@@ -1,0 +1,18 @@
+rootProject.name = 'sapari-be'
+
+['apps', 'common', 'storage'].each { groupName ->
+    def groupDir = new File(rootDir, groupName)
+    if (!groupDir.exists()) return
+    groupDir.eachDir { subDir ->
+        include "${groupName}:${subDir.name}"
+    }
+}
+
+def moduleDir = new File(rootDir, 'modules')
+if(moduleDir.exists()){
+    moduleDir.eachDir { domainDir ->
+        domainDir.eachDir { acDir ->
+            include "modules:${domainDir.name}:${acDir.name}"
+        }
+    }
+}

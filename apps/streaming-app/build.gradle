@@ -1,0 +1,14 @@
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'io.livekit:livekit-server:0.12.1'
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}
+
+bootJar {
+    enabled = true
+}
+
+jar{
+    enabled = false
+}

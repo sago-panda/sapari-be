@@ -1,0 +1,15 @@
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-batch'
+    testImplementation 'org.springframework.boot:spring-boot-starter-batch-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}
+
+bootJar {
+    enabled = true
+}
+
+jar{
+    enabled = false
+}
