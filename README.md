@@ -1,4 +1,4 @@
-# live-commerce
+# sapari
 
 라이브 커머스 백엔드 — 모듈러 모놀리식 구조 (Spring Boot 4 / Java 21)
 
