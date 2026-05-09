@@ -17,7 +17,7 @@
 ## 패키지 구조
 
 ```
-live-commerce/
+sapari-be/
 ├── settings.gradle.kts
 ├── build.gradle.kts
 ├── buildSrc/
@@ -140,7 +140,7 @@ modules/X/X-api  → (의존 없음, DTO/인터페이스만)
 
 ```
 main      ← 운영 배포 (직접 push 금지, PR만)
-develop   ← 통합 브랜치 (개발 서버 자동 배포)
+dev   ← 통합 브랜치 (개발 서버 자동 배포)
 *         ← 위 컨벤션 따라 생성, develop으로 PR
 ```
 
