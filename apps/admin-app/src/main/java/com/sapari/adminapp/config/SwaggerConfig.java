@@ -1,56 +1,39 @@
 package com.sapari.adminapp.config;
 
+import com.sapari.common.web.swagger.OpenApiDetails;
+import com.sapari.common.web.swagger.SwaggerConfigurer;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import org.springdoc.core.models.GroupedOpenApi;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.List;
+
 @Configuration
-public class SwaggerConfig {
+public class SwaggerConfig implements SwaggerConfigurer {
 
     @Bean
     public OpenAPI openAPI() {
         return new OpenAPI()
                 .info(new Info()
-                        .title("Sapari - 어드민 API")
+                        .title("Sapari - 관리자 API")
                         .version("v1.0.0")
-                        .description("어드민/판매자용 API"));
+                        .description("관리자용 API"));
+    }
+
+    @Override
+    public List<OpenApiDetails> apiDetails() {
+        return List.of(
+                new OpenApiDetails("admin-user",    "회원 관리",  List.of("/admin/v1/users/**")),
+                new OpenApiDetails("admin-product", "상품 관리",  List.of("/admin/v1/products/**")),
+                new OpenApiDetails("admin-order",   "주문 관리",  List.of("/admin/v1/orders/**")),
+                new OpenApiDetails("admin-live",    "라이브 관리", List.of("/admin/v1/lives/**"))
+        );
     }
 
     @Bean
-    public GroupedOpenApi adminUserApi() {
-        return GroupedOpenApi.builder()
-                .group("admin-user")
-                .displayName("회원 관리")
-                .pathsToMatch("/admin/v1/users/**")
-                .build();
-    }
-
-    @Bean
-    public GroupedOpenApi adminProductApi() {
-        return GroupedOpenApi.builder()
-                .group("admin-product")
-                .displayName("상품 관리")
-                .pathsToMatch("/admin/v1/products/**")
-                .build();
-    }
-
-    @Bean
-    public GroupedOpenApi adminOrderApi() {
-        return GroupedOpenApi.builder()
-                .group("admin-order")
-                .displayName("주문 관리")
-                .pathsToMatch("/admin/v1/orders/**")
-                .build();
-    }
-
-    @Bean
-    public GroupedOpenApi adminLiveApi() {
-        return GroupedOpenApi.builder()
-                .group("admin-live")
-                .displayName("라이브 관리")
-                .pathsToMatch("/admin/v1/lives/**")
-                .build();
+    public List<GroupedOpenApi> groupedOpenApis() {
+        return groupApis();
     }
 }
