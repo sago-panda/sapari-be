@@ -5,11 +5,3 @@ dependencies {
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
-
-bootJar {
-    enabled = true
-}
-
-jar{
-    enabled = false
-}
