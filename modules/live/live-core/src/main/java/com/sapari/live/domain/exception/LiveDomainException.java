@@ -20,4 +20,9 @@ public class LiveDomainException extends RuntimeException{
         super(customMessage, cause);
         this.errorCode = errorCode;
     }
+
+    public LiveDomainException(LiveErrorCode errorCode, String customMessage){
+        super(customMessage);
+        this.errorCode = errorCode;
+    }
 }

@@ -49,4 +49,25 @@ public record LiveRoom(
         );
     }
 
+    public LiveRoom startLive(StreamInfo newStreamInfo){
+        var nextStatus = new LiveStatus.Live(
+                LocalDateTime.now(),
+                newStreamInfo.sfuRoomId(),
+                newStreamInfo.egressId(),
+                newStreamInfo.hlsUrl()
+        );
+
+        return new LiveRoom(
+                id,
+                sellerId,
+                title,
+                description,
+                newStreamInfo,
+                nextStatus,
+                scheduledAt,
+                createdAt,
+                updatedAt
+        );
+    }
+
 }

@@ -4,4 +4,6 @@ import java.util.UUID;
 
 public interface LiveMediaManager {
     SfuRoomResult createRoom(UUID roomId);
+    String issueSellerToken(UUID roomId, UUID sellerId);
+    HlsEgressResult startHlsEgress(UUID roomId);
 }

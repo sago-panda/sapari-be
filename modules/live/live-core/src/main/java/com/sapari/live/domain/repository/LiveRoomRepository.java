@@ -8,4 +8,5 @@ import com.sapari.live.domain.model.LiveRoom;
 public interface LiveRoomRepository {
     LiveRoom save(LiveRoom liveRoom);
     Optional<LiveRoom> findById(UUID id);
+    Optional<LiveRoom> findByIdAndSellerId(UUID id, UUID hostId);
 }
