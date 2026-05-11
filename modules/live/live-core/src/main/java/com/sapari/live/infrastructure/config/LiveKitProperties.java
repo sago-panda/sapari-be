@@ -1,20 +1,28 @@
 package com.sapari.live.infrastructure.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
+
+@Validated
 @ConfigurationProperties("livekit")
 public record LiveKitProperties(
-        String host,
-        String apiKey,
-        String apiSecret,
-        S3 s3,
-        Hls hls
+        @NotBlank String host,
+        @NotBlank String apiKey,
+        @NotBlank String apiSecret,
+        @NotNull @Valid S3 s3,
+        @NotNull @Valid Hls hls
 ) {
     public record S3(
-            String bucket, String region,
-            String keyPrefix,
-            String accessKey, String secretKey
+            @NotNull String bucket,
+            @NotNull String region,
+            @NotNull String keyPrefix,
+            @NotNull String accessKey,
+            @NotNull String secretKey
     ) {}
 
-    public record Hls(String cdnBaseUrl, int segmentDuration) {}
+    public record Hls(@NotNull String cdnBaseUrl, @NotNull int segmentDuration) {}
 }

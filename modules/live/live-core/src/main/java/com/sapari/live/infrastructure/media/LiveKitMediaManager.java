@@ -1,6 +1,7 @@
 package com.sapari.live.infrastructure.media;
 
 import io.livekit.server.AccessToken;
+import io.livekit.server.AudioMixing;
 import io.livekit.server.CanPublish;
 import io.livekit.server.CanPublishData;
 import io.livekit.server.CanSubscribe;
@@ -88,9 +89,6 @@ public class LiveKitMediaManager implements LiveMediaManager {
         LiveKitProperties.S3 s3 = liveKitProperties.s3();
         LiveKitProperties.Hls hls = liveKitProperties.hls();
 
-        log.error("LiveKit properties 전체 상태: {}", liveKitProperties);
-        log.error("host: {}, apiKey: {}", liveKitProperties.host(), liveKitProperties.apiKey());
-
         //S3 설정
         S3Upload s3Upload = S3Upload.newBuilder()
                 .setBucket(s3.bucket())
@@ -121,7 +119,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
                     false,
                     false,
                     "" //custom base url
-                    //, AudioMixing.DEFAULT_MIXING
+                    , AudioMixing.DEFAULT_MIXING
             );
 
             // API 실행 및 응답 대기
