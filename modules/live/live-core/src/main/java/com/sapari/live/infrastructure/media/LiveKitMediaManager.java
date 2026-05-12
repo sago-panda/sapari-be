@@ -148,4 +148,30 @@ public class LiveKitMediaManager implements LiveMediaManager {
             throw new LiveMediaException("HLS Egress 알 수 없는 오류: " + roomId, e);
         }
     }
+
+    /**
+     * s3 기록 종료, 최종 플레이 리스트 생성
+     */
+    @Override
+    public void stopHlsEgress(UUID roomId, String egressId){
+        try{
+            egressServiceClient.stopEgress(egressId).execute();
+            log.info("HLS Egress 중단: egressId: {}, roomId: {}", egressId, roomId);
+        }catch (Exception e){
+            log.warn("HLS Egress 중단 실패 (이미 중단됐을 수 있음): egressId={}", egressId, e);
+        }
+    }
+
+    /**
+     * sfu room 삭제
+     */
+    @Override
+    public void closeRoom(String sfuRoomId){
+        try{
+            roomServiceClient.deleteRoom(sfuRoomId).execute();
+            log.info("LiveKit 룸 삭제: sfuRoomId={}", sfuRoomId);
+        }catch (Exception e){
+            log.warn("LiveKit 룸 삭제 실패 (이미 삭제됐을 수 있음): sfuRoomId={}", sfuRoomId, e);
+        }
+    }
 }

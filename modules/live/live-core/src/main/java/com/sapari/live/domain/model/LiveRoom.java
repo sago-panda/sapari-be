@@ -70,4 +70,19 @@ public record LiveRoom(
         );
     }
 
+    public LiveRoom endLive(){
+        //status 변경
+        LiveStatus.Live live = (LiveStatus.Live) this.status;
+        var endedStatus = new LiveStatus.Ended(
+                live.startedAt(),
+                LocalDateTime.now(),
+                streamInfo().hlsUrl()
+        );
+
+        return new LiveRoom(
+                id, sellerId, title, description,
+                streamInfo, endedStatus,
+                scheduledAt, createdAt, LocalDateTime.now()
+        );
+    }
 }

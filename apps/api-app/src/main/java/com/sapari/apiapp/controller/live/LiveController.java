@@ -18,9 +18,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.apiapp.controller.dto.CreateRoomRequest;
 import com.sapari.live.command.CreateLiveCommand;
+import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.port.CreateLiveFacade;
+import com.sapari.live.port.EndLiveFacade;
 import com.sapari.live.port.EnterLiveFacade;
 import com.sapari.live.port.StartLiveFacade;
 import com.sapari.live.view.CreateLiveView;
@@ -35,6 +37,7 @@ public class LiveController {
     private final CreateLiveFacade createLiveFacade;
     private final StartLiveFacade startLiveFacade;
     private final EnterLiveFacade enterLiveFacade;
+    private final EndLiveFacade endLiveFacade;
 
     @PostMapping("/rooms")
     public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request,@RequestParam(name = "sellerId") UUID sellerId){
@@ -61,5 +64,16 @@ public class LiveController {
                 new EnterLiveCommand(roomId)
         );
         return ResponseEntity.ok(result);
+    }
+
+    @PostMapping("/rooms/{roomId}/broadcast/end")
+    public ResponseEntity<Void> endBroadcast(
+            @RequestParam(name = "sellerId") UUID sellerId,
+            @PathVariable UUID roomId
+    ){
+        endLiveFacade.execute(
+                new EndLiveCommand(roomId, sellerId)
+        );
+        return ResponseEntity.noContent().build();
     }
 }
