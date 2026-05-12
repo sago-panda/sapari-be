@@ -32,6 +32,8 @@ public class EnterLiveService implements EnterLiveFacade {
             throw new InvalidLiveStateException(command.roomId().toString());
         }
 
+        log.info("roomId: {} hlsUrl 발급", command.roomId());
+
         return new EnterLiveResult(
                 room.streamInfo().hlsUrl()
         );
