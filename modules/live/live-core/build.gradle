@@ -1,15 +1,30 @@
+plugins {
+    id 'java-library'
+}
+
 dependencies {
-    implementation 'org.springframework.boot:spring-boot-starter'
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    api(project(':storage:db-core'))
+    implementation(project(':common:global'))
+    implementation(project(':modules:live:live-api'))
+
+    api 'jakarta.persistence:jakarta.persistence-api'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // LiveKit (WebRTC)
+    implementation 'io.livekit:livekit-server:0.12.1'
+
+    // MapStruct
+    implementation 'org.mapstruct:mapstruct:1.5.5.Final'
+
+    annotationProcessor 'jakarta.annotation:jakarta.annotation-api'
+    annotationProcessor 'jakarta.persistence:jakarta.persistence-api'
+
+    annotationProcessor 'org.mapstruct:mapstruct-processor:1.5.5.Final'
+    annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
+
+    // FixtureMonkey
+    testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
-
-bootJar {
-    enabled = true
-}
-
-jar{
-    enabled = false
-}
