@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     api(project(':storage:db-core'))
+    implementation(project(':common:global'))
     implementation(project(':modules:live:live-api'))
 
     api 'jakarta.persistence:jakarta.persistence-api'

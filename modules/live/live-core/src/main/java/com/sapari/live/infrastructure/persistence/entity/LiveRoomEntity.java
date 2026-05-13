@@ -5,7 +5,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.UUID;
 
 import jakarta.persistence.Column;
@@ -42,13 +42,13 @@ public class LiveRoomEntity extends BaseUuidEntity {
 
     private String suspendedReason;
 
-    private LocalDateTime suspendedAt;
+    private Instant suspendedAt;
 
-    private LocalDateTime scheduledAt;
+    private Instant scheduledAt;
 
-    private LocalDateTime startedAt;
+    private Instant startedAt;
 
-    private LocalDateTime endedAt;
+    private Instant endedAt;
 
     private int peakViewers;
 
@@ -67,8 +67,8 @@ public class LiveRoomEntity extends BaseUuidEntity {
     public LiveRoomEntity(UUID sellerId, String title, String description, LiveRoomStatus liveStatus,
                           String sfuRoomId,
                           String egressId, String hlsUrl, String hlsArchiveUrl, String suspendedReason,
-                          LocalDateTime suspendedAt, LocalDateTime scheduledAt, LocalDateTime startedAt,
-                          LocalDateTime endedAt, int peakViewers, int totalViewers, String vodKey,
+                          Instant suspendedAt, Instant scheduledAt, Instant startedAt,
+                          Instant endedAt, int peakViewers, int totalViewers, String vodKey,
                           int vodDurationSeconds,
                           VodStatus vodStatus, boolean isVodPublic) {
         this.sellerId = sellerId;
@@ -93,7 +93,7 @@ public class LiveRoomEntity extends BaseUuidEntity {
     }
 
 
-    public void applyLive(LocalDateTime startedAt, String sfuRoomId, String egressId, String hlsUrl){
+    public void applyLive(Instant startedAt, String sfuRoomId, String egressId, String hlsUrl){
         this.liveStatus = LiveRoomStatus.LIVE;
         this.startedAt = startedAt;
         this.sfuRoomId = sfuRoomId;
@@ -101,13 +101,12 @@ public class LiveRoomEntity extends BaseUuidEntity {
         this.hlsUrl    = hlsUrl;
 
     }
-    public void applyEnded(LocalDateTime startedAt, LocalDateTime endedAt, String hlsArchiveUrl){
+    public void applyEnded(Instant endedAt, String hlsArchiveUrl){
         this.liveStatus = LiveRoomStatus.ENDED;
-        this.startedAt = startedAt;
         this.endedAt = endedAt;
         this.hlsArchiveUrl = hlsArchiveUrl;
     }
-    public void applySuspended(LocalDateTime suspendedAt, String reason){
+    public void applySuspended(Instant suspendedAt, String reason){
         this.liveStatus = LiveRoomStatus.SUSPENDED;
         this.suspendedAt = suspendedAt;
         this.suspendedReason = reason;
@@ -121,7 +120,7 @@ public class LiveRoomEntity extends BaseUuidEntity {
         this.description = description;
     }
 
-    public void updateScheduledAt(LocalDateTime scheduledAt) {
+    public void updateScheduledAt(Instant scheduledAt) {
         this.scheduledAt = scheduledAt;
     }
 

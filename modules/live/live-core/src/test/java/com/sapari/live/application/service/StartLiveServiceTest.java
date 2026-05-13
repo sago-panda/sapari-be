@@ -6,7 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -72,7 +72,7 @@ public class StartLiveServiceTest {
         LiveRoom room = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
-                .set("status", new LiveStatus.Scheduled(LocalDateTime.now()))
+                .set("status", new LiveStatus.Scheduled(Instant.now()))
                 .set("streamInfo", streamInfo)
                 .sample();
 
@@ -120,7 +120,7 @@ public class StartLiveServiceTest {
                 .set("id", roomId)
                 .set("sellerId", sellerId)
                 .set("streamInfo", streamInfo)
-                .set("status", new Live(LocalDateTime.now(), streamInfo.sfuRoomId(), streamInfo.egressId(), streamInfo.hlsUrl()))
+                .set("status", new Live(Instant.now(), streamInfo.sfuRoomId(), streamInfo.egressId(), streamInfo.hlsUrl()))
                 .sample();
 
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(invalidRoom));

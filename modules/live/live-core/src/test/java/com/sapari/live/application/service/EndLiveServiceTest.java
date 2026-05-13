@@ -113,7 +113,7 @@ public class EndLiveServiceTest {
         // given
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
         LiveStatus nonLiveStatus = fixtureMonkey.giveMeBuilder(LiveStatus.class)
-                .setPostCondition(status -> !(status instanceof LiveStatus.Live))
+                .setPostCondition(status -> !(status instanceof LiveStatus.Live || status instanceof LiveStatus.Suspended))
                 .sample();
 
         // 생성된 무작위 nonLiveStatus를 LiveRoom에 주입

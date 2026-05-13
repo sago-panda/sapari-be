@@ -10,7 +10,6 @@ import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
-import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.EnterLiveFacade;
 import com.sapari.live.view.EnterLiveResult;
@@ -28,14 +27,12 @@ public class EnterLiveService implements EnterLiveFacade {
         LiveRoom room = liveRoomRepository.findById(command.roomId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
-        if (!(room.status() instanceof LiveStatus.Live)) {
+        if (!room.canEnterLive()) {
             throw new InvalidLiveStateException(command.roomId().toString());
         }
 
         log.info("roomId: {} hlsUrl 발급", command.roomId());
 
-        return new EnterLiveResult(
-                room.streamInfo().hlsUrl()
-        );
+        return room.toEnterLiveResult();
     }
 }

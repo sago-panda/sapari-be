@@ -6,13 +6,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
-import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.StartLiveFacade;
@@ -25,6 +25,7 @@ public class StartLiveService implements StartLiveFacade {
 
     private final LiveRoomRepository liveRoomRepository;
     private final LiveMediaManager liveMediaManager;
+    private final TimeProvider timeProvider;
 
     @Override
     @Transactional
@@ -33,7 +34,7 @@ public class StartLiveService implements StartLiveFacade {
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
         // Live로 넘어갈 수 있는 상태인지 확인
-        if(!room.status().canTransitionTo(new LiveStatus.Live(null, null, null, null))){
+        if(!room.canStartLive()){
             throw new InvalidLiveStateException(room.id().toString());
         }
 
@@ -47,19 +48,14 @@ public class StartLiveService implements StartLiveFacade {
         HlsEgressResult egressResult = liveMediaManager.startHlsEgress(command.roomId());
 
         // liveRoomEntity status -> Live 변환
-        StreamInfo streamInfo = StreamInfo.of(room.streamInfo().sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl());
-        LiveRoom updatedRoom = room.startLive(streamInfo);
+        StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl());
+        LiveRoom updatedRoom = room.startLive(streamInfo, timeProvider.now());
 
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송
 
         //저장
         liveRoomRepository.save(updatedRoom);
 
-        return new StartLiveResult(
-                command.roomId().toString(),
-                sfuToken,
-                streamInfo.hlsUrl(),
-                ""
-        );
+        return updatedRoom.toStartLiveResult(sfuToken, liveMediaManager.getSfuUrl());
     }
 }

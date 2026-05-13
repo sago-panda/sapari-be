@@ -30,6 +30,7 @@ import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.SfuRoomResult;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.infrastructure.config.LiveKitProperties;
+import com.sapari.global.validator.UrlValidator;
 
 @Slf4j
 @Component
@@ -135,6 +136,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
             EgressInfo egressInfo = response.body();
 
             String hlsUrl = hls.cdnBaseUrl() + "/" + s3.keyPrefix() + roomId + "/index.m3u8";
+            UrlValidator.validateHlsUrl(hlsUrl);
             log.info("HLS Egress 시작: roomId={}, egressId={}, hlsUrl={}",
                     roomId, egressInfo.getEgressId(), hlsUrl);
 
@@ -173,5 +175,10 @@ public class LiveKitMediaManager implements LiveMediaManager {
         }catch (Exception e){
             log.warn("LiveKit 룸 삭제 실패 (이미 삭제됐을 수 있음): sfuRoomId={}", sfuRoomId, e);
         }
+    }
+
+    @Override
+    public String getSfuUrl(){
+        return liveKitProperties.host();
     }
 }

@@ -1,6 +1,6 @@
 package com.sapari.live.infrastructure.persistence.mapper;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -87,8 +87,8 @@ public class LiveRoomMapper {
         };
     }
 
-    private static LocalDateTime scheduledAt(LiveStatus status) {
-        return status instanceof Scheduled(LocalDateTime scheduledAt)
+    private static Instant scheduledAt(LiveStatus status) {
+        return status instanceof Scheduled(Instant scheduledAt)
                 ? scheduledAt : null;
     }
 
@@ -104,7 +104,7 @@ public class LiveRoomMapper {
             }
             case Ended e -> {
                 entity.applyEnded(
-                        e.startedAt(), e.endedAt(), e.hlsArchiveUrl()
+                        e.endedAt(), e.hlsArchiveUrl()
                 );
             }
             case Suspended s -> {

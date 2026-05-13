@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.SfuRoomResult;
 import com.sapari.live.command.CreateLiveCommand;
@@ -21,6 +22,7 @@ public class CreateLiveService implements CreateLiveFacade {
 
     private final LiveRoomRepository liveRoomRepository;
     private final LiveMediaManager liveMediaManager;
+    private final TimeProvider timeProvider;
 
     @Override
     @Transactional
@@ -29,7 +31,8 @@ public class CreateLiveService implements CreateLiveFacade {
                 command.sellerId(),
                 command.title(),
                 command.description(),
-                command.scheduledAt()
+                command.scheduledAt(),
+                timeProvider.now()
         );
 
         LiveRoom saved = liveRoomRepository.save(room);
@@ -40,14 +43,6 @@ public class CreateLiveService implements CreateLiveFacade {
 
         liveRoomRepository.save(withSfu);
 
-        return toView(withSfu);
-    }
-
-    private CreateLiveView toView(LiveRoom room) {
-        return new CreateLiveView(
-                room.id(),
-                room.title(),
-                room.description()
-        );
+        return withSfu.toCreateLiveView();
     }
 }

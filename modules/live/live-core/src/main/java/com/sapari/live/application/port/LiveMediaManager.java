@@ -8,4 +8,5 @@ public interface LiveMediaManager {
     HlsEgressResult startHlsEgress(UUID roomId);
     void stopHlsEgress(UUID roomId, String egressId);
     void closeRoom(String sfuRoomId);
+    String getSfuUrl();
 }
