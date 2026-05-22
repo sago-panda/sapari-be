@@ -44,7 +44,7 @@ public class LiveController {
         CreateLiveCommand command = request.toCommand(sellerId);
 
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(createLiveFacade.execute(command));
+                .body(createLiveFacade.create(command));
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/start")
@@ -52,7 +52,7 @@ public class LiveController {
             @RequestParam(name = "sellerId") UUID sellerId,
             @PathVariable UUID roomId
     ) {
-        StartLiveResult result = startLiveFacade.execute(
+        StartLiveResult result = startLiveFacade.start(
                 new StartLiveCommand(roomId, sellerId)
         );
         return ResponseEntity.ok(result);
@@ -60,7 +60,7 @@ public class LiveController {
 
     @GetMapping("/rooms/{roomId}")
     public ResponseEntity<EnterLiveResult> enterRoom(@PathVariable UUID roomId){
-        EnterLiveResult result = enterLiveFacade.execute(
+        EnterLiveResult result = enterLiveFacade.enter(
                 new EnterLiveCommand(roomId)
         );
         return ResponseEntity.ok(result);
@@ -71,7 +71,7 @@ public class LiveController {
             @RequestParam(name = "sellerId") UUID sellerId,
             @PathVariable UUID roomId
     ){
-        endLiveFacade.execute(
+        endLiveFacade.end(
                 new EndLiveCommand(roomId, sellerId)
         );
         return ResponseEntity.noContent().build();

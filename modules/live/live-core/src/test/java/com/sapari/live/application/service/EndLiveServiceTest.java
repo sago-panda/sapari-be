@@ -72,7 +72,7 @@ public class EndLiveServiceTest {
                 .willReturn(Optional.of(mockRoom));
 
         // when
-        endLiveService.execute(command);
+        endLiveService.end(command);
 
         // then
         then(liveMediaManager).should(times(1)).stopHlsEgress(roomId, mockRoom.streamInfo().egressId());
@@ -98,7 +98,7 @@ public class EndLiveServiceTest {
                 .willReturn(Optional.empty());
 
         // when & then
-        assertThatThrownBy(() -> endLiveService.execute(command))
+        assertThatThrownBy(() -> endLiveService.end(command))
                 .isInstanceOf(LiveNotFoundException.class)
                 .hasMessageContaining(command.roomId().toString());
 
@@ -127,7 +127,7 @@ public class EndLiveServiceTest {
                 .willReturn(Optional.of(notLiveRoom));
 
         // when & then
-        assertThatThrownBy(() -> endLiveService.execute(command))
+        assertThatThrownBy(() -> endLiveService.end(command))
                 .isInstanceOf(InvalidLiveStateException.class)
                 .hasMessageContaining("방송 중인 방만 종료 가능합니다");
 

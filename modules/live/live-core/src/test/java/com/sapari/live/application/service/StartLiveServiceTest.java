@@ -83,7 +83,7 @@ public class StartLiveServiceTest {
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
 
         //when
-        var result = startLiveService.execute(command);
+        var result = startLiveService.start(command);
 
         //then
         assertThat(result.roomId()).isEqualTo(roomId.toString());
@@ -103,7 +103,7 @@ public class StartLiveServiceTest {
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.empty());
 
         // when & then
-        assertThatThrownBy(() -> startLiveService.execute(command))
+        assertThatThrownBy(() -> startLiveService.start(command))
                 .isInstanceOf(LiveNotFoundException.class)
                 .hasMessageContaining(roomId.toString());
 
@@ -126,7 +126,7 @@ public class StartLiveServiceTest {
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(invalidRoom));
 
         // when & then
-        assertThatThrownBy(() -> startLiveService.execute(command))
+        assertThatThrownBy(() -> startLiveService.start(command))
                 .isInstanceOf(InvalidLiveStateException.class)
                 .hasMessageContaining(roomId.toString());
     }

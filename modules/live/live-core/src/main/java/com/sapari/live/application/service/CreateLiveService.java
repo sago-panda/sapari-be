@@ -26,7 +26,7 @@ public class CreateLiveService implements CreateLiveFacade {
 
     @Override
     @Transactional
-    public CreateLiveView execute(CreateLiveCommand command){
+    public CreateLiveView create(CreateLiveCommand command){
         LiveRoom room = LiveRoom.create(
                 command.sellerId(),
                 command.title(),

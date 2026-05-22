@@ -4,5 +4,5 @@ import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.view.EnterLiveResult;
 
 public interface EnterLiveFacade {
-    EnterLiveResult execute(EnterLiveCommand command);
+    EnterLiveResult enter(EnterLiveCommand command);
 }

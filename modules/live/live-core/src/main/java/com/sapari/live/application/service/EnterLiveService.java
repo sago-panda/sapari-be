@@ -23,7 +23,7 @@ public class EnterLiveService implements EnterLiveFacade {
 
     @Override
     @Transactional(readOnly = true)
-    public EnterLiveResult execute(EnterLiveCommand command) {
+    public EnterLiveResult enter(EnterLiveCommand command) {
         LiveRoom room = liveRoomRepository.findById(command.roomId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 

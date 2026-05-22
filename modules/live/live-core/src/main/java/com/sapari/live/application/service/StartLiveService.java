@@ -29,7 +29,7 @@ public class StartLiveService implements StartLiveFacade {
 
     @Override
     @Transactional
-    public StartLiveResult execute(StartLiveCommand command){
+    public StartLiveResult start(StartLiveCommand command){
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 

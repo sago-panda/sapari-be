@@ -26,7 +26,7 @@ public class EndLiveService implements EndLiveFacade {
 
     @Override
     @Transactional
-    public void execute(EndLiveCommand command){
+    public void end(EndLiveCommand command){
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
