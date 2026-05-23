@@ -21,13 +21,16 @@ import com.sapari.apiapp.controller.dto.StartBroadcastRequest;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
+import com.sapari.live.command.GetLiveCommand;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.port.CreateLiveFacade;
 import com.sapari.live.port.EndLiveFacade;
 import com.sapari.live.port.EnterLiveFacade;
+import com.sapari.live.port.GetLiveFacade;
 import com.sapari.live.port.StartLiveFacade;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.EnterLiveResult;
+import com.sapari.live.view.GetLiveResult;
 import com.sapari.live.view.StartLiveResult;
 
 @RestController
@@ -39,6 +42,7 @@ public class LiveController {
     private final StartLiveFacade startLiveFacade;
     private final EnterLiveFacade enterLiveFacade;
     private final EndLiveFacade endLiveFacade;
+    private final GetLiveFacade getLiveFacade;
 
     @PostMapping("/rooms")
     public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @RequestParam(name = "sellerId") UUID sellerId) {
@@ -63,6 +67,11 @@ public class LiveController {
     public ResponseEntity<EnterLiveResult> enterRoom(@PathVariable UUID roomId) {
         EnterLiveResult result = enterLiveFacade.enter(new EnterLiveCommand(roomId));
         return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/rooms")
+    public ResponseEntity<GetLiveResult> getRooms() {
+        return ResponseEntity.ok(getLiveFacade.getRooms(GetLiveCommand.defaultMain()));
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/end")
