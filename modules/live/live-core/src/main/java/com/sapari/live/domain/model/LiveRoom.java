@@ -16,6 +16,8 @@ public record LiveRoom(
         UUID sellerId,
         String title,
         String description,
+        String sellerNickname,
+        String thumbnailUrl,
         StreamInfo streamInfo,
         LiveStatus status,
         Instant scheduledAt,
@@ -26,6 +28,8 @@ public record LiveRoom(
             UUID sellerId,
             String title,
             String description,
+            String sellerNickname,
+            String thumbnailUrl,
             Instant scheduledAt,
             Instant now
     ){
@@ -33,6 +37,8 @@ public record LiveRoom(
                 .sellerId(sellerId)
                 .title(title)
                 .description(description)
+                .sellerNickname(sellerNickname)
+                .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
                 .scheduledAt(scheduledAt)
                 .createdAt(now)

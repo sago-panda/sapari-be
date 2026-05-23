@@ -18,6 +18,8 @@ public class LiveRoomMapper {
                 .sellerId(room.sellerId())
                 .title(room.title())
                 .description(room.description())
+                .sellerNickname(room.sellerNickname())
+                .thumbnailUrl(room.thumbnailUrl())
                 .liveStatus(toStatusEnum(room.status()))
                 .scheduledAt(scheduledAt(room.status()))
                 .build();
@@ -54,6 +56,8 @@ public class LiveRoomMapper {
                 .sellerId(entity.getSellerId())
                 .title(entity.getTitle())
                 .description(entity.getDescription())
+                .sellerNickname(entity.getSellerNickname())
+                .thumbnailUrl(entity.getThumbnailUrl())
                 .status(status)
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
@@ -63,6 +67,8 @@ public class LiveRoomMapper {
     public static void updateEntityFromDomain(LiveRoomEntity entity, LiveRoom room){
         entity.updateTitle(room.title());
         entity.updateDescription(room.description());
+        entity.updateSellerNickname(room.sellerNickname());
+        entity.updateThumbnailUrl(room.thumbnailUrl());
         entity.updateScheduledAt(room.scheduledAt());
 
         if (room.streamInfo() != null) {

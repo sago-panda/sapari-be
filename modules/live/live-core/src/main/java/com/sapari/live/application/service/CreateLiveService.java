@@ -31,6 +31,8 @@ public class CreateLiveService implements CreateLiveFacade {
                 command.sellerId(),
                 command.title(),
                 command.description(),
+                command.sellerNickname(),
+                command.thumbnailUrl(),
                 command.scheduledAt(),
                 timeProvider.now()
         );
