@@ -7,6 +7,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -57,7 +58,7 @@ public class StartLiveServiceTest {
 
         roomId = UUID.randomUUID();
         sellerId = UUID.randomUUID();
-        command = new StartLiveCommand(roomId, sellerId);
+        command = new StartLiveCommand(roomId, sellerId, List.of());
 
     }
 

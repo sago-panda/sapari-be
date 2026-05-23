@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.apiapp.controller.dto.CreateRoomRequest;
+import com.sapari.apiapp.controller.dto.StartBroadcastRequest;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
@@ -40,9 +41,8 @@ public class LiveController {
     private final EndLiveFacade endLiveFacade;
 
     @PostMapping("/rooms")
-    public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request,@RequestParam(name = "sellerId") UUID sellerId){
+    public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @RequestParam(name = "sellerId") UUID sellerId) {
         CreateLiveCommand command = request.toCommand(sellerId);
-
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(createLiveFacade.create(command));
     }
@@ -50,19 +50,18 @@ public class LiveController {
     @PostMapping("/rooms/{roomId}/broadcast/start")
     public ResponseEntity<StartLiveResult> startBroadcast(
             @RequestParam(name = "sellerId") UUID sellerId,
-            @PathVariable UUID roomId
+            @PathVariable UUID roomId,
+            @RequestBody StartBroadcastRequest request
     ) {
         StartLiveResult result = startLiveFacade.start(
-                new StartLiveCommand(roomId, sellerId)
+                new StartLiveCommand(roomId, sellerId, request.toProductEntries())
         );
         return ResponseEntity.ok(result);
     }
 
     @GetMapping("/rooms/{roomId}")
-    public ResponseEntity<EnterLiveResult> enterRoom(@PathVariable UUID roomId){
-        EnterLiveResult result = enterLiveFacade.enter(
-                new EnterLiveCommand(roomId)
-        );
+    public ResponseEntity<EnterLiveResult> enterRoom(@PathVariable UUID roomId) {
+        EnterLiveResult result = enterLiveFacade.enter(new EnterLiveCommand(roomId));
         return ResponseEntity.ok(result);
     }
 
@@ -70,10 +69,8 @@ public class LiveController {
     public ResponseEntity<Void> endBroadcast(
             @RequestParam(name = "sellerId") UUID sellerId,
             @PathVariable UUID roomId
-    ){
-        endLiveFacade.end(
-                new EndLiveCommand(roomId, sellerId)
-        );
+    ) {
+        endLiveFacade.end(new EndLiveCommand(roomId, sellerId));
         return ResponseEntity.noContent().build();
     }
 }
