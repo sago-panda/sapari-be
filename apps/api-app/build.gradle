@@ -2,6 +2,8 @@ dependencies {
     implementation project(':common:web')
     implementation(project(":modules:live:live-api"))
     implementation(project(":modules:live:live-core"))
+    implementation(project(":modules:seller:seller-api"))
+    implementation(project(":modules:seller:seller-core"))
     implementation(project(":modules:user:user-core"))
     implementation(project(":storage:redis-core"))
 
