@@ -27,6 +27,8 @@ import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.common.web.security.JwtAuthenticationFilter;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.member.infrastructure.oauth.MemberOAuth2SuccessHandler;
+import com.sapari.member.infrastructure.oauth.MemberOAuth2UserService;
 
 @Configuration
 @EnableWebSecurity
@@ -119,7 +121,9 @@ public class ApiSecurityConfig {
             HttpSecurity http,
             JwtAuthenticationFilter jwtAuthenticationFilter,
             JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint,
-            JwtAccessDeniedHandler jwtAccessDeniedHandler
+            JwtAccessDeniedHandler jwtAccessDeniedHandler,
+            MemberOAuth2UserService memberOAuth2UserService,
+            MemberOAuth2SuccessHandler memberOAuth2SuccessHandler
     ) throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -132,6 +136,18 @@ public class ApiSecurityConfig {
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint(jwtAuthenticationEntryPoint)
                         .accessDeniedHandler(jwtAccessDeniedHandler)
+                )
+                .oauth2Login(oauth2 -> oauth2
+                        .authorizationEndpoint(authorization -> authorization
+                                .baseUri("/api/auth/members/oauth2/authorization")
+                        )
+                        .redirectionEndpoint(redirection -> redirection
+                                .baseUri("/api/auth/members/oauth2/code/*")
+                        )
+                        .userInfoEndpoint(userInfo -> userInfo
+                                .userService(memberOAuth2UserService)
+                        )
+                        .successHandler(memberOAuth2SuccessHandler)
                 )
                 .authorizeHttpRequests(authorize -> authorize
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
