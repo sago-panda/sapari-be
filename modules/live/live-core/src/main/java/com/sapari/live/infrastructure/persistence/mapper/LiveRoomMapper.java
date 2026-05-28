@@ -46,6 +46,7 @@ public class LiveRoomMapper {
                     entity.getHlsUrl()
             );
             case SUSPENDED -> new Suspended(
+                    entity.getStartedAt(),
                     entity.getSuspendedAt(),
                     entity.getSuspendedReason()
             );

@@ -9,13 +9,13 @@ import org.springframework.stereotype.Service;
 import com.sapari.live.command.GetLiveCommand;
 import com.sapari.live.domain.model.LiveRoomCache;
 import com.sapari.live.domain.repository.LiveRoomCacheRepository;
-import com.sapari.live.port.GetLiveFacade;
+import com.sapari.live.port.GetLiveUseCase;
 import com.sapari.live.view.GetLiveResult;
 import com.sapari.live.view.GetLiveResult.LiveRoomSummary;
 
 @Service
 @RequiredArgsConstructor
-public class GetLiveService implements GetLiveFacade {
+public class GetLiveService implements GetLiveUseCase {
 
     private final LiveRoomCacheRepository liveRoomCacheRepository;
 

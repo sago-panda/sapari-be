@@ -23,11 +23,11 @@ import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.command.GetLiveCommand;
 import com.sapari.live.command.StartLiveCommand;
-import com.sapari.live.port.CreateLiveFacade;
-import com.sapari.live.port.EndLiveFacade;
-import com.sapari.live.port.EnterLiveFacade;
-import com.sapari.live.port.GetLiveFacade;
-import com.sapari.live.port.StartLiveFacade;
+import com.sapari.live.port.CreateLiveUseCase;
+import com.sapari.live.port.EndLiveUseCase;
+import com.sapari.live.port.EnterLiveUseCase;
+import com.sapari.live.port.GetLiveUseCase;
+import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.EnterLiveResult;
 import com.sapari.live.view.GetLiveResult;
@@ -38,26 +38,26 @@ import com.sapari.live.view.StartLiveResult;
 @RequestMapping("api/v1/lives")
 public class LiveController {
 
-    private final CreateLiveFacade createLiveFacade;
-    private final StartLiveFacade startLiveFacade;
-    private final EnterLiveFacade enterLiveFacade;
-    private final EndLiveFacade endLiveFacade;
-    private final GetLiveFacade getLiveFacade;
+    private final CreateLiveUseCase createLiveUseCase;
+    private final StartLiveUseCase startLiveUseCase;
+    private final EnterLiveUseCase enterLiveUseCase;
+    private final EndLiveUseCase endLiveUseCase;
+    private final GetLiveUseCase getLiveUseCase;
 
     @PostMapping("/rooms")
     public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @RequestParam(name = "sellerId") UUID sellerId) {
         CreateLiveCommand command = request.toCommand(sellerId);
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(createLiveFacade.create(command));
+                .body(createLiveUseCase.create(command));
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/start")
     public ResponseEntity<StartLiveResult> startBroadcast(
             @RequestParam(name = "sellerId") UUID sellerId,
             @PathVariable UUID roomId,
-            @RequestBody StartBroadcastRequest request
+            @RequestBody @Valid StartBroadcastRequest request
     ) {
-        StartLiveResult result = startLiveFacade.start(
+        StartLiveResult result = startLiveUseCase.start(
                 new StartLiveCommand(roomId, sellerId, request.toProductEntries())
         );
         return ResponseEntity.ok(result);
@@ -65,13 +65,13 @@ public class LiveController {
 
     @GetMapping("/rooms/{roomId}")
     public ResponseEntity<EnterLiveResult> enterRoom(@PathVariable UUID roomId) {
-        EnterLiveResult result = enterLiveFacade.enter(new EnterLiveCommand(roomId));
+        EnterLiveResult result = enterLiveUseCase.enter(new EnterLiveCommand(roomId));
         return ResponseEntity.ok(result);
     }
 
     @GetMapping("/rooms")
     public ResponseEntity<GetLiveResult> getRooms() {
-        return ResponseEntity.ok(getLiveFacade.getRooms(GetLiveCommand.defaultMain()));
+        return ResponseEntity.ok(getLiveUseCase.getRooms(GetLiveCommand.defaultMain()));
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/end")
@@ -79,7 +79,7 @@ public class LiveController {
             @RequestParam(name = "sellerId") UUID sellerId,
             @PathVariable UUID roomId
     ) {
-        endLiveFacade.end(new EndLiveCommand(roomId, sellerId));
+        endLiveUseCase.end(new EndLiveCommand(roomId, sellerId));
         return ResponseEntity.noContent().build();
     }
 }

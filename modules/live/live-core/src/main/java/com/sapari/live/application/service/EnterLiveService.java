@@ -11,13 +11,13 @@ import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
-import com.sapari.live.port.EnterLiveFacade;
+import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.view.EnterLiveResult;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class EnterLiveService implements EnterLiveFacade {
+public class EnterLiveService implements EnterLiveUseCase {
 
     private final LiveRoomRepository liveRoomRepository;
 

@@ -21,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
@@ -30,6 +31,7 @@ import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStatus.Live;
 import com.sapari.live.domain.model.StreamInfo;
+import com.sapari.live.domain.repository.LiveProductRepository;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 
 @ExtendWith(MockitoExtension.class)
@@ -39,7 +41,13 @@ public class StartLiveServiceTest {
     private LiveRoomRepository liveRoomRepository;
 
     @Mock
+    private LiveProductRepository liveProductRepository;
+
+    @Mock
     private LiveMediaManager liveMediaManager;
+
+    @Mock
+    private TimeProvider timeProvider;
 
     @InjectMocks
     private StartLiveService startLiveService;
@@ -58,7 +66,10 @@ public class StartLiveServiceTest {
 
         roomId = UUID.randomUUID();
         sellerId = UUID.randomUUID();
-        command = new StartLiveCommand(roomId, sellerId, List.of());
+        StartLiveCommand.ProductEntry pinnedProduct = new StartLiveCommand.ProductEntry(
+                UUID.randomUUID(), 10000, 8000, 7000, true
+        );
+        command = new StartLiveCommand(roomId, sellerId, List.of(pinnedProduct));
 
     }
 
@@ -80,6 +91,7 @@ public class StartLiveServiceTest {
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn(expectedSfuToken);
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
+        given(timeProvider.now()).willReturn(Instant.now());
 
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
 
