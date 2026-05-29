@@ -12,13 +12,13 @@ import com.sapari.live.application.port.SfuRoomResult;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
-import com.sapari.live.port.CreateLiveFacade;
+import com.sapari.live.port.CreateLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class CreateLiveService implements CreateLiveFacade {
+public class CreateLiveService implements CreateLiveUseCase {
 
     private final LiveRoomRepository liveRoomRepository;
     private final LiveMediaManager liveMediaManager;
@@ -26,11 +26,13 @@ public class CreateLiveService implements CreateLiveFacade {
 
     @Override
     @Transactional
-    public CreateLiveView execute(CreateLiveCommand command){
+    public CreateLiveView create(CreateLiveCommand command){
         LiveRoom room = LiveRoom.create(
                 command.sellerId(),
                 command.title(),
                 command.description(),
+                command.sellerNickname(),
+                command.thumbnailUrl(),
                 command.scheduledAt(),
                 timeProvider.now()
         );
