@@ -13,8 +13,8 @@ import com.sapari.live.command.StartLiveCommand.ProductEntry;
 
 public record StartBroadcastRequest(
         @NotEmpty(message = "라이브 상품은 최소 1개 이상이어야 합니다.")
-        @Valid
-        List<ProductRequest> products
+
+        List<@NotNull @Valid ProductRequest> products
 ) {
     public List<ProductEntry> toProductEntries() {
         return products.stream()
