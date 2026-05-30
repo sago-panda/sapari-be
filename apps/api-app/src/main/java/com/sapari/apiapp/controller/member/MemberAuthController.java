@@ -2,7 +2,6 @@ package com.sapari.apiapp.controller.member;
 
 import lombok.RequiredArgsConstructor;
 
-import java.time.Duration;
 import java.util.UUID;
 
 import jakarta.validation.Valid;
@@ -13,7 +12,6 @@ import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
@@ -27,9 +25,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.sapari.apiapp.controller.auth.AuthCookieSupport;
+import com.sapari.apiapp.controller.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.auth.dto.response.DuplicateCheckResponse;
 import com.sapari.apiapp.controller.member.dto.request.MemberNicknameUpdateRequest;
 import com.sapari.apiapp.controller.member.dto.request.SocialSignupRequest;
-import com.sapari.apiapp.controller.member.dto.response.DuplicateCheckResponse;
 import com.sapari.apiapp.controller.member.dto.response.MemberMeResponse;
 import com.sapari.apiapp.controller.member.dto.response.SocialSignupInfoResponse;
 import com.sapari.apiapp.controller.member.dto.response.SocialLoginResponse;
@@ -54,8 +54,6 @@ public class MemberAuthController {
 
     private static final String SIGNUP_SID_COOKIE_NAME = "signup_sid";
     private static final String TEMPORARY_LOGIN_CODE_COOKIE_NAME = "temporary_login_code";
-    private static final String REFRESH_TOKEN_COOKIE_NAME = "refresh_token";
-    private static final String BEARER_PREFIX = "Bearer ";
 
     private final MemberAuthUseCase memberAuthUseCase;
 
@@ -71,9 +69,12 @@ public class MemberAuthController {
 
         return ResponseEntity
                 .ok()
-                .header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken())
-                .header(HttpHeaders.SET_COOKIE, createRefreshTokenCookie(result.refreshToken()).toString())
-                .header(HttpHeaders.SET_COOKIE, createDeleteCookie(SIGNUP_SID_COOKIE_NAME).toString())
+                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                        result.refreshToken(),
+                        refreshTokenExpirationSeconds
+                ).toString())
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createDeleteCookie(SIGNUP_SID_COOKIE_NAME).toString())
                 .body(SocialSignupResponse.from(result));
     }
 
@@ -132,21 +133,26 @@ public class MemberAuthController {
 
         return ResponseEntity
                 .ok()
-                .header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken())
-                .header(HttpHeaders.SET_COOKIE, createRefreshTokenCookie(result.refreshToken()).toString())
-                .header(HttpHeaders.SET_COOKIE, createDeleteCookie(TEMPORARY_LOGIN_CODE_COOKIE_NAME).toString())
+                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                        result.refreshToken(),
+                        refreshTokenExpirationSeconds
+                ).toString())
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                        .createDeleteCookie(TEMPORARY_LOGIN_CODE_COOKIE_NAME)
+                        .toString())
                 .body(SocialLoginResponse.from(result));
     }
 
     @PostMapping("/token/reissue")
     public ResponseEntity<TokenReissueResponse> reissueAccessToken(
-            @CookieValue(name = REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
+            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
     ) {
         MemberTokenReissueResult result = memberAuthUseCase.reissueAccessToken(refreshToken);
 
         return ResponseEntity
                 .ok()
-                .header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken())
+                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
                 .body(TokenReissueResponse.from(result));
     }
 
@@ -159,7 +165,9 @@ public class MemberAuthController {
 
         return ResponseEntity
                 .noContent()
-                .header(HttpHeaders.SET_COOKIE, createDeleteCookie(REFRESH_TOKEN_COOKIE_NAME).toString())
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                        .createDeleteCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .toString())
                 .build();
     }
 
@@ -194,35 +202,12 @@ public class MemberAuthController {
 
         return ResponseEntity
                 .ok()
-                .header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken())
+                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
                 .body(MemberMeResponse.from(result.member()));
     }
 
-    private ResponseCookie createRefreshTokenCookie(String refreshToken) {
-        return ResponseCookie.from(REFRESH_TOKEN_COOKIE_NAME, refreshToken)
-                .httpOnly(true)
-                .secure(true)
-                .sameSite("Lax")
-                .path("/")
-                .maxAge(Duration.ofSeconds(refreshTokenExpirationSeconds))
-                .build();
-    }
-
-    private ResponseCookie createDeleteCookie(String cookieName) {
-        return ResponseCookie.from(cookieName, "")
-                .httpOnly(true)
-                .secure(true)
-                .sameSite("Lax")
-                .path("/")
-                .maxAge(Duration.ZERO)
-                .build();
-    }
-
     private String resolveAccessToken(String authorizationHeader) {
-        if (authorizationHeader == null || !authorizationHeader.startsWith(BEARER_PREFIX)) {
-            throw new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN);
-        }
-
-        return authorizationHeader.substring(BEARER_PREFIX.length());
+        return BearerTokenExtractor.extract(authorizationHeader)
+                .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN));
     }
 }

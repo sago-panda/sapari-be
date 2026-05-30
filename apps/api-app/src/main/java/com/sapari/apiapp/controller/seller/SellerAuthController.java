@@ -3,7 +3,6 @@ package com.sapari.apiapp.controller.seller;
 import lombok.RequiredArgsConstructor;
 
 import java.net.URI;
-import java.time.Duration;
 import java.util.UUID;
 
 import jakarta.validation.Valid;
@@ -14,7 +13,6 @@ import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
@@ -28,10 +26,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.sapari.apiapp.controller.auth.AuthCookieSupport;
+import com.sapari.apiapp.controller.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.auth.dto.response.DuplicateCheckResponse;
 import com.sapari.apiapp.controller.seller.dto.request.SellerLoginRequest;
 import com.sapari.apiapp.controller.seller.dto.request.SellerNicknameUpdateRequest;
 import com.sapari.apiapp.controller.seller.dto.request.SellerSignupRequest;
-import com.sapari.apiapp.controller.seller.dto.response.DuplicateCheckResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerLoginResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerMeResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerSignupResponse;
@@ -51,9 +51,6 @@ import com.sapari.seller.result.SellerTokenReissueResult;
 @RequiredArgsConstructor
 @Validated
 public class SellerAuthController {
-
-    private static final String REFRESH_TOKEN_COOKIE_NAME = "refresh_token";
-    private static final String BEARER_PREFIX = "Bearer ";
 
     private final SellerAuthUseCase sellerAuthUseCase;
 
@@ -114,20 +111,23 @@ public class SellerAuthController {
 
         return ResponseEntity
                 .ok()
-                .header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken())
-                .header(HttpHeaders.SET_COOKIE, createRefreshTokenCookie(result.refreshToken()).toString())
+                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                        result.refreshToken(),
+                        refreshTokenExpirationSeconds
+                ).toString())
                 .body(SellerLoginResponse.from(result));
     }
 
     @PostMapping("/token/reissue")
     public ResponseEntity<SellerTokenReissueResponse> reissueAccessToken(
-            @CookieValue(name = REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
+            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
     ) {
         SellerTokenReissueResult result = sellerAuthUseCase.reissueAccessToken(refreshToken);
 
         return ResponseEntity
                 .ok()
-                .header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken())
+                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
                 .body(SellerTokenReissueResponse.from(result));
     }
 
@@ -162,7 +162,7 @@ public class SellerAuthController {
         ResponseEntity.BodyBuilder response = ResponseEntity.ok();
 
         if (result.accessToken() != null) {
-            response.header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken());
+            response.header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()));
         }
 
         return response.body(SellerMeResponse.from(result.seller()));
@@ -177,35 +177,14 @@ public class SellerAuthController {
 
         return ResponseEntity
                 .noContent()
-                .header(HttpHeaders.SET_COOKIE, createDeleteCookie(REFRESH_TOKEN_COOKIE_NAME).toString())
-                .build();
-    }
-
-    private ResponseCookie createRefreshTokenCookie(String refreshToken) {
-        return ResponseCookie.from(REFRESH_TOKEN_COOKIE_NAME, refreshToken)
-                .httpOnly(true)
-                .secure(true)
-                .sameSite("Lax")
-                .path("/")
-                .maxAge(Duration.ofSeconds(refreshTokenExpirationSeconds))
-                .build();
-    }
-
-    private ResponseCookie createDeleteCookie(String cookieName) {
-        return ResponseCookie.from(cookieName, "")
-                .httpOnly(true)
-                .secure(true)
-                .sameSite("Lax")
-                .path("/")
-                .maxAge(Duration.ZERO)
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                        .createDeleteCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .toString())
                 .build();
     }
 
     private String resolveAccessToken(String authorizationHeader) {
-        if (authorizationHeader == null || !authorizationHeader.startsWith(BEARER_PREFIX)) {
-            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
-        }
-
-        return authorizationHeader.substring(BEARER_PREFIX.length());
+        return BearerTokenExtractor.extract(authorizationHeader)
+                .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN));
     }
 }
