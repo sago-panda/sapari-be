@@ -1,6 +1,6 @@
 package com.sapari.apiapp.controller.seller;
 
-import java.time.LocalDateTime;
+import lombok.RequiredArgsConstructor;
 
 import jakarta.validation.ConstraintViolationException;
 
@@ -13,12 +13,16 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
 import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.domain.exception.SellerException;
 
+@RequiredArgsConstructor
 @RestControllerAdvice(basePackages = "com.sapari.apiapp.controller.seller")
 public class SellerExceptionHandler {
 
     private static final String BAD_REQUEST_MESSAGE = "잘못된 요청입니다.";
+
+    private final TimeProvider timeProvider;
 
     @ExceptionHandler(SellerException.class)
     public ResponseEntity<ErrorResponse> handleSellerException(SellerException exception) {
@@ -81,7 +85,7 @@ public class SellerExceptionHandler {
         return new ErrorResponse(
                 status,
                 message,
-                LocalDateTime.now()
+                timeProvider.now()
         );
     }
 }

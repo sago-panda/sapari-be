@@ -19,7 +19,7 @@ import com.sapari.common.web.security.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberLogoutCommand;
-import com.sapari.member.command.MemberMeUpdateCommand;
+import com.sapari.member.command.MemberNicknameUpdateCommand;
 import com.sapari.member.command.SocialSignupCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
@@ -40,7 +40,9 @@ import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository
 
 @Service
 @RequiredArgsConstructor
-public class MemberAuthService implements MemberAuthFacade {
+public class MemberAuthService implements MemberAuthUseCase {
+
+    private static final Duration NICKNAME_CHANGE_INTERVAL = Duration.ofDays(30);
 
     private final SocialSignupRedisRepository socialSignupRedisRepository;
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
@@ -146,28 +148,34 @@ public class MemberAuthService implements MemberAuthFacade {
 
     @Override
     @Transactional(readOnly = true)
+    public boolean isNicknameDuplicated(String nickname) {
+        return userRepository.existsByNickname(nickname);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isMyNicknameDuplicated(UUID userId, String nickname) {
+        findMember(userId);
+
+        return userRepository.existsByNicknameAndUserIdNot(nickname, userId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public MemberMeResult getMyInfo(UUID userId) {
         return toMemberMeResult(findMember(userId));
     }
 
     @Override
     @Transactional
-    public MemberMeResult updateMyInfo(MemberMeUpdateCommand command) {
+    public MemberMeResult updateNickname(MemberNicknameUpdateCommand command) {
         User member = findMember(command.userId());
 
         Instant now = timeProvider.now();
         validateNicknameChangeAllowed(member, now);
         validateDuplicatedNickname(command.userId(), command.nickname());
 
-        User updatedMember = member.updateProfile(
-                command.nickname(),
-                command.name(),
-                command.birthDate(),
-                command.phoneNumber(),
-                command.profileImageKey(),
-                command.email(),
-                command.marketingAgreed()
-        );
+        User updatedMember = member.updateNickname(command.nickname(), now);
 
         try {
             return toMemberMeResult(userRepository.save(updatedMember));
@@ -222,15 +230,17 @@ public class MemberAuthService implements MemberAuthFacade {
         }
     }
 
-    private void validateDuplicatedPhoneNumber(UUID userId, String phoneNumber) {
-        if (userRepository.existsByPhoneNumberAndUserIdNot(phoneNumber, userId)) {
-            throw new MemberException(MemberErrorCode.DUPLICATED_PHONE_NUMBER);
+    private void validateDuplicatedNickname(UUID userId, String nickname) {
+        if (userRepository.existsByNicknameAndUserIdNot(nickname, userId)) {
+            throw new MemberException(MemberErrorCode.DUPLICATED_NICKNAME);
         }
     }
 
-    private void validateDuplicatedEmail(UUID userId, String email) {
-        if (userRepository.existsByEmailAndUserIdNot(email, userId)) {
-            throw new MemberException(MemberErrorCode.DUPLICATED_EMAIL);
+    private void validateNicknameChangeAllowed(User member, Instant now) {
+        // 마지막 변경 시각부터 30일이 지나야 다음 닉네임 변경을 허용한다.
+        Instant nextChangeAt = member.nicknameChangedAt().plus(NICKNAME_CHANGE_INTERVAL);
+        if (now.isBefore(nextChangeAt)) {
+            throw new MemberException(MemberErrorCode.NICKNAME_CHANGE_RESTRICTED);
         }
     }
 

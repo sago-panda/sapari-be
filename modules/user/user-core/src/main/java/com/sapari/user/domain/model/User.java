@@ -14,6 +14,7 @@ public record User(
         UserRole role,
         UserStatus status,
         String nickname,
+        Instant nicknameChangedAt,
         String name,
         LocalDate birthDate,
         UserGender gender,
@@ -43,14 +44,20 @@ public record User(
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
-            String providerEmail
+            String providerEmail,
+            Instant providerCreatedAt,
+            Instant nicknameChangedAt
     ) {
         validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        Assert.notNull(gender, "gender은 필수입니다.");
+        Assert.notNull(providerCreatedAt, "providerCreatedAt은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return User.builder()
                 .role(UserRole.USER)
                 .status(UserStatus.ACTIVE)
                 .nickname(nickname)
+                .nicknameChangedAt(nicknameChangedAt)
                 .name(name)
                 .birthDate(birthDate)
                 .gender(gender)
@@ -72,14 +79,17 @@ public record User(
             LocalDate birthDate,
             String phoneNumber,
             String email,
-            Boolean marketingAgreed
+            Boolean marketingAgreed,
+            Instant nicknameChangedAt
     ) {
         validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return User.builder()
                 .role(UserRole.SELLER)
                 .status(UserStatus.ACTIVE)
                 .nickname(nickname)
+                .nicknameChangedAt(nicknameChangedAt)
                 .name(name)
                 .birthDate(birthDate)
                 .phoneNumber(phoneNumber)
@@ -90,26 +100,13 @@ public record User(
                 .build();
     }
 
-    public User updateProfile(
-            String nickname,
-            String name,
-            LocalDate birthDate,
-            String phoneNumber,
-            String profileImageKey,
-            String email,
-            Boolean marketingAgreed
-    ) {
-        validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
-        Assert.notNull(marketingAgreed, "marketingAgreed은 필수입니다.");
+    public User updateNickname(String nickname, Instant nicknameChangedAt) {
+        Assert.hasText(nickname, "닉네임은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return toBuilder()
                 .nickname(nickname)
-                .name(name)
-                .birthDate(birthDate)
-                .phoneNumber(phoneNumber)
-                .profileImageKey(profileImageKey)
-                .email(email)
-                .marketingAgreed(marketingAgreed)
+                .nicknameChangedAt(nicknameChangedAt)
                 .build();
     }
 

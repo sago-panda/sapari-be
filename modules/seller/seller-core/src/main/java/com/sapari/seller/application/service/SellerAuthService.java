@@ -18,7 +18,7 @@ import com.sapari.common.web.security.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
-import com.sapari.seller.command.SellerMeUpdateCommand;
+import com.sapari.seller.command.SellerNicknameUpdateCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
@@ -37,7 +37,9 @@ import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository
 
 @Service
 @RequiredArgsConstructor
-public class SellerAuthService implements SellerAuthFacade {
+public class SellerAuthService implements SellerAuthUseCase {
+
+    private static final Duration NICKNAME_CHANGE_INTERVAL = Duration.ofDays(30);
 
     private final UserRepository userRepository;
     private final LocalCredentialRepository localCredentialRepository;
@@ -76,6 +78,20 @@ public class SellerAuthService implements SellerAuthFacade {
     @Transactional(readOnly = true)
     public boolean isPhoneNumberDuplicated(String phoneNumber) {
         return userRepository.existsByPhoneNumber(phoneNumber);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isNicknameDuplicated(String nickname) {
+        return userRepository.existsByNickname(nickname);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isMyNicknameDuplicated(UUID userId, String nickname) {
+        findSeller(userId);
+
+        return userRepository.existsByNicknameAndUserIdNot(nickname, userId);
     }
 
     @Override
@@ -134,19 +150,20 @@ public class SellerAuthService implements SellerAuthFacade {
 
     @Override
     @Transactional
-    public SellerMeResult updateMyInfo(SellerMeUpdateCommand command) {
+    public SellerMeResult updateNickname(SellerNicknameUpdateCommand command) {
         User seller = findSeller(command.userId());
-        User updatedSeller = seller.updateProfile(
-                command.nickname(),
-                command.name(),
-                command.birthDate(),
-                command.phoneNumber(),
-                command.profileImageKey(),
-                command.email(),
-                command.marketingAgreed()
-        );
 
-        return toSellerMeResult(userRepository.save(updatedSeller));
+        Instant now = timeProvider.now();
+        validateNicknameChangeAllowed(seller, now);
+        validateDuplicatedNickname(command.userId(), command.nickname());
+
+        User updatedSeller = seller.updateNickname(command.nickname(), now);
+
+        try {
+            return toSellerMeResult(userRepository.save(updatedSeller));
+        } catch (DataIntegrityViolationException e) {
+            throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
+        }
     }
 
     private User createSeller(SellerSignupCommand command) {

@@ -1,6 +1,6 @@
 package com.sapari.apiapp.controller.member;
 
-import java.time.LocalDateTime;
+import lombok.RequiredArgsConstructor;
 
 import jakarta.validation.ConstraintViolationException;
 
@@ -13,12 +13,16 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
 import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.domain.exception.MemberException;
 
+@RequiredArgsConstructor
 @RestControllerAdvice(basePackages = "com.sapari.apiapp.controller.member")
 public class MemberExceptionHandler {
 
     private static final String BAD_REQUEST_MESSAGE = "잘못된 요청입니다.";
+
+    private final TimeProvider timeProvider;
 
     @ExceptionHandler(MemberException.class)
     public ResponseEntity<ErrorResponse> handleMemberException(MemberException exception) {
@@ -81,7 +85,7 @@ public class MemberExceptionHandler {
         return new ErrorResponse(
                 status,
                 message,
-                LocalDateTime.now()
+                timeProvider.now()
         );
     }
 }

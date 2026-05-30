@@ -23,7 +23,11 @@ public interface UserRepository {
 
     boolean existsByEmail(String email);
 
+    boolean existsByNickname(String nickname);
+
     boolean existsByPhoneNumberAndUserIdNot(String phoneNumber, UUID userId);
 
     boolean existsByEmailAndUserIdNot(String email, UUID userId);
+
+    boolean existsByNicknameAndUserIdNot(String nickname, UUID userId);
 }

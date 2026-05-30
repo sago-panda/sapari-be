@@ -14,7 +14,8 @@ public class UserMapper {
                     user.birthDate(),
                     user.phoneNumber(),
                     user.email(),
-                    user.marketingAgreed()
+                    user.marketingAgreed(),
+                    user.nicknameChangedAt()
             );
             seller.updateProfile(
                     user.nickname(),
@@ -23,7 +24,8 @@ public class UserMapper {
                     user.phoneNumber(),
                     user.profileImageKey(),
                     user.email(),
-                    user.marketingAgreed()
+                    user.marketingAgreed(),
+                    user.nicknameChangedAt()
             );
             return seller;
         }
@@ -38,7 +40,9 @@ public class UserMapper {
                 user.marketingAgreed(),
                 user.provider(),
                 user.providerId(),
-                user.providerEmail()
+                user.providerEmail(),
+                user.providerCreatedAt(),
+                user.nicknameChangedAt()
         );
         member.updateProfile(
                 user.nickname(),
@@ -88,7 +92,8 @@ public class UserMapper {
                 user.phoneNumber(),
                 user.profileImageKey(),
                 user.email(),
-                user.marketingAgreed()
+                user.marketingAgreed(),
+                user.nicknameChangedAt()
         );
     }
 }

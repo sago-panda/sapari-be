@@ -98,7 +98,9 @@ public class UserEntity extends BaseUuidEntity {
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
-            String providerEmail
+            String providerEmail,
+            Instant providerCreatedAt,
+            Instant nicknameChangedAt
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
@@ -106,12 +108,15 @@ public class UserEntity extends BaseUuidEntity {
         Assert.notNull(gender, "gender은 필수입니다.");
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
+        Assert.notNull(providerCreatedAt, "providerCreatedAt은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         UserEntity user = new UserEntity();
 
         user.role = UserRole.USER;
         user.status = UserStatus.ACTIVE;
         user.nickname = nickname;
+        user.nicknameChangedAt = nicknameChangedAt;
         user.name = name;
         user.birthDate = birthDate;
         user.gender = gender;
@@ -134,19 +139,22 @@ public class UserEntity extends BaseUuidEntity {
             LocalDate birthDate,
             String phoneNumber,
             String email,
-            Boolean marketingAgreed
+            Boolean marketingAgreed,
+            Instant nicknameChangedAt
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
         Assert.notNull(birthDate, "birthDate은 필수입니다.");
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         UserEntity user = new UserEntity();
 
         user.role = UserRole.SELLER;
         user.status = UserStatus.ACTIVE;
         user.nickname = nickname;
+        user.nicknameChangedAt = nicknameChangedAt;
         user.name = name;
         user.birthDate = birthDate;
         user.phoneNumber = phoneNumber;
@@ -165,7 +173,8 @@ public class UserEntity extends BaseUuidEntity {
             String phoneNumber,
             String profileImageKey,
             String email,
-            Boolean marketingAgreed
+            Boolean marketingAgreed,
+            Instant nicknameChangedAt
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
@@ -173,8 +182,10 @@ public class UserEntity extends BaseUuidEntity {
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
         Assert.notNull(marketingAgreed, "marketingAgreed은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         this.nickname = nickname;
+        this.nicknameChangedAt = nicknameChangedAt;
         this.name = name;
         this.birthDate = birthDate;
         this.phoneNumber = phoneNumber;

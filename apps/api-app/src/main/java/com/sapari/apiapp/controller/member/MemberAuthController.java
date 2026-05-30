@@ -111,7 +111,19 @@ public class MemberAuthController {
         );
     }
 
-    @PostMapping("/auth/members/login/social/code")
+    @GetMapping("/signup/check-nickname")
+    public ResponseEntity<DuplicateCheckResponse> checkNickname(
+            @RequestParam
+            @NotBlank(message = "닉네임은 필수입니다.")
+            @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
+            String nickname
+    ) {
+        return ResponseEntity.ok(
+                new DuplicateCheckResponse(memberAuthUseCase.isNicknameDuplicated(nickname))
+        );
+    }
+
+    @PostMapping("/login/social/code")
     public ResponseEntity<SocialLoginResponse> exchangeSocialLoginCode(
             @CookieValue(name = TEMPORARY_LOGIN_CODE_COOKIE_NAME, required = false) String temporaryLoginCode
     ) {
@@ -150,21 +162,34 @@ public class MemberAuthController {
                 .build();
     }
 
-    @GetMapping("/members/me")
+    @GetMapping("/me")
     public ResponseEntity<MemberMeResponse> getMyInfo(
             @AuthenticationPrincipal(expression = "user.userId") UUID userId
     ) {
-        MemberMeResult result = memberAuthFacade.getMyInfo(userId);
+        MemberMeResult result = memberAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(MemberMeResponse.from(result));
     }
 
-    @PutMapping("/members/me")
-    public ResponseEntity<MemberMeResponse> updateMyInfo(
+    @GetMapping("/me/check-nickname")
+    public ResponseEntity<DuplicateCheckResponse> checkMyNickname(
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
-            @Valid @RequestBody MemberMeUpdateRequest request
+            @RequestParam
+            @NotBlank(message = "닉네임은 필수입니다.")
+            @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
+            String nickname
     ) {
-        MemberMeResult result = memberAuthFacade.updateMyInfo(request.toCommand(userId));
+        return ResponseEntity.ok(
+                new DuplicateCheckResponse(memberAuthUseCase.isMyNicknameDuplicated(userId, nickname))
+        );
+    }
+
+    @PutMapping("/me/nickname")
+    public ResponseEntity<MemberMeResponse> updateNickname(
+            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @Valid @RequestBody MemberNicknameUpdateRequest request
+    ) {
+        MemberMeResult result = memberAuthUseCase.updateNickname(request.toCommand(userId));
 
         return ResponseEntity.ok(MemberMeResponse.from(result));
     }

@@ -16,7 +16,9 @@ public enum MemberErrorCode {
     INVALID_LOGIN_CODE(400, "MEMBER-007", "임시 로그인 코드가 유효하지 않습니다."),
     INVALID_SOCIAL_INFO(400, "MEMBER-008", "소셜 인증 정보를 읽을 수 없습니다."),
     DUPLICATED_SIGNUP_INFO(409, "MEMBER-009", "이미 사용 중인 회원 정보입니다."),
-    INVALID_OAUTH_PROVIDER(400, "MEMBER-010", "지원하지 않는 OAuth provider입니다.");
+    INVALID_OAUTH_PROVIDER(400, "MEMBER-010", "지원하지 않는 OAuth provider입니다."),
+    DUPLICATED_NICKNAME(409, "MEMBER-011", "이미 사용 중인 닉네임입니다."),
+    NICKNAME_CHANGE_RESTRICTED(409, "MEMBER-012", "닉네임은 30일마다 변경할 수 있습니다.");
 
     private final int status;
     private final String code;

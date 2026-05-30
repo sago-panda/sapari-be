@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.apiapp.controller.seller.dto.request.SellerLoginRequest;
-import com.sapari.apiapp.controller.seller.dto.request.SellerMeUpdateRequest;
+import com.sapari.apiapp.controller.seller.dto.request.SellerNicknameUpdateRequest;
 import com.sapari.apiapp.controller.seller.dto.request.SellerSignupRequest;
 import com.sapari.apiapp.controller.seller.dto.response.DuplicateCheckResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerLoginResponse;
@@ -89,7 +89,19 @@ public class SellerAuthController {
             String phoneNumber
     ) {
         return ResponseEntity.ok(
-                new DuplicateCheckResponse(sellerAuthFacade.isPhoneNumberDuplicated(phoneNumber))
+                new DuplicateCheckResponse(sellerAuthUseCase.isPhoneNumberDuplicated(phoneNumber))
+        );
+    }
+
+    @GetMapping("/signup/check-nickname")
+    public ResponseEntity<DuplicateCheckResponse> checkNickname(
+            @RequestParam
+            @NotBlank(message = "닉네임은 필수입니다.")
+            @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
+            String nickname
+    ) {
+        return ResponseEntity.ok(
+                new DuplicateCheckResponse(sellerAuthUseCase.isNicknameDuplicated(nickname))
         );
     }
 
@@ -127,12 +139,25 @@ public class SellerAuthController {
         return ResponseEntity.ok(SellerMeResponse.from(result));
     }
 
-    @PutMapping("/me")
-    public ResponseEntity<SellerMeResponse> updateMyInfo(
+    @GetMapping("/me/check-nickname")
+    public ResponseEntity<DuplicateCheckResponse> checkMyNickname(
+            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @RequestParam
+            @NotBlank(message = "닉네임은 필수입니다.")
+            @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
+            String nickname
+    ) {
+        return ResponseEntity.ok(
+                new DuplicateCheckResponse(sellerAuthUseCase.isMyNicknameDuplicated(userId, nickname))
+        );
+    }
+
+    @PutMapping("/me/nickname")
+    public ResponseEntity<SellerMeResponse> updateNickname(
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
-        SellerMeResult result = sellerAuthFacade.updateMyInfo(request.toCommand(userId));
+        SellerMeResult result = sellerAuthUseCase.updateNickname(request.toCommand(userId));
 
         return ResponseEntity.ok(SellerMeResponse.from(result));
     }

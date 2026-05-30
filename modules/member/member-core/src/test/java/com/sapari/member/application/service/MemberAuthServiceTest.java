@@ -25,9 +25,10 @@ import com.sapari.common.web.security.jwt.JwtProperties;
 import com.sapari.common.web.security.jwt.JwtSubject;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberLogoutCommand;
-import com.sapari.member.command.MemberMeUpdateCommand;
+import com.sapari.member.command.MemberNicknameUpdateCommand;
 import com.sapari.member.command.SocialSignupCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
@@ -98,8 +99,8 @@ class MemberAuthServiceTest {
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
-        assertThat(jwtTokenProvider.getTokenType(result.accessToken())).isEqualTo(JwtTokenType.ACCESS);
-        assertThat(jwtTokenProvider.getTokenType(result.refreshToken())).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(jwtTokenProvider.parseToken(result.accessToken()).tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(jwtTokenProvider.parseToken(result.refreshToken()).tokenType()).isEqualTo(JwtTokenType.REFRESH);
 
         ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
         verify(userRepository).save(userCaptor.capture());
@@ -123,6 +124,35 @@ class MemberAuthServiceTest {
                 );
 
         verifyNoInteractions(userRepository, refreshTokenRedisRepository);
+    }
+
+    @Test
+    @DisplayName("회원가입 sid로 소셜 가입 기본 정보를 조회한다")
+    void getSocialSignupInfoReturnsSocialSignupInfo() throws Exception {
+        // given
+        when(socialSignupRedisRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+
+        // when
+        SocialSignupInfoResult result = memberAuthService.getSocialSignupInfo(SIGNUP_SID);
+
+        // then
+        assertThat(result.phoneNumber()).isEqualTo("01012345678");
+        assertThat(result.name()).isEqualTo("소셜이름");
+        assertThat(result.email()).isEqualTo("provider@example.com");
+        assertThat(result.nickname()).isEqualTo("소셜닉네임");
+        assertThat(result.profileImageUrl()).isEqualTo("https://image.example/profile.png");
+        assertThat(result.gender()).isEqualTo("MALE");
+        assertThat(result.birthDate()).isEqualTo(LocalDate.of(2000, 1, 1));
+    }
+
+    @Test
+    @DisplayName("회원가입 sid가 없으면 소셜 가입 기본 정보 조회에 실패한다")
+    void getSocialSignupInfoThrowsExceptionWhenSignupSidIsMissing() {
+        assertThatThrownBy(() -> memberAuthService.getSocialSignupInfo(null))
+                .isInstanceOfSatisfying(MemberException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.INVALID_SIGNUP_SESSION)
+                );
     }
 
     @Test
@@ -169,7 +199,7 @@ class MemberAuthServiceTest {
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
-        assertThat(jwtTokenProvider.getTokenType(result.accessToken())).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(jwtTokenProvider.parseToken(result.accessToken()).tokenType()).isEqualTo(JwtTokenType.ACCESS);
     }
 
     @Test
@@ -222,60 +252,109 @@ class MemberAuthServiceTest {
     }
 
     @Test
-    @DisplayName("내정보 수정 시 중복을 검증하고 구매자 프로필을 저장한다")
-    void updateMyInfoUpdatesMemberProfile() {
+    @DisplayName("30일이 지난 뒤 닉네임 수정 시 중복을 검증하고 닉네임만 저장한다")
+    void updateNicknameUpdatesMemberNickname() {
         // given
         UUID userId = UUID.randomUUID();
-        MemberMeUpdateCommand command = new MemberMeUpdateCommand(
+        MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
                 userId,
-                "updated",
-                "수정자",
-                LocalDate.of(1999, 12, 31),
-                "01087654321",
-                "profile/new.png",
-                "updated@example.com",
-                false
+                "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByPhoneNumberAndUserIdNot("01087654321", userId)).thenReturn(false);
-        when(userRepository.existsByEmailAndUserIdNot("updated@example.com", userId)).thenReturn(false);
+        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(false);
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // when
-        MemberMeResult result = memberAuthService.updateMyInfo(command);
+        MemberMeResult result = memberAuthService.updateNickname(command);
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
         assertThat(result.nickname()).isEqualTo("updated");
-        assertThat(result.phoneNumber()).isEqualTo("01087654321");
-        assertThat(result.email()).isEqualTo("updated@example.com");
+        assertThat(result.name()).isEqualTo("구매자");
+        assertThat(result.birthDate()).isEqualTo(LocalDate.of(2000, 1, 1));
+        assertThat(result.phoneNumber()).isEqualTo("01012345678");
+        assertThat(result.email()).isEqualTo(EMAIL);
         assertThat(result.role()).isEqualTo(UserRole.USER.name());
+        verify(userRepository).existsByNicknameAndUserIdNot("updated", userId);
         verify(userRepository).save(any(User.class));
     }
 
     @Test
-    @DisplayName("다른 사용자의 이메일과 중복되면 내정보 수정에 실패한다")
-    void updateMyInfoThrowsExceptionWhenEmailIsDuplicated() {
+    @DisplayName("가입 후 30일이 지나지 않았으면 닉네임 수정에 실패한다")
+    void updateNicknameThrowsExceptionWhenChangedWithinThirtyDays() {
         // given
         UUID userId = UUID.randomUUID();
-        MemberMeUpdateCommand command = new MemberMeUpdateCommand(
+        MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
                 userId,
-                "updated",
-                "수정자",
-                LocalDate.of(1999, 12, 31),
-                "01087654321",
-                "profile/new.png",
-                "updated@example.com",
-                true
+                "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByPhoneNumberAndUserIdNot("01087654321", userId)).thenReturn(false);
-        when(userRepository.existsByEmailAndUserIdNot("updated@example.com", userId)).thenReturn(true);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId, NOW.minus(Duration.ofDays(1)))));
 
         // when, then
-        assertThatThrownBy(() -> memberAuthService.updateMyInfo(command))
+        assertThatThrownBy(() -> memberAuthService.updateNickname(command))
                 .isInstanceOfSatisfying(MemberException.class, exception ->
-                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.DUPLICATED_EMAIL)
+                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.NICKNAME_CHANGE_RESTRICTED)
+                );
+        verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    @DisplayName("같은 닉네임이면 제한 검증 없이 현재 정보를 반환한다")
+    void updateNicknameReturnsCurrentMemberWhenNicknameIsSame() {
+        // given
+        UUID userId = UUID.randomUUID();
+        MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
+                userId,
+                "member"
+        );
+        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId, NOW)));
+
+        // when
+        MemberMeResult result = memberAuthService.updateNickname(command);
+
+        // then
+        assertThat(result.nickname()).isEqualTo("member");
+        verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    @DisplayName("다른 사용자의 닉네임과 중복되면 닉네임 수정에 실패한다")
+    void updateNicknameThrowsExceptionWhenNicknameIsDuplicated() {
+        // given
+        UUID userId = UUID.randomUUID();
+        MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
+                userId,
+                "updated"
+        );
+        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
+        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(true);
+
+        // when, then
+        assertThatThrownBy(() -> memberAuthService.updateNickname(command))
+                .isInstanceOfSatisfying(MemberException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.DUPLICATED_NICKNAME)
+                );
+    }
+
+    @Test
+    @DisplayName("저장 중 닉네임 unique 충돌이 발생하면 닉네임 중복으로 실패한다")
+    void updateNicknameThrowsExceptionWhenNicknameSaveConflicts() {
+        // given
+        UUID userId = UUID.randomUUID();
+        MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
+                userId,
+                "updated"
+        );
+        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
+        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(false);
+        when(userRepository.save(any(User.class))).thenThrow(new DataIntegrityViolationException("duplicated"));
+
+        // when, then
+        assertThatThrownBy(() -> memberAuthService.updateNickname(command))
+                .isInstanceOfSatisfying(MemberException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.DUPLICATED_NICKNAME)
                 );
     }
 
@@ -293,6 +372,24 @@ class MemberAuthServiceTest {
         when(userRepository.existsByPhoneNumber("01012345678")).thenReturn(true);
 
         assertThat(memberAuthService.isPhoneNumberDuplicated("01012345678")).isTrue();
+    }
+
+    @Test
+    @DisplayName("닉네임 중복 여부를 조회한다")
+    void isNicknameDuplicatedReturnsRepositoryResult() {
+        when(userRepository.existsByNickname("member")).thenReturn(true);
+
+        assertThat(memberAuthService.isNicknameDuplicated("member")).isTrue();
+    }
+
+    @Test
+    @DisplayName("내 닉네임 중복 여부는 자기 자신을 제외하고 조회한다")
+    void isMyNicknameDuplicatedReturnsRepositoryResult() {
+        UUID userId = UUID.randomUUID();
+        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
+        when(userRepository.existsByNicknameAndUserIdNot("member", userId)).thenReturn(true);
+
+        assertThat(memberAuthService.isMyNicknameDuplicated(userId, "member")).isTrue();
     }
 
     private SocialSignupCommand signupCommand() {
@@ -313,24 +410,43 @@ class MemberAuthServiceTest {
                 "naver-id",
                 "provider@example.com",
                 "소셜이름",
-                "https://image.example/profile.png"
+                "소셜닉네임",
+                "01012345678",
+                "https://image.example/profile.png",
+                UserGender.MALE,
+                LocalDate.of(2000, 1, 1)
         );
     }
 
+    private TimeProvider timeProvider() {
+        return new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
     private User createMember(UUID userId) {
+        return createMember(userId, providerCreatedAt());
+    }
+
+    private User createMember(UUID userId, Instant nicknameChangedAt) {
         return User.createSocialMember(
                 "member",
                 "구매자",
                 LocalDate.of(2000, 1, 1),
+                UserGender.MALE,
                 "01012345678",
                 EMAIL,
                 true,
                 ProviderType.NAVER,
                 "naver-id",
-                "provider@example.com"
+                "provider@example.com",
+                providerCreatedAt(),
+                nicknameChangedAt
         ).toBuilder()
                 .userId(userId)
                 .build();
+    }
+
+    private Instant providerCreatedAt() {
+        return Instant.parse("2025-01-01T00:00:00Z");
     }
 
     private User createSeller(UUID userId) {
@@ -340,7 +456,8 @@ class MemberAuthServiceTest {
                 LocalDate.of(1990, 1, 1),
                 "01099998888",
                 "seller@example.com",
-                true
+                true,
+                providerCreatedAt()
         ).toBuilder()
                 .userId(userId)
                 .build();
