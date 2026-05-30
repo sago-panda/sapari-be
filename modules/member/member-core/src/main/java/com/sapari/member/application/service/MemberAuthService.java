@@ -27,6 +27,7 @@ import com.sapari.member.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.member.port.MemberAuthUseCase;
 import com.sapari.member.result.MemberMeResult;
+import com.sapari.member.result.MemberNicknameUpdateResult;
 import com.sapari.member.result.MemberTokenReissueResult;
 import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
@@ -168,8 +169,13 @@ public class MemberAuthService implements MemberAuthUseCase {
 
     @Override
     @Transactional
-    public MemberMeResult updateNickname(MemberNicknameUpdateCommand command) {
+    public MemberNicknameUpdateResult updateNickname(MemberNicknameUpdateCommand command) {
         User member = findMember(command.userId());
+
+        // 같은 닉네임은 변경이 아니므로 제한/중복 검증과 토큰 재발급을 건너뛴다.
+        if (member.nickname().equals(command.nickname())) {
+            return new MemberNicknameUpdateResult(toMemberMeResult(member), null);
+        }
 
         Instant now = timeProvider.now();
         validateNicknameChangeAllowed(member, now);
@@ -178,7 +184,10 @@ public class MemberAuthService implements MemberAuthUseCase {
         User updatedMember = member.updateNickname(command.nickname(), now);
 
         try {
-            return toMemberMeResult(userRepository.save(updatedMember));
+            User savedMember = userRepository.save(updatedMember);
+            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedMember));
+
+            return new MemberNicknameUpdateResult(toMemberMeResult(savedMember), accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new MemberException(MemberErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -304,7 +313,7 @@ public class MemberAuthService implements MemberAuthUseCase {
     }
 
     private JwtSubject toJwtSubject(User member) {
-        return new JwtSubject(member.userId(), member.role().name());
+        return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
     }
 
     private MemberMeResult toMemberMeResult(User member) {

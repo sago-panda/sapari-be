@@ -46,7 +46,7 @@ class JwtAuthenticationFilterTest {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider();
         UUID userId = UUID.randomUUID();
-        String token = jwtTokenProvider.createAccessToken(new JwtSubject(userId, "USER"));
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "ACTIVE"),
@@ -102,7 +102,7 @@ class JwtAuthenticationFilterTest {
     void doFilterDoesNotAuthenticateWhenTokenTypeIsRefresh() throws ServletException, IOException {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider();
-        String token = jwtTokenProvider.createRefreshToken(new JwtSubject(UUID.randomUUID(), "USER"));
+        String token = jwtTokenProvider.createRefreshToken(jwtSubject(UUID.randomUUID(), "USER"));
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 unreachableUserDetailsService(),
@@ -124,7 +124,7 @@ class JwtAuthenticationFilterTest {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider();
         UUID userId = UUID.randomUUID();
-        String token = jwtTokenProvider.createAccessToken(new JwtSubject(userId, "USER"));
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "DELETED"),
@@ -146,7 +146,7 @@ class JwtAuthenticationFilterTest {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider();
         UUID userId = UUID.randomUUID();
-        String token = jwtTokenProvider.createAccessToken(new JwtSubject(userId, "USER"));
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "SUSPENDED"),
@@ -168,7 +168,7 @@ class JwtAuthenticationFilterTest {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider();
         UUID userId = UUID.randomUUID();
-        String token = jwtTokenProvider.createAccessToken(new JwtSubject(userId, "USER"));
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
         Authentication existingAuthentication = new TestingAuthenticationToken("existing", null);
         SecurityContextHolder.getContext().setAuthentication(existingAuthentication);
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
@@ -192,7 +192,7 @@ class JwtAuthenticationFilterTest {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider();
         UUID userId = UUID.randomUUID();
-        String token = jwtTokenProvider.createAccessToken(new JwtSubject(userId, "USER"));
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "ACTIVE"),
@@ -214,6 +214,10 @@ class JwtAuthenticationFilterTest {
 
     private TimeProvider timeProvider() {
         return new TimeProvider(Clock.fixed(Instant.now(), ZoneOffset.UTC));
+    }
+
+    private JwtSubject jwtSubject(UUID userId, String role) {
+        return new JwtSubject(userId, role, "member", "member@example.com");
     }
 
     private UserDetailsService userDetailsService(UUID userId, String role, String status) {

@@ -27,6 +27,7 @@ import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
+import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
 import com.sapari.user.domain.model.User;
@@ -150,8 +151,13 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     @Override
     @Transactional
-    public SellerMeResult updateNickname(SellerNicknameUpdateCommand command) {
+    public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
         User seller = findSeller(command.userId());
+
+        // 같은 닉네임은 변경이 아니므로 제한/중복 검증과 토큰 재발급을 건너뛴다.
+        if (seller.nickname().equals(command.nickname())) {
+            return new SellerNicknameUpdateResult(toSellerMeResult(seller), null);
+        }
 
         Instant now = timeProvider.now();
         validateNicknameChangeAllowed(seller, now);
@@ -160,7 +166,10 @@ public class SellerAuthService implements SellerAuthUseCase {
         User updatedSeller = seller.updateNickname(command.nickname(), now);
 
         try {
-            return toSellerMeResult(userRepository.save(updatedSeller));
+            User savedSeller = userRepository.save(updatedSeller);
+            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller));
+
+            return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller), accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -264,7 +273,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     private JwtSubject toJwtSubject(User seller) {
-        return new JwtSubject(seller.userId(), seller.role().name());
+        return new JwtSubject(seller.userId(), seller.role().name(), seller.nickname(), seller.email());
     }
 
     private SellerMeResult toSellerMeResult(User seller) {

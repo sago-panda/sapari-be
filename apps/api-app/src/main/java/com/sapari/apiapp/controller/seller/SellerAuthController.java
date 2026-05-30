@@ -42,6 +42,7 @@ import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
+import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
 
@@ -157,9 +158,14 @@ public class SellerAuthController {
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
-        SellerMeResult result = sellerAuthUseCase.updateNickname(request.toCommand(userId));
+        SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(request.toCommand(userId));
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
 
-        return ResponseEntity.ok(SellerMeResponse.from(result));
+        if (result.accessToken() != null) {
+            response.header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken());
+        }
+
+        return response.body(SellerMeResponse.from(result.seller()));
     }
 
     @PostMapping("/logout")

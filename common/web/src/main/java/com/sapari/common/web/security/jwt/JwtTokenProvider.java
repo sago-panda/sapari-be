@@ -2,6 +2,7 @@ package com.sapari.common.web.security.jwt;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.MalformedJwtException;
@@ -26,6 +27,8 @@ public class JwtTokenProvider {
 
     private static final String ROLE_CLAIM = "role";
     private static final String TOKEN_TYPE_CLAIM = "tokenType";
+    private static final String NICKNAME_CLAIM = "nickname";
+    private static final String EMAIL_CLAIM = "email";
 
     private final String issuer;
     private final SecretKey secretKey;
@@ -60,6 +63,8 @@ public class JwtTokenProvider {
                 getRequiredUserId(claims),
                 getRequiredRole(claims),
                 getRequiredTokenType(claims),
+                getOptionalStringClaim(claims, NICKNAME_CLAIM),
+                getOptionalStringClaim(claims, EMAIL_CLAIM),
                 getRequiredExpiration(claims)
         );
     }
@@ -72,15 +77,21 @@ public class JwtTokenProvider {
         Instant now = timeProvider.now();
         Instant expiration = now.plusSeconds(expirationSeconds);
 
-        return Jwts.builder()
+        JwtBuilder builder = Jwts.builder()
                 .issuer(issuer)
                 .subject(subject.userId().toString())
                 .claim(ROLE_CLAIM, subject.role())
                 .claim(TOKEN_TYPE_CLAIM, tokenType.name())
                 .issuedAt(Date.from(now))
-                .expiration(Date.from(expiration))
-                .signWith(secretKey)
-                .compact();
+                .expiration(Date.from(expiration));
+
+        if (tokenType == JwtTokenType.ACCESS) {
+            builder
+                    .claim(NICKNAME_CLAIM, subject.nickname())
+                    .claim(EMAIL_CLAIM, subject.email());
+        }
+
+        return builder.signWith(secretKey).compact();
     }
 
     private Claims parseClaims(String token) {
@@ -156,5 +167,9 @@ public class JwtTokenProvider {
         }
 
         return expiration.toInstant();
+    }
+
+    private String getOptionalStringClaim(Claims claims, String claimName) {
+        return claims.get(claimName, String.class);
     }
 }

@@ -40,6 +40,7 @@ import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
 import com.sapari.member.port.MemberAuthUseCase;
 import com.sapari.member.result.MemberMeResult;
+import com.sapari.member.result.MemberNicknameUpdateResult;
 import com.sapari.member.result.MemberTokenReissueResult;
 import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
@@ -189,9 +190,12 @@ public class MemberAuthController {
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
             @Valid @RequestBody MemberNicknameUpdateRequest request
     ) {
-        MemberMeResult result = memberAuthUseCase.updateNickname(request.toCommand(userId));
+        MemberNicknameUpdateResult result = memberAuthUseCase.updateNickname(request.toCommand(userId));
 
-        return ResponseEntity.ok(MemberMeResponse.from(result));
+        return ResponseEntity
+                .ok()
+                .header(HttpHeaders.AUTHORIZATION, BEARER_PREFIX + result.accessToken())
+                .body(MemberMeResponse.from(result.member()));
     }
 
     private ResponseCookie createRefreshTokenCookie(String refreshToken) {

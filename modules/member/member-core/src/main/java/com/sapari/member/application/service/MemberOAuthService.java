@@ -113,6 +113,6 @@ public class MemberOAuthService implements MemberOAuthUseCase {
     }
 
     private JwtSubject toJwtSubject(User member) {
-        return new JwtSubject(member.userId(), member.role().name());
+        return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
     }
 }

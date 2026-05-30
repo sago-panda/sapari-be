@@ -22,6 +22,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.sapari.common.web.security.jwt.JwtProperties;
 import com.sapari.common.web.security.jwt.JwtSubject;
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
@@ -34,7 +35,7 @@ import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.result.SellerLoginResult;
-import com.sapari.seller.result.SellerMeResult;
+import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
 import com.sapari.user.domain.model.ProviderType;
@@ -140,8 +141,14 @@ class SellerAuthServiceTest {
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
-        assertThat(jwtTokenProvider.parseToken(result.accessToken()).tokenType()).isEqualTo(JwtTokenType.ACCESS);
-        assertThat(jwtTokenProvider.parseToken(result.refreshToken()).tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(result.refreshToken());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("seller");
+        assertThat(accessClaims.email()).isEqualTo(EMAIL);
+        assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(refreshClaims.nickname()).isNull();
+        assertThat(refreshClaims.email()).isNull();
         verify(refreshTokenRedisRepository).save(userId, result.refreshToken());
     }
 
@@ -167,7 +174,7 @@ class SellerAuthServiceTest {
     void reissueAccessTokenReturnsNewAccessTokenWhenRefreshTokenMatches() {
         // given
         UUID userId = UUID.randomUUID();
-        String refreshToken = jwtTokenProvider.createRefreshToken(new JwtSubject(userId, UserRole.SELLER.name()));
+        String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
         when(refreshTokenRedisRepository.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
 
@@ -176,7 +183,10 @@ class SellerAuthServiceTest {
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
-        assertThat(jwtTokenProvider.parseToken(result.accessToken()).tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("seller");
+        assertThat(accessClaims.email()).isEqualTo(EMAIL);
     }
 
     @Test
@@ -193,7 +203,7 @@ class SellerAuthServiceTest {
     void reissueAccessTokenThrowsExceptionWhenSavedRefreshTokenDoesNotMatch() {
         // given
         UUID userId = UUID.randomUUID();
-        String refreshToken = jwtTokenProvider.createRefreshToken(new JwtSubject(userId, UserRole.SELLER.name()));
+        String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
         when(refreshTokenRedisRepository.findByUserId(userId)).thenReturn(Optional.of("different-token"));
 
@@ -209,7 +219,7 @@ class SellerAuthServiceTest {
     void reissueAccessTokenThrowsExceptionWhenUserIsNotSeller() {
         // given
         UUID userId = UUID.randomUUID();
-        String refreshToken = jwtTokenProvider.createRefreshToken(new JwtSubject(userId, UserRole.USER.name()));
+        String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
 
         // when, then
@@ -224,7 +234,7 @@ class SellerAuthServiceTest {
     void logoutDeletesRefreshTokenAndBlacklistsAccessToken() {
         // given
         UUID userId = UUID.randomUUID();
-        String accessToken = jwtTokenProvider.createAccessToken(new JwtSubject(userId, UserRole.SELLER.name()));
+        String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
 
         // when
         sellerAuthService.logout(new SellerLogoutCommand(userId, accessToken));
@@ -265,17 +275,22 @@ class SellerAuthServiceTest {
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // when
-        SellerMeResult result = sellerAuthService.updateNickname(command);
+        SellerNicknameUpdateResult result = sellerAuthService.updateNickname(command);
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
 
         // then
-        assertThat(result.userId()).isEqualTo(userId);
-        assertThat(result.nickname()).isEqualTo("updated");
-        assertThat(result.name()).isEqualTo("판매자");
-        assertThat(result.birthDate()).isEqualTo(LocalDate.of(1990, 1, 1));
-        assertThat(result.phoneNumber()).isEqualTo("01012345678");
-        assertThat(result.email()).isEqualTo(EMAIL);
-        assertThat(result.role()).isEqualTo(UserRole.SELLER.name());
+        assertThat(result.seller().userId()).isEqualTo(userId);
+        assertThat(result.seller().nickname()).isEqualTo("updated");
+        assertThat(result.seller().name()).isEqualTo("판매자");
+        assertThat(result.seller().birthDate()).isEqualTo(LocalDate.of(1990, 1, 1));
+        assertThat(result.seller().phoneNumber()).isEqualTo("01012345678");
+        assertThat(result.seller().email()).isEqualTo(EMAIL);
+        assertThat(result.seller().role()).isEqualTo(UserRole.SELLER.name());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("updated");
+        assertThat(accessClaims.email()).isEqualTo(EMAIL);
         verify(userRepository).existsByNicknameAndUserIdNot("updated", userId);
+        verify(refreshTokenRedisRepository, never()).save(eq(userId), any(String.class));
     }
 
     @Test
@@ -310,10 +325,11 @@ class SellerAuthServiceTest {
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId, NOW)));
 
         // when
-        SellerMeResult result = sellerAuthService.updateNickname(command);
+        SellerNicknameUpdateResult result = sellerAuthService.updateNickname(command);
 
         // then
-        assertThat(result.nickname()).isEqualTo("seller");
+        assertThat(result.seller().nickname()).isEqualTo("seller");
+        assertThat(result.accessToken()).isNull();
         verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
         verify(userRepository, never()).save(any(User.class));
     }
@@ -413,6 +429,10 @@ class SellerAuthServiceTest {
 
     private TimeProvider timeProvider() {
         return new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    private JwtSubject jwtSubject(UUID userId, String role) {
+        return new JwtSubject(userId, role, "seller", EMAIL);
     }
 
     private User createSeller(UUID userId) {

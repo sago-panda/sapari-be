@@ -6,6 +6,7 @@ import com.sapari.member.command.MemberLogoutCommand;
 import com.sapari.member.command.MemberNicknameUpdateCommand;
 import com.sapari.member.command.SocialSignupCommand;
 import com.sapari.member.result.MemberMeResult;
+import com.sapari.member.result.MemberNicknameUpdateResult;
 import com.sapari.member.result.MemberTokenReissueResult;
 import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
@@ -33,5 +34,5 @@ public interface MemberAuthUseCase {
 
     MemberMeResult getMyInfo(UUID userId);
 
-    MemberMeResult updateNickname(MemberNicknameUpdateCommand command);
+    MemberNicknameUpdateResult updateNickname(MemberNicknameUpdateCommand command);
 }

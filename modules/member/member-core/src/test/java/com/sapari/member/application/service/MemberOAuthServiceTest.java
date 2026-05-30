@@ -18,7 +18,9 @@ import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.web.security.jwt.JwtProperties;
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.web.security.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberOAuthCommand;
@@ -90,6 +92,14 @@ class MemberOAuthServiceTest {
         assertThat(tokenResult.userId()).isEqualTo(userId);
         assertThat(tokenResult.accessToken()).isNotBlank();
         assertThat(tokenResult.refreshToken()).isNotBlank();
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(tokenResult.accessToken());
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(tokenResult.refreshToken());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("member");
+        assertThat(accessClaims.email()).isEqualTo("member@example.com");
+        assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(refreshClaims.nickname()).isNull();
+        assertThat(refreshClaims.email()).isNull();
         verifyNoInteractions(socialSignupRedisRepository);
     }
 

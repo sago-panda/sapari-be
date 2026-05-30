@@ -7,6 +7,8 @@ public record JwtTokenClaims(
         UUID userId,
         String role,
         JwtTokenType tokenType,
+        String nickname,
+        String email,
         Instant expiresAt
 ) {
 }

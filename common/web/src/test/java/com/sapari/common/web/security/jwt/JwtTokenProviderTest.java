@@ -1,6 +1,7 @@
 package com.sapari.common.web.security.jwt;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,12 +30,12 @@ class JwtTokenProviderTest {
     private static final String ISSUER = "auth-service-test";
 
     @Test
-    @DisplayName("Access Token 생성 시 userId, role, ACCESS 타입을 포함한다")
+    @DisplayName("Access Token 생성 시 사용자 정보와 ACCESS 타입을 포함한다")
     void createAccessTokenContainsUserIdRoleAndAccessTokenType() {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(3600, 1209600);
         UUID userId = UUID.randomUUID();
-        JwtSubject subject = new JwtSubject(userId, "USER");
+        JwtSubject subject = jwtSubject(userId, "USER");
 
         // when
         String token = jwtTokenProvider.createAccessToken(subject);
@@ -44,6 +45,8 @@ class JwtTokenProviderTest {
         assertEquals(userId, claims.userId());
         assertEquals("USER", claims.role());
         assertEquals(JwtTokenType.ACCESS, claims.tokenType());
+        assertEquals("member", claims.nickname());
+        assertEquals("member@example.com", claims.email());
         assertTrue(claims.expiresAt().isAfter(Instant.now()));
     }
 
@@ -52,7 +55,7 @@ class JwtTokenProviderTest {
     void createRefreshTokenContainsRefreshTokenType() {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(3600, 1209600);
-        JwtSubject subject = new JwtSubject(UUID.randomUUID(), "USER");
+        JwtSubject subject = jwtSubject(UUID.randomUUID(), "USER");
 
         // when
         String token = jwtTokenProvider.createRefreshToken(subject);
@@ -60,6 +63,8 @@ class JwtTokenProviderTest {
 
         // then
         assertEquals(JwtTokenType.REFRESH, claims.tokenType());
+        assertNull(claims.nickname());
+        assertNull(claims.email());
     }
 
     @Test
@@ -67,7 +72,7 @@ class JwtTokenProviderTest {
     void getRemainingExpirationReturnsPositiveDurationWhenTokenIsValid() {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(3600, 1209600);
-        JwtSubject subject = new JwtSubject(UUID.randomUUID(), "USER");
+        JwtSubject subject = jwtSubject(UUID.randomUUID(), "USER");
 
         // when
         String token = jwtTokenProvider.createAccessToken(subject);
@@ -93,7 +98,7 @@ class JwtTokenProviderTest {
     void parseTokenThrowsExceptionWhenTokenIsExpired() throws InterruptedException {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(1, 1209600);
-        JwtSubject subject = new JwtSubject(UUID.randomUUID(), "USER");
+        JwtSubject subject = jwtSubject(UUID.randomUUID(), "USER");
         String token = jwtTokenProvider.createAccessToken(subject);
 
         Thread.sleep(1100);
@@ -113,7 +118,7 @@ class JwtTokenProviderTest {
                 3600L,
                 1209600L
         ), timeProvider());
-        String token = tokenIssuer.createAccessToken(new JwtSubject(UUID.randomUUID(), "USER"));
+        String token = tokenIssuer.createAccessToken(jwtSubject(UUID.randomUUID(), "USER"));
 
         // when, then
         assertThrows(RuntimeException.class, () -> tokenValidator.parseToken(token));
@@ -168,6 +173,10 @@ class JwtTokenProviderTest {
 
     private TimeProvider timeProvider() {
         return new TimeProvider(Clock.fixed(Instant.now(), ZoneOffset.UTC));
+    }
+
+    private JwtSubject jwtSubject(UUID userId, String role) {
+        return new JwtSubject(userId, role, "member", "member@example.com");
     }
 
     private String createTokenWithoutSubject() {

@@ -8,6 +8,7 @@ import com.sapari.seller.command.SellerNicknameUpdateCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
+import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
 
@@ -31,5 +32,5 @@ public interface SellerAuthUseCase {
 
     SellerMeResult getMyInfo(UUID userId);
 
-    SellerMeResult updateNickname(SellerNicknameUpdateCommand command);
+    SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command);
 }

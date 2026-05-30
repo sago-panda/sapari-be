@@ -4,6 +4,8 @@ import java.util.UUID;
 
 public record JwtSubject(
         UUID userId,
-        String role
+        String role,
+        String nickname,
+        String email
 ) {
 }

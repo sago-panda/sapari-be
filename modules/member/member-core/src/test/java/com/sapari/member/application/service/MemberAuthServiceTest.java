@@ -23,6 +23,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.web.security.jwt.JwtProperties;
 import com.sapari.common.web.security.jwt.JwtSubject;
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
@@ -34,7 +35,7 @@ import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
 import com.sapari.member.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
-import com.sapari.member.result.MemberMeResult;
+import com.sapari.member.result.MemberNicknameUpdateResult;
 import com.sapari.member.result.MemberTokenReissueResult;
 import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
@@ -99,8 +100,14 @@ class MemberAuthServiceTest {
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
-        assertThat(jwtTokenProvider.parseToken(result.accessToken()).tokenType()).isEqualTo(JwtTokenType.ACCESS);
-        assertThat(jwtTokenProvider.parseToken(result.refreshToken()).tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(result.refreshToken());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("member");
+        assertThat(accessClaims.email()).isEqualTo(EMAIL);
+        assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(refreshClaims.nickname()).isNull();
+        assertThat(refreshClaims.email()).isNull();
 
         ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
         verify(userRepository).save(userCaptor.capture());
@@ -190,7 +197,7 @@ class MemberAuthServiceTest {
         UUID userId = UUID.randomUUID();
         User member = createMember(userId);
         String refreshToken =
-                jwtTokenProvider.createRefreshToken(new JwtSubject(userId, UserRole.USER.name()));
+                jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
         when(userRepository.findById(userId)).thenReturn(Optional.of(member));
         when(refreshTokenRedisRepository.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
 
@@ -199,7 +206,10 @@ class MemberAuthServiceTest {
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
-        assertThat(jwtTokenProvider.parseToken(result.accessToken()).tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("member");
+        assertThat(accessClaims.email()).isEqualTo(EMAIL);
     }
 
     @Test
@@ -208,7 +218,7 @@ class MemberAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String refreshToken =
-                jwtTokenProvider.createRefreshToken(new JwtSubject(userId, UserRole.SELLER.name()));
+                jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
 
         // when, then
@@ -224,7 +234,7 @@ class MemberAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String accessToken =
-                jwtTokenProvider.createAccessToken(new JwtSubject(userId, UserRole.USER.name()));
+                jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
 
         // when
         memberAuthService.logout(new MemberLogoutCommand(userId, accessToken));
@@ -265,18 +275,23 @@ class MemberAuthServiceTest {
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // when
-        MemberMeResult result = memberAuthService.updateNickname(command);
+        MemberNicknameUpdateResult result = memberAuthService.updateNickname(command);
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
 
         // then
-        assertThat(result.userId()).isEqualTo(userId);
-        assertThat(result.nickname()).isEqualTo("updated");
-        assertThat(result.name()).isEqualTo("구매자");
-        assertThat(result.birthDate()).isEqualTo(LocalDate.of(2000, 1, 1));
-        assertThat(result.phoneNumber()).isEqualTo("01012345678");
-        assertThat(result.email()).isEqualTo(EMAIL);
-        assertThat(result.role()).isEqualTo(UserRole.USER.name());
+        assertThat(result.member().userId()).isEqualTo(userId);
+        assertThat(result.member().nickname()).isEqualTo("updated");
+        assertThat(result.member().name()).isEqualTo("구매자");
+        assertThat(result.member().birthDate()).isEqualTo(LocalDate.of(2000, 1, 1));
+        assertThat(result.member().phoneNumber()).isEqualTo("01012345678");
+        assertThat(result.member().email()).isEqualTo(EMAIL);
+        assertThat(result.member().role()).isEqualTo(UserRole.USER.name());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("updated");
+        assertThat(accessClaims.email()).isEqualTo(EMAIL);
         verify(userRepository).existsByNicknameAndUserIdNot("updated", userId);
         verify(userRepository).save(any(User.class));
+        verify(refreshTokenRedisRepository, never()).save(eq(userId), any(String.class));
     }
 
     @Test
@@ -311,10 +326,11 @@ class MemberAuthServiceTest {
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId, NOW)));
 
         // when
-        MemberMeResult result = memberAuthService.updateNickname(command);
+        MemberNicknameUpdateResult result = memberAuthService.updateNickname(command);
 
         // then
-        assertThat(result.nickname()).isEqualTo("member");
+        assertThat(result.member().nickname()).isEqualTo("member");
+        assertThat(result.accessToken()).isNull();
         verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
         verify(userRepository, never()).save(any(User.class));
     }
@@ -420,6 +436,10 @@ class MemberAuthServiceTest {
 
     private TimeProvider timeProvider() {
         return new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    private JwtSubject jwtSubject(UUID userId, String role) {
+        return new JwtSubject(userId, role, "member", EMAIL);
     }
 
     private User createMember(UUID userId) {
