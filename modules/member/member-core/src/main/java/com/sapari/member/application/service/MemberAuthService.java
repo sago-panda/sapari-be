@@ -3,6 +3,7 @@ package com.sapari.member.application.service;
 import lombok.RequiredArgsConstructor;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -12,8 +13,10 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.web.security.jwt.JwtSubject;
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberLogoutCommand;
 import com.sapari.member.command.MemberMeUpdateCommand;
@@ -22,9 +25,10 @@ import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
 import com.sapari.member.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
-import com.sapari.member.port.MemberAuthFacade;
+import com.sapari.member.port.MemberAuthUseCase;
 import com.sapari.member.result.MemberMeResult;
 import com.sapari.member.result.MemberTokenReissueResult;
+import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
 import com.sapari.user.domain.model.User;
@@ -43,6 +47,7 @@ public class MemberAuthService implements MemberAuthFacade {
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenRedisRepository refreshTokenRedisRepository;
     private final AccessTokenBlacklistRedisRepository accessTokenBlacklistRedisRepository;
+    private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
 
     /**
@@ -92,9 +97,9 @@ public class MemberAuthService implements MemberAuthFacade {
     @Override
     @Transactional(readOnly = true)
     public MemberTokenReissueResult reissueAccessToken(String refreshToken) {
-        validateRefreshToken(refreshToken);
+        JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
-        User member = findRefreshTokenMember(refreshToken);
+        User member = findRefreshTokenMember(claims.userId());
         String savedRefreshToken = refreshTokenRedisRepository.findByUserId(member.userId())
                 .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN));
 
@@ -143,8 +148,9 @@ public class MemberAuthService implements MemberAuthFacade {
     public MemberMeResult updateMyInfo(MemberMeUpdateCommand command) {
         User member = findMember(command.userId());
 
-        validateDuplicatedPhoneNumber(command.userId(), command.phoneNumber());
-        validateDuplicatedEmail(command.userId(), command.email());
+        Instant now = timeProvider.now();
+        validateNicknameChangeAllowed(member, now);
+        validateDuplicatedNickname(command.userId(), command.nickname());
 
         User updatedMember = member.updateProfile(
                 command.nickname(),
@@ -156,10 +162,16 @@ public class MemberAuthService implements MemberAuthFacade {
                 command.marketingAgreed()
         );
 
-        return toMemberMeResult(userRepository.save(updatedMember));
+        try {
+            return toMemberMeResult(userRepository.save(updatedMember));
+        } catch (DataIntegrityViolationException e) {
+            throw new MemberException(MemberErrorCode.DUPLICATED_NICKNAME, e);
+        }
     }
 
     private User createMember(SocialSignupCommand command, SocialSignupInfo socialSignupInfo) {
+        Instant now = timeProvider.now();
+
         return User.createSocialMember(
                 command.nickname(),
                 command.name(),
@@ -169,7 +181,9 @@ public class MemberAuthService implements MemberAuthFacade {
                 command.isMarketingAgreed(),
                 socialSignupInfo.provider(),
                 socialSignupInfo.providerId(),
-                socialSignupInfo.providerEmail()
+                socialSignupInfo.providerEmail(),
+                now,
+                now
         );
     }
 
@@ -223,8 +237,7 @@ public class MemberAuthService implements MemberAuthFacade {
         return user;
     }
 
-    private User findRefreshTokenMember(String refreshToken) {
-        UUID userId = getRefreshTokenUserId(refreshToken);
+    private User findRefreshTokenMember(UUID userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN));
 
@@ -235,31 +248,23 @@ public class MemberAuthService implements MemberAuthFacade {
         return user;
     }
 
-    private void validateRefreshToken(String refreshToken) {
+    private JwtTokenClaims parseRefreshToken(String refreshToken) {
         if (refreshToken == null || refreshToken.isBlank()) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        if (!jwtTokenProvider.validateToken(refreshToken)) {
+        JwtTokenClaims claims = parseToken(refreshToken);
+
+        if (claims.tokenType() != JwtTokenType.REFRESH) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        if (getRefreshTokenType(refreshToken) != JwtTokenType.REFRESH) {
-            throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
-        }
+        return claims;
     }
 
-    private UUID getRefreshTokenUserId(String refreshToken) {
+    private JwtTokenClaims parseToken(String token) {
         try {
-            return jwtTokenProvider.getUserId(refreshToken);
-        } catch (RuntimeException e) {
-            throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN, e);
-        }
-    }
-
-    private JwtTokenType getRefreshTokenType(String refreshToken) {
-        try {
-            return jwtTokenProvider.getTokenType(refreshToken);
+            return jwtTokenProvider.parseToken(token);
         } catch (RuntimeException e) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN, e);
         }
@@ -267,7 +272,14 @@ public class MemberAuthService implements MemberAuthFacade {
 
     private Duration getRemainingExpiration(String accessToken) {
         try {
-            return jwtTokenProvider.getRemainingExpiration(accessToken);
+            JwtTokenClaims claims = jwtTokenProvider.parseToken(accessToken);
+            Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
+
+            if (remainingExpiration.isNegative()) {
+                return Duration.ZERO;
+            }
+
+            return remainingExpiration;
         } catch (RuntimeException e) {
             throw new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN, e);
         }

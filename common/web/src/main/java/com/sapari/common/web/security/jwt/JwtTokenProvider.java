@@ -10,7 +10,6 @@ import io.jsonwebtoken.security.Keys;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.UUID;
@@ -18,6 +17,8 @@ import java.util.UUID;
 import javax.crypto.SecretKey;
 
 import org.springframework.stereotype.Component;
+
+import com.sapari.global.time.TimeProvider;
 
 @Slf4j
 @Component
@@ -31,11 +32,14 @@ public class JwtTokenProvider {
     private final long accessTokenExpirationSeconds;
     private final long refreshTokenExpirationSeconds;
 
-    public JwtTokenProvider(JwtProperties jwtProperties) {
+    private final TimeProvider timeProvider;
+
+    public JwtTokenProvider(JwtProperties jwtProperties, TimeProvider timeProvider) {
         this.issuer = jwtProperties.issuer();
         this.secretKey = Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8));
         this.accessTokenExpirationSeconds = jwtProperties.accessTokenExpirationSeconds();
         this.refreshTokenExpirationSeconds = jwtProperties.refreshTokenExpirationSeconds();
+        this.timeProvider = timeProvider;
     }
 
     public String createAccessToken(JwtSubject subject) {
@@ -47,61 +51,17 @@ public class JwtTokenProvider {
     }
 
     /**
-     * 토큰의 서명, 만료 여부, 형식을 검증
-     *
+     * 토큰의 서명, 만료 여부, 필수 claims를 검증하고 파싱 결과를 반환
      */
-    public boolean validateToken(String token) {
-        try {
-            Claims claims = parseClaims(token);
-            validateRequiredClaims(claims);
-            return true;
-        } catch (SecurityException | MalformedJwtException e) {
-            log.info("Invalid JWT token", e);
-        } catch (ExpiredJwtException e) {
-            log.info("Expired JWT token", e);
-        } catch (UnsupportedJwtException e) {
-            log.info("Unsupported JWT token", e);
-        } catch (IllegalArgumentException e) {
-            log.info("JWT token is empty", e);
-        } catch (JwtException e) {
-            log.info("JWT token validation failed", e);
-        }
-        return false;
-    }
+    public JwtTokenClaims parseToken(String token) {
+        Claims claims = parseClaims(token);
 
-    public Claims parseClaims(String token) {
-        return Jwts.parser()
-                .verifyWith(secretKey)
-                .requireIssuer(issuer)
-                .build()
-                .parseSignedClaims(token)
-                .getPayload();
-    }
-
-    public UUID getUserId(String token) {
-        return UUID.fromString(parseClaims(token).getSubject());
-    }
-
-    public String getRole(String token) {
-        return parseClaims(token).get(ROLE_CLAIM, String.class);
-    }
-
-    public JwtTokenType getTokenType(String token) {
-        return getRequiredTokenType(parseClaims(token));
-    }
-
-    /**
-     * 토큰의 남은 만료 시간을 계산
-     */
-    public Duration getRemainingExpiration(String token) {
-        Instant expiration = parseClaims(token).getExpiration().toInstant();
-        Duration remainingExpiration = Duration.between(Instant.now(), expiration);
-
-        if (remainingExpiration.isNegative()) {
-            return Duration.ZERO;
-        }
-
-        return remainingExpiration;
+        return new JwtTokenClaims(
+                getRequiredUserId(claims),
+                getRequiredRole(claims),
+                getRequiredTokenType(claims),
+                getRequiredExpiration(claims)
+        );
     }
 
     private String createToken(
@@ -109,7 +69,7 @@ public class JwtTokenProvider {
             JwtTokenType tokenType,
             long expirationSeconds
     ) {
-        Instant now = Instant.now();
+        Instant now = timeProvider.now();
         Instant expiration = now.plusSeconds(expirationSeconds);
 
         return Jwts.builder()
@@ -123,34 +83,56 @@ public class JwtTokenProvider {
                 .compact();
     }
 
-    private void validateRequiredClaims(Claims claims) {
-        validateSubject(claims);
-        validateRole(claims);
-        getRequiredTokenType(claims);
+    private Claims parseClaims(String token) {
+        try {
+            return Jwts.parser()
+                    .verifyWith(secretKey)
+                    .requireIssuer(issuer)
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload();
+        } catch (SecurityException | MalformedJwtException e) {
+            log.warn("Invalid JWT token", e);
+            throw e;
+        } catch (ExpiredJwtException e) {
+            log.debug("Expired JWT token", e);
+            throw e;
+        } catch (UnsupportedJwtException e) {
+            log.warn("Unsupported JWT token", e);
+            throw e;
+        } catch (IllegalArgumentException e) {
+            log.warn("JWT token is empty", e);
+            throw e;
+        } catch (JwtException e) {
+            log.warn("JWT token validation failed", e);
+            throw e;
+        }
     }
 
     /**
      * subject는 사용자 UUID로 사용하므로 비어 있거나 UUID 형식이 아니면 유효하지 않은 토큰으로 처리
      */
-    private void validateSubject(Claims claims) {
+    private UUID getRequiredUserId(Claims claims) {
         String subject = claims.getSubject();
 
         if (subject == null || subject.isBlank()) {
             throw new IllegalArgumentException("JWT subject is required.");
         }
 
-        UUID.fromString(subject);
+        return UUID.fromString(subject);
     }
 
     /**
      * 인증 객체의 권한을 만들 때 필요한 role claim이 포함되어 있는지 확인
      */
-    private void validateRole(Claims claims) {
+    private String getRequiredRole(Claims claims) {
         String role = claims.get(ROLE_CLAIM, String.class);
 
         if (role == null || role.isBlank()) {
             throw new IllegalArgumentException("JWT role claim is required.");
         }
+
+        return role;
     }
 
     /**
@@ -164,5 +146,15 @@ public class JwtTokenProvider {
         }
 
         return JwtTokenType.valueOf(tokenType);
+    }
+
+    private Instant getRequiredExpiration(Claims claims) {
+        Date expiration = claims.getExpiration();
+
+        if (expiration == null) {
+            throw new IllegalArgumentException("JWT expiration claim is required.");
+        }
+
+        return expiration.toInstant();
     }
 }

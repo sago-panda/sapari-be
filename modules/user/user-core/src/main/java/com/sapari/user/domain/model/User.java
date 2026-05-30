@@ -2,8 +2,8 @@ package com.sapari.user.domain.model;
 
 import lombok.Builder;
 
+import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.UUID;
 
 import org.springframework.util.Assert;
@@ -22,14 +22,14 @@ public record User(
         UserGrade grade,
         Integer pointBalance,
         Boolean marketingAgreed,
-        LocalDateTime suspendedUntil,
+        Instant suspendedUntil,
         String suspensionReason,
-        LocalDateTime deletedAt,
-        LocalDateTime personalDataPurgedAt,
+        Instant deletedAt,
+        Instant personalDataPurgedAt,
         ProviderType provider,
         String providerId,
         String providerEmail,
-        LocalDateTime providerCreatedAt
+        Instant providerCreatedAt
 ) {
 
     public static User createSocialMember(

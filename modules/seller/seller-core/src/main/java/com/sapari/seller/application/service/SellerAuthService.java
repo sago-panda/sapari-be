@@ -3,6 +3,7 @@ package com.sapari.seller.application.service;
 import lombok.RequiredArgsConstructor;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -11,8 +12,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.common.web.security.jwt.JwtSubject;
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerMeUpdateCommand;
@@ -21,7 +24,7 @@ import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
-import com.sapari.seller.port.SellerAuthFacade;
+import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
 import com.sapari.seller.result.SellerSignupResult;
@@ -42,6 +45,7 @@ public class SellerAuthService implements SellerAuthFacade {
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenRedisRepository refreshTokenRedisRepository;
     private final AccessTokenBlacklistRedisRepository accessTokenBlacklistRedisRepository;
+    private final TimeProvider timeProvider;
 
     @Override
     @Transactional
@@ -50,7 +54,8 @@ public class SellerAuthService implements SellerAuthFacade {
             User savedUser = userRepository.save(createSeller(command));
             LocalCredential localCredential = LocalCredential.create(
                     savedUser.userId(),
-                    passwordEncoder.encode(command.password())
+                    passwordEncoder.encode(command.password()),
+                    timeProvider.now()
             );
 
             localCredentialRepository.save(localCredential);
@@ -93,9 +98,9 @@ public class SellerAuthService implements SellerAuthFacade {
     @Override
     @Transactional(readOnly = true)
     public SellerTokenReissueResult reissueAccessToken(String refreshToken) {
-        validateRefreshToken(refreshToken);
+        JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
-        User seller = findRefreshTokenSeller(refreshToken);
+        User seller = findRefreshTokenSeller(claims.userId());
         String savedRefreshToken = refreshTokenRedisRepository.findByUserId(seller.userId())
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
 
@@ -145,13 +150,16 @@ public class SellerAuthService implements SellerAuthFacade {
     }
 
     private User createSeller(SellerSignupCommand command) {
+        Instant now = timeProvider.now();
+
         return User.createSeller(
                 command.nickname(),
                 command.name(),
                 command.birthDate(),
                 command.phoneNumber(),
                 command.email(),
-                command.marketingAgreed()
+                command.marketingAgreed(),
+                now
         );
     }
 
@@ -165,8 +173,7 @@ public class SellerAuthService implements SellerAuthFacade {
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS));
     }
 
-    private User findRefreshTokenSeller(String refreshToken) {
-        UUID userId = getRefreshTokenUserId(refreshToken);
+    private User findRefreshTokenSeller(UUID userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
 
@@ -188,31 +195,37 @@ public class SellerAuthService implements SellerAuthFacade {
         return user;
     }
 
-    private void validateRefreshToken(String refreshToken) {
+    private void validateDuplicatedNickname(UUID userId, String nickname) {
+        if (userRepository.existsByNicknameAndUserIdNot(nickname, userId)) {
+            throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME);
+        }
+    }
+
+    private void validateNicknameChangeAllowed(User seller, Instant now) {
+        // 마지막 변경 시각부터 30일이 지나야 다음 닉네임 변경을 허용한다.
+        Instant nextChangeAt = seller.nicknameChangedAt().plus(NICKNAME_CHANGE_INTERVAL);
+        if (now.isBefore(nextChangeAt)) {
+            throw new SellerException(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED);
+        }
+    }
+
+    private JwtTokenClaims parseRefreshToken(String refreshToken) {
         if (refreshToken == null || refreshToken.isBlank()) {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        if (!jwtTokenProvider.validateToken(refreshToken)) {
+        JwtTokenClaims claims = parseToken(refreshToken);
+
+        if (claims.tokenType() != JwtTokenType.REFRESH) {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        if (getRefreshTokenType(refreshToken) != JwtTokenType.REFRESH) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        }
+        return claims;
     }
 
-    private UUID getRefreshTokenUserId(String refreshToken) {
+    private JwtTokenClaims parseToken(String token) {
         try {
-            return jwtTokenProvider.getUserId(refreshToken);
-        } catch (RuntimeException e) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN, e);
-        }
-    }
-
-    private JwtTokenType getRefreshTokenType(String refreshToken) {
-        try {
-            return jwtTokenProvider.getTokenType(refreshToken);
+            return jwtTokenProvider.parseToken(token);
         } catch (RuntimeException e) {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN, e);
         }
@@ -220,7 +233,14 @@ public class SellerAuthService implements SellerAuthFacade {
 
     private Duration getRemainingExpiration(String accessToken) {
         try {
-            return jwtTokenProvider.getRemainingExpiration(accessToken);
+            JwtTokenClaims claims = jwtTokenProvider.parseToken(accessToken);
+            Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
+
+            if (remainingExpiration.isNegative()) {
+                return Duration.ZERO;
+            }
+
+            return remainingExpiration;
         } catch (RuntimeException e) {
             throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN, e);
         }

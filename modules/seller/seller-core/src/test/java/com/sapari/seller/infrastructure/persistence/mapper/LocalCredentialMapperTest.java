@@ -2,7 +2,7 @@ package com.sapari.seller.infrastructure.persistence.mapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
@@ -19,8 +19,8 @@ class LocalCredentialMapperTest {
     void toEntityMapsDomainToEntity() {
         // given
         UUID userId = UUID.randomUUID();
-        LocalDateTime lockedAt = LocalDateTime.of(2026, 1, 1, 10, 0);
-        LocalDateTime lastChangedAt = LocalDateTime.of(2026, 1, 2, 10, 0);
+        Instant lockedAt = Instant.parse("2026-01-01T10:00:00Z");
+        Instant lastChangedAt = Instant.parse("2026-01-02T10:00:00Z");
         LocalCredential localCredential = new LocalCredential(
                 userId,
                 "hashed-password",
@@ -45,7 +45,7 @@ class LocalCredentialMapperTest {
     void toDomainMapsEntityToDomain() {
         // given
         UUID userId = UUID.randomUUID();
-        LocalDateTime lastChangedAt = LocalDateTime.of(2026, 1, 2, 10, 0);
+        Instant lastChangedAt = Instant.parse("2026-01-02T10:00:00Z");
         LocalCredentialEntity entity = LocalCredentialEntity.of(
                 userId,
                 "hashed-password",

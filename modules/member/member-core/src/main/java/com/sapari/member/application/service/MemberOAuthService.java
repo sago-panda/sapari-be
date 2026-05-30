@@ -17,7 +17,7 @@ import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
 import com.sapari.member.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
-import com.sapari.member.port.MemberOAuthFacade;
+import com.sapari.member.port.MemberOAuthUseCase;
 import com.sapari.member.result.MemberOAuthResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.user.domain.model.ProviderType;
@@ -27,9 +27,8 @@ import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
 
 @Service
-@Transactional(readOnly = true)
 @RequiredArgsConstructor
-public class MemberOAuthService implements MemberOAuthFacade {
+public class MemberOAuthService implements MemberOAuthUseCase {
 
     private final UserRepository userRepository;
     private final SocialSignupRedisRepository socialSignupRedisRepository;
@@ -42,6 +41,7 @@ public class MemberOAuthService implements MemberOAuthFacade {
      * OAuth 인증 사용자가 기존 회원이면 임시 로그인 code를, 신규 회원이면 회원가입 sid를 발급
      */
     @Override
+    @Transactional(readOnly = true)
     public MemberOAuthResult handleOAuthSuccess(MemberOAuthCommand command) {
         ProviderType provider = toProviderType(command.provider());
         validateProviderId(command.providerId());

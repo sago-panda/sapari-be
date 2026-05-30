@@ -1,10 +1,10 @@
 package com.sapari.common.web.response;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 public record ErrorResponse(
         int status,
         String message,
-        LocalDateTime timestamp
+        Instant timestamp
 ) {
 }

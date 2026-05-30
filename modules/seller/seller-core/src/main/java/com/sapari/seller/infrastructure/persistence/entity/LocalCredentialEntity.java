@@ -4,7 +4,7 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.UUID;
 
 import jakarta.persistence.Column;
@@ -29,17 +29,17 @@ public class LocalCredentialEntity {
     @Column(nullable = false)
     private Integer failedLoginCount = 0;
 
-    private LocalDateTime lockedAt;
+    private Instant lockedAt;
 
     @Column(nullable = false)
-    private LocalDateTime lastChangedAt;
+    private Instant lastChangedAt;
 
     public static LocalCredentialEntity of(
             UUID userId,
             String passwordHash,
             Integer failedLoginCount,
-            LocalDateTime lockedAt,
-            LocalDateTime lastChangedAt
+            Instant lockedAt,
+            Instant lastChangedAt
     ) {
         Assert.notNull(userId, "userId는 필수입니다.");
         Assert.hasText(passwordHash, "passwordHash는 필수입니다.");

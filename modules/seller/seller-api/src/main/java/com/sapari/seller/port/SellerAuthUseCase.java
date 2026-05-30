@@ -4,20 +4,24 @@ import java.util.UUID;
 
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
-import com.sapari.seller.command.SellerMeUpdateCommand;
+import com.sapari.seller.command.SellerNicknameUpdateCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
 
-public interface SellerAuthFacade {
+public interface SellerAuthUseCase {
 
     SellerSignupResult signup(SellerSignupCommand command);
 
     boolean isEmailDuplicated(String email);
 
     boolean isPhoneNumberDuplicated(String phoneNumber);
+
+    boolean isNicknameDuplicated(String nickname);
+
+    boolean isMyNicknameDuplicated(UUID userId, String nickname);
 
     SellerLoginResult login(SellerLoginCommand command);
 
@@ -27,5 +31,5 @@ public interface SellerAuthFacade {
 
     SellerMeResult getMyInfo(UUID userId);
 
-    SellerMeResult updateMyInfo(SellerMeUpdateCommand command);
+    SellerMeResult updateNickname(SellerNicknameUpdateCommand command);
 }

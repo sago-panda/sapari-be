@@ -4,20 +4,18 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
+import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.UUID;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import org.hibernate.annotations.UuidGenerator;
 import org.springframework.util.Assert;
 
+import com.sapari.storage.db.entity.BaseUuidEntity;
 import com.sapari.user.domain.model.ProviderType;
 import com.sapari.user.domain.model.UserGrade;
 import com.sapari.user.domain.model.UserRole;
@@ -27,12 +25,7 @@ import com.sapari.user.domain.model.UserStatus;
 @Getter
 @Table(name = "users")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class UserEntity {
-
-    @Id
-    @UuidGenerator(style = UuidGenerator.Style.VERSION_7)
-    @Column(name = "users_id", nullable = false)
-    private UUID userId;
+public class UserEntity extends BaseUuidEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 10)
@@ -69,14 +62,14 @@ public class UserEntity {
     @Column(nullable = false)
     private Boolean marketingAgreed = false;
 
-    private LocalDateTime suspendedUntil;
+    private Instant suspendedUntil;
 
     @Column(columnDefinition = "text")
     private String suspensionReason;
 
-    private LocalDateTime deletedAt;
+    private Instant deletedAt;
 
-    private LocalDateTime personalDataPurgedAt;
+    private Instant personalDataPurgedAt;
 
     @Enumerated(EnumType.STRING)
     private ProviderType provider;
@@ -85,7 +78,7 @@ public class UserEntity {
 
     private String providerEmail;
 
-    private LocalDateTime providerCreatedAt;
+    private Instant providerCreatedAt;
 
     public static UserEntity createSocialMember(
             String nickname,
@@ -119,7 +112,7 @@ public class UserEntity {
         user.provider = provider;
         user.providerId = providerId;
         user.providerEmail = providerEmail;
-        user.providerCreatedAt = LocalDateTime.now();
+        user.providerCreatedAt = providerCreatedAt;
 
         return user;
     }

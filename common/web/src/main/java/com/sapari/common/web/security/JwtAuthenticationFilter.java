@@ -1,7 +1,8 @@
 package com.sapari.common.web.security;
 
+import io.jsonwebtoken.JwtException;
+
 import java.io.IOException;
-import java.util.UUID;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -15,6 +16,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
 
@@ -47,13 +49,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         try {
             if (token != null
-                    && SecurityContextHolder.getContext().getAuthentication() == null
-                    && jwtTokenProvider.validateToken(token)
-                    && isAccessToken(token)
-                    && isNotRevoked(token)) {
-                authenticate(token);
+                    && SecurityContextHolder.getContext().getAuthentication() == null) {
+                JwtTokenClaims claims = jwtTokenProvider.parseToken(token);
+
+                if (isAccessToken(claims) && isNotRevoked(token)) {
+                    authenticate(claims);
+                }
             }
-        } catch (AuthenticationException | IllegalArgumentException e) {
+        } catch (AuthenticationException | JwtException | IllegalArgumentException e) {
             SecurityContextHolder.clearContext();
         }
 
@@ -70,17 +73,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return authorizationHeader.substring(BEARER_PREFIX.length());
     }
 
-    private boolean isAccessToken(String token) {
-        return jwtTokenProvider.getTokenType(token) == JwtTokenType.ACCESS;
+    private boolean isAccessToken(JwtTokenClaims claims) {
+        return claims.tokenType() == JwtTokenType.ACCESS;
     }
 
     private boolean isNotRevoked(String token) {
         return !accessTokenRevocationChecker.isRevoked(token);
     }
 
-    private void authenticate(String token) {
-        UUID userId = jwtTokenProvider.getUserId(token);
-        UserDetails userDetails = userDetailsService.loadUserByUsername(userId.toString());
+    private void authenticate(JwtTokenClaims claims) {
+        UserDetails userDetails = userDetailsService.loadUserByUsername(claims.userId().toString());
 
         if (!userDetails.isEnabled() || !userDetails.isAccountNonLocked()) {
             return;

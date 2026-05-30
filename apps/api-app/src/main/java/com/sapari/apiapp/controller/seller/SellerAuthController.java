@@ -10,6 +10,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -38,14 +39,14 @@ import com.sapari.apiapp.controller.seller.dto.response.SellerTokenReissueRespon
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
-import com.sapari.seller.port.SellerAuthFacade;
+import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
 
 @RestController
-@RequestMapping("/api/sellers")
+@RequestMapping("/api/v1/sellers/auth")
 @RequiredArgsConstructor
 @Validated
 public class SellerAuthController {
@@ -53,7 +54,7 @@ public class SellerAuthController {
     private static final String REFRESH_TOKEN_COOKIE_NAME = "refresh_token";
     private static final String BEARER_PREFIX = "Bearer ";
 
-    private final SellerAuthFacade sellerAuthFacade;
+    private final SellerAuthUseCase sellerAuthUseCase;
 
     @Value("${jwt.refresh-token-expiration-seconds}")
     private long refreshTokenExpirationSeconds;
@@ -62,10 +63,10 @@ public class SellerAuthController {
     public ResponseEntity<SellerSignupResponse> signup(
             @Valid @RequestBody SellerSignupRequest request
     ) {
-        SellerSignupResult result = sellerAuthFacade.signup(request.toCommand());
+        SellerSignupResult result = sellerAuthUseCase.signup(request.toCommand());
 
         return ResponseEntity
-                .created(URI.create("/api/sellers/" + result.userId()))
+                .created(URI.create("/api/v1/sellers/" + result.userId()))
                 .body(SellerSignupResponse.from(result));
     }
 
@@ -77,14 +78,14 @@ public class SellerAuthController {
             String email
     ) {
         return ResponseEntity.ok(
-                new DuplicateCheckResponse(sellerAuthFacade.isEmailDuplicated(email))
+                new DuplicateCheckResponse(sellerAuthUseCase.isEmailDuplicated(email))
         );
     }
 
     @GetMapping("/signup/check-phone")
     public ResponseEntity<DuplicateCheckResponse> checkPhoneNumber(
             @RequestParam
-            @Pattern(regexp = "^\\d{11}$", message = "전화번호는 숫자 11자리여야 합니다.")
+            @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
             String phoneNumber
     ) {
         return ResponseEntity.ok(
@@ -96,7 +97,7 @@ public class SellerAuthController {
     public ResponseEntity<SellerLoginResponse> login(
             @Valid @RequestBody SellerLoginRequest request
     ) {
-        SellerLoginResult result = sellerAuthFacade.login(request.toCommand());
+        SellerLoginResult result = sellerAuthUseCase.login(request.toCommand());
 
         return ResponseEntity
                 .ok()
@@ -105,11 +106,11 @@ public class SellerAuthController {
                 .body(SellerLoginResponse.from(result));
     }
 
-    @PostMapping("/reissue")
+    @PostMapping("/token/reissue")
     public ResponseEntity<SellerTokenReissueResponse> reissueAccessToken(
             @CookieValue(name = REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
     ) {
-        SellerTokenReissueResult result = sellerAuthFacade.reissueAccessToken(refreshToken);
+        SellerTokenReissueResult result = sellerAuthUseCase.reissueAccessToken(refreshToken);
 
         return ResponseEntity
                 .ok()
@@ -121,7 +122,7 @@ public class SellerAuthController {
     public ResponseEntity<SellerMeResponse> getMyInfo(
             @AuthenticationPrincipal(expression = "user.userId") UUID userId
     ) {
-        SellerMeResult result = sellerAuthFacade.getMyInfo(userId);
+        SellerMeResult result = sellerAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(SellerMeResponse.from(result));
     }
@@ -129,7 +130,7 @@ public class SellerAuthController {
     @PutMapping("/me")
     public ResponseEntity<SellerMeResponse> updateMyInfo(
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
-            @Valid @RequestBody SellerMeUpdateRequest request
+            @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
         SellerMeResult result = sellerAuthFacade.updateMyInfo(request.toCommand(userId));
 
@@ -141,7 +142,7 @@ public class SellerAuthController {
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
-        sellerAuthFacade.logout(new SellerLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
+        sellerAuthUseCase.logout(new SellerLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
 
         return ResponseEntity
                 .noContent()

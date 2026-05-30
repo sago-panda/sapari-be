@@ -3,6 +3,9 @@ package com.sapari.common.web.security;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 import jakarta.servlet.ServletException;
@@ -24,6 +27,7 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import com.sapari.common.web.security.jwt.JwtProperties;
 import com.sapari.common.web.security.jwt.JwtSubject;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.global.time.TimeProvider;
 
 @DisplayName("JWT 인증 필터 테스트")
 class JwtAuthenticationFilterTest {
@@ -205,7 +209,11 @@ class JwtAuthenticationFilterTest {
     }
 
     private JwtTokenProvider createProvider() {
-        return new JwtTokenProvider(new JwtProperties(ISSUER, SECRET, 3600L, 1209600L));
+        return new JwtTokenProvider(new JwtProperties(ISSUER, SECRET, 3600L, 1209600L), timeProvider());
+    }
+
+    private TimeProvider timeProvider() {
+        return new TimeProvider(Clock.fixed(Instant.now(), ZoneOffset.UTC));
     }
 
     private UserDetailsService userDetailsService(UUID userId, String role, String status) {

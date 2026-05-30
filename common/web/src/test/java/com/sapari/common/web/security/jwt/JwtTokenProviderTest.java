@@ -1,15 +1,17 @@
 package com.sapari.common.web.security.jwt;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.UUID;
 
@@ -17,6 +19,8 @@ import javax.crypto.SecretKey;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import com.sapari.global.time.TimeProvider;
 
 @DisplayName("JWT 토큰 제공자 테스트")
 class JwtTokenProviderTest {
@@ -34,12 +38,13 @@ class JwtTokenProviderTest {
 
         // when
         String token = jwtTokenProvider.createAccessToken(subject);
+        JwtTokenClaims claims = jwtTokenProvider.parseToken(token);
 
         // then
-        assertTrue(jwtTokenProvider.validateToken(token));
-        assertEquals(userId, jwtTokenProvider.getUserId(token));
-        assertEquals("USER", jwtTokenProvider.getRole(token));
-        assertEquals(JwtTokenType.ACCESS, jwtTokenProvider.getTokenType(token));
+        assertEquals(userId, claims.userId());
+        assertEquals("USER", claims.role());
+        assertEquals(JwtTokenType.ACCESS, claims.tokenType());
+        assertTrue(claims.expiresAt().isAfter(Instant.now()));
     }
 
     @Test
@@ -51,10 +56,10 @@ class JwtTokenProviderTest {
 
         // when
         String token = jwtTokenProvider.createRefreshToken(subject);
+        JwtTokenClaims claims = jwtTokenProvider.parseToken(token);
 
         // then
-        assertTrue(jwtTokenProvider.validateToken(token));
-        assertEquals(JwtTokenType.REFRESH, jwtTokenProvider.getTokenType(token));
+        assertEquals(JwtTokenType.REFRESH, claims.tokenType());
     }
 
     @Test
@@ -66,28 +71,26 @@ class JwtTokenProviderTest {
 
         // when
         String token = jwtTokenProvider.createAccessToken(subject);
-        Duration remainingExpiration = jwtTokenProvider.getRemainingExpiration(token);
+        JwtTokenClaims claims = jwtTokenProvider.parseToken(token);
+        Duration remainingExpiration = Duration.between(timeProvider().now(), claims.expiresAt());
 
         // then
         assertTrue(remainingExpiration.compareTo(Duration.ZERO) > 0);
     }
 
     @Test
-    @DisplayName("형식이 잘못된 토큰은 유효하지 않다")
-    void validateTokenReturnsFalseWhenTokenIsInvalid() {
+    @DisplayName("형식이 잘못된 토큰은 파싱에 실패한다")
+    void parseTokenThrowsExceptionWhenTokenIsInvalid() {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(3600, 1209600);
 
-        // when
-        boolean valid = jwtTokenProvider.validateToken("invalid.jwt.token");
-
-        // then
-        assertFalse(valid);
+        // when, then
+        assertThrows(RuntimeException.class, () -> jwtTokenProvider.parseToken("invalid.jwt.token"));
     }
 
     @Test
-    @DisplayName("만료된 토큰은 유효하지 않다")
-    void validateTokenReturnsFalseWhenTokenIsExpired() throws InterruptedException {
+    @DisplayName("만료된 토큰은 파싱에 실패한다")
+    void parseTokenThrowsExceptionWhenTokenIsExpired() throws InterruptedException {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(1, 1209600);
         JwtSubject subject = new JwtSubject(UUID.randomUUID(), "USER");
@@ -95,16 +98,13 @@ class JwtTokenProviderTest {
 
         Thread.sleep(1100);
 
-        // when
-        boolean valid = jwtTokenProvider.validateToken(token);
-
-        // then
-        assertFalse(valid);
+        // when, then
+        assertThrows(RuntimeException.class, () -> jwtTokenProvider.parseToken(token));
     }
 
     @Test
-    @DisplayName("issuer가 다르면 유효하지 않다")
-    void validateTokenReturnsFalseWhenIssuerDoesNotMatch() {
+    @DisplayName("issuer가 다르면 파싱에 실패한다")
+    void parseTokenThrowsExceptionWhenIssuerDoesNotMatch() {
         // given
         JwtTokenProvider tokenIssuer = createProvider(3600, 1209600);
         JwtTokenProvider tokenValidator = new JwtTokenProvider(new JwtProperties(
@@ -112,42 +112,33 @@ class JwtTokenProviderTest {
                 SECRET,
                 3600L,
                 1209600L
-        ));
+        ), timeProvider());
         String token = tokenIssuer.createAccessToken(new JwtSubject(UUID.randomUUID(), "USER"));
 
-        // when
-        boolean valid = tokenValidator.validateToken(token);
-
-        // then
-        assertFalse(valid);
+        // when, then
+        assertThrows(RuntimeException.class, () -> tokenValidator.parseToken(token));
     }
 
     @Test
-    @DisplayName("subject가 없으면 유효하지 않다")
-    void validateTokenReturnsFalseWhenSubjectIsMissing() {
+    @DisplayName("subject가 없으면 파싱에 실패한다")
+    void parseTokenThrowsExceptionWhenSubjectIsMissing() {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(3600, 1209600);
         String token = createTokenWithoutSubject();
 
-        // when
-        boolean valid = jwtTokenProvider.validateToken(token);
-
-        // then
-        assertFalse(valid);
+        // when, then
+        assertThrows(RuntimeException.class, () -> jwtTokenProvider.parseToken(token));
     }
 
     @Test
-    @DisplayName("tokenType claim이 없으면 유효하지 않다")
-    void validateTokenReturnsFalseWhenTokenTypeIsMissing() {
+    @DisplayName("tokenType claim이 없으면 파싱에 실패한다")
+    void parseTokenThrowsExceptionWhenTokenTypeIsMissing() {
         // given
         JwtTokenProvider jwtTokenProvider = createProvider(3600, 1209600);
         String token = createTokenWithoutTokenType();
 
-        // when
-        boolean valid = jwtTokenProvider.validateToken(token);
-
-        // then
-        assertFalse(valid);
+        // when, then
+        assertThrows(RuntimeException.class, () -> jwtTokenProvider.parseToken(token));
     }
 
     @Test
@@ -172,7 +163,11 @@ class JwtTokenProviderTest {
                 SECRET,
                 accessTokenExpirationSeconds,
                 refreshTokenExpirationSeconds
-        ));
+        ), timeProvider());
+    }
+
+    private TimeProvider timeProvider() {
+        return new TimeProvider(Clock.fixed(Instant.now(), ZoneOffset.UTC));
     }
 
     private String createTokenWithoutSubject() {

@@ -5,7 +5,6 @@ import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.time.LocalDateTime;
 
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -17,14 +16,15 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 
 import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.global.time.TimeProvider;
 
 @Slf4j(topic = "JWT_AUTHENTICATION_ENTRY_POINT")
 @RequiredArgsConstructor
 public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
-    private static final String UNAUTHORIZED_MESSAGE = "인증이 필요합니다.";
 
     private final ObjectMapper objectMapper;
+    private final TimeProvider timeProvider;
 
     @Override
     public void commence(
@@ -36,8 +36,8 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
         ErrorResponse errorResponse = new ErrorResponse(
                 HttpStatus.UNAUTHORIZED.value(),
-                UNAUTHORIZED_MESSAGE,
-                LocalDateTime.now()
+                "인증이 필요합니다.",
+                timeProvider.now()
         );
 
         writeErrorResponse(response, HttpStatus.UNAUTHORIZED, errorResponse);

@@ -14,13 +14,13 @@ import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.repository.UserRepository;
 
 @Service
-@Transactional(readOnly = true)
 @RequiredArgsConstructor
 public class JwtUserDetailsService implements UserDetailsService {
 
     private final UserRepository userRepository;
 
     @Override
+    @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
         UUID userId = parseUserId(username);
 

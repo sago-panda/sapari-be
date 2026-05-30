@@ -9,6 +9,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -26,24 +27,26 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.sapari.apiapp.controller.member.dto.request.MemberMeUpdateRequest;
+import com.sapari.apiapp.controller.member.dto.request.MemberNicknameUpdateRequest;
 import com.sapari.apiapp.controller.member.dto.request.SocialSignupRequest;
 import com.sapari.apiapp.controller.member.dto.response.DuplicateCheckResponse;
 import com.sapari.apiapp.controller.member.dto.response.MemberMeResponse;
+import com.sapari.apiapp.controller.member.dto.response.SocialSignupInfoResponse;
 import com.sapari.apiapp.controller.member.dto.response.SocialLoginResponse;
 import com.sapari.apiapp.controller.member.dto.response.SocialSignupResponse;
 import com.sapari.apiapp.controller.member.dto.response.TokenReissueResponse;
 import com.sapari.member.command.MemberLogoutCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
-import com.sapari.member.port.MemberAuthFacade;
+import com.sapari.member.port.MemberAuthUseCase;
 import com.sapari.member.result.MemberMeResult;
 import com.sapari.member.result.MemberTokenReissueResult;
+import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
 
 @RestController
-@RequestMapping("/api")
+@RequestMapping("/api/v1/members/auth")
 @RequiredArgsConstructor
 @Validated
 public class MemberAuthController {
@@ -53,17 +56,17 @@ public class MemberAuthController {
     private static final String REFRESH_TOKEN_COOKIE_NAME = "refresh_token";
     private static final String BEARER_PREFIX = "Bearer ";
 
-    private final MemberAuthFacade memberAuthFacade;
+    private final MemberAuthUseCase memberAuthUseCase;
 
     @Value("${jwt.refresh-token-expiration-seconds}")
     private long refreshTokenExpirationSeconds;
 
-    @PostMapping("/auth/members/signup/social")
+    @PostMapping("/signup/social")
     public ResponseEntity<SocialSignupResponse> completeSocialSignup(
             @CookieValue(name = SIGNUP_SID_COOKIE_NAME, required = false) String signupSid,
             @Valid @RequestBody SocialSignupRequest request
     ) {
-        SocialSignupResult result = memberAuthFacade.completeSocialSignup(signupSid, request.toCommand());
+        SocialSignupResult result = memberAuthUseCase.completeSocialSignup(signupSid, request.toCommand());
 
         return ResponseEntity
                 .ok()
@@ -73,18 +76,30 @@ public class MemberAuthController {
                 .body(SocialSignupResponse.from(result));
     }
 
-    @GetMapping("/auth/members/signup/check-phone")
+    @GetMapping("/signup/social-info")
+    public ResponseEntity<SocialSignupInfoResponse> getSocialSignupInfo(
+            @CookieValue(name = SIGNUP_SID_COOKIE_NAME, required = false) String signupSid
+    ) {
+        SocialSignupInfoResult result = memberAuthUseCase.getSocialSignupInfo(signupSid);
+
+        return ResponseEntity
+                .ok()
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(SocialSignupInfoResponse.from(result));
+    }
+
+    @GetMapping("/signup/check-phone")
     public ResponseEntity<DuplicateCheckResponse> checkPhoneNumber(
             @RequestParam
-            @Pattern(regexp = "^\\d{11}$", message = "전화번호는 숫자 11자리여야 합니다.")
+            @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
             String phoneNumber
     ) {
         return ResponseEntity.ok(
-                new DuplicateCheckResponse(memberAuthFacade.isPhoneNumberDuplicated(phoneNumber))
+                new DuplicateCheckResponse(memberAuthUseCase.isPhoneNumberDuplicated(phoneNumber))
         );
     }
 
-    @GetMapping("/auth/members/signup/check-email")
+    @GetMapping("/signup/check-email")
     public ResponseEntity<DuplicateCheckResponse> checkEmail(
             @RequestParam
             @NotBlank(message = "이메일은 필수입니다.")
@@ -92,7 +107,7 @@ public class MemberAuthController {
             String email
     ) {
         return ResponseEntity.ok(
-                new DuplicateCheckResponse(memberAuthFacade.isEmailDuplicated(email))
+                new DuplicateCheckResponse(memberAuthUseCase.isEmailDuplicated(email))
         );
     }
 
@@ -100,7 +115,7 @@ public class MemberAuthController {
     public ResponseEntity<SocialLoginResponse> exchangeSocialLoginCode(
             @CookieValue(name = TEMPORARY_LOGIN_CODE_COOKIE_NAME, required = false) String temporaryLoginCode
     ) {
-        SocialLoginTokenResult result = memberAuthFacade.exchangeTemporaryLoginCode(temporaryLoginCode);
+        SocialLoginTokenResult result = memberAuthUseCase.exchangeTemporaryLoginCode(temporaryLoginCode);
 
         return ResponseEntity
                 .ok()
@@ -110,11 +125,11 @@ public class MemberAuthController {
                 .body(SocialLoginResponse.from(result));
     }
 
-    @PostMapping("/auth/token/reissue")
+    @PostMapping("/token/reissue")
     public ResponseEntity<TokenReissueResponse> reissueAccessToken(
             @CookieValue(name = REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
     ) {
-        MemberTokenReissueResult result = memberAuthFacade.reissueAccessToken(refreshToken);
+        MemberTokenReissueResult result = memberAuthUseCase.reissueAccessToken(refreshToken);
 
         return ResponseEntity
                 .ok()
@@ -122,12 +137,12 @@ public class MemberAuthController {
                 .body(TokenReissueResponse.from(result));
     }
 
-    @PostMapping("/auth/logout")
+    @PostMapping("/logout")
     public ResponseEntity<Void> logout(
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
-        memberAuthFacade.logout(new MemberLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
+        memberAuthUseCase.logout(new MemberLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
 
         return ResponseEntity
                 .noContent()

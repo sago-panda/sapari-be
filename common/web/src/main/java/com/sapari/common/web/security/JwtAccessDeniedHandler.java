@@ -5,7 +5,6 @@ import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.time.LocalDateTime;
 
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -17,14 +16,14 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.web.access.AccessDeniedHandler;
 
 import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.global.time.TimeProvider;
 
 @Slf4j(topic = "JWT_ACCESS_DENIED_HANDLER")
 @RequiredArgsConstructor
 public class JwtAccessDeniedHandler implements AccessDeniedHandler {
 
-    private static final String FORBIDDEN_MESSAGE = "접근 권한이 없습니다.";
-
     private final ObjectMapper objectMapper;
+    private final TimeProvider timeProvider;
 
     @Override
     public void handle(
@@ -36,8 +35,8 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
 
         ErrorResponse errorResponse = new ErrorResponse(
                 HttpStatus.FORBIDDEN.value(),
-                FORBIDDEN_MESSAGE,
-                LocalDateTime.now()
+                "접근 권한이 없습니다.",
+                timeProvider.now()
         );
 
         writeErrorResponse(response, HttpStatus.FORBIDDEN, errorResponse);

@@ -7,6 +7,9 @@ import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.ServletException;
 
 import java.io.IOException;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,6 +18,8 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.access.AccessDeniedException;
 
+import com.sapari.global.time.TimeProvider;
+
 @DisplayName("JWT 인가 실패 핸들러 테스트")
 class JwtAccessDeniedHandlerTest {
 
@@ -22,7 +27,7 @@ class JwtAccessDeniedHandlerTest {
     @DisplayName("권한 부족 시 403 JSON 응답을 반환한다")
     void handleReturnsForbiddenJsonResponse() throws ServletException, IOException {
         // given
-        JwtAccessDeniedHandler accessDeniedHandler = new JwtAccessDeniedHandler(new ObjectMapper());
+        JwtAccessDeniedHandler accessDeniedHandler = new JwtAccessDeniedHandler(new ObjectMapper(), timeProvider());
         MockHttpServletRequest request = new MockHttpServletRequest();
         MockHttpServletResponse response = new MockHttpServletResponse();
 
@@ -39,5 +44,9 @@ class JwtAccessDeniedHandlerTest {
         assertThat(response.getCharacterEncoding()).isEqualTo("UTF-8");
         assertThat(response.getContentAsString()).contains("\"status\":403");
         assertThat(response.getContentAsString()).contains("접근 권한이 없습니다.");
+    }
+
+    private TimeProvider timeProvider() {
+        return new TimeProvider(Clock.fixed(Instant.now(), ZoneOffset.UTC));
     }
 }
