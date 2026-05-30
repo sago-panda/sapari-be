@@ -8,6 +8,7 @@ public record SocialSignupCommand(
         String nickname,
         String name,
         LocalDate birthDate,
+        String gender,
         Boolean marketingAgreed
 ) {
 

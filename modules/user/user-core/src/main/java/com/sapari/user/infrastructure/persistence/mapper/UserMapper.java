@@ -32,6 +32,7 @@ public class UserMapper {
                 user.nickname(),
                 user.name(),
                 user.birthDate(),
+                user.gender(),
                 user.phoneNumber(),
                 user.email(),
                 user.marketingAgreed(),
@@ -46,19 +47,22 @@ public class UserMapper {
                 user.phoneNumber(),
                 user.profileImageKey(),
                 user.email(),
-                user.marketingAgreed()
+                user.marketingAgreed(),
+                user.nicknameChangedAt()
         );
         return member;
     }
 
     public static User toDomain(UserEntity entity) {
         return User.builder()
-                .userId(entity.getUserId())
+                .userId(entity.getId())
                 .role(entity.getRole())
                 .status(entity.getStatus())
                 .nickname(entity.getNickname())
+                .nicknameChangedAt(entity.getNicknameChangedAt())
                 .name(entity.getName())
                 .birthDate(entity.getBirthDate())
+                .gender(entity.getGender())
                 .phoneNumber(entity.getPhoneNumber())
                 .profileImageKey(entity.getProfileImageKey())
                 .email(entity.getEmail())

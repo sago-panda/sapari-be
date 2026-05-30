@@ -3,12 +3,14 @@ package com.sapari.user.infrastructure.persistence.entity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Instant;
 import java.time.LocalDate;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.sapari.user.domain.model.ProviderType;
+import com.sapari.user.domain.model.UserGender;
 import com.sapari.user.domain.model.UserGrade;
 import com.sapari.user.domain.model.UserRole;
 import com.sapari.user.domain.model.UserStatus;
@@ -20,18 +22,23 @@ class UserEntityTest {
     void createSocialMember() {
         // given
         LocalDate birthDate = LocalDate.of(1995, 5, 15);
+        Instant providerCreatedAt = providerCreatedAt();
+        Instant nicknameChangedAt = nicknameChangedAt();
 
         // when
         UserEntity user = UserEntity.createSocialMember(
                 "tester",
                 "테스터",
                 birthDate,
+                UserGender.FEMALE,
                 "01012345678",
                 "tester@example.com",
                 true,
                 ProviderType.KAKAO,
                 "provider-id",
-                "provider@example.com"
+                "provider@example.com",
+                providerCreatedAt,
+                nicknameChangedAt
         );
 
         // then
@@ -40,6 +47,7 @@ class UserEntityTest {
         assertThat(user.getNickname()).isEqualTo("tester");
         assertThat(user.getName()).isEqualTo("테스터");
         assertThat(user.getBirthDate()).isEqualTo(birthDate);
+        assertThat(user.getGender()).isEqualTo(UserGender.FEMALE);
         assertThat(user.getPhoneNumber()).isEqualTo("01012345678");
         assertThat(user.getEmail()).isEqualTo("tester@example.com");
         assertThat(user.getGrade()).isEqualTo(UserGrade.BRONZE);
@@ -48,7 +56,8 @@ class UserEntityTest {
         assertThat(user.getProvider()).isEqualTo(ProviderType.KAKAO);
         assertThat(user.getProviderId()).isEqualTo("provider-id");
         assertThat(user.getProviderEmail()).isEqualTo("provider@example.com");
-        assertThat(user.getProviderCreatedAt()).isNotNull();
+        assertThat(user.getProviderCreatedAt()).isEqualTo(providerCreatedAt);
+        assertThat(user.getNicknameChangedAt()).isEqualTo(nicknameChangedAt);
     }
 
     @Test
@@ -64,7 +73,8 @@ class UserEntityTest {
                 birthDate,
                 "01087654321",
                 "seller@example.com",
-                null
+                null,
+                nicknameChangedAt()
         );
 
         // then
@@ -88,14 +98,18 @@ class UserEntityTest {
                 "tester",
                 "테스터",
                 LocalDate.of(1995, 5, 15),
+                UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
                 false,
                 ProviderType.NAVER,
                 "provider-id",
-                "provider@example.com"
+                "provider@example.com",
+                providerCreatedAt(),
+                nicknameChangedAt()
         );
         LocalDate changedBirthDate = LocalDate.of(1996, 6, 16);
+        Instant changedAt = Instant.parse("2025-02-01T00:00:00Z");
 
         // when
         user.updateProfile(
@@ -105,7 +119,8 @@ class UserEntityTest {
                 "01011112222",
                 "profile/image/key",
                 "updated@example.com",
-                true
+                true,
+                changedAt
         );
 
         // then
@@ -116,6 +131,7 @@ class UserEntityTest {
         assertThat(user.getProfileImageKey()).isEqualTo("profile/image/key");
         assertThat(user.getEmail()).isEqualTo("updated@example.com");
         assertThat(user.getMarketingAgreed()).isTrue();
+        assertThat(user.getNicknameChangedAt()).isEqualTo(changedAt);
     }
 
     @Test
@@ -129,12 +145,23 @@ class UserEntityTest {
                 blankNickname,
                 "테스터",
                 LocalDate.of(1995, 5, 15),
+                UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
                 false,
                 ProviderType.KAKAO,
                 "provider-id",
-                "provider@example.com"
+                "provider@example.com",
+                providerCreatedAt(),
+                nicknameChangedAt()
         )).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private Instant providerCreatedAt() {
+        return Instant.parse("2025-01-01T00:00:00Z");
+    }
+
+    private Instant nicknameChangedAt() {
+        return Instant.parse("2025-01-01T00:00:00Z");
     }
 }

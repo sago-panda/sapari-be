@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,7 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
 import com.sapari.user.domain.model.ProviderType;
 import com.sapari.user.domain.model.User;
+import com.sapari.user.domain.model.UserGender;
 import com.sapari.user.domain.repository.UserRepository;
 
 @DisplayName("JWT 사용자 조회 서비스 테스트")
@@ -78,12 +80,15 @@ class JwtUserDetailsServiceTest {
                 "tester",
                 "테스터",
                 LocalDate.of(1995, 5, 15),
+                UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
                 false,
                 ProviderType.KAKAO,
                 "provider-id",
-                "provider@example.com"
+                "provider@example.com",
+                Instant.parse("2025-01-01T00:00:00Z"),
+                Instant.parse("2025-01-01T00:00:00Z")
         ).toBuilder()
                 .userId(userId)
                 .build();

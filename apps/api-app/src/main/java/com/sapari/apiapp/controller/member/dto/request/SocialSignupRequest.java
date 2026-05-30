@@ -12,7 +12,7 @@ import com.sapari.member.command.SocialSignupCommand;
 
 public record SocialSignupRequest(
         @NotBlank(message = "전화번호는 필수입니다.")
-        @Pattern(regexp = "^\\d{11}$", message = "전화번호는 숫자 11자리여야 합니다.")
+        @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
         String phoneNumber,
 
         @NotBlank(message = "이메일은 필수입니다.")
@@ -30,6 +30,10 @@ public record SocialSignupRequest(
         @NotNull(message = "생년월일은 필수입니다.")
         LocalDate birthDate,
 
+        @NotNull(message = "성별은 필수입니다.")
+        @Pattern(regexp = "MALE|FEMALE", message = "성별 형식이 올바르지 않습니다.")
+        String gender,
+
         Boolean marketingAgreed
 ) {
 
@@ -40,6 +44,7 @@ public record SocialSignupRequest(
                 nickname,
                 name,
                 birthDate,
+                gender,
                 Boolean.TRUE.equals(marketingAgreed)
         );
     }

@@ -4,7 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,6 +19,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.web.security.jwt.JwtProperties;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberOAuthCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
@@ -27,6 +31,7 @@ import com.sapari.member.result.MemberOAuthResultType;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.user.domain.model.ProviderType;
 import com.sapari.user.domain.model.User;
+import com.sapari.user.domain.model.UserGender;
 import com.sapari.user.domain.model.UserRole;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
@@ -42,7 +47,8 @@ class MemberOAuthServiceTest {
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository =
             mock(SocialLoginCodeRedisRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("member-oauth-test", SECRET, 3600L, 1209600L)
+            new JwtProperties("member-oauth-test", SECRET, 3600L, 1209600L),
+            timeProvider()
     );
     private final RefreshTokenRedisRepository refreshTokenRedisRepository =
             mock(RefreshTokenRedisRepository.class);
@@ -113,7 +119,11 @@ class MemberOAuthServiceTest {
         assertThat(signupInfo.providerId()).isEqualTo("naver-id");
         assertThat(signupInfo.providerEmail()).isEqualTo("member@naver.com");
         assertThat(signupInfo.name()).isEqualTo("member-name");
+        assertThat(signupInfo.nickname()).isEqualTo("member-nickname");
+        assertThat(signupInfo.phoneNumber()).isEqualTo("01012345678");
         assertThat(signupInfo.profileImageUrl()).isEqualTo("https://image.example/naver.png");
+        assertThat(signupInfo.gender()).isEqualTo(UserGender.MALE);
+        assertThat(signupInfo.birthDate()).isEqualTo(LocalDate.of(2000, 1, 1));
         verifyNoInteractions(refreshTokenRedisRepository, socialLoginCodeRedisRepository);
     }
 
@@ -125,7 +135,11 @@ class MemberOAuthServiceTest {
                 "google-id",
                 "member@gmail.com",
                 "member-name",
-                null
+                "member-nickname",
+                "01012345678",
+                null,
+                UserGender.MALE.name(),
+                LocalDate.of(2000, 1, 1)
         );
 
         assertThatThrownBy(() -> memberOAuthService.handleOAuthSuccess(command))
@@ -153,8 +167,16 @@ class MemberOAuthServiceTest {
                 "naver-id",
                 "member@naver.com",
                 "member-name",
-                "https://image.example/naver.png"
+                "member-nickname",
+                "01012345678",
+                "https://image.example/naver.png",
+                UserGender.MALE.name(),
+                LocalDate.of(2000, 1, 1)
         );
+    }
+
+    private TimeProvider timeProvider() {
+        return new TimeProvider(Clock.fixed(Instant.now(), ZoneOffset.UTC));
     }
 
     private User createMember(UUID userId) {
@@ -162,15 +184,22 @@ class MemberOAuthServiceTest {
                 "member",
                 "구매자",
                 LocalDate.of(2000, 1, 1),
+                UserGender.MALE,
                 "01012345678",
                 "member@example.com",
                 true,
                 ProviderType.NAVER,
                 "naver-id",
-                "member@naver.com"
+                "member@naver.com",
+                providerCreatedAt(),
+                providerCreatedAt()
         ).toBuilder()
                 .userId(userId)
                 .build();
+    }
+
+    private Instant providerCreatedAt() {
+        return Instant.parse("2025-01-01T00:00:00Z");
     }
 
     private User createSeller(UUID userId) {
@@ -180,7 +209,8 @@ class MemberOAuthServiceTest {
                 LocalDate.of(1990, 1, 1),
                 "01099998888",
                 "seller@example.com",
-                true
+                true,
+                providerCreatedAt()
         ).toBuilder()
                 .userId(userId)
                 .build();

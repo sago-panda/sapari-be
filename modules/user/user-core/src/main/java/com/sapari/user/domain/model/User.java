@@ -16,6 +16,7 @@ public record User(
         String nickname,
         String name,
         LocalDate birthDate,
+        UserGender gender,
         String phoneNumber,
         String profileImageKey,
         String email,
@@ -36,6 +37,7 @@ public record User(
             String nickname,
             String name,
             LocalDate birthDate,
+            UserGender gender,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
@@ -51,6 +53,7 @@ public record User(
                 .nickname(nickname)
                 .name(name)
                 .birthDate(birthDate)
+                .gender(gender)
                 .phoneNumber(phoneNumber)
                 .email(email)
                 .grade(UserGrade.BRONZE)
@@ -59,7 +62,7 @@ public record User(
                 .provider(provider)
                 .providerId(providerId)
                 .providerEmail(providerEmail)
-                .providerCreatedAt(LocalDateTime.now())
+                .providerCreatedAt(providerCreatedAt)
                 .build();
     }
 

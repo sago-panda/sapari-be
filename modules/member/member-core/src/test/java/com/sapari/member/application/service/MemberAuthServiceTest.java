@@ -6,14 +6,18 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -31,10 +35,12 @@ import com.sapari.member.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.member.result.MemberMeResult;
 import com.sapari.member.result.MemberTokenReissueResult;
+import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
 import com.sapari.user.domain.model.ProviderType;
 import com.sapari.user.domain.model.User;
+import com.sapari.user.domain.model.UserGender;
 import com.sapari.user.domain.model.UserRole;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.infrastructure.security.redis.AccessTokenBlacklistRedisRepository;
@@ -47,6 +53,7 @@ class MemberAuthServiceTest {
     private static final String SIGNUP_SID = "signup-session-id";
     private static final String TEMPORARY_LOGIN_CODE = "temporary-login-code";
     private static final String EMAIL = "member@example.com";
+    private static final Instant NOW = Instant.now();
 
     private final SocialSignupRedisRepository socialSignupRedisRepository =
             mock(SocialSignupRedisRepository.class);
@@ -54,7 +61,8 @@ class MemberAuthServiceTest {
             mock(SocialLoginCodeRedisRepository.class);
     private final UserRepository userRepository = mock(UserRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("member-test", SECRET, 3600L, 1209600L)
+            new JwtProperties("member-test", SECRET, 3600L, 1209600L),
+            timeProvider()
     );
     private final RefreshTokenRedisRepository refreshTokenRedisRepository =
             mock(RefreshTokenRedisRepository.class);
@@ -68,6 +76,7 @@ class MemberAuthServiceTest {
             jwtTokenProvider,
             refreshTokenRedisRepository,
             accessTokenBlacklistRedisRepository,
+            timeProvider(),
             objectMapper
     );
 
@@ -98,6 +107,8 @@ class MemberAuthServiceTest {
         assertThat(userCaptor.getValue().provider()).isEqualTo(ProviderType.NAVER);
         assertThat(userCaptor.getValue().providerId()).isEqualTo("naver-id");
         assertThat(userCaptor.getValue().email()).isEqualTo(EMAIL);
+        assertThat(userCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
+        assertThat(userCaptor.getValue().nicknameChangedAt()).isEqualTo(NOW);
 
         verify(socialSignupRedisRepository).delete(SIGNUP_SID);
         verify(refreshTokenRedisRepository).save(userId, result.refreshToken());
@@ -291,6 +302,7 @@ class MemberAuthServiceTest {
                 "member",
                 "구매자",
                 LocalDate.of(2000, 1, 1),
+                UserGender.FEMALE.name(),
                 true
         );
     }

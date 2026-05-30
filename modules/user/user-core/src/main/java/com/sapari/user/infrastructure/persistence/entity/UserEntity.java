@@ -17,6 +17,7 @@ import org.springframework.util.Assert;
 
 import com.sapari.storage.db.entity.BaseUuidEntity;
 import com.sapari.user.domain.model.ProviderType;
+import com.sapari.user.domain.model.UserGender;
 import com.sapari.user.domain.model.UserGrade;
 import com.sapari.user.domain.model.UserRole;
 import com.sapari.user.domain.model.UserStatus;
@@ -35,13 +36,20 @@ public class UserEntity extends BaseUuidEntity {
     @Column(nullable = false, length = 15)
     private UserStatus status = UserStatus.ACTIVE;
 
-    @Column(nullable = false, length = 10)
+    @Column(nullable = false, unique = true, length = 10)
     private String nickname;
+
+    @Column(nullable = false)
+    private Instant nicknameChangedAt;
 
     @Column(length = 20)
     private String name;
 
     private LocalDate birthDate;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 10)
+    private UserGender gender;
 
     @Column(nullable = false, unique = true, length = 11)
     private String phoneNumber;
@@ -84,6 +92,7 @@ public class UserEntity extends BaseUuidEntity {
             String nickname,
             String name,
             LocalDate birthDate,
+            UserGender gender,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
@@ -94,6 +103,7 @@ public class UserEntity extends BaseUuidEntity {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
         Assert.notNull(birthDate, "birthDate은 필수입니다.");
+        Assert.notNull(gender, "gender은 필수입니다.");
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
 
@@ -104,6 +114,7 @@ public class UserEntity extends BaseUuidEntity {
         user.nickname = nickname;
         user.name = name;
         user.birthDate = birthDate;
+        user.gender = gender;
         user.phoneNumber = phoneNumber;
         user.email = email;
         user.grade = UserGrade.BRONZE;

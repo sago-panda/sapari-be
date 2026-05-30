@@ -32,6 +32,7 @@ import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
 import com.sapari.user.domain.model.User;
+import com.sapari.user.domain.model.UserGender;
 import com.sapari.user.domain.model.UserRole;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.infrastructure.security.redis.AccessTokenBlacklistRedisRepository;
@@ -70,6 +71,12 @@ public class MemberAuthService implements MemberAuthFacade {
         } catch (DataIntegrityViolationException e) {
             throw new MemberException(MemberErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SocialSignupInfoResult getSocialSignupInfo(String signupSid) {
+        return toSocialSignupInfoResult(findSocialSignupInfo(signupSid));
     }
 
     /**
@@ -176,6 +183,7 @@ public class MemberAuthService implements MemberAuthFacade {
                 command.nickname(),
                 command.name(),
                 command.birthDate(),
+                UserGender.valueOf(command.gender()),
                 command.phoneNumber(),
                 command.email(),
                 command.isMarketingAgreed(),
@@ -295,6 +303,7 @@ public class MemberAuthService implements MemberAuthFacade {
                 member.nickname(),
                 member.name(),
                 member.birthDate(),
+                member.gender() == null ? null : member.gender().name(),
                 member.phoneNumber(),
                 member.profileImageKey(),
                 member.email(),
@@ -304,6 +313,18 @@ public class MemberAuthService implements MemberAuthFacade {
                 member.pointBalance(),
                 member.marketingAgreed(),
                 member.provider() == null ? null : member.provider().name()
+        );
+    }
+
+    private SocialSignupInfoResult toSocialSignupInfoResult(SocialSignupInfo socialSignupInfo) {
+        return new SocialSignupInfoResult(
+                socialSignupInfo.phoneNumber(),
+                socialSignupInfo.name(),
+                socialSignupInfo.providerEmail(),
+                socialSignupInfo.nickname(),
+                socialSignupInfo.profileImageUrl(),
+                socialSignupInfo.gender() == null ? null : socialSignupInfo.gender().name(),
+                socialSignupInfo.birthDate()
         );
     }
 }

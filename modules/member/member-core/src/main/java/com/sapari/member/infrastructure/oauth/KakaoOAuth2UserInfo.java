@@ -1,9 +1,11 @@
 package com.sapari.member.infrastructure.oauth;
 
+import java.time.LocalDate;
 import java.util.Collections;
 import java.util.Map;
 
 import com.sapari.user.domain.model.ProviderType;
+import com.sapari.user.domain.model.UserGender;
 
 public class KakaoOAuth2UserInfo implements OAuth2UserInfo {
 
@@ -27,22 +29,49 @@ public class KakaoOAuth2UserInfo implements OAuth2UserInfo {
 
     @Override
     public String providerId() {
-        return getString(attributes, "id");
+        return OAuth2ProfileParser.getString(attributes, "id");
     }
 
     @Override
     public String providerEmail() {
-        return getString(kakaoAccount, "email");
+        return OAuth2ProfileParser.getString(kakaoAccount, "email");
     }
 
     @Override
     public String name() {
-        return getString(profile, "nickname");
+        return OAuth2ProfileParser.getString(kakaoAccount, "name");
+    }
+
+    @Override
+    public String nickname() {
+        return OAuth2ProfileParser.getString(profile, "nickname");
+    }
+
+    @Override
+    public String phoneNumber() {
+        return OAuth2ProfileParser.normalizePhoneNumber(
+                OAuth2ProfileParser.getString(kakaoAccount, "phone_number")
+        );
     }
 
     @Override
     public String profileImageUrl() {
-        return getString(profile, "profile_image_url");
+        return OAuth2ProfileParser.getString(profile, "profile_image_url");
+    }
+
+    @Override
+    public UserGender gender() {
+        return OAuth2ProfileParser.parseGender(
+                OAuth2ProfileParser.getString(kakaoAccount, "gender")
+        );
+    }
+
+    @Override
+    public LocalDate birthDate() {
+        return OAuth2ProfileParser.parseBirthDate(
+                OAuth2ProfileParser.getString(kakaoAccount, "birthyear"),
+                OAuth2ProfileParser.getString(kakaoAccount, "birthday")
+        );
     }
 
     @Override
@@ -61,8 +90,4 @@ public class KakaoOAuth2UserInfo implements OAuth2UserInfo {
         return Collections.emptyMap();
     }
 
-    private String getString(Map<String, Object> source, String key) {
-        Object value = source.get(key);
-        return value == null ? null : String.valueOf(value);
-    }
 }
