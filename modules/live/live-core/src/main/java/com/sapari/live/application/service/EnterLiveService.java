@@ -11,19 +11,19 @@ import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
-import com.sapari.live.port.EnterLiveFacade;
+import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.view.EnterLiveResult;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class EnterLiveService implements EnterLiveFacade {
+public class EnterLiveService implements EnterLiveUseCase {
 
     private final LiveRoomRepository liveRoomRepository;
 
     @Override
     @Transactional(readOnly = true)
-    public EnterLiveResult execute(EnterLiveCommand command) {
+    public EnterLiveResult enter(EnterLiveCommand command) {
         LiveRoom room = liveRoomRepository.findById(command.roomId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 

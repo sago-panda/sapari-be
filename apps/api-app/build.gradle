@@ -18,6 +18,8 @@ dependencies {
     implementation 'org.bouncycastle:bcprov-jdk18on:1.84'
 
     runtimeOnly("org.postgresql:postgresql")
+
+    testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

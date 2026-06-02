@@ -19,14 +19,18 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Instant;
+
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 
 @ExtendWith(MockitoExtension.class)
@@ -37,6 +41,9 @@ public class EndLiveServiceTest {
 
     @Mock
     private LiveMediaManager liveMediaManager;
+
+    @Mock
+    private TimeProvider timeProvider;
 
     @InjectMocks
     private EndLiveService endLiveService;
@@ -61,18 +68,22 @@ public class EndLiveServiceTest {
         // given
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
 
+        LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
-                .set("status", fixtureMonkey.giveMeOne(LiveStatus.Live.class))
-                .setNotNull("streamInfo")
+                .set("status", liveStatus)
+                .set("streamInfo", streamInfo)
                 .sample();
 
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
                 .willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(Instant.now());
 
         // when
-        endLiveService.execute(command);
+        endLiveService.end(command);
 
         // then
         then(liveMediaManager).should(times(1)).stopHlsEgress(roomId, mockRoom.streamInfo().egressId());
@@ -98,7 +109,7 @@ public class EndLiveServiceTest {
                 .willReturn(Optional.empty());
 
         // when & then
-        assertThatThrownBy(() -> endLiveService.execute(command))
+        assertThatThrownBy(() -> endLiveService.end(command))
                 .isInstanceOf(LiveNotFoundException.class)
                 .hasMessageContaining(command.roomId().toString());
 
@@ -112,24 +123,20 @@ public class EndLiveServiceTest {
     void endLive_Fail_NotLiveStatus() {
         // given
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
-        LiveStatus nonLiveStatus = fixtureMonkey.giveMeBuilder(LiveStatus.class)
-                .setPostCondition(status -> !(status instanceof LiveStatus.Live || status instanceof LiveStatus.Suspended))
-                .sample();
-
-        // 생성된 무작위 nonLiveStatus를 LiveRoom에 주입
-        LiveRoom notLiveRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
-                .set("id", command.roomId())
-                .set("sellerId", command.sellerId())
-                .set("status", nonLiveStatus)
-                .sample();
+        LiveRoom notLiveRoom = LiveRoom.builder()
+                .id(command.roomId())
+                .sellerId(command.sellerId())
+                .status(new LiveStatus.Scheduled(Instant.now()))
+                .title("테스트 방송")
+                .build();
 
         given(liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId()))
                 .willReturn(Optional.of(notLiveRoom));
 
         // when & then
-        assertThatThrownBy(() -> endLiveService.execute(command))
+        assertThatThrownBy(() -> endLiveService.end(command))
                 .isInstanceOf(InvalidLiveStateException.class)
-                .hasMessageContaining("방송 중인 방만 종료 가능합니다");
+                .hasMessageContaining(command.roomId().toString());
 
         // 검증
         then(liveMediaManager).shouldHaveNoInteractions();
