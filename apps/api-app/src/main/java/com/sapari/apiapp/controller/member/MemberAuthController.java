@@ -13,7 +13,6 @@ import jakarta.validation.constraints.Size;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,6 +34,7 @@ import com.sapari.apiapp.controller.member.dto.response.SocialSignupInfoResponse
 import com.sapari.apiapp.controller.member.dto.response.SocialLoginResponse;
 import com.sapari.apiapp.controller.member.dto.response.SocialSignupResponse;
 import com.sapari.apiapp.controller.member.dto.response.TokenReissueResponse;
+import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.member.command.MemberLogoutCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
@@ -158,7 +158,7 @@ public class MemberAuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
         memberAuthUseCase.logout(new MemberLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
@@ -173,7 +173,7 @@ public class MemberAuthController {
 
     @GetMapping("/me")
     public ResponseEntity<MemberMeResponse> getMyInfo(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId
+            @CurrentUserId UUID userId
     ) {
         MemberMeResult result = memberAuthUseCase.getMyInfo(userId);
 
@@ -182,7 +182,7 @@ public class MemberAuthController {
 
     @GetMapping("/me/check-nickname")
     public ResponseEntity<DuplicateCheckResponse> checkMyNickname(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @CurrentUserId UUID userId,
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
             @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
@@ -195,7 +195,7 @@ public class MemberAuthController {
 
     @PutMapping("/me/nickname")
     public ResponseEntity<MemberMeResponse> updateNickname(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @CurrentUserId UUID userId,
             @Valid @RequestBody MemberNicknameUpdateRequest request
     ) {
         MemberNicknameUpdateResult result = memberAuthUseCase.updateNickname(request.toCommand(userId));

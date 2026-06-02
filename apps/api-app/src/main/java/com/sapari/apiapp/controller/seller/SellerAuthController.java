@@ -14,7 +14,6 @@ import jakarta.validation.constraints.Size;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,6 +35,7 @@ import com.sapari.apiapp.controller.seller.dto.response.SellerLoginResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerMeResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerSignupResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerTokenReissueResponse;
+import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
@@ -133,7 +133,7 @@ public class SellerAuthController {
 
     @GetMapping("/me")
     public ResponseEntity<SellerMeResponse> getMyInfo(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId
+            @CurrentUserId UUID userId
     ) {
         SellerMeResult result = sellerAuthUseCase.getMyInfo(userId);
 
@@ -142,7 +142,7 @@ public class SellerAuthController {
 
     @GetMapping("/me/check-nickname")
     public ResponseEntity<DuplicateCheckResponse> checkMyNickname(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @CurrentUserId UUID userId,
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
             @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
@@ -155,7 +155,7 @@ public class SellerAuthController {
 
     @PutMapping("/me/nickname")
     public ResponseEntity<SellerMeResponse> updateNickname(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @CurrentUserId UUID userId,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
         SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(request.toCommand(userId));
@@ -170,7 +170,7 @@ public class SellerAuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(
-            @AuthenticationPrincipal(expression = "user.userId") UUID userId,
+            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
         sellerAuthUseCase.logout(new SellerLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
