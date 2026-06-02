@@ -8,7 +8,6 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -93,7 +92,7 @@ public class MemberAuthController {
     @GetMapping("/signup/check-phone")
     public ResponseEntity<DuplicateCheckResponse> checkPhoneNumber(
             @RequestParam
-            @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
+            @Pattern(regexp = "^010\\d{8}$", message = "전화번호는 010으로 시작하는 숫자 11자리여야 합니다.")
             String phoneNumber
     ) {
         return ResponseEntity.ok(
@@ -117,7 +116,10 @@ public class MemberAuthController {
     public ResponseEntity<DuplicateCheckResponse> checkNickname(
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
-            @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
+            @Pattern(
+                    regexp = "^[가-힣A-Za-z0-9]{2,10}$",
+                    message = "닉네임은 2~10자의 한글, 영문, 숫자만 사용할 수 있습니다."
+            )
             String nickname
     ) {
         return ResponseEntity.ok(
@@ -185,7 +187,10 @@ public class MemberAuthController {
             @AuthenticationPrincipal(expression = "user.userId") UUID userId,
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
-            @Size(max = 10, message = "닉네임은 10자 이하여야 합니다.")
+            @Pattern(
+                    regexp = "^[가-힣A-Za-z0-9]{2,10}$",
+                    message = "닉네임은 2~10자의 한글, 영문, 숫자만 사용할 수 있습니다."
+            )
             String nickname
     ) {
         return ResponseEntity.ok(
