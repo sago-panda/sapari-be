@@ -13,12 +13,12 @@ import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
-import com.sapari.live.port.EndLiveFacade;
+import com.sapari.live.port.EndLiveUseCase;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class EndLiveService implements EndLiveFacade {
+public class EndLiveService implements EndLiveUseCase {
 
     private final LiveRoomRepository liveRoomRepository;
     private final LiveMediaManager liveMediaManager;
@@ -26,16 +26,19 @@ public class EndLiveService implements EndLiveFacade {
 
     @Override
     @Transactional
-    public void execute(EndLiveCommand command){
+    public void end(EndLiveCommand command){
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
-        if(!room.canEndLive()){
-            throw new InvalidLiveStateException("방송 중인 방만 종료 가능합니다.");
+        // 외부 호출 전 상태 사전 검증
+        if (!room.canEndLive()) {
+            throw new InvalidLiveStateException(room.id().toString());
         }
 
-        liveMediaManager.stopHlsEgress(command.roomId(), room.egressId());
-        liveMediaManager.closeRoom(room.sfuRoomId());
+        if (room.streamInfo() != null) {
+            liveMediaManager.stopHlsEgress(command.roomId(), room.egressId());
+            liveMediaManager.closeRoom(room.sfuRoomId());
+        }
 
         LiveRoom endedRoom = room.endLive(timeProvider.now());
 

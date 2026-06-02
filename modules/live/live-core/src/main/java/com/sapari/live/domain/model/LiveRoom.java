@@ -5,6 +5,7 @@ import lombok.Builder;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.EnterLiveResult;
@@ -16,6 +17,8 @@ public record LiveRoom(
         UUID sellerId,
         String title,
         String description,
+        String sellerNickname,
+        String thumbnailUrl,
         StreamInfo streamInfo,
         LiveStatus status,
         Instant scheduledAt,
@@ -26,13 +29,29 @@ public record LiveRoom(
             UUID sellerId,
             String title,
             String description,
+            String sellerNickname,
+            String thumbnailUrl,
             Instant scheduledAt,
             Instant now
     ){
+        if (sellerId == null) {
+            throw new IllegalArgumentException("sellerId는 필수입니다.");
+        }
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("title은 필수입니다.");
+        }
+        if (sellerNickname == null || sellerNickname.isBlank()) {
+            throw new IllegalArgumentException("sellerNickname은 필수입니다.");
+        }
+        if (scheduledAt == null) {
+            throw new IllegalArgumentException("scheduledAt은 필수입니다.");
+        }
         return builder()
                 .sellerId(sellerId)
                 .title(title)
                 .description(description)
+                .sellerNickname(sellerNickname)
+                .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
                 .scheduledAt(scheduledAt)
                 .createdAt(now)
@@ -43,20 +62,23 @@ public record LiveRoom(
     public LiveRoom withSfuRoomId(String sfuRoomId) {
         //streamInfo 정보 없는 경우 sfuRoomId만 추가, 그 외에는 기존 값 복사하고 sfuRoomId만 교체
         StreamInfo updated = (this.streamInfo == null) ?
-                new StreamInfo(sfuRoomId, null, null) : new StreamInfo(sfuRoomId, this.streamInfo.egressId(), this.streamInfo.hlsUrl());
+                StreamInfo.ofSfuRoomId(sfuRoomId) : StreamInfo.of(sfuRoomId, this.streamInfo.egressId(), this.streamInfo.hlsUrl());
         return toBuilder()
                 .streamInfo(updated)
                 .build();
     }
 
     public LiveRoom startLive(StreamInfo newStreamInfo, Instant now){
+        if(!canStartLive()){
+            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+
         var nextStatus = new LiveStatus.Live(
                 now,
                 newStreamInfo.sfuRoomId(),
                 newStreamInfo.egressId(),
                 newStreamInfo.hlsUrl()
         );
-
         return toBuilder()
                 .streamInfo(newStreamInfo)
                 .status(nextStatus)
@@ -65,13 +87,18 @@ public record LiveRoom(
     }
 
     public LiveRoom endLive(Instant now){
-        //status 변경
-        LiveStatus.Live live = (LiveStatus.Live) this.status;
-        var endedStatus = new LiveStatus.Ended(
-                live.startedAt(),
-                now,
-                streamInfo().hlsUrl()
-        );
+        if (!canEndLive()) {
+            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+
+        Instant startedAt = switch (this.status) {
+            case LiveStatus.Live l -> l.startedAt();
+            case LiveStatus.Suspended s -> s.startedAt(); // 방송 전 정지면 null, 방송 후 정지면 startedAt
+            default -> throw new IllegalStateException("예상치 못한 상태: " + this.status);
+        };
+
+        String hlsArchiveUrl = (streamInfo != null) ? streamInfo.hlsUrl() : null;
+        var endedStatus = new LiveStatus.Ended(startedAt, now, hlsArchiveUrl);
 
         return toBuilder()
                 .status(endedStatus)

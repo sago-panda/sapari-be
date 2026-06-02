@@ -55,14 +55,23 @@ public class LiveKitMediaManagerTest {
 
     @BeforeEach
     void setup(){
-        LiveKitProperties.S3 s3 = fixtureMonkey.giveMeOne(LiveKitProperties.S3.class);
-        LiveKitProperties.Hls hls = fixtureMonkey.giveMeOne(LiveKitProperties.Hls.class);
+        LiveKitProperties.S3 s3 = fixtureMonkey.giveMeBuilder(LiveKitProperties.S3.class)
+                .set("bucket", "test-bucket")
+                .set("accessKey", "test-access-key")
+                .set("secretKey", "test-secret-key")
+                .set("region", "ap-northeast-2")
+                .set("keyPrefix", "live/")
+                .sample();
+        LiveKitProperties.Hls hls = fixtureMonkey.giveMeBuilder(LiveKitProperties.Hls.class)
+                .set("cdnBaseUrl", "https://cdn.example.com")
+                .set("segmentDuration", 2)
+                .sample();
         liveKitProperties = fixtureMonkey.giveMeBuilder(LiveKitProperties.class)
                 .set("s3", s3)
                 .set("hls", hls)
                 .sample();
         liveKitMediaManager = new LiveKitMediaManager(roomServiceClient, liveKitProperties, egressServiceClient);
-        egressId = fixtureMonkey.giveMeOne(String.class);
+        egressId = "egress-" + UUID.randomUUID();
         roomId = UUID.randomUUID();
     }
 
