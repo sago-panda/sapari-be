@@ -271,7 +271,7 @@ class MemberAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(false);
+        when(userRepository.existsByNickname("updated")).thenReturn(false);
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // when
@@ -289,7 +289,7 @@ class MemberAuthServiceTest {
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
-        verify(userRepository).existsByNicknameAndUserIdNot("updated", userId);
+        verify(userRepository).existsByNickname("updated");
         verify(userRepository).save(any(User.class));
         verify(refreshTokenRedisRepository, never()).save(eq(userId), any(String.class));
     }
@@ -304,19 +304,20 @@ class MemberAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId, NOW.minus(Duration.ofDays(1)))));
+        when(userRepository.existsByNickname("updated")).thenReturn(false);
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.updateNickname(command))
                 .isInstanceOfSatisfying(MemberException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.NICKNAME_CHANGE_RESTRICTED)
                 );
-        verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
+        verify(userRepository).existsByNickname("updated");
         verify(userRepository, never()).save(any(User.class));
     }
 
     @Test
-    @DisplayName("같은 닉네임이면 제한 검증 없이 현재 정보를 반환한다")
-    void updateNicknameReturnsCurrentMemberWhenNicknameIsSame() {
+    @DisplayName("같은 닉네임이면 닉네임 중복으로 실패한다")
+    void updateNicknameThrowsExceptionWhenNicknameIsSame() {
         // given
         UUID userId = UUID.randomUUID();
         MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
@@ -324,19 +325,19 @@ class MemberAuthServiceTest {
                 "member"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId, NOW)));
+        when(userRepository.existsByNickname("member")).thenReturn(true);
 
-        // when
-        MemberNicknameUpdateResult result = memberAuthService.updateNickname(command);
-
-        // then
-        assertThat(result.member().nickname()).isEqualTo("member");
-        assertThat(result.accessToken()).isNull();
-        verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
+        // when, then
+        assertThatThrownBy(() -> memberAuthService.updateNickname(command))
+                .isInstanceOfSatisfying(MemberException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.DUPLICATED_NICKNAME)
+                );
+        verify(userRepository).existsByNickname("member");
         verify(userRepository, never()).save(any(User.class));
     }
 
     @Test
-    @DisplayName("다른 사용자의 닉네임과 중복되면 닉네임 수정에 실패한다")
+    @DisplayName("이미 존재하는 닉네임이면 닉네임 수정에 실패한다")
     void updateNicknameThrowsExceptionWhenNicknameIsDuplicated() {
         // given
         UUID userId = UUID.randomUUID();
@@ -345,7 +346,7 @@ class MemberAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(true);
+        when(userRepository.existsByNickname("updated")).thenReturn(true);
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.updateNickname(command))
@@ -364,7 +365,7 @@ class MemberAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(false);
+        when(userRepository.existsByNickname("updated")).thenReturn(false);
         when(userRepository.save(any(User.class))).thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
@@ -396,16 +397,6 @@ class MemberAuthServiceTest {
         when(userRepository.existsByNickname("member")).thenReturn(true);
 
         assertThat(memberAuthService.isNicknameDuplicated("member")).isTrue();
-    }
-
-    @Test
-    @DisplayName("내 닉네임 중복 여부는 자기 자신을 제외하고 조회한다")
-    void isMyNicknameDuplicatedReturnsRepositoryResult() {
-        UUID userId = UUID.randomUUID();
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("member", userId)).thenReturn(true);
-
-        assertThat(memberAuthService.isMyNicknameDuplicated(userId, "member")).isTrue();
     }
 
     private SocialSignupCommand signupCommand() {

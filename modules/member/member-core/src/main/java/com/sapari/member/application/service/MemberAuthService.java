@@ -155,14 +155,6 @@ public class MemberAuthService implements MemberAuthUseCase {
 
     @Override
     @Transactional(readOnly = true)
-    public boolean isMyNicknameDuplicated(UUID userId, String nickname) {
-        findMember(userId);
-
-        return userRepository.existsByNicknameAndUserIdNot(nickname, userId);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
     public MemberMeResult getMyInfo(UUID userId) {
         return toMemberMeResult(findMember(userId));
     }
@@ -172,14 +164,10 @@ public class MemberAuthService implements MemberAuthUseCase {
     public MemberNicknameUpdateResult updateNickname(MemberNicknameUpdateCommand command) {
         User member = findMember(command.userId());
 
-        // 같은 닉네임은 변경이 아니므로 제한/중복 검증과 토큰 재발급을 건너뛴다.
-        if (member.nickname().equals(command.nickname())) {
-            return new MemberNicknameUpdateResult(toMemberMeResult(member), null);
-        }
+        validateDuplicatedNickname(command.nickname());
 
         Instant now = timeProvider.now();
         validateNicknameChangeAllowed(member, now);
-        validateDuplicatedNickname(command.userId(), command.nickname());
 
         User updatedMember = member.updateNickname(command.nickname(), now);
 
@@ -239,8 +227,8 @@ public class MemberAuthService implements MemberAuthUseCase {
         }
     }
 
-    private void validateDuplicatedNickname(UUID userId, String nickname) {
-        if (userRepository.existsByNicknameAndUserIdNot(nickname, userId)) {
+    private void validateDuplicatedNickname(String nickname) {
+        if (userRepository.existsByNickname(nickname)) {
             throw new MemberException(MemberErrorCode.DUPLICATED_NICKNAME);
         }
     }

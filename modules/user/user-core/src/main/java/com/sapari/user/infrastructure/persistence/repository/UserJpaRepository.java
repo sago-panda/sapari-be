@@ -28,6 +28,4 @@ public interface UserJpaRepository extends JpaRepository<UserEntity, UUID> {
     boolean existsByPhoneNumberAndIdNot(String phoneNumber, UUID userId);
 
     boolean existsByEmailAndIdNot(String email, UUID userId);
-
-    boolean existsByNicknameAndIdNot(String nickname, UUID userId);
 }
