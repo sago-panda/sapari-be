@@ -1,6 +1,7 @@
 package com.sapari.common.web.security;
 
 import io.jsonwebtoken.JwtException;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 
@@ -21,6 +22,7 @@ import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
 
+@Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String AUTHORIZATION_HEADER = "Authorization";
@@ -59,6 +61,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         } catch (AuthenticationException | JwtException | IllegalArgumentException e) {
             SecurityContextHolder.clearContext();
+            log.debug(
+                    "JWT authentication failed. method={}, uri={}, reason={}",
+                    request.getMethod(),
+                    request.getRequestURI(),
+                    e.getClass().getSimpleName()
+            );
         }
 
         filterChain.doFilter(request, response);
