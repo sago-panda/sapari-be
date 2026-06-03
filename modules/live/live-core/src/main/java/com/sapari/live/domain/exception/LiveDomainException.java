@@ -1,28 +1,27 @@
 package com.sapari.live.domain.exception;
 
-import lombok.Getter;
+import com.sapari.common.core.exception.BusinessException;
 
-@Getter
-public class LiveDomainException extends RuntimeException{
-    private final LiveErrorCode errorCode;
+public class LiveDomainException extends BusinessException {
 
-    public LiveDomainException(LiveErrorCode errorCode){
-        super(errorCode.getMessage());
-        this.errorCode = errorCode;
+    public LiveDomainException(LiveErrorCode errorCode) {
+        super(errorCode);
     }
 
     public LiveDomainException(LiveErrorCode errorCode, Throwable cause) {
-        super(errorCode.getMessage(), cause);
-        this.errorCode = errorCode;
+        super(errorCode, cause);
     }
 
     public LiveDomainException(LiveErrorCode errorCode, String customMessage, Throwable cause) {
-        super(customMessage, cause);
-        this.errorCode = errorCode;
+        super(errorCode, customMessage, cause);
     }
 
-    public LiveDomainException(LiveErrorCode errorCode, String customMessage){
-        super(customMessage);
-        this.errorCode = errorCode;
+    public LiveDomainException(LiveErrorCode errorCode, String customMessage) {
+        super(errorCode, customMessage);
+    }
+
+    @Override
+    public LiveErrorCode getErrorCode() {
+        return (LiveErrorCode) super.getErrorCode();
     }
 }

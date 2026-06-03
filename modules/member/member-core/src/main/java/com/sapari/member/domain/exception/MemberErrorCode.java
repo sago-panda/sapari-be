@@ -3,9 +3,11 @@ package com.sapari.member.domain.exception;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
+import com.sapari.common.core.exception.ErrorCode;
+
 @Getter
 @RequiredArgsConstructor
-public enum MemberErrorCode {
+public enum MemberErrorCode implements ErrorCode {
 
     INVALID_REFRESH_TOKEN(401, "MEMBER-001", "Refresh Token이 유효하지 않습니다."),
     INVALID_ACCESS_TOKEN(401, "MEMBER-002", "Access Token이 유효하지 않습니다."),

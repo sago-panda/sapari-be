@@ -1,4 +1,5 @@
 dependencies {
+    implementation(project(':common:core'))
     implementation(project(':common:web'))
     implementation(project(':modules:member:member-api'))
     implementation(project(':modules:user:user-core'))

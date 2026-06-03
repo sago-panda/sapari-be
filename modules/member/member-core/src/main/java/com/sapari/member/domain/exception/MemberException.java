@@ -1,19 +1,19 @@
 package com.sapari.member.domain.exception;
 
-import lombok.Getter;
+import com.sapari.common.core.exception.BusinessException;
 
-@Getter
-public class MemberException extends RuntimeException {
-
-    private final MemberErrorCode errorCode;
+public class MemberException extends BusinessException {
 
     public MemberException(MemberErrorCode errorCode) {
-        super(errorCode.getMessage());
-        this.errorCode = errorCode;
+        super(errorCode);
     }
 
     public MemberException(MemberErrorCode errorCode, Throwable cause) {
-        super(errorCode.getMessage(), cause);
-        this.errorCode = errorCode;
+        super(errorCode, cause);
+    }
+
+    @Override
+    public MemberErrorCode getErrorCode() {
+        return (MemberErrorCode) super.getErrorCode();
     }
 }

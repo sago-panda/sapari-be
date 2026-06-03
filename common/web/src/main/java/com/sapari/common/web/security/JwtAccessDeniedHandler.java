@@ -10,17 +10,21 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.web.access.AccessDeniedHandler;
 
+import com.sapari.common.core.exception.CommonErrorCode;
 import com.sapari.common.web.response.ErrorResponse;
 import com.sapari.global.time.TimeProvider;
 
 @Slf4j(topic = "JWT_ACCESS_DENIED_HANDLER")
 @RequiredArgsConstructor
 public class JwtAccessDeniedHandler implements AccessDeniedHandler {
+
+    private static final String REQUEST_ID = "requestId";
 
     private final ObjectMapper objectMapper;
     private final TimeProvider timeProvider;
@@ -33,9 +37,9 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
     ) throws IOException, ServletException {
         log.warn("Access denied: {}", accessDeniedException.getMessage());
 
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.FORBIDDEN.value(),
-                "접근 권한이 없습니다.",
+        ErrorResponse errorResponse = ErrorResponse.of(
+                CommonErrorCode.FORBIDDEN,
+                MDC.get(REQUEST_ID),
                 timeProvider.now()
         );
 

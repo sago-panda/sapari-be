@@ -3,9 +3,11 @@ package com.sapari.seller.domain.exception;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
+import com.sapari.common.core.exception.ErrorCode;
+
 @Getter
 @RequiredArgsConstructor
-public enum SellerErrorCode {
+public enum SellerErrorCode implements ErrorCode {
 
     DUPLICATED_SIGNUP_INFO(409, "SELLER-001", "이미 사용 중인 판매자 회원 정보입니다."),
     INVALID_LOGIN_CREDENTIALS(401, "SELLER-002", "이메일 또는 비밀번호가 올바르지 않습니다."),

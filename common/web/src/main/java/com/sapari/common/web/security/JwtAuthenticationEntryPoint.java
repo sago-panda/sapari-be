@@ -10,11 +10,13 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 
+import com.sapari.common.core.exception.CommonErrorCode;
 import com.sapari.common.web.response.ErrorResponse;
 import com.sapari.global.time.TimeProvider;
 
@@ -22,6 +24,7 @@ import com.sapari.global.time.TimeProvider;
 @RequiredArgsConstructor
 public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
+    private static final String REQUEST_ID = "requestId";
 
     private final ObjectMapper objectMapper;
     private final TimeProvider timeProvider;
@@ -34,9 +37,9 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
     ) throws IOException, ServletException {
         log.warn("Unauthenticated request: {}", authException.getMessage());
 
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.UNAUTHORIZED.value(),
-                "인증이 필요합니다.",
+        ErrorResponse errorResponse = ErrorResponse.of(
+                CommonErrorCode.UNAUTHORIZED,
+                MDC.get(REQUEST_ID),
                 timeProvider.now()
         );
 
