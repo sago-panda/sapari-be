@@ -61,7 +61,7 @@ public class MemberAuthController {
 
     @PostMapping("/signup/social")
     public ResponseEntity<SocialSignupResponse> completeSocialSignup(
-            @CookieValue(name = SIGNUP_SID_COOKIE_NAME, required = false) String signupSid,
+            @CookieValue(name = SIGNUP_SID_COOKIE_NAME) String signupSid,
             @Valid @RequestBody SocialSignupRequest request
     ) {
         SocialSignupResult result = memberAuthUseCase.completeSocialSignup(signupSid, request.toCommand());
@@ -73,13 +73,13 @@ public class MemberAuthController {
                         result.refreshToken(),
                         refreshTokenExpirationSeconds
                 ).toString())
-                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createDeleteCookie(SIGNUP_SID_COOKIE_NAME).toString())
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createExpiredCookie(SIGNUP_SID_COOKIE_NAME).toString())
                 .body(SocialSignupResponse.from(result));
     }
 
     @GetMapping("/signup/social-info")
     public ResponseEntity<SocialSignupInfoResponse> getSocialSignupInfo(
-            @CookieValue(name = SIGNUP_SID_COOKIE_NAME, required = false) String signupSid
+            @CookieValue(name = SIGNUP_SID_COOKIE_NAME) String signupSid
     ) {
         SocialSignupInfoResult result = memberAuthUseCase.getSocialSignupInfo(signupSid);
 
@@ -129,7 +129,7 @@ public class MemberAuthController {
 
     @PostMapping("/login/social/code")
     public ResponseEntity<SocialLoginResponse> exchangeSocialLoginCode(
-            @CookieValue(name = TEMPORARY_LOGIN_CODE_COOKIE_NAME, required = false) String temporaryLoginCode
+            @CookieValue(name = TEMPORARY_LOGIN_CODE_COOKIE_NAME) String temporaryLoginCode
     ) {
         SocialLoginTokenResult result = memberAuthUseCase.exchangeTemporaryLoginCode(temporaryLoginCode);
 
@@ -141,14 +141,14 @@ public class MemberAuthController {
                         refreshTokenExpirationSeconds
                 ).toString())
                 .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
-                        .createDeleteCookie(TEMPORARY_LOGIN_CODE_COOKIE_NAME)
+                        .createExpiredCookie(TEMPORARY_LOGIN_CODE_COOKIE_NAME)
                         .toString())
                 .body(SocialLoginResponse.from(result));
     }
 
     @PostMapping("/token/reissue")
     public ResponseEntity<TokenReissueResponse> reissueAccessToken(
-            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
+            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME) String refreshToken
     ) {
         MemberTokenReissueResult result = memberAuthUseCase.reissueAccessToken(refreshToken);
 
@@ -168,7 +168,7 @@ public class MemberAuthController {
         return ResponseEntity
                 .noContent()
                 .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
-                        .createDeleteCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
                         .toString())
                 .build();
     }

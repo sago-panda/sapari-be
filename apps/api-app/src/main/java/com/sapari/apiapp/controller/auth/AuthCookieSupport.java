@@ -24,7 +24,7 @@ public final class AuthCookieSupport {
                 .build();
     }
 
-    public static ResponseCookie createDeleteCookie(String cookieName) {
+    public static ResponseCookie createExpiredCookie(String cookieName) {
         return ResponseCookie.from(cookieName, "")
                 .httpOnly(true)
                 .secure(true)

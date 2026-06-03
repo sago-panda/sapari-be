@@ -123,7 +123,7 @@ public class SellerAuthController {
 
     @PostMapping("/token/reissue")
     public ResponseEntity<SellerTokenReissueResponse> reissueAccessToken(
-            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken
+            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME) String refreshToken
     ) {
         SellerTokenReissueResult result = sellerAuthUseCase.reissueAccessToken(refreshToken);
 
@@ -165,7 +165,7 @@ public class SellerAuthController {
         return ResponseEntity
                 .noContent()
                 .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
-                        .createDeleteCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
                         .toString())
                 .build();
     }

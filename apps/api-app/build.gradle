@@ -20,6 +20,8 @@ dependencies {
     runtimeOnly("org.postgresql:postgresql")
 
     testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
+    testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
+    testImplementation 'org.springframework.security:spring-security-test'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
