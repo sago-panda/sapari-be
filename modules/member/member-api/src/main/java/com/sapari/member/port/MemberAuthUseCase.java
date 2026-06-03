@@ -30,8 +30,6 @@ public interface MemberAuthUseCase {
 
     boolean isNicknameDuplicated(String nickname);
 
-    boolean isMyNicknameDuplicated(UUID userId, String nickname);
-
     MemberMeResult getMyInfo(UUID userId);
 
     MemberNicknameUpdateResult updateNickname(MemberNicknameUpdateCommand command);

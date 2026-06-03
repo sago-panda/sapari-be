@@ -90,7 +90,7 @@ public class SellerAuthController {
         );
     }
 
-    @GetMapping("/signup/check-nickname")
+    @GetMapping("/check-nickname")
     public ResponseEntity<DuplicateCheckResponse> checkNickname(
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
@@ -142,35 +142,17 @@ public class SellerAuthController {
         return ResponseEntity.ok(SellerMeResponse.from(result));
     }
 
-    @GetMapping("/me/check-nickname")
-    public ResponseEntity<DuplicateCheckResponse> checkMyNickname(
-            @CurrentUserId UUID userId,
-            @RequestParam
-            @NotBlank(message = "닉네임은 필수입니다.")
-            @Pattern(
-                    regexp = "^[가-힣A-Za-z0-9]{2,10}$",
-                    message = "닉네임은 2~10자의 한글, 영문, 숫자만 사용할 수 있습니다."
-            )
-            String nickname
-    ) {
-        return ResponseEntity.ok(
-                new DuplicateCheckResponse(sellerAuthUseCase.isMyNicknameDuplicated(userId, nickname))
-        );
-    }
-
     @PutMapping("/me/nickname")
     public ResponseEntity<SellerMeResponse> updateNickname(
             @CurrentUserId UUID userId,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
         SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(request.toCommand(userId));
-        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
 
-        if (result.accessToken() != null) {
-            response.header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()));
-        }
-
-        return response.body(SellerMeResponse.from(result.seller()));
+        return ResponseEntity
+                .ok()
+                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
+                .body(SellerMeResponse.from(result.seller()));
     }
 
     @PostMapping("/logout")

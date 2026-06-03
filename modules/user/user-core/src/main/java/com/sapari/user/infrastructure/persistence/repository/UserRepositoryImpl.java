@@ -86,9 +86,4 @@ public class UserRepositoryImpl implements UserRepository {
     public boolean existsByEmailAndUserIdNot(String email, UUID userId) {
         return userJpaRepository.existsByEmailAndIdNot(email, userId);
     }
-
-    @Override
-    public boolean existsByNicknameAndUserIdNot(String nickname, UUID userId) {
-        return userJpaRepository.existsByNicknameAndIdNot(nickname, userId);
-    }
 }

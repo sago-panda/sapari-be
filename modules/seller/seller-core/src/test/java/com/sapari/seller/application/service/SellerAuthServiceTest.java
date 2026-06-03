@@ -271,7 +271,7 @@ class SellerAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(false);
+        when(userRepository.existsByNickname("updated")).thenReturn(false);
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // when
@@ -289,7 +289,7 @@ class SellerAuthServiceTest {
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
-        verify(userRepository).existsByNicknameAndUserIdNot("updated", userId);
+        verify(userRepository).existsByNickname("updated");
         verify(refreshTokenRedisRepository, never()).save(eq(userId), any(String.class));
     }
 
@@ -303,19 +303,20 @@ class SellerAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId, NOW.minus(Duration.ofDays(1)))));
+        when(userRepository.existsByNickname("updated")).thenReturn(false);
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.updateNickname(command))
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED)
                 );
-        verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
+        verify(userRepository).existsByNickname("updated");
         verify(userRepository, never()).save(any(User.class));
     }
 
     @Test
-    @DisplayName("같은 닉네임이면 제한 검증 없이 현재 정보를 반환한다")
-    void updateNicknameReturnsCurrentSellerWhenNicknameIsSame() {
+    @DisplayName("같은 닉네임이면 닉네임 중복으로 실패한다")
+    void updateNicknameThrowsExceptionWhenNicknameIsSame() {
         // given
         UUID userId = UUID.randomUUID();
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
@@ -323,19 +324,19 @@ class SellerAuthServiceTest {
                 "seller"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId, NOW)));
+        when(userRepository.existsByNickname("seller")).thenReturn(true);
 
-        // when
-        SellerNicknameUpdateResult result = sellerAuthService.updateNickname(command);
-
-        // then
-        assertThat(result.seller().nickname()).isEqualTo("seller");
-        assertThat(result.accessToken()).isNull();
-        verify(userRepository, never()).existsByNicknameAndUserIdNot(any(), any());
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.updateNickname(command))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_NICKNAME)
+                );
+        verify(userRepository).existsByNickname("seller");
         verify(userRepository, never()).save(any(User.class));
     }
 
     @Test
-    @DisplayName("다른 사용자의 닉네임과 중복되면 닉네임 수정에 실패한다")
+    @DisplayName("이미 존재하는 닉네임이면 닉네임 수정에 실패한다")
     void updateNicknameThrowsExceptionWhenNicknameIsDuplicated() {
         // given
         UUID userId = UUID.randomUUID();
@@ -344,7 +345,7 @@ class SellerAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(true);
+        when(userRepository.existsByNickname("updated")).thenReturn(true);
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.updateNickname(command))
@@ -363,7 +364,7 @@ class SellerAuthServiceTest {
                 "updated"
         );
         when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("updated", userId)).thenReturn(false);
+        when(userRepository.existsByNickname("updated")).thenReturn(false);
         when(userRepository.save(any(User.class))).thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
@@ -401,18 +402,6 @@ class SellerAuthServiceTest {
 
         // when, then
         assertThat(sellerAuthService.isNicknameDuplicated("seller")).isTrue();
-    }
-
-    @Test
-    @DisplayName("내 닉네임 중복 여부는 자기 자신을 제외하고 조회한다")
-    void isMyNicknameDuplicatedReturnsRepositoryResult() {
-        // given
-        UUID userId = UUID.randomUUID();
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(userRepository.existsByNicknameAndUserIdNot("seller", userId)).thenReturn(true);
-
-        // when, then
-        assertThat(sellerAuthService.isMyNicknameDuplicated(userId, "seller")).isTrue();
     }
 
     private SellerSignupCommand signupCommand() {

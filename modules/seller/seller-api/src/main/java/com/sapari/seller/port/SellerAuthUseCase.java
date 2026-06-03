@@ -22,8 +22,6 @@ public interface SellerAuthUseCase {
 
     boolean isNicknameDuplicated(String nickname);
 
-    boolean isMyNicknameDuplicated(UUID userId, String nickname);
-
     SellerLoginResult login(SellerLoginCommand command);
 
     SellerTokenReissueResult reissueAccessToken(String refreshToken);

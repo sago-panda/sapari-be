@@ -88,14 +88,6 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     @Override
-    @Transactional(readOnly = true)
-    public boolean isMyNicknameDuplicated(UUID userId, String nickname) {
-        findSeller(userId);
-
-        return userRepository.existsByNicknameAndUserIdNot(nickname, userId);
-    }
-
-    @Override
     @Transactional
     public SellerLoginResult login(SellerLoginCommand command) {
         User seller = findSellerByEmail(command.email());
@@ -154,14 +146,10 @@ public class SellerAuthService implements SellerAuthUseCase {
     public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
         User seller = findSeller(command.userId());
 
-        // 같은 닉네임은 변경이 아니므로 제한/중복 검증과 토큰 재발급을 건너뛴다.
-        if (seller.nickname().equals(command.nickname())) {
-            return new SellerNicknameUpdateResult(toSellerMeResult(seller), null);
-        }
+        validateDuplicatedNickname(command.nickname());
 
         Instant now = timeProvider.now();
         validateNicknameChangeAllowed(seller, now);
-        validateDuplicatedNickname(command.userId(), command.nickname());
 
         User updatedSeller = seller.updateNickname(command.nickname(), now);
 
@@ -221,8 +209,8 @@ public class SellerAuthService implements SellerAuthUseCase {
         return user;
     }
 
-    private void validateDuplicatedNickname(UUID userId, String nickname) {
-        if (userRepository.existsByNicknameAndUserIdNot(nickname, userId)) {
+    private void validateDuplicatedNickname(String nickname) {
+        if (userRepository.existsByNickname(nickname)) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME);
         }
     }

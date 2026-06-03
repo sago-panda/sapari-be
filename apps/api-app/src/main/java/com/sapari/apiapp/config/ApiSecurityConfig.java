@@ -40,14 +40,13 @@ public class ApiSecurityConfig {
             "/api/v1/sellers/auth/signup",
             "/api/v1/sellers/auth/signup/check-email",
             "/api/v1/sellers/auth/signup/check-phone",
-            "/api/v1/sellers/auth/signup/check-nickname",
+            "/api/v1/sellers/auth/check-nickname",
             "/api/v1/sellers/auth/login",
             "/api/v1/sellers/auth/token/reissue"
     };
 
     private static final String[] MEMBER_PROTECTED_MATCHERS = {
             "/api/v1/members/auth/me",
-            "/api/v1/members/auth/me/check-nickname",
             "/api/v1/members/auth/me/nickname",
             "/api/v1/members/auth/logout"
     };

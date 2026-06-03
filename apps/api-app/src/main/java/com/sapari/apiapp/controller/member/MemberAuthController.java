@@ -112,7 +112,7 @@ public class MemberAuthController {
         );
     }
 
-    @GetMapping("/signup/check-nickname")
+    @GetMapping("/check-nickname")
     public ResponseEntity<DuplicateCheckResponse> checkNickname(
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
@@ -180,22 +180,6 @@ public class MemberAuthController {
         MemberMeResult result = memberAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(MemberMeResponse.from(result));
-    }
-
-    @GetMapping("/me/check-nickname")
-    public ResponseEntity<DuplicateCheckResponse> checkMyNickname(
-            @CurrentUserId UUID userId,
-            @RequestParam
-            @NotBlank(message = "닉네임은 필수입니다.")
-            @Pattern(
-                    regexp = "^[가-힣A-Za-z0-9]{2,10}$",
-                    message = "닉네임은 2~10자의 한글, 영문, 숫자만 사용할 수 있습니다."
-            )
-            String nickname
-    ) {
-        return ResponseEntity.ok(
-                new DuplicateCheckResponse(memberAuthUseCase.isMyNicknameDuplicated(userId, nickname))
-        );
     }
 
     @PutMapping("/me/nickname")
