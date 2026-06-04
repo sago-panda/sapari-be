@@ -3,9 +3,11 @@ package com.sapari.live.domain.exception;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
+import com.sapari.common.core.exception.ErrorCode;
+
 @Getter
 @RequiredArgsConstructor
-public enum LiveErrorCode {
+public enum LiveErrorCode implements ErrorCode {
 
     MEDIA_SERVER_ERROR(500, "LIVE-001", "미디어 서버와 통신 중 오류가 발생했습니다."),
     LIVE_NOT_FOUND(404, "LIVE-002", "방송을 찾을 수 없습니다."),

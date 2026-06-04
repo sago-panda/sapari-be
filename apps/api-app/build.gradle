@@ -1,5 +1,6 @@
 dependencies {
     implementation project(':common:web')
+    implementation project(':common:auth')
     implementation(project(":modules:live:live-api"))
     implementation(project(":modules:live:live-core"))
     implementation(project(":modules:member:member-api"))
@@ -18,6 +19,10 @@ dependencies {
     implementation 'org.bouncycastle:bcprov-jdk18on:1.84'
 
     runtimeOnly("org.postgresql:postgresql")
+
+    testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
+    testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
+    testImplementation 'org.springframework.security:spring-security-test'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

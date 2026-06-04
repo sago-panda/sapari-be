@@ -1,7 +1,8 @@
 dependencies {
+    implementation(project(':common:core'))
     implementation(project(':common:web'))
     implementation(project(':modules:member:member-api'))
-    implementation(project(':modules:user:user-core'))
+    implementation(project(':modules:user:user-api'))
     implementation(project(':storage:redis-core'))
 
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'

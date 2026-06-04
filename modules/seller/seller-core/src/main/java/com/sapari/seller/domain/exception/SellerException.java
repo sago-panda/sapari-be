@@ -1,19 +1,19 @@
 package com.sapari.seller.domain.exception;
 
-import lombok.Getter;
+import com.sapari.common.core.exception.BusinessException;
 
-@Getter
-public class SellerException extends RuntimeException {
-
-    private final SellerErrorCode errorCode;
+public class SellerException extends BusinessException {
 
     public SellerException(SellerErrorCode errorCode) {
-        super(errorCode.getMessage());
-        this.errorCode = errorCode;
+        super(errorCode);
     }
 
     public SellerException(SellerErrorCode errorCode, Throwable cause) {
-        super(errorCode.getMessage(), cause);
-        this.errorCode = errorCode;
+        super(errorCode, cause);
+    }
+
+    @Override
+    public SellerErrorCode getErrorCode() {
+        return (SellerErrorCode) super.getErrorCode();
     }
 }

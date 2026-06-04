@@ -17,36 +17,36 @@ import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
 import com.sapari.member.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
-import com.sapari.member.port.MemberOAuthFacade;
+import com.sapari.member.port.MemberOAuthUseCase;
 import com.sapari.member.result.MemberOAuthResult;
 import com.sapari.member.result.SocialLoginTokenResult;
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @Service
-@Transactional(readOnly = true)
 @RequiredArgsConstructor
-public class MemberOAuthService implements MemberOAuthFacade {
+public class MemberOAuthService implements MemberOAuthUseCase {
 
-    private final UserRepository userRepository;
+    private final UserAccountUseCase userAccountUseCase;
     private final SocialSignupRedisRepository socialSignupRedisRepository;
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
     private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository;
+    private final RefreshTokenStore refreshTokenStore;
     private final ObjectMapper objectMapper;
 
     /**
      * OAuth 인증 사용자가 기존 회원이면 임시 로그인 code를, 신규 회원이면 회원가입 sid를 발급
      */
     @Override
+    @Transactional(readOnly = true)
     public MemberOAuthResult handleOAuthSuccess(MemberOAuthCommand command) {
         ProviderType provider = toProviderType(command.provider());
         validateProviderId(command.providerId());
 
-        return userRepository.findByProviderAndProviderId(provider, command.providerId())
+        return userAccountUseCase.findBySocialAccount(provider, command.providerId())
                 .map(this::createLoginSuccessResult)
                 .orElseGet(() -> createSignupRequiredResult(command));
     }
@@ -54,7 +54,7 @@ public class MemberOAuthService implements MemberOAuthFacade {
     /**
      * 기존 회원에게 전달할 임시 로그인 code를 만들고 Redis에 token 정보를 짧게 저장
      */
-    private MemberOAuthResult createLoginSuccessResult(User user) {
+    private MemberOAuthResult createLoginSuccessResult(UserView user) {
         if (user.role() != UserRole.USER) {
             throw new MemberException(MemberErrorCode.USER_NOT_FOUND);
         }
@@ -68,7 +68,7 @@ public class MemberOAuthService implements MemberOAuthFacade {
                 refreshToken
         ));
 
-        refreshTokenRedisRepository.save(user.userId(), refreshToken);
+        refreshTokenStore.save(user.userId(), refreshToken);
         socialLoginCodeRedisRepository.save(loginCode, socialLoginTokenInfoJson);
 
         return MemberOAuthResult.loginSuccess(loginCode);
@@ -112,7 +112,7 @@ public class MemberOAuthService implements MemberOAuthFacade {
         }
     }
 
-    private JwtSubject toJwtSubject(User member) {
-        return new JwtSubject(member.userId(), member.role().name());
+    private JwtSubject toJwtSubject(UserView member) {
+        return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
     }
 }

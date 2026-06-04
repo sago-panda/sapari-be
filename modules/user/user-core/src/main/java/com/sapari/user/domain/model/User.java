@@ -2,11 +2,17 @@ package com.sapari.user.domain.model;
 
 import lombok.Builder;
 
+import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.UUID;
 
 import org.springframework.util.Assert;
+
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 
 @Builder(toBuilder = true)
 public record User(
@@ -14,43 +20,53 @@ public record User(
         UserRole role,
         UserStatus status,
         String nickname,
+        Instant nicknameChangedAt,
         String name,
         LocalDate birthDate,
+        UserGender gender,
         String phoneNumber,
         String profileImageKey,
         String email,
         UserGrade grade,
         Integer pointBalance,
         Boolean marketingAgreed,
-        LocalDateTime suspendedUntil,
+        Instant suspendedUntil,
         String suspensionReason,
-        LocalDateTime deletedAt,
-        LocalDateTime personalDataPurgedAt,
+        Instant deletedAt,
+        Instant personalDataPurgedAt,
         ProviderType provider,
         String providerId,
         String providerEmail,
-        LocalDateTime providerCreatedAt
+        Instant providerCreatedAt
 ) {
 
     public static User createSocialMember(
             String nickname,
             String name,
             LocalDate birthDate,
+            UserGender gender,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
-            String providerEmail
+            String providerEmail,
+            Instant providerCreatedAt,
+            Instant nicknameChangedAt
     ) {
         validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        Assert.notNull(gender, "gender은 필수입니다.");
+        Assert.notNull(providerCreatedAt, "providerCreatedAt은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return User.builder()
                 .role(UserRole.USER)
                 .status(UserStatus.ACTIVE)
                 .nickname(nickname)
+                .nicknameChangedAt(nicknameChangedAt)
                 .name(name)
                 .birthDate(birthDate)
+                .gender(gender)
                 .phoneNumber(phoneNumber)
                 .email(email)
                 .grade(UserGrade.BRONZE)
@@ -59,7 +75,7 @@ public record User(
                 .provider(provider)
                 .providerId(providerId)
                 .providerEmail(providerEmail)
-                .providerCreatedAt(LocalDateTime.now())
+                .providerCreatedAt(providerCreatedAt)
                 .build();
     }
 
@@ -69,14 +85,17 @@ public record User(
             LocalDate birthDate,
             String phoneNumber,
             String email,
-            Boolean marketingAgreed
+            Boolean marketingAgreed,
+            Instant nicknameChangedAt
     ) {
         validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return User.builder()
                 .role(UserRole.SELLER)
                 .status(UserStatus.ACTIVE)
                 .nickname(nickname)
+                .nicknameChangedAt(nicknameChangedAt)
                 .name(name)
                 .birthDate(birthDate)
                 .phoneNumber(phoneNumber)
@@ -87,26 +106,13 @@ public record User(
                 .build();
     }
 
-    public User updateProfile(
-            String nickname,
-            String name,
-            LocalDate birthDate,
-            String phoneNumber,
-            String profileImageKey,
-            String email,
-            Boolean marketingAgreed
-    ) {
-        validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
-        Assert.notNull(marketingAgreed, "marketingAgreed은 필수입니다.");
+    public User updateNickname(String nickname, Instant nicknameChangedAt) {
+        Assert.hasText(nickname, "닉네임은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return toBuilder()
                 .nickname(nickname)
-                .name(name)
-                .birthDate(birthDate)
-                .phoneNumber(phoneNumber)
-                .profileImageKey(profileImageKey)
-                .email(email)
-                .marketingAgreed(marketingAgreed)
+                .nicknameChangedAt(nicknameChangedAt)
                 .build();
     }
 

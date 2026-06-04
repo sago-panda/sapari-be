@@ -27,6 +27,7 @@ import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.common.web.security.JwtAuthenticationFilter;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.infrastructure.oauth.MemberOAuth2SuccessHandler;
 import com.sapari.member.infrastructure.oauth.MemberOAuth2UserService;
 
@@ -36,26 +37,34 @@ import com.sapari.member.infrastructure.oauth.MemberOAuth2UserService;
 public class ApiSecurityConfig {
 
     private static final String[] SELLER_PUBLIC_MATCHERS = {
-            "/api/sellers/signup",
-            "/api/sellers/signup/check-email",
-            "/api/sellers/signup/check-phone",
-            "/api/sellers/login",
-            "/api/sellers/reissue"
+            "/api/v1/sellers/auth/signup",
+            "/api/v1/sellers/auth/signup/check-email",
+            "/api/v1/sellers/auth/signup/check-phone",
+            "/api/v1/sellers/auth/check-nickname",
+            "/api/v1/sellers/auth/login",
+            "/api/v1/sellers/auth/token/reissue"
     };
 
     private static final String[] MEMBER_PROTECTED_MATCHERS = {
-            "/api/members/**",
-            "/api/auth/logout"
+            "/api/v1/members/auth/me",
+            "/api/v1/members/auth/me/nickname",
+            "/api/v1/members/auth/logout"
     };
 
     @Bean
-    public JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint(ObjectMapper objectMapper) {
-        return new JwtAuthenticationEntryPoint(objectMapper);
+    public JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint(
+            ObjectMapper objectMapper,
+            TimeProvider timeProvider
+    ) {
+        return new JwtAuthenticationEntryPoint(objectMapper, timeProvider);
     }
 
     @Bean
-    public JwtAccessDeniedHandler jwtAccessDeniedHandler(ObjectMapper objectMapper) {
-        return new JwtAccessDeniedHandler(objectMapper);
+    public JwtAccessDeniedHandler jwtAccessDeniedHandler(
+            ObjectMapper objectMapper,
+            TimeProvider timeProvider
+    ) {
+        return new JwtAccessDeniedHandler(objectMapper, timeProvider);
     }
 
     @Bean
@@ -71,13 +80,7 @@ public class ApiSecurityConfig {
     public PasswordEncoder passwordEncoder() {
         String encodingId = "argon2id";
 
-        PasswordEncoder argon2PasswordEncoder = new Argon2PasswordEncoder(
-                16,
-                32,
-                1,
-                65536,
-                3
-        );
+        PasswordEncoder argon2PasswordEncoder = Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8();
 
         return new DelegatingPasswordEncoder(
                 encodingId,
@@ -94,7 +97,7 @@ public class ApiSecurityConfig {
             JwtAccessDeniedHandler jwtAccessDeniedHandler
     ) throws Exception {
         return http
-                .securityMatcher("/api/sellers/**")
+                .securityMatcher("/api/v1/sellers/auth/**")
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session ->
@@ -139,10 +142,10 @@ public class ApiSecurityConfig {
                 )
                 .oauth2Login(oauth2 -> oauth2
                         .authorizationEndpoint(authorization -> authorization
-                                .baseUri("/api/auth/members/oauth2/authorization")
+                                .baseUri("/api/v1/members/auth/oauth2/authorization")
                         )
                         .redirectionEndpoint(redirection -> redirection
-                                .baseUri("/api/auth/members/oauth2/code/*")
+                                .baseUri("/api/v1/members/auth/oauth2/code/*")
                         )
                         .userInfoEndpoint(userInfo -> userInfo
                                 .userService(memberOAuth2UserService)

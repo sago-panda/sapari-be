@@ -19,7 +19,7 @@ import org.springframework.security.web.authentication.AuthenticationSuccessHand
 import org.springframework.stereotype.Component;
 
 import com.sapari.member.command.MemberOAuthCommand;
-import com.sapari.member.port.MemberOAuthFacade;
+import com.sapari.member.port.MemberOAuthUseCase;
 import com.sapari.member.result.MemberOAuthResult;
 
 @Component
@@ -31,7 +31,7 @@ public class MemberOAuth2SuccessHandler implements AuthenticationSuccessHandler 
     private static final String SIGNUP_SID_COOKIE_NAME = "signup_sid";
     private static final Duration SIGNUP_SID_COOKIE_MAX_AGE = Duration.ofMinutes(30);
 
-    private final MemberOAuthFacade memberOAuthFacade;
+    private final MemberOAuthUseCase memberOAuthUseCase;
     private final MemberOAuthRedirectProperties redirectProperties;
 
     @Override
@@ -41,7 +41,7 @@ public class MemberOAuth2SuccessHandler implements AuthenticationSuccessHandler 
             Authentication authentication
     ) throws IOException, ServletException {
         MemberOAuth2User memberOAuth2User = getMemberOAuth2User(authentication);
-        MemberOAuthResult result = memberOAuthFacade.handleOAuthSuccess(toCommand(memberOAuth2User));
+        MemberOAuthResult result = memberOAuthUseCase.handleOAuthSuccess(toCommand(memberOAuth2User));
 
         switch (result.type()) {
             case LOGIN_SUCCESS -> redirectLoginSuccess(response, result);
@@ -65,7 +65,11 @@ public class MemberOAuth2SuccessHandler implements AuthenticationSuccessHandler 
                 user.getProviderId(),
                 user.getProviderEmail(),
                 user.getProfileName(),
-                user.getProfileImageUrl()
+                user.getNickname(),
+                user.getPhoneNumber(),
+                user.getProfileImageUrl(),
+                user.getGender() == null ? null : user.getGender().name(),
+                user.getBirthDate()
         );
     }
 

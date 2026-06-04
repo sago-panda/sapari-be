@@ -10,11 +10,10 @@ import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.stereotype.Service;
 
+import com.sapari.member.domain.exception.MemberErrorCode;
+
 @Service
 public class MemberOAuth2UserService implements OAuth2UserService<OAuth2UserRequest, OAuth2User> {
-
-    private static final String UNSUPPORTED_PROVIDER_ERROR_CODE = "unsupported_oauth2_provider";
-    private static final String INVALID_USER_INFO_ERROR_CODE = "invalid_oauth2_user_info";
 
     private final OAuth2UserService<OAuth2UserRequest, OAuth2User> delegate;
 
@@ -39,7 +38,11 @@ public class MemberOAuth2UserService implements OAuth2UserService<OAuth2UserRequ
                 userInfo.providerId(),
                 userInfo.providerEmail(),
                 userInfo.name(),
+                userInfo.nickname(),
+                userInfo.phoneNumber(),
                 userInfo.profileImageUrl(),
+                userInfo.gender(),
+                userInfo.birthDate(),
                 userInfo.attributes(),
                 oAuth2User.getAuthorities()
         );
@@ -51,8 +54,8 @@ public class MemberOAuth2UserService implements OAuth2UserService<OAuth2UserRequ
             case "kakao" -> new KakaoOAuth2UserInfo(oAuth2User.getAttributes());
             default -> throw new OAuth2AuthenticationException(
                     new OAuth2Error(
-                            UNSUPPORTED_PROVIDER_ERROR_CODE,
-                            "지원하지 않는 OAuth provider입니다: " + registrationId,
+                            MemberErrorCode.INVALID_OAUTH_PROVIDER.getCode(),
+                            MemberErrorCode.INVALID_OAUTH_PROVIDER.getMessage() + ": " + registrationId,
                             null
                     )
             );
@@ -63,8 +66,8 @@ public class MemberOAuth2UserService implements OAuth2UserService<OAuth2UserRequ
         if (userInfo.providerId() == null || userInfo.providerId().isBlank()) {
             throw new OAuth2AuthenticationException(
                     new OAuth2Error(
-                            INVALID_USER_INFO_ERROR_CODE,
-                            "OAuth provider 사용자 ID를 찾을 수 없습니다.",
+                            MemberErrorCode.INVALID_SOCIAL_INFO.getCode(),
+                            MemberErrorCode.INVALID_SOCIAL_INFO.getMessage(),
                             null
                     )
             );

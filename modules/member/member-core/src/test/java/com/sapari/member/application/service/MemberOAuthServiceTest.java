@@ -4,7 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -15,7 +18,10 @@ import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.web.security.jwt.JwtProperties;
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberOAuthCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
@@ -25,34 +31,38 @@ import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.member.result.MemberOAuthResult;
 import com.sapari.member.result.MemberOAuthResultType;
 import com.sapari.member.result.SocialLoginTokenResult;
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @DisplayName("구매자 OAuth 서비스 테스트")
 class MemberOAuthServiceTest {
 
     private static final String SECRET = "test-secret-key-for-member-jwt-32bytes";
 
-    private final UserRepository userRepository = mock(UserRepository.class);
+    private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
     private final SocialSignupRedisRepository socialSignupRedisRepository =
             mock(SocialSignupRedisRepository.class);
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository =
             mock(SocialLoginCodeRedisRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("member-oauth-test", SECRET, 3600L, 1209600L)
+            new JwtProperties("member-oauth-test", SECRET, 3600L, 1209600L),
+            timeProvider()
     );
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository =
-            mock(RefreshTokenRedisRepository.class);
+    private final RefreshTokenStore refreshTokenStore =
+            mock(RefreshTokenStore.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final MemberOAuthService memberOAuthService = new MemberOAuthService(
-            userRepository,
+            userAccountUseCase,
             socialSignupRedisRepository,
             socialLoginCodeRedisRepository,
             jwtTokenProvider,
-            refreshTokenRedisRepository,
+            refreshTokenStore,
             objectMapper
     );
 
@@ -61,9 +71,8 @@ class MemberOAuthServiceTest {
     void handleOAuthSuccessCreatesLoginCodeAndStoresTokenInfoWhenUserExists() throws Exception {
         // given
         UUID userId = UUID.randomUUID();
-        User user = createMember(userId);
-        when(userRepository.findByProviderAndProviderId(ProviderType.NAVER, "naver-id"))
-                .thenReturn(Optional.of(user));
+        when(userAccountUseCase.findBySocialAccount(ProviderType.NAVER, "naver-id"))
+                .thenReturn(Optional.of(memberView(userId)));
 
         // when
         MemberOAuthResult result = memberOAuthService.handleOAuthSuccess(oAuthCommand());
@@ -72,7 +81,7 @@ class MemberOAuthServiceTest {
         assertThat(result.type()).isEqualTo(MemberOAuthResultType.LOGIN_SUCCESS);
         assertThat(result.loginCode()).isNotBlank();
         assertThat(result.signupSid()).isNull();
-        verify(refreshTokenRedisRepository).save(eq(userId), any(String.class));
+        verify(refreshTokenStore).save(eq(userId), any(String.class));
 
         ArgumentCaptor<String> codeCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
@@ -84,6 +93,14 @@ class MemberOAuthServiceTest {
         assertThat(tokenResult.userId()).isEqualTo(userId);
         assertThat(tokenResult.accessToken()).isNotBlank();
         assertThat(tokenResult.refreshToken()).isNotBlank();
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(tokenResult.accessToken());
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(tokenResult.refreshToken());
+        assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.nickname()).isEqualTo("member");
+        assertThat(accessClaims.email()).isEqualTo("member@example.com");
+        assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(refreshClaims.nickname()).isNull();
+        assertThat(refreshClaims.email()).isNull();
         verifyNoInteractions(socialSignupRedisRepository);
     }
 
@@ -91,7 +108,7 @@ class MemberOAuthServiceTest {
     @DisplayName("신규 회원이면 소셜 회원가입 정보를 저장하고 signup sid를 반환한다")
     void handleOAuthSuccessStoresSocialSignupInfoWhenUserDoesNotExist() throws Exception {
         // given
-        when(userRepository.findByProviderAndProviderId(ProviderType.NAVER, "naver-id"))
+        when(userAccountUseCase.findBySocialAccount(ProviderType.NAVER, "naver-id"))
                 .thenReturn(Optional.empty());
 
         // when
@@ -113,8 +130,12 @@ class MemberOAuthServiceTest {
         assertThat(signupInfo.providerId()).isEqualTo("naver-id");
         assertThat(signupInfo.providerEmail()).isEqualTo("member@naver.com");
         assertThat(signupInfo.name()).isEqualTo("member-name");
+        assertThat(signupInfo.nickname()).isEqualTo("member-nickname");
+        assertThat(signupInfo.phoneNumber()).isEqualTo("01012345678");
         assertThat(signupInfo.profileImageUrl()).isEqualTo("https://image.example/naver.png");
-        verifyNoInteractions(refreshTokenRedisRepository, socialLoginCodeRedisRepository);
+        assertThat(signupInfo.gender()).isEqualTo(UserGender.MALE);
+        assertThat(signupInfo.birthDate()).isEqualTo(LocalDate.of(2000, 1, 1));
+        verifyNoInteractions(refreshTokenStore, socialLoginCodeRedisRepository);
     }
 
     @Test
@@ -125,7 +146,11 @@ class MemberOAuthServiceTest {
                 "google-id",
                 "member@gmail.com",
                 "member-name",
-                null
+                "member-nickname",
+                "01012345678",
+                null,
+                UserGender.MALE.name(),
+                LocalDate.of(2000, 1, 1)
         );
 
         assertThatThrownBy(() -> memberOAuthService.handleOAuthSuccess(command))
@@ -138,8 +163,8 @@ class MemberOAuthServiceTest {
     @DisplayName("기존 회원이 구매자가 아니면 OAuth 로그인에 실패한다")
     void handleOAuthSuccessThrowsExceptionWhenExistingUserIsNotMember() {
         UUID userId = UUID.randomUUID();
-        when(userRepository.findByProviderAndProviderId(ProviderType.NAVER, "naver-id"))
-                .thenReturn(Optional.of(createSeller(userId)));
+        when(userAccountUseCase.findBySocialAccount(ProviderType.NAVER, "naver-id"))
+                .thenReturn(Optional.of(sellerView(userId)));
 
         assertThatThrownBy(() -> memberOAuthService.handleOAuthSuccess(oAuthCommand()))
                 .isInstanceOfSatisfying(MemberException.class, exception ->
@@ -153,36 +178,63 @@ class MemberOAuthServiceTest {
                 "naver-id",
                 "member@naver.com",
                 "member-name",
-                "https://image.example/naver.png"
+                "member-nickname",
+                "01012345678",
+                "https://image.example/naver.png",
+                UserGender.MALE.name(),
+                LocalDate.of(2000, 1, 1)
         );
     }
 
-    private User createMember(UUID userId) {
-        return User.createSocialMember(
+    private TimeProvider timeProvider() {
+        return new TimeProvider(Clock.fixed(Instant.now(), ZoneOffset.UTC));
+    }
+
+    private UserView memberView(UUID userId) {
+        return new UserView(
+                userId,
+                UserRole.USER,
+                UserStatus.ACTIVE,
                 "member",
+                providerCreatedAt(),
                 "구매자",
                 LocalDate.of(2000, 1, 1),
+                UserGender.MALE,
                 "01012345678",
+                null,
                 "member@example.com",
+                UserGrade.BRONZE,
+                0,
                 true,
                 ProviderType.NAVER,
                 "naver-id",
                 "member@naver.com"
-        ).toBuilder()
-                .userId(userId)
-                .build();
+        );
     }
 
-    private User createSeller(UUID userId) {
-        return User.createSeller(
+    private UserView sellerView(UUID userId) {
+        return new UserView(
+                userId,
+                UserRole.SELLER,
+                UserStatus.ACTIVE,
                 "seller",
+                providerCreatedAt(),
                 "판매자",
                 LocalDate.of(1990, 1, 1),
+                null,
                 "01099998888",
+                null,
                 "seller@example.com",
-                true
-        ).toBuilder()
-                .userId(userId)
-                .build();
+                UserGrade.BRONZE,
+                0,
+                true,
+                null,
+                null,
+                null
+        );
+    }
+
+    private Instant providerCreatedAt() {
+        return Instant.parse("2025-01-01T00:00:00Z");
     }
 }

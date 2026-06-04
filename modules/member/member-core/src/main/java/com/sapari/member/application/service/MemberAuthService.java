@@ -3,6 +3,7 @@ package com.sapari.member.application.service;
 import lombok.RequiredArgsConstructor;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -12,37 +13,46 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.web.security.jwt.JwtSubject;
+import com.sapari.common.web.security.jwt.JwtTokenClaims;
 import com.sapari.common.web.security.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberLogoutCommand;
-import com.sapari.member.command.MemberMeUpdateCommand;
+import com.sapari.member.command.MemberNicknameUpdateCommand;
 import com.sapari.member.command.SocialSignupCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
 import com.sapari.member.domain.exception.MemberException;
 import com.sapari.member.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
-import com.sapari.member.port.MemberAuthFacade;
+import com.sapari.member.port.MemberAuthUseCase;
 import com.sapari.member.result.MemberMeResult;
+import com.sapari.member.result.MemberNicknameUpdateResult;
 import com.sapari.member.result.MemberTokenReissueResult;
+import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.AccessTokenBlacklistRedisRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.user.command.RegisterSocialMemberCommand;
+import com.sapari.common.web.security.AccessTokenBlacklist;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @Service
 @RequiredArgsConstructor
-public class MemberAuthService implements MemberAuthFacade {
+public class MemberAuthService implements MemberAuthUseCase {
+
+    private static final Duration NICKNAME_CHANGE_INTERVAL = Duration.ofDays(30);
 
     private final SocialSignupRedisRepository socialSignupRedisRepository;
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
-    private final UserRepository userRepository;
+    private final UserAccountUseCase userAccountUseCase;
     private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository;
-    private final AccessTokenBlacklistRedisRepository accessTokenBlacklistRedisRepository;
+    private final RefreshTokenStore refreshTokenStore;
+    private final AccessTokenBlacklist accessTokenBlacklist;
+    private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
 
     /**
@@ -54,17 +64,23 @@ public class MemberAuthService implements MemberAuthFacade {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
 
         try {
-            User savedUser = userRepository.save(createMember(command, socialSignupInfo));
+            UserView savedUser = userAccountUseCase.registerSocialMember(toRegisterCommand(command, socialSignupInfo));
             socialSignupRedisRepository.delete(signupSid);
 
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedUser));
             String refreshToken = jwtTokenProvider.createRefreshToken(toJwtSubject(savedUser));
-            refreshTokenRedisRepository.save(savedUser.userId(), refreshToken);
+            refreshTokenStore.save(savedUser.userId(), refreshToken);
 
             return new SocialSignupResult(savedUser.userId(), accessToken, refreshToken);
         } catch (DataIntegrityViolationException e) {
             throw new MemberException(MemberErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SocialSignupInfoResult getSocialSignupInfo(String signupSid) {
+        return toSocialSignupInfoResult(findSocialSignupInfo(signupSid));
     }
 
     /**
@@ -92,10 +108,10 @@ public class MemberAuthService implements MemberAuthFacade {
     @Override
     @Transactional(readOnly = true)
     public MemberTokenReissueResult reissueAccessToken(String refreshToken) {
-        validateRefreshToken(refreshToken);
+        JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
-        User member = findRefreshTokenMember(refreshToken);
-        String savedRefreshToken = refreshTokenRedisRepository.findByUserId(member.userId())
+        UserView member = findRefreshTokenMember(claims.userId());
+        String savedRefreshToken = refreshTokenStore.findByUserId(member.userId())
                 .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN));
 
         if (!savedRefreshToken.equals(refreshToken)) {
@@ -110,26 +126,32 @@ public class MemberAuthService implements MemberAuthFacade {
     @Override
     @Transactional
     public void logout(MemberLogoutCommand command) {
-        refreshTokenRedisRepository.delete(command.userId());
+        refreshTokenStore.delete(command.userId());
         Duration remainingExpiration = getRemainingExpiration(command.accessToken());
 
         if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
             return;
         }
 
-        accessTokenBlacklistRedisRepository.save(command.accessToken(), remainingExpiration);
+        accessTokenBlacklist.save(command.accessToken(), remainingExpiration);
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean isPhoneNumberDuplicated(String phoneNumber) {
-        return userRepository.existsByPhoneNumber(phoneNumber);
+        return userAccountUseCase.existsByPhoneNumber(phoneNumber);
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean isEmailDuplicated(String email) {
-        return userRepository.existsByEmail(email);
+        return userAccountUseCase.existsByEmail(email);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isNicknameDuplicated(String nickname) {
+        return userAccountUseCase.existsByNickname(nickname);
     }
 
     @Override
@@ -140,30 +162,30 @@ public class MemberAuthService implements MemberAuthFacade {
 
     @Override
     @Transactional
-    public MemberMeResult updateMyInfo(MemberMeUpdateCommand command) {
-        User member = findMember(command.userId());
+    public MemberNicknameUpdateResult updateNickname(MemberNicknameUpdateCommand command) {
+        UserView member = findMember(command.userId());
 
-        validateDuplicatedPhoneNumber(command.userId(), command.phoneNumber());
-        validateDuplicatedEmail(command.userId(), command.email());
+        validateDuplicatedNickname(command.nickname());
 
-        User updatedMember = member.updateProfile(
-                command.nickname(),
-                command.name(),
-                command.birthDate(),
-                command.phoneNumber(),
-                command.profileImageKey(),
-                command.email(),
-                command.marketingAgreed()
-        );
+        Instant now = timeProvider.now();
+        validateNicknameChangeAllowed(member, now);
 
-        return toMemberMeResult(userRepository.save(updatedMember));
+        try {
+            UserView savedMember = userAccountUseCase.changeNickname(command.userId(), command.nickname());
+            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedMember));
+
+            return new MemberNicknameUpdateResult(toMemberMeResult(savedMember), accessToken);
+        } catch (DataIntegrityViolationException e) {
+            throw new MemberException(MemberErrorCode.DUPLICATED_NICKNAME, e);
+        }
     }
 
-    private User createMember(SocialSignupCommand command, SocialSignupInfo socialSignupInfo) {
-        return User.createSocialMember(
+    private RegisterSocialMemberCommand toRegisterCommand(SocialSignupCommand command, SocialSignupInfo socialSignupInfo) {
+        return new RegisterSocialMemberCommand(
                 command.nickname(),
                 command.name(),
                 command.birthDate(),
+                UserGender.valueOf(command.gender()),
                 command.phoneNumber(),
                 command.email(),
                 command.isMarketingAgreed(),
@@ -200,20 +222,22 @@ public class MemberAuthService implements MemberAuthFacade {
         }
     }
 
-    private void validateDuplicatedPhoneNumber(UUID userId, String phoneNumber) {
-        if (userRepository.existsByPhoneNumberAndUserIdNot(phoneNumber, userId)) {
-            throw new MemberException(MemberErrorCode.DUPLICATED_PHONE_NUMBER);
+    private void validateDuplicatedNickname(String nickname) {
+        if (userAccountUseCase.existsByNickname(nickname)) {
+            throw new MemberException(MemberErrorCode.DUPLICATED_NICKNAME);
         }
     }
 
-    private void validateDuplicatedEmail(UUID userId, String email) {
-        if (userRepository.existsByEmailAndUserIdNot(email, userId)) {
-            throw new MemberException(MemberErrorCode.DUPLICATED_EMAIL);
+    private void validateNicknameChangeAllowed(UserView member, Instant now) {
+        // 마지막 변경 시각부터 30일이 지나야 다음 닉네임 변경을 허용한다.
+        Instant nextChangeAt = member.nicknameChangedAt().plus(NICKNAME_CHANGE_INTERVAL);
+        if (now.isBefore(nextChangeAt)) {
+            throw new MemberException(MemberErrorCode.NICKNAME_CHANGE_RESTRICTED);
         }
     }
 
-    private User findMember(UUID userId) {
-        User user = userRepository.findById(userId)
+    private UserView findMember(UUID userId) {
+        UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new MemberException(MemberErrorCode.USER_NOT_FOUND));
 
         if (user.role() != UserRole.USER) {
@@ -223,9 +247,8 @@ public class MemberAuthService implements MemberAuthFacade {
         return user;
     }
 
-    private User findRefreshTokenMember(String refreshToken) {
-        UUID userId = getRefreshTokenUserId(refreshToken);
-        User user = userRepository.findById(userId)
+    private UserView findRefreshTokenMember(UUID userId) {
+        UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN));
 
         if (user.role() != UserRole.USER) {
@@ -235,31 +258,23 @@ public class MemberAuthService implements MemberAuthFacade {
         return user;
     }
 
-    private void validateRefreshToken(String refreshToken) {
+    private JwtTokenClaims parseRefreshToken(String refreshToken) {
         if (refreshToken == null || refreshToken.isBlank()) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        if (!jwtTokenProvider.validateToken(refreshToken)) {
+        JwtTokenClaims claims = parseToken(refreshToken);
+
+        if (claims.tokenType() != JwtTokenType.REFRESH) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        if (getRefreshTokenType(refreshToken) != JwtTokenType.REFRESH) {
-            throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
-        }
+        return claims;
     }
 
-    private UUID getRefreshTokenUserId(String refreshToken) {
+    private JwtTokenClaims parseToken(String token) {
         try {
-            return jwtTokenProvider.getUserId(refreshToken);
-        } catch (RuntimeException e) {
-            throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN, e);
-        }
-    }
-
-    private JwtTokenType getRefreshTokenType(String refreshToken) {
-        try {
-            return jwtTokenProvider.getTokenType(refreshToken);
+            return jwtTokenProvider.parseToken(token);
         } catch (RuntimeException e) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN, e);
         }
@@ -267,22 +282,30 @@ public class MemberAuthService implements MemberAuthFacade {
 
     private Duration getRemainingExpiration(String accessToken) {
         try {
-            return jwtTokenProvider.getRemainingExpiration(accessToken);
+            JwtTokenClaims claims = jwtTokenProvider.parseToken(accessToken);
+            Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
+
+            if (remainingExpiration.isNegative()) {
+                return Duration.ZERO;
+            }
+
+            return remainingExpiration;
         } catch (RuntimeException e) {
             throw new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN, e);
         }
     }
 
-    private JwtSubject toJwtSubject(User member) {
-        return new JwtSubject(member.userId(), member.role().name());
+    private JwtSubject toJwtSubject(UserView member) {
+        return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
     }
 
-    private MemberMeResult toMemberMeResult(User member) {
+    private MemberMeResult toMemberMeResult(UserView member) {
         return new MemberMeResult(
                 member.userId(),
                 member.nickname(),
                 member.name(),
                 member.birthDate(),
+                member.gender() == null ? null : member.gender().name(),
                 member.phoneNumber(),
                 member.profileImageKey(),
                 member.email(),
@@ -292,6 +315,18 @@ public class MemberAuthService implements MemberAuthFacade {
                 member.pointBalance(),
                 member.marketingAgreed(),
                 member.provider() == null ? null : member.provider().name()
+        );
+    }
+
+    private SocialSignupInfoResult toSocialSignupInfoResult(SocialSignupInfo socialSignupInfo) {
+        return new SocialSignupInfoResult(
+                socialSignupInfo.phoneNumber(),
+                socialSignupInfo.name(),
+                socialSignupInfo.providerEmail(),
+                socialSignupInfo.nickname(),
+                socialSignupInfo.profileImageUrl(),
+                socialSignupInfo.gender() == null ? null : socialSignupInfo.gender().name(),
+                socialSignupInfo.birthDate()
         );
     }
 }

@@ -8,6 +8,7 @@ public record MemberMeResult(
         String nickname,
         String name,
         LocalDate birthDate,
+        String gender,
         String phoneNumber,
         String profileImageKey,
         String email,

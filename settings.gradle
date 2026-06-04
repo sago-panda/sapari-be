@@ -16,3 +16,6 @@ if(moduleDir.exists()){
         }
     }
 }
+
+// 아키텍처 규칙 테스트 전용 모듈
+include 'architecture-test'

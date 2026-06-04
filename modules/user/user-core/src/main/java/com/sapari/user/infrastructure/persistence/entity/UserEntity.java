@@ -4,35 +4,29 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
+import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.UUID;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import org.hibernate.annotations.UuidGenerator;
 import org.springframework.util.Assert;
 
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserGrade;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.model.UserStatus;
+import com.sapari.storage.db.entity.BaseUuidEntity;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 
 @Entity
 @Getter
 @Table(name = "users")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class UserEntity {
-
-    @Id
-    @UuidGenerator(style = UuidGenerator.Style.VERSION_7)
-    @Column(name = "users_id", nullable = false)
-    private UUID userId;
+public class UserEntity extends BaseUuidEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 10)
@@ -42,13 +36,20 @@ public class UserEntity {
     @Column(nullable = false, length = 15)
     private UserStatus status = UserStatus.ACTIVE;
 
-    @Column(nullable = false, length = 10)
+    @Column(nullable = false, unique = true, length = 10)
     private String nickname;
+
+    @Column(nullable = false)
+    private Instant nicknameChangedAt;
 
     @Column(length = 20)
     private String name;
 
     private LocalDate birthDate;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 10)
+    private UserGender gender;
 
     @Column(nullable = false, unique = true, length = 11)
     private String phoneNumber;
@@ -69,14 +70,14 @@ public class UserEntity {
     @Column(nullable = false)
     private Boolean marketingAgreed = false;
 
-    private LocalDateTime suspendedUntil;
+    private Instant suspendedUntil;
 
     @Column(columnDefinition = "text")
     private String suspensionReason;
 
-    private LocalDateTime deletedAt;
+    private Instant deletedAt;
 
-    private LocalDateTime personalDataPurgedAt;
+    private Instant personalDataPurgedAt;
 
     @Enumerated(EnumType.STRING)
     private ProviderType provider;
@@ -85,32 +86,40 @@ public class UserEntity {
 
     private String providerEmail;
 
-    private LocalDateTime providerCreatedAt;
+    private Instant providerCreatedAt;
 
     public static UserEntity createSocialMember(
             String nickname,
             String name,
             LocalDate birthDate,
+            UserGender gender,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
-            String providerEmail
+            String providerEmail,
+            Instant providerCreatedAt,
+            Instant nicknameChangedAt
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
         Assert.notNull(birthDate, "birthDate은 필수입니다.");
+        Assert.notNull(gender, "gender은 필수입니다.");
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
+        Assert.notNull(providerCreatedAt, "providerCreatedAt은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         UserEntity user = new UserEntity();
 
         user.role = UserRole.USER;
         user.status = UserStatus.ACTIVE;
         user.nickname = nickname;
+        user.nicknameChangedAt = nicknameChangedAt;
         user.name = name;
         user.birthDate = birthDate;
+        user.gender = gender;
         user.phoneNumber = phoneNumber;
         user.email = email;
         user.grade = UserGrade.BRONZE;
@@ -119,7 +128,7 @@ public class UserEntity {
         user.provider = provider;
         user.providerId = providerId;
         user.providerEmail = providerEmail;
-        user.providerCreatedAt = LocalDateTime.now();
+        user.providerCreatedAt = providerCreatedAt;
 
         return user;
     }
@@ -130,19 +139,22 @@ public class UserEntity {
             LocalDate birthDate,
             String phoneNumber,
             String email,
-            Boolean marketingAgreed
+            Boolean marketingAgreed,
+            Instant nicknameChangedAt
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
         Assert.notNull(birthDate, "birthDate은 필수입니다.");
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         UserEntity user = new UserEntity();
 
         user.role = UserRole.SELLER;
         user.status = UserStatus.ACTIVE;
         user.nickname = nickname;
+        user.nicknameChangedAt = nicknameChangedAt;
         user.name = name;
         user.birthDate = birthDate;
         user.phoneNumber = phoneNumber;
@@ -161,7 +173,8 @@ public class UserEntity {
             String phoneNumber,
             String profileImageKey,
             String email,
-            Boolean marketingAgreed
+            Boolean marketingAgreed,
+            Instant nicknameChangedAt
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
@@ -169,8 +182,10 @@ public class UserEntity {
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
         Assert.notNull(marketingAgreed, "marketingAgreed은 필수입니다.");
+        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         this.nickname = nickname;
+        this.nicknameChangedAt = nicknameChangedAt;
         this.name = name;
         this.birthDate = birthDate;
         this.phoneNumber = phoneNumber;

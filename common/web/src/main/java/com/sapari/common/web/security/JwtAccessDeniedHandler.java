@@ -5,26 +5,30 @@ import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.time.LocalDateTime;
+import java.nio.charset.StandardCharsets;
 
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.web.access.AccessDeniedHandler;
 
+import com.sapari.common.core.exception.CommonErrorCode;
 import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.global.time.TimeProvider;
 
 @Slf4j(topic = "JWT_ACCESS_DENIED_HANDLER")
 @RequiredArgsConstructor
 public class JwtAccessDeniedHandler implements AccessDeniedHandler {
 
-    private static final String FORBIDDEN_MESSAGE = "접근 권한이 없습니다.";
+    private static final String REQUEST_ID = "requestId";
 
     private final ObjectMapper objectMapper;
+    private final TimeProvider timeProvider;
 
     @Override
     public void handle(
@@ -34,10 +38,10 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
     ) throws IOException, ServletException {
         log.warn("Access denied: {}", accessDeniedException.getMessage());
 
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.FORBIDDEN.value(),
-                FORBIDDEN_MESSAGE,
-                LocalDateTime.now()
+        ErrorResponse errorResponse = ErrorResponse.of(
+                CommonErrorCode.FORBIDDEN,
+                MDC.get(REQUEST_ID),
+                timeProvider.now()
         );
 
         writeErrorResponse(response, HttpStatus.FORBIDDEN, errorResponse);
@@ -50,7 +54,7 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
     ) throws IOException {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        response.setCharacterEncoding("UTF-8");
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.getWriter().write(objectMapper.writeValueAsString(errorResponse));
     }
 }

@@ -31,6 +31,12 @@ public class LiveRoomEntity extends BaseUuidEntity {
     @Column(columnDefinition = "TEXT")
     private String description;
 
+    @Column(name = "seller_nickname")
+    private String sellerNickname;
+
+    @Column(name = "thumbnail_url")
+    private String thumbnailUrl;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private LiveRoomStatus liveStatus;
@@ -64,7 +70,8 @@ public class LiveRoomEntity extends BaseUuidEntity {
     private boolean isVodPublic;
 
     @Builder
-    public LiveRoomEntity(UUID sellerId, String title, String description, LiveRoomStatus liveStatus,
+    public LiveRoomEntity(UUID sellerId, String title, String description, String sellerNickname,
+                          String thumbnailUrl, LiveRoomStatus liveStatus,
                           String sfuRoomId,
                           String egressId, String hlsUrl, String hlsArchiveUrl, String suspendedReason,
                           Instant suspendedAt, Instant scheduledAt, Instant startedAt,
@@ -74,6 +81,8 @@ public class LiveRoomEntity extends BaseUuidEntity {
         this.sellerId = sellerId;
         this.title = title;
         this.description = description;
+        this.sellerNickname = sellerNickname;
+        this.thumbnailUrl = thumbnailUrl;
         this.liveStatus = liveStatus;
         this.sfuRoomId = sfuRoomId;
         this.egressId = egressId;
@@ -118,6 +127,14 @@ public class LiveRoomEntity extends BaseUuidEntity {
 
     public void updateDescription(String description) {
         this.description = description;
+    }
+
+    public void updateSellerNickname(String sellerNickname) {
+        this.sellerNickname = sellerNickname;
+    }
+
+    public void updateThumbnailUrl(String thumbnailUrl) {
+        this.thumbnailUrl = thumbnailUrl;
     }
 
     public void updateScheduledAt(Instant scheduledAt) {
