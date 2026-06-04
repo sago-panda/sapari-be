@@ -1,7 +1,7 @@
 package com.sapari.user.infrastructure.persistence.mapper;
 
 import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
+import com.sapari.user.model.UserRole;
 import com.sapari.user.infrastructure.persistence.entity.UserEntity;
 
 public class UserMapper {

@@ -20,21 +20,21 @@ import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.member.port.MemberOAuthUseCase;
 import com.sapari.member.result.MemberOAuthResult;
 import com.sapari.member.result.SocialLoginTokenResult;
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @Service
 @RequiredArgsConstructor
 public class MemberOAuthService implements MemberOAuthUseCase {
 
-    private final UserRepository userRepository;
+    private final UserAccountUseCase userAccountUseCase;
     private final SocialSignupRedisRepository socialSignupRedisRepository;
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
     private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository;
+    private final RefreshTokenStore refreshTokenStore;
     private final ObjectMapper objectMapper;
 
     /**
@@ -46,7 +46,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
         ProviderType provider = toProviderType(command.provider());
         validateProviderId(command.providerId());
 
-        return userRepository.findByProviderAndProviderId(provider, command.providerId())
+        return userAccountUseCase.findBySocialAccount(provider, command.providerId())
                 .map(this::createLoginSuccessResult)
                 .orElseGet(() -> createSignupRequiredResult(command));
     }
@@ -54,7 +54,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
     /**
      * 기존 회원에게 전달할 임시 로그인 code를 만들고 Redis에 token 정보를 짧게 저장
      */
-    private MemberOAuthResult createLoginSuccessResult(User user) {
+    private MemberOAuthResult createLoginSuccessResult(UserView user) {
         if (user.role() != UserRole.USER) {
             throw new MemberException(MemberErrorCode.USER_NOT_FOUND);
         }
@@ -68,7 +68,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
                 refreshToken
         ));
 
-        refreshTokenRedisRepository.save(user.userId(), refreshToken);
+        refreshTokenStore.save(user.userId(), refreshToken);
         socialLoginCodeRedisRepository.save(loginCode, socialLoginTokenInfoJson);
 
         return MemberOAuthResult.loginSuccess(loginCode);
@@ -112,7 +112,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
         }
     }
 
-    private JwtSubject toJwtSubject(User member) {
+    private JwtSubject toJwtSubject(UserView member) {
         return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
     }
 }

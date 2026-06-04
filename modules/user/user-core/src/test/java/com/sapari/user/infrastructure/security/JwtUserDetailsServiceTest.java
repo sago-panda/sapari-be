@@ -13,9 +13,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
-import com.sapari.user.domain.model.ProviderType;
+import com.sapari.user.model.ProviderType;
 import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserGender;
+import com.sapari.user.model.UserGender;
 import com.sapari.user.domain.repository.UserRepository;
 
 @DisplayName("JWT 사용자 조회 서비스 테스트")

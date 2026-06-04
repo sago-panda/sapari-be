@@ -8,8 +8,8 @@ import java.util.Map;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserGender;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
 
 public class MemberOAuth2User implements OAuth2User {
 

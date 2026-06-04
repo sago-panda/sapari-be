@@ -30,11 +30,12 @@ import com.sapari.seller.result.SellerMeResult;
 import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.AccessTokenBlacklistRedisRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.user.command.RegisterSellerCommand;
+import com.sapari.common.web.security.AccessTokenBlacklist;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @Service
 @RequiredArgsConstructor
@@ -42,19 +43,19 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     private static final Duration NICKNAME_CHANGE_INTERVAL = Duration.ofDays(30);
 
-    private final UserRepository userRepository;
+    private final UserAccountUseCase userAccountUseCase;
     private final LocalCredentialRepository localCredentialRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository;
-    private final AccessTokenBlacklistRedisRepository accessTokenBlacklistRedisRepository;
+    private final RefreshTokenStore refreshTokenStore;
+    private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
 
     @Override
     @Transactional
     public SellerSignupResult signup(SellerSignupCommand command) {
         try {
-            User savedUser = userRepository.save(createSeller(command));
+            UserView savedUser = userAccountUseCase.registerSeller(toRegisterCommand(command));
             LocalCredential localCredential = LocalCredential.create(
                     savedUser.userId(),
                     passwordEncoder.encode(command.password()),
@@ -72,25 +73,25 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional(readOnly = true)
     public boolean isEmailDuplicated(String email) {
-        return userRepository.existsByEmail(email);
+        return userAccountUseCase.existsByEmail(email);
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean isPhoneNumberDuplicated(String phoneNumber) {
-        return userRepository.existsByPhoneNumber(phoneNumber);
+        return userAccountUseCase.existsByPhoneNumber(phoneNumber);
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean isNicknameDuplicated(String nickname) {
-        return userRepository.existsByNickname(nickname);
+        return userAccountUseCase.existsByNickname(nickname);
     }
 
     @Override
     @Transactional
     public SellerLoginResult login(SellerLoginCommand command) {
-        User seller = findSellerByEmail(command.email());
+        UserView seller = findSellerByEmail(command.email());
         LocalCredential localCredential = findLocalCredential(seller.userId());
 
         if (!passwordEncoder.matches(command.password(), localCredential.passwordHash())) {
@@ -99,7 +100,7 @@ public class SellerAuthService implements SellerAuthUseCase {
 
         String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(seller));
         String refreshToken = jwtTokenProvider.createRefreshToken(toJwtSubject(seller));
-        refreshTokenRedisRepository.save(seller.userId(), refreshToken);
+        refreshTokenStore.save(seller.userId(), refreshToken);
 
         return new SellerLoginResult(seller.userId(), accessToken, refreshToken);
     }
@@ -109,8 +110,8 @@ public class SellerAuthService implements SellerAuthUseCase {
     public SellerTokenReissueResult reissueAccessToken(String refreshToken) {
         JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
-        User seller = findRefreshTokenSeller(claims.userId());
-        String savedRefreshToken = refreshTokenRedisRepository.findByUserId(seller.userId())
+        UserView seller = findRefreshTokenSeller(claims.userId());
+        String savedRefreshToken = refreshTokenStore.findByUserId(seller.userId())
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
 
         if (!savedRefreshToken.equals(refreshToken)) {
@@ -125,14 +126,14 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public void logout(SellerLogoutCommand command) {
-        refreshTokenRedisRepository.delete(command.userId());
+        refreshTokenStore.delete(command.userId());
         Duration remainingExpiration = getRemainingExpiration(command.accessToken());
 
         if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
             return;
         }
 
-        accessTokenBlacklistRedisRepository.save(command.accessToken(), remainingExpiration);
+        accessTokenBlacklist.save(command.accessToken(), remainingExpiration);
     }
 
     @Override
@@ -144,17 +145,15 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
-        User seller = findSeller(command.userId());
+        UserView seller = findSeller(command.userId());
 
         validateDuplicatedNickname(command.nickname());
 
         Instant now = timeProvider.now();
         validateNicknameChangeAllowed(seller, now);
 
-        User updatedSeller = seller.updateNickname(command.nickname(), now);
-
         try {
-            User savedSeller = userRepository.save(updatedSeller);
+            UserView savedSeller = userAccountUseCase.changeNickname(command.userId(), command.nickname());
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller));
 
             return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller), accessToken);
@@ -163,22 +162,19 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
     }
 
-    private User createSeller(SellerSignupCommand command) {
-        Instant now = timeProvider.now();
-
-        return User.createSeller(
+    private RegisterSellerCommand toRegisterCommand(SellerSignupCommand command) {
+        return new RegisterSellerCommand(
                 command.nickname(),
                 command.name(),
                 command.birthDate(),
                 command.phoneNumber(),
                 command.email(),
-                command.marketingAgreed(),
-                now
+                command.marketingAgreed()
         );
     }
 
-    private User findSellerByEmail(String email) {
-        return userRepository.findByEmailAndRole(email, UserRole.SELLER)
+    private UserView findSellerByEmail(String email) {
+        return userAccountUseCase.findByEmailAndRole(email, UserRole.SELLER)
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS));
     }
 
@@ -187,22 +183,22 @@ public class SellerAuthService implements SellerAuthUseCase {
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS));
     }
 
-    private User findRefreshTokenSeller(UUID userId) {
-        User user = userRepository.findById(userId)
+    private UserView findRefreshTokenSeller(UUID userId) {
+        UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
 
-        if (!user.isSeller()) {
+        if (user.role() != UserRole.SELLER) {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
         }
 
         return user;
     }
 
-    private User findSeller(UUID userId) {
-        User user = userRepository.findById(userId)
+    private UserView findSeller(UUID userId) {
+        UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new SellerException(SellerErrorCode.USER_NOT_FOUND));
 
-        if (!user.isSeller()) {
+        if (user.role() != UserRole.SELLER) {
             throw new SellerException(SellerErrorCode.USER_NOT_FOUND);
         }
 
@@ -210,12 +206,12 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     private void validateDuplicatedNickname(String nickname) {
-        if (userRepository.existsByNickname(nickname)) {
+        if (userAccountUseCase.existsByNickname(nickname)) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME);
         }
     }
 
-    private void validateNicknameChangeAllowed(User seller, Instant now) {
+    private void validateNicknameChangeAllowed(UserView seller, Instant now) {
         // 마지막 변경 시각부터 30일이 지나야 다음 닉네임 변경을 허용한다.
         Instant nextChangeAt = seller.nicknameChangedAt().plus(NICKNAME_CHANGE_INTERVAL);
         if (now.isBefore(nextChangeAt)) {
@@ -260,11 +256,11 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
     }
 
-    private JwtSubject toJwtSubject(User seller) {
+    private JwtSubject toJwtSubject(UserView seller) {
         return new JwtSubject(seller.userId(), seller.role().name(), seller.nickname(), seller.email());
     }
 
-    private SellerMeResult toSellerMeResult(User seller) {
+    private SellerMeResult toSellerMeResult(UserView seller) {
         return new SellerMeResult(
                 seller.userId(),
                 seller.nickname(),

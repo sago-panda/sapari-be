@@ -9,6 +9,12 @@ import java.time.LocalDate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
+
 @DisplayName("User 도메인 모델 테스트")
 class UserTest {
 

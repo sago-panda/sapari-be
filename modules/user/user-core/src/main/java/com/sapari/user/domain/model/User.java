@@ -8,6 +8,12 @@ import java.util.UUID;
 
 import org.springframework.util.Assert;
 
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
+
 @Builder(toBuilder = true)
 public record User(
         UUID userId,

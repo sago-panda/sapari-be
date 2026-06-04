@@ -4,8 +4,8 @@ import java.time.LocalDate;
 import java.util.Collections;
 import java.util.Map;
 
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserGender;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
 
 public class NaverOAuth2UserInfo implements OAuth2UserInfo {
 

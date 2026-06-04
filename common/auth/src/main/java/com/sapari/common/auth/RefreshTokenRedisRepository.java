@@ -1,4 +1,4 @@
-package com.sapari.user.infrastructure.security.redis;
+package com.sapari.common.auth;
 
 import lombok.RequiredArgsConstructor;
 
@@ -9,26 +9,30 @@ import java.util.UUID;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.sapari.common.web.security.RefreshTokenStore;
 import com.sapari.common.web.security.jwt.JwtProperties;
 
 @Repository
 @RequiredArgsConstructor
-public class RefreshTokenRedisRepository {
+public class RefreshTokenRedisRepository implements RefreshTokenStore {
 
     private static final String KEY_PREFIX = "refresh-token:user:";
 
     private final StringRedisTemplate stringRedisTemplate;
     private final JwtProperties jwtProperties;
 
+    @Override
     public void save(UUID userId, String refreshToken) {
         stringRedisTemplate.opsForValue()
                 .set(createKey(userId), refreshToken, refreshTokenTtl());
     }
 
+    @Override
     public Optional<String> findByUserId(UUID userId) {
         return Optional.ofNullable(stringRedisTemplate.opsForValue().get(createKey(userId)));
     }
 
+    @Override
     public void delete(UUID userId) {
         stringRedisTemplate.delete(createKey(userId));
     }

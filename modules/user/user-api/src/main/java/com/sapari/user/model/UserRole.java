@@ -1,4 +1,4 @@
-package com.sapari.user.domain.model;
+package com.sapari.user.model;
 
 public enum UserRole {
     USER,

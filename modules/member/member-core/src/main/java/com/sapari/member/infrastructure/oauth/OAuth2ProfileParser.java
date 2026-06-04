@@ -5,7 +5,7 @@ import java.time.LocalDate;
 import java.util.Locale;
 import java.util.Map;
 
-import com.sapari.user.domain.model.UserGender;
+import com.sapari.user.model.UserGender;
 
 public final class OAuth2ProfileParser {
 

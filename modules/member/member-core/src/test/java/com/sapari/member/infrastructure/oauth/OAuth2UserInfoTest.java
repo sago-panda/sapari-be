@@ -8,8 +8,8 @@ import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserGender;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
 
 @DisplayName("OAuth2 사용자 정보 파싱 테스트")
 class OAuth2UserInfoTest {

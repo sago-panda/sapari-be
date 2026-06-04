@@ -3,8 +3,8 @@ package com.sapari.member.application.dto;
 import java.time.LocalDate;
 
 import com.sapari.member.command.MemberOAuthCommand;
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserGender;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
 
 public record SocialSignupInfo(
         ProviderType provider,

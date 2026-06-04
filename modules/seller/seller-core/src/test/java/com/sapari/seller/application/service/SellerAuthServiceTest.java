@@ -38,13 +38,16 @@ import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserGender;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.AccessTokenBlacklistRedisRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.user.command.RegisterSellerCommand;
+import com.sapari.common.web.security.AccessTokenBlacklist;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @DisplayName("판매자 인증 서비스 테스트")
 class SellerAuthServiceTest {
@@ -55,7 +58,7 @@ class SellerAuthServiceTest {
     private static final String PASSWORD_HASH = "hashed-password";
     private static final Instant NOW = Instant.now();
 
-    private final UserRepository userRepository = mock(UserRepository.class);
+    private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
     private final LocalCredentialRepository localCredentialRepository =
             mock(LocalCredentialRepository.class);
     private final PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
@@ -63,17 +66,17 @@ class SellerAuthServiceTest {
             new JwtProperties("seller-test", SECRET, 3600L, 1209600L),
             timeProvider()
     );
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository =
-            mock(RefreshTokenRedisRepository.class);
-    private final AccessTokenBlacklistRedisRepository accessTokenBlacklistRedisRepository =
-            mock(AccessTokenBlacklistRedisRepository.class);
+    private final RefreshTokenStore refreshTokenStore =
+            mock(RefreshTokenStore.class);
+    private final AccessTokenBlacklist accessTokenBlacklist =
+            mock(AccessTokenBlacklist.class);
     private final SellerAuthService sellerAuthService = new SellerAuthService(
-            userRepository,
+            userAccountUseCase,
             localCredentialRepository,
             passwordEncoder,
             jwtTokenProvider,
-            refreshTokenRedisRepository,
-            accessTokenBlacklistRedisRepository,
+            refreshTokenStore,
+            accessTokenBlacklist,
             timeProvider()
     );
 
@@ -84,11 +87,8 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         SellerSignupCommand command = signupCommand();
         when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
-        when(userRepository.save(any(User.class))).thenAnswer(invocation ->
-                ((User) invocation.getArgument(0)).toBuilder()
-                        .userId(userId)
-                        .build()
-        );
+        when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
+                .thenReturn(sellerView(userId));
         when(localCredentialRepository.save(any(LocalCredential.class))).thenAnswer(invocation ->
                 invocation.getArgument(0)
         );
@@ -99,11 +99,11 @@ class SellerAuthServiceTest {
         // then
         assertThat(result.userId()).isEqualTo(userId);
 
-        ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
-        verify(userRepository).save(userCaptor.capture());
-        assertThat(userCaptor.getValue().role()).isEqualTo(UserRole.SELLER);
-        assertThat(userCaptor.getValue().email()).isEqualTo(EMAIL);
-        assertThat(userCaptor.getValue().nicknameChangedAt()).isEqualTo(NOW);
+        ArgumentCaptor<RegisterSellerCommand> commandCaptor =
+                ArgumentCaptor.forClass(RegisterSellerCommand.class);
+        verify(userAccountUseCase).registerSeller(commandCaptor.capture());
+        assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
+        assertThat(commandCaptor.getValue().nickname()).isEqualTo("seller");
 
         ArgumentCaptor<LocalCredential> credentialCaptor = ArgumentCaptor.forClass(LocalCredential.class);
         verify(localCredentialRepository).save(credentialCaptor.capture());
@@ -115,7 +115,7 @@ class SellerAuthServiceTest {
     @DisplayName("회원가입 정보가 중복되면 SellerException이 발생한다")
     void signupThrowsExceptionWhenSignupInfoIsDuplicated() {
         // given
-        when(userRepository.save(any(User.class)))
+        when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
                 .thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
@@ -130,8 +130,8 @@ class SellerAuthServiceTest {
     void loginIssuesTokensAndStoresRefreshToken() {
         // given
         UUID userId = UUID.randomUUID();
-        User seller = createSeller(userId);
-        when(userRepository.findByEmailAndRole(EMAIL, UserRole.SELLER)).thenReturn(Optional.of(seller));
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId)));
         when(localCredentialRepository.findById(userId))
                 .thenReturn(Optional.of(LocalCredential.create(userId, PASSWORD_HASH, passwordChangedAt())));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
@@ -149,7 +149,7 @@ class SellerAuthServiceTest {
         assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
-        verify(refreshTokenRedisRepository).save(userId, result.refreshToken());
+        verify(refreshTokenStore).save(userId, result.refreshToken());
     }
 
     @Test
@@ -157,7 +157,8 @@ class SellerAuthServiceTest {
     void loginThrowsExceptionWhenPasswordDoesNotMatch() {
         // given
         UUID userId = UUID.randomUUID();
-        when(userRepository.findByEmailAndRole(EMAIL, UserRole.SELLER)).thenReturn(Optional.of(createSeller(userId)));
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId)));
         when(localCredentialRepository.findById(userId))
                 .thenReturn(Optional.of(LocalCredential.create(userId, PASSWORD_HASH, passwordChangedAt())));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(false);
@@ -175,8 +176,8 @@ class SellerAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(refreshTokenRedisRepository.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
+        when(refreshTokenStore.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
 
         // when
         SellerTokenReissueResult result = sellerAuthService.reissueAccessToken(refreshToken);
@@ -204,8 +205,8 @@ class SellerAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(refreshTokenRedisRepository.findByUserId(userId)).thenReturn(Optional.of("different-token"));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
+        when(refreshTokenStore.findByUserId(userId)).thenReturn(Optional.of("different-token"));
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.reissueAccessToken(refreshToken))
@@ -220,7 +221,7 @@ class SellerAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.reissueAccessToken(refreshToken))
@@ -240,10 +241,10 @@ class SellerAuthServiceTest {
         sellerAuthService.logout(new SellerLogoutCommand(userId, accessToken));
 
         // then
-        verify(refreshTokenRedisRepository).delete(userId);
+        verify(refreshTokenStore).delete(userId);
 
         ArgumentCaptor<Duration> durationCaptor = ArgumentCaptor.forClass(Duration.class);
-        verify(accessTokenBlacklistRedisRepository).save(eq(accessToken), durationCaptor.capture());
+        verify(accessTokenBlacklist).save(eq(accessToken), durationCaptor.capture());
         assertThat(durationCaptor.getValue()).isPositive();
     }
 
@@ -252,7 +253,7 @@ class SellerAuthServiceTest {
     void getMyInfoThrowsExceptionWhenUserIsNotSeller() {
         // given
         UUID userId = UUID.randomUUID();
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.getMyInfo(userId))
@@ -270,9 +271,10 @@ class SellerAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(userRepository.existsByNickname("updated")).thenReturn(false);
-        when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
+        when(userAccountUseCase.changeNickname(userId, "updated"))
+                .thenReturn(sellerView(userId, "updated", passwordChangedAt()));
 
         // when
         SellerNicknameUpdateResult result = sellerAuthService.updateNickname(command);
@@ -289,8 +291,9 @@ class SellerAuthServiceTest {
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
-        verify(userRepository).existsByNickname("updated");
-        verify(refreshTokenRedisRepository, never()).save(eq(userId), any(String.class));
+        verify(userAccountUseCase).existsByNickname("updated");
+        verify(userAccountUseCase).changeNickname(userId, "updated");
+        verify(refreshTokenStore, never()).save(eq(userId), any(String.class));
     }
 
     @Test
@@ -302,16 +305,17 @@ class SellerAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId, NOW.minus(Duration.ofDays(1)))));
-        when(userRepository.existsByNickname("updated")).thenReturn(false);
+        when(userAccountUseCase.findById(userId))
+                .thenReturn(Optional.of(sellerView(userId, NOW.minus(Duration.ofDays(1)))));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.updateNickname(command))
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED)
                 );
-        verify(userRepository).existsByNickname("updated");
-        verify(userRepository, never()).save(any(User.class));
+        verify(userAccountUseCase).existsByNickname("updated");
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
     }
 
     @Test
@@ -323,16 +327,16 @@ class SellerAuthServiceTest {
                 userId,
                 "seller"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId, NOW)));
-        when(userRepository.existsByNickname("seller")).thenReturn(true);
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId, NOW)));
+        when(userAccountUseCase.existsByNickname("seller")).thenReturn(true);
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.updateNickname(command))
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_NICKNAME)
                 );
-        verify(userRepository).existsByNickname("seller");
-        verify(userRepository, never()).save(any(User.class));
+        verify(userAccountUseCase).existsByNickname("seller");
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
     }
 
     @Test
@@ -344,8 +348,8 @@ class SellerAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(userRepository.existsByNickname("updated")).thenReturn(true);
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(true);
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.updateNickname(command))
@@ -363,9 +367,10 @@ class SellerAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
-        when(userRepository.existsByNickname("updated")).thenReturn(false);
-        when(userRepository.save(any(User.class))).thenThrow(new DataIntegrityViolationException("duplicated"));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
+        when(userAccountUseCase.changeNickname(userId, "updated"))
+                .thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.updateNickname(command))
@@ -378,7 +383,7 @@ class SellerAuthServiceTest {
     @DisplayName("이메일 중복 여부를 조회한다")
     void isEmailDuplicatedReturnsRepositoryResult() {
         // given
-        when(userRepository.existsByEmail(EMAIL)).thenReturn(true);
+        when(userAccountUseCase.existsByEmail(EMAIL)).thenReturn(true);
 
         // when, then
         assertThat(sellerAuthService.isEmailDuplicated(EMAIL)).isTrue();
@@ -388,7 +393,7 @@ class SellerAuthServiceTest {
     @DisplayName("전화번호 중복 여부를 조회한다")
     void isPhoneNumberDuplicatedReturnsRepositoryResult() {
         // given
-        when(userRepository.existsByPhoneNumber("01012345678")).thenReturn(true);
+        when(userAccountUseCase.existsByPhoneNumber("01012345678")).thenReturn(true);
 
         // when, then
         assertThat(sellerAuthService.isPhoneNumberDuplicated("01012345678")).isTrue();
@@ -398,7 +403,7 @@ class SellerAuthServiceTest {
     @DisplayName("닉네임 중복 여부를 조회한다")
     void isNicknameDuplicatedReturnsRepositoryResult() {
         // given
-        when(userRepository.existsByNickname("seller")).thenReturn(true);
+        when(userAccountUseCase.existsByNickname("seller")).thenReturn(true);
 
         // when, then
         assertThat(sellerAuthService.isNicknameDuplicated("seller")).isTrue();
@@ -424,48 +429,59 @@ class SellerAuthServiceTest {
         return new JwtSubject(userId, role, "seller", EMAIL);
     }
 
-    private User createSeller(UUID userId) {
-        return createSeller(userId, providerCreatedAt());
+    private UserView sellerView(UUID userId) {
+        return sellerView(userId, "seller", passwordChangedAt());
     }
 
-    private User createSeller(UUID userId, Instant nicknameChangedAt) {
-        return User.createSeller(
-                "seller",
+    private UserView sellerView(UUID userId, Instant nicknameChangedAt) {
+        return sellerView(userId, "seller", nicknameChangedAt);
+    }
+
+    private UserView sellerView(UUID userId, String nickname, Instant nicknameChangedAt) {
+        return new UserView(
+                userId,
+                UserRole.SELLER,
+                UserStatus.ACTIVE,
+                nickname,
+                nicknameChangedAt,
                 "판매자",
                 LocalDate.of(1990, 1, 1),
+                null,
                 "01012345678",
+                null,
                 EMAIL,
+                UserGrade.BRONZE,
+                0,
                 true,
-                nicknameChangedAt
-        ).toBuilder()
-                .userId(userId)
-                .build();
+                null,
+                null,
+                null
+        );
     }
 
-    private User createMember(UUID userId) {
-        return User.createSocialMember(
+    private UserView memberView(UUID userId) {
+        return new UserView(
+                userId,
+                UserRole.USER,
+                UserStatus.ACTIVE,
                 "member",
+                passwordChangedAt(),
                 "회원",
                 LocalDate.of(1990, 1, 1),
                 UserGender.MALE,
                 "01012345678",
+                null,
                 "member@example.com",
+                UserGrade.BRONZE,
+                0,
                 false,
                 ProviderType.KAKAO,
                 "provider-id",
-                "provider@example.com",
-                providerCreatedAt(),
-                providerCreatedAt()
-        ).toBuilder()
-                .userId(userId)
-                .build();
+                "provider@example.com"
+        );
     }
 
     private Instant passwordChangedAt() {
-        return Instant.parse("2025-01-01T00:00:00Z");
-    }
-
-    private Instant providerCreatedAt() {
         return Instant.parse("2025-01-01T00:00:00Z");
     }
 }

@@ -3,8 +3,8 @@ package com.sapari.member.infrastructure.oauth;
 import java.time.LocalDate;
 import java.util.Map;
 
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserGender;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
 
 public interface OAuth2UserInfo {
 

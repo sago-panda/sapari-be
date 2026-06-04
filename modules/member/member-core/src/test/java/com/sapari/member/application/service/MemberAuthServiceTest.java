@@ -40,13 +40,16 @@ import com.sapari.member.result.MemberTokenReissueResult;
 import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserGender;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.AccessTokenBlacklistRedisRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.user.command.RegisterSocialMemberCommand;
+import com.sapari.common.web.security.AccessTokenBlacklist;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @DisplayName("구매자 인증 서비스 테스트")
 class MemberAuthServiceTest {
@@ -61,23 +64,23 @@ class MemberAuthServiceTest {
             mock(SocialSignupRedisRepository.class);
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository =
             mock(SocialLoginCodeRedisRepository.class);
-    private final UserRepository userRepository = mock(UserRepository.class);
+    private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("member-test", SECRET, 3600L, 1209600L),
             timeProvider()
     );
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository =
-            mock(RefreshTokenRedisRepository.class);
-    private final AccessTokenBlacklistRedisRepository accessTokenBlacklistRedisRepository =
-            mock(AccessTokenBlacklistRedisRepository.class);
+    private final RefreshTokenStore refreshTokenStore =
+            mock(RefreshTokenStore.class);
+    private final AccessTokenBlacklist accessTokenBlacklist =
+            mock(AccessTokenBlacklist.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final MemberAuthService memberAuthService = new MemberAuthService(
             socialSignupRedisRepository,
             socialLoginCodeRedisRepository,
-            userRepository,
+            userAccountUseCase,
             jwtTokenProvider,
-            refreshTokenRedisRepository,
-            accessTokenBlacklistRedisRepository,
+            refreshTokenStore,
+            accessTokenBlacklist,
             timeProvider(),
             objectMapper
     );
@@ -89,11 +92,8 @@ class MemberAuthServiceTest {
         UUID userId = UUID.randomUUID();
         when(socialSignupRedisRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
-        when(userRepository.save(any(User.class))).thenAnswer(invocation ->
-                ((User) invocation.getArgument(0)).toBuilder()
-                        .userId(userId)
-                        .build()
-        );
+        when(userAccountUseCase.registerSocialMember(any(RegisterSocialMemberCommand.class)))
+                .thenReturn(memberView(userId));
 
         // when
         SocialSignupResult result = memberAuthService.completeSocialSignup(SIGNUP_SID, signupCommand());
@@ -109,17 +109,16 @@ class MemberAuthServiceTest {
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
 
-        ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
-        verify(userRepository).save(userCaptor.capture());
-        assertThat(userCaptor.getValue().role()).isEqualTo(UserRole.USER);
-        assertThat(userCaptor.getValue().provider()).isEqualTo(ProviderType.NAVER);
-        assertThat(userCaptor.getValue().providerId()).isEqualTo("naver-id");
-        assertThat(userCaptor.getValue().email()).isEqualTo(EMAIL);
-        assertThat(userCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
-        assertThat(userCaptor.getValue().nicknameChangedAt()).isEqualTo(NOW);
+        ArgumentCaptor<RegisterSocialMemberCommand> commandCaptor =
+                ArgumentCaptor.forClass(RegisterSocialMemberCommand.class);
+        verify(userAccountUseCase).registerSocialMember(commandCaptor.capture());
+        assertThat(commandCaptor.getValue().provider()).isEqualTo(ProviderType.NAVER);
+        assertThat(commandCaptor.getValue().providerId()).isEqualTo("naver-id");
+        assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
+        assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
 
         verify(socialSignupRedisRepository).delete(SIGNUP_SID);
-        verify(refreshTokenRedisRepository).save(userId, result.refreshToken());
+        verify(refreshTokenStore).save(userId, result.refreshToken());
     }
 
     @Test
@@ -130,7 +129,7 @@ class MemberAuthServiceTest {
                         assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.INVALID_SIGNUP_SESSION)
                 );
 
-        verifyNoInteractions(userRepository, refreshTokenRedisRepository);
+        verifyNoInteractions(userAccountUseCase, refreshTokenStore);
     }
 
     @Test
@@ -195,11 +194,10 @@ class MemberAuthServiceTest {
     void reissueAccessTokenReturnsNewAccessTokenWhenRefreshTokenMatches() {
         // given
         UUID userId = UUID.randomUUID();
-        User member = createMember(userId);
         String refreshToken =
                 jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
-        when(userRepository.findById(userId)).thenReturn(Optional.of(member));
-        when(refreshTokenRedisRepository.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
+        when(refreshTokenStore.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
 
         // when
         MemberTokenReissueResult result = memberAuthService.reissueAccessToken(refreshToken);
@@ -219,7 +217,7 @@ class MemberAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String refreshToken =
                 jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.reissueAccessToken(refreshToken))
@@ -240,10 +238,10 @@ class MemberAuthServiceTest {
         memberAuthService.logout(new MemberLogoutCommand(userId, accessToken));
 
         // then
-        verify(refreshTokenRedisRepository).delete(userId);
+        verify(refreshTokenStore).delete(userId);
 
         ArgumentCaptor<Duration> durationCaptor = ArgumentCaptor.forClass(Duration.class);
-        verify(accessTokenBlacklistRedisRepository).save(eq(accessToken), durationCaptor.capture());
+        verify(accessTokenBlacklist).save(eq(accessToken), durationCaptor.capture());
         assertThat(durationCaptor.getValue()).isPositive();
     }
 
@@ -252,7 +250,7 @@ class MemberAuthServiceTest {
     void getMyInfoThrowsExceptionWhenUserIsNotMember() {
         // given
         UUID userId = UUID.randomUUID();
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createSeller(userId)));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.getMyInfo(userId))
@@ -270,9 +268,10 @@ class MemberAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByNickname("updated")).thenReturn(false);
-        when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
+        when(userAccountUseCase.changeNickname(userId, "updated"))
+                .thenReturn(memberView(userId, "updated", providerCreatedAt()));
 
         // when
         MemberNicknameUpdateResult result = memberAuthService.updateNickname(command);
@@ -289,9 +288,9 @@ class MemberAuthServiceTest {
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
-        verify(userRepository).existsByNickname("updated");
-        verify(userRepository).save(any(User.class));
-        verify(refreshTokenRedisRepository, never()).save(eq(userId), any(String.class));
+        verify(userAccountUseCase).existsByNickname("updated");
+        verify(userAccountUseCase).changeNickname(userId, "updated");
+        verify(refreshTokenStore, never()).save(eq(userId), any(String.class));
     }
 
     @Test
@@ -303,16 +302,17 @@ class MemberAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId, NOW.minus(Duration.ofDays(1)))));
-        when(userRepository.existsByNickname("updated")).thenReturn(false);
+        when(userAccountUseCase.findById(userId))
+                .thenReturn(Optional.of(memberView(userId, NOW.minus(Duration.ofDays(1)))));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.updateNickname(command))
                 .isInstanceOfSatisfying(MemberException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.NICKNAME_CHANGE_RESTRICTED)
                 );
-        verify(userRepository).existsByNickname("updated");
-        verify(userRepository, never()).save(any(User.class));
+        verify(userAccountUseCase).existsByNickname("updated");
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
     }
 
     @Test
@@ -324,16 +324,16 @@ class MemberAuthServiceTest {
                 userId,
                 "member"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId, NOW)));
-        when(userRepository.existsByNickname("member")).thenReturn(true);
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId, NOW)));
+        when(userAccountUseCase.existsByNickname("member")).thenReturn(true);
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.updateNickname(command))
                 .isInstanceOfSatisfying(MemberException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.DUPLICATED_NICKNAME)
                 );
-        verify(userRepository).existsByNickname("member");
-        verify(userRepository, never()).save(any(User.class));
+        verify(userAccountUseCase).existsByNickname("member");
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
     }
 
     @Test
@@ -345,8 +345,8 @@ class MemberAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByNickname("updated")).thenReturn(true);
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(true);
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.updateNickname(command))
@@ -364,9 +364,10 @@ class MemberAuthServiceTest {
                 userId,
                 "updated"
         );
-        when(userRepository.findById(userId)).thenReturn(Optional.of(createMember(userId)));
-        when(userRepository.existsByNickname("updated")).thenReturn(false);
-        when(userRepository.save(any(User.class))).thenThrow(new DataIntegrityViolationException("duplicated"));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
+        when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
+        when(userAccountUseCase.changeNickname(userId, "updated"))
+                .thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
         assertThatThrownBy(() -> memberAuthService.updateNickname(command))
@@ -378,7 +379,7 @@ class MemberAuthServiceTest {
     @Test
     @DisplayName("이메일 중복 여부를 조회한다")
     void isEmailDuplicatedReturnsRepositoryResult() {
-        when(userRepository.existsByEmail(EMAIL)).thenReturn(true);
+        when(userAccountUseCase.existsByEmail(EMAIL)).thenReturn(true);
 
         assertThat(memberAuthService.isEmailDuplicated(EMAIL)).isTrue();
     }
@@ -386,7 +387,7 @@ class MemberAuthServiceTest {
     @Test
     @DisplayName("전화번호 중복 여부를 조회한다")
     void isPhoneNumberDuplicatedReturnsRepositoryResult() {
-        when(userRepository.existsByPhoneNumber("01012345678")).thenReturn(true);
+        when(userAccountUseCase.existsByPhoneNumber("01012345678")).thenReturn(true);
 
         assertThat(memberAuthService.isPhoneNumberDuplicated("01012345678")).isTrue();
     }
@@ -394,7 +395,7 @@ class MemberAuthServiceTest {
     @Test
     @DisplayName("닉네임 중복 여부를 조회한다")
     void isNicknameDuplicatedReturnsRepositoryResult() {
-        when(userRepository.existsByNickname("member")).thenReturn(true);
+        when(userAccountUseCase.existsByNickname("member")).thenReturn(true);
 
         assertThat(memberAuthService.isNicknameDuplicated("member")).isTrue();
     }
@@ -433,44 +434,59 @@ class MemberAuthServiceTest {
         return new JwtSubject(userId, role, "member", EMAIL);
     }
 
-    private User createMember(UUID userId) {
-        return createMember(userId, providerCreatedAt());
+    private UserView memberView(UUID userId) {
+        return memberView(userId, "member", providerCreatedAt());
     }
 
-    private User createMember(UUID userId, Instant nicknameChangedAt) {
-        return User.createSocialMember(
-                "member",
+    private UserView memberView(UUID userId, Instant nicknameChangedAt) {
+        return memberView(userId, "member", nicknameChangedAt);
+    }
+
+    private UserView memberView(UUID userId, String nickname, Instant nicknameChangedAt) {
+        return new UserView(
+                userId,
+                UserRole.USER,
+                UserStatus.ACTIVE,
+                nickname,
+                nicknameChangedAt,
                 "구매자",
                 LocalDate.of(2000, 1, 1),
                 UserGender.MALE,
                 "01012345678",
+                null,
                 EMAIL,
+                UserGrade.BRONZE,
+                0,
                 true,
                 ProviderType.NAVER,
                 "naver-id",
-                "provider@example.com",
+                "provider@example.com"
+        );
+    }
+
+    private UserView sellerView(UUID userId) {
+        return new UserView(
+                userId,
+                UserRole.SELLER,
+                UserStatus.ACTIVE,
+                "seller",
                 providerCreatedAt(),
-                nicknameChangedAt
-        ).toBuilder()
-                .userId(userId)
-                .build();
+                "판매자",
+                LocalDate.of(1990, 1, 1),
+                null,
+                "01099998888",
+                null,
+                "seller@example.com",
+                UserGrade.BRONZE,
+                0,
+                true,
+                null,
+                null,
+                null
+        );
     }
 
     private Instant providerCreatedAt() {
         return Instant.parse("2025-01-01T00:00:00Z");
-    }
-
-    private User createSeller(UUID userId) {
-        return User.createSeller(
-                "seller",
-                "판매자",
-                LocalDate.of(1990, 1, 1),
-                "01099998888",
-                "seller@example.com",
-                true,
-                providerCreatedAt()
-        ).toBuilder()
-                .userId(userId)
-                .build();
     }
 }

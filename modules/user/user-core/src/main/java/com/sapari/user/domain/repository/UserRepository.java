@@ -3,9 +3,9 @@ package com.sapari.user.domain.repository;
 import java.util.Optional;
 import java.util.UUID;
 
-import com.sapari.user.domain.model.ProviderType;
+import com.sapari.user.model.ProviderType;
 import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
+import com.sapari.user.model.UserRole;
 
 public interface UserRepository {
 

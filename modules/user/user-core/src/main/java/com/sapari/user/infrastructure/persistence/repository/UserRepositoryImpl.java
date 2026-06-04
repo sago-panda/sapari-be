@@ -9,9 +9,9 @@ import jakarta.persistence.EntityNotFoundException;
 
 import org.springframework.stereotype.Repository;
 
-import com.sapari.user.domain.model.ProviderType;
+import com.sapari.user.model.ProviderType;
 import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserRole;
+import com.sapari.user.model.UserRole;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.infrastructure.persistence.entity.UserEntity;
 import com.sapari.user.infrastructure.persistence.mapper.UserMapper;

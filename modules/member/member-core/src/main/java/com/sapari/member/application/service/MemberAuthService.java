@@ -32,12 +32,13 @@ import com.sapari.member.result.MemberTokenReissueResult;
 import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.model.UserGender;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.repository.UserRepository;
-import com.sapari.user.infrastructure.security.redis.AccessTokenBlacklistRedisRepository;
-import com.sapari.user.infrastructure.security.redis.RefreshTokenRedisRepository;
+import com.sapari.user.command.RegisterSocialMemberCommand;
+import com.sapari.common.web.security.AccessTokenBlacklist;
+import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @Service
 @RequiredArgsConstructor
@@ -47,10 +48,10 @@ public class MemberAuthService implements MemberAuthUseCase {
 
     private final SocialSignupRedisRepository socialSignupRedisRepository;
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
-    private final UserRepository userRepository;
+    private final UserAccountUseCase userAccountUseCase;
     private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenRedisRepository refreshTokenRedisRepository;
-    private final AccessTokenBlacklistRedisRepository accessTokenBlacklistRedisRepository;
+    private final RefreshTokenStore refreshTokenStore;
+    private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
 
@@ -63,12 +64,12 @@ public class MemberAuthService implements MemberAuthUseCase {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
 
         try {
-            User savedUser = userRepository.save(createMember(command, socialSignupInfo));
+            UserView savedUser = userAccountUseCase.registerSocialMember(toRegisterCommand(command, socialSignupInfo));
             socialSignupRedisRepository.delete(signupSid);
 
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedUser));
             String refreshToken = jwtTokenProvider.createRefreshToken(toJwtSubject(savedUser));
-            refreshTokenRedisRepository.save(savedUser.userId(), refreshToken);
+            refreshTokenStore.save(savedUser.userId(), refreshToken);
 
             return new SocialSignupResult(savedUser.userId(), accessToken, refreshToken);
         } catch (DataIntegrityViolationException e) {
@@ -109,8 +110,8 @@ public class MemberAuthService implements MemberAuthUseCase {
     public MemberTokenReissueResult reissueAccessToken(String refreshToken) {
         JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
-        User member = findRefreshTokenMember(claims.userId());
-        String savedRefreshToken = refreshTokenRedisRepository.findByUserId(member.userId())
+        UserView member = findRefreshTokenMember(claims.userId());
+        String savedRefreshToken = refreshTokenStore.findByUserId(member.userId())
                 .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN));
 
         if (!savedRefreshToken.equals(refreshToken)) {
@@ -125,32 +126,32 @@ public class MemberAuthService implements MemberAuthUseCase {
     @Override
     @Transactional
     public void logout(MemberLogoutCommand command) {
-        refreshTokenRedisRepository.delete(command.userId());
+        refreshTokenStore.delete(command.userId());
         Duration remainingExpiration = getRemainingExpiration(command.accessToken());
 
         if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
             return;
         }
 
-        accessTokenBlacklistRedisRepository.save(command.accessToken(), remainingExpiration);
+        accessTokenBlacklist.save(command.accessToken(), remainingExpiration);
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean isPhoneNumberDuplicated(String phoneNumber) {
-        return userRepository.existsByPhoneNumber(phoneNumber);
+        return userAccountUseCase.existsByPhoneNumber(phoneNumber);
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean isEmailDuplicated(String email) {
-        return userRepository.existsByEmail(email);
+        return userAccountUseCase.existsByEmail(email);
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean isNicknameDuplicated(String nickname) {
-        return userRepository.existsByNickname(nickname);
+        return userAccountUseCase.existsByNickname(nickname);
     }
 
     @Override
@@ -162,17 +163,15 @@ public class MemberAuthService implements MemberAuthUseCase {
     @Override
     @Transactional
     public MemberNicknameUpdateResult updateNickname(MemberNicknameUpdateCommand command) {
-        User member = findMember(command.userId());
+        UserView member = findMember(command.userId());
 
         validateDuplicatedNickname(command.nickname());
 
         Instant now = timeProvider.now();
         validateNicknameChangeAllowed(member, now);
 
-        User updatedMember = member.updateNickname(command.nickname(), now);
-
         try {
-            User savedMember = userRepository.save(updatedMember);
+            UserView savedMember = userAccountUseCase.changeNickname(command.userId(), command.nickname());
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedMember));
 
             return new MemberNicknameUpdateResult(toMemberMeResult(savedMember), accessToken);
@@ -181,10 +180,8 @@ public class MemberAuthService implements MemberAuthUseCase {
         }
     }
 
-    private User createMember(SocialSignupCommand command, SocialSignupInfo socialSignupInfo) {
-        Instant now = timeProvider.now();
-
-        return User.createSocialMember(
+    private RegisterSocialMemberCommand toRegisterCommand(SocialSignupCommand command, SocialSignupInfo socialSignupInfo) {
+        return new RegisterSocialMemberCommand(
                 command.nickname(),
                 command.name(),
                 command.birthDate(),
@@ -194,9 +191,7 @@ public class MemberAuthService implements MemberAuthUseCase {
                 command.isMarketingAgreed(),
                 socialSignupInfo.provider(),
                 socialSignupInfo.providerId(),
-                socialSignupInfo.providerEmail(),
-                now,
-                now
+                socialSignupInfo.providerEmail()
         );
     }
 
@@ -228,12 +223,12 @@ public class MemberAuthService implements MemberAuthUseCase {
     }
 
     private void validateDuplicatedNickname(String nickname) {
-        if (userRepository.existsByNickname(nickname)) {
+        if (userAccountUseCase.existsByNickname(nickname)) {
             throw new MemberException(MemberErrorCode.DUPLICATED_NICKNAME);
         }
     }
 
-    private void validateNicknameChangeAllowed(User member, Instant now) {
+    private void validateNicknameChangeAllowed(UserView member, Instant now) {
         // 마지막 변경 시각부터 30일이 지나야 다음 닉네임 변경을 허용한다.
         Instant nextChangeAt = member.nicknameChangedAt().plus(NICKNAME_CHANGE_INTERVAL);
         if (now.isBefore(nextChangeAt)) {
@@ -241,8 +236,8 @@ public class MemberAuthService implements MemberAuthUseCase {
         }
     }
 
-    private User findMember(UUID userId) {
-        User user = userRepository.findById(userId)
+    private UserView findMember(UUID userId) {
+        UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new MemberException(MemberErrorCode.USER_NOT_FOUND));
 
         if (user.role() != UserRole.USER) {
@@ -252,8 +247,8 @@ public class MemberAuthService implements MemberAuthUseCase {
         return user;
     }
 
-    private User findRefreshTokenMember(UUID userId) {
-        User user = userRepository.findById(userId)
+    private UserView findRefreshTokenMember(UUID userId) {
+        UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN));
 
         if (user.role() != UserRole.USER) {
@@ -300,11 +295,11 @@ public class MemberAuthService implements MemberAuthUseCase {
         }
     }
 
-    private JwtSubject toJwtSubject(User member) {
+    private JwtSubject toJwtSubject(UserView member) {
         return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
     }
 
-    private MemberMeResult toMemberMeResult(User member) {
+    private MemberMeResult toMemberMeResult(UserView member) {
         return new MemberMeResult(
                 member.userId(),
                 member.nickname(),

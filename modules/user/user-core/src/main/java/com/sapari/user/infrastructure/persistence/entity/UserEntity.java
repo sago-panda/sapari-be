@@ -16,11 +16,11 @@ import jakarta.persistence.Table;
 import org.springframework.util.Assert;
 
 import com.sapari.storage.db.entity.BaseUuidEntity;
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserGender;
-import com.sapari.user.domain.model.UserGrade;
-import com.sapari.user.domain.model.UserRole;
-import com.sapari.user.domain.model.UserStatus;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserGender;
+import com.sapari.user.model.UserGrade;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 
 @Entity
 @Getter

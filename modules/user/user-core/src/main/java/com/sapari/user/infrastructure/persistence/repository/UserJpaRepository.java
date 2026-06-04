@@ -6,8 +6,8 @@ import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
-import com.sapari.user.domain.model.ProviderType;
-import com.sapari.user.domain.model.UserRole;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.UserRole;
 import com.sapari.user.infrastructure.persistence.entity.UserEntity;
 
 @Repository
