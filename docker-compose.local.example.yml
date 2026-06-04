@@ -1,0 +1,40 @@
+# 로컬 개발/수동 검증용 인프라 템플릿 (운영 아님)
+#
+# 사용:  cp docker-compose.local.example.yml docker-compose.local.yml
+#        docker compose -f docker-compose.local.yml up -d
+#        docker compose -f docker-compose.local.yml down
+#
+# 실제 파일(docker-compose.local.yml)은 .gitignore — 개인별로 포트/버전 조정해 쓰세요.
+# ※ 통합/단위 테스트의 Redis·Mongo는 TestContainers가 자체 기동 → 이 compose와 별개.
+services:
+  postgres:                          # 메인 RDB (live_rooms, chat_kick_log 등)
+    image: postgres:16
+    environment:
+      POSTGRES_DB: sapari
+      POSTGRES_USER: sapari
+      POSTGRES_PASSWORD: sapari      # 로컬 더미 — 실제 시크릿 아님
+    ports: ["5432:5432"]
+    volumes:
+      - sapari-pg:/var/lib/postgresql/data
+
+  redis:                             # 단일 노드 (운영은 Cluster HA — 로컬은 단일로 충분)
+    image: redis:7
+    ports: ["6379:6379"]
+
+  mongo:                             # 채팅 메시지 전용 (chat_messages)
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes:
+      - sapari-mongo:/data/db
+
+  livekit:                           # SFU (WebRTC) — --dev 모드: 기본 키 devkey/secret
+    image: livekit/livekit-server
+    command: --dev --bind 0.0.0.0 --node-ip 127.0.0.1
+    ports:
+      - "7880:7880"                  # HTTP/WebSocket signaling
+      - "7881:7881"                  # RTC over TCP
+      - "7882:7882/udp"              # RTC over UDP
+
+volumes:
+  sapari-pg:
+  sapari-mongo:
