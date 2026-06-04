@@ -48,3 +48,6 @@ application*.yml
 ###DS_store###
 .DS_Store
 modules/.DS_Store
+
+### 로컬 전용 compose (개인 파일 — example만 커밋, 실제 파일은 무시) ###
+docker-compose.local.yml
