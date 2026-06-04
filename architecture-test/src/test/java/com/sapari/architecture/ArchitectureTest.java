@@ -120,12 +120,12 @@ class ArchitectureTest {
         return parts.length >= 4 && CORE_LAYERS.contains(parts[3]);
     }
 
-    // 6) common/global(공유 토대)은 도메인 모듈(member/seller/user/live...)을 의존하면 안 된다.
-    //    (common -> 도메인 core 역전 방지: 공유 인증·유틸이 특정 도메인에 매이면 안 됨)
+    // 6) 공유 토대(common/global/storage)는 도메인 모듈(member/seller/user/live...)을 의존하면 안 된다.
+    //    (역전 방지: 공유 인증·유틸·스토리지가 특정 도메인에 매이면 안 됨)
     @Test
-    void common_must_not_depend_on_domain_modules() {
+    void foundation_must_not_depend_on_domain_modules() {
         ArchRule rule = classes()
-                .that().resideInAnyPackage("com.sapari.common..", "com.sapari.global..")
+                .that().resideInAnyPackage("com.sapari.common..", "com.sapari.global..", "com.sapari.storage..")
                 .should(dependOnDomainModule());
 
         rule.check(SAPARI);
@@ -139,6 +139,18 @@ class ArchitectureTest {
                 .matching("com.sapari.(*)..")
                 .should().beFreeOfCycles()
                 .check(SAPARI);
+    }
+
+    // 8) JPA 엔티티(@Entity)는 infrastructure.persistence 안에서만 참조되어야 한다 (보안: mass assignment 방어).
+    //    컨트롤러/서비스/도메인이 엔티티를 직접 다루면 클라가 role·status·id 등을 주입(over-posting)하거나
+    //    엔티티가 응답에 노출될 수 있다 → 요청 DTO·도메인 record로만 주고받는다.
+    @Test
+    void jpa_entities_are_only_used_within_persistence() {
+        ArchRule rule = classes()
+                .that().areAnnotatedWith("jakarta.persistence.Entity")
+                .should().onlyHaveDependentClassesThat().resideInAnyPackage("..infrastructure.persistence..");
+
+        rule.check(SAPARI);
     }
 
     private static final Set<String> NON_DOMAIN_ROOTS = Set.of("common", "global", "storage", "architecture");

@@ -16,7 +16,8 @@
       "Read(./.env)",
       "Read(./**/.env)",
       "Read(./**/*.pem)",
-      "Bash(rm -rf:*)"
+      "Bash(rm -rf:*)",
+      "Bash(git push:*)"
     ]
   }
 }

@@ -37,11 +37,16 @@ All LiveKit access goes through `LiveMediaManager` (port) ← `LiveKitMediaManag
 Never call LiveKit SDK from a service. Port surface: `createRoom`, `issueSellerToken`,
 `startHlsEgress`, `stopHlsEgress`, `closeRoom`, `getSfuUrl`.
 
-**`StartLiveService` ordering (intentional):** guard state → validate pinned product → issue SFU
-token → start HLS egress → domain transition → persist. The media calls happen **inside**
-`@Transactional` *after* pre-validation — this is a deliberate exception to "minimize external
-calls in a tx" (state is re-checked here to avoid hitting the media server in a bad state). Keep
-the order; the egressId returned is needed later by `stopHlsEgress`.
+**Intentional exception — external calls inside `@Transactional` (`StartLiveService`).**
+The root rule is "minimize external calls in a tx"; here it is deliberate. Order:
+guard state (`canStartLive()` re-check) → validate pinned product → `issueSellerToken`
+→ `startHlsEgress` → domain transition → persist. The media calls run **inside** the tx,
+*after* re-validation, so we never hit the media server in a bad state, and the `egressId` is
+committed together with the room (needed later by `stopHlsEgress`).
+**Accepted risk:** the DB connection is held across media I/O, and if persistence fails *after*
+`startHlsEgress` the egress is orphaned (egressId never committed → no auto-cleanup; needs a
+compensating `stopHlsEgress`, not wired yet). Keep this order — **reviewers must NOT flag the
+in-transaction network call here.**
 
 **Pinned product rule:** starting requires **exactly one** pinned product (`validatePinnedProduct`).
 
