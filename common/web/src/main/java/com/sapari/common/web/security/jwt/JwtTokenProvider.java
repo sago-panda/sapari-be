@@ -1,14 +1,9 @@
 package com.sapari.common.web.security.jwt;
 
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtBuilder;
-import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.MalformedJwtException;
-import io.jsonwebtoken.UnsupportedJwtException;
 import io.jsonwebtoken.security.Keys;
-import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -21,7 +16,6 @@ import org.springframework.stereotype.Component;
 
 import com.sapari.global.time.TimeProvider;
 
-@Slf4j
 @Component
 public class JwtTokenProvider {
 
@@ -95,29 +89,13 @@ public class JwtTokenProvider {
     }
 
     private Claims parseClaims(String token) {
-        try {
-            return Jwts.parser()
-                    .verifyWith(secretKey)
-                    .requireIssuer(issuer)
-                    .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
-        } catch (SecurityException | MalformedJwtException e) {
-            log.warn("Invalid JWT token", e);
-            throw e;
-        } catch (ExpiredJwtException e) {
-            log.debug("Expired JWT token", e);
-            throw e;
-        } catch (UnsupportedJwtException e) {
-            log.warn("Unsupported JWT token", e);
-            throw e;
-        } catch (IllegalArgumentException e) {
-            log.warn("JWT token is empty", e);
-            throw e;
-        } catch (JwtException e) {
-            log.warn("JWT token validation failed", e);
-            throw e;
-        }
+        return Jwts.parser()
+                .verifyWith(secretKey)
+                .requireIssuer(issuer)
+                .clock(() -> Date.from(timeProvider.now()))
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
     }
 
     /**
