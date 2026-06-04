@@ -1,16 +1,28 @@
 dependencies {
     implementation project(':common:web')
+    implementation project(':common:auth')
     implementation(project(":modules:live:live-api"))
     implementation(project(":modules:live:live-core"))
+    implementation(project(":modules:member:member-api"))
+    implementation(project(":modules:member:member-core"))
+    implementation(project(":modules:seller:seller-api"))
+    implementation(project(":modules:seller:seller-core"))
+    implementation(project(":modules:user:user-core"))
+    implementation(project(":storage:redis-core"))
 
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.84'
 
     runtimeOnly("org.postgresql:postgresql")
 
     testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
+    testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
+    testImplementation 'org.springframework.security:spring-security-test'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
