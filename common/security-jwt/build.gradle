@@ -1,0 +1,17 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':common:global')
+
+    // JWT 코덱 — jjwt-api는 JwtException 등 타입이 common/web(필터)에 노출되므로 api로 재노출
+    api 'io.jsonwebtoken:jjwt-api:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.13.0'
+
+    // JwtProperties의 jakarta.validation 제약(@NotBlank/@Size/@Positive)
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}

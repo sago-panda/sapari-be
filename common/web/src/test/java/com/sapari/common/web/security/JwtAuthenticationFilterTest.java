@@ -24,9 +24,10 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 
-import com.sapari.common.web.security.jwt.JwtProperties;
-import com.sapari.common.web.security.jwt.JwtSubject;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.global.time.TimeProvider;
 
 @DisplayName("JWT 인증 필터 테스트")

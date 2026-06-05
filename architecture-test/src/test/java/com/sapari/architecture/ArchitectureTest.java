@@ -153,6 +153,20 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    // 9) 공유 JWT 코덱 모듈(common/security-jwt)은 Servlet/웹MVC/스프링시큐리티에 의존하면 안 된다.
+    //    (WebFlux 등 비-Servlet 소비자도 공유할 수 있도록 Servlet-free 유지 — JWT-A 추출 불변식)
+    @Test
+    void security_jwt_must_stay_servlet_free() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.common.securityjwt..")
+                .should().dependOnClassesThat().resideInAnyPackage(
+                        "jakarta.servlet..",
+                        "org.springframework.web..",
+                        "org.springframework.security..");
+
+        rule.check(SAPARI);
+    }
+
     private static final Set<String> NON_DOMAIN_ROOTS = Set.of("common", "global", "storage", "architecture");
 
     /** 대상이 도메인 모듈(com.sapari.<도메인>) 클래스이면 위반으로 기록하는 조건. */

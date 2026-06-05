@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    implementation project(':common:web')
+    implementation project(':common:security-jwt')
     implementation project(':storage:redis-core')
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
