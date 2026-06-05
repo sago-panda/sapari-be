@@ -104,6 +104,24 @@ class JwtTokenProviderTest {
     }
 
     @Test
+    @DisplayName("RTR용 Refresh Token은 기존 만료 시각을 유지하고 새 jti를 가진다")
+    void createRefreshTokenForRotationKeepsExpirationAndUsesNewTokenId() {
+        // given
+        JwtTokenClaims previousClaims = jwtTokenProvider.parseToken(jwtTokenProvider.createRefreshToken(subject));
+
+        // when
+        JwtTokenClaims rotatedClaims = jwtTokenProvider.parseToken(
+                jwtTokenProvider.createRefreshTokenForRotation(subject, previousClaims.expiresAt())
+        );
+
+        // then
+        assertEquals(previousClaims.sessionId(), rotatedClaims.sessionId());
+        assertNotEquals(previousClaims.tokenId(), rotatedClaims.tokenId());
+        assertEquals(previousClaims.expiresAt(), rotatedClaims.expiresAt());
+        assertEquals(JwtTokenType.REFRESH, rotatedClaims.tokenType());
+    }
+
+    @Test
     @DisplayName("유효한 토큰의 남은 만료 시간은 0보다 크다")
     void getRemainingExpirationReturnsPositiveDurationWhenTokenIsValid() {
         // when
