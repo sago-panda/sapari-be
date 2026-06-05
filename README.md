@@ -9,7 +9,7 @@
 - [모듈 의존 규칙](#모듈-의존-규칙)
 - [브랜치 컨벤션](#브랜치-컨벤션)
 - [커밋 컨벤션](#커밋-컨벤션)
-- [PR 컨벤션](#pr-컨벤션)
+- [MR 컨벤션](#mr-컨벤션)
 - [머지 전략](#머지-전략)
 
 ---
@@ -139,9 +139,9 @@ modules/X/X-api  → (의존 없음, DTO/인터페이스만)
 ### 보호 브랜치
 
 ```
-main      ← 운영 배포 (직접 push 금지, PR만)
+main      ← 운영 배포 (직접 push 금지, MR만)
 dev   ← 통합 브랜치 (개발 서버 자동 배포)
-*         ← 위 컨벤션 따라 생성, develop으로 PR
+*         ← 위 컨벤션 따라 생성, dev로 MR
 ```
 
 ---
@@ -183,7 +183,7 @@ dev   ← 통합 브랜치 (개발 서버 자동 배포)
 | `order` | `modules/order/**` |
 | `promotion` | `modules/promotion/**` |
 | `notification` | `modules/notification/**` |
-| `common` | `commons/**` |
+| `common` | `common/**` |
 | `storage` | `storage/**` |
 | `app` | `apps/**` |
 | `infra` | 빌드, CI, 도커 등 (scope 생략 가능) |
@@ -268,7 +268,7 @@ fix(payment): null 체크 추가 [SPR-145] #comment 핫픽스 적용 #time 30m
 
 ---
 
-## PR 컨벤션
+## MR 컨벤션
 
 ### 제목
 
@@ -282,31 +282,9 @@ fix(payment): null 체크 추가 [SPR-145] #comment 핫픽스 적용 #time 30m
 [SPR-123] feat(live): LiveKit HLS Egress 통합
 ```
 
-### 템플릿 (`.github/pull_request_template.md`)
+### 템플릿
 
-```markdown
-## 작업 내용
-<!-- 무엇을 했는지 한두 줄 -->
-
-## 배경 / 이유
-<!-- 왜 이 변경이 필요한지 -->
-
-## 변경 사항
-- [ ] 항목 1
-- [ ] 항목 2
-
-## 테스트
-<!-- 어떻게 검증했는지, 추가한 테스트 -->
-
-## 체크리스트
-- [ ] 단위 테스트 추가/수정
-- [ ] ArchUnit 모듈 의존 테스트 통과
-- [ ] DB 스키마 변경 시 Flyway 마이그레이션 포함
-- [ ] Breaking change 시 BREAKING CHANGE 표기
-
-## Jira
-SAPARI-123
-```
+MR 템플릿은 `.gitlab/merge_request_templates/default.md`에 있으며, MR 생성 화면의 description 드롭다운에서 선택하면 자동 로드됩니다. (기본 브랜치 `dev`에 있어야 적용됨)
 
 ---
 
@@ -314,10 +292,10 @@ SAPARI-123
 
 | 전략 | 용도 |
 |---|---|
-| **Squash and merge** | feature/fix 브랜치 → develop. 작은 커밋들을 1개로 압축 |
-| **Merge commit** | develop → main (릴리즈). 머지 포인트가 명확하게 보임 |
+| **Squash and merge** | feature/fix 브랜치 → dev. 작은 커밋들을 1개로 압축 |
+| **Merge commit** | dev → main (릴리즈). 머지 포인트가 명확하게 보임 |
 
-GitHub PR 설정에서 "Squash and merge"만 활성화 권장.
+GitLab MR 설정에서 "Squash commits when merging"을 활성화 권장.
 
 ---
 
@@ -326,16 +304,16 @@ GitHub PR 설정에서 "Squash and merge"만 활성화 권장.
 ```
 브랜치:  <type>/SPR-XXX
 커밋:    <type>(<scope>): <한글 요약> [SPR-XXX]
-PR:      [SPR-XXX] <type>(<scope>): <한글 요약>
+MR:      [SPR-XXX] <type>(<scope>): <한글 요약>
 
 type:    feat fix refactor perf test docs chore style ci
 scope:   user product live order promotion notification
          common storage app infra
 
 규칙:
-  - 커밋·PR에 [SPR-XXX] 필수
-  - main 직접 push 금지, PR만
-  - PR은 Squash merge
+  - 커밋·MR에 [SPR-XXX] 필수
+  - main 직접 push 금지, MR만
+  - MR은 Squash merge
   - subject 50자 이내, 마침표 X
   - perf는 측정 가능한 성능 개선에만 사용
 ```
