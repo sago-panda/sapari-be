@@ -1,4 +1,4 @@
-package com.sapari.common.web.security.jwt;
+package com.sapari.common.securityjwt.jwt;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtBuilder;

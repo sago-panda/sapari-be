@@ -1,4 +1,4 @@
-package com.sapari.common.web.security;
+package com.sapari.common.securityjwt.store;
 
 import java.util.UUID;
 
