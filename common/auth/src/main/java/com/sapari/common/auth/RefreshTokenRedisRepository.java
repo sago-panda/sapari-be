@@ -9,14 +9,13 @@ import java.util.UUID;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
-import com.sapari.common.web.security.RefreshTokenStore;
-import com.sapari.common.web.security.jwt.JwtProperties;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.TokenStoreKeys;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
 
 @Repository
 @RequiredArgsConstructor
 public class RefreshTokenRedisRepository implements RefreshTokenStore {
-
-    private static final String KEY_PREFIX = "refresh-token:session:";
 
     private final StringRedisTemplate stringRedisTemplate;
     private final JwtProperties jwtProperties;
@@ -48,6 +47,6 @@ public class RefreshTokenRedisRepository implements RefreshTokenStore {
     }
 
     private String createKey(UUID sessionId) {
-        return KEY_PREFIX + sessionId;
+        return TokenStoreKeys.REFRESH_TOKEN_SESSION_PREFIX + sessionId;
     }
 }

@@ -1,4 +1,4 @@
-package com.sapari.common.web.security.jwt;
+package com.sapari.common.securityjwt.jwt;
 
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;

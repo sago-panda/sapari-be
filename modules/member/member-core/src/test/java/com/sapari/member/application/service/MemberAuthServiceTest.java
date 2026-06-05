@@ -21,11 +21,11 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.web.security.jwt.JwtProperties;
-import com.sapari.common.web.security.jwt.JwtSubject;
-import com.sapari.common.web.security.jwt.JwtTokenClaims;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
-import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberLogoutCommand;
@@ -41,8 +41,8 @@ import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialMemberCommand;
-import com.sapari.common.web.security.AccessTokenBlacklist;
-import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;

@@ -185,7 +185,7 @@ public class MemberAuthController {
     @PutMapping("/me/nickname")
     public ResponseEntity<MemberMeResponse> updateNickname(
             @CurrentUserId UUID userId,
-            @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody MemberNicknameUpdateRequest request
     ) {
         MemberNicknameUpdateResult result = memberAuthUseCase.updateNickname(
