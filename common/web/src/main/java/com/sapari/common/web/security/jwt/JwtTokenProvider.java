@@ -23,6 +23,7 @@ public class JwtTokenProvider {
     private static final String TOKEN_TYPE_CLAIM = "tokenType";
     private static final String NICKNAME_CLAIM = "nickname";
     private static final String EMAIL_CLAIM = "email";
+    private static final String SESSION_ID_CLAIM = "sid";
 
     private final String issuer;
     private final SecretKey secretKey;
@@ -48,13 +49,15 @@ public class JwtTokenProvider {
     }
 
     /**
-     * 토큰의 서명, 만료 여부, 필수 claims를 검증하고 파싱 결과를 반환
+     * 토큰의 서명, 만료 여부와 jti/sid/tokenType 필수 claims를 검증하고 파싱 결과를 반환
      */
     public JwtTokenClaims parseToken(String token) {
         Claims claims = parseClaims(token);
 
         return new JwtTokenClaims(
                 getRequiredUserId(claims),
+                getRequiredSessionId(claims),
+                getRequiredTokenId(claims),
                 getRequiredRole(claims),
                 getRequiredTokenType(claims),
                 getOptionalStringClaim(claims, NICKNAME_CLAIM),
@@ -70,10 +73,13 @@ public class JwtTokenProvider {
     ) {
         Instant now = timeProvider.now();
         Instant expiration = now.plusSeconds(expirationSeconds);
+        UUID tokenId = UUID.randomUUID();
 
         JwtBuilder builder = Jwts.builder()
+                .id(tokenId.toString())
                 .issuer(issuer)
                 .subject(subject.userId().toString())
+                .claim(SESSION_ID_CLAIM, subject.sessionId().toString())
                 .claim(ROLE_CLAIM, subject.role())
                 .claim(TOKEN_TYPE_CLAIM, tokenType.name())
                 .issuedAt(Date.from(now))
@@ -109,6 +115,32 @@ public class JwtTokenProvider {
         }
 
         return UUID.fromString(subject);
+    }
+
+    /**
+     * Refresh Token 저장소 조회에 필요한 sid claim이 포함되어 있는지 확인
+     */
+    private UUID getRequiredSessionId(Claims claims) {
+        String sessionId = claims.get(SESSION_ID_CLAIM, String.class);
+
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("JWT sid claim is required.");
+        }
+
+        return UUID.fromString(sessionId);
+    }
+
+    /**
+     * 토큰 단위 폐기에 필요한 jti claim이 포함되어 있는지 확인
+     */
+    private UUID getRequiredTokenId(Claims claims) {
+        String tokenId = claims.getId();
+
+        if (tokenId == null || tokenId.isBlank()) {
+            throw new IllegalArgumentException("JWT jti claim is required.");
+        }
+
+        return UUID.fromString(tokenId);
     }
 
     /**

@@ -145,9 +145,12 @@ public class SellerAuthController {
     @PutMapping("/me/nickname")
     public ResponseEntity<SellerMeResponse> updateNickname(
             @CurrentUserId UUID userId,
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
-        SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(request.toCommand(userId));
+        SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(
+                request.toCommand(userId, resolveAccessToken(authorizationHeader))
+        );
 
         return ResponseEntity
                 .ok()

@@ -9,9 +9,9 @@ import java.util.UUID;
  */
 public interface RefreshTokenStore {
 
-    void save(UUID userId, String refreshToken);
+    void save(UUID sessionId, String refreshToken);
 
-    Optional<String> findByUserId(UUID userId);
+    Optional<String> findBySessionId(UUID sessionId);
 
-    void delete(UUID userId);
+    void deleteBySessionId(UUID sessionId);
 }
