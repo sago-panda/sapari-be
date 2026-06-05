@@ -1,6 +1,8 @@
 package com.sapari.common.web.security.jwt;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -41,6 +43,7 @@ class JwtTokenProviderTest {
     private TimeProvider timeProvider;
     private JwtTokenProvider jwtTokenProvider;
     private UUID userId;
+    private UUID sessionId;
     private JwtSubject subject;
 
     @BeforeEach
@@ -48,6 +51,7 @@ class JwtTokenProviderTest {
         timeProvider = new TimeProvider(Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
         jwtTokenProvider = createProvider(ACCESS_TOKEN_EXPIRATION_SECONDS, REFRESH_TOKEN_EXPIRATION_SECONDS);
         userId = UUID.randomUUID();
+        sessionId = UUID.randomUUID();
         subject = jwtSubject(userId, "USER");
     }
 
@@ -60,6 +64,8 @@ class JwtTokenProviderTest {
 
         // then
         assertEquals(userId, claims.userId());
+        assertEquals(sessionId, claims.sessionId());
+        assertNotNull(claims.tokenId());
         assertEquals("USER", claims.role());
         assertEquals(JwtTokenType.ACCESS, claims.tokenType());
         assertEquals("member", claims.nickname());
@@ -76,11 +82,25 @@ class JwtTokenProviderTest {
 
         // then
         assertEquals(userId, claims.userId());
+        assertEquals(sessionId, claims.sessionId());
+        assertNotNull(claims.tokenId());
         assertEquals("USER", claims.role());
         assertEquals(JwtTokenType.REFRESH, claims.tokenType());
         assertNull(claims.nickname());
         assertNull(claims.email());
         assertEquals(FIXED_NOW.plusSeconds(REFRESH_TOKEN_EXPIRATION_SECONDS), claims.expiresAt());
+    }
+
+    @Test
+    @DisplayName("같은 세션의 Access Token과 Refresh Token은 같은 sid와 다른 jti를 가진다")
+    void createTokensShareSessionIdAndUseDifferentTokenId() {
+        // when
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(jwtTokenProvider.createAccessToken(subject));
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(jwtTokenProvider.createRefreshToken(subject));
+
+        // then
+        assertEquals(accessClaims.sessionId(), refreshClaims.sessionId());
+        assertNotEquals(accessClaims.tokenId(), refreshClaims.tokenId());
     }
 
     @Test
@@ -169,6 +189,26 @@ class JwtTokenProviderTest {
     }
 
     @Test
+    @DisplayName("jti가 없으면 파싱에 실패한다")
+    void parseTokenThrowsExceptionWhenTokenIdIsMissing() {
+        // given
+        String token = createTokenWithoutTokenId();
+
+        // when, then
+        assertThrows(IllegalArgumentException.class, () -> jwtTokenProvider.parseToken(token));
+    }
+
+    @Test
+    @DisplayName("sid가 없으면 파싱에 실패한다")
+    void parseTokenThrowsExceptionWhenSessionIdIsMissing() {
+        // given
+        String token = createTokenWithoutSessionId();
+
+        // when, then
+        assertThrows(IllegalArgumentException.class, () -> jwtTokenProvider.parseToken(token));
+    }
+
+    @Test
     @DisplayName("JWT 설정 객체는 yml 또는 환경변수에서 주입된 값을 그대로 가진다")
     void jwtPropertiesKeepsConfiguredValues() {
         // given & when
@@ -203,13 +243,15 @@ class JwtTokenProviderTest {
     }
 
     private JwtSubject jwtSubject(UUID userId, String role) {
-        return new JwtSubject(userId, role, "member", "member@example.com");
+        return new JwtSubject(userId, sessionId, role, "member", "member@example.com");
     }
 
     private String createExpiredToken() {
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .issuer(ISSUER)
                 .subject(userId.toString())
+                .claim("sid", sessionId.toString())
                 .claim("role", "USER")
                 .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW.minusSeconds(3600)))
@@ -220,8 +262,10 @@ class JwtTokenProviderTest {
 
     private String createAccessTokenSignedWith(String secret) {
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .issuer(ISSUER)
                 .subject(userId.toString())
+                .claim("sid", sessionId.toString())
                 .claim("role", "USER")
                 .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW))
@@ -232,7 +276,9 @@ class JwtTokenProviderTest {
 
     private String createTokenWithoutSubject() {
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .issuer(ISSUER)
+                .claim("sid", sessionId.toString())
                 .claim("role", "USER")
                 .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW))
@@ -243,9 +289,37 @@ class JwtTokenProviderTest {
 
     private String createTokenWithoutTokenType() {
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
+                .issuer(ISSUER)
+                .subject(userId.toString())
+                .claim("sid", sessionId.toString())
+                .claim("role", "USER")
+                .issuedAt(Date.from(FIXED_NOW))
+                .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
+                .signWith(secretKey(SECRET))
+                .compact();
+    }
+
+    private String createTokenWithoutTokenId() {
+        return Jwts.builder()
+                .issuer(ISSUER)
+                .subject(userId.toString())
+                .claim("sid", sessionId.toString())
+                .claim("role", "USER")
+                .claim("tokenType", JwtTokenType.ACCESS.name())
+                .issuedAt(Date.from(FIXED_NOW))
+                .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
+                .signWith(secretKey(SECRET))
+                .compact();
+    }
+
+    private String createTokenWithoutSessionId() {
+        return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .issuer(ISSUER)
                 .subject(userId.toString())
                 .claim("role", "USER")
+                .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW))
                 .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
                 .signWith(secretKey(SECRET))

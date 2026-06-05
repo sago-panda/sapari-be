@@ -29,15 +29,15 @@ class RefreshTokenRedisRepositoryTest {
     );
 
     @Test
-    @DisplayName("사용자 ID 기준으로 Refresh Token을 TTL과 함께 저장한다")
+    @DisplayName("세션 ID 기준으로 Refresh Token을 TTL과 함께 저장한다")
     void saveStoresRefreshTokenWithTtl() {
         // given
-        UUID userId = UUID.randomUUID();
-        String key = "refresh-token:user:" + userId;
+        UUID sessionId = UUID.randomUUID();
+        String key = "refresh-token:session:" + sessionId;
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         // when
-        repository.save(userId, REFRESH_TOKEN);
+        repository.save(sessionId, REFRESH_TOKEN);
 
         // then
         verify(valueOperations).set(
@@ -48,30 +48,30 @@ class RefreshTokenRedisRepositoryTest {
     }
 
     @Test
-    @DisplayName("사용자 ID로 Refresh Token을 조회한다")
-    void findByUserIdReturnsRefreshToken() {
+    @DisplayName("세션 ID로 Refresh Token을 조회한다")
+    void findBySessionIdReturnsRefreshToken() {
         // given
-        UUID userId = UUID.randomUUID();
-        String key = "refresh-token:user:" + userId;
+        UUID sessionId = UUID.randomUUID();
+        String key = "refresh-token:session:" + sessionId;
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get(key)).thenReturn(REFRESH_TOKEN);
 
         // when
-        Optional<String> refreshToken = repository.findByUserId(userId);
+        Optional<String> refreshToken = repository.findBySessionId(sessionId);
 
         // then
         assertThat(refreshToken).contains(REFRESH_TOKEN);
     }
 
     @Test
-    @DisplayName("사용자 ID 기준으로 Refresh Token을 삭제한다")
+    @DisplayName("세션 ID 기준으로 Refresh Token을 삭제한다")
     void deleteRemovesRefreshToken() {
         // given
-        UUID userId = UUID.randomUUID();
-        String key = "refresh-token:user:" + userId;
+        UUID sessionId = UUID.randomUUID();
+        String key = "refresh-token:session:" + sessionId;
 
         // when
-        repository.delete(userId);
+        repository.deleteBySessionId(sessionId);
 
         // then
         verify(stringRedisTemplate).delete(key);

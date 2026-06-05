@@ -1,6 +1,7 @@
 package com.sapari.common.web.security;
 
 import java.time.Duration;
+import java.util.UUID;
 
 /**
  * 로그아웃된 Access Token을 폐기 목록에 등록하는 포트(쓰기).
@@ -9,5 +10,5 @@ import java.time.Duration;
  */
 public interface AccessTokenBlacklist {
 
-    void save(String accessToken, Duration ttl);
+    void save(UUID tokenId, Duration ttl);
 }
