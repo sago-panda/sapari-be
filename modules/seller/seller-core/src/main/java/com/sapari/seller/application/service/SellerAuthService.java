@@ -101,8 +101,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         UUID sessionId = UUID.randomUUID();
         JwtSubject subject = toJwtSubject(seller, sessionId);
         String accessToken = jwtTokenProvider.createAccessToken(subject);
-        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
-        refreshTokenStore.save(sessionId, refreshToken);
+        String refreshToken = issueRefreshToken(subject);
 
         return new SellerLoginResult(seller.userId(), accessToken, refreshToken);
     }
@@ -113,16 +112,16 @@ public class SellerAuthService implements SellerAuthUseCase {
         JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
         UserView seller = findRefreshTokenSeller(claims.userId());
-        String savedRefreshToken = refreshTokenStore.findBySessionId(claims.sessionId())
-                .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
+        JwtSubject subject = toJwtSubject(seller, claims.sessionId());
+        String accessToken = jwtTokenProvider.createAccessToken(subject);
+        RotatedRefreshToken rotatedRefreshToken = rotateRefreshToken(subject, claims);
 
-        if (!savedRefreshToken.equals(refreshToken)) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(seller, claims.sessionId()));
-
-        return new SellerTokenReissueResult(seller.userId(), accessToken);
+        return new SellerTokenReissueResult(
+                seller.userId(),
+                accessToken,
+                rotatedRefreshToken.token(),
+                rotatedRefreshToken.maxAgeSeconds()
+        );
     }
 
     @Override
@@ -266,6 +265,45 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
     }
 
+    /**
+     * 로그인 세션의 Refresh Token을 발급하고 현재 Refresh Token ID를 저장한다.
+     */
+    private String issueRefreshToken(JwtSubject subject) {
+        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
+        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
+
+        refreshTokenStore.save(
+                refreshClaims.sessionId(),
+                refreshClaims.tokenId(),
+                getRemainingExpiration(refreshClaims)
+        );
+
+        return refreshToken;
+    }
+
+    /**
+     * 같은 로그인 세션에서 현재 Refresh Token ID를 새 Refresh Token ID로 교체한다.
+     */
+    private RotatedRefreshToken rotateRefreshToken(JwtSubject subject, JwtTokenClaims previousRefreshClaims) {
+        String refreshToken = jwtTokenProvider.createRefreshTokenForRotation(subject, previousRefreshClaims.expiresAt());
+        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
+        Duration refreshTokenTtl = getRemainingExpiration(refreshClaims);
+
+        boolean rotated = refreshTokenStore.rotate(
+                previousRefreshClaims.sessionId(),
+                previousRefreshClaims.tokenId(),
+                refreshClaims.tokenId(),
+                refreshTokenTtl
+        );
+
+        if (!rotated) {
+            refreshTokenStore.deleteBySessionId(previousRefreshClaims.sessionId());
+            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
+        }
+
+        return new RotatedRefreshToken(refreshToken, refreshTokenTtl.toSeconds());
+    }
+
     private void validateAccessTokenOwner(JwtTokenClaims claims, UUID userId) {
         if (!claims.userId().equals(userId)) {
             throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
@@ -311,5 +349,11 @@ public class SellerAuthService implements SellerAuthUseCase {
                 seller.pointBalance(),
                 seller.marketingAgreed()
         );
+    }
+
+    private record RotatedRefreshToken(
+            String token,
+            long maxAgeSeconds
+    ) {
     }
 }

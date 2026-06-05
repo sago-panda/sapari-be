@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -63,6 +64,7 @@ class MemberOAuthServiceTest {
             socialLoginCodeRedisRepository,
             jwtTokenProvider,
             refreshTokenStore,
+            timeProvider(),
             objectMapper
     );
 
@@ -101,7 +103,11 @@ class MemberOAuthServiceTest {
         assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
-        verify(refreshTokenStore).save(refreshClaims.sessionId(), tokenResult.refreshToken());
+        verify(refreshTokenStore).save(
+                eq(refreshClaims.sessionId()),
+                eq(refreshClaims.tokenId()),
+                any(Duration.class)
+        );
         verifyNoInteractions(socialSignupRedisRepository);
     }
 
