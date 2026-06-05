@@ -4,6 +4,7 @@ import java.util.UUID;
 
 public record SellerNicknameUpdateCommand(
         UUID userId,
-        String nickname
+        String nickname,
+        String accessToken
 ) {
 }

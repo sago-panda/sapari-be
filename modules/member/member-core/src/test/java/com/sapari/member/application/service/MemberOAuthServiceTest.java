@@ -81,8 +81,6 @@ class MemberOAuthServiceTest {
         assertThat(result.type()).isEqualTo(MemberOAuthResultType.LOGIN_SUCCESS);
         assertThat(result.loginCode()).isNotBlank();
         assertThat(result.signupSid()).isNull();
-        verify(refreshTokenStore).save(eq(userId), any(String.class));
-
         ArgumentCaptor<String> codeCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
         verify(socialLoginCodeRedisRepository).save(codeCaptor.capture(), valueCaptor.capture());
@@ -96,11 +94,14 @@ class MemberOAuthServiceTest {
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(tokenResult.accessToken());
         JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(tokenResult.refreshToken());
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.sessionId()).isEqualTo(refreshClaims.sessionId());
+        assertThat(accessClaims.tokenId()).isNotEqualTo(refreshClaims.tokenId());
         assertThat(accessClaims.nickname()).isEqualTo("member");
         assertThat(accessClaims.email()).isEqualTo("member@example.com");
         assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
+        verify(refreshTokenStore).save(refreshClaims.sessionId(), tokenResult.refreshToken());
         verifyNoInteractions(socialSignupRedisRepository);
     }
 

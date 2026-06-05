@@ -16,10 +16,11 @@ public record MemberNicknameUpdateRequest(
         String nickname
 ) {
 
-    public MemberNicknameUpdateCommand toCommand(UUID userId) {
+    public MemberNicknameUpdateCommand toCommand(UUID userId, String accessToken) {
         return new MemberNicknameUpdateCommand(
                 userId,
-                nickname
+                nickname,
+                accessToken
         );
     }
 }

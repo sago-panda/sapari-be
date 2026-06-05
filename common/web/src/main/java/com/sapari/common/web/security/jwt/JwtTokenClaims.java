@@ -5,6 +5,8 @@ import java.util.UUID;
 
 public record JwtTokenClaims(
         UUID userId,
+        UUID sessionId,
+        UUID tokenId,
         String role,
         JwtTokenType tokenType,
         String nickname,
