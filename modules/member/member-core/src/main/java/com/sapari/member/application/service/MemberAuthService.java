@@ -67,9 +67,11 @@ public class MemberAuthService implements MemberAuthUseCase {
             UserView savedUser = userAccountUseCase.registerSocialMember(toRegisterCommand(command, socialSignupInfo));
             socialSignupRedisRepository.delete(signupSid);
 
-            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedUser));
-            String refreshToken = jwtTokenProvider.createRefreshToken(toJwtSubject(savedUser));
-            refreshTokenStore.save(savedUser.userId(), refreshToken);
+            UUID sessionId = UUID.randomUUID();
+            JwtSubject subject = toJwtSubject(savedUser, sessionId);
+            String accessToken = jwtTokenProvider.createAccessToken(subject);
+            String refreshToken = jwtTokenProvider.createRefreshToken(subject);
+            refreshTokenStore.save(sessionId, refreshToken);
 
             return new SocialSignupResult(savedUser.userId(), accessToken, refreshToken);
         } catch (DataIntegrityViolationException e) {
@@ -111,14 +113,15 @@ public class MemberAuthService implements MemberAuthUseCase {
         JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
         UserView member = findRefreshTokenMember(claims.userId());
-        String savedRefreshToken = refreshTokenStore.findByUserId(member.userId())
+        // Refresh Token은 사용자 단위가 아니라 sid 세션 단위로 검증한다.
+        String savedRefreshToken = refreshTokenStore.findBySessionId(claims.sessionId())
                 .orElseThrow(() -> new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN));
 
         if (!savedRefreshToken.equals(refreshToken)) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(member));
+        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(member, claims.sessionId()));
 
         return new MemberTokenReissueResult(member.userId(), accessToken);
     }
@@ -126,14 +129,18 @@ public class MemberAuthService implements MemberAuthUseCase {
     @Override
     @Transactional
     public void logout(MemberLogoutCommand command) {
-        refreshTokenStore.delete(command.userId());
-        Duration remainingExpiration = getRemainingExpiration(command.accessToken());
+        JwtTokenClaims claims = parseAccessToken(command.accessToken());
+        validateAccessTokenOwner(claims, command.userId());
+
+        // 로그아웃은 현재 sid의 Refresh Token을 제거하고 현재 Access Token jti만 폐기
+        refreshTokenStore.deleteBySessionId(claims.sessionId());
+        Duration remainingExpiration = getRemainingExpiration(claims);
 
         if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
             return;
         }
 
-        accessTokenBlacklist.save(command.accessToken(), remainingExpiration);
+        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
     }
 
     @Override
@@ -163,6 +170,9 @@ public class MemberAuthService implements MemberAuthUseCase {
     @Override
     @Transactional
     public MemberNicknameUpdateResult updateNickname(MemberNicknameUpdateCommand command) {
+        JwtTokenClaims accessClaims = parseAccessToken(command.accessToken());
+        validateAccessTokenOwner(accessClaims, command.userId());
+
         UserView member = findMember(command.userId());
 
         validateDuplicatedNickname(command.nickname());
@@ -172,7 +182,9 @@ public class MemberAuthService implements MemberAuthUseCase {
 
         try {
             UserView savedMember = userAccountUseCase.changeNickname(command.userId(), command.nickname());
-            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedMember));
+            // nickname이 바뀌었으므로 기존 access jti를 폐기하고 같은 sid로 새 Access Token을 발급
+            blacklistAccessToken(accessClaims);
+            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedMember, accessClaims.sessionId()));
 
             return new MemberNicknameUpdateResult(toMemberMeResult(savedMember), accessToken);
         } catch (DataIntegrityViolationException e) {
@@ -263,7 +275,7 @@ public class MemberAuthService implements MemberAuthUseCase {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        JwtTokenClaims claims = parseToken(refreshToken);
+        JwtTokenClaims claims = parseToken(refreshToken, MemberErrorCode.INVALID_REFRESH_TOKEN);
 
         if (claims.tokenType() != JwtTokenType.REFRESH) {
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
@@ -272,31 +284,56 @@ public class MemberAuthService implements MemberAuthUseCase {
         return claims;
     }
 
-    private JwtTokenClaims parseToken(String token) {
+    private JwtTokenClaims parseAccessToken(String accessToken) {
+        if (accessToken == null || accessToken.isBlank()) {
+            throw new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN);
+        }
+
+        JwtTokenClaims claims = parseToken(accessToken, MemberErrorCode.INVALID_ACCESS_TOKEN);
+
+        if (claims.tokenType() != JwtTokenType.ACCESS) {
+            throw new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN);
+        }
+
+        return claims;
+    }
+
+    private JwtTokenClaims parseToken(String token, MemberErrorCode errorCode) {
         try {
             return jwtTokenProvider.parseToken(token);
         } catch (RuntimeException e) {
-            throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN, e);
+            throw new MemberException(errorCode, e);
         }
     }
 
-    private Duration getRemainingExpiration(String accessToken) {
-        try {
-            JwtTokenClaims claims = jwtTokenProvider.parseToken(accessToken);
-            Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
-
-            if (remainingExpiration.isNegative()) {
-                return Duration.ZERO;
-            }
-
-            return remainingExpiration;
-        } catch (RuntimeException e) {
-            throw new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN, e);
+    private void validateAccessTokenOwner(JwtTokenClaims claims, UUID userId) {
+        if (!claims.userId().equals(userId)) {
+            throw new MemberException(MemberErrorCode.INVALID_ACCESS_TOKEN);
         }
     }
 
-    private JwtSubject toJwtSubject(UserView member) {
-        return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
+    private void blacklistAccessToken(JwtTokenClaims claims) {
+        Duration remainingExpiration = getRemainingExpiration(claims);
+
+        if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
+            return;
+        }
+
+        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
+    }
+
+    private Duration getRemainingExpiration(JwtTokenClaims claims) {
+        Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
+
+        if (remainingExpiration.isNegative()) {
+            return Duration.ZERO;
+        }
+
+        return remainingExpiration;
+    }
+
+    private JwtSubject toJwtSubject(UserView member, UUID sessionId) {
+        return new JwtSubject(member.userId(), sessionId, member.role().name(), member.nickname(), member.email());
     }
 
     private MemberMeResult toMemberMeResult(UserView member) {

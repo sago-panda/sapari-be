@@ -98,9 +98,11 @@ public class SellerAuthService implements SellerAuthUseCase {
             throw new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS);
         }
 
-        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(seller));
-        String refreshToken = jwtTokenProvider.createRefreshToken(toJwtSubject(seller));
-        refreshTokenStore.save(seller.userId(), refreshToken);
+        UUID sessionId = UUID.randomUUID();
+        JwtSubject subject = toJwtSubject(seller, sessionId);
+        String accessToken = jwtTokenProvider.createAccessToken(subject);
+        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
+        refreshTokenStore.save(sessionId, refreshToken);
 
         return new SellerLoginResult(seller.userId(), accessToken, refreshToken);
     }
@@ -111,14 +113,14 @@ public class SellerAuthService implements SellerAuthUseCase {
         JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
         UserView seller = findRefreshTokenSeller(claims.userId());
-        String savedRefreshToken = refreshTokenStore.findByUserId(seller.userId())
+        String savedRefreshToken = refreshTokenStore.findBySessionId(claims.sessionId())
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
 
         if (!savedRefreshToken.equals(refreshToken)) {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(seller));
+        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(seller, claims.sessionId()));
 
         return new SellerTokenReissueResult(seller.userId(), accessToken);
     }
@@ -126,14 +128,18 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public void logout(SellerLogoutCommand command) {
-        refreshTokenStore.delete(command.userId());
-        Duration remainingExpiration = getRemainingExpiration(command.accessToken());
+        JwtTokenClaims claims = parseAccessToken(command.accessToken());
+        validateAccessTokenOwner(claims, command.userId());
+
+        // 로그아웃은 현재 sid의 Refresh Token을 제거하고 현재 Access Token jti만 폐기
+        refreshTokenStore.deleteBySessionId(claims.sessionId());
+        Duration remainingExpiration = getRemainingExpiration(claims);
 
         if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
             return;
         }
 
-        accessTokenBlacklist.save(command.accessToken(), remainingExpiration);
+        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
     }
 
     @Override
@@ -145,6 +151,9 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
+        JwtTokenClaims accessClaims = parseAccessToken(command.accessToken());
+        validateAccessTokenOwner(accessClaims, command.userId());
+
         UserView seller = findSeller(command.userId());
 
         validateDuplicatedNickname(command.nickname());
@@ -154,7 +163,9 @@ public class SellerAuthService implements SellerAuthUseCase {
 
         try {
             UserView savedSeller = userAccountUseCase.changeNickname(command.userId(), command.nickname());
-            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller));
+            // nickname snapshot이 바뀌었으므로 기존 access jti를 폐기하고 같은 sid로 새 Access Token을 발급
+            blacklistAccessToken(accessClaims);
+            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller, accessClaims.sessionId()));
 
             return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller), accessToken);
         } catch (DataIntegrityViolationException e) {
@@ -224,7 +235,7 @@ public class SellerAuthService implements SellerAuthUseCase {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
         }
 
-        JwtTokenClaims claims = parseToken(refreshToken);
+        JwtTokenClaims claims = parseToken(refreshToken, SellerErrorCode.INVALID_REFRESH_TOKEN);
 
         if (claims.tokenType() != JwtTokenType.REFRESH) {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
@@ -233,31 +244,56 @@ public class SellerAuthService implements SellerAuthUseCase {
         return claims;
     }
 
-    private JwtTokenClaims parseToken(String token) {
+    private JwtTokenClaims parseAccessToken(String accessToken) {
+        if (accessToken == null || accessToken.isBlank()) {
+            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
+        }
+
+        JwtTokenClaims claims = parseToken(accessToken, SellerErrorCode.INVALID_ACCESS_TOKEN);
+
+        if (claims.tokenType() != JwtTokenType.ACCESS) {
+            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
+        }
+
+        return claims;
+    }
+
+    private JwtTokenClaims parseToken(String token, SellerErrorCode errorCode) {
         try {
             return jwtTokenProvider.parseToken(token);
         } catch (RuntimeException e) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN, e);
+            throw new SellerException(errorCode, e);
         }
     }
 
-    private Duration getRemainingExpiration(String accessToken) {
-        try {
-            JwtTokenClaims claims = jwtTokenProvider.parseToken(accessToken);
-            Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
-
-            if (remainingExpiration.isNegative()) {
-                return Duration.ZERO;
-            }
-
-            return remainingExpiration;
-        } catch (RuntimeException e) {
-            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN, e);
+    private void validateAccessTokenOwner(JwtTokenClaims claims, UUID userId) {
+        if (!claims.userId().equals(userId)) {
+            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
         }
     }
 
-    private JwtSubject toJwtSubject(UserView seller) {
-        return new JwtSubject(seller.userId(), seller.role().name(), seller.nickname(), seller.email());
+    private void blacklistAccessToken(JwtTokenClaims claims) {
+        Duration remainingExpiration = getRemainingExpiration(claims);
+
+        if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
+            return;
+        }
+
+        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
+    }
+
+    private Duration getRemainingExpiration(JwtTokenClaims claims) {
+        Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
+
+        if (remainingExpiration.isNegative()) {
+            return Duration.ZERO;
+        }
+
+        return remainingExpiration;
+    }
+
+    private JwtSubject toJwtSubject(UserView seller, UUID sessionId) {
+        return new JwtSubject(seller.userId(), sessionId, seller.role().name(), seller.nickname(), seller.email());
     }
 
     private SellerMeResult toSellerMeResult(UserView seller) {

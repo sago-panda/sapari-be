@@ -217,7 +217,7 @@ class JwtAuthenticationFilterTest {
     }
 
     private JwtSubject jwtSubject(UUID userId, String role) {
-        return new JwtSubject(userId, role, "member", "member@example.com");
+        return new JwtSubject(userId, UUID.randomUUID(), role, "member", "member@example.com");
     }
 
     private UserDetailsService userDetailsService(UUID userId, String role, String status) {

@@ -147,9 +147,11 @@ class SellerAuthServiceTest {
         assertThat(accessClaims.nickname()).isEqualTo("seller");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
         assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(refreshClaims.sessionId()).isEqualTo(accessClaims.sessionId());
+        assertThat(refreshClaims.tokenId()).isNotEqualTo(accessClaims.tokenId());
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
-        verify(refreshTokenStore).save(userId, result.refreshToken());
+        verify(refreshTokenStore).save(refreshClaims.sessionId(), result.refreshToken());
     }
 
     @Test
@@ -176,8 +178,9 @@ class SellerAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
-        when(refreshTokenStore.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
+        when(refreshTokenStore.findBySessionId(refreshClaims.sessionId())).thenReturn(Optional.of(refreshToken));
 
         // when
         SellerTokenReissueResult result = sellerAuthService.reissueAccessToken(refreshToken);
@@ -186,6 +189,8 @@ class SellerAuthServiceTest {
         assertThat(result.userId()).isEqualTo(userId);
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.sessionId()).isEqualTo(refreshClaims.sessionId());
+        assertThat(accessClaims.tokenId()).isNotEqualTo(refreshClaims.tokenId());
         assertThat(accessClaims.nickname()).isEqualTo("seller");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
     }
@@ -205,8 +210,9 @@ class SellerAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
-        when(refreshTokenStore.findByUserId(userId)).thenReturn(Optional.of("different-token"));
+        when(refreshTokenStore.findBySessionId(refreshClaims.sessionId())).thenReturn(Optional.of("different-token"));
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.reissueAccessToken(refreshToken))
@@ -236,15 +242,16 @@ class SellerAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(accessToken);
 
         // when
         sellerAuthService.logout(new SellerLogoutCommand(userId, accessToken));
 
         // then
-        verify(refreshTokenStore).delete(userId);
+        verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
 
         ArgumentCaptor<Duration> durationCaptor = ArgumentCaptor.forClass(Duration.class);
-        verify(accessTokenBlacklist).save(eq(accessToken), durationCaptor.capture());
+        verify(accessTokenBlacklist).save(eq(accessClaims.tokenId()), durationCaptor.capture());
         assertThat(durationCaptor.getValue()).isPositive();
     }
 
@@ -267,9 +274,12 @@ class SellerAuthServiceTest {
     void updateNicknameUpdatesSellerNickname() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
+        JwtTokenClaims oldAccessClaims = jwtTokenProvider.parseToken(oldAccessToken);
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
@@ -289,11 +299,14 @@ class SellerAuthServiceTest {
         assertThat(result.seller().email()).isEqualTo(EMAIL);
         assertThat(result.seller().role()).isEqualTo(UserRole.SELLER.name());
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.sessionId()).isEqualTo(oldAccessClaims.sessionId());
+        assertThat(accessClaims.tokenId()).isNotEqualTo(oldAccessClaims.tokenId());
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
         verify(userAccountUseCase).existsByNickname("updated");
         verify(userAccountUseCase).changeNickname(userId, "updated");
-        verify(refreshTokenStore, never()).save(eq(userId), any(String.class));
+        verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(String.class));
     }
 
     @Test
@@ -301,9 +314,11 @@ class SellerAuthServiceTest {
     void updateNicknameThrowsExceptionWhenChangedWithinThirtyDays() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId))
                 .thenReturn(Optional.of(sellerView(userId, NOW.minus(Duration.ofDays(1)))));
@@ -323,9 +338,11 @@ class SellerAuthServiceTest {
     void updateNicknameThrowsExceptionWhenNicknameIsSame() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
                 userId,
-                "seller"
+                "seller",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId, NOW)));
         when(userAccountUseCase.existsByNickname("seller")).thenReturn(true);
@@ -344,9 +361,11 @@ class SellerAuthServiceTest {
     void updateNicknameThrowsExceptionWhenNicknameIsDuplicated() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(true);
@@ -363,9 +382,11 @@ class SellerAuthServiceTest {
     void updateNicknameThrowsExceptionWhenNicknameSaveConflicts() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
@@ -426,7 +447,7 @@ class SellerAuthServiceTest {
     }
 
     private JwtSubject jwtSubject(UUID userId, String role) {
-        return new JwtSubject(userId, role, "seller", EMAIL);
+        return new JwtSubject(userId, UUID.randomUUID(), role, "seller", EMAIL);
     }
 
     private UserView sellerView(UUID userId) {
