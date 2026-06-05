@@ -5,6 +5,8 @@ import lombok.Builder;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.sapari.chat.view.ChatMessageView;
+
 @Builder(toBuilder = true)
 public record ChatMessage(
         String id,                 // MongoDB ObjectId의 String 추상화 — 영속 전에는 null
@@ -37,5 +39,30 @@ public record ChatMessage(
         if (createdAt == null) {
             throw new IllegalArgumentException("createdAt은 필수입니다.");
         }
+    }
+
+    /** 마스킹 본문만 담은 view. senderEmail·원문은 제외 — 누출 방지 기본값. */
+    public ChatMessageView toView() {
+        return view(null, null);
+    }
+
+    /** 방 주인 수신자 전용 view — senderEmail과 원문을 포함(마스킹↔원문 토글). 수신자의 방 소유를 확인한 경우에만 호출한다. */
+    public ChatMessageView toOwnerView() {
+        return view(senderEmail, originalMessage);
+    }
+
+    private ChatMessageView view(String emailOrNull, String originalOrNull) {
+        return new ChatMessageView(
+                id, roomId, senderId, senderNickname, emailOrNull,
+                senderRole.name(), typeName(), displayMessage, originalOrNull, clientMsgId, createdAt
+        );
+    }
+
+    private String typeName() {
+        return switch (type) {
+            case ChatMessageType.Normal n -> "NORMAL";
+            case ChatMessageType.Notice n -> "NOTICE";
+            case ChatMessageType.System s -> "SYSTEM";
+        };
     }
 }
