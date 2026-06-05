@@ -32,7 +32,7 @@ public record LiveProduct(
         if (productId == null) {
             throw new IllegalArgumentException("productId는 필수입니다.");
         }
-        if (originalPrice < 0 || discountPrice < 0 || liveDiscountPrice < 0) {
+        if (originalPrice <= 0 || discountPrice < 0 || liveDiscountPrice < 0) {
             throw new IllegalArgumentException("가격은 음수일 수 없습니다.");
         }
         if (discountPrice > originalPrice) {
