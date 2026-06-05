@@ -18,9 +18,10 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import com.sapari.common.web.security.jwt.JwtTokenClaims;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
-import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 
 @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {

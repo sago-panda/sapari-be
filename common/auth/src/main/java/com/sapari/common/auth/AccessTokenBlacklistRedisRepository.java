@@ -8,14 +8,14 @@ import java.util.UUID;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
-import com.sapari.common.web.security.AccessTokenBlacklist;
-import com.sapari.common.web.security.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.TokenStoreKeys;
 
 @Repository
 @RequiredArgsConstructor
 public class AccessTokenBlacklistRedisRepository implements AccessTokenBlacklist, AccessTokenRevocationChecker {
 
-    private static final String KEY_PREFIX = "access-token:blacklist:";
     private static final String LOGOUT_VALUE = "logout";
 
     private final StringRedisTemplate stringRedisTemplate;
@@ -39,6 +39,6 @@ public class AccessTokenBlacklistRedisRepository implements AccessTokenBlacklist
     }
 
     private String createKey(UUID tokenId) {
-        return KEY_PREFIX + tokenId;
+        return TokenStoreKeys.ACCESS_TOKEN_BLACKLIST_PREFIX + tokenId;
     }
 }

@@ -9,8 +9,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.web.security.jwt.JwtSubject;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberOAuthCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
@@ -20,7 +20,7 @@ import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.member.port.MemberOAuthUseCase;
 import com.sapari.member.result.MemberOAuthResult;
 import com.sapari.member.result.SocialLoginTokenResult;
-import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;

@@ -22,11 +22,11 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
-import com.sapari.common.web.security.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.common.web.security.JwtAuthenticationFilter;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.infrastructure.oauth.MemberOAuth2SuccessHandler;
 import com.sapari.member.infrastructure.oauth.MemberOAuth2UserService;

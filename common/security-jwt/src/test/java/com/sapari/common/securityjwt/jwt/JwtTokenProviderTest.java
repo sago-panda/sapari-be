@@ -1,4 +1,4 @@
-package com.sapari.common.web.security.jwt;
+package com.sapari.common.securityjwt.jwt;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;

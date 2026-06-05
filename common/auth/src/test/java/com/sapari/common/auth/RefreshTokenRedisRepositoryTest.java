@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
-import com.sapari.common.web.security.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
 
 @DisplayName("Refresh Token Redis 저장소 테스트")
 class RefreshTokenRedisRepositoryTest {
