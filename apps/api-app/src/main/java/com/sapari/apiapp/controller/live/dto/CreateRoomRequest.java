@@ -1,4 +1,4 @@
-package com.sapari.apiapp.controller.dto;
+package com.sapari.apiapp.controller.live.dto;
 
 import java.time.Instant;
 import java.util.UUID;

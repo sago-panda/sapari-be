@@ -1,4 +1,4 @@
-package com.sapari.apiapp.controller.dto;
+package com.sapari.apiapp.controller.live.dto;
 
 import java.util.List;
 import java.util.UUID;
