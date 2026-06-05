@@ -1,0 +1,7 @@
+dependencies {
+    implementation(project(':modules:chat:chat-api'))
+    implementation(project(':common:core'))
+    implementation(project(':common:global'))
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}
