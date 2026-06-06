@@ -27,6 +27,7 @@ import com.sapari.apiapp.config.WebMvcConfig;
 import com.sapari.apiapp.controller.member.MemberAuthController;
 import com.sapari.apiapp.controller.seller.SellerAuthController;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.infrastructure.oauth.MemberOAuth2SuccessHandler;
@@ -61,6 +62,9 @@ class SecurityFailureResponseTest {
 
     @MockitoBean
     private AccessTokenRevocationChecker accessTokenRevocationChecker;
+
+    @MockitoBean
+    private SessionRevocationChecker sessionRevocationChecker;
 
     @MockitoBean
     private MemberOAuth2UserService memberOAuth2UserService;

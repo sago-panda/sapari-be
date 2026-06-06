@@ -35,6 +35,7 @@ import com.sapari.member.result.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialMemberCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
@@ -51,6 +52,7 @@ public class MemberAuthService implements MemberAuthUseCase {
     private final UserAccountUseCase userAccountUseCase;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
+    private final SessionRevocationStore sessionRevocationStore;
     private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
@@ -107,7 +109,7 @@ public class MemberAuthService implements MemberAuthUseCase {
      * Refresh Token을 검증해 새 Access Token을 발급
      */
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public MemberTokenReissueResult reissueAccessToken(String refreshToken) {
         JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
@@ -130,15 +132,9 @@ public class MemberAuthService implements MemberAuthUseCase {
         JwtTokenClaims claims = parseAccessToken(command.accessToken());
         validateAccessTokenOwner(claims, command.userId());
 
-        // 로그아웃은 현재 sid의 Refresh Token을 제거하고 현재 Access Token jti만 폐기
+        // 로그아웃은 현재 sid 세션 전체를 폐기해 같은 세션의 Access Token까지 차단한다.
         refreshTokenStore.deleteBySessionId(claims.sessionId());
-        Duration remainingExpiration = getRemainingExpiration(claims);
-
-        if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
-            return;
-        }
-
-        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
+        sessionRevocationStore.revoke(claims.sessionId());
     }
 
     @Override
@@ -328,6 +324,10 @@ public class MemberAuthService implements MemberAuthUseCase {
         JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
         Duration refreshTokenTtl = getRemainingExpiration(refreshClaims);
 
+        if (refreshTokenTtl.toMillis() < 1) {
+            throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
+        }
+
         boolean rotated = refreshTokenStore.rotate(
                 previousRefreshClaims.sessionId(),
                 previousRefreshClaims.tokenId(),
@@ -337,6 +337,7 @@ public class MemberAuthService implements MemberAuthUseCase {
 
         if (!rotated) {
             refreshTokenStore.deleteBySessionId(previousRefreshClaims.sessionId());
+            sessionRevocationStore.revoke(previousRefreshClaims.sessionId());
             throw new MemberException(MemberErrorCode.INVALID_REFRESH_TOKEN);
         }
 
