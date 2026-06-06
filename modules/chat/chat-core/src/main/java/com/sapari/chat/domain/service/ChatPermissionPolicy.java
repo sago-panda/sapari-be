@@ -38,7 +38,7 @@ public final class ChatPermissionPolicy {
      * <ul>
      *   <li>자기 자신은 강퇴 불가(역할·소유 무관) — 권한 규칙이 바뀌어도 self-kick은 막히도록 선차단.
      *   <li>ADMIN: 모든 방에서 ADMIN을 제외한 모든 역할 강퇴.
-     *   <li>SELLER: 자기 방(kickerId == roomOwnerId)에서 BUYER만 강퇴(동급·상위 불가).
+     *   <li>SELLER: 자기 방(kickerId == roomOwnerId)에서 ADMIN을 제외한 모든 참가자 강퇴 — 방문 SELLER도 내 방에선 시청자(isRoomOwner=false)이므로 강퇴 대상. ADMIN만 보호(플랫폼 운영자 ≥ 방주인).
      *   <li>그 외(BUYER·GUEST): 권한 없음.
      * </ul>
      * 대상이 비회원(GUEST)·탈퇴·없는 UUID인 경우는 호출 서비스가 조회 실패로 먼저 거부하므로
@@ -51,7 +51,7 @@ public final class ChatPermissionPolicy {
         }
         return switch (kickerRole) {
             case ADMIN -> targetRole != ChatRole.ADMIN;
-            case SELLER -> kickerId.equals(roomOwnerId) && targetRole == ChatRole.BUYER;
+            case SELLER -> kickerId.equals(roomOwnerId) && targetRole != ChatRole.ADMIN;
             default -> false;
         };
     }

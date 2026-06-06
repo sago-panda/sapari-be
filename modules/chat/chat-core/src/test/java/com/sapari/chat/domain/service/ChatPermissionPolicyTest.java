@@ -69,7 +69,7 @@ class ChatPermissionPolicyTest {
         UUID admin = UUID.fromString("00000000-0000-0000-0000-0000000000d4"); // ADMIN ≠ 방주인을 분명히
         return Stream.of(
                 arguments("#13 SELLER(방주인) → BUYER 강퇴 → 허용", ChatRole.SELLER, owner, owner, ChatRole.BUYER, target, true),
-                arguments("#14 SELLER(방주인) → SELLER → 거부(동급)", ChatRole.SELLER, owner, owner, ChatRole.SELLER, target, false),
+                arguments("#14 SELLER(방주인) → 방문 SELLER 강퇴 → 허용", ChatRole.SELLER, owner, owner, ChatRole.SELLER, target, true),
                 arguments("#15 SELLER(방주인) → ADMIN → 거부", ChatRole.SELLER, owner, owner, ChatRole.ADMIN, target, false),
                 arguments("#16 SELLER(남의 방) → BUYER → 거부", ChatRole.SELLER, other, owner, ChatRole.BUYER, target, false),
                 arguments("#17 ADMIN → BUYER → 허용", ChatRole.ADMIN, other, owner, ChatRole.BUYER, target, true),
