@@ -70,7 +70,9 @@ mr-comment:
         echo "ERROR: review.md 에 토큰 형태 문자열이 있어 게시를 중단함"; exit 1
       fi
       echo "GITLAB_API_TOKEN length: ${#GITLAB_API_TOKEN}" # 0 이면 변수 미주입
-      printf '## 🤖 Claude Auto Review\n\n' | cat - review.md > body.md
+      # B-2: 신뢰 불가 리뷰 출력의 @멘션을 무력화(\@)해 대량 알림/스팸을 방지한다.
+      sed 's/@/\\@/g' review.md > review.safe.md
+      printf '## 🤖 Claude Auto Review\n\n' | cat - review.safe.md > body.md
       http=$(curl -s -o /tmp/resp -w "%{http_code}" --request POST \
         --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" \
         --data-urlencode "body@body.md" \
