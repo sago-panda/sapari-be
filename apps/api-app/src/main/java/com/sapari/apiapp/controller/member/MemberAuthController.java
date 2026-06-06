@@ -155,6 +155,10 @@ public class MemberAuthController {
         return ResponseEntity
                 .ok()
                 .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                        result.refreshToken(),
+                        result.refreshTokenMaxAgeSeconds()
+                ).toString())
                 .body(TokenReissueResponse.from(result));
     }
 

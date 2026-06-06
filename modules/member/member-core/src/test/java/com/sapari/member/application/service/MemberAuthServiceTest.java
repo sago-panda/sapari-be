@@ -43,6 +43,7 @@ import com.sapari.member.result.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialMemberCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -71,6 +72,8 @@ class MemberAuthServiceTest {
     );
     private final RefreshTokenStore refreshTokenStore =
             mock(RefreshTokenStore.class);
+    private final SessionRevocationStore sessionRevocationStore =
+            mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -80,6 +83,7 @@ class MemberAuthServiceTest {
             userAccountUseCase,
             jwtTokenProvider,
             refreshTokenStore,
+            sessionRevocationStore,
             accessTokenBlacklist,
             timeProvider(),
             objectMapper
@@ -120,7 +124,11 @@ class MemberAuthServiceTest {
         assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
 
         verify(socialSignupRedisRepository).delete(SIGNUP_SID);
-        verify(refreshTokenStore).save(refreshClaims.sessionId(), result.refreshToken());
+        verify(refreshTokenStore).save(
+                eq(refreshClaims.sessionId()),
+                eq(refreshClaims.tokenId()),
+                any(Duration.class)
+        );
     }
 
     @Test
@@ -200,7 +208,12 @@ class MemberAuthServiceTest {
                 jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
         JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
-        when(refreshTokenStore.findBySessionId(refreshClaims.sessionId())).thenReturn(Optional.of(refreshToken));
+        when(refreshTokenStore.rotate(
+                eq(refreshClaims.sessionId()),
+                eq(refreshClaims.tokenId()),
+                any(UUID.class),
+                any(Duration.class)
+        )).thenReturn(true);
 
         // when
         MemberTokenReissueResult result = memberAuthService.reissueAccessToken(refreshToken);
@@ -208,11 +221,107 @@ class MemberAuthServiceTest {
         // then
         assertThat(result.userId()).isEqualTo(userId);
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
+        JwtTokenClaims rotatedRefreshClaims = jwtTokenProvider.parseToken(result.refreshToken());
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
         assertThat(accessClaims.sessionId()).isEqualTo(refreshClaims.sessionId());
         assertThat(accessClaims.tokenId()).isNotEqualTo(refreshClaims.tokenId());
         assertThat(accessClaims.nickname()).isEqualTo("member");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
+        assertThat(rotatedRefreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(rotatedRefreshClaims.sessionId()).isEqualTo(refreshClaims.sessionId());
+        assertThat(rotatedRefreshClaims.tokenId()).isNotEqualTo(refreshClaims.tokenId());
+        assertThat(rotatedRefreshClaims.expiresAt()).isEqualTo(refreshClaims.expiresAt());
+        assertThat(result.refreshTokenMaxAgeSeconds())
+                .isEqualTo(Duration.between(NOW, rotatedRefreshClaims.expiresAt()).toSeconds());
+        verify(refreshTokenStore).rotate(
+                eq(refreshClaims.sessionId()),
+                eq(refreshClaims.tokenId()),
+                eq(rotatedRefreshClaims.tokenId()),
+                any(Duration.class)
+        );
+    }
+
+    @Test
+    @DisplayName("회전된 Refresh Token의 남은 TTL이 1ms 미만이면 Redis 저장 없이 재발급에 실패한다")
+    void reissueAccessTokenThrowsExceptionWhenRotatedRefreshTokenTtlIsExpired() {
+        // given
+        UUID userId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        String previousRefreshToken = "previous-refresh-token";
+        String rotatedRefreshToken = "rotated-refresh-token";
+        JwtTokenProvider tokenProvider = mock(JwtTokenProvider.class);
+        MemberAuthService service = new MemberAuthService(
+                socialSignupRedisRepository,
+                socialLoginCodeRedisRepository,
+                userAccountUseCase,
+                tokenProvider,
+                refreshTokenStore,
+                sessionRevocationStore,
+                accessTokenBlacklist,
+                timeProvider(),
+                objectMapper
+        );
+        JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
+                userId,
+                sessionId,
+                UUID.randomUUID(),
+                UserRole.USER.name(),
+                JwtTokenType.REFRESH,
+                null,
+                null,
+                NOW
+        );
+        JwtTokenClaims rotatedRefreshClaims = new JwtTokenClaims(
+                userId,
+                sessionId,
+                UUID.randomUUID(),
+                UserRole.USER.name(),
+                JwtTokenType.REFRESH,
+                null,
+                null,
+                NOW
+        );
+        when(tokenProvider.parseToken(previousRefreshToken)).thenReturn(previousRefreshClaims);
+        when(tokenProvider.createAccessToken(any(JwtSubject.class))).thenReturn("access-token");
+        when(tokenProvider.createRefreshTokenForRotation(any(JwtSubject.class), eq(previousRefreshClaims.expiresAt())))
+                .thenReturn(rotatedRefreshToken);
+        when(tokenProvider.parseToken(rotatedRefreshToken)).thenReturn(rotatedRefreshClaims);
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
+
+        // when, then
+        assertThatThrownBy(() -> service.reissueAccessToken(previousRefreshToken))
+                .isInstanceOfSatisfying(MemberException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.INVALID_REFRESH_TOKEN)
+                );
+        verify(refreshTokenStore, never())
+                .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class));
+        verifyNoInteractions(sessionRevocationStore);
+    }
+
+    @Test
+    @DisplayName("이전 Refresh Token 재사용이 감지되면 해당 세션을 삭제하고 재발급에 실패한다")
+    void reissueAccessTokenDeletesSessionWhenRefreshTokenIsReused() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String refreshToken =
+                jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
+        when(refreshTokenStore.rotate(
+                eq(refreshClaims.sessionId()),
+                eq(refreshClaims.tokenId()),
+                any(UUID.class),
+                any(Duration.class)
+        )).thenReturn(false);
+
+        // when, then
+        assertThatThrownBy(() -> memberAuthService.reissueAccessToken(refreshToken))
+                .isInstanceOfSatisfying(MemberException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(MemberErrorCode.INVALID_REFRESH_TOKEN)
+        );
+        verify(refreshTokenStore).deleteBySessionId(refreshClaims.sessionId());
+        verify(sessionRevocationStore).revoke(refreshClaims.sessionId());
     }
 
     @Test
@@ -232,8 +341,8 @@ class MemberAuthServiceTest {
     }
 
     @Test
-    @DisplayName("로그아웃 시 Refresh Token을 삭제하고 Access Token을 blacklist에 저장한다")
-    void logoutDeletesRefreshTokenAndBlacklistsAccessToken() {
+    @DisplayName("로그아웃 시 Refresh Token을 삭제하고 로그인 세션을 폐기한다")
+    void logoutDeletesRefreshTokenAndRevokesSession() {
         // given
         UUID userId = UUID.randomUUID();
         String accessToken =
@@ -245,10 +354,8 @@ class MemberAuthServiceTest {
 
         // then
         verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
-
-        ArgumentCaptor<Duration> durationCaptor = ArgumentCaptor.forClass(Duration.class);
-        verify(accessTokenBlacklist).save(eq(accessClaims.tokenId()), durationCaptor.capture());
-        assertThat(durationCaptor.getValue()).isPositive();
+        verify(sessionRevocationStore).revoke(accessClaims.sessionId());
+        verify(accessTokenBlacklist, never()).save(any(UUID.class), any(Duration.class));
     }
 
     @Test
@@ -302,7 +409,8 @@ class MemberAuthServiceTest {
         verify(userAccountUseCase).existsByNickname("updated");
         verify(userAccountUseCase).changeNickname(userId, "updated");
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
-        verify(refreshTokenStore, never()).save(any(UUID.class), any(String.class));
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(Duration.class));
+        verifyNoInteractions(sessionRevocationStore);
     }
 
     @Test

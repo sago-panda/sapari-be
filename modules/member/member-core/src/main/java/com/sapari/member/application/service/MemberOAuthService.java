@@ -2,6 +2,7 @@ package com.sapari.member.application.service;
 
 import lombok.RequiredArgsConstructor;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -10,7 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberOAuthCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
@@ -35,13 +38,14 @@ public class MemberOAuthService implements MemberOAuthUseCase {
     private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
+    private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
 
     /**
      * OAuth 인증 사용자가 기존 회원이면 임시 로그인 code를, 신규 회원이면 회원가입 sid를 발급
      */
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public MemberOAuthResult handleOAuthSuccess(MemberOAuthCommand command) {
         ProviderType provider = toProviderType(command.provider());
         validateProviderId(command.providerId());
@@ -62,7 +66,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
         UUID sessionId = UUID.randomUUID();
         JwtSubject subject = toJwtSubject(user, sessionId);
         String accessToken = jwtTokenProvider.createAccessToken(subject);
-        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
+        String refreshToken = issueRefreshToken(subject);
         String loginCode = UUID.randomUUID().toString();
         String socialLoginTokenInfoJson = toJson(new SocialLoginTokenResult(
                 user.userId(),
@@ -70,7 +74,6 @@ public class MemberOAuthService implements MemberOAuthUseCase {
                 refreshToken
         ));
 
-        refreshTokenStore.save(sessionId, refreshToken);
         socialLoginCodeRedisRepository.save(loginCode, socialLoginTokenInfoJson);
 
         return MemberOAuthResult.loginSuccess(loginCode);
@@ -112,6 +115,32 @@ public class MemberOAuthService implements MemberOAuthUseCase {
         } catch (Exception e) {
             throw new MemberException(MemberErrorCode.INVALID_SOCIAL_INFO, e);
         }
+    }
+
+    /**
+     * 로그인 세션의 Refresh Token을 발급하고 현재 Refresh Token ID를 저장한다.
+     */
+    private String issueRefreshToken(JwtSubject subject) {
+        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
+
+        refreshTokenStore.save(
+                refreshClaims.sessionId(),
+                refreshClaims.tokenId(),
+                getRemainingExpiration(refreshClaims)
+        );
+
+        return refreshToken;
+    }
+
+    private Duration getRemainingExpiration(JwtTokenClaims claims) {
+        Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
+
+        if (remainingExpiration.isNegative()) {
+            return Duration.ZERO;
+        }
+
+        return remainingExpiration;
     }
 
     private JwtSubject toJwtSubject(UserView member, UUID sessionId) {
