@@ -1,0 +1,40 @@
+# Claude Code automated MR review.
+#
+# Runs on merge_request_event unless the MR carries the `skip-review` label.
+# Reviews the diff with the sapari-reviewer / security-reviewer subagents and posts an MR note.
+#
+# Required CI variables (Settings > CI/CD > Variables, Masked on / Protected off):
+#   CLAUDE_CODE_OAUTH_TOKEN  OAuth token from `claude setup-token`
+#   GITLAB_API_TOKEN         Personal Access Token (api scope) for posting MR notes
+
+mr-review:
+  stage: test
+  image: node:22
+  variables:
+    GIT_DEPTH: "0" # full history so the merge-base diff can be computed
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_LABELS !~ /skip-review/'
+  script:
+    - npm install -g @anthropic-ai/claude-code
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - git diff "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" > mr.diff
+    - |
+      claude -p "The file mr.diff in the current directory holds this MR's change diff. \
+                 Use the sapari-reviewer and security-reviewer subagents to review these changes, \
+                 then merge their findings into a single Markdown report. \
+                 Include severity (blocker/major/minor/nit) and file:line references, \
+                 and state explicitly when there are no issues. \
+                 Write the final report in Korean." \
+             --allowedTools "Read,Grep,Glob,Bash,Task" \
+             --output-format text > review.md
+    - |
+      printf '## 🤖 Claude Auto Review\n\n' | cat - review.md > body.md
+      curl -sf --request POST \
+        --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" \
+        --data-urlencode "body@body.md" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes"
+  artifacts:
+    paths:
+      - review.md
+    expire_in: 1 week
+    when: always # keep the review output even if the comment step fails
