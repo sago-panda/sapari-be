@@ -45,7 +45,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
      * OAuth 인증 사용자가 기존 회원이면 임시 로그인 code를, 신규 회원이면 회원가입 sid를 발급
      */
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public MemberOAuthResult handleOAuthSuccess(MemberOAuthCommand command) {
         ProviderType provider = toProviderType(command.provider());
         validateProviderId(command.providerId());
@@ -127,10 +127,20 @@ public class MemberOAuthService implements MemberOAuthUseCase {
         refreshTokenStore.save(
                 refreshClaims.sessionId(),
                 refreshClaims.tokenId(),
-                Duration.between(timeProvider.now(), refreshClaims.expiresAt())
+                getRemainingExpiration(refreshClaims)
         );
 
         return refreshToken;
+    }
+
+    private Duration getRemainingExpiration(JwtTokenClaims claims) {
+        Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
+
+        if (remainingExpiration.isNegative()) {
+            return Duration.ZERO;
+        }
+
+        return remainingExpiration;
     }
 
     private JwtSubject toJwtSubject(UserView member, UUID sessionId) {

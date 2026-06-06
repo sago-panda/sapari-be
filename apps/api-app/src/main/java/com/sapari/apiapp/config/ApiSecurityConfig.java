@@ -23,6 +23,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.common.web.security.JwtAuthenticationFilter;
@@ -71,9 +72,15 @@ public class ApiSecurityConfig {
     public JwtAuthenticationFilter jwtAuthenticationFilter(
             JwtTokenProvider jwtTokenProvider,
             UserDetailsService userDetailsService,
-            AccessTokenRevocationChecker accessTokenRevocationChecker
+            AccessTokenRevocationChecker accessTokenRevocationChecker,
+            SessionRevocationChecker sessionRevocationChecker
     ) {
-        return new JwtAuthenticationFilter(jwtTokenProvider, userDetailsService, accessTokenRevocationChecker);
+        return new JwtAuthenticationFilter(
+                jwtTokenProvider,
+                userDetailsService,
+                accessTokenRevocationChecker,
+                sessionRevocationChecker
+        );
     }
 
     @Bean
