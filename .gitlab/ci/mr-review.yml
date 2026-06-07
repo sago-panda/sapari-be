@@ -1,34 +1,80 @@
-# Claude Code 기반 MR 자동 리뷰 (2단계, 토큰 격리).
+# Claude Code 기반 MR 자동 리뷰 (3단계: precheck -> review -> comment)
 #
-# merge_request_event 에서 동작하며, MR에 skip-review 라벨이 있으면 건너뛴다.
-#  - review 단계:  신뢰 불가 diff를 CI 전용 서브에이전트로 리뷰한다.
-#                  이 단계에서는 GITLAB_API_TOKEN 을 빈 값으로 덮어써(격리), diff의 프롬프트
-#                  인젝션이 api PAT 에 닿지 못하게 한다. 결과는 시크릿 유출 검사를 통과해야만
-#                  artifact 로 남는다(on_success).
-#  - comment 단계: review.md 를 MR에 게시한다. 이 단계에서는 CLAUDE_CODE_OAUTH_TOKEN 을 빈
-#                  값으로 덮어쓰고, 게시 직전 review.md 를 토큰 패턴으로 재검사한다.
+# 동작 규칙:
+#  - skip-review 라벨이 있으면 리뷰하지 않는다.
+#  - 그 외에는 "Claude 리뷰 댓글 마커"의 유무로 판단한다:
+#     · 마커 없음(첫 MR)         -> 리뷰 1회 수행
+#     · 마커 있음(이후 커밋 push) -> 자동 재리뷰 안 함
+#  - 재리뷰: 파이프라인을 수동 재실행하며 변수 FORCE_REVIEW=true 를 주면 마커를 무시하고
+#    다시 리뷰하며, 댓글에 "추가 리뷰"임을 명시한다.
 #
-# CI 전용 변종(sapari-reviewer-ci / security-reviewer-ci)은 Bash 가 없으며 diff 를 데이터로만 취급한다.
-# 로컬 sapari-reviewer / security-reviewer 는 대화형용으로 Bash 를 유지한다.
+# 단계별 토큰 격리:
+#  - precheck/comment: GITLAB_API_TOKEN 보유(claude 미실행 -> 인젝션 없음, 안전)
+#  - review: claude 실행(인젝션 노출) -> GITLAB_API_TOKEN 격리(빈 값)
+#  - comment: CLAUDE_CODE_OAUTH_TOKEN 격리(빈 값)
+#
+# CI 전용 변종(sapari-reviewer-ci / security-reviewer-ci)은 Bash 없음, diff를 데이터로만 취급.
 #
 # 필요 CI 변수 (Settings > CI/CD > Variables, Masked 켜고 Protected 끄기):
 #   CLAUDE_CODE_OAUTH_TOKEN  claude setup-token 으로 발급한 OAuth 토큰
-#   GITLAB_API_TOKEN         MR 댓글 작성용 Personal Access Token (api scope)
+#   GITLAB_API_TOKEN         MR 노트 조회/작성용 Personal Access Token (api scope)
 
 stages:
+  - precheck
   - review
   - comment
 
+# 공통 실행 조건: MR 파이프라인(자동, skip-review 라벨 1차 차단) 또는 수동 재리뷰(FORCE_REVIEW)
+# rules 는 1차 방어, precheck 의 labels API 판정이 2차 방어(이중 게이트).
+.mr_rules: &mr_rules
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_LABELS !~ /(^|,)\s*skip-review\s*(,|$)/'
+  - if: '$FORCE_REVIEW == "true" && $CI_MERGE_REQUEST_IID'
+
+# 1단계: 리뷰 수행 여부 판단 (skip-review 라벨 + 마커 + FORCE_REVIEW)
+mr-precheck:
+  stage: precheck
+  image: alpine:3.20
+  variables:
+    CLAUDE_CODE_OAUTH_TOKEN: "" # claude 미실행 단계
+  rules: *mr_rules
+  script:
+    - apk add --no-cache curl jq >/dev/null
+    - |
+      api="$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID"
+      # skip-review: labels 필드만 정확히 확인 (제목/설명 텍스트 오탐 방지)
+      if curl -s --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" "$api" | jq -e '.labels | index("skip-review")' >/dev/null; then
+        echo "skip-review 라벨 -> 리뷰하지 않음"; DO=false; RERUN=false
+      else
+        # 마커: 봇(토큰 소유자) 작성 노트에서만 검사 (사람 댓글/리뷰 본문 오염으로 인한 위양성 방지)
+        bot_id=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" "$CI_API_V4_URL/user" | jq -r '.id')
+        cnt=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" "$api/notes?per_page=100&sort=desc" \
+          | jq --argjson bot "$bot_id" '[.[] | select(.author.id == $bot) | select(.body | contains("claude-mr-review:marker"))] | length')
+        if [ "$FORCE_REVIEW" = "true" ]; then
+          echo "재리뷰 요청(FORCE_REVIEW) -> 추가 리뷰 수행"; DO=true; RERUN=true
+        elif [ "$cnt" -gt 0 ]; then
+          echo "기존 봇 리뷰 존재 -> 자동 재리뷰 안 함"; DO=false; RERUN=false
+        else
+          echo "첫 리뷰 수행"; DO=true; RERUN=false
+        fi
+      fi
+      printf 'DO_REVIEW=%s\nIS_RERUN=%s\n' "$DO" "$RERUN" > review.env
+  artifacts:
+    reports:
+      dotenv: review.env
+
+# 2단계: 리뷰 (신뢰 불가 diff, api PAT 격리)
 mr-review:
   stage: review
   image: node:22
+  needs:
+    - mr-precheck
   variables:
     GIT_DEPTH: "0" # merge-base diff 계산을 위해 전체 히스토리 필요
     GITLAB_API_TOKEN: "" # claude(인젝션 노출) 단계에서 api PAT 제거
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_LABELS !~ /(^|,)\s*skip-review\s*(,|$)/'
+  rules: *mr_rules
   script:
-    - npm install -g @anthropic-ai/claude-code
+    - '[ "$DO_REVIEW" = "true" ] || { echo "리뷰 스킵"; exit 0; }'
+    - npm install -g @anthropic-ai/claude-code # TODO: 버전 고정
     - git fetch origin -- "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
     - git diff "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" -- > mr.diff
     - |
@@ -54,25 +100,33 @@ mr-review:
     expire_in: 1 week
     when: on_success # 유출 검사 실패 시 artifact 를 남기지 않는다
 
+# 3단계: MR 노트 게시 (claude 토큰 격리, 마커 삽입)
 mr-comment:
   stage: comment
-  image: curlimages/curl:latest # claude 불필요 → 경량 이미지
+  image: curlimages/curl:latest
   needs:
-    - mr-review # review.md 를 artifact 로 전달받는다
+    - mr-precheck
+    - mr-review
   variables:
     CLAUDE_CODE_OAUTH_TOKEN: "" # 게시 단계에서 claude 토큰 제거
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_LABELS !~ /(^|,)\s*skip-review\s*(,|$)/'
+  rules: *mr_rules
   script:
     - |
-      # 다층 방어: review.md 에 토큰 형태 문자열이 남아 있으면 게시 거부.
+      [ "$DO_REVIEW" = "true" ] || { echo "리뷰 스킵 -> 게시 안 함"; exit 0; }
+      [ -s review.md ] || { echo "review.md 없음"; exit 1; }
+      # 다층 방어: 토큰 형태 문자열이 남아 있으면 게시 거부
       if grep -qE 'glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}' review.md; then
         echo "ERROR: review.md 에 토큰 형태 문자열이 있어 게시를 중단함"; exit 1
       fi
-      echo "GITLAB_API_TOKEN length: ${#GITLAB_API_TOKEN}" # 0 이면 변수 미주입
-      # B-2: 신뢰 불가 리뷰 출력의 @멘션을 무력화(\@)해 대량 알림/스팸을 방지한다.
-      sed 's/@/\\@/g' review.md > review.safe.md
-      printf '## 🤖 Claude Auto Review\n\n' | cat - review.safe.md > body.md
+      # B-2: @멘션 무력화 + review.md 에 섞인 마커 리터럴 제거(precheck 위양성/오염 방지).
+      sed -e 's/@/\\@/g' -e 's/claude-mr-review:marker//g' review.md > review.safe.md
+      if [ "$IS_RERUN" = "true" ]; then
+        title='## 🤖 Claude Auto Review (🔄 추가 리뷰)'
+      else
+        title='## 🤖 Claude Auto Review'
+      fi
+      # 본문 끝의 HTML 주석 마커로 다음 precheck 이 "리뷰됨"을 판단한다.
+      { printf '%s\n\n' "$title"; cat review.safe.md; printf '\n<!-- claude-mr-review:marker -->\n'; } > body.md
       http=$(curl -s -o /tmp/resp -w "%{http_code}" --request POST \
         --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" \
         --data-urlencode "body@body.md" \
