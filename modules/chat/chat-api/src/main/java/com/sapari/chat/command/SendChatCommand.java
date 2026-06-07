@@ -20,4 +20,20 @@ public record SendChatCommand(
         String content,         // 클라 — 원문(서버에서 욕설 필터링)
         String clientMsgId      // 클라 — nullable, 재전송 멱등 키
 ) {
+    public SendChatCommand {
+        // 서버가 채우는 신뢰 필드 + 클라가 보내는 타입은 누락되면 안 된다.
+        // (content 길이·빈 값은 전송 흐름 입력검증 책임이라 여기서 강제하지 않음. nickname/email은 종류별 유무 달라 nullable)
+        if (roomId == null) {
+            throw new IllegalArgumentException("roomId는 필수입니다.");
+        }
+        if (senderId == null) {
+            throw new IllegalArgumentException("senderId는 필수입니다.");
+        }
+        if (senderRole == null || senderRole.isBlank()) {
+            throw new IllegalArgumentException("senderRole은 필수입니다.");
+        }
+        if (messageType == null || messageType.isBlank()) {
+            throw new IllegalArgumentException("messageType은 필수입니다.");
+        }
+    }
 }
