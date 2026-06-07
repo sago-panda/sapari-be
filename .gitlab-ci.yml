@@ -1,0 +1,4 @@
+# GitLab CI entrypoint (must live at repo root).
+# Keep this thin: split actual jobs under .gitlab/ci/ and include them here.
+include:
+  - local: '.gitlab/ci/mr-review.yml'
