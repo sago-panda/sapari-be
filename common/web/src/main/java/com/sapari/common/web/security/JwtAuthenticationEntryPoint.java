@@ -18,7 +18,8 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 
 import com.sapari.common.core.exception.CommonErrorCode;
-import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.common.response.ErrorResponse;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.global.time.TimeProvider;
 
 @Slf4j(topic = "JWT_AUTHENTICATION_ENTRY_POINT")
@@ -55,6 +56,6 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.getWriter().write(objectMapper.writeValueAsString(errorResponse));
+        response.getWriter().write(objectMapper.writeValueAsString(ResponseEnvelope.fail(errorResponse)));
     }
 }
