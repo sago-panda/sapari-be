@@ -43,7 +43,19 @@ public record SellerSignupRequest(
         @NotNull(message = "생년월일은 필수입니다.")
         LocalDate birthDate,
 
-        Boolean marketingAgreed
+        Boolean marketingAgreed,
+
+        @NotBlank(message = "상호명은 필수입니다.")
+        @Size(max = 20, message = "상호명은 20자 이하여야 합니다.")
+        String storeName,
+
+        @NotBlank(message = "사업자번호는 필수입니다.")
+        @Pattern(regexp = "^\\d{10}$", message = "사업자번호는 숫자 10자리여야 합니다.")
+        String businessNumber,
+
+        @NotBlank(message = "사업자 유형은 필수입니다.")
+        @Pattern(regexp = "^(INDIVIDUAL|CORPORATE)$", message = "사업자 유형이 올바르지 않습니다.")
+        String businessType
 ) {
     public SellerSignupCommand toCommand() {
         return new SellerSignupCommand(
@@ -53,7 +65,10 @@ public record SellerSignupRequest(
                 name,
                 phoneNumber,
                 birthDate,
-                Boolean.TRUE.equals(marketingAgreed)
+                Boolean.TRUE.equals(marketingAgreed),
+                storeName,
+                businessNumber,
+                businessType
         );
     }
 }

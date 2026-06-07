@@ -23,7 +23,10 @@ import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
+import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
+import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
@@ -46,6 +49,7 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     private final UserAccountUseCase userAccountUseCase;
     private final LocalCredentialRepository localCredentialRepository;
+    private final SellerProfileRepository sellerProfileRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
@@ -56,6 +60,10 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public SellerSignupResult signup(SellerSignupCommand command) {
+        validateDuplicatedStoreName(command.storeName());
+        validateDuplicatedBusinessNumber(command.businessNumber());
+        SellerBusinessType businessType = toBusinessType(command.businessType());
+
         try {
             UserView savedUser = userAccountUseCase.registerSeller(toRegisterCommand(command));
             LocalCredential localCredential = LocalCredential.create(
@@ -63,8 +71,15 @@ public class SellerAuthService implements SellerAuthUseCase {
                     passwordEncoder.encode(command.password()),
                     timeProvider.now()
             );
+            SellerProfile sellerProfile = SellerProfile.createPending(
+                    savedUser.userId(),
+                    command.storeName(),
+                    command.businessNumber(),
+                    businessType
+            );
 
             localCredentialRepository.save(localCredential);
+            sellerProfileRepository.save(sellerProfile);
 
             return new SellerSignupResult(savedUser.userId());
         } catch (DataIntegrityViolationException e) {
@@ -88,6 +103,12 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Transactional(readOnly = true)
     public boolean isNicknameDuplicated(String nickname) {
         return userAccountUseCase.existsByNickname(nickname);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isStoreNameDuplicated(String storeName) {
+        return sellerProfileRepository.existsByStoreName(storeName);
     }
 
     @Override
@@ -140,7 +161,10 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional(readOnly = true)
     public SellerMeResult getMyInfo(UUID userId) {
-        return toSellerMeResult(findSeller(userId));
+        UserView seller = findSeller(userId);
+        SellerProfile sellerProfile = findSellerProfile(userId);
+
+        return toSellerMeResult(seller, sellerProfile);
     }
 
     @Override
@@ -158,11 +182,12 @@ public class SellerAuthService implements SellerAuthUseCase {
 
         try {
             UserView savedSeller = userAccountUseCase.changeNickname(command.userId(), command.nickname());
+            SellerProfile sellerProfile = findSellerProfile(command.userId());
             // nickname snapshot이 바뀌었으므로 기존 access jti를 폐기하고 같은 sid로 새 Access Token을 발급
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller, accessClaims.sessionId()));
 
-            return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller), accessToken);
+            return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller, sellerProfile), accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -177,6 +202,30 @@ public class SellerAuthService implements SellerAuthUseCase {
                 command.email(),
                 command.marketingAgreed()
         );
+    }
+
+    private void validateDuplicatedBusinessNumber(String businessNumber) {
+        if (sellerProfileRepository.existsByBusinessNumber(businessNumber)) {
+            throw new SellerException(SellerErrorCode.DUPLICATED_BUSINESS_NUMBER);
+        }
+    }
+
+    private void validateDuplicatedStoreName(String storeName) {
+        if (sellerProfileRepository.existsByStoreName(storeName)) {
+            throw new SellerException(SellerErrorCode.DUPLICATED_STORE_NAME);
+        }
+    }
+
+    private SellerBusinessType toBusinessType(String businessType) {
+        if (businessType == null || businessType.isBlank()) {
+            throw new SellerException(SellerErrorCode.INVALID_BUSINESS_TYPE);
+        }
+
+        try {
+            return SellerBusinessType.valueOf(businessType);
+        } catch (IllegalArgumentException e) {
+            throw new SellerException(SellerErrorCode.INVALID_BUSINESS_TYPE, e);
+        }
     }
 
     private UserView findSellerByEmail(String email) {
@@ -209,6 +258,11 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
 
         return user;
+    }
+
+    private SellerProfile findSellerProfile(UUID userId) {
+        return sellerProfileRepository.findByUserId(userId)
+                .orElseThrow(() -> new SellerException(SellerErrorCode.USER_NOT_FOUND));
     }
 
     private void validateDuplicatedNickname(String nickname) {
@@ -335,7 +389,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         return new JwtSubject(seller.userId(), sessionId, seller.role().name(), seller.nickname(), seller.email());
     }
 
-    private SellerMeResult toSellerMeResult(UserView seller) {
+    private SellerMeResult toSellerMeResult(UserView seller, SellerProfile sellerProfile) {
         return new SellerMeResult(
                 seller.userId(),
                 seller.nickname(),
@@ -348,7 +402,13 @@ public class SellerAuthService implements SellerAuthUseCase {
                 seller.status().name(),
                 seller.grade().name(),
                 seller.pointBalance(),
-                seller.marketingAgreed()
+                seller.marketingAgreed(),
+                sellerProfile.storeName(),
+                sellerProfile.businessNumber(),
+                sellerProfile.businessType().name(),
+                sellerProfile.status().name(),
+                sellerProfile.rejectionReason(),
+                sellerProfile.approvedAt()
         );
     }
 
