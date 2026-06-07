@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
+import static com.tngtech.archunit.base.DescribedPredicate.not;
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
@@ -149,6 +151,44 @@ class ArchitectureTest {
         ArchRule rule = classes()
                 .that().areAnnotatedWith("jakarta.persistence.Entity")
                 .should().onlyHaveDependentClassesThat().resideInAnyPackage("..infrastructure.persistence..");
+
+        rule.check(SAPARI);
+    }
+
+    // 표현 DTO 격리: 도메인 -core(application/domain/infrastructure)와 -api(command/port/result/view/event)는
+    // 공통 응답 봉투(com.sapari.common.response: ResponseEnvelope/ErrorResponse)를 의존하면 안 된다.
+    // 봉투는 컨트롤러(apps), 에러 봉투는 예외 핸들러(common/web)의 일이다 — use-case 포트가 봉투를 반환하지 않는다.
+    @Test
+    void domain_and_api_must_not_depend_on_response_types() {
+        ArchRule rule = noClasses()
+                .that().resideInAnyPackage(
+                        "com.sapari.*.application..",
+                        "com.sapari.*.domain..",
+                        "com.sapari.*.infrastructure..",
+                        "com.sapari.*.command..",
+                        "com.sapari.*.port..",
+                        "com.sapari.*.result..",
+                        "com.sapari.*.view..",
+                        "com.sapari.*.event..")
+                .should().dependOnClassesThat().resideInAPackage("com.sapari.common.response..");
+
+        rule.check(SAPARI);
+    }
+
+    // *-api(command/port/result/view/event)는 공유 토대 com.sapari.global 중 page 패키지만 의존할 수 있다.
+    // use-case 반환 타입의 CursorPage/OffsetPage 는 허용하되, TimeProvider 등 Spring 결합 토대가 -api 에 새지 않게 한다.
+    @Test
+    void api_may_depend_on_foundation_page_only() {
+        ArchRule rule = noClasses()
+                .that().resideInAnyPackage(
+                        "com.sapari.*.command..",
+                        "com.sapari.*.port..",
+                        "com.sapari.*.result..",
+                        "com.sapari.*.view..",
+                        "com.sapari.*.event..")
+                .should().dependOnClassesThat(
+                        resideInAPackage("com.sapari.global..")
+                                .and(not(resideInAPackage("com.sapari.global.page.."))));
 
         rule.check(SAPARI);
     }

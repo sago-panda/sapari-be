@@ -37,6 +37,8 @@ modules/X/X-api   → no internal module dependencies; DTO / interface only
 
 - Cross-domain calls go through `*-api` ports OR **domain events** — never direct, never another domain's `-core`.
 - `-core` is never depended on by other modules (Gradle `implementation` scope).
+- `*-api` may depend on the shared foundation **only via `com.sapari.global.page`** (CursorPage/OffsetPage in use-case return types); the rest of `common/global` (TimeProvider, …) must NOT leak into `-api`.
+- **`com.sapari.common.response`** (ResponseEnvelope/ErrorResponse) is **controller/exception-handler only** — domain `-core` and `-api` must NOT depend on it (the envelope is wrapped at the web layer, not returned by use-case ports).
 
 ## Architectural Decisions (affect how you write code)
 
