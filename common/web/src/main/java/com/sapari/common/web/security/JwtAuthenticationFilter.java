@@ -18,9 +18,10 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import com.sapari.common.web.security.jwt.JwtTokenClaims;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
-import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 
 @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -55,7 +56,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     && SecurityContextHolder.getContext().getAuthentication() == null) {
                 JwtTokenClaims claims = jwtTokenProvider.parseToken(token);
 
-                if (isAccessToken(claims) && isNotRevoked(token)) {
+                if (isAccessToken(claims) && isNotRevoked(claims)) {
                     authenticate(claims);
                 }
             }
@@ -86,8 +87,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return claims.tokenType() == JwtTokenType.ACCESS;
     }
 
-    private boolean isNotRevoked(String token) {
-        return !accessTokenRevocationChecker.isRevoked(token);
+    private boolean isNotRevoked(JwtTokenClaims claims) {
+        return !accessTokenRevocationChecker.isRevoked(claims.tokenId());
     }
 
     private void authenticate(JwtTokenClaims claims) {

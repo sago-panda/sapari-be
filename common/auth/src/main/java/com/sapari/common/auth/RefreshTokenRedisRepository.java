@@ -9,32 +9,34 @@ import java.util.UUID;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
-import com.sapari.common.web.security.RefreshTokenStore;
-import com.sapari.common.web.security.jwt.JwtProperties;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.TokenStoreKeys;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
 
 @Repository
 @RequiredArgsConstructor
 public class RefreshTokenRedisRepository implements RefreshTokenStore {
 
-    private static final String KEY_PREFIX = "refresh-token:user:";
-
     private final StringRedisTemplate stringRedisTemplate;
     private final JwtProperties jwtProperties;
 
     @Override
-    public void save(UUID userId, String refreshToken) {
+    public void save(UUID sessionId, String refreshToken) {
+        // 여러 기기 로그인을 허용하기 위해 사용자 ID가 아니라 로그인 세션 sid 기준으로 저장
         stringRedisTemplate.opsForValue()
-                .set(createKey(userId), refreshToken, refreshTokenTtl());
+                .set(createKey(sessionId), refreshToken, refreshTokenTtl());
     }
 
     @Override
-    public Optional<String> findByUserId(UUID userId) {
-        return Optional.ofNullable(stringRedisTemplate.opsForValue().get(createKey(userId)));
+    public Optional<String> findBySessionId(UUID sessionId) {
+        // Refresh Token 재발급 시 token의 sid로 현재 세션의 저장된 Refresh Token을 찾음
+        return Optional.ofNullable(stringRedisTemplate.opsForValue().get(createKey(sessionId)));
     }
 
     @Override
-    public void delete(UUID userId) {
-        stringRedisTemplate.delete(createKey(userId));
+    public void deleteBySessionId(UUID sessionId) {
+        // 로그아웃은 전체 사용자 세션이 아니라 현재 sid 세션만 종료
+        stringRedisTemplate.delete(createKey(sessionId));
     }
 
     /**
@@ -44,7 +46,7 @@ public class RefreshTokenRedisRepository implements RefreshTokenStore {
         return Duration.ofSeconds(jwtProperties.refreshTokenExpirationSeconds());
     }
 
-    private String createKey(UUID userId) {
-        return KEY_PREFIX + userId;
+    private String createKey(UUID sessionId) {
+        return TokenStoreKeys.REFRESH_TOKEN_SESSION_PREFIX + sessionId;
     }
 }

@@ -1,0 +1,10 @@
+dependencies {
+    implementation(project(':modules:chat:chat-api'))
+    implementation(project(':common:core'))
+    implementation(project(':common:global'))
+
+    // 순수 정책·도메인 단위테스트는 enum/primitive 입력이라 픽스처 생성기가 불필요(루트 spring-boot-starter-test로 충분).
+    // FixtureMonkey는 필드 많은 ChatMessage/ChatSession 픽스처가 필요한 T6(영속)·T7(서비스) 테스트에서 testImplementation으로 추가.
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}

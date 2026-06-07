@@ -24,9 +24,10 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 
-import com.sapari.common.web.security.jwt.JwtProperties;
-import com.sapari.common.web.security.jwt.JwtSubject;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.global.time.TimeProvider;
 
 @DisplayName("JWT 인증 필터 테스트")
@@ -217,7 +218,7 @@ class JwtAuthenticationFilterTest {
     }
 
     private JwtSubject jwtSubject(UUID userId, String role) {
-        return new JwtSubject(userId, role, "member", "member@example.com");
+        return new JwtSubject(userId, UUID.randomUUID(), role, "member", "member@example.com");
     }
 
     private UserDetailsService userDetailsService(UUID userId, String role, String status) {

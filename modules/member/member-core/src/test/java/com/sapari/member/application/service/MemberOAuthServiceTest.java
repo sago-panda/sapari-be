@@ -17,10 +17,10 @@ import org.mockito.ArgumentCaptor;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.web.security.jwt.JwtProperties;
-import com.sapari.common.web.security.jwt.JwtTokenClaims;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
-import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberOAuthCommand;
@@ -31,7 +31,7 @@ import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.member.result.MemberOAuthResult;
 import com.sapari.member.result.MemberOAuthResultType;
 import com.sapari.member.result.SocialLoginTokenResult;
-import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -81,8 +81,6 @@ class MemberOAuthServiceTest {
         assertThat(result.type()).isEqualTo(MemberOAuthResultType.LOGIN_SUCCESS);
         assertThat(result.loginCode()).isNotBlank();
         assertThat(result.signupSid()).isNull();
-        verify(refreshTokenStore).save(eq(userId), any(String.class));
-
         ArgumentCaptor<String> codeCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
         verify(socialLoginCodeRedisRepository).save(codeCaptor.capture(), valueCaptor.capture());
@@ -96,11 +94,14 @@ class MemberOAuthServiceTest {
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(tokenResult.accessToken());
         JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(tokenResult.refreshToken());
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.sessionId()).isEqualTo(refreshClaims.sessionId());
+        assertThat(accessClaims.tokenId()).isNotEqualTo(refreshClaims.tokenId());
         assertThat(accessClaims.nickname()).isEqualTo("member");
         assertThat(accessClaims.email()).isEqualTo("member@example.com");
         assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
+        verify(refreshTokenStore).save(refreshClaims.sessionId(), tokenResult.refreshToken());
         verifyNoInteractions(socialSignupRedisRepository);
     }
 

@@ -21,11 +21,11 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.web.security.jwt.JwtProperties;
-import com.sapari.common.web.security.jwt.JwtSubject;
-import com.sapari.common.web.security.jwt.JwtTokenClaims;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
-import com.sapari.common.web.security.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberLogoutCommand;
@@ -41,8 +41,8 @@ import com.sapari.member.result.SocialSignupInfoResult;
 import com.sapari.member.result.SocialLoginTokenResult;
 import com.sapari.member.result.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialMemberCommand;
-import com.sapari.common.web.security.AccessTokenBlacklist;
-import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -106,6 +106,8 @@ class MemberAuthServiceTest {
         assertThat(accessClaims.nickname()).isEqualTo("member");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
         assertThat(refreshClaims.tokenType()).isEqualTo(JwtTokenType.REFRESH);
+        assertThat(refreshClaims.sessionId()).isEqualTo(accessClaims.sessionId());
+        assertThat(refreshClaims.tokenId()).isNotEqualTo(accessClaims.tokenId());
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
 
@@ -118,7 +120,7 @@ class MemberAuthServiceTest {
         assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
 
         verify(socialSignupRedisRepository).delete(SIGNUP_SID);
-        verify(refreshTokenStore).save(userId, result.refreshToken());
+        verify(refreshTokenStore).save(refreshClaims.sessionId(), result.refreshToken());
     }
 
     @Test
@@ -196,8 +198,9 @@ class MemberAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String refreshToken =
                 jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
-        when(refreshTokenStore.findByUserId(userId)).thenReturn(Optional.of(refreshToken));
+        when(refreshTokenStore.findBySessionId(refreshClaims.sessionId())).thenReturn(Optional.of(refreshToken));
 
         // when
         MemberTokenReissueResult result = memberAuthService.reissueAccessToken(refreshToken);
@@ -206,6 +209,8 @@ class MemberAuthServiceTest {
         assertThat(result.userId()).isEqualTo(userId);
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.sessionId()).isEqualTo(refreshClaims.sessionId());
+        assertThat(accessClaims.tokenId()).isNotEqualTo(refreshClaims.tokenId());
         assertThat(accessClaims.nickname()).isEqualTo("member");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
     }
@@ -233,15 +238,16 @@ class MemberAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String accessToken =
                 jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(accessToken);
 
         // when
         memberAuthService.logout(new MemberLogoutCommand(userId, accessToken));
 
         // then
-        verify(refreshTokenStore).delete(userId);
+        verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
 
         ArgumentCaptor<Duration> durationCaptor = ArgumentCaptor.forClass(Duration.class);
-        verify(accessTokenBlacklist).save(eq(accessToken), durationCaptor.capture());
+        verify(accessTokenBlacklist).save(eq(accessClaims.tokenId()), durationCaptor.capture());
         assertThat(durationCaptor.getValue()).isPositive();
     }
 
@@ -264,9 +270,12 @@ class MemberAuthServiceTest {
     void updateNicknameUpdatesMemberNickname() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        JwtTokenClaims oldAccessClaims = jwtTokenProvider.parseToken(oldAccessToken);
         MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
@@ -286,11 +295,14 @@ class MemberAuthServiceTest {
         assertThat(result.member().email()).isEqualTo(EMAIL);
         assertThat(result.member().role()).isEqualTo(UserRole.USER.name());
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
+        assertThat(accessClaims.sessionId()).isEqualTo(oldAccessClaims.sessionId());
+        assertThat(accessClaims.tokenId()).isNotEqualTo(oldAccessClaims.tokenId());
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
         verify(userAccountUseCase).existsByNickname("updated");
         verify(userAccountUseCase).changeNickname(userId, "updated");
-        verify(refreshTokenStore, never()).save(eq(userId), any(String.class));
+        verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(String.class));
     }
 
     @Test
@@ -298,9 +310,11 @@ class MemberAuthServiceTest {
     void updateNicknameThrowsExceptionWhenChangedWithinThirtyDays() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId))
                 .thenReturn(Optional.of(memberView(userId, NOW.minus(Duration.ofDays(1)))));
@@ -320,9 +334,11 @@ class MemberAuthServiceTest {
     void updateNicknameThrowsExceptionWhenNicknameIsSame() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
                 userId,
-                "member"
+                "member",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId, NOW)));
         when(userAccountUseCase.existsByNickname("member")).thenReturn(true);
@@ -341,9 +357,11 @@ class MemberAuthServiceTest {
     void updateNicknameThrowsExceptionWhenNicknameIsDuplicated() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(true);
@@ -360,9 +378,11 @@ class MemberAuthServiceTest {
     void updateNicknameThrowsExceptionWhenNicknameSaveConflicts() {
         // given
         UUID userId = UUID.randomUUID();
+        String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         MemberNicknameUpdateCommand command = new MemberNicknameUpdateCommand(
                 userId,
-                "updated"
+                "updated",
+                oldAccessToken
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(memberView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
@@ -431,7 +451,7 @@ class MemberAuthServiceTest {
     }
 
     private JwtSubject jwtSubject(UUID userId, String role) {
-        return new JwtSubject(userId, role, "member", EMAIL);
+        return new JwtSubject(userId, UUID.randomUUID(), role, "member", EMAIL);
     }
 
     private UserView memberView(UUID userId) {

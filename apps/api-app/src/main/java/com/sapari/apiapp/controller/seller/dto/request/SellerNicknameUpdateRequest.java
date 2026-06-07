@@ -16,10 +16,11 @@ public record SellerNicknameUpdateRequest(
         String nickname
 ) {
 
-    public SellerNicknameUpdateCommand toCommand(UUID userId) {
+    public SellerNicknameUpdateCommand toCommand(UUID userId, String accessToken) {
         return new SellerNicknameUpdateCommand(
                 userId,
-                nickname
+                nickname,
+                accessToken
         );
     }
 }

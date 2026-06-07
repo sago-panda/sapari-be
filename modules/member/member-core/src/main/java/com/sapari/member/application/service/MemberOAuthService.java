@@ -9,8 +9,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.web.security.jwt.JwtSubject;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.member.application.dto.SocialSignupInfo;
 import com.sapari.member.command.MemberOAuthCommand;
 import com.sapari.member.domain.exception.MemberErrorCode;
@@ -20,7 +20,7 @@ import com.sapari.member.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.member.port.MemberOAuthUseCase;
 import com.sapari.member.result.MemberOAuthResult;
 import com.sapari.member.result.SocialLoginTokenResult;
-import com.sapari.common.web.security.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
@@ -59,8 +59,10 @@ public class MemberOAuthService implements MemberOAuthUseCase {
             throw new MemberException(MemberErrorCode.USER_NOT_FOUND);
         }
 
-        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(user));
-        String refreshToken = jwtTokenProvider.createRefreshToken(toJwtSubject(user));
+        UUID sessionId = UUID.randomUUID();
+        JwtSubject subject = toJwtSubject(user, sessionId);
+        String accessToken = jwtTokenProvider.createAccessToken(subject);
+        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
         String loginCode = UUID.randomUUID().toString();
         String socialLoginTokenInfoJson = toJson(new SocialLoginTokenResult(
                 user.userId(),
@@ -68,7 +70,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
                 refreshToken
         ));
 
-        refreshTokenStore.save(user.userId(), refreshToken);
+        refreshTokenStore.save(sessionId, refreshToken);
         socialLoginCodeRedisRepository.save(loginCode, socialLoginTokenInfoJson);
 
         return MemberOAuthResult.loginSuccess(loginCode);
@@ -112,7 +114,7 @@ public class MemberOAuthService implements MemberOAuthUseCase {
         }
     }
 
-    private JwtSubject toJwtSubject(UserView member) {
-        return new JwtSubject(member.userId(), member.role().name(), member.nickname(), member.email());
+    private JwtSubject toJwtSubject(UserView member, UUID sessionId) {
+        return new JwtSubject(member.userId(), sessionId, member.role().name(), member.nickname(), member.email());
     }
 }

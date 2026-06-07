@@ -17,6 +17,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -25,8 +26,8 @@ import com.sapari.apiapp.config.ApiSecurityConfig;
 import com.sapari.apiapp.config.WebMvcConfig;
 import com.sapari.apiapp.controller.member.MemberAuthController;
 import com.sapari.apiapp.controller.seller.SellerAuthController;
-import com.sapari.common.web.security.AccessTokenRevocationChecker;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.member.infrastructure.oauth.MemberOAuth2SuccessHandler;
 import com.sapari.member.infrastructure.oauth.MemberOAuth2UserService;
@@ -66,6 +67,9 @@ class SecurityFailureResponseTest {
 
     @MockitoBean
     private MemberOAuth2SuccessHandler memberOAuth2SuccessHandler;
+
+    @MockitoBean
+    private ClientRegistrationRepository clientRegistrationRepository;
 
     @Test
     @DisplayName("미인증 사용자가 회원 보호 API에 접근하면 401 ErrorResponse를 반환한다")
