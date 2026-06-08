@@ -5,10 +5,10 @@ import lombok.RequiredArgsConstructor;
 import java.util.Optional;
 import java.util.UUID;
 
-import jakarta.persistence.EntityNotFoundException;
-
 import org.springframework.stereotype.Repository;
 
+import com.sapari.seller.domain.exception.SellerErrorCode;
+import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.seller.infrastructure.persistence.entity.SellerProfileEntity;
@@ -29,7 +29,7 @@ public class SellerProfileRepositoryImpl implements SellerProfileRepository {
         }
 
         SellerProfileEntity existingEntity = sellerProfileJpaRepository.findById(sellerProfile.sellerProfileId())
-                .orElseThrow(() -> new EntityNotFoundException("해당 판매자 프로필을 찾을 수 없습니다."));
+                .orElseThrow(() -> new SellerException(SellerErrorCode.SELLER_PROFILE_NOT_FOUND));
 
         SellerProfileMapper.updateEntityFromDomain(existingEntity, sellerProfile);
 

@@ -10,18 +10,22 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
 import com.sapari.seller.command.SellerSignupCommand;
-import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
-import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
@@ -35,10 +39,6 @@ import com.sapari.seller.result.SellerMeResult;
 import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
-import com.sapari.user.command.RegisterSellerCommand;
-import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
-import com.sapari.common.securityjwt.store.RefreshTokenStore;
-import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
@@ -53,6 +53,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final LocalCredentialRepository localCredentialRepository;
     private final SellerProfileRepository sellerProfileRepository;
     private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier;
+    private final SellerSignupProcessor sellerSignupProcessor;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
@@ -61,32 +62,18 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final TimeProvider timeProvider;
 
     @Override
-    @Transactional
     public SellerSignupResult signup(SellerSignupCommand command) {
         SellerBusinessType businessType = toBusinessType(command.businessType());
+        String normalizedStoreName = normalizeStoreName(command.storeName());
+
         validateBusinessRegistration(command);
-        validateDuplicatedStoreName(command.storeName());
+        validateDuplicatedStoreName(normalizedStoreName);
         validateDuplicatedBusinessNumber(command.businessNumber());
 
         try {
-            UserView savedUser = userAccountUseCase.registerSeller(toRegisterCommand(command));
-            LocalCredential localCredential = LocalCredential.create(
-                    savedUser.userId(),
-                    passwordEncoder.encode(command.password()),
-                    timeProvider.now()
-            );
-            SellerProfile sellerProfile = SellerProfile.createPending(
-                    savedUser.userId(),
-                    command.storeName(),
-                    command.businessNumber(),
-                    businessType
-            );
-
-            localCredentialRepository.save(localCredential);
-            sellerProfileRepository.save(sellerProfile);
-
-            return new SellerSignupResult(savedUser.userId());
+            return sellerSignupProcessor.signup(command, normalizedStoreName, businessType);
         } catch (DataIntegrityViolationException e) {
+            // 트랜잭션 commit/flush 시점 unique 충돌까지 서비스 예외로 변환한다.
             throw new SellerException(SellerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
     }
@@ -112,7 +99,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional(readOnly = true)
     public boolean isStoreNameDuplicated(String storeName) {
-        return sellerProfileRepository.existsByStoreName(storeName);
+        return sellerProfileRepository.existsByStoreName(normalizeStoreName(storeName));
     }
 
     @Override
@@ -197,17 +184,6 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
     }
 
-    private RegisterSellerCommand toRegisterCommand(SellerSignupCommand command) {
-        return new RegisterSellerCommand(
-                command.nickname(),
-                command.name(),
-                command.birthDate(),
-                command.phoneNumber(),
-                command.email(),
-                command.marketingAgreed()
-        );
-    }
-
     private void validateDuplicatedBusinessNumber(String businessNumber) {
         if (sellerProfileRepository.existsByBusinessNumber(businessNumber)) {
             throw new SellerException(SellerErrorCode.DUPLICATED_BUSINESS_NUMBER);
@@ -215,6 +191,10 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     private void validateDuplicatedStoreName(String storeName) {
+        if (!StringUtils.hasText(storeName)) {
+            return;
+        }
+
         if (sellerProfileRepository.existsByStoreName(storeName)) {
             throw new SellerException(SellerErrorCode.DUPLICATED_STORE_NAME);
         }
@@ -290,7 +270,15 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     private SellerProfile findSellerProfile(UUID userId) {
         return sellerProfileRepository.findByUserId(userId)
-                .orElseThrow(() -> new SellerException(SellerErrorCode.USER_NOT_FOUND));
+                .orElseThrow(() -> new SellerException(SellerErrorCode.SELLER_PROFILE_NOT_FOUND));
+    }
+
+    private String normalizeStoreName(String storeName) {
+        if (storeName == null) {
+            return null;
+        }
+
+        return storeName.trim();
     }
 
     private void validateDuplicatedNickname(String nickname) {

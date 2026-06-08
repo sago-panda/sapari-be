@@ -16,7 +16,6 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
@@ -44,7 +43,6 @@ import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
-import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
@@ -72,6 +70,8 @@ class SellerAuthServiceTest {
             mock(SellerProfileRepository.class);
     private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier =
             mock(SellerBusinessRegistrationVerifier.class);
+    private final SellerSignupProcessor sellerSignupProcessor =
+            mock(SellerSignupProcessor.class);
     private final PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("seller-test", SECRET, 3600L, 1209600L),
@@ -88,6 +88,7 @@ class SellerAuthServiceTest {
             localCredentialRepository,
             sellerProfileRepository,
             sellerBusinessRegistrationVerifier,
+            sellerSignupProcessor,
             passwordEncoder,
             jwtTokenProvider,
             refreshTokenStore,
@@ -101,46 +102,22 @@ class SellerAuthServiceTest {
     void signupSavesSellerUserAndLocalCredential() {
         // given
         UUID userId = UUID.randomUUID();
-        SellerSignupCommand command = signupCommand();
-        when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        SellerSignupCommand command = signupCommand(" 사파리 상점 ", "INDIVIDUAL");
         when(sellerBusinessRegistrationVerifier.verify(
                 "1234567890",
                 "판매자",
                 LocalDate.of(2020, 1, 1)
         )).thenReturn(SellerBusinessRegistrationVerification.available());
-        when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
-                .thenReturn(sellerView(userId));
-        when(localCredentialRepository.save(any(LocalCredential.class))).thenAnswer(invocation ->
-                invocation.getArgument(0)
-        );
-        when(sellerProfileRepository.save(any(SellerProfile.class))).thenAnswer(invocation ->
-                invocation.getArgument(0)
-        );
+        when(sellerSignupProcessor.signup(command, "사파리 상점", SellerBusinessType.INDIVIDUAL))
+                .thenReturn(new SellerSignupResult(userId));
 
         // when
         SellerSignupResult result = sellerAuthService.signup(command);
 
         // then
         assertThat(result.userId()).isEqualTo(userId);
-
-        ArgumentCaptor<RegisterSellerCommand> commandCaptor =
-                ArgumentCaptor.forClass(RegisterSellerCommand.class);
-        verify(userAccountUseCase).registerSeller(commandCaptor.capture());
-        assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
-        assertThat(commandCaptor.getValue().nickname()).isEqualTo("seller");
-
-        ArgumentCaptor<LocalCredential> credentialCaptor = ArgumentCaptor.forClass(LocalCredential.class);
-        verify(localCredentialRepository).save(credentialCaptor.capture());
-        assertThat(credentialCaptor.getValue().userId()).isEqualTo(userId);
-        assertThat(credentialCaptor.getValue().passwordHash()).isEqualTo(PASSWORD_HASH);
-
-        ArgumentCaptor<SellerProfile> profileCaptor = ArgumentCaptor.forClass(SellerProfile.class);
-        verify(sellerProfileRepository).save(profileCaptor.capture());
-        assertThat(profileCaptor.getValue().userId()).isEqualTo(userId);
-        assertThat(profileCaptor.getValue().status()).isEqualTo(SellerApprovalStatus.PENDING);
-        assertThat(profileCaptor.getValue().storeName()).isEqualTo("사파리 상점");
-        assertThat(profileCaptor.getValue().businessNumber()).isEqualTo("1234567890");
-        assertThat(profileCaptor.getValue().businessType()).isEqualTo(SellerBusinessType.INDIVIDUAL);
+        verify(sellerProfileRepository).existsByStoreName("사파리 상점");
+        verify(sellerSignupProcessor).signup(command, "사파리 상점", SellerBusinessType.INDIVIDUAL);
     }
 
     @Test
@@ -149,28 +126,19 @@ class SellerAuthServiceTest {
         // given
         UUID userId = UUID.randomUUID();
         SellerSignupCommand command = signupCommand("CORPORATE");
-        when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
         when(sellerBusinessRegistrationVerifier.verify(
                 "1234567890",
                 "판매자",
                 LocalDate.of(2020, 1, 1)
         )).thenReturn(SellerBusinessRegistrationVerification.available());
-        when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
-                .thenReturn(sellerView(userId));
-        when(localCredentialRepository.save(any(LocalCredential.class))).thenAnswer(invocation ->
-                invocation.getArgument(0)
-        );
-        when(sellerProfileRepository.save(any(SellerProfile.class))).thenAnswer(invocation ->
-                invocation.getArgument(0)
-        );
+        when(sellerSignupProcessor.signup(command, "사파리 상점", SellerBusinessType.CORPORATE))
+                .thenReturn(new SellerSignupResult(userId));
 
         // when
         sellerAuthService.signup(command);
 
         // then
-        ArgumentCaptor<SellerProfile> profileCaptor = ArgumentCaptor.forClass(SellerProfile.class);
-        verify(sellerProfileRepository).save(profileCaptor.capture());
-        assertThat(profileCaptor.getValue().businessType()).isEqualTo(SellerBusinessType.CORPORATE);
+        verify(sellerSignupProcessor).signup(command, "사파리 상점", SellerBusinessType.CORPORATE);
     }
 
     @Test
@@ -189,9 +157,7 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_BUSINESS_NUMBER)
                 );
-        verify(userAccountUseCase, never()).registerSeller(any(RegisterSellerCommand.class));
-        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
-        verify(sellerProfileRepository, never()).save(any(SellerProfile.class));
+        verifyNoInteractions(sellerSignupProcessor);
     }
 
     @Test
@@ -210,9 +176,7 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_STORE_NAME)
                 );
-        verify(userAccountUseCase, never()).registerSeller(any(RegisterSellerCommand.class));
-        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
-        verify(sellerProfileRepository, never()).save(any(SellerProfile.class));
+        verifyNoInteractions(sellerSignupProcessor);
     }
 
     @Test
@@ -223,9 +187,7 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_BUSINESS_TYPE)
                 );
-        verify(userAccountUseCase, never()).registerSeller(any(RegisterSellerCommand.class));
-        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
-        verify(sellerProfileRepository, never()).save(any(SellerProfile.class));
+        verifyNoInteractions(sellerSignupProcessor);
     }
 
     @Test
@@ -243,9 +205,7 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_BUSINESS_REGISTRATION)
                 );
-        verify(userAccountUseCase, never()).registerSeller(any(RegisterSellerCommand.class));
-        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
-        verify(sellerProfileRepository, never()).save(any(SellerProfile.class));
+        verifyNoInteractions(sellerSignupProcessor);
     }
 
     @Test
@@ -264,22 +224,23 @@ class SellerAuthServiceTest {
                         assertThat(exception.getErrorCode())
                                 .isEqualTo(SellerErrorCode.BUSINESS_REGISTRATION_CHECK_UNAVAILABLE)
                 );
-        verify(userAccountUseCase, never()).registerSeller(any(RegisterSellerCommand.class));
-        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
-        verify(sellerProfileRepository, never()).save(any(SellerProfile.class));
+        verifyNoInteractions(sellerSignupProcessor);
     }
 
     @Test
     @DisplayName("회원가입 정보가 중복되면 SellerException이 발생한다")
     void signupThrowsExceptionWhenSignupInfoIsDuplicated() {
         // given
-        when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
-                .thenThrow(new DataIntegrityViolationException("duplicated"));
         when(sellerBusinessRegistrationVerifier.verify(
                 "1234567890",
                 "판매자",
                 LocalDate.of(2020, 1, 1)
         )).thenReturn(SellerBusinessRegistrationVerification.available());
+        when(sellerSignupProcessor.signup(
+                any(SellerSignupCommand.class),
+                eq("사파리 상점"),
+                eq(SellerBusinessType.INDIVIDUAL)
+        )).thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.signup(signupCommand()))
@@ -394,6 +355,7 @@ class SellerAuthServiceTest {
                 localCredentialRepository,
                 sellerProfileRepository,
                 sellerBusinessRegistrationVerifier,
+                sellerSignupProcessor,
                 passwordEncoder,
                 tokenProvider,
                 refreshTokenStore,
@@ -552,7 +514,7 @@ class SellerAuthServiceTest {
         // when, then
         assertThatThrownBy(() -> sellerAuthService.getMyInfo(userId))
                 .isInstanceOfSatisfying(SellerException.class, exception ->
-                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.USER_NOT_FOUND)
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.SELLER_PROFILE_NOT_FOUND)
                 );
     }
 
@@ -738,6 +700,10 @@ class SellerAuthServiceTest {
     }
 
     private SellerSignupCommand signupCommand(String businessType) {
+        return signupCommand("사파리 상점", businessType);
+    }
+
+    private SellerSignupCommand signupCommand(String storeName, String businessType) {
         return new SellerSignupCommand(
                 EMAIL,
                 PASSWORD,
@@ -746,7 +712,7 @@ class SellerAuthServiceTest {
                 "01012345678",
                 LocalDate.of(1990, 1, 1),
                 true,
-                "사파리 상점",
+                storeName,
                 "1234567890",
                 LocalDate.of(2020, 1, 1),
                 businessType
