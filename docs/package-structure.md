@@ -152,6 +152,7 @@ Entity ↔ 도메인 변환?                  → X-core/infrastructure/persiste
 |---|---|---|---|---|
 | **`common/core`** | `com.sapari.common.core` | 순수 계약 — 웹·도메인 무관 | `BusinessException`, `ErrorCode`, `CommonErrorCode` | (없음 — 가장 안정) |
 | **`common/global`** | `com.sapari.global` | 횡단 유틸 | `TimeProvider`, `UrlValidator` | (없음) |
+| **`common/page`** | `com.sapari.common.page` | 페이지네이션 토대 (-api 반환타입 + 코덱) | `CursorPage`, `OffsetPage`, `PageSupport`, `CursorCodec`, `InvalidCursorException` | `core` |
 | **`common/web`** | `com.sapari.common.web` | 웹·보안 공통 | `GlobalExceptionHandler`, `ErrorResponse`, JWT(`JwtTokenProvider`…), 보안 필터, `@CurrentUserId`, 토큰 **포트**(`RefreshTokenStore`·`AccessTokenBlacklist`), Swagger | `core`, `global` |
 | **`common/auth`** | `com.sapari.common.auth` | 인증 인프라 **구현** | `RefreshTokenRedisRepository`, `AccessTokenBlacklistRedisRepository` (common/web 포트의 Redis 구현) | `common/web`, `storage:redis-core` |
 
@@ -159,13 +160,15 @@ Entity ↔ 도메인 변환?                  → X-core/infrastructure/persiste
 
 **내부 레이어링** (안정 → 변동):
 ```
-common/core  ·  common/global       (순수 토대, 의존 없음)
+common/core  ·  common/global       (순수 토대, 의존 없음 — 모든 모듈이 깔고 쓰는 보편 리프)
         ▲
-   common/web                        (웹·보안 + 토큰 포트)
+   common/page (→ core)             (페이지네이션 토대; -api 반환타입 + 코덱)
+   common/web  (→ core, global)     (웹·보안 + 토큰 포트)
         ▲
    common/auth                       (Redis 구현)
 ```
-- `common/*`은 **도메인 모듈을 의존하지 않습니다**(룰6). 내부에서는 `core`/`global` ← `web` ← `auth` 방향만.
+- `common/*`은 **도메인 모듈을 의존하지 않습니다**(룰6). 내부에서는 `core`/`global` ← `page`/`web` ← `auth` 방향만.
+- `core`·`global`은 **의존 0인 형제 리프**이며 서로 의존하지 않습니다(룰7 슬라이스 순환 방지). BusinessException 이 필요한 페이지네이션 코덱은 `global`(의존 0 불변)에 두지 않고 `core` 위의 `common/page`로 분리했습니다.
 - **포트/구현 분리** 예: 토큰 **포트는 `common/web`**, **구현(Redis)은 `common/auth`** — `common/web`이 Redis에 매이지 않도록.
 
 ### 새 공통 요소가 생기면? — `common`에 무지성으로 절대 넣지 말 것

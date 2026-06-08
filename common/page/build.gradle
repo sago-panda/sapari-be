@@ -1,0 +1,7 @@
+dependencies {
+    // CursorCodec/InvalidCursorException 이 BusinessException/CommonErrorCode 를 쓴다.
+    // core 만 의존(transitive 비노출) → -api 가 :common:page 를 물어도 response 봉투가 -api classpath 에 새지 않음.
+    implementation project(':common:core')
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}

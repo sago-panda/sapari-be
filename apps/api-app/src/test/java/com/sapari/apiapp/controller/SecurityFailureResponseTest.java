@@ -18,6 +18,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -67,13 +68,17 @@ class SecurityFailureResponseTest {
     @MockitoBean
     private MemberOAuth2SuccessHandler memberOAuth2SuccessHandler;
 
+    @MockitoBean
+    private ClientRegistrationRepository clientRegistrationRepository;
+
     @Test
     @DisplayName("미인증 사용자가 회원 보호 API에 접근하면 401 ErrorResponse를 반환한다")
     void unauthenticatedMemberRequestReturnsUnauthorizedErrorResponse() throws Exception {
         mockMvc.perform(get("/api/v1/members/auth/me"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.status").value(401))
-                .andExpect(jsonPath("$.message").value("인증이 필요합니다."));
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(401))
+                .andExpect(jsonPath("$.error.message").value("인증이 필요합니다."));
     }
 
     @Test
@@ -82,8 +87,9 @@ class SecurityFailureResponseTest {
         mockMvc.perform(get("/api/v1/sellers/auth/me")
                         .with(user("019e6e30-ea61-7392-8123-1047154d4660").roles("USER")))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.message").value("접근 권한이 없습니다."));
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(403))
+                .andExpect(jsonPath("$.error.message").value("접근 권한이 없습니다."));
     }
 
     @TestConfiguration(proxyBeanMethods = false)

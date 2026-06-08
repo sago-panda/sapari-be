@@ -1,4 +1,4 @@
-package com.sapari.common.web.response;
+package com.sapari.common.response;
 
 import java.time.Instant;
 
