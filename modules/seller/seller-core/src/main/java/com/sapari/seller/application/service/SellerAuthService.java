@@ -20,6 +20,8 @@ import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
 import com.sapari.seller.command.SellerSignupCommand;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
@@ -50,6 +52,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final UserAccountUseCase userAccountUseCase;
     private final LocalCredentialRepository localCredentialRepository;
     private final SellerProfileRepository sellerProfileRepository;
+    private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
@@ -60,9 +63,10 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public SellerSignupResult signup(SellerSignupCommand command) {
+        SellerBusinessType businessType = toBusinessType(command.businessType());
+        validateBusinessRegistration(command);
         validateDuplicatedStoreName(command.storeName());
         validateDuplicatedBusinessNumber(command.businessNumber());
-        SellerBusinessType businessType = toBusinessType(command.businessType());
 
         try {
             UserView savedUser = userAccountUseCase.registerSeller(toRegisterCommand(command));
@@ -214,6 +218,30 @@ public class SellerAuthService implements SellerAuthUseCase {
         if (sellerProfileRepository.existsByStoreName(storeName)) {
             throw new SellerException(SellerErrorCode.DUPLICATED_STORE_NAME);
         }
+    }
+
+    /**
+     * 판매자 가입 전에 사업자등록정보가 국세청 정보와 일치하고 계속사업자 상태인지 확인한다.
+     */
+    private void validateBusinessRegistration(SellerSignupCommand command) {
+        SellerBusinessRegistrationVerification verification = sellerBusinessRegistrationVerifier.verify(
+                command.businessNumber(),
+                command.name(),
+                command.businessStartDate()
+        );
+        if (verification == null) {
+            throw new SellerException(SellerErrorCode.BUSINESS_REGISTRATION_CHECK_UNAVAILABLE);
+        }
+
+        if (verification.registrationAvailable()) {
+            return;
+        }
+
+        if (verification.failureReason() == SellerBusinessRegistrationVerification.FailureReason.UNAVAILABLE) {
+            throw new SellerException(SellerErrorCode.BUSINESS_REGISTRATION_CHECK_UNAVAILABLE);
+        }
+
+        throw new SellerException(SellerErrorCode.INVALID_BUSINESS_REGISTRATION);
     }
 
     private SellerBusinessType toBusinessType(String businessType) {

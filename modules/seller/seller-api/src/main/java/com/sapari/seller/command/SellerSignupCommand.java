@@ -12,6 +12,7 @@ public record SellerSignupCommand(
         Boolean marketingAgreed,
         String storeName,
         String businessNumber,
+        LocalDate businessStartDate,
         String businessType
 ) {
 }

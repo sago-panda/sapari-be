@@ -20,7 +20,9 @@ public enum SellerErrorCode implements ErrorCode {
     NICKNAME_CHANGE_RESTRICTED(409, "SELLER-009", "닉네임은 30일마다 변경할 수 있습니다."),
     DUPLICATED_BUSINESS_NUMBER(409, "SELLER-010", "이미 등록된 사업자번호입니다."),
     INVALID_BUSINESS_TYPE(400, "SELLER-011", "사업자 유형이 올바르지 않습니다."),
-    DUPLICATED_STORE_NAME(409, "SELLER-012", "이미 사용 중인 상호명입니다.");
+    DUPLICATED_STORE_NAME(409, "SELLER-012", "이미 사용 중인 상호명입니다."),
+    INVALID_BUSINESS_REGISTRATION(400, "SELLER-013", "가입 가능한 사업자등록번호가 아닙니다."),
+    BUSINESS_REGISTRATION_CHECK_UNAVAILABLE(503, "SELLER-014", "사업자등록번호 확인이 지연되고 있습니다.");
 
     private final int status;
     private final String code;

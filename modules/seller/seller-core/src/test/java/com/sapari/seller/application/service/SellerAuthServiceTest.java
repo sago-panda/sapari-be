@@ -30,6 +30,8 @@ import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
 import com.sapari.seller.command.SellerSignupCommand;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
@@ -68,6 +70,8 @@ class SellerAuthServiceTest {
             mock(LocalCredentialRepository.class);
     private final SellerProfileRepository sellerProfileRepository =
             mock(SellerProfileRepository.class);
+    private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier =
+            mock(SellerBusinessRegistrationVerifier.class);
     private final PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("seller-test", SECRET, 3600L, 1209600L),
@@ -83,6 +87,7 @@ class SellerAuthServiceTest {
             userAccountUseCase,
             localCredentialRepository,
             sellerProfileRepository,
+            sellerBusinessRegistrationVerifier,
             passwordEncoder,
             jwtTokenProvider,
             refreshTokenStore,
@@ -98,6 +103,11 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         SellerSignupCommand command = signupCommand();
         when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.available());
         when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
                 .thenReturn(sellerView(userId));
         when(localCredentialRepository.save(any(LocalCredential.class))).thenAnswer(invocation ->
@@ -140,6 +150,11 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         SellerSignupCommand command = signupCommand("CORPORATE");
         when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.available());
         when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
                 .thenReturn(sellerView(userId));
         when(localCredentialRepository.save(any(LocalCredential.class))).thenAnswer(invocation ->
@@ -162,6 +177,11 @@ class SellerAuthServiceTest {
     @DisplayName("사업자번호가 중복되면 회원가입에 실패한다")
     void signupThrowsExceptionWhenBusinessNumberIsDuplicated() {
         // given
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.available());
         when(sellerProfileRepository.existsByBusinessNumber("1234567890")).thenReturn(true);
 
         // when, then
@@ -178,6 +198,11 @@ class SellerAuthServiceTest {
     @DisplayName("상호명이 중복되면 회원가입에 실패한다")
     void signupThrowsExceptionWhenStoreNameIsDuplicated() {
         // given
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.available());
         when(sellerProfileRepository.existsByStoreName("사파리 상점")).thenReturn(true);
 
         // when, then
@@ -204,11 +229,57 @@ class SellerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("가입 가능한 사업자등록번호가 아니면 회원가입에 실패한다")
+    void signupThrowsExceptionWhenBusinessRegistrationIsInactive() {
+        // given
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.invalid());
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.signup(signupCommand()))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_BUSINESS_REGISTRATION)
+                );
+        verify(userAccountUseCase, never()).registerSeller(any(RegisterSellerCommand.class));
+        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
+        verify(sellerProfileRepository, never()).save(any(SellerProfile.class));
+    }
+
+    @Test
+    @DisplayName("사업자등록번호 상태조회가 불가능하면 회원가입에 실패한다")
+    void signupThrowsExceptionWhenBusinessRegistrationCheckIsUnavailable() {
+        // given
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.unavailable());
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.signup(signupCommand()))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode())
+                                .isEqualTo(SellerErrorCode.BUSINESS_REGISTRATION_CHECK_UNAVAILABLE)
+                );
+        verify(userAccountUseCase, never()).registerSeller(any(RegisterSellerCommand.class));
+        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
+        verify(sellerProfileRepository, never()).save(any(SellerProfile.class));
+    }
+
+    @Test
     @DisplayName("회원가입 정보가 중복되면 SellerException이 발생한다")
     void signupThrowsExceptionWhenSignupInfoIsDuplicated() {
         // given
         when(userAccountUseCase.registerSeller(any(RegisterSellerCommand.class)))
                 .thenThrow(new DataIntegrityViolationException("duplicated"));
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.available());
 
         // when, then
         assertThatThrownBy(() -> sellerAuthService.signup(signupCommand()))
@@ -322,6 +393,7 @@ class SellerAuthServiceTest {
                 userAccountUseCase,
                 localCredentialRepository,
                 sellerProfileRepository,
+                sellerBusinessRegistrationVerifier,
                 passwordEncoder,
                 tokenProvider,
                 refreshTokenStore,
@@ -676,6 +748,7 @@ class SellerAuthServiceTest {
                 true,
                 "사파리 상점",
                 "1234567890",
+                LocalDate.of(2020, 1, 1),
                 businessType
         );
     }
