@@ -13,11 +13,11 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.sapari.apiapp.controller.dto.CreateRoomRequest;
-import com.sapari.apiapp.controller.dto.StartBroadcastRequest;
+import com.sapari.apiapp.controller.live.dto.CreateRoomRequest;
+import com.sapari.apiapp.controller.live.dto.StartBroadcastRequest;
+import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
@@ -45,7 +45,7 @@ public class LiveController {
     private final GetLiveUseCase getLiveUseCase;
 
     @PostMapping("/rooms")
-    public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @RequestParam(name = "sellerId") UUID sellerId) {
+    public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @CurrentUserId UUID sellerId) {
         CreateLiveCommand command = request.toCommand(sellerId);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(createLiveUseCase.create(command));
@@ -53,7 +53,7 @@ public class LiveController {
 
     @PostMapping("/rooms/{roomId}/broadcast/start")
     public ResponseEntity<StartLiveResult> startBroadcast(
-            @RequestParam(name = "sellerId") UUID sellerId,
+            @CurrentUserId UUID sellerId,
             @PathVariable UUID roomId,
             @RequestBody @Valid StartBroadcastRequest request
     ) {
@@ -76,7 +76,7 @@ public class LiveController {
 
     @PostMapping("/rooms/{roomId}/broadcast/end")
     public ResponseEntity<Void> endBroadcast(
-            @RequestParam(name = "sellerId") UUID sellerId,
+            @CurrentUserId UUID sellerId,
             @PathVariable UUID roomId
     ) {
         endLiveUseCase.end(new EndLiveCommand(roomId, sellerId));
