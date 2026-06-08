@@ -15,8 +15,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
-import static com.tngtech.archunit.base.DescribedPredicate.not;
-import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
@@ -175,10 +173,10 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
-    // *-api(command/port/result/view/event)는 공유 토대 com.sapari.global 중 page 패키지만 의존할 수 있다.
-    // use-case 반환 타입의 CursorPage/OffsetPage 는 허용하되, TimeProvider 등 Spring 결합 토대가 -api 에 새지 않게 한다.
+    // *-api(command/port/result/view/event)는 com.sapari.global(TimeProvider 등 Spring 결합 토대)에 의존하면 안 된다.
+    // use-case 반환 타입의 CursorPage/OffsetPage 는 별도 토대 모듈 com.sapari.common.page 로 분리했고, -api 는 그것만 의존한다.
     @Test
-    void api_may_depend_on_foundation_page_only() {
+    void api_must_not_depend_on_spring_coupled_foundation() {
         ArchRule rule = noClasses()
                 .that().resideInAnyPackage(
                         "com.sapari.*.command..",
@@ -186,9 +184,7 @@ class ArchitectureTest {
                         "com.sapari.*.result..",
                         "com.sapari.*.view..",
                         "com.sapari.*.event..")
-                .should().dependOnClassesThat(
-                        resideInAPackage("com.sapari.global..")
-                                .and(not(resideInAPackage("com.sapari.global.page.."))));
+                .should().dependOnClassesThat().resideInAPackage("com.sapari.global..");
 
         rule.check(SAPARI);
     }

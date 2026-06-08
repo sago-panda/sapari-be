@@ -1,4 +1,4 @@
-package com.sapari.global.page;
+package com.sapari.common.page;
 
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;

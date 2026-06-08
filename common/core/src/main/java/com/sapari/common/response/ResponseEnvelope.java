@@ -1,6 +1,5 @@
 package com.sapari.common.response;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
@@ -17,8 +16,11 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * <p>패키지는 {@code com.sapari.common.response} — 표현 DTO 라 도메인 코어가 의존하면 안 된다
  * (ArchUnit 으로 차단). 모듈은 현재 common/core 지만, 패키지명을 모듈과 분리해 두어 나중에
  * 별도 모듈로 추출해도 import 변경이 없게 한다.
+ *
+ * <p>{@code data}/{@code error} 는 null 이어도 **생략하지 않고 항상 내려준다**(NON_NULL 미적용). 봉투 형태를
+ * 고정해 클라이언트가 {@code data: T | null}, {@code error: ErrorResponse | null} 로 일관되게 다루게 한다
+ * (키 부재(undefined) 대신 명시적 null).
  */
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ResponseEnvelope<T>(
         @JsonProperty("success") boolean isSuccess,
         T data,
