@@ -211,7 +211,7 @@ common/core  ·  common/global       (순수 토대, 의존 없음 — 모든 �
 
 | 앱 | 역할 |
 |---|---|
-| **`api-app`** | 구매자/판매자 REST API (member·seller·live 컨트롤러 + 보안 체인) |
+| **`api-app`** | 구매자/판매자 REST API (customer·seller·live 컨트롤러 + 보안 체인) |
 | **`admin-app`** | 관리자 |
 | **`streaming-app`** | 실시간 (WS 채팅 예정) |
 | **`batch-app`** | 배치 |
@@ -222,7 +222,7 @@ apps/api-app/  src/main/java/com/sapari/apiapp/
 ├─ ApiAppApplication              ← main (컴포넌트 스캔 com.sapari)
 ├─ config/        ApiSecurityConfig(보안 체인), WebFilterConfig(MDC 필터),
 │                 WebMvcConfig(@CurrentUserId 리졸버), SwaggerConfig
-├─ controller/<도메인>/   LiveController, MemberAuthController, SellerAuthController
+├─ controller/<도메인>/   LiveController, CustomerAuthController, SellerAuthController
 │                 └ dto/request·response/   HTTP 요청·응답 DTO
 └─ controller/auth/   AuthCookieSupport, BearerTokenExtractor (인증 보조)
    resources/     application.yml, logback-spring.xml

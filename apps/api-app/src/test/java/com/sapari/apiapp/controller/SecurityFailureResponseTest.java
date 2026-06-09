@@ -17,6 +17,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -24,17 +25,18 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.sapari.apiapp.config.ApiSecurityConfig;
 import com.sapari.apiapp.config.WebMvcConfig;
-import com.sapari.apiapp.controller.member.MemberAuthController;
+import com.sapari.apiapp.controller.customer.CustomerAuthController;
 import com.sapari.apiapp.controller.seller.SellerAuthController;
-import com.sapari.common.web.security.AccessTokenRevocationChecker;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
-import com.sapari.member.infrastructure.oauth.MemberOAuth2SuccessHandler;
-import com.sapari.member.infrastructure.oauth.MemberOAuth2UserService;
-import com.sapari.member.port.MemberAuthUseCase;
+import com.sapari.customer.infrastructure.oauth.CustomerOAuth2SuccessHandler;
+import com.sapari.customer.infrastructure.oauth.CustomerOAuth2UserService;
+import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.seller.port.SellerAuthUseCase;
 
-@WebMvcTest(controllers = {MemberAuthController.class, SellerAuthController.class})
+@WebMvcTest(controllers = {CustomerAuthController.class, SellerAuthController.class})
 @Import({
         ApiSecurityConfig.class,
         WebMvcConfig.class,
@@ -48,7 +50,7 @@ class SecurityFailureResponseTest {
     private MockMvc mockMvc;
 
     @MockitoBean
-    private MemberAuthUseCase memberAuthUseCase;
+    private CustomerAuthUseCase customerAuthUseCase;
 
     @MockitoBean
     private SellerAuthUseCase sellerAuthUseCase;
@@ -63,18 +65,21 @@ class SecurityFailureResponseTest {
     private AccessTokenRevocationChecker accessTokenRevocationChecker;
 
     @MockitoBean
-    private MemberOAuth2UserService memberOAuth2UserService;
+    private SessionRevocationChecker sessionRevocationChecker;
 
     @MockitoBean
-    private MemberOAuth2SuccessHandler memberOAuth2SuccessHandler;
+    private CustomerOAuth2UserService customerOAuth2UserService;
+
+    @MockitoBean
+    private CustomerOAuth2SuccessHandler customerOAuth2SuccessHandler;
 
     @MockitoBean
     private ClientRegistrationRepository clientRegistrationRepository;
 
     @Test
-    @DisplayName("미인증 사용자가 회원 보호 API에 접근하면 401 ErrorResponse를 반환한다")
-    void unauthenticatedMemberRequestReturnsUnauthorizedErrorResponse() throws Exception {
-        mockMvc.perform(get("/api/v1/members/auth/me"))
+    @DisplayName("미인증 사용자가 고객 보호 API에 접근하면 401 ErrorResponse를 반환한다")
+    void unauthenticatedCustomerRequestReturnsUnauthorizedErrorResponse() throws Exception {
+        mockMvc.perform(get("/api/v1/customers/auth/me"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.error.status").value(401))

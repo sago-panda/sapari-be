@@ -9,6 +9,10 @@ public record SellerSignupCommand(
         String name,
         String phoneNumber,
         LocalDate birthDate,
-        Boolean marketingAgreed
+        Boolean marketingAgreed,
+        String storeName,
+        String businessNumber,
+        LocalDate businessStartDate,
+        String businessType
 ) {
 }

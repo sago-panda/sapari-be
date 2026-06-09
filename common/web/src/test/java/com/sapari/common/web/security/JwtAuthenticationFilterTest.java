@@ -24,9 +24,11 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 
-import com.sapari.common.web.security.jwt.JwtProperties;
-import com.sapari.common.web.security.jwt.JwtSubject;
-import com.sapari.common.web.security.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.global.time.TimeProvider;
 
 @DisplayName("JWT 인증 필터 테스트")
@@ -50,7 +52,8 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "ACTIVE"),
-                activeTokenChecker()
+                activeTokenChecker(),
+                activeSessionChecker()
         );
         MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -106,7 +109,8 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 unreachableUserDetailsService(),
-                activeTokenChecker()
+                activeTokenChecker(),
+                activeSessionChecker()
         );
         MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -128,7 +132,8 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "DELETED"),
-                activeTokenChecker()
+                activeTokenChecker(),
+                activeSessionChecker()
         );
         MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -150,7 +155,8 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "SUSPENDED"),
-                activeTokenChecker()
+                activeTokenChecker(),
+                activeSessionChecker()
         );
         MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -174,7 +180,8 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 unreachableUserDetailsService(),
-                activeTokenChecker()
+                activeTokenChecker(),
+                activeSessionChecker()
         );
         MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -196,7 +203,54 @@ class JwtAuthenticationFilterTest {
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
                 userDetailsService(userId, "USER", "ACTIVE"),
-                revokedTokenChecker()
+                revokedTokenChecker(),
+                activeSessionChecker()
+        );
+        MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        // when
+        filter.doFilter(request, response, new MockFilterChain());
+
+        // then
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    @DisplayName("폐기된 로그인 세션이면 인증하지 않는다")
+    void doFilterDoesNotAuthenticateWhenSessionIsRevoked() throws ServletException, IOException {
+        // given
+        JwtTokenProvider jwtTokenProvider = createProvider();
+        UUID userId = UUID.randomUUID();
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
+        JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
+                jwtTokenProvider,
+                userDetailsService(userId, "USER", "ACTIVE"),
+                activeTokenChecker(),
+                revokedSessionChecker()
+        );
+        MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        // when
+        filter.doFilter(request, response, new MockFilterChain());
+
+        // then
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    @DisplayName("폐기 여부 조회에 실패하면 인증하지 않는다")
+    void doFilterDoesNotAuthenticateWhenRevocationCheckFails() throws ServletException, IOException {
+        // given
+        JwtTokenProvider jwtTokenProvider = createProvider();
+        UUID userId = UUID.randomUUID();
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
+        JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
+                jwtTokenProvider,
+                userDetailsService(userId, "USER", "ACTIVE"),
+                failedTokenChecker(),
+                activeSessionChecker()
         );
         MockHttpServletRequest request = requestWithAuthorization("Bearer " + token);
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -217,7 +271,7 @@ class JwtAuthenticationFilterTest {
     }
 
     private JwtSubject jwtSubject(UUID userId, String role) {
-        return new JwtSubject(userId, role, "member", "member@example.com");
+        return new JwtSubject(userId, UUID.randomUUID(), role, "member", "member@example.com");
     }
 
     private UserDetailsService userDetailsService(UUID userId, String role, String status) {
@@ -232,7 +286,8 @@ class JwtAuthenticationFilterTest {
         return new JwtAuthenticationFilter(
                 createProvider(),
                 unreachableUserDetailsService(),
-                activeTokenChecker()
+                activeTokenChecker(),
+                activeSessionChecker()
         );
     }
 
@@ -248,6 +303,20 @@ class JwtAuthenticationFilterTest {
 
     private AccessTokenRevocationChecker revokedTokenChecker() {
         return accessToken -> true;
+    }
+
+    private AccessTokenRevocationChecker failedTokenChecker() {
+        return accessToken -> {
+            throw new IllegalStateException("redis unavailable");
+        };
+    }
+
+    private SessionRevocationChecker activeSessionChecker() {
+        return sessionId -> false;
+    }
+
+    private SessionRevocationChecker revokedSessionChecker() {
+        return sessionId -> true;
     }
 
     private MockHttpServletRequest requestWithAuthorization(String authorization) {

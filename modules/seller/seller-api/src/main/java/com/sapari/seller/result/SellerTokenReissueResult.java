@@ -4,6 +4,8 @@ import java.util.UUID;
 
 public record SellerTokenReissueResult(
         UUID userId,
-        String accessToken
+        String accessToken,
+        String refreshToken,
+        long refreshTokenMaxAgeSeconds
 ) {
 }

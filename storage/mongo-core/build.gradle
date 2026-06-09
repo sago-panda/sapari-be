@@ -1,0 +1,18 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    // 매핑 타입(@Document·@Id)만 노출. 실제 구동 스타터(blocking/reactive)는 각 앱이 선택한다.
+    api 'org.springframework.data:spring-data-mongodb'
+}
+
+bootJar {
+    enabled = false
+}
+
+jar {
+    enabled = true
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}

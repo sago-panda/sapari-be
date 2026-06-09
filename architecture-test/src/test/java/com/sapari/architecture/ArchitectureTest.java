@@ -120,7 +120,7 @@ class ArchitectureTest {
         return parts.length >= 4 && CORE_LAYERS.contains(parts[3]);
     }
 
-    // 6) 공유 토대(common/global/storage)는 도메인 모듈(member/seller/user/live...)을 의존하면 안 된다.
+    // 6) 공유 토대(common/global/storage)는 도메인 모듈(customer/seller/user/live...)을 의존하면 안 된다.
     //    (역전 방지: 공유 인증·유틸·스토리지가 특정 도메인에 매이면 안 됨)
     @Test
     void foundation_must_not_depend_on_domain_modules() {
@@ -132,7 +132,7 @@ class ArchitectureTest {
     }
 
     // 7) 도메인 슬라이스 간 순환 의존 금지 (ADP: 비순환 의존 원칙).
-    //    레이어(api/core) 무관하게 도메인끼리 양방향 의존(member <-> user 등)을 잡는다.
+    //    레이어(api/core) 무관하게 도메인끼리 양방향 의존(customer <-> user 등)을 잡는다.
     @Test
     void domain_slices_should_be_free_of_cycles() {
         SlicesRuleDefinition.slices()
@@ -149,6 +149,20 @@ class ArchitectureTest {
         ArchRule rule = classes()
                 .that().areAnnotatedWith("jakarta.persistence.Entity")
                 .should().onlyHaveDependentClassesThat().resideInAnyPackage("..infrastructure.persistence..");
+
+        rule.check(SAPARI);
+    }
+
+    // 9) 공유 JWT 코덱 모듈(common/security-jwt)은 Servlet/웹MVC/스프링시큐리티에 의존하면 안 된다.
+    //    (WebFlux 등 비-Servlet 소비자도 공유할 수 있도록 Servlet-free 유지 — JWT-A 추출 불변식)
+    @Test
+    void security_jwt_must_stay_servlet_free() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.common.securityjwt..")
+                .should().dependOnClassesThat().resideInAnyPackage(
+                        "jakarta.servlet..",
+                        "org.springframework.web..",
+                        "org.springframework.security..");
 
         rule.check(SAPARI);
     }
@@ -193,7 +207,7 @@ class ArchitectureTest {
 
     /** 대상이 도메인 모듈(com.sapari.<도메인>) 클래스이면 위반으로 기록하는 조건. */
     private static ArchCondition<JavaClass> dependOnDomainModule() {
-        return new ArchCondition<>("도메인 모듈(member/seller/user/live...)에 의존하지 않아야 한다") {
+        return new ArchCondition<>("도메인 모듈(customer/seller/user/live...)에 의존하지 않아야 한다") {
             @Override
             public void check(JavaClass origin, ConditionEvents events) {
                 for (Dependency dependency : origin.getDirectDependenciesFromSelf()) {
