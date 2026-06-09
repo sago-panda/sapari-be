@@ -1,8 +1,8 @@
-package com.sapari.seller.result;
+package com.sapari.customer.view;
 
 import java.util.UUID;
 
-public record SellerLoginResult(
+public record SocialLoginTokenResult(
         UUID userId,
         String accessToken,
         String refreshToken

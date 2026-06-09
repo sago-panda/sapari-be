@@ -1,4 +1,4 @@
-package com.sapari.seller.result;
+package com.sapari.seller.view;
 
 import java.util.UUID;
 

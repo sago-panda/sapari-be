@@ -1,7 +1,7 @@
-package com.sapari.customer.result;
+package com.sapari.customer.view;
 
 public record CustomerNicknameUpdateResult(
-        CustomerMeResult customer,
+        CustomerMeView customer,
         String accessToken
 ) {
 }

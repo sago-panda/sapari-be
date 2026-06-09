@@ -4,7 +4,7 @@ import java.time.LocalDate;
 import java.time.Instant;
 import java.util.UUID;
 
-import com.sapari.seller.result.SellerMeResult;
+import com.sapari.seller.view.SellerMeView;
 
 public record SellerMeResponse(
         UUID userId,
@@ -27,7 +27,7 @@ public record SellerMeResponse(
         Instant approvedAt
 ) {
 
-    public static SellerMeResponse from(SellerMeResult result) {
+    public static SellerMeResponse from(SellerMeView result) {
         return new SellerMeResponse(
                 result.userId(),
                 result.nickname(),

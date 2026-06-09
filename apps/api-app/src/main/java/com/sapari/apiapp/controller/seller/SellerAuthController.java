@@ -40,11 +40,11 @@ import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.port.SellerAuthUseCase;
-import com.sapari.seller.result.SellerLoginResult;
-import com.sapari.seller.result.SellerMeResult;
-import com.sapari.seller.result.SellerNicknameUpdateResult;
-import com.sapari.seller.result.SellerSignupResult;
-import com.sapari.seller.result.SellerTokenReissueResult;
+import com.sapari.seller.view.SellerLoginResult;
+import com.sapari.seller.view.SellerMeView;
+import com.sapari.seller.view.SellerNicknameUpdateResult;
+import com.sapari.seller.view.SellerSignupResult;
+import com.sapari.seller.view.SellerTokenReissueResult;
 
 @RestController
 @RequestMapping("/api/v1/sellers/auth")
@@ -154,7 +154,7 @@ public class SellerAuthController {
     public ResponseEntity<SellerMeResponse> getMyInfo(
             @CurrentUserId UUID userId
     ) {
-        SellerMeResult result = sellerAuthUseCase.getMyInfo(userId);
+        SellerMeView result = sellerAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(SellerMeResponse.from(result));
     }

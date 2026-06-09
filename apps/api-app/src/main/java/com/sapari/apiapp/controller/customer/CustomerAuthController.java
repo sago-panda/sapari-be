@@ -38,12 +38,12 @@ import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.port.CustomerAuthUseCase;
-import com.sapari.customer.result.CustomerMeResult;
-import com.sapari.customer.result.CustomerNicknameUpdateResult;
-import com.sapari.customer.result.CustomerTokenReissueResult;
-import com.sapari.customer.result.SocialSignupInfoResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.customer.result.SocialSignupResult;
+import com.sapari.customer.view.CustomerMeView;
+import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
+import com.sapari.customer.view.SocialSignupInfoView;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.customer.view.SocialSignupResult;
 
 @RestController
 @RequestMapping("/api/v1/customers/auth")
@@ -81,7 +81,7 @@ public class CustomerAuthController {
     public ResponseEntity<SocialSignupInfoResponse> getSocialSignupInfo(
             @CookieValue(name = SIGNUP_SID_COOKIE_NAME) String signupSid
     ) {
-        SocialSignupInfoResult result = customerAuthUseCase.getSocialSignupInfo(signupSid);
+        SocialSignupInfoView result = customerAuthUseCase.getSocialSignupInfo(signupSid);
 
         return ResponseEntity
                 .ok()
@@ -181,7 +181,7 @@ public class CustomerAuthController {
     public ResponseEntity<CustomerMeResponse> getMyInfo(
             @CurrentUserId UUID userId
     ) {
-        CustomerMeResult result = customerAuthUseCase.getMyInfo(userId);
+        CustomerMeView result = customerAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(CustomerMeResponse.from(result));
     }

@@ -34,11 +34,11 @@ import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.seller.port.SellerAuthUseCase;
-import com.sapari.seller.result.SellerLoginResult;
-import com.sapari.seller.result.SellerMeResult;
-import com.sapari.seller.result.SellerNicknameUpdateResult;
-import com.sapari.seller.result.SellerSignupResult;
-import com.sapari.seller.result.SellerTokenReissueResult;
+import com.sapari.seller.view.SellerLoginResult;
+import com.sapari.seller.view.SellerMeView;
+import com.sapari.seller.view.SellerNicknameUpdateResult;
+import com.sapari.seller.view.SellerSignupResult;
+import com.sapari.seller.view.SellerTokenReissueResult;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
@@ -151,11 +151,11 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     @Override
     @Transactional(readOnly = true)
-    public SellerMeResult getMyInfo(UUID userId) {
+    public SellerMeView getMyInfo(UUID userId) {
         UserView seller = findSeller(userId);
         SellerProfile sellerProfile = findSellerProfile(userId);
 
-        return toSellerMeResult(seller, sellerProfile);
+        return toSellerMeView(seller, sellerProfile);
     }
 
     @Override
@@ -178,7 +178,7 @@ public class SellerAuthService implements SellerAuthUseCase {
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller, accessClaims.sessionId()));
 
-            return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller, sellerProfile), accessToken);
+            return new SellerNicknameUpdateResult(toSellerMeView(savedSeller, sellerProfile), accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -405,8 +405,8 @@ public class SellerAuthService implements SellerAuthUseCase {
         return new JwtSubject(seller.userId(), sessionId, seller.role().name(), seller.nickname(), seller.email());
     }
 
-    private SellerMeResult toSellerMeResult(UserView seller, SellerProfile sellerProfile) {
-        return new SellerMeResult(
+    private SellerMeView toSellerMeView(UserView seller, SellerProfile sellerProfile) {
+        return new SellerMeView(
                 seller.userId(),
                 seller.nickname(),
                 seller.name(),

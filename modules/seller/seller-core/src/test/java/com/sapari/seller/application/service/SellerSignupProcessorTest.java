@@ -27,7 +27,7 @@ import com.sapari.seller.domain.model.SellerBusinessType;
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
-import com.sapari.seller.result.SellerSignupResult;
+import com.sapari.seller.view.SellerSignupResult;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;

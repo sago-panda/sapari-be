@@ -35,11 +35,11 @@ import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
-import com.sapari.customer.result.CustomerNicknameUpdateResult;
-import com.sapari.customer.result.CustomerTokenReissueResult;
-import com.sapari.customer.result.SocialSignupInfoResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.customer.result.SocialSignupResult;
+import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
+import com.sapari.customer.view.SocialSignupInfoView;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
@@ -150,7 +150,7 @@ class CustomerAuthServiceTest {
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
 
         // when
-        SocialSignupInfoResult result = customerAuthService.getSocialSignupInfo(SIGNUP_SID);
+        SocialSignupInfoView result = customerAuthService.getSocialSignupInfo(SIGNUP_SID);
 
         // then
         assertThat(result.phoneNumber()).isEqualTo("01012345678");
