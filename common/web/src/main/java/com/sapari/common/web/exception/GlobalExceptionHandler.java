@@ -21,12 +21,15 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 import com.sapari.common.core.exception.BusinessException;
 import com.sapari.common.core.exception.CommonErrorCode;
 import com.sapari.common.core.exception.ErrorCode;
-import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.common.response.ErrorResponse;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.global.time.TimeProvider;
 
 /**
  * 전역 예외 처리. 모든 REST 앱(api/admin)이 com.sapari 컴포넌트 스캔으로 자동 등록한다.
  *
+ * - 모든 에러는 {@link ResponseEnvelope#fail} 봉투로 감싸 성공 응답과 형식을 통일한다.
+ *   HTTP status 는 그대로 4xx/5xx 를 유지하고, 봉투의 error 에 상세를 담는다.
  * - 응답 메시지는 errorCode 카탈로그 메시지(검증은 dev가 쓴 메시지). 예외의 내부 detail/스택은 응답에 안 넣는다.
  * - 미처리 예외는 고정 문구로 응답하고, 실제 예외/스택은 서버 로그에만 남긴다.
  */
@@ -46,7 +49,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * then: errorCode의 status/code/message로 응답. 5xx는 스택까지 error 로그, 4xx는 warn. 내부 detail은 로그에만.
      */
     @ExceptionHandler(BusinessException.class)
-    public ResponseEntity<ErrorResponse> handleBusinessException(BusinessException exception) {
+    public ResponseEntity<ResponseEnvelope<Void>> handleBusinessException(BusinessException exception) {
         ErrorCode errorCode = exception.getErrorCode();
         if (errorCode.getStatus() >= 500) {
             // 5xx는 스택트레이스까지. exception.getMessage()(커스텀=roomId 등)는 로그에만.
@@ -54,7 +57,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         } else {
             log.warn("[{}] {}", errorCode.getCode(), exception.getMessage());
         }
-        return ResponseEntity.status(errorCode.getStatus()).body(body(errorCode));
+        return ResponseEntity.status(errorCode.getStatus()).body(ResponseEnvelope.fail(body(errorCode)));
     }
 
     /**
@@ -63,13 +66,13 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * then: 첫 위반 메시지를 그대로 응답(COMMON-001).
      */
     @ExceptionHandler(ConstraintViolationException.class)
-    public ResponseEntity<ErrorResponse> handleConstraintViolation(ConstraintViolationException exception) {
+    public ResponseEntity<ResponseEnvelope<Void>> handleConstraintViolation(ConstraintViolationException exception) {
         String message = exception.getConstraintViolations().stream()
                 .findFirst()
                 .map(violation -> violation.getMessage())
                 .orElse(VALIDATION_FALLBACK_MESSAGE);
         log.warn("[{}] validation: {}", CommonErrorCode.INVALID_INPUT.getCode(), message);
-        return ResponseEntity.badRequest().body(validationBody(message));
+        return ResponseEntity.badRequest().body(ResponseEnvelope.fail(validationBody(message)));
     }
 
     /**
@@ -78,10 +81,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * then: COMMON-004 고정 문구로만 응답. 실제 예외·스택은 서버 로그에만(내부 노출 금지).
      */
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponse> handleUnexpected(Exception exception) {
+    public ResponseEntity<ResponseEnvelope<Void>> handleUnexpected(Exception exception) {
         log.error("Unhandled exception", exception);
         return ResponseEntity.status(CommonErrorCode.INTERNAL_ERROR.getStatus())
-                .body(body(CommonErrorCode.INTERNAL_ERROR));
+                .body(ResponseEnvelope.fail(body(CommonErrorCode.INTERNAL_ERROR)));
     }
 
     /**
@@ -97,7 +100,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 .map(MessageSourceResolvable::getDefaultMessage)
                 .orElse(VALIDATION_FALLBACK_MESSAGE);
         log.warn("[{}] validation: {}", CommonErrorCode.INVALID_INPUT.getCode(), message);
-        return super.handleExceptionInternal(ex, validationBody(message), headers, status, request);
+        return super.handleExceptionInternal(
+                ex, ResponseEnvelope.fail(validationBody(message)), headers, status, request);
     }
 
     /**
@@ -114,20 +118,29 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 .map(MessageSourceResolvable::getDefaultMessage)
                 .orElse(VALIDATION_FALLBACK_MESSAGE);
         log.warn("[{}] validation: {}", CommonErrorCode.INVALID_INPUT.getCode(), message);
-        return super.handleExceptionInternal(ex, validationBody(message), headers, status, request);
+        return super.handleExceptionInternal(
+                ex, ResponseEnvelope.fail(validationBody(message)), headers, status, request);
     }
 
     /**
      * ResponseEntityExceptionHandler가 다루는 표준 MVC 예외(404·405·415·깨진 JSON 등)가 모두 통과하는 공통 지점.
      * when: POST /signup/social 자리에 GET 호출 → 405, 본문 JSON이 깨지거나 birthDate가 잘못된 날짜 → 400
-     * then: status는 실제값 그대로, code/message는 404·405만 전용·나머지는 4xx/5xx 일반값. 내부 detail 미노출.
+     * then: status는 실제값 그대로, code/message는 404·405만 전용·나머지는 4xx/5xx 일반값. fail 봉투로 감싼다.
      */
     @Override
     protected ResponseEntity<Object> handleExceptionInternal(
             Exception ex, Object body, HttpHeaders headers, HttpStatusCode statusCode, WebRequest request) {
+        // body 가 이미 ResponseEnvelope 면(위 검증 핸들러들이 감싸 호출) 그대로, 아니면 표준 에러를 fail 봉투로 감싼다.
+        Object envelope = (body instanceof ResponseEnvelope<?>)
+                ? body
+                : wrapStandardError(ex, statusCode);
+        return super.handleExceptionInternal(ex, envelope, headers, statusCode, request);
+    }
+
+    private ResponseEnvelope<Void> wrapStandardError(Exception ex, HttpStatusCode statusCode) {
         ErrorResponse error = standardErrorBody(statusCode);
         log.warn("[{}] {} {}", error.code(), statusCode.value(), ex.getClass().getSimpleName());
-        return super.handleExceptionInternal(ex, error, headers, statusCode, request);
+        return ResponseEnvelope.fail(error);
     }
 
     /**

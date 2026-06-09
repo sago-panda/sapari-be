@@ -18,7 +18,8 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.web.access.AccessDeniedHandler;
 
 import com.sapari.common.core.exception.CommonErrorCode;
-import com.sapari.common.web.response.ErrorResponse;
+import com.sapari.common.response.ErrorResponse;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.global.time.TimeProvider;
 
 @Slf4j(topic = "JWT_ACCESS_DENIED_HANDLER")
@@ -55,6 +56,6 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.getWriter().write(objectMapper.writeValueAsString(errorResponse));
+        response.getWriter().write(objectMapper.writeValueAsString(ResponseEnvelope.fail(errorResponse)));
     }
 }
