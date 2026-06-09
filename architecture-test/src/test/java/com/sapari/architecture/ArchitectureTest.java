@@ -167,6 +167,42 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    // 표현 DTO 격리: 도메인 -core(application/domain/infrastructure)와 -api(command/port/result/view/event)는
+    // 공통 응답 봉투(com.sapari.common.response: ResponseEnvelope/ErrorResponse)를 의존하면 안 된다.
+    // 봉투는 컨트롤러(apps), 에러 봉투는 예외 핸들러(common/web)의 일이다 — use-case 포트가 봉투를 반환하지 않는다.
+    @Test
+    void domain_and_api_must_not_depend_on_response_types() {
+        ArchRule rule = noClasses()
+                .that().resideInAnyPackage(
+                        "com.sapari.*.application..",
+                        "com.sapari.*.domain..",
+                        "com.sapari.*.infrastructure..",
+                        "com.sapari.*.command..",
+                        "com.sapari.*.port..",
+                        "com.sapari.*.result..",
+                        "com.sapari.*.view..",
+                        "com.sapari.*.event..")
+                .should().dependOnClassesThat().resideInAPackage("com.sapari.common.response..");
+
+        rule.check(SAPARI);
+    }
+
+    // *-api(command/port/result/view/event)는 com.sapari.global(TimeProvider 등 Spring 결합 토대)에 의존하면 안 된다.
+    // use-case 반환 타입의 CursorPage/OffsetPage 는 별도 토대 모듈 com.sapari.common.page 로 분리했고, -api 는 그것만 의존한다.
+    @Test
+    void api_must_not_depend_on_spring_coupled_foundation() {
+        ArchRule rule = noClasses()
+                .that().resideInAnyPackage(
+                        "com.sapari.*.command..",
+                        "com.sapari.*.port..",
+                        "com.sapari.*.result..",
+                        "com.sapari.*.view..",
+                        "com.sapari.*.event..")
+                .should().dependOnClassesThat().resideInAPackage("com.sapari.global..");
+
+        rule.check(SAPARI);
+    }
+
     private static final Set<String> NON_DOMAIN_ROOTS = Set.of("common", "global", "storage", "architecture");
 
     /** 대상이 도메인 모듈(com.sapari.<도메인>) 클래스이면 위반으로 기록하는 조건. */
