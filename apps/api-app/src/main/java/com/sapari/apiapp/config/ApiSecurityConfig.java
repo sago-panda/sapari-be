@@ -42,6 +42,7 @@ public class ApiSecurityConfig {
             "/api/v1/sellers/auth/signup/check-email",
             "/api/v1/sellers/auth/signup/check-phone",
             "/api/v1/sellers/auth/check-nickname",
+            "/api/v1/sellers/auth/signup/check-store-name",
             "/api/v1/sellers/auth/login",
             "/api/v1/sellers/auth/token/reissue"
     };

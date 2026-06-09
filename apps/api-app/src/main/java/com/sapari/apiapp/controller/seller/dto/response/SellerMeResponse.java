@@ -1,6 +1,7 @@
 package com.sapari.apiapp.controller.seller.dto.response;
 
 import java.time.LocalDate;
+import java.time.Instant;
 import java.util.UUID;
 
 import com.sapari.seller.result.SellerMeResult;
@@ -17,7 +18,13 @@ public record SellerMeResponse(
         String status,
         String grade,
         Integer pointBalance,
-        Boolean marketingAgreed
+        Boolean marketingAgreed,
+        String storeName,
+        String businessNumber,
+        String businessType,
+        String approvalStatus,
+        String rejectionReason,
+        Instant approvedAt
 ) {
 
     public static SellerMeResponse from(SellerMeResult result) {
@@ -33,7 +40,13 @@ public record SellerMeResponse(
                 result.status(),
                 result.grade(),
                 result.pointBalance(),
-                result.marketingAgreed()
+                result.marketingAgreed(),
+                result.storeName(),
+                result.businessNumber(),
+                result.businessType(),
+                result.approvalStatus(),
+                result.rejectionReason(),
+                result.approvedAt()
         );
     }
 }
