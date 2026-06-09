@@ -11,7 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.RegisterSellerCommand;
-import com.sapari.user.command.RegisterSocialMemberCommand;
+import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.model.ProviderType;
@@ -32,9 +32,9 @@ public class UserAccountService implements UserAccountUseCase {
 
     @Override
     @Transactional
-    public UserView registerSocialMember(RegisterSocialMemberCommand command) {
+    public UserView registerSocialCustomer(RegisterSocialCustomerCommand command) {
         Instant now = timeProvider.now();
-        User user = User.createSocialMember(
+        User user = User.createSocialCustomer(
                 command.nickname(),
                 command.name(),
                 command.birthDate(),

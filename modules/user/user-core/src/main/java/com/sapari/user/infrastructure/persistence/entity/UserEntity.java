@@ -88,7 +88,7 @@ public class UserEntity extends BaseUuidEntity {
 
     private Instant providerCreatedAt;
 
-    public static UserEntity createSocialMember(
+    public static UserEntity createSocialCustomer(
             String nickname,
             String name,
             LocalDate birthDate,

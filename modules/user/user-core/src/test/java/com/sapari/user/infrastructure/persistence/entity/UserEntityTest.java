@@ -19,14 +19,14 @@ class UserEntityTest {
 
     @Test
     @DisplayName("소셜 회원 생성 시 구매자 기본 상태와 소셜 제공자 정보를 설정한다")
-    void createSocialMember() {
+    void createSocialCustomer() {
         // given
         LocalDate birthDate = LocalDate.of(1995, 5, 15);
         Instant providerCreatedAt = providerCreatedAt();
         Instant nicknameChangedAt = nicknameChangedAt();
 
         // when
-        UserEntity user = UserEntity.createSocialMember(
+        UserEntity user = UserEntity.createSocialCustomer(
                 "tester",
                 "테스터",
                 birthDate,
@@ -94,7 +94,7 @@ class UserEntityTest {
     @DisplayName("프로필 수정 시 변경 가능한 프로필 필드를 갱신한다")
     void updateProfile() {
         // given
-        UserEntity user = UserEntity.createSocialMember(
+        UserEntity user = UserEntity.createSocialCustomer(
                 "tester",
                 "테스터",
                 LocalDate.of(1995, 5, 15),
@@ -136,12 +136,12 @@ class UserEntityTest {
 
     @Test
     @DisplayName("회원 생성 시 필수값이 비어 있으면 예외가 발생한다")
-    void createSocialMemberThrowsExceptionWhenRequiredValueIsBlank() {
+    void createSocialCustomerThrowsExceptionWhenRequiredValueIsBlank() {
         // given
         String blankNickname = " ";
 
         // when, then
-        assertThatThrownBy(() -> UserEntity.createSocialMember(
+        assertThatThrownBy(() -> UserEntity.createSocialCustomer(
                 blankNickname,
                 "테스터",
                 LocalDate.of(1995, 5, 15),

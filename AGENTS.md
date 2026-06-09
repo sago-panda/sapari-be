@@ -21,7 +21,7 @@ apps/      separate Spring Boot apps / Pods: api-app (REST) · admin-app · stre
 common/    domain-agnostic shared code (core / web / global)
 storage/   persistence adapters (db-core / redis-core / search-core / object-storage)
 modules/   domain modules — each an -api / -core pair (internal layout: modules/AGENTS.md)
-           live ✅ broadcast (chat WIP) · member, seller, product, order, promotion, notification ⚠️ skeleton only — follow live
+           live ✅ broadcast (chat WIP) · customer, seller, product, order, promotion, notification ⚠️ skeleton only — follow live
 ```
 
 Module-specific conventions: **prefer the `AGENTS.md` inside that directory**.

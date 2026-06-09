@@ -21,7 +21,7 @@ class UserMapperTest {
     @DisplayName("UserEntity를 User 도메인 모델로 변환한다")
     void toDomainConvertsEntityToUser() {
         // given
-        UserEntity entity = UserEntity.createSocialMember(
+        UserEntity entity = UserEntity.createSocialCustomer(
                 "tester",
                 "테스터",
                 LocalDate.of(1995, 5, 15),

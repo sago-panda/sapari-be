@@ -29,8 +29,8 @@ import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.common.web.security.JwtAuthenticationFilter;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
-import com.sapari.member.infrastructure.oauth.MemberOAuth2SuccessHandler;
-import com.sapari.member.infrastructure.oauth.MemberOAuth2UserService;
+import com.sapari.customer.infrastructure.oauth.CustomerOAuth2SuccessHandler;
+import com.sapari.customer.infrastructure.oauth.CustomerOAuth2UserService;
 
 @Configuration
 @EnableWebSecurity
@@ -47,10 +47,10 @@ public class ApiSecurityConfig {
             "/api/v1/sellers/auth/token/reissue"
     };
 
-    private static final String[] MEMBER_PROTECTED_MATCHERS = {
-            "/api/v1/members/auth/me",
-            "/api/v1/members/auth/me/nickname",
-            "/api/v1/members/auth/logout"
+    private static final String[] CUSTOMER_PROTECTED_MATCHERS = {
+            "/api/v1/customers/auth/me",
+            "/api/v1/customers/auth/me/nickname",
+            "/api/v1/customers/auth/logout"
     };
 
     @Bean
@@ -128,13 +128,13 @@ public class ApiSecurityConfig {
 
     @Bean
     @Order(2)
-    public SecurityFilterChain memberFilterChain(
+    public SecurityFilterChain customerFilterChain(
             HttpSecurity http,
             JwtAuthenticationFilter jwtAuthenticationFilter,
             JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint,
             JwtAccessDeniedHandler jwtAccessDeniedHandler,
-            MemberOAuth2UserService memberOAuth2UserService,
-            MemberOAuth2SuccessHandler memberOAuth2SuccessHandler
+            CustomerOAuth2UserService customerOAuth2UserService,
+            CustomerOAuth2SuccessHandler customerOAuth2SuccessHandler
     ) throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -150,19 +150,19 @@ public class ApiSecurityConfig {
                 )
                 .oauth2Login(oauth2 -> oauth2
                         .authorizationEndpoint(authorization -> authorization
-                                .baseUri("/api/v1/members/auth/oauth2/authorization")
+                                .baseUri("/api/v1/customers/auth/oauth2/authorization")
                         )
                         .redirectionEndpoint(redirection -> redirection
-                                .baseUri("/api/v1/members/auth/oauth2/code/*")
+                                .baseUri("/api/v1/customers/auth/oauth2/code/*")
                         )
                         .userInfoEndpoint(userInfo -> userInfo
-                                .userService(memberOAuth2UserService)
+                                .userService(customerOAuth2UserService)
                         )
-                        .successHandler(memberOAuth2SuccessHandler)
+                        .successHandler(customerOAuth2SuccessHandler)
                 )
                 .authorizeHttpRequests(authorize -> authorize
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                        .requestMatchers(MEMBER_PROTECTED_MATCHERS).authenticated()
+                        .requestMatchers(CUSTOMER_PROTECTED_MATCHERS).authenticated()
                         .anyRequest().permitAll()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
