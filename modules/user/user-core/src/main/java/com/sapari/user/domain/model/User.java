@@ -40,7 +40,7 @@ public record User(
         Instant providerCreatedAt
 ) {
 
-    public static User createSocialMember(
+    public static User createSocialCustomer(
             String nickname,
             String name,
             LocalDate birthDate,
