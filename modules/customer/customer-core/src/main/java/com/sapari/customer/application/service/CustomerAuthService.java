@@ -17,6 +17,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.customer.application.assembler.CustomerViewAssembler;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
@@ -56,6 +57,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
+    private final CustomerViewAssembler customerViewAssembler;
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입
@@ -158,7 +160,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional(readOnly = true)
     public CustomerMeView getMyInfo(UUID userId) {
-        return toCustomerMeView(findCustomer(userId));
+        return customerViewAssembler.toMeView(findCustomer(userId));
     }
 
     @Override
@@ -180,7 +182,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedCustomer, accessClaims.sessionId()));
 
-            return new CustomerNicknameUpdateResult(toCustomerMeView(savedCustomer), accessToken);
+            return customerViewAssembler.toNicknameUpdateResult(savedCustomer, accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -372,25 +374,6 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     private JwtSubject toJwtSubject(UserView customer, UUID sessionId) {
         return new JwtSubject(customer.userId(), sessionId, customer.role().name(), customer.nickname(), customer.email());
-    }
-
-    private CustomerMeView toCustomerMeView(UserView customer) {
-        return new CustomerMeView(
-                customer.userId(),
-                customer.nickname(),
-                customer.name(),
-                customer.birthDate(),
-                customer.gender() == null ? null : customer.gender().name(),
-                customer.phoneNumber(),
-                customer.profileImageKey(),
-                customer.email(),
-                customer.role().name(),
-                customer.status().name(),
-                customer.grade().name(),
-                customer.pointBalance(),
-                customer.marketingAgreed(),
-                customer.provider() == null ? null : customer.provider().name()
-        );
     }
 
     private SocialSignupInfoView toSocialSignupInfoView(SocialSignupInfo socialSignupInfo) {

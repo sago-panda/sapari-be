@@ -25,6 +25,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.seller.application.assembler.SellerViewAssembler;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
@@ -94,7 +95,8 @@ class SellerAuthServiceTest {
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
-            timeProvider()
+            timeProvider(),
+            new SellerViewAssembler()
     );
 
     @Test
@@ -361,7 +363,8 @@ class SellerAuthServiceTest {
                 refreshTokenStore,
                 sessionRevocationStore,
                 accessTokenBlacklist,
-                timeProvider()
+                timeProvider(),
+                new SellerViewAssembler()
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,

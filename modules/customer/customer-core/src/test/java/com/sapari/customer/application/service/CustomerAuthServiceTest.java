@@ -44,6 +44,7 @@ import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
+import com.sapari.customer.application.assembler.CustomerViewAssembler;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -86,7 +87,8 @@ class CustomerAuthServiceTest {
             sessionRevocationStore,
             accessTokenBlacklist,
             timeProvider(),
-            objectMapper
+            objectMapper,
+            new CustomerViewAssembler()
     );
 
     @Test
@@ -259,7 +261,8 @@ class CustomerAuthServiceTest {
                 sessionRevocationStore,
                 accessTokenBlacklist,
                 timeProvider(),
-                objectMapper
+                objectMapper,
+                new CustomerViewAssembler()
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,

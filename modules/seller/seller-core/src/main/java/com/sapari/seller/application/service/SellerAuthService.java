@@ -20,6 +20,7 @@ import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.seller.application.assembler.SellerViewAssembler;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.command.SellerLoginCommand;
@@ -60,6 +61,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final SessionRevocationStore sessionRevocationStore;
     private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
+    private final SellerViewAssembler sellerViewAssembler;
 
     @Override
     public SellerSignupResult signup(SellerSignupCommand command) {
@@ -155,7 +157,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         UserView seller = findSeller(userId);
         SellerProfile sellerProfile = findSellerProfile(userId);
 
-        return toSellerMeView(seller, sellerProfile);
+        return sellerViewAssembler.toMeView(seller, sellerProfile);
     }
 
     @Override
@@ -178,7 +180,7 @@ public class SellerAuthService implements SellerAuthUseCase {
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller, accessClaims.sessionId()));
 
-            return new SellerNicknameUpdateResult(toSellerMeView(savedSeller, sellerProfile), accessToken);
+            return sellerViewAssembler.toNicknameUpdateResult(savedSeller, sellerProfile, accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -403,29 +405,6 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     private JwtSubject toJwtSubject(UserView seller, UUID sessionId) {
         return new JwtSubject(seller.userId(), sessionId, seller.role().name(), seller.nickname(), seller.email());
-    }
-
-    private SellerMeView toSellerMeView(UserView seller, SellerProfile sellerProfile) {
-        return new SellerMeView(
-                seller.userId(),
-                seller.nickname(),
-                seller.name(),
-                seller.birthDate(),
-                seller.phoneNumber(),
-                seller.profileImageKey(),
-                seller.email(),
-                seller.role().name(),
-                seller.status().name(),
-                seller.grade().name(),
-                seller.pointBalance(),
-                seller.marketingAgreed(),
-                sellerProfile.storeName(),
-                sellerProfile.businessNumber(),
-                sellerProfile.businessType().name(),
-                sellerProfile.status().name(),
-                sellerProfile.rejectionReason(),
-                sellerProfile.approvedAt()
-        );
     }
 
     private record RotatedRefreshToken(
