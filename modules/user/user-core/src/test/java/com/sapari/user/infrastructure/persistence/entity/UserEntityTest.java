@@ -18,7 +18,7 @@ import com.sapari.user.model.UserStatus;
 class UserEntityTest {
 
     @Test
-    @DisplayName("소셜 회원 생성 시 구매자 기본 상태와 소셜 제공자 정보를 설정한다")
+    @DisplayName("소셜 고객 생성 시 고객 기본 상태와 소셜 제공자 정보를 설정한다")
     void createSocialCustomer() {
         // given
         LocalDate birthDate = LocalDate.of(1995, 5, 15);
@@ -135,7 +135,7 @@ class UserEntityTest {
     }
 
     @Test
-    @DisplayName("회원 생성 시 필수값이 비어 있으면 예외가 발생한다")
+    @DisplayName("소셜 고객 생성 시 필수값이 비어 있으면 예외가 발생한다")
     void createSocialCustomerThrowsExceptionWhenRequiredValueIsBlank() {
         // given
         String blankNickname = " ";

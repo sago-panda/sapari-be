@@ -19,8 +19,8 @@ import com.sapari.user.model.UserStatus;
 class UserTest {
 
     @Test
-    @DisplayName("소셜 회원 생성 시 구매자 기본 상태를 설정한다")
-    void createSocialCustomerSetsMemberDefaults() {
+    @DisplayName("소셜 고객 생성 시 고객 기본 상태를 설정한다")
+    void createSocialCustomerSetsCustomerDefaults() {
         // given
         LocalDate birthDate = LocalDate.of(1995, 5, 15);
         Instant providerCreatedAt = providerCreatedAt();
