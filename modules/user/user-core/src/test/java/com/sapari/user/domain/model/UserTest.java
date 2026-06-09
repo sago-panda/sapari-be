@@ -19,15 +19,15 @@ import com.sapari.user.model.UserStatus;
 class UserTest {
 
     @Test
-    @DisplayName("소셜 회원 생성 시 구매자 기본 상태를 설정한다")
-    void createSocialMemberSetsMemberDefaults() {
+    @DisplayName("소셜 고객 생성 시 고객 기본 상태를 설정한다")
+    void createSocialCustomerSetsCustomerDefaults() {
         // given
         LocalDate birthDate = LocalDate.of(1995, 5, 15);
         Instant providerCreatedAt = providerCreatedAt();
         Instant nicknameChangedAt = nicknameChangedAt();
 
         // when
-        User user = User.createSocialMember(
+        User user = User.createSocialCustomer(
                 "tester",
                 "테스터",
                 birthDate,
@@ -84,7 +84,7 @@ class UserTest {
     @DisplayName("닉네임 수정 시 닉네임만 변경한 User를 반환한다")
     void updateNicknameReturnsUpdatedUser() {
         // given
-        User user = User.createSocialMember(
+        User user = User.createSocialCustomer(
                 "tester",
                 "테스터",
                 LocalDate.of(1995, 5, 15),
@@ -115,12 +115,12 @@ class UserTest {
 
     @Test
     @DisplayName("필수값이 비어 있으면 예외가 발생한다")
-    void createSocialMemberThrowsExceptionWhenRequiredValueIsBlank() {
+    void createSocialCustomerThrowsExceptionWhenRequiredValueIsBlank() {
         // given
         String blankNickname = " ";
 
         // when, then
-        assertThatThrownBy(() -> User.createSocialMember(
+        assertThatThrownBy(() -> User.createSocialCustomer(
                 blankNickname,
                 "테스터",
                 LocalDate.of(1995, 5, 15),

@@ -44,8 +44,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     private final TimeProvider timeProvider;
 
     /**
-     * 모든 비즈니스 예외(BusinessException 하위: MemberException 등)를 잡는다.
-     * when: 소셜 회원가입 시 signupSid 쿠키 만료·없음(MEMBER-006), 저장 중 이메일·전화번호 중복(MEMBER-009) 등
+     * 모든 비즈니스 예외(BusinessException 하위: CustomerException 등)를 잡는다.
+     * when: 소셜 회원가입 시 signupSid 쿠키 만료·없음(CUSTOMER-006), 저장 중 이메일·전화번호 중복(CUSTOMER-009) 등
      * then: errorCode의 status/code/message로 응답. 5xx는 스택까지 error 로그, 4xx는 warn. 내부 detail은 로그에만.
      */
     @ExceptionHandler(BusinessException.class)

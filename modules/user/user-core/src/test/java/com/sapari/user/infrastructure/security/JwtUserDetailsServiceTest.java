@@ -76,7 +76,7 @@ class JwtUserDetailsServiceTest {
     }
 
     private User createUser(UUID userId) {
-        return User.createSocialMember(
+        return User.createSocialCustomer(
                 "tester",
                 "테스터",
                 LocalDate.of(1995, 5, 15),

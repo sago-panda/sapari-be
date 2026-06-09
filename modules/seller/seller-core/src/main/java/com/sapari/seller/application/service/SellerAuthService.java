@@ -10,12 +10,18 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
+import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
+import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
@@ -23,16 +29,16 @@ import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
+import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
+import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.result.SellerLoginResult;
 import com.sapari.seller.result.SellerMeResult;
 import com.sapari.seller.result.SellerNicknameUpdateResult;
 import com.sapari.seller.result.SellerSignupResult;
 import com.sapari.seller.result.SellerTokenReissueResult;
-import com.sapari.user.command.RegisterSellerCommand;
-import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
-import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
@@ -45,27 +51,29 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     private final UserAccountUseCase userAccountUseCase;
     private final LocalCredentialRepository localCredentialRepository;
+    private final SellerProfileRepository sellerProfileRepository;
+    private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier;
+    private final SellerSignupProcessor sellerSignupProcessor;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
+    private final SessionRevocationStore sessionRevocationStore;
     private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
 
     @Override
-    @Transactional
     public SellerSignupResult signup(SellerSignupCommand command) {
+        SellerBusinessType businessType = toBusinessType(command.businessType());
+        String normalizedStoreName = normalizeStoreName(command.storeName());
+
+        validateBusinessRegistration(command);
+        validateDuplicatedStoreName(normalizedStoreName);
+        validateDuplicatedBusinessNumber(command.businessNumber());
+
         try {
-            UserView savedUser = userAccountUseCase.registerSeller(toRegisterCommand(command));
-            LocalCredential localCredential = LocalCredential.create(
-                    savedUser.userId(),
-                    passwordEncoder.encode(command.password()),
-                    timeProvider.now()
-            );
-
-            localCredentialRepository.save(localCredential);
-
-            return new SellerSignupResult(savedUser.userId());
+            return sellerSignupProcessor.signup(command, normalizedStoreName, businessType);
         } catch (DataIntegrityViolationException e) {
+            // 트랜잭션 commit/flush 시점 unique 충돌까지 서비스 예외로 변환한다.
             throw new SellerException(SellerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
     }
@@ -89,6 +97,12 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public boolean isStoreNameDuplicated(String storeName) {
+        return sellerProfileRepository.existsByStoreName(normalizeStoreName(storeName));
+    }
+
+    @Override
     @Transactional
     public SellerLoginResult login(SellerLoginCommand command) {
         UserView seller = findSellerByEmail(command.email());
@@ -101,28 +115,27 @@ public class SellerAuthService implements SellerAuthUseCase {
         UUID sessionId = UUID.randomUUID();
         JwtSubject subject = toJwtSubject(seller, sessionId);
         String accessToken = jwtTokenProvider.createAccessToken(subject);
-        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
-        refreshTokenStore.save(sessionId, refreshToken);
+        String refreshToken = issueRefreshToken(subject);
 
         return new SellerLoginResult(seller.userId(), accessToken, refreshToken);
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public SellerTokenReissueResult reissueAccessToken(String refreshToken) {
         JwtTokenClaims claims = parseRefreshToken(refreshToken);
 
         UserView seller = findRefreshTokenSeller(claims.userId());
-        String savedRefreshToken = refreshTokenStore.findBySessionId(claims.sessionId())
-                .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
+        JwtSubject subject = toJwtSubject(seller, claims.sessionId());
+        String accessToken = jwtTokenProvider.createAccessToken(subject);
+        RotatedRefreshToken rotatedRefreshToken = rotateRefreshToken(subject, claims);
 
-        if (!savedRefreshToken.equals(refreshToken)) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(seller, claims.sessionId()));
-
-        return new SellerTokenReissueResult(seller.userId(), accessToken);
+        return new SellerTokenReissueResult(
+                seller.userId(),
+                accessToken,
+                rotatedRefreshToken.token(),
+                rotatedRefreshToken.maxAgeSeconds()
+        );
     }
 
     @Override
@@ -131,21 +144,18 @@ public class SellerAuthService implements SellerAuthUseCase {
         JwtTokenClaims claims = parseAccessToken(command.accessToken());
         validateAccessTokenOwner(claims, command.userId());
 
-        // 로그아웃은 현재 sid의 Refresh Token을 제거하고 현재 Access Token jti만 폐기
+        // 로그아웃은 현재 sid 세션 전체를 폐기해 같은 세션의 Access Token까지 차단한다.
         refreshTokenStore.deleteBySessionId(claims.sessionId());
-        Duration remainingExpiration = getRemainingExpiration(claims);
-
-        if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
-            return;
-        }
-
-        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
+        sessionRevocationStore.revoke(claims.sessionId());
     }
 
     @Override
     @Transactional(readOnly = true)
     public SellerMeResult getMyInfo(UUID userId) {
-        return toSellerMeResult(findSeller(userId));
+        UserView seller = findSeller(userId);
+        SellerProfile sellerProfile = findSellerProfile(userId);
+
+        return toSellerMeResult(seller, sellerProfile);
     }
 
     @Override
@@ -163,25 +173,67 @@ public class SellerAuthService implements SellerAuthUseCase {
 
         try {
             UserView savedSeller = userAccountUseCase.changeNickname(command.userId(), command.nickname());
+            SellerProfile sellerProfile = findSellerProfile(command.userId());
             // nickname snapshot이 바뀌었으므로 기존 access jti를 폐기하고 같은 sid로 새 Access Token을 발급
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller, accessClaims.sessionId()));
 
-            return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller), accessToken);
+            return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller, sellerProfile), accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
     }
 
-    private RegisterSellerCommand toRegisterCommand(SellerSignupCommand command) {
-        return new RegisterSellerCommand(
-                command.nickname(),
+    private void validateDuplicatedBusinessNumber(String businessNumber) {
+        if (sellerProfileRepository.existsByBusinessNumber(businessNumber)) {
+            throw new SellerException(SellerErrorCode.DUPLICATED_BUSINESS_NUMBER);
+        }
+    }
+
+    private void validateDuplicatedStoreName(String storeName) {
+        if (!StringUtils.hasText(storeName)) {
+            return;
+        }
+
+        if (sellerProfileRepository.existsByStoreName(storeName)) {
+            throw new SellerException(SellerErrorCode.DUPLICATED_STORE_NAME);
+        }
+    }
+
+    /**
+     * 판매자 가입 전에 사업자등록정보가 국세청 정보와 일치하고 계속사업자 상태인지 확인한다.
+     */
+    private void validateBusinessRegistration(SellerSignupCommand command) {
+        SellerBusinessRegistrationVerification verification = sellerBusinessRegistrationVerifier.verify(
+                command.businessNumber(),
                 command.name(),
-                command.birthDate(),
-                command.phoneNumber(),
-                command.email(),
-                command.marketingAgreed()
+                command.businessStartDate()
         );
+        if (verification == null) {
+            throw new SellerException(SellerErrorCode.BUSINESS_REGISTRATION_CHECK_UNAVAILABLE);
+        }
+
+        if (verification.registrationAvailable()) {
+            return;
+        }
+
+        if (verification.failureReason() == SellerBusinessRegistrationVerification.FailureReason.UNAVAILABLE) {
+            throw new SellerException(SellerErrorCode.BUSINESS_REGISTRATION_CHECK_UNAVAILABLE);
+        }
+
+        throw new SellerException(SellerErrorCode.INVALID_BUSINESS_REGISTRATION);
+    }
+
+    private SellerBusinessType toBusinessType(String businessType) {
+        if (businessType == null || businessType.isBlank()) {
+            throw new SellerException(SellerErrorCode.INVALID_BUSINESS_TYPE);
+        }
+
+        try {
+            return SellerBusinessType.valueOf(businessType);
+        } catch (IllegalArgumentException e) {
+            throw new SellerException(SellerErrorCode.INVALID_BUSINESS_TYPE, e);
+        }
     }
 
     private UserView findSellerByEmail(String email) {
@@ -214,6 +266,19 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
 
         return user;
+    }
+
+    private SellerProfile findSellerProfile(UUID userId) {
+        return sellerProfileRepository.findByUserId(userId)
+                .orElseThrow(() -> new SellerException(SellerErrorCode.SELLER_PROFILE_NOT_FOUND));
+    }
+
+    private String normalizeStoreName(String storeName) {
+        if (storeName == null) {
+            return null;
+        }
+
+        return storeName.trim();
     }
 
     private void validateDuplicatedNickname(String nickname) {
@@ -266,6 +331,50 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
     }
 
+    /**
+     * 로그인 세션의 Refresh Token을 발급하고 현재 Refresh Token ID를 저장한다.
+     */
+    private String issueRefreshToken(JwtSubject subject) {
+        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
+        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
+
+        refreshTokenStore.save(
+                refreshClaims.sessionId(),
+                refreshClaims.tokenId(),
+                getRemainingExpiration(refreshClaims)
+        );
+
+        return refreshToken;
+    }
+
+    /**
+     * 같은 로그인 세션에서 현재 Refresh Token ID를 새 Refresh Token ID로 교체한다.
+     */
+    private RotatedRefreshToken rotateRefreshToken(JwtSubject subject, JwtTokenClaims previousRefreshClaims) {
+        String refreshToken = jwtTokenProvider.createRefreshTokenForRotation(subject, previousRefreshClaims.expiresAt());
+        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
+        Duration refreshTokenTtl = getRemainingExpiration(refreshClaims);
+
+        if (refreshTokenTtl.toMillis() < 1) {
+            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
+        }
+
+        boolean rotated = refreshTokenStore.rotate(
+                previousRefreshClaims.sessionId(),
+                previousRefreshClaims.tokenId(),
+                refreshClaims.tokenId(),
+                refreshTokenTtl
+        );
+
+        if (!rotated) {
+            refreshTokenStore.deleteBySessionId(previousRefreshClaims.sessionId());
+            sessionRevocationStore.revoke(previousRefreshClaims.sessionId());
+            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
+        }
+
+        return new RotatedRefreshToken(refreshToken, refreshTokenTtl.toSeconds());
+    }
+
     private void validateAccessTokenOwner(JwtTokenClaims claims, UUID userId) {
         if (!claims.userId().equals(userId)) {
             throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
@@ -296,7 +405,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         return new JwtSubject(seller.userId(), sessionId, seller.role().name(), seller.nickname(), seller.email());
     }
 
-    private SellerMeResult toSellerMeResult(UserView seller) {
+    private SellerMeResult toSellerMeResult(UserView seller, SellerProfile sellerProfile) {
         return new SellerMeResult(
                 seller.userId(),
                 seller.nickname(),
@@ -309,7 +418,19 @@ public class SellerAuthService implements SellerAuthUseCase {
                 seller.status().name(),
                 seller.grade().name(),
                 seller.pointBalance(),
-                seller.marketingAgreed()
+                seller.marketingAgreed(),
+                sellerProfile.storeName(),
+                sellerProfile.businessNumber(),
+                sellerProfile.businessType().name(),
+                sellerProfile.status().name(),
+                sellerProfile.rejectionReason(),
+                sellerProfile.approvedAt()
         );
+    }
+
+    private record RotatedRefreshToken(
+            String token,
+            long maxAgeSeconds
+    ) {
     }
 }

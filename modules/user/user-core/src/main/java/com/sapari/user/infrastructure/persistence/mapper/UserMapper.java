@@ -30,7 +30,7 @@ public class UserMapper {
             return seller;
         }
 
-        UserEntity member = UserEntity.createSocialMember(
+        UserEntity userEntity = UserEntity.createSocialCustomer(
                 user.nickname(),
                 user.name(),
                 user.birthDate(),
@@ -44,7 +44,7 @@ public class UserMapper {
                 user.providerCreatedAt(),
                 user.nicknameChangedAt()
         );
-        member.updateProfile(
+        userEntity.updateProfile(
                 user.nickname(),
                 user.name(),
                 user.birthDate(),
@@ -54,7 +54,7 @@ public class UserMapper {
                 user.marketingAgreed(),
                 user.nicknameChangedAt()
         );
-        return member;
+        return userEntity;
     }
 
     public static User toDomain(UserEntity entity) {

@@ -9,6 +9,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -105,6 +106,18 @@ public class SellerAuthController {
         );
     }
 
+    @GetMapping("/signup/check-store-name")
+    public ResponseEntity<DuplicateCheckResponse> checkStoreName(
+            @RequestParam
+            @NotBlank(message = "상호명은 필수입니다.")
+            @Size(max = 20, message = "상호명은 20자 이하여야 합니다.")
+            String storeName
+    ) {
+        return ResponseEntity.ok(
+                new DuplicateCheckResponse(sellerAuthUseCase.isStoreNameDuplicated(storeName))
+        );
+    }
+
     @PostMapping("/login")
     public ResponseEntity<SellerLoginResponse> login(
             @Valid @RequestBody SellerLoginRequest request
@@ -130,6 +143,10 @@ public class SellerAuthController {
         return ResponseEntity
                 .ok()
                 .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                        result.refreshToken(),
+                        result.refreshTokenMaxAgeSeconds()
+                ).toString())
                 .body(SellerTokenReissueResponse.from(result));
     }
 

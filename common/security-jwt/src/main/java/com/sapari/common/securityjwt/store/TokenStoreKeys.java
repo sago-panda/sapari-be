@@ -12,6 +12,9 @@ public final class TokenStoreKeys {
     /** Refresh Token 저장 키 prefix. 뒤에 sid(sessionId, UUID)를 붙인다. */
     public static final String REFRESH_TOKEN_SESSION_PREFIX = "refresh-token:session:";
 
+    /** 폐기된 로그인 세션 키 prefix. 뒤에 sid(sessionId, UUID)를 붙인다. */
+    public static final String REVOKED_SESSION_PREFIX = "revoked-session:";
+
     private TokenStoreKeys() {
     }
 }

@@ -26,7 +26,7 @@ findings. Assume the author did NOT think about attackers. You are READ-ONLY.
 ## Security focus (sapari-be specific)
 
 1. **Authorization / IDOR (highest priority)**
-   - Does each new/changed endpoint enforce role-based authz? (member/seller `SecurityFilterChain`
+   - Does each new/changed endpoint enforce role-based authz? (customer/seller `SecurityFilterChain`
      matchers, `@PreAuthorize`) — **but respect intentionally public endpoints** (login, signup,
      OAuth callback, health, duplicate-check) per `AGENTS.md`; do NOT false-flag those.
    - Is the acting user the **authenticated principal (`@CurrentUserId`)**, or is a userId from the

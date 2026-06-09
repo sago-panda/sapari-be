@@ -1,6 +1,6 @@
 package com.sapari.common.securityjwt.store;
 
-import java.util.Optional;
+import java.time.Duration;
 import java.util.UUID;
 
 /**
@@ -9,9 +9,18 @@ import java.util.UUID;
  */
 public interface RefreshTokenStore {
 
-    void save(UUID sessionId, String refreshToken);
+    /**
+     * 로그인 세션의 현재 Refresh Token ID를 저장한다.
+     */
+    void save(UUID sessionId, UUID refreshTokenId, Duration ttl);
 
-    Optional<String> findBySessionId(UUID sessionId);
+    /**
+     * 현재 저장된 Refresh Token ID가 기대값과 같을 때 새 ID로 교체한다.
+     */
+    boolean rotate(UUID sessionId, UUID expectedRefreshTokenId, UUID newRefreshTokenId, Duration ttl);
 
+    /**
+     * 로그인 세션의 Refresh Token 정보를 삭제한다.
+     */
     void deleteBySessionId(UUID sessionId);
 }

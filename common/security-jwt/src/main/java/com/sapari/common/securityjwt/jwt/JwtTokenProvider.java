@@ -40,16 +40,29 @@ public class JwtTokenProvider {
         this.timeProvider = timeProvider;
     }
 
+    /**
+     * API 인증에 사용하는 Access Token을 발급한다.
+     */
     public String createAccessToken(JwtSubject subject) {
         return createToken(subject, JwtTokenType.ACCESS, accessTokenExpirationSeconds);
     }
 
+    /**
+     * 로그인 세션 검증에 사용하는 Refresh Token을 발급한다.
+     */
     public String createRefreshToken(JwtSubject subject) {
         return createToken(subject, JwtTokenType.REFRESH, refreshTokenExpirationSeconds);
     }
 
     /**
-     * 토큰의 서명, 만료 여부와 jti/sid/tokenType 필수 claims를 검증하고 파싱 결과를 반환
+     * 지정된 만료 시각까지 유효한 Refresh Token을 발급한다.
+     */
+    public String createRefreshTokenForRotation(JwtSubject subject, Instant expiresAt) {
+        return createToken(subject, JwtTokenType.REFRESH, expiresAt);
+    }
+
+    /**
+     * 토큰의 서명, 만료 여부와 jti/sid/tokenType 필수 claims를 검증하고 파싱 결과를 반환한다.
      */
     public JwtTokenClaims parseToken(String token) {
         Claims claims = parseClaims(token);
@@ -72,9 +85,20 @@ public class JwtTokenProvider {
             long expirationSeconds
     ) {
         Instant now = timeProvider.now();
-        Instant expiration = now.plusSeconds(expirationSeconds);
+        Instant expiresAt = now.plusSeconds(expirationSeconds);
+
+        return createToken(subject, tokenType, expiresAt);
+    }
+
+    private String createToken(
+            JwtSubject subject,
+            JwtTokenType tokenType,
+            Instant expiresAt
+    ) {
+        Instant now = timeProvider.now();
         UUID tokenId = UUID.randomUUID();
 
+        // jti는 토큰 1장을 식별하고, sid는 같은 로그인 세션의 Access/Refresh Token을 묶는다.
         JwtBuilder builder = Jwts.builder()
                 .id(tokenId.toString())
                 .issuer(issuer)
@@ -83,7 +107,7 @@ public class JwtTokenProvider {
                 .claim(ROLE_CLAIM, subject.role())
                 .claim(TOKEN_TYPE_CLAIM, tokenType.name())
                 .issuedAt(Date.from(now))
-                .expiration(Date.from(expiration));
+                .expiration(Date.from(expiresAt));
 
         if (tokenType == JwtTokenType.ACCESS) {
             builder

@@ -22,6 +22,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 
 @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -32,15 +33,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenProvider jwtTokenProvider;
     private final UserDetailsService userDetailsService;
     private final AccessTokenRevocationChecker accessTokenRevocationChecker;
+    private final SessionRevocationChecker sessionRevocationChecker;
 
     public JwtAuthenticationFilter(
             JwtTokenProvider jwtTokenProvider,
             UserDetailsService userDetailsService,
-            AccessTokenRevocationChecker accessTokenRevocationChecker
+            AccessTokenRevocationChecker accessTokenRevocationChecker,
+            SessionRevocationChecker sessionRevocationChecker
     ) {
         this.jwtTokenProvider = jwtTokenProvider;
         this.userDetailsService = userDetailsService;
         this.accessTokenRevocationChecker = accessTokenRevocationChecker;
+        this.sessionRevocationChecker = sessionRevocationChecker;
     }
 
     @Override
@@ -56,7 +60,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     && SecurityContextHolder.getContext().getAuthentication() == null) {
                 JwtTokenClaims claims = jwtTokenProvider.parseToken(token);
 
-                if (isAccessToken(claims) && isNotRevoked(claims)) {
+                if (isAccessToken(claims) && isNotRevoked(request, claims)) {
                     authenticate(claims);
                 }
             }
@@ -87,8 +91,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return claims.tokenType() == JwtTokenType.ACCESS;
     }
 
-    private boolean isNotRevoked(JwtTokenClaims claims) {
-        return !accessTokenRevocationChecker.isRevoked(claims.tokenId());
+    private boolean isNotRevoked(HttpServletRequest request, JwtTokenClaims claims) {
+        try {
+            return !accessTokenRevocationChecker.isRevoked(claims.tokenId())
+                    && !sessionRevocationChecker.isRevoked(claims.sessionId());
+        } catch (RuntimeException e) {
+            SecurityContextHolder.clearContext();
+            log.warn(
+                    "JWT revocation check failed. method={}, uri={}, reason={}",
+                    request.getMethod(),
+                    request.getRequestURI(),
+                    e.getClass().getSimpleName()
+            );
+            return false;
+        }
     }
 
     private void authenticate(JwtTokenClaims claims) {

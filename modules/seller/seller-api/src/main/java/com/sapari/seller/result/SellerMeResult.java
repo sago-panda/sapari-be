@@ -1,6 +1,7 @@
 package com.sapari.seller.result;
 
 import java.time.LocalDate;
+import java.time.Instant;
 import java.util.UUID;
 
 public record SellerMeResult(
@@ -15,6 +16,12 @@ public record SellerMeResult(
         String status,
         String grade,
         Integer pointBalance,
-        Boolean marketingAgreed
+        Boolean marketingAgreed,
+        String storeName,
+        String businessNumber,
+        String businessType,
+        String approvalStatus,
+        String rejectionReason,
+        Instant approvedAt
 ) {
 }
