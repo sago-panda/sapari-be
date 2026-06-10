@@ -3,12 +3,16 @@ package com.sapari.user.infrastructure.persistence.mapper;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.MappingTarget;
+import org.mapstruct.ReportingPolicy;
 
 import com.sapari.user.domain.model.User;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.infrastructure.persistence.entity.UserEntity;
 
-@Mapper(componentModel = "spring")
+@Mapper(
+        componentModel = "spring",
+        unmappedTargetPolicy = ReportingPolicy.ERROR
+)
 public interface UserMapper {
 
     default UserEntity toEntity(User user) {

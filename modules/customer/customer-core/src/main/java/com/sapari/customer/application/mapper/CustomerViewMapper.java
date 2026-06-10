@@ -2,6 +2,7 @@ package com.sapari.customer.application.mapper;
 
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
+import org.mapstruct.ReportingPolicy;
 
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.view.CustomerMeView;
@@ -9,7 +10,10 @@ import com.sapari.customer.view.CustomerNicknameUpdateResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.user.view.UserView;
 
-@Mapper(componentModel = "spring")
+@Mapper(
+        componentModel = "spring",
+        unmappedTargetPolicy = ReportingPolicy.ERROR
+)
 public interface CustomerViewMapper {
 
     @Mapping(target = "gender", expression = "java(customer.gender() == null ? null : customer.gender().name())")

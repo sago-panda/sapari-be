@@ -2,13 +2,17 @@ package com.sapari.seller.application.mapper;
 
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
+import org.mapstruct.ReportingPolicy;
 
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.view.SellerMeView;
 import com.sapari.seller.view.SellerNicknameUpdateResult;
 import com.sapari.user.view.UserView;
 
-@Mapper(componentModel = "spring")
+@Mapper(
+        componentModel = "spring",
+        unmappedTargetPolicy = ReportingPolicy.ERROR
+)
 public interface SellerViewMapper {
 
     @Mapping(target = "userId", source = "seller.userId")

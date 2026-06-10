@@ -3,11 +3,15 @@ package com.sapari.seller.infrastructure.persistence.mapper;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.MappingTarget;
+import org.mapstruct.ReportingPolicy;
 
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.infrastructure.persistence.entity.SellerProfileEntity;
 
-@Mapper(componentModel = "spring")
+@Mapper(
+        componentModel = "spring",
+        unmappedTargetPolicy = ReportingPolicy.ERROR
+)
 public interface SellerProfileMapper {
 
     default SellerProfileEntity toEntity(SellerProfile sellerProfile) {
