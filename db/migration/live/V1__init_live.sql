@@ -119,59 +119,49 @@ CREATE INDEX ON live_schema.live_chats (live_session_id, elapsed_seconds);
 CREATE INDEX ON live_schema.live_chats (live_session_id, created_at);
 CREATE INDEX ON live_schema.live_chats (user_id, live_session_id);
 
--- 세션 단위 채팅 강퇴 로그 (append-only 순수 증거 로그 — 밴 상태 없음. 세션 종료 시 자동 해제)
+-- 세션 강퇴 (append-only 순수 증거 로그 — 밴 상태 없음. 세션 종료 시 자동 해제)
 CREATE TABLE live_schema.chat_kick_log (
-    id                 bigserial   NOT NULL,
-    user_id            uuid        NOT NULL,             -- soft ref: user_schema.users.id
-    live_session_id    uuid        NOT NULL,             -- soft ref (원안 room_id — 파일 내 일관성 위해 통일)
+    id                 uuid        NOT NULL DEFAULT gen_random_uuid(),
+    user_id            uuid        NOT NULL,             -- 강퇴 대상 (soft ref: user_schema.users.id)
+    live_session_id    uuid        NOT NULL,             -- 발생 라이브 (soft ref. 원안 room_id — 파일 내 일관성 위해 통일)
     kicked_by_id       uuid        NOT NULL,
     kicked_by_role     varchar(16) NOT NULL,
-    triggering_message text        NOT NULL,             -- 강퇴 유발 원문 스냅샷 (증거 보존)
+    triggering_message text        NOT NULL,             -- 원문 스냅샷 (증거 박제)
     kicked_at          timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT pk_chat_kick_log PRIMARY KEY (id),
-    CONSTRAINT uk_chat_kick_log_user_session UNIQUE (user_id, live_session_id),  -- 세션 멱등
+    CONSTRAINT uk_chat_kick_log_user_session UNIQUE (user_id, live_session_id),  -- 중복 강퇴 멱등
     CONSTRAINT chk_kick_by_role CHECK (kicked_by_role IN ('SELLER', 'ADMIN'))
 );
+CREATE INDEX ON live_schema.chat_kick_log (user_id, kicked_at DESC);
 
--- 유저-레벨 밴 상태 (세션을 넘어 유지). SELLER=해당 판매자 라이브 한정 / PLATFORM=전체 금지
--- 밴 판정: expires_at IS NULL(영구) OR expires_at > now(). 해제 = 행 삭제 또는 expires_at 갱신
+-- 플랫폼 밴 (전체 차단 — scope 없음 = 항상 전체. 판매자 한정 밴 없음)
+-- banned_by_id: 자동 escalation=SYSTEM UUID / 수동=ADMIN id (판매자 불가 — banned_by_role 컬럼이
+--   없어 DB CHECK로는 미강제. 앱 레벨(ADMIN/SYSTEM만 호출 가능)에서 보장)
+-- 활성 판정: expires_at IS NULL OR expires_at > now(). un-ban = 행 DELETE.
+-- Redis 미러: banned:{userId} 단일 키.
+-- 자동 escalation(2년 롤링 글로벌 강퇴 카운트): 3회→1주 / 6회→1달 / 9회→1년 / 12회+→영구
 CREATE TABLE live_schema.chat_ban (
-    id             bigserial   NOT NULL,
-    user_id        uuid        NOT NULL,                 -- 밴 대상
-    scope          varchar(16) NOT NULL,
-    seller_id      uuid,                                 -- scope=SELLER일 때만 (그 판매자 라이브 한정)
-    banned_by_id   uuid        NOT NULL,
-    banned_by_role varchar(16) NOT NULL,
-    expires_at     timestamptz,                          -- NULL=영구
-    created_at     timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT pk_chat_ban PRIMARY KEY (id),
-    CONSTRAINT chk_ban_scope        CHECK (scope IN ('SELLER', 'PLATFORM')),
-    CONSTRAINT chk_ban_by_role      CHECK (banned_by_role IN ('SELLER', 'ADMIN')),
-    CONSTRAINT chk_ban_scope_seller CHECK ((scope = 'SELLER') = (seller_id IS NOT NULL)),
-    CONSTRAINT chk_platform_ban_admin_only CHECK (scope <> 'PLATFORM' OR banned_by_role = 'ADMIN')  -- ★ 플랫폼 밴은 ADMIN만
+    id           uuid        NOT NULL DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL,
+    banned_by_id uuid        NOT NULL,                   -- 자동=SYSTEM UUID / 수동=ADMIN id
+    expires_at   timestamptz,                            -- NULL=영구
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT pk_chat_ban PRIMARY KEY (id)
 );
 CREATE INDEX ON live_schema.chat_ban (user_id, expires_at);
-CREATE INDEX ON live_schema.chat_ban (seller_id, expires_at);
 
--- 채팅 금칙어/허용 필터 사전. WHITELIST 우선 → PROFANITY 평가 → action 적용
+-- 욕설/화이트리스트 사전 (글로벌 1개 — 판매자 커스텀 없음)
+-- 3계층: Postgres(출처) → Redis Pub/Sub(변경 전파) → Pod 메모리 trie(런타임 평가)
 CREATE TABLE live_schema.chat_filter_word (
-    id         uuid         NOT NULL DEFAULT gen_random_uuid(),
-    kind       varchar(10)  NOT NULL DEFAULT 'PROFANITY',  -- PROFANITY | WHITELIST
-    scope      varchar(10)  NOT NULL,                    -- GLOBAL | SELLER
-    seller_id  uuid,                                     -- scope=SELLER일 때만
-    word       varchar(100) NOT NULL,                    -- 소문자·공백 정규화 후 저장
-    match_type varchar(10)  NOT NULL DEFAULT 'CONTAINS', -- EXACT | CONTAINS | REGEX
-    action     varchar(10)  NOT NULL DEFAULT 'BLOCK',    -- BLOCK | MASK (WHITELIST는 무시)
-    is_active  boolean      NOT NULL DEFAULT true,
-    created_by uuid,                                     -- NULL=시스템 시드
-    created_at timestamptz  NOT NULL,
-    updated_at timestamptz  NOT NULL,
+    id         uuid        NOT NULL DEFAULT gen_random_uuid(),
+    kind       varchar(16) NOT NULL,                     -- PROFANITY | WHITELIST
+    word       varchar(64) NOT NULL,
+    created_by uuid        NOT NULL,                     -- 관리자 id / 시드=SYSTEM UUID
+    created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT pk_chat_filter_word PRIMARY KEY (id),
-    CONSTRAINT chk_filter_scope_seller CHECK ((scope = 'SELLER') = (seller_id IS NOT NULL))
+    CONSTRAINT uk_chat_filter_word UNIQUE (kind, word),
+    CONSTRAINT chk_filter_kind CHECK (kind IN ('PROFANITY', 'WHITELIST'))
 );
-CREATE INDEX ON live_schema.chat_filter_word (scope, is_active);
-CREATE INDEX ON live_schema.chat_filter_word (seller_id, is_active);
-CREATE INDEX ON live_schema.chat_filter_word (kind, scope, seller_id, word);
 
 -- ============================================================
 -- 공지 · 썸네일 · 시청 · 좋아요 · 알림신청 · 클릭 이벤트
