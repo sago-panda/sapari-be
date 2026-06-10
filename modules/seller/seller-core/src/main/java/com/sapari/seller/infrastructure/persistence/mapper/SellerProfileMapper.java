@@ -1,11 +1,16 @@
 package com.sapari.seller.infrastructure.persistence.mapper;
 
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+import org.mapstruct.MappingTarget;
+
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.infrastructure.persistence.entity.SellerProfileEntity;
 
-public class SellerProfileMapper {
+@Mapper(componentModel = "spring")
+public interface SellerProfileMapper {
 
-    public static SellerProfileEntity toEntity(SellerProfile sellerProfile) {
+    default SellerProfileEntity toEntity(SellerProfile sellerProfile) {
         return SellerProfileEntity.of(
                 sellerProfile.userId(),
                 sellerProfile.status(),
@@ -17,20 +22,10 @@ public class SellerProfileMapper {
         );
     }
 
-    public static SellerProfile toDomain(SellerProfileEntity entity) {
-        return new SellerProfile(
-                entity.getId(),
-                entity.getUserId(),
-                entity.getStatus(),
-                entity.getStoreName(),
-                entity.getBusinessNumber(),
-                entity.getBusinessType(),
-                entity.getRejectionReason(),
-                entity.getApprovedAt()
-        );
-    }
+    @Mapping(target = "sellerProfileId", source = "id")
+    SellerProfile toDomain(SellerProfileEntity entity);
 
-    public static void updateEntityFromDomain(SellerProfileEntity entity, SellerProfile sellerProfile) {
+    default void updateEntityFromDomain(@MappingTarget SellerProfileEntity entity, SellerProfile sellerProfile) {
         entity.update(
                 sellerProfile.status(),
                 sellerProfile.storeName(),

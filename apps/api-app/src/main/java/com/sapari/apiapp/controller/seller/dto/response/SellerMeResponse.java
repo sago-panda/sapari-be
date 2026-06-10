@@ -43,8 +43,8 @@ public record SellerMeResponse(
                 result.marketingAgreed(),
                 result.storeName(),
                 result.businessNumber(),
-                result.businessType(),
-                result.approvalStatus(),
+                result.businessType() == null ? null : result.businessType().name(),
+                result.approvalStatus() == null ? null : result.approvalStatus().name(),
                 result.rejectionReason(),
                 result.approvedAt()
         );

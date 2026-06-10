@@ -9,7 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.model.LocalCredential;
-import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.model.SellerBusinessType;
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;

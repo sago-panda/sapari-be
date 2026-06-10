@@ -17,7 +17,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
-import com.sapari.customer.application.assembler.CustomerViewAssembler;
+import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
@@ -57,7 +57,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
-    private final CustomerViewAssembler customerViewAssembler;
+    private final CustomerViewMapper customerViewMapper;
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입
@@ -85,7 +85,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional(readOnly = true)
     public SocialSignupInfoView getSocialSignupInfo(String signupSid) {
-        return toSocialSignupInfoView(findSocialSignupInfo(signupSid));
+        return customerViewMapper.toSocialSignupInfoView(findSocialSignupInfo(signupSid));
     }
 
     /**
@@ -160,7 +160,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional(readOnly = true)
     public CustomerMeView getMyInfo(UUID userId) {
-        return customerViewAssembler.toMeView(findCustomer(userId));
+        return customerViewMapper.toMeView(findCustomer(userId));
     }
 
     @Override
@@ -182,7 +182,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedCustomer, accessClaims.sessionId()));
 
-            return customerViewAssembler.toNicknameUpdateResult(savedCustomer, accessToken);
+            return customerViewMapper.toNicknameUpdateResult(savedCustomer, accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -374,18 +374,6 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     private JwtSubject toJwtSubject(UserView customer, UUID sessionId) {
         return new JwtSubject(customer.userId(), sessionId, customer.role().name(), customer.nickname(), customer.email());
-    }
-
-    private SocialSignupInfoView toSocialSignupInfoView(SocialSignupInfo socialSignupInfo) {
-        return new SocialSignupInfoView(
-                socialSignupInfo.phoneNumber(),
-                socialSignupInfo.name(),
-                socialSignupInfo.providerEmail(),
-                socialSignupInfo.nickname(),
-                socialSignupInfo.profileImageUrl(),
-                socialSignupInfo.gender() == null ? null : socialSignupInfo.gender().name(),
-                socialSignupInfo.birthDate()
-        );
     }
 
     private record RotatedRefreshToken(

@@ -16,6 +16,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 
@@ -44,7 +45,7 @@ import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
-import com.sapari.customer.application.assembler.CustomerViewAssembler;
+import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -88,7 +89,7 @@ class CustomerAuthServiceTest {
             accessTokenBlacklist,
             timeProvider(),
             objectMapper,
-            new CustomerViewAssembler()
+            Mappers.getMapper(CustomerViewMapper.class)
     );
 
     @Test
@@ -262,7 +263,7 @@ class CustomerAuthServiceTest {
                 accessTokenBlacklist,
                 timeProvider(),
                 objectMapper,
-                new CustomerViewAssembler()
+                Mappers.getMapper(CustomerViewMapper.class)
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,

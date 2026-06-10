@@ -1,11 +1,14 @@
 package com.sapari.seller.infrastructure.persistence.mapper;
 
+import org.mapstruct.Mapper;
+
 import com.sapari.seller.domain.model.LocalCredential;
 import com.sapari.seller.infrastructure.persistence.entity.LocalCredentialEntity;
 
-public class LocalCredentialMapper {
+@Mapper(componentModel = "spring")
+public interface LocalCredentialMapper {
 
-    public static LocalCredentialEntity toEntity(LocalCredential localCredential) {
+    default LocalCredentialEntity toEntity(LocalCredential localCredential) {
         return LocalCredentialEntity.of(
                 localCredential.userId(),
                 localCredential.passwordHash(),
@@ -15,13 +18,5 @@ public class LocalCredentialMapper {
         );
     }
 
-    public static LocalCredential toDomain(LocalCredentialEntity entity) {
-        return new LocalCredential(
-                entity.getUserId(),
-                entity.getPasswordHash(),
-                entity.getFailedLoginCount(),
-                entity.getLockedAt(),
-                entity.getLastChangedAt()
-        );
-    }
+    LocalCredential toDomain(LocalCredentialEntity entity);
 }

@@ -22,8 +22,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.model.LocalCredential;
-import com.sapari.seller.domain.model.SellerApprovalStatus;
-import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.model.SellerApprovalStatus;
+import com.sapari.seller.model.SellerBusinessType;
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
@@ -127,7 +127,7 @@ class SellerSignupProcessorTest {
                 "사파리 상점",
                 "1234567890",
                 LocalDate.of(2020, 1, 1),
-                "INDIVIDUAL"
+                SellerBusinessType.INDIVIDUAL
         );
     }
 
