@@ -2,14 +2,14 @@
 --  1) 미디어 = 합집합: LiveKit(sfu/egress/hls) + Ingress 송출(stream_type/stream_key/ingress_id)
 --  2) 상태 = 코드 모델 유지: SCHEDULED → LIVE → ENDED, SUSPENDED 측면 분기 (CANCELLED/force_ended 미채택)
 --  3) live_products = DDL 구조 + live_price(최종가 캐시) 추가, 가격 불변·핀/순서 가변
--- ⚠️ 이 V1은 live 엔티티 리팩토링(LiveRoomEntity→live_sessions 정렬)과 함께 적용해야 한다.
---    리팩토링 전까지 기존 엔티티(live_rooms 매핑)는 ddl validate에 실패한다.
+-- ⚠️ 테이블/참조 컬럼명은 코드의 LiveRoomEntity(live_rooms)·LiveProductEntity(live_room_id)에 맞춰 정렬했다.
+--    컬럼 필드 단위 대조(엔티티 ↔ DDL)는 별도 브랜치에서 진행한다.
 CREATE SCHEMA IF NOT EXISTS live_schema;
 
 -- ============================================================
 -- 라이브 세션 원장
 -- ============================================================
-CREATE TABLE live_schema.live_sessions (
+CREATE TABLE live_schema.live_rooms (
     id                       uuid         NOT NULL DEFAULT gen_random_uuid(),
     seller_id                uuid         NOT NULL,      -- ref: user_schema.users.id
     title                    varchar(100) NOT NULL,
@@ -51,14 +51,14 @@ CREATE TABLE live_schema.live_sessions (
     vod_is_public            boolean      NOT NULL DEFAULT true,
     created_at               timestamptz  NOT NULL,
     updated_at               timestamptz  NOT NULL,
-    CONSTRAINT pk_live_sessions PRIMARY KEY (id)
+    CONSTRAINT pk_live_rooms PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_sessions (seller_id, status, created_at);
-CREATE INDEX ON live_schema.live_sessions (status, scheduled_at);
-CREATE INDEX ON live_schema.live_sessions (stream_key);
-CREATE INDEX ON live_schema.live_sessions (started_at);
-CREATE INDEX ON live_schema.live_sessions (concurrent_viewers);
-CREATE INDEX ON live_schema.live_sessions (deactivate_after);
+CREATE INDEX ON live_schema.live_rooms (seller_id, status, created_at);
+CREATE INDEX ON live_schema.live_rooms (status, scheduled_at);
+CREATE INDEX ON live_schema.live_rooms (stream_key);
+CREATE INDEX ON live_schema.live_rooms (started_at);
+CREATE INDEX ON live_schema.live_rooms (concurrent_viewers);
+CREATE INDEX ON live_schema.live_rooms (deactivate_after);
 
 -- ============================================================
 -- 라이브 등록 상품 (최대 50개) — DDL 구조 + live_price 캐시
@@ -66,7 +66,7 @@ CREATE INDEX ON live_schema.live_sessions (deactivate_after);
 -- ============================================================
 CREATE TABLE live_schema.live_products (
     id              uuid        NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id uuid        NOT NULL,
+    live_room_id uuid        NOT NULL,
     product_id      uuid        NOT NULL,                -- ref: product_schema.products.id
     list_price      integer,                             -- 비교 표시가 (취소선). NULL=미설정
     selling_price   integer     NOT NULL,                -- 등록 시점 판매가 스냅샷
@@ -80,21 +80,21 @@ CREATE TABLE live_schema.live_products (
     updated_at      timestamptz NOT NULL,
     CONSTRAINT pk_live_products PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_products (live_session_id, sort_order);
-CREATE INDEX ON live_schema.live_products (live_session_id, is_pinned);
+CREATE INDEX ON live_schema.live_products (live_room_id, sort_order);
+CREATE INDEX ON live_schema.live_products (live_room_id, is_pinned);
 CREATE INDEX ON live_schema.live_products (product_id);
 
 -- 라이브 중 상품 핀/언핀 이력. elapsed_seconds로 VOD 리플레이 재현
 CREATE TABLE live_schema.live_product_pin_histories (
     id              uuid        NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id uuid        NOT NULL,
+    live_room_id uuid        NOT NULL,
     live_product_id uuid        NOT NULL,
     action          varchar(10) NOT NULL,                -- PIN | UNPIN
     elapsed_seconds integer     NOT NULL,
     created_at      timestamptz NOT NULL,
     CONSTRAINT pk_live_product_pin_histories PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_product_pin_histories (live_session_id, elapsed_seconds);
+CREATE INDEX ON live_schema.live_product_pin_histories (live_room_id, elapsed_seconds);
 
 -- ============================================================
 -- 채팅 · 모더레이션
@@ -103,7 +103,7 @@ CREATE INDEX ON live_schema.live_product_pin_histories (live_session_id, elapsed
 -- 라이브 채팅. 구매자↔판매자 전용. elapsed_seconds로 VOD 리플레이 동기화
 CREATE TABLE live_schema.live_chats (
     id              uuid         NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id uuid         NOT NULL,
+    live_room_id uuid         NOT NULL,
     user_id         uuid         NOT NULL,               -- ref: user_schema.users.id
     message         varchar(200) NOT NULL,
     type            varchar(15)  NOT NULL DEFAULT 'NORMAL',
@@ -115,63 +115,53 @@ CREATE TABLE live_schema.live_chats (
     created_at      timestamptz  NOT NULL,
     CONSTRAINT pk_live_chats PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_chats (live_session_id, elapsed_seconds);
-CREATE INDEX ON live_schema.live_chats (live_session_id, created_at);
-CREATE INDEX ON live_schema.live_chats (user_id, live_session_id);
+CREATE INDEX ON live_schema.live_chats (live_room_id, elapsed_seconds);
+CREATE INDEX ON live_schema.live_chats (live_room_id, created_at);
+CREATE INDEX ON live_schema.live_chats (user_id, live_room_id);
 
--- 세션 단위 채팅 강퇴 로그 (append-only 순수 증거 로그 — 밴 상태 없음. 세션 종료 시 자동 해제)
+-- 세션 강퇴 (append-only 순수 증거 로그 — 밴 상태 없음. 세션 종료 시 자동 해제)
 CREATE TABLE live_schema.chat_kick_log (
-    id                 bigserial   NOT NULL,
-    user_id            uuid        NOT NULL,             -- soft ref: user_schema.users.id
-    live_session_id    uuid        NOT NULL,             -- soft ref (원안 room_id — 파일 내 일관성 위해 통일)
+    id                 uuid        NOT NULL DEFAULT gen_random_uuid(),
+    user_id            uuid        NOT NULL,             -- 강퇴 대상 (soft ref: user_schema.users.id)
+    live_room_id       uuid        NOT NULL,             -- 발생 라이브 (soft ref: live_schema.live_rooms.id)
     kicked_by_id       uuid        NOT NULL,
     kicked_by_role     varchar(16) NOT NULL,
-    triggering_message text        NOT NULL,             -- 강퇴 유발 원문 스냅샷 (증거 보존)
+    triggering_message text        NOT NULL,             -- 원문 스냅샷 (증거 박제)
     kicked_at          timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT pk_chat_kick_log PRIMARY KEY (id),
-    CONSTRAINT uk_chat_kick_log_user_session UNIQUE (user_id, live_session_id),  -- 세션 멱등
+    CONSTRAINT uk_chat_kick_log_user_room UNIQUE (user_id, live_room_id),  -- 중복 강퇴 멱등
     CONSTRAINT chk_kick_by_role CHECK (kicked_by_role IN ('SELLER', 'ADMIN'))
 );
+CREATE INDEX ON live_schema.chat_kick_log (user_id, kicked_at DESC);
 
--- 유저-레벨 밴 상태 (세션을 넘어 유지). SELLER=해당 판매자 라이브 한정 / PLATFORM=전체 금지
--- 밴 판정: expires_at IS NULL(영구) OR expires_at > now(). 해제 = 행 삭제 또는 expires_at 갱신
+-- 플랫폼 밴 (전체 차단 — scope 없음 = 항상 전체. 판매자 한정 밴 없음)
+-- banned_by_id: 자동 escalation=SYSTEM UUID / 수동=ADMIN id (판매자 불가 — banned_by_role 컬럼이
+--   없어 DB CHECK로는 미강제. 앱 레벨(ADMIN/SYSTEM만 호출 가능)에서 보장)
+-- 활성 판정: expires_at IS NULL OR expires_at > now(). un-ban = 행 DELETE.
+-- Redis 미러: banned:{userId} 단일 키.
+-- 자동 escalation(2년 롤링 글로벌 강퇴 카운트): 3회→1주 / 6회→1달 / 9회→1년 / 12회+→영구
 CREATE TABLE live_schema.chat_ban (
-    id             bigserial   NOT NULL,
-    user_id        uuid        NOT NULL,                 -- 밴 대상
-    scope          varchar(16) NOT NULL,
-    seller_id      uuid,                                 -- scope=SELLER일 때만 (그 판매자 라이브 한정)
-    banned_by_id   uuid        NOT NULL,
-    banned_by_role varchar(16) NOT NULL,
-    expires_at     timestamptz,                          -- NULL=영구
-    created_at     timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT pk_chat_ban PRIMARY KEY (id),
-    CONSTRAINT chk_ban_scope        CHECK (scope IN ('SELLER', 'PLATFORM')),
-    CONSTRAINT chk_ban_by_role      CHECK (banned_by_role IN ('SELLER', 'ADMIN')),
-    CONSTRAINT chk_ban_scope_seller CHECK ((scope = 'SELLER') = (seller_id IS NOT NULL)),
-    CONSTRAINT chk_platform_ban_admin_only CHECK (scope <> 'PLATFORM' OR banned_by_role = 'ADMIN')  -- ★ 플랫폼 밴은 ADMIN만
+    id           uuid        NOT NULL DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL,
+    banned_by_id uuid        NOT NULL,                   -- 자동=SYSTEM UUID / 수동=ADMIN id
+    expires_at   timestamptz,                            -- NULL=영구
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT pk_chat_ban PRIMARY KEY (id)
 );
 CREATE INDEX ON live_schema.chat_ban (user_id, expires_at);
-CREATE INDEX ON live_schema.chat_ban (seller_id, expires_at);
 
--- 채팅 금칙어/허용 필터 사전. WHITELIST 우선 → PROFANITY 평가 → action 적용
+-- 욕설/화이트리스트 사전 (글로벌 1개 — 판매자 커스텀 없음)
+-- 3계층: Postgres(출처) → Redis Pub/Sub(변경 전파) → Pod 메모리 trie(런타임 평가)
 CREATE TABLE live_schema.chat_filter_word (
-    id         uuid         NOT NULL DEFAULT gen_random_uuid(),
-    kind       varchar(10)  NOT NULL DEFAULT 'PROFANITY',  -- PROFANITY | WHITELIST
-    scope      varchar(10)  NOT NULL,                    -- GLOBAL | SELLER
-    seller_id  uuid,                                     -- scope=SELLER일 때만
-    word       varchar(100) NOT NULL,                    -- 소문자·공백 정규화 후 저장
-    match_type varchar(10)  NOT NULL DEFAULT 'CONTAINS', -- EXACT | CONTAINS | REGEX
-    action     varchar(10)  NOT NULL DEFAULT 'BLOCK',    -- BLOCK | MASK (WHITELIST는 무시)
-    is_active  boolean      NOT NULL DEFAULT true,
-    created_by uuid,                                     -- NULL=시스템 시드
-    created_at timestamptz  NOT NULL,
-    updated_at timestamptz  NOT NULL,
+    id         uuid        NOT NULL DEFAULT gen_random_uuid(),
+    kind       varchar(16) NOT NULL,                     -- PROFANITY | WHITELIST
+    word       varchar(64) NOT NULL,
+    created_by uuid        NOT NULL,                     -- 관리자 id / 시드=SYSTEM UUID
+    created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT pk_chat_filter_word PRIMARY KEY (id),
-    CONSTRAINT chk_filter_scope_seller CHECK ((scope = 'SELLER') = (seller_id IS NOT NULL))
+    CONSTRAINT uk_chat_filter_word UNIQUE (kind, word),
+    CONSTRAINT chk_filter_kind CHECK (kind IN ('PROFANITY', 'WHITELIST'))
 );
-CREATE INDEX ON live_schema.chat_filter_word (scope, is_active);
-CREATE INDEX ON live_schema.chat_filter_word (seller_id, is_active);
-CREATE INDEX ON live_schema.chat_filter_word (kind, scope, seller_id, word);
 
 -- ============================================================
 -- 공지 · 썸네일 · 시청 · 좋아요 · 알림신청 · 클릭 이벤트
@@ -180,7 +170,7 @@ CREATE INDEX ON live_schema.chat_filter_word (kind, scope, seller_id, word);
 -- 라이브 공지 이력. 화면 상단 8초 노출, elapsed_seconds로 리플레이 재현
 CREATE TABLE live_schema.live_announcements (
     id              uuid         NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id uuid         NOT NULL,
+    live_room_id uuid         NOT NULL,
     type            varchar(15)  NOT NULL,
     content         varchar(500) NOT NULL,
     live_product_id uuid,                                -- 참조 상품 (이력 보존 — 앱에서 삭제 제한)
@@ -188,12 +178,12 @@ CREATE TABLE live_schema.live_announcements (
     created_at      timestamptz  NOT NULL,
     CONSTRAINT pk_live_announcements PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_announcements (live_session_id, elapsed_seconds);
+CREATE INDEX ON live_schema.live_announcements (live_room_id, elapsed_seconds);
 
 -- 5분 간격 자동 캡처 썸네일. is_cover=true가 목록 대표·VOD 커버 (판매자 업로드 포함)
 CREATE TABLE live_schema.live_thumbnails (
     id              uuid         NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id uuid         NOT NULL,
+    live_room_id uuid         NOT NULL,
     image_key       varchar(500) NOT NULL,
     is_cover        boolean      NOT NULL DEFAULT false,
     elapsed_seconds integer      NOT NULL,
@@ -201,13 +191,13 @@ CREATE TABLE live_schema.live_thumbnails (
     created_at      timestamptz  NOT NULL,
     CONSTRAINT pk_live_thumbnails PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_thumbnails (live_session_id, elapsed_seconds);
-CREATE INDEX ON live_schema.live_thumbnails (live_session_id, is_cover);
+CREATE INDEX ON live_schema.live_thumbnails (live_room_id, elapsed_seconds);
+CREATE INDEX ON live_schema.live_thumbnails (live_room_id, is_cover);
 
 -- 시청자 입장·퇴장 이벤트. 비회원은 user_id NULL. unique_viewers 집계 원천
 CREATE TABLE live_schema.live_viewer_sessions (
     id                     uuid        NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id        uuid        NOT NULL,
+    live_room_id        uuid        NOT NULL,
     user_id                uuid,
     joined_at              timestamptz NOT NULL,
     left_at                timestamptz,
@@ -215,37 +205,37 @@ CREATE TABLE live_schema.live_viewer_sessions (
     created_at             timestamptz NOT NULL,
     CONSTRAINT pk_live_viewer_sessions PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_viewer_sessions (live_session_id, joined_at);
-CREATE INDEX ON live_schema.live_viewer_sessions (user_id, live_session_id);
-CREATE INDEX ON live_schema.live_viewer_sessions (live_session_id, left_at);
+CREATE INDEX ON live_schema.live_viewer_sessions (live_room_id, joined_at);
+CREATE INDEX ON live_schema.live_viewer_sessions (user_id, live_room_id);
+CREATE INDEX ON live_schema.live_viewer_sessions (live_room_id, left_at);
 
 -- 동시 시청자 시계열 스냅샷 (1분 간격). 판매자 대시보드 그래프 소스
 CREATE TABLE live_schema.live_viewer_counts (
     id                 uuid        NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id    uuid        NOT NULL,
+    live_room_id    uuid        NOT NULL,
     concurrent_viewers integer     NOT NULL,
     elapsed_seconds    integer     NOT NULL,
     recorded_at        timestamptz NOT NULL,
     CONSTRAINT pk_live_viewer_counts PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX ON live_schema.live_viewer_counts (live_session_id, elapsed_seconds);
+CREATE UNIQUE INDEX ON live_schema.live_viewer_counts (live_room_id, elapsed_seconds);
 
 -- 라이브 좋아요. 사용자당 세션당 1회. like_count와 동기화
 CREATE TABLE live_schema.live_likes (
     id              uuid        NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id uuid        NOT NULL,
+    live_room_id uuid        NOT NULL,
     user_id         uuid        NOT NULL,
     created_at      timestamptz NOT NULL,
     CONSTRAINT pk_live_likes PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX ON live_schema.live_likes (live_session_id, user_id);
-CREATE INDEX ON live_schema.live_likes (live_session_id);
+CREATE UNIQUE INDEX ON live_schema.live_likes (live_room_id, user_id);
+CREATE INDEX ON live_schema.live_likes (live_room_id);
 
 -- 예약 라이브 알림 신청. 시작 10분 전·시작 시 두 번 발송
 CREATE TABLE live_schema.live_session_subscriptions (
     id                   uuid        NOT NULL DEFAULT gen_random_uuid(),
     user_id              uuid        NOT NULL,
-    live_session_id      uuid        NOT NULL,
+    live_room_id      uuid        NOT NULL,
     notified_before      boolean     NOT NULL DEFAULT false,
     notified_before_at   timestamptz,
     notified_on_start    boolean     NOT NULL DEFAULT false,
@@ -254,14 +244,14 @@ CREATE TABLE live_schema.live_session_subscriptions (
     created_at           timestamptz NOT NULL,
     CONSTRAINT pk_live_session_subscriptions PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX ON live_schema.live_session_subscriptions (user_id, live_session_id);
-CREATE INDEX ON live_schema.live_session_subscriptions (live_session_id, notified_before);
-CREATE INDEX ON live_schema.live_session_subscriptions (live_session_id, notified_on_start);
+CREATE UNIQUE INDEX ON live_schema.live_session_subscriptions (user_id, live_room_id);
+CREATE INDEX ON live_schema.live_session_subscriptions (live_room_id, notified_before);
+CREATE INDEX ON live_schema.live_session_subscriptions (live_room_id, notified_on_start);
 
 -- 라이브 상품 클릭 이벤트 시계열 (버퍼링 후 배치 INSERT. 파티셔닝은 운영 단계 과제)
 CREATE TABLE live_schema.live_product_click_events (
     id              uuid        NOT NULL DEFAULT gen_random_uuid(),
-    live_session_id uuid        NOT NULL,
+    live_room_id uuid        NOT NULL,
     live_product_id uuid        NOT NULL,
     user_id         uuid,
     source          varchar(15) NOT NULL,
@@ -269,7 +259,7 @@ CREATE TABLE live_schema.live_product_click_events (
     clicked_at      timestamptz NOT NULL,
     CONSTRAINT pk_live_product_click_events PRIMARY KEY (id)
 );
-CREATE INDEX ON live_schema.live_product_click_events (live_session_id, clicked_at);
+CREATE INDEX ON live_schema.live_product_click_events (live_room_id, clicked_at);
 CREATE INDEX ON live_schema.live_product_click_events (live_product_id);
 
 -- ============================================================
