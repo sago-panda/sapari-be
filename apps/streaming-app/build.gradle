@@ -1,7 +1,6 @@
 dependencies {
-    implementation project(':common:web')
     implementation 'io.livekit:livekit-server:0.12.1'
-    implementation 'org.springframework.boot:spring-boot-starter-websocket'
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
