@@ -17,6 +17,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
@@ -26,12 +27,12 @@ import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.customer.port.CustomerAuthUseCase;
-import com.sapari.customer.result.CustomerMeResult;
-import com.sapari.customer.result.CustomerNicknameUpdateResult;
-import com.sapari.customer.result.CustomerTokenReissueResult;
-import com.sapari.customer.result.SocialSignupInfoResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.customer.result.SocialSignupResult;
+import com.sapari.customer.view.CustomerMeView;
+import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
+import com.sapari.customer.view.SocialSignupInfoView;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
@@ -56,6 +57,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
+    private final CustomerViewMapper customerViewMapper;
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입
@@ -82,8 +84,8 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     @Override
     @Transactional(readOnly = true)
-    public SocialSignupInfoResult getSocialSignupInfo(String signupSid) {
-        return toSocialSignupInfoResult(findSocialSignupInfo(signupSid));
+    public SocialSignupInfoView getSocialSignupInfo(String signupSid) {
+        return customerViewMapper.toSocialSignupInfoView(findSocialSignupInfo(signupSid));
     }
 
     /**
@@ -157,8 +159,8 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     @Override
     @Transactional(readOnly = true)
-    public CustomerMeResult getMyInfo(UUID userId) {
-        return toCustomerMeResult(findCustomer(userId));
+    public CustomerMeView getMyInfo(UUID userId) {
+        return customerViewMapper.toMeView(findCustomer(userId));
     }
 
     @Override
@@ -180,7 +182,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedCustomer, accessClaims.sessionId()));
 
-            return new CustomerNicknameUpdateResult(toCustomerMeResult(savedCustomer), accessToken);
+            return customerViewMapper.toNicknameUpdateResult(savedCustomer, accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -372,37 +374,6 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     private JwtSubject toJwtSubject(UserView customer, UUID sessionId) {
         return new JwtSubject(customer.userId(), sessionId, customer.role().name(), customer.nickname(), customer.email());
-    }
-
-    private CustomerMeResult toCustomerMeResult(UserView customer) {
-        return new CustomerMeResult(
-                customer.userId(),
-                customer.nickname(),
-                customer.name(),
-                customer.birthDate(),
-                customer.gender() == null ? null : customer.gender().name(),
-                customer.phoneNumber(),
-                customer.profileImageKey(),
-                customer.email(),
-                customer.role().name(),
-                customer.status().name(),
-                customer.grade().name(),
-                customer.pointBalance(),
-                customer.marketingAgreed(),
-                customer.provider() == null ? null : customer.provider().name()
-        );
-    }
-
-    private SocialSignupInfoResult toSocialSignupInfoResult(SocialSignupInfo socialSignupInfo) {
-        return new SocialSignupInfoResult(
-                socialSignupInfo.phoneNumber(),
-                socialSignupInfo.name(),
-                socialSignupInfo.providerEmail(),
-                socialSignupInfo.nickname(),
-                socialSignupInfo.profileImageUrl(),
-                socialSignupInfo.gender() == null ? null : socialSignupInfo.gender().name(),
-                socialSignupInfo.birthDate()
-        );
     }
 
     private record RotatedRefreshToken(

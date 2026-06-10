@@ -6,11 +6,11 @@ import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
 import com.sapari.seller.command.SellerSignupCommand;
-import com.sapari.seller.result.SellerLoginResult;
-import com.sapari.seller.result.SellerMeResult;
-import com.sapari.seller.result.SellerNicknameUpdateResult;
-import com.sapari.seller.result.SellerSignupResult;
-import com.sapari.seller.result.SellerTokenReissueResult;
+import com.sapari.seller.view.SellerLoginResult;
+import com.sapari.seller.view.SellerMeView;
+import com.sapari.seller.view.SellerNicknameUpdateResult;
+import com.sapari.seller.view.SellerSignupResult;
+import com.sapari.seller.view.SellerTokenReissueResult;
 
 public interface SellerAuthUseCase {
 
@@ -30,7 +30,7 @@ public interface SellerAuthUseCase {
 
     void logout(SellerLogoutCommand command);
 
-    SellerMeResult getMyInfo(UUID userId);
+    SellerMeView getMyInfo(UUID userId);
 
     SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command);
 }

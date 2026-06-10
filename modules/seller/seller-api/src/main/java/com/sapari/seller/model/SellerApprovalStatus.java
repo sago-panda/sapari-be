@@ -1,4 +1,4 @@
-package com.sapari.seller.domain.model;
+package com.sapari.seller.model;
 
 public enum SellerApprovalStatus {
     PENDING,

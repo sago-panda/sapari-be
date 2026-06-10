@@ -16,6 +16,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mapstruct.factory.Mappers;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
@@ -25,6 +26,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.seller.application.mapper.SellerViewMapper;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
@@ -34,15 +36,15 @@ import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
-import com.sapari.seller.domain.model.SellerApprovalStatus;
-import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.model.SellerApprovalStatus;
+import com.sapari.seller.model.SellerBusinessType;
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
-import com.sapari.seller.result.SellerLoginResult;
-import com.sapari.seller.result.SellerNicknameUpdateResult;
-import com.sapari.seller.result.SellerSignupResult;
-import com.sapari.seller.result.SellerTokenReissueResult;
+import com.sapari.seller.view.SellerLoginResult;
+import com.sapari.seller.view.SellerNicknameUpdateResult;
+import com.sapari.seller.view.SellerSignupResult;
+import com.sapari.seller.view.SellerTokenReissueResult;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
@@ -94,7 +96,8 @@ class SellerAuthServiceTest {
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
-            timeProvider()
+            timeProvider(),
+            Mappers.getMapper(SellerViewMapper.class)
     );
 
     @Test
@@ -102,7 +105,7 @@ class SellerAuthServiceTest {
     void signupSavesSellerUserAndLocalCredential() {
         // given
         UUID userId = UUID.randomUUID();
-        SellerSignupCommand command = signupCommand(" 사파리 상점 ", "INDIVIDUAL");
+        SellerSignupCommand command = signupCommand(" 사파리 상점 ", SellerBusinessType.INDIVIDUAL);
         when(sellerBusinessRegistrationVerifier.verify(
                 "1234567890",
                 "판매자",
@@ -125,7 +128,7 @@ class SellerAuthServiceTest {
     void signupSavesCorporateBusinessType() {
         // given
         UUID userId = UUID.randomUUID();
-        SellerSignupCommand command = signupCommand("CORPORATE");
+        SellerSignupCommand command = signupCommand(SellerBusinessType.CORPORATE);
         when(sellerBusinessRegistrationVerifier.verify(
                 "1234567890",
                 "판매자",
@@ -175,17 +178,6 @@ class SellerAuthServiceTest {
         assertThatThrownBy(() -> sellerAuthService.signup(signupCommand()))
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_STORE_NAME)
-                );
-        verifyNoInteractions(sellerSignupProcessor);
-    }
-
-    @Test
-    @DisplayName("사업자 유형이 올바르지 않으면 회원가입에 실패한다")
-    void signupThrowsExceptionWhenBusinessTypeIsInvalid() {
-        // when, then
-        assertThatThrownBy(() -> sellerAuthService.signup(signupCommand("개인")))
-                .isInstanceOfSatisfying(SellerException.class, exception ->
-                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_BUSINESS_TYPE)
                 );
         verifyNoInteractions(sellerSignupProcessor);
     }
@@ -361,7 +353,8 @@ class SellerAuthServiceTest {
                 refreshTokenStore,
                 sessionRevocationStore,
                 accessTokenBlacklist,
-                timeProvider()
+                timeProvider(),
+                Mappers.getMapper(SellerViewMapper.class)
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,
@@ -497,8 +490,8 @@ class SellerAuthServiceTest {
         assertThat(result.status()).isEqualTo(UserStatus.ACTIVE.name());
         assertThat(result.storeName()).isEqualTo("사파리 상점");
         assertThat(result.businessNumber()).isEqualTo("1234567890");
-        assertThat(result.businessType()).isEqualTo(SellerBusinessType.INDIVIDUAL.name());
-        assertThat(result.approvalStatus()).isEqualTo(SellerApprovalStatus.PENDING.name());
+        assertThat(result.businessType()).isEqualTo(SellerBusinessType.INDIVIDUAL);
+        assertThat(result.approvalStatus()).isEqualTo(SellerApprovalStatus.PENDING);
         assertThat(result.rejectionReason()).isNull();
         assertThat(result.approvedAt()).isNull();
     }
@@ -550,8 +543,8 @@ class SellerAuthServiceTest {
         assertThat(result.seller().role()).isEqualTo(UserRole.SELLER.name());
         assertThat(result.seller().storeName()).isEqualTo("사파리 상점");
         assertThat(result.seller().businessNumber()).isEqualTo("1234567890");
-        assertThat(result.seller().businessType()).isEqualTo(SellerBusinessType.INDIVIDUAL.name());
-        assertThat(result.seller().approvalStatus()).isEqualTo(SellerApprovalStatus.PENDING.name());
+        assertThat(result.seller().businessType()).isEqualTo(SellerBusinessType.INDIVIDUAL);
+        assertThat(result.seller().approvalStatus()).isEqualTo(SellerApprovalStatus.PENDING);
         assertThat(accessClaims.tokenType()).isEqualTo(JwtTokenType.ACCESS);
         assertThat(accessClaims.sessionId()).isEqualTo(oldAccessClaims.sessionId());
         assertThat(accessClaims.tokenId()).isNotEqualTo(oldAccessClaims.tokenId());
@@ -696,14 +689,14 @@ class SellerAuthServiceTest {
     }
 
     private SellerSignupCommand signupCommand() {
-        return signupCommand("INDIVIDUAL");
+        return signupCommand(SellerBusinessType.INDIVIDUAL);
     }
 
-    private SellerSignupCommand signupCommand(String businessType) {
+    private SellerSignupCommand signupCommand(SellerBusinessType businessType) {
         return signupCommand("사파리 상점", businessType);
     }
 
-    private SellerSignupCommand signupCommand(String storeName, String businessType) {
+    private SellerSignupCommand signupCommand(String storeName, SellerBusinessType businessType) {
         return new SellerSignupCommand(
                 EMAIL,
                 PASSWORD,

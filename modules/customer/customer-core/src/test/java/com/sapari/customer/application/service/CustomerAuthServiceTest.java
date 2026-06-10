@@ -16,6 +16,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 
@@ -35,15 +36,16 @@ import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
 import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
-import com.sapari.customer.result.CustomerNicknameUpdateResult;
-import com.sapari.customer.result.CustomerTokenReissueResult;
-import com.sapari.customer.result.SocialSignupInfoResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.customer.result.SocialSignupResult;
+import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
+import com.sapari.customer.view.SocialSignupInfoView;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
+import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -86,7 +88,8 @@ class CustomerAuthServiceTest {
             sessionRevocationStore,
             accessTokenBlacklist,
             timeProvider(),
-            objectMapper
+            objectMapper,
+            Mappers.getMapper(CustomerViewMapper.class)
     );
 
     @Test
@@ -150,7 +153,7 @@ class CustomerAuthServiceTest {
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
 
         // when
-        SocialSignupInfoResult result = customerAuthService.getSocialSignupInfo(SIGNUP_SID);
+        SocialSignupInfoView result = customerAuthService.getSocialSignupInfo(SIGNUP_SID);
 
         // then
         assertThat(result.phoneNumber()).isEqualTo("01012345678");
@@ -259,7 +262,8 @@ class CustomerAuthServiceTest {
                 sessionRevocationStore,
                 accessTokenBlacklist,
                 timeProvider(),
-                objectMapper
+                objectMapper,
+                Mappers.getMapper(CustomerViewMapper.class)
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,

@@ -20,6 +20,7 @@ import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.seller.application.mapper.SellerViewMapper;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 import com.sapari.seller.command.SellerLoginCommand;
@@ -29,16 +30,16 @@ import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.domain.model.LocalCredential;
-import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.model.SellerBusinessType;
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.seller.port.SellerAuthUseCase;
-import com.sapari.seller.result.SellerLoginResult;
-import com.sapari.seller.result.SellerMeResult;
-import com.sapari.seller.result.SellerNicknameUpdateResult;
-import com.sapari.seller.result.SellerSignupResult;
-import com.sapari.seller.result.SellerTokenReissueResult;
+import com.sapari.seller.view.SellerLoginResult;
+import com.sapari.seller.view.SellerMeView;
+import com.sapari.seller.view.SellerNicknameUpdateResult;
+import com.sapari.seller.view.SellerSignupResult;
+import com.sapari.seller.view.SellerTokenReissueResult;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
@@ -60,10 +61,11 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final SessionRevocationStore sessionRevocationStore;
     private final AccessTokenBlacklist accessTokenBlacklist;
     private final TimeProvider timeProvider;
+    private final SellerViewMapper sellerViewMapper;
 
     @Override
     public SellerSignupResult signup(SellerSignupCommand command) {
-        SellerBusinessType businessType = toBusinessType(command.businessType());
+        SellerBusinessType businessType = command.businessType();
         String normalizedStoreName = normalizeStoreName(command.storeName());
 
         validateBusinessRegistration(command);
@@ -151,11 +153,11 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     @Override
     @Transactional(readOnly = true)
-    public SellerMeResult getMyInfo(UUID userId) {
+    public SellerMeView getMyInfo(UUID userId) {
         UserView seller = findSeller(userId);
         SellerProfile sellerProfile = findSellerProfile(userId);
 
-        return toSellerMeResult(seller, sellerProfile);
+        return sellerViewMapper.toMeView(seller, sellerProfile);
     }
 
     @Override
@@ -178,7 +180,7 @@ public class SellerAuthService implements SellerAuthUseCase {
             blacklistAccessToken(accessClaims);
             String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller, accessClaims.sessionId()));
 
-            return new SellerNicknameUpdateResult(toSellerMeResult(savedSeller, sellerProfile), accessToken);
+            return sellerViewMapper.toNicknameUpdateResult(savedSeller, sellerProfile, accessToken);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
@@ -222,18 +224,6 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
 
         throw new SellerException(SellerErrorCode.INVALID_BUSINESS_REGISTRATION);
-    }
-
-    private SellerBusinessType toBusinessType(String businessType) {
-        if (businessType == null || businessType.isBlank()) {
-            throw new SellerException(SellerErrorCode.INVALID_BUSINESS_TYPE);
-        }
-
-        try {
-            return SellerBusinessType.valueOf(businessType);
-        } catch (IllegalArgumentException e) {
-            throw new SellerException(SellerErrorCode.INVALID_BUSINESS_TYPE, e);
-        }
     }
 
     private UserView findSellerByEmail(String email) {
@@ -403,29 +393,6 @@ public class SellerAuthService implements SellerAuthUseCase {
 
     private JwtSubject toJwtSubject(UserView seller, UUID sessionId) {
         return new JwtSubject(seller.userId(), sessionId, seller.role().name(), seller.nickname(), seller.email());
-    }
-
-    private SellerMeResult toSellerMeResult(UserView seller, SellerProfile sellerProfile) {
-        return new SellerMeResult(
-                seller.userId(),
-                seller.nickname(),
-                seller.name(),
-                seller.birthDate(),
-                seller.phoneNumber(),
-                seller.profileImageKey(),
-                seller.email(),
-                seller.role().name(),
-                seller.status().name(),
-                seller.grade().name(),
-                seller.pointBalance(),
-                seller.marketingAgreed(),
-                sellerProfile.storeName(),
-                sellerProfile.businessNumber(),
-                sellerProfile.businessType().name(),
-                sellerProfile.status().name(),
-                sellerProfile.rejectionReason(),
-                sellerProfile.approvedAt()
-        );
     }
 
     private record RotatedRefreshToken(

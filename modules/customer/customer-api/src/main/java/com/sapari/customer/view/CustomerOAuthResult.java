@@ -1,4 +1,4 @@
-package com.sapari.customer.result;
+package com.sapari.customer.view;
 
 public record CustomerOAuthResult(
         CustomerOAuthResultType type,

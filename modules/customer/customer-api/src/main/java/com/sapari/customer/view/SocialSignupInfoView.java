@@ -1,8 +1,8 @@
-package com.sapari.customer.result;
+package com.sapari.customer.view;
 
 import java.time.LocalDate;
 
-public record SocialSignupInfoResult(
+public record SocialSignupInfoView(
         String phoneNumber,
         String name,
         String email,

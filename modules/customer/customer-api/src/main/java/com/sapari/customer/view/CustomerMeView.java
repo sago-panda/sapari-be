@@ -1,9 +1,9 @@
-package com.sapari.customer.result;
+package com.sapari.customer.view;
 
 import java.time.LocalDate;
 import java.util.UUID;
 
-public record CustomerMeResult(
+public record CustomerMeView(
         UUID userId,
         String nickname,
         String name,

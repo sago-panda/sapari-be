@@ -7,6 +7,7 @@ import java.time.LocalDate;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mapstruct.factory.Mappers;
 
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.domain.model.User;
@@ -16,6 +17,8 @@ import com.sapari.user.infrastructure.persistence.entity.UserEntity;
 
 @DisplayName("User 영속성 매퍼 테스트")
 class UserMapperTest {
+
+    private final UserMapper mapper = Mappers.getMapper(UserMapper.class);
 
     @Test
     @DisplayName("UserEntity를 User 도메인 모델로 변환한다")
@@ -37,7 +40,7 @@ class UserMapperTest {
         );
 
         // when
-        User user = UserMapper.toDomain(entity);
+        User user = mapper.toDomain(entity);
 
         // then
         assertThat(user.role()).isEqualTo(UserRole.USER);
@@ -63,7 +66,7 @@ class UserMapperTest {
         );
 
         // when
-        UserEntity entity = UserMapper.toEntity(user);
+        UserEntity entity = mapper.toEntity(user);
 
         // then
         assertThat(entity.getRole()).isEqualTo(UserRole.SELLER);

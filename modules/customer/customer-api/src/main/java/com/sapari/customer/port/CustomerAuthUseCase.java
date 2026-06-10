@@ -5,18 +5,18 @@ import java.util.UUID;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.SocialSignupCommand;
-import com.sapari.customer.result.CustomerMeResult;
-import com.sapari.customer.result.CustomerNicknameUpdateResult;
-import com.sapari.customer.result.CustomerTokenReissueResult;
-import com.sapari.customer.result.SocialSignupInfoResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.customer.result.SocialSignupResult;
+import com.sapari.customer.view.CustomerMeView;
+import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
+import com.sapari.customer.view.SocialSignupInfoView;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.customer.view.SocialSignupResult;
 
 public interface CustomerAuthUseCase {
 
     SocialSignupResult completeSocialSignup(String signupSid, SocialSignupCommand command);
 
-    SocialSignupInfoResult getSocialSignupInfo(String signupSid);
+    SocialSignupInfoView getSocialSignupInfo(String signupSid);
 
     SocialLoginTokenResult exchangeTemporaryLoginCode(String temporaryLoginCode);
 
@@ -30,7 +30,7 @@ public interface CustomerAuthUseCase {
 
     boolean isNicknameDuplicated(String nickname);
 
-    CustomerMeResult getMyInfo(UUID userId);
+    CustomerMeView getMyInfo(UUID userId);
 
     CustomerNicknameUpdateResult updateNickname(CustomerNicknameUpdateCommand command);
 }

@@ -1,10 +1,13 @@
-package com.sapari.seller.result;
+package com.sapari.seller.view;
 
 import java.time.LocalDate;
 import java.time.Instant;
 import java.util.UUID;
 
-public record SellerMeResult(
+import com.sapari.seller.model.SellerApprovalStatus;
+import com.sapari.seller.model.SellerBusinessType;
+
+public record SellerMeView(
         UUID userId,
         String nickname,
         String name,
@@ -19,8 +22,8 @@ public record SellerMeResult(
         Boolean marketingAgreed,
         String storeName,
         String businessNumber,
-        String businessType,
-        String approvalStatus,
+        SellerBusinessType businessType,
+        SellerApprovalStatus approvalStatus,
         String rejectionReason,
         Instant approvedAt
 ) {

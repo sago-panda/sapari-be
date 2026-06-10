@@ -8,8 +8,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import com.sapari.seller.domain.model.SellerApprovalStatus;
-import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.model.SellerApprovalStatus;
+import com.sapari.seller.model.SellerBusinessType;
 
 @DisplayName("판매자 프로필 엔티티 테스트")
 class SellerProfileEntityTest {
