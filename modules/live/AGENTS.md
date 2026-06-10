@@ -53,6 +53,7 @@ A process crash still orphans the egress → needs a reconciliation batch, not b
 
 ## Persistence & Cache
 
+- **Schema is `live_schema`** (DDL: `db/migration/live/`, Flyway-owned).
 - **Entity is mutable, domain record is not.** `LiveRoomRepositoryImpl.save()` is an upsert by
   `id`: null → insert; non-null → load entity, `LiveRoomMapper.updateEntityFromDomain(...)`, save.
   Mutation lives in `LiveRoomEntity` (`updateXxx` / `applyXxx`), driven by `LiveRoomMapper`.

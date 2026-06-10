@@ -7,6 +7,7 @@
 - [패키지 구조](#패키지-구조)
 - [레이어 역할](#레이어-역할)
 - [모듈 의존 규칙](#모듈-의존-규칙)
+- [DB 스키마 관리 (Flyway)](#db-스키마-관리-flyway)
 - [브랜치 컨벤션](#브랜치-컨벤션)
 - [커밋 컨벤션](#커밋-컨벤션)
 - [MR 컨벤션](#mr-컨벤션)
@@ -18,93 +19,65 @@
 
 ```
 sapari-be/
-├── settings.gradle.kts
-├── build.gradle.kts
-├── buildSrc/
+├── settings.gradle                # Groovy DSL. apps/common/storage/modules 하위 디렉토리 자동 include
+├── build.gradle
 │
 ├── apps/                          # 실행 가능한 애플리케이션 (entry points)
 │   ├── api-app/                   # 사용자용 REST API
-│   ├── admin-app/                 # 어드민/판매자
+│   ├── admin-app/                 # 어드민
 │   ├── streaming-app/             # 라이브 송출/시청 (WebSocket, SFU 연동)
 │   └── batch-app/                 # 정산/통계 배치
 │
-├── commons/                       # 공용 기술 컴포넌트
-│   ├── core/                      # 공용 예외, 이벤트 인프라, 분산락, 유틸
-│   └── web/                       # 시큐리티, 응답 포맷, 웹 설정
+├── common/                        # 공용 기술 컴포넌트 (상세: docs/package-structure.md §6)
+│   ├── core/                      # 순수 계약 — BusinessException, ErrorCode
+│   ├── global/                    # 횡단 유틸 — TimeProvider 등
+│   ├── page/                      # 페이지네이션 토대 — CursorPage/OffsetPage, CursorCodec
+│   ├── web/                       # 웹 공통 — 예외 핸들러, 필터, 웹 설정
+│   ├── security-jwt/              # JWT 발급·검증 + 토큰 스토어 포트
+│   └── auth/                      # 인증 인프라 구현 — 토큰 스토어 Redis 구현
 │
 ├── storage/                       # 영속성 어댑터
-│   ├── db-core/                   # JPA/QueryDSL/Flyway 공통
+│   ├── db-core/                   # JPA/QueryDSL 공통 (BaseEntity, 감사 설정)
 │   ├── redis-core/
-│   ├── search-core/               # OpenSearch/ES
-│   └── object-storage/            # S3
+│   ├── search-core/               # OpenSearch/ES (예정)
+│   └── object-storage/            # S3 (예정)
 │
-└── modules/                       # 도메인 모듈
-    ├── user/                      # 회원 + 판매자
-    │   ├── user-api/              # 외부 공개 계약 (다른 모듈이 의존)
-    │   │   ├── command/           # 외부 입력 DTO
-    │   │   ├── event/             # 도메인 이벤트
-    │   │   ├── port/              # in port (Facade)
-    │   │   └── view/              # 외부 응답 DTO
-    │   └── user-core/             # 내부 구현 (패키지로 레이어 분리)
-    │       ├── domain/model/
-    │       ├── domain/repository/
-    │       ├── domain/service/
-    │       ├── application/service/
-    │       ├── application/port/
-    │       ├── infrastructure/persistence/
-    │       └── infrastructure/config/
-    │
-    ├── product/                   # 상품 + 카탈로그 + 리뷰
-    │   ├── product-api/
-    │   └── product-core/
-    │
-    ├── live/                      # 라이브 방송 + 채팅
-    │   ├── live-api/
-    │   └── live-core/
-    │       ├── domain/model/
-    │       ├── domain/repository/
-    │       ├── domain/service/
-    │       ├── application/service/
-    │       ├── application/port/
-    │       ├── application/handler/
-    │       ├── infrastructure/persistence/
-    │       ├── infrastructure/media/      # LiveKit SFU 어댑터
-    │       ├── infrastructure/messaging/  # Redis Pub/Sub, STOMP
-    │       └── infrastructure/config/
-    │
-    ├── order/                     # 장바구니 + 주문 + 결제 + 배송
-    │   ├── order-api/
-    │   └── order-core/
-    │       └── infrastructure/client/     # PG사, 배송 API
-    │
-    ├── promotion/                 # 쿠폰 + 포인트
-    │   ├── promotion-api/
-    │   └── promotion-core/
-    │
-    └── notification/              # 알림 (FCM, SMS)
-        ├── notification-api/
-        └── notification-core/
+├── db/migration/                  # Flyway 마이그레이션 SQL (도메인 스키마별 — 아래 섹션 참고)
+├── infra/migration/               # 마이그레이션 러너/이미지
+│
+└── modules/                       # 도메인 모듈 — 각 X-api/X-core 쌍 (상세: docs/package-structure.md)
+    ├── user/                      # 공통 신원·계정 (customer·seller가 user-api로 사용) ✅
+    ├── customer/                  # 구매자 — 소셜 로그인 플로우 ✅
+    ├── seller/                    # 판매자 — 이메일+비밀번호 플로우 ✅
+    ├── live/                      # 라이브 방송 + 채팅 ✅ (레퍼런스 구현)
+    ├── product/                   # 상품 + 카탈로그 + 리뷰 (스켈레톤)
+    ├── order/                     # 장바구니 + 주문 + 결제 + 배송 (스켈레톤)
+    ├── promotion/                 # 쿠폰 + 포인트 (스켈레톤)
+    └── notification/              # 알림 (스켈레톤)
 ```
+
+> 모듈 내부 패키지 배치(`X-api`의 command/port/view, `X-core`의 domain/application/infrastructure)는
+> **[docs/package-structure.md](docs/package-structure.md)** 가 기준 문서입니다 (ArchUnit으로 빌드에서 강제).
 
 ## 레이어 역할
 
 | 레이어 | 역할 |
 |---|---|
 | `apps/*` | 실행 가능한 애플리케이션. Controller와 진입 설정만 포함 |
-| `commons/*` | 도메인과 무관한 공용 기술 코드 |
+| `common/*` | 도메인과 무관한 공용 기술 코드 |
 | `storage/*` | DB/Redis/검색/스토리지 공통 설정 |
-| `modules/*/​*-api` | 외부 모듈에 공개되는 계약 (DTO, 이벤트, Facade 인터페이스) |
+| `modules/*/​*-api` | 외부 모듈에 공개되는 계약 (DTO, 이벤트, UseCase 포트 인터페이스) |
 | `modules/*/​*-core` | 도메인 + 애플리케이션 + 인프라 구현 (외부 비공개) |
 
 ## 모듈 의존 규칙
 
 ```
-apps/*           → modules/*/​*-api,  modules/*/​*-core,  commons/*
+apps/*           → modules/*/​*-api,  modules/*/​*-core,  common/*,  storage/*
 
-modules/X/X-core → modules/X/X-api,  commons/*,  storage/*
+modules/X/X-core → modules/X/X-api,  common/*,  storage/*
                  → modules/Y/Y-api  (다른 도메인은 api만 의존)
 
-modules/X/X-api  → (의존 없음, DTO/인터페이스만)
+modules/X/X-api  → (내부 모듈 의존 없음 — DTO/인터페이스만. 공유 토대는 common/page만 허용)
 ```
 
 핵심 원칙:
@@ -112,6 +85,56 @@ modules/X/X-api  → (의존 없음, DTO/인터페이스만)
 - 도메인 간 직접 호출은 `*-api` (port 인터페이스) 통해서만
 - 트랜잭션을 가로지르는 협력은 도메인 이벤트로 처리
 - `*-core`는 외부 모듈이 절대 의존하지 않음 (Gradle `implementation`)
+
+---
+
+## DB 스키마 관리 (Flyway)
+
+스키마는 더 이상 `ddl-auto: update`가 만들지 않습니다. **Flyway 마이그레이션 SQL이 스키마의
+source of truth**이고, 앱은 `ddl-auto: validate`로 엔티티 ↔ DB 일치 **검증만** 합니다.
+
+```
+db/migration/<도메인>/V*.sql     ← 스키마 정의 (도메인 = PostgreSQL 스키마, 모듈과 1:1)
+infra/migration/migrate.sh       ← 스키마별 독립 Flyway 실행 (각자 history·버전)
+infra/migration/Dockerfile       ← 마이그레이션 이미지 (운영에선 배포 Job이 실행)
+```
+
+### ⚠️ 현재 상태 — 엔티티에 스키마 미적용 (과도기)
+
+마이그레이션 SQL은 도메인별 스키마(`user_schema.users`, `live_schema.live_sessions` …)에
+테이블을 만들지만, **현재 엔티티에는 아직 `@Table(schema=...)`가 붙어 있지 않습니다.**
+엔티티는 기존처럼 `public` 스키마의 테이블(`users`, `live_rooms` …)을 바라봅니다.
+
+- **지금 개발할 때**: 기존 방식 그대로 부팅·개발하면 됩니다. 로컬 DB의 기존 public 테이블을
+  사용하며, 마이그레이션을 돌릴 필요 없습니다.
+- **별도 브랜치에서 진행 중**: 엔티티 `@Table(schema=...)` 적용 + live 도메인 DDL 정렬
+  (`live_rooms` → `live_sessions`, 미디어/상품 모델 변경).
+- **그 브랜치가 머지되는 시점(컷오버)**: 로컬 DB의 기존 public 테이블을 drop하고
+  마이그레이션을 1회 실행해야 합니다. 머지 시 공지 예정 —
+  그 전까지는 아무것도 바꿀 필요 없습니다.
+
+### 마이그레이션 실행 (스키마 작업자/컷오버 시에만)
+
+```bash
+docker build -f infra/migration/Dockerfile -t sapari-migration:dev .
+docker run --rm \
+  -e DB_URL="jdbc:postgresql://host.docker.internal:5432/sapari_db" \
+  -e DB_USER=postgres -e DB_PASSWORD=<비밀번호> \
+  sapari-migration:dev
+```
+반드시 **primary**에만 실행합니다(replica는 WAL로 자동 전파). 앱이 마이그레이션을 실행하는
+일은 없습니다(`spring.flyway` 설정 금지).
+
+### 마이그레이션 작성 규칙
+
+| 규칙 | 내용 |
+|---|---|
+| 파일명 | 최초: `V1__init_<스키마>.sql` / 이후: `V<yyyyMMddHHmm>__<동사>_<대상>.sql` (예: `V202607021430__add_social_accounts.sql`) |
+| 버전 충돌 | 스키마별 독립 시퀀스 + 타임스탬프라 브랜치 간 충돌 없음 (`outOfOrder` 적용됨) |
+| dev 단계 | 운영 배포 전까지 **V1 직접 수정 + DB drop·재마이그레이션 허용** (운영 후엔 증분 V만) |
+| 하위호환 | 운영 후엔 한 릴리스에 `ADD COLUMN(nullable/default)`·`CREATE TABLE`·`CREATE INDEX`만. **DROP/RENAME/NOT NULL은 expand → migrate → contract로 릴리스 분리** (구버전 파드 공존 보호) |
+| 새 도메인 추가 | `db/migration/<도메인>/V1__init_<도메인>.sql` 생성 + `infra/migration/migrate.sh`의 `SCHEMAS`에 한 줄 추가 + 엔티티에 `@Table(schema="<도메인>_schema")` |
+| FK | 도메인(스키마) 간 물리 FK 금지 — uuid id 참조만 (모듈 의존 규칙과 동일 원칙) |
 
 ---
 
@@ -178,6 +201,8 @@ dev   ← 통합 브랜치 (개발 서버 자동 배포)
 | Scope | 대상 |
 |---|---|
 | `user` | `modules/user/**` |
+| `customer` | `modules/customer/**` |
+| `seller` | `modules/seller/**` |
 | `product` | `modules/product/**` |
 | `live` | `modules/live/**` |
 | `order` | `modules/order/**` |
@@ -307,7 +332,7 @@ GitLab MR 설정에서 "Squash commits when merging"을 활성화 권장.
 MR:      [SPR-XXX] <type>(<scope>): <한글 요약>
 
 type:    feat fix refactor perf test docs chore style ci
-scope:   user product live order promotion notification
+scope:   user customer seller product live order promotion notification
          common storage app infra
 
 규칙:

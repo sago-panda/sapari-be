@@ -29,6 +29,12 @@ fi
 
 FLYWAY_BIN="${FLYWAY_BIN:-flyway}"
 
+# 자격증명은 커맨드라인 인자가 아니라 FLYWAY_* env로 전달한다.
+# (-password=... 인자는 ps / /proc/<pid>/cmdline 에 평문 노출됨 — 보안 리뷰 지적)
+export FLYWAY_URL="$DB_URL"
+export FLYWAY_USER="$DB_USER"
+export FLYWAY_PASSWORD="$DB_PASSWORD"
+
 # 폴더명:스키마명 (스키마 추가 시 여기에 한 줄 + db/migration/<폴더> 생성)
 SCHEMAS="
 user:user_schema
@@ -49,9 +55,6 @@ for entry in $SCHEMAS; do
     echo ""
     echo "=== migrate [$folder] -> $schema ==="
     "$FLYWAY_BIN" \
-        -url="$DB_URL" \
-        -user="$DB_USER" \
-        -password="$DB_PASSWORD" \
         -schemas="$schema" \
         -defaultSchema="$schema" \
         -table="flyway_schema_history" \

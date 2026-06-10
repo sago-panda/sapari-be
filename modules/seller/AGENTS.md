@@ -12,6 +12,8 @@ local password credential. Shared auth-area map + identity invariants: see `modu
 
 - **`LocalCredential`** (JPA, seller-core): `passwordHash` (Spring `PasswordEncoder`),
   `failedLoginCount`, `lockedAt`, `lastChangedAt`.
+  Maps to `seller_schema.local_credentials` (DDL: `db/migration/seller/`; PK column `users_id`,
+  no `created_at`/`updated_at` — doesn't extend `BaseEntity`).
 - user-core owns the `User`; seller owns **only** the local credential row.
 
 ## Conventions
