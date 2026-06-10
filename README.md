@@ -101,14 +101,15 @@ infra/migration/Dockerfile       ← 마이그레이션 이미지 (운영에선 
 
 ### ⚠️ 현재 상태 — 엔티티에 스키마 미적용 (과도기)
 
-마이그레이션 SQL은 도메인별 스키마(`user_schema.users`, `live_schema.live_sessions` …)에
+마이그레이션 SQL은 도메인별 스키마(`user_schema.users`, `live_schema.live_rooms` …)에
 테이블을 만들지만, **현재 엔티티에는 아직 `@Table(schema=...)`가 붙어 있지 않습니다.**
 엔티티는 기존처럼 `public` 스키마의 테이블(`users`, `live_rooms` …)을 바라봅니다.
 
 - **지금 개발할 때**: 기존 방식 그대로 부팅·개발하면 됩니다. 로컬 DB의 기존 public 테이블을
   사용하며, 마이그레이션을 돌릴 필요 없습니다.
-- **별도 브랜치에서 진행 중**: 엔티티 `@Table(schema=...)` 적용 + live 도메인 DDL 정렬
-  (`live_rooms` → `live_sessions`, 미디어/상품 모델 변경).
+- **이 브랜치에서 완료**: live 마이그레이션 테이블/참조 컬럼명을 코드(`live_rooms`/`live_room_id`)에 맞춰 정렬.
+- **별도 브랜치에서 진행 중**: 엔티티 `@Table(schema=...)` 적용 + live 컬럼 필드 대조
+  (미디어/상품 모델 변경).
 - **그 브랜치가 머지되는 시점(컷오버)**: 로컬 DB의 기존 public 테이블을 drop하고
   마이그레이션을 1회 실행해야 합니다. 머지 시 공지 예정 —
   그 전까지는 아무것도 바꿀 필요 없습니다.
