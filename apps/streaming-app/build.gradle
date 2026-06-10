@@ -1,7 +1,9 @@
 dependencies {
-    implementation project(':common:web')
+    implementation project(':common:security-jwt')
     implementation 'io.livekit:livekit-server:0.12.1'
-    implementation 'org.springframework.boot:spring-boot-starter-websocket'
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
@@ -10,6 +12,7 @@ bootJar {
     enabled = true
 }
 
+// architecture-test가 streamingapp 클래스를 분석하려면 plain jar 필요 (bootJar는 BOOT-INF 구조라 분석 불가)
 jar{
-    enabled = false
+    enabled = true
 }

@@ -203,6 +203,21 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    // streaming-app(WebFlux)은 reactive 전용 — 블로킹 StringRedisTemplate/RedisTemplate을 주입·호출하면
+    // Netty 이벤트루프가 블로킹된다. 블로킹 빈이 live-core 경유로 전이 존재하는 것은 허용하되,
+    // streamingapp 패키지 코드가 그것을 '쓰는' 것만 금지한다.
+    // (ReactiveStringRedisTemplate 등 reactive 타입은 같은 패키지라 패키지 단위가 아닌 타입명으로 차단)
+    @Test
+    void streaming_app_must_not_use_blocking_redis_template() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.streamingapp..")
+                .should().dependOnClassesThat().haveFullyQualifiedName("org.springframework.data.redis.core.StringRedisTemplate")
+                .orShould().dependOnClassesThat().haveFullyQualifiedName("org.springframework.data.redis.core.RedisTemplate")
+                .as("streaming-app은 블로킹 Redis 템플릿 대신 ReactiveStringRedisTemplate만 사용해야 한다");
+
+        rule.check(SAPARI);
+    }
+
     private static final Set<String> NON_DOMAIN_ROOTS = Set.of("common", "global", "storage", "architecture");
 
     /** 대상이 도메인 모듈(com.sapari.<도메인>) 클래스이면 위반으로 기록하는 조건. */

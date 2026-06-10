@@ -16,6 +16,9 @@ dependencies {
                 )
             }
             .each { add('testImplementation', it) }
+
+    // streaming-app은 블로킹 Redis 호출 금지 규칙의 검사 대상이라 명시 포함 (apps는 자동 포함에서 제외돼 있음)
+    testImplementation project(':apps:streaming-app')
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
