@@ -24,7 +24,7 @@ import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveProductRepository;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.StartLiveUseCase;
-import com.sapari.live.view.StartLiveResult;
+import com.sapari.live.view.StartLiveView;
 
 @Slf4j
 @Service
@@ -38,7 +38,7 @@ public class StartLiveService implements StartLiveUseCase {
 
     @Override
     @Transactional
-    public StartLiveResult start(StartLiveCommand command) {
+    public StartLiveView start(StartLiveCommand command) {
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 

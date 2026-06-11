@@ -1,6 +1,6 @@
 package com.sapari.live.view;
 
-public record StartLiveResult(
+public record StartLiveView(
         String roomId,
         String sfuToken,
         String hlsUrl,

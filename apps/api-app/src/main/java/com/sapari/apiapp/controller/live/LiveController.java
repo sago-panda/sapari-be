@@ -29,9 +29,9 @@ import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.port.GetLiveUseCase;
 import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
-import com.sapari.live.view.EnterLiveResult;
-import com.sapari.live.view.GetLiveResult;
-import com.sapari.live.view.StartLiveResult;
+import com.sapari.live.view.EnterLiveView;
+import com.sapari.live.view.GetLiveView;
+import com.sapari.live.view.StartLiveView;
 
 @RestController
 @RequiredArgsConstructor
@@ -52,25 +52,25 @@ public class LiveController {
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/start")
-    public ResponseEntity<StartLiveResult> startBroadcast(
+    public ResponseEntity<StartLiveView> startBroadcast(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID roomId,
             @RequestBody @Valid StartBroadcastRequest request
     ) {
-        StartLiveResult result = startLiveUseCase.start(
+        StartLiveView result = startLiveUseCase.start(
                 new StartLiveCommand(roomId, sellerId, request.toProductEntries())
         );
         return ResponseEntity.ok(result);
     }
 
     @GetMapping("/rooms/{roomId}")
-    public ResponseEntity<EnterLiveResult> enterRoom(@PathVariable UUID roomId) {
-        EnterLiveResult result = enterLiveUseCase.enter(new EnterLiveCommand(roomId));
+    public ResponseEntity<EnterLiveView> enterRoom(@PathVariable UUID roomId) {
+        EnterLiveView result = enterLiveUseCase.enter(new EnterLiveCommand(roomId));
         return ResponseEntity.ok(result);
     }
 
     @GetMapping("/rooms")
-    public ResponseEntity<GetLiveResult> getRooms() {
+    public ResponseEntity<GetLiveView> getRooms() {
         return ResponseEntity.ok(getLiveUseCase.getRooms(GetLiveCommand.defaultMain()));
     }
 
