@@ -27,8 +27,8 @@ import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerOAuthCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
-import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
-import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
+import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
+import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.result.CustomerOAuthResult;
 import com.sapari.customer.result.CustomerOAuthResultType;
 import com.sapari.customer.result.SocialLoginTokenResult;
@@ -47,10 +47,10 @@ class CustomerOAuthServiceTest {
     private static final String SECRET = "test-secret-key-for-customer-jwt-32bytes";
 
     private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
-    private final SocialSignupRedisRepository socialSignupRedisRepository =
-            mock(SocialSignupRedisRepository.class);
-    private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository =
-            mock(SocialLoginCodeRedisRepository.class);
+    private final SocialSignupRepository socialSignupRepository =
+            mock(SocialSignupRepository.class);
+    private final SocialLoginCodeRepository socialLoginCodeRepository =
+            mock(SocialLoginCodeRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("customer-oauth-test", SECRET, 3600L, 1209600L),
             timeProvider()
@@ -60,8 +60,8 @@ class CustomerOAuthServiceTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final CustomerOAuthService customerOAuthService = new CustomerOAuthService(
             userAccountUseCase,
-            socialSignupRedisRepository,
-            socialLoginCodeRedisRepository,
+            socialSignupRepository,
+            socialLoginCodeRepository,
             jwtTokenProvider,
             refreshTokenStore,
             timeProvider(),
@@ -85,7 +85,7 @@ class CustomerOAuthServiceTest {
         assertThat(result.signupSid()).isNull();
         ArgumentCaptor<String> codeCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
-        verify(socialLoginCodeRedisRepository).save(codeCaptor.capture(), valueCaptor.capture());
+        verify(socialLoginCodeRepository).save(codeCaptor.capture(), valueCaptor.capture());
         assertThat(codeCaptor.getValue()).isEqualTo(result.loginCode());
 
         SocialLoginTokenResult tokenResult =
@@ -108,7 +108,7 @@ class CustomerOAuthServiceTest {
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
         );
-        verifyNoInteractions(socialSignupRedisRepository);
+        verifyNoInteractions(socialSignupRepository);
     }
 
     @Test
@@ -128,7 +128,7 @@ class CustomerOAuthServiceTest {
 
         ArgumentCaptor<String> sidCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
-        verify(socialSignupRedisRepository).save(sidCaptor.capture(), valueCaptor.capture());
+        verify(socialSignupRepository).save(sidCaptor.capture(), valueCaptor.capture());
         assertThat(sidCaptor.getValue()).isEqualTo(result.signupSid());
 
         SocialSignupInfo signupInfo =
@@ -142,7 +142,7 @@ class CustomerOAuthServiceTest {
         assertThat(signupInfo.profileImageUrl()).isEqualTo("https://image.example/naver.png");
         assertThat(signupInfo.gender()).isEqualTo(UserGender.MALE);
         assertThat(signupInfo.birthDate()).isEqualTo(LocalDate.of(2000, 1, 1));
-        verifyNoInteractions(refreshTokenStore, socialLoginCodeRedisRepository);
+        verifyNoInteractions(refreshTokenStore, socialLoginCodeRepository);
     }
 
     @Test

@@ -34,8 +34,8 @@ import com.sapari.user.view.UserView;
 public class CustomerOAuthService implements CustomerOAuthUseCase {
 
     private final UserAccountUseCase userAccountUseCase;
-    private final SocialSignupRepository socialSignupRedisRepository;
-    private final SocialLoginCodeRepository socialLoginCodeRedisRepository;
+    private final SocialSignupRepository socialSignupRepository;
+    private final SocialLoginCodeRepository socialLoginCodeRepository;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
     private final TimeProvider timeProvider;
@@ -74,7 +74,7 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
                 refreshToken
         ));
 
-        socialLoginCodeRedisRepository.save(loginCode, socialLoginTokenInfoJson);
+        socialLoginCodeRepository.save(loginCode, socialLoginTokenInfoJson);
 
         return CustomerOAuthResult.loginSuccess(loginCode);
     }
@@ -86,7 +86,7 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
         String signupSid = UUID.randomUUID().toString();
         String socialSignupInfoJson = toJson(SocialSignupInfo.from(command));
 
-        socialSignupRedisRepository.save(signupSid, socialSignupInfoJson);
+        socialSignupRepository.save(signupSid, socialSignupInfoJson);
 
         return CustomerOAuthResult.signupRequired(signupSid);
     }
