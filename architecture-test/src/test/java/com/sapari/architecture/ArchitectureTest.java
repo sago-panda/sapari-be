@@ -203,6 +203,19 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    /**
+     * 한 도메인의 -core(application)은 infrastructure를 직접 의존하면 안된다 (포트 경유)
+     */
+    @Test
+    void application_must_not_depend_on_infrastructure(){
+        ArchRule rule = noClasses()
+                .that().resideInAnyPackage(
+                        "com.sapari.*.application.."
+                ).should().dependOnClassesThat().resideInAPackage("..infrastructure..");
+
+        rule.check(SAPARI);
+    }
+
     private static final Set<String> NON_DOMAIN_ROOTS = Set.of("common", "global", "storage", "architecture");
 
     /** 대상이 도메인 모듈(com.sapari.<도메인>) 클래스이면 위반으로 기록하는 조건. */
