@@ -57,7 +57,7 @@ A process crash still orphans the egress → needs a reconciliation batch, not b
 - **Entity is mutable, domain record is not.** `LiveRoomRepositoryImpl.save()` is an upsert by
   `id`: null → insert; non-null → load entity, `LiveRoomMapper.updateEntityFromDomain(...)`, save.
   Mutation lives in `LiveRoomEntity` (`updateXxx` / `applyXxx`), driven by `LiveRoomMapper`.
-- **Conversion is in `LiveRoomMapper` (static)** — sealed `LiveStatus` ↔ `LiveRoomStatus` enum.
+- **Conversion is in `LiveRoomMapper`** (MapStruct `@Mapper`, `componentModel="spring"` — injected, not static). Flat fields map automatically; the sealed `LiveStatus` ↔ `LiveRoomStatus` enum, variant-specific fields, and entity mutators are handled by `default` / `@AfterMapping` methods.
 - **Ranking list reads cache only.** `GetLiveService` → `findTopByViewers(limit)` over Redis
   (`LiveRoomCache`), no DB hit; empty list when nothing is live. Keys in `LiveRedisKeys`
   (`live:room:{id}`, `live:ranking`) — package-private, keep them there.
