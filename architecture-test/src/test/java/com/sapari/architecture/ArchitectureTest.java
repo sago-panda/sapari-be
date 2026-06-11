@@ -238,7 +238,7 @@ class ArchitectureTest {
     @Test
     void time_must_come_from_time_provider() {
         ArchRule rule = classes()
-                .that().resideInAnyPackage("com.sapari.*.application..", "com.sapari.*.domain..")
+                .that().resideInAnyPackage("com.sapari..application..", "com.sapari..domain..")
                 .should(notReadCurrentTimeDirectly());
 
         rule.check(SAPARI);
