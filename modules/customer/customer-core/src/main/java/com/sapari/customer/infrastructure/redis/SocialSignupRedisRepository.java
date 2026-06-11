@@ -8,9 +8,11 @@ import java.util.Optional;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.sapari.customer.domain.repository.SocialSignupRepository;
+
 @Repository
 @RequiredArgsConstructor
-public class SocialSignupRedisRepository {
+public class SocialSignupRedisRepository implements SocialSignupRepository {
 
     private static final String KEY_PREFIX = "signup:social:info:";
     private static final Duration TTL = Duration.ofMinutes(30);
