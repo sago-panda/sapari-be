@@ -34,13 +34,13 @@ import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
-import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
-import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
 import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.customer.view.SocialSignupResult;
+import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
+import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
@@ -63,10 +63,10 @@ class CustomerAuthServiceTest {
     private static final String EMAIL = "customer@example.com";
     private static final Instant NOW = Instant.now();
 
-    private final SocialSignupRedisRepository socialSignupRedisRepository =
-            mock(SocialSignupRedisRepository.class);
-    private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository =
-            mock(SocialLoginCodeRedisRepository.class);
+    private final SocialSignupRepository socialSignupRepository =
+            mock(SocialSignupRepository.class);
+    private final SocialLoginCodeRepository socialLoginCodeRepository =
+            mock(SocialLoginCodeRepository.class);
     private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("customer-test", SECRET, 3600L, 1209600L),
@@ -87,8 +87,8 @@ class CustomerAuthServiceTest {
             timeProvider()
     );
     private final CustomerAuthService customerAuthService = new CustomerAuthService(
-            socialSignupRedisRepository,
-            socialLoginCodeRedisRepository,
+            socialSignupRepository,
+            socialLoginCodeRepository,
             userAccountUseCase,
             customerJwtSessionService,
             timeProvider(),
@@ -101,7 +101,7 @@ class CustomerAuthServiceTest {
     void completeSocialSignupCreatesUserAndIssuesTokens() throws Exception {
         // given
         UUID userId = UUID.randomUUID();
-        when(socialSignupRedisRepository.findBySid(SIGNUP_SID))
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
         when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
                 .thenReturn(customerView(userId));
@@ -130,7 +130,7 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
         assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
 
-        verify(socialSignupRedisRepository).delete(SIGNUP_SID);
+        verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
@@ -153,7 +153,7 @@ class CustomerAuthServiceTest {
     @DisplayName("가입 sid로 소셜 가입 기본 정보를 조회한다")
     void getSocialSignupInfoReturnsSocialSignupInfo() throws Exception {
         // given
-        when(socialSignupRedisRepository.findBySid(SIGNUP_SID))
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
 
         // when
@@ -185,7 +185,7 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         SocialLoginTokenResult tokenResult =
                 new SocialLoginTokenResult(userId, "access-token", "refresh-token");
-        when(socialLoginCodeRedisRepository.findByCode(TEMPORARY_LOGIN_CODE))
+        when(socialLoginCodeRepository.findByCode(TEMPORARY_LOGIN_CODE))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(tokenResult)));
 
         // when
@@ -194,7 +194,7 @@ class CustomerAuthServiceTest {
 
         // then
         assertThat(result).isEqualTo(tokenResult);
-        verify(socialLoginCodeRedisRepository).delete(TEMPORARY_LOGIN_CODE);
+        verify(socialLoginCodeRepository).delete(TEMPORARY_LOGIN_CODE);
     }
 
     @Test
@@ -265,8 +265,8 @@ class CustomerAuthServiceTest {
                 timeProvider()
         );
         CustomerAuthService service = new CustomerAuthService(
-                socialSignupRedisRepository,
-                socialLoginCodeRedisRepository,
+                socialSignupRepository,
+                socialLoginCodeRepository,
                 userAccountUseCase,
                 jwtSessionService,
                 timeProvider(),

@@ -15,7 +15,7 @@ cross-cutting rules; this file is the user-specific + **auth-area shared map** o
 |---|---|
 | `User` aggregate, role/status/grade/gender, `ProviderType` | **user-core** (record); shared types published in **user-api** (`user.model.*`) |
 | Create / find a user | **`UserAccountUseCase`** (user-api port) — `RegisterSocialCustomerCommand` / `RegisterSellerCommand` |
-| `User` persistence | user-core (JPA, `db-core`) |
+| `User` persistence | user-core (JPA, `db-core`) → `user_schema` (DDL: `db/migration/user/`) |
 | JWT issue / verify, `@CurrentUserId` | **`common/web`** — not a domain |
 | Refresh / blacklist store | **`common/web`** interfaces (`RefreshTokenStore`, `AccessTokenBlacklist`) ← **`common/auth`** Redis impl |
 | Login / logout / refresh **orchestration** | the **flow module** (seller / customer), *not* user |

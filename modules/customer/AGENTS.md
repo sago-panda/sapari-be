@@ -1,8 +1,10 @@
 # customer — social (OAuth) auth flow
 
-OAuth social login. Produces a **USER** `User` via `user-api`. **No DB of its own** — user
-persistence is delegated to `user`; only transient signup state lives in Redis. Shared auth-area
-map + identity invariants: see `modules/user/AGENTS.md`.
+OAuth social login. Produces a **USER** `User` via `user-api`. **No JPA entities today** — the auth
+flow persists via `user`, and only transient signup state lives in Redis. (A `customer_schema` is
+reserved as design-ahead DDL — `user_addresses`, `wishlists` — which customer-core will own once
+🚧 customer profile is built; it has no entities mapping to it yet.) Shared auth-area map + identity
+invariants: see `modules/user/AGENTS.md`.
 
 ## Status
 
@@ -11,8 +13,9 @@ map + identity invariants: see `modules/user/AGENTS.md`.
 
 ## Owns
 
-- OAuth flow (`spring-boot-starter-oauth2-client`). **No JPA** — build has no `db-core`; if you reach
-  for an entity here, the design is wrong (persist via `user`).
+- OAuth flow (`spring-boot-starter-oauth2-client`). **For the auth flow there is no JPA** — build has
+  no `db-core`; an identity entity here is wrong (persist via `user`). Adding `db-core` is expected
+  only when 🚧 customer profile (the reserved `customer_schema`) is built.
 - Transient signup state in **Redis** (single-use, TTL'd, unguessable id).
 
 ## Conventions
