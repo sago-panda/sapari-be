@@ -60,6 +60,7 @@ public class CustomerJwtSessionService {
      * 검증된 refresh 세션을 같은 sid의 새 Access Token과 Refresh Token으로 회전한다.
      */
     public RotatedRefreshToken rotateRefreshToken(RefreshSession refreshSession, UserView customer) {
+        // RefreshSession과 UserView는 독립 인자이므로, 새 토큰 subject를 만들기 전에 같은 사용자 세션인지 보장한다.
         validateRefreshSessionOwner(refreshSession, customer);
 
         JwtSubject subject = toJwtSubject(customer, refreshSession.sessionId());

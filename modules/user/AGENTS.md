@@ -28,15 +28,17 @@ cross-cutting rules; this file is the user-specific + **auth-area shared map** o
 
 - Role on creation: social signup → `USER`; local signup → `SELLER`
   (`User.createSocialCustomer` / `createSeller`). Don't set role ad hoc.
-- **email is immutable** (excluded from profile update). **nickname**: 30-day cooldown
-  (`canChangeNickname`) — enforced as a domain invariant, not in the service.
+- **email is immutable** (excluded from profile update). **nickname** changes are limited by the
+  customer/seller auth flow policy; `User.updateNickname` only applies the already-validated change.
 - Transitions return a **new** `User` (immutable record); never mutate fields.
 
 ## Errors
 
-`user` has **no own `ErrorCode` enum** — creation guards use `Assert` / `IllegalArgumentException`,
-mapped by the global handler. The flow modules own the catalogs (`SellerErrorCode` / `CustomerErrorCode`).
-Add a `UserErrorCode` only when user gains domain-specific failures (e.g. status transitions).
+`user` has **no own `ErrorCode` enum** — domain record guards (`User.createSocialCustomer`,
+`User.createSeller`, `User.updateNickname`) use `Assert` / `IllegalArgumentException`, mapped by the
+global handler. Persistence entities do not own domain validation; they keep JPA mapping and mutation
+only. The flow modules own the catalogs (`SellerErrorCode` / `CustomerErrorCode`). Add a
+`UserErrorCode` only when user gains domain-specific failures (e.g. status transitions).
 
 ## Tests
 
