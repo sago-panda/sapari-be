@@ -18,8 +18,8 @@ import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerOAuthCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
-import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
-import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
+import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
+import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.port.CustomerOAuthUseCase;
 import com.sapari.customer.result.CustomerOAuthResult;
 import com.sapari.customer.result.SocialLoginTokenResult;
@@ -34,8 +34,8 @@ import com.sapari.user.view.UserView;
 public class CustomerOAuthService implements CustomerOAuthUseCase {
 
     private final UserAccountUseCase userAccountUseCase;
-    private final SocialSignupRedisRepository socialSignupRedisRepository;
-    private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
+    private final SocialSignupRepository socialSignupRedisRepository;
+    private final SocialLoginCodeRepository socialLoginCodeRedisRepository;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
     private final TimeProvider timeProvider;

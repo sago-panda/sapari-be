@@ -23,8 +23,8 @@ import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
-import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
-import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
+import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
+import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.customer.result.CustomerMeResult;
 import com.sapari.customer.result.CustomerNicknameUpdateResult;
@@ -47,8 +47,8 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     private static final Duration NICKNAME_CHANGE_INTERVAL = Duration.ofDays(30);
 
-    private final SocialSignupRedisRepository socialSignupRedisRepository;
-    private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
+    private final SocialSignupRepository socialSignupRedisRepository;
+    private final SocialLoginCodeRepository socialLoginCodeRedisRepository;
     private final UserAccountUseCase userAccountUseCase;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
