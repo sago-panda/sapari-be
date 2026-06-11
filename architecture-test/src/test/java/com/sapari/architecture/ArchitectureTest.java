@@ -220,7 +220,6 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
-
     // 10) @Transactional은 application 레이어에만 둔다.
     //     트랜잭션 경계는 유스케이스 오케스트레이션(application/service)의 책임 — 인프라/도메인/표현 계층에
     //     트랜잭션이 새면 경계가 흐려진다. (Spring Data 레포의 자체 트랜잭션은 여기 대상 아님)
