@@ -83,6 +83,16 @@ class ChatEnvelopeSerializationTest {
     }
 
     @Test
+    @DisplayName("System도 round-trip 가능 — 와이어 미탑재(로컬 렌더 전용)지만 매핑은 살아있는 전수성 방어다")
+    void systemType_round_trips_despite_not_being_on_wire() throws Exception {
+        String wire = objectMapper.writeValueAsString(new ChatMessageType.System("KICKED"));
+
+        ChatMessageType back = objectMapper.readValue(wire, ChatMessageType.class);
+
+        assertThat(back).isEqualTo(new ChatMessageType.System("KICKED")); // code 포함 복원 — 죽은 분기 아님
+    }
+
+    @Test
     @DisplayName("ChatMessageType 와이어 식별자 고정 — Normal=NORMAL, Notice=NOTICE (pubsub 계약)")
     void chatMessageType_wire_ids_are_pinned() {
         JsonNode normal = objectMapper.valueToTree(
