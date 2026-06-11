@@ -3,6 +3,7 @@ package com.sapari.architecture;
 import com.tngtech.archunit.core.domain.Dependency;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchCondition;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 /**
@@ -216,6 +218,50 @@ class ArchitectureTest {
                 .as("streaming-app은 블로킹 Redis 템플릿 대신 ReactiveStringRedisTemplate만 사용해야 한다");
 
         rule.check(SAPARI);
+    }
+
+
+    // 10) @Transactional은 application 레이어에만 둔다.
+    //     트랜잭션 경계는 유스케이스 오케스트레이션(application/service)의 책임 — 인프라/도메인/표현 계층에
+    //     트랜잭션이 새면 경계가 흐려진다. (Spring Data 레포의 자체 트랜잭션은 여기 대상 아님)
+    @Test
+    void transactional_only_in_application_layer() {
+        ArchRule rule = methods()
+                .that().areAnnotatedWith("org.springframework.transaction.annotation.Transactional")
+                .should().beDeclaredInClassesThat().resideInAPackage("..application..")
+                .as("@Transactional은 application 레이어 메서드에만 선언되어야 한다");
+
+        rule.check(SAPARI);
+    }
+
+    // 11) 현재 시각은 TimeProvider로만 얻는다 — application/domain에서 java.time *.now() 나
+    //     System.currentTimeMillis()/nanoTime() 직접 호출 금지. (고정 시계 주입으로 테스트 가능성 확보)
+    @Test
+    void time_must_come_from_time_provider() {
+        ArchRule rule = classes()
+                .that().resideInAnyPackage("com.sapari..application..", "com.sapari..domain..")
+                .should(notReadCurrentTimeDirectly());
+
+        rule.check(SAPARI);
+    }
+
+    /** application/domain 클래스가 현재 시각을 직접 읽으면(= java.time *.now() / System 시간) 위반으로 기록. */
+    private static ArchCondition<JavaClass> notReadCurrentTimeDirectly() {
+        return new ArchCondition<>("현재 시각을 직접 읽지 않아야 한다 (TimeProvider 경유)") {
+            @Override
+            public void check(JavaClass origin, ConditionEvents events) {
+                for (JavaMethodCall call : origin.getMethodCallsFromSelf()) {
+                    String owner = call.getTarget().getOwner().getName();
+                    String name = call.getTarget().getName();
+                    boolean javaTimeNow = owner.startsWith("java.time.") && name.equals("now");
+                    boolean systemTime = owner.equals("java.lang.System")
+                            && (name.equals("currentTimeMillis") || name.equals("nanoTime"));
+                    if (javaTimeNow || systemTime) {
+                        events.add(SimpleConditionEvent.violated(call, call.getDescription()));
+                    }
+                }
+            }
+        };
     }
 
     private static final Set<String> NON_DOMAIN_ROOTS = Set.of("common", "global", "storage", "architecture");
