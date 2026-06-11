@@ -21,35 +21,36 @@ import com.sapari.live.infrastructure.persistence.mapper.LiveRoomMapper;
 public class LiveRoomRepositoryImpl implements LiveRoomRepository {
 
     private final LiveRoomJpaRepository liveRoomJpaRepository;
+    private final LiveRoomMapper liveRoomMapper;
 
     @Override
     public LiveRoom save(LiveRoom liveRoom){
         //신규 생성
         if(liveRoom.id() == null){
-            LiveRoomEntity entity = LiveRoomMapper.toEntity(liveRoom);
+            LiveRoomEntity entity = liveRoomMapper.toEntity(liveRoom);
             LiveRoomEntity saved = liveRoomJpaRepository.save(entity);
 
-            return LiveRoomMapper.toDomain(saved);
+            return liveRoomMapper.toDomain(saved);
         }
         else{
             LiveRoomEntity existingEntity = liveRoomJpaRepository.findById(liveRoom.id())
                     .orElseThrow(() -> new EntityNotFoundException("해당 라이브 방을 찾을 수 없습니다."));
 
-            LiveRoomMapper.updateEntityFromDomain(existingEntity, liveRoom);
+            liveRoomMapper.updateEntityFromDomain(existingEntity, liveRoom);
 
-            return LiveRoomMapper.toDomain(liveRoomJpaRepository.save(existingEntity));
+            return liveRoomMapper.toDomain(liveRoomJpaRepository.save(existingEntity));
         }
     }
 
     @Override
     public Optional<LiveRoom> findById(UUID id){
         return liveRoomJpaRepository.findById(id)
-                .map(LiveRoomMapper::toDomain);
+                .map(liveRoomMapper::toDomain);
     }
 
     @Override
     public Optional<LiveRoom> findByIdAndSellerId(UUID id, UUID hostId){
         return liveRoomJpaRepository.findByIdAndSellerId(id, hostId)
-                .map(LiveRoomMapper::toDomain);
+                .map(liveRoomMapper::toDomain);
     }
 }
