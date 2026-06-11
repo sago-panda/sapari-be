@@ -20,6 +20,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
@@ -63,17 +64,19 @@ class CustomerOAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
-    private final CustomerJwtSessionService customerJwtSessionService = new CustomerJwtSessionService(
+    private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
             timeProvider()
     );
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter =
+            new CustomerJwtTokenAdapter(jwtTokenLifecycle);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final CustomerOAuthService customerOAuthService = new CustomerOAuthService(
             userAccountUseCase,
-            customerJwtSessionService,
+            customerJwtTokenAdapter,
             socialSignupRepository,
             socialLoginCodeRepository,
             objectMapper

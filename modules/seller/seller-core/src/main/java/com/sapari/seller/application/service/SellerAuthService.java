@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.application.mapper.SellerViewMapper;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
@@ -49,7 +50,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier;
     private final SellerSignupProcessor sellerSignupProcessor;
     private final PasswordEncoder passwordEncoder;
-    private final SellerJwtSessionService sellerJwtSessionService;
+    private final SellerJwtTokenAdapter sellerJwtTokenAdapter;
     private final TimeProvider timeProvider;
     private final SellerViewMapper sellerViewMapper;
 
@@ -104,7 +105,7 @@ public class SellerAuthService implements SellerAuthUseCase {
             throw new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS);
         }
 
-        SellerJwtSessionService.IssuedTokenPair tokenPair = sellerJwtSessionService.issueTokenPair(seller);
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = sellerJwtTokenAdapter.issueTokenPair(seller);
 
         return new SellerLoginResult(seller.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
     }
@@ -112,10 +113,10 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public SellerTokenReissueResult reissueAccessToken(String refreshToken) {
-        SellerJwtSessionService.RefreshSession refreshSession = sellerJwtSessionService.requireRefreshToken(refreshToken);
+        JwtTokenLifecycle.RefreshSession refreshSession = sellerJwtTokenAdapter.requireRefreshToken(refreshToken);
         UserView seller = findRefreshTokenSeller(refreshSession.userId());
-        SellerJwtSessionService.RotatedRefreshToken rotatedRefreshToken =
-                sellerJwtSessionService.rotateRefreshToken(refreshSession, seller);
+        JwtTokenLifecycle.RotatedRefreshToken rotatedRefreshToken =
+                sellerJwtTokenAdapter.rotateRefreshToken(refreshSession, seller);
 
         return new SellerTokenReissueResult(
                 seller.userId(),
@@ -128,7 +129,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public void logout(SellerLogoutCommand command) {
-        sellerJwtSessionService.revokeSession(command.accessToken());
+        sellerJwtTokenAdapter.revokeSession(command.accessToken());
     }
 
     @Override
@@ -143,8 +144,8 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
-        SellerJwtSessionService.AccessSession accessSession =
-                sellerJwtSessionService.requireAccessToken(command.accessToken());
+        JwtTokenLifecycle.AccessSession accessSession =
+                sellerJwtTokenAdapter.requireAccessToken(command.accessToken());
         UserView seller = findSeller(accessSession.userId());
 
         validateDuplicatedNickname(command.nickname());
@@ -155,7 +156,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         try {
             UserView savedSeller = userAccountUseCase.changeNickname(accessSession.userId(), command.nickname());
             SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
-            String accessToken = sellerJwtSessionService.replaceAccessTokenForNickname(accessSession, savedSeller);
+            String accessToken = sellerJwtTokenAdapter.replaceAccessTokenForNickname(accessSession, savedSeller);
 
             return sellerViewMapper.toNicknameUpdateResult(savedSeller, sellerProfile, accessToken);
         } catch (DataIntegrityViolationException e) {

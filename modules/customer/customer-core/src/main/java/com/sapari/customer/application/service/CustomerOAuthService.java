@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerOAuthCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
@@ -28,7 +29,7 @@ import com.sapari.user.view.UserView;
 public class CustomerOAuthService implements CustomerOAuthUseCase {
 
     private final UserAccountUseCase userAccountUseCase;
-    private final CustomerJwtSessionService customerJwtSessionService;
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter;
     private final SocialSignupRepository socialSignupRepository;
     private final SocialLoginCodeRepository socialLoginCodeRepository;
     private final ObjectMapper objectMapper;
@@ -55,7 +56,7 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
             throw new CustomerException(CustomerErrorCode.USER_NOT_FOUND);
         }
 
-        CustomerJwtSessionService.IssuedTokenPair tokenPair = customerJwtSessionService.issueTokenPair(user);
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(user);
         String loginCode = UUID.randomUUID().toString();
         String socialLoginTokenInfoJson = toJson(new SocialLoginTokenResult(
                 user.userId(),

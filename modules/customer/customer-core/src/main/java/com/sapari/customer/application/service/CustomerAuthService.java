@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.customer.command.CustomerLogoutCommand;
@@ -44,7 +45,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final SocialSignupRepository socialSignupRepository;
     private final SocialLoginCodeRepository socialLoginCodeRepository;
     private final UserAccountUseCase userAccountUseCase;
-    private final CustomerJwtSessionService customerJwtSessionService;
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter;
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
     private final CustomerViewMapper customerViewMapper;
@@ -60,7 +61,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         try {
             UserView savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
             socialSignupRepository.delete(signupSid);
-            CustomerJwtSessionService.IssuedTokenPair tokenPair = customerJwtSessionService.issueTokenPair(savedUser);
+            JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(savedUser);
 
             return new SocialSignupResult(savedUser.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
         } catch (DataIntegrityViolationException e) {
@@ -99,10 +100,10 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional
     public CustomerTokenReissueResult reissueAccessToken(String refreshToken) {
-        CustomerJwtSessionService.RefreshSession refreshSession = customerJwtSessionService.requireRefreshToken(refreshToken);
+        JwtTokenLifecycle.RefreshSession refreshSession = customerJwtTokenAdapter.requireRefreshToken(refreshToken);
         UserView customer = findRefreshTokenCustomer(refreshSession.userId());
-        CustomerJwtSessionService.RotatedRefreshToken rotatedRefreshToken =
-                customerJwtSessionService.rotateRefreshToken(refreshSession, customer);
+        JwtTokenLifecycle.RotatedRefreshToken rotatedRefreshToken =
+                customerJwtTokenAdapter.rotateRefreshToken(refreshSession, customer);
 
         return new CustomerTokenReissueResult(
                 customer.userId(),
@@ -115,7 +116,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional
     public void logout(CustomerLogoutCommand command) {
-        customerJwtSessionService.revokeSession(command.accessToken());
+        customerJwtTokenAdapter.revokeSession(command.accessToken());
     }
 
     @Override
@@ -145,8 +146,8 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional
     public CustomerNicknameUpdateResult updateNickname(CustomerNicknameUpdateCommand command) {
-        CustomerJwtSessionService.AccessSession accessSession =
-                customerJwtSessionService.requireAccessToken(command.accessToken());
+        JwtTokenLifecycle.AccessSession accessSession =
+                customerJwtTokenAdapter.requireAccessToken(command.accessToken());
         UserView customer = findCustomer(accessSession.userId());
 
         validateDuplicatedNickname(command.nickname());
@@ -156,7 +157,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
         try {
             UserView savedCustomer = userAccountUseCase.changeNickname(accessSession.userId(), command.nickname());
-            String accessToken = customerJwtSessionService.replaceAccessTokenForNickname(accessSession, savedCustomer);
+            String accessToken = customerJwtTokenAdapter.replaceAccessTokenForNickname(accessSession, savedCustomer);
 
             return customerViewMapper.toNicknameUpdateResult(savedCustomer, accessToken);
         } catch (DataIntegrityViolationException e) {

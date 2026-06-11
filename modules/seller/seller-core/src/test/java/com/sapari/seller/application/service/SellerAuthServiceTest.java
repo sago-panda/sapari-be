@@ -23,6 +23,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
@@ -85,13 +86,15 @@ class SellerAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
-    private final SellerJwtSessionService sellerJwtSessionService = new SellerJwtSessionService(
+    private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
             timeProvider()
     );
+    private final SellerJwtTokenAdapter sellerJwtTokenAdapter =
+            new SellerJwtTokenAdapter(jwtTokenLifecycle);
     private final SellerAuthService sellerAuthService = new SellerAuthService(
             userAccountUseCase,
             localCredentialRepository,
@@ -99,7 +102,7 @@ class SellerAuthServiceTest {
             sellerBusinessRegistrationVerifier,
             sellerSignupProcessor,
             passwordEncoder,
-            sellerJwtSessionService,
+            sellerJwtTokenAdapter,
             timeProvider(),
             Mappers.getMapper(SellerViewMapper.class)
     );
@@ -346,13 +349,14 @@ class SellerAuthServiceTest {
         String previousRefreshToken = "previous-refresh-token";
         String rotatedRefreshToken = "rotated-refresh-token";
         JwtTokenProvider tokenProvider = mock(JwtTokenProvider.class);
-        SellerJwtSessionService jwtSessionService = new SellerJwtSessionService(
+        JwtTokenLifecycle tokenLifecycle = new JwtTokenLifecycle(
                 tokenProvider,
                 refreshTokenStore,
                 sessionRevocationStore,
                 accessTokenBlacklist,
                 timeProvider()
         );
+        SellerJwtTokenAdapter jwtTokenAdapter = new SellerJwtTokenAdapter(tokenLifecycle);
         SellerAuthService service = new SellerAuthService(
                 userAccountUseCase,
                 localCredentialRepository,
@@ -360,7 +364,7 @@ class SellerAuthServiceTest {
                 sellerBusinessRegistrationVerifier,
                 sellerSignupProcessor,
                 passwordEncoder,
-                jwtSessionService,
+                jwtTokenAdapter,
                 timeProvider(),
                 Mappers.getMapper(SellerViewMapper.class)
         );

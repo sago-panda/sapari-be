@@ -1,4 +1,4 @@
-package com.sapari.seller.application.service;
+package com.sapari.customer.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -18,50 +18,53 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
+import com.sapari.customer.domain.exception.CustomerErrorCode;
+import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.global.time.TimeProvider;
-import com.sapari.seller.domain.exception.SellerErrorCode;
-import com.sapari.seller.domain.exception.SellerException;
+import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.view.UserView;
 
-@DisplayName("판매자 JWT 세션 서비스 테스트")
-class SellerJwtSessionServiceTest {
+@DisplayName("구매자 JWT 세션 서비스 테스트")
+class CustomerJwtTokenAdapterTest {
 
     private static final Instant NOW = Instant.parse("2025-01-01T00:00:00Z");
-    private static final String SECRET = "test-secret-key-for-seller-session-32bytes";
+    private static final String SECRET = "test-secret-key-for-customer-session-32bytes";
 
     private final TimeProvider timeProvider = new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("seller-session-test", SECRET, 3600L, 1209600L),
+            new JwtProperties("customer-session-test", SECRET, 3600L, 1209600L),
             timeProvider
     );
     private final RefreshTokenStore refreshTokenStore = mock(RefreshTokenStore.class);
     private final SessionRevocationStore sessionRevocationStore = mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist = mock(AccessTokenBlacklist.class);
-    private final SellerJwtSessionService service = new SellerJwtSessionService(
+    private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
             timeProvider
     );
+    private final CustomerJwtTokenAdapter service = new CustomerJwtTokenAdapter(jwtTokenLifecycle);
 
     @Test
     @DisplayName("새 로그인 세션 토큰 쌍을 발급하고 refresh token id를 저장한다")
     void issueTokenPairSavesRefreshTokenId() {
         // given
-        UserView seller = sellerView(UUID.randomUUID(), "seller");
+        UserView customer = customerView(UUID.randomUUID(), "customer");
 
         // when
-        SellerJwtSessionService.IssuedTokenPair tokenPair = service.issueTokenPair(seller);
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = service.issueTokenPair(customer);
 
         // then
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(tokenPair.accessToken());
@@ -81,16 +84,16 @@ class SellerJwtSessionServiceTest {
     @DisplayName("refresh token 회전 성공 시 새 access/refresh token과 남은 TTL을 반환한다")
     void rotateRefreshTokenReturnsRotatedTokens() {
         // given
-        UserView seller = sellerView(UUID.randomUUID(), "seller");
-        SellerJwtSessionService.IssuedTokenPair tokenPair = service.issueTokenPair(seller);
+        UserView customer = customerView(UUID.randomUUID(), "customer");
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = service.issueTokenPair(customer);
         JwtTokenClaims oldRefreshClaims = jwtTokenProvider.parseToken(tokenPair.refreshToken());
         when(refreshTokenStore.rotate(eq(oldRefreshClaims.sessionId()), eq(oldRefreshClaims.tokenId()), any(), any()))
                 .thenReturn(true);
-        SellerJwtSessionService.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
+        JwtTokenLifecycle.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
 
         // when
-        SellerJwtSessionService.RotatedRefreshToken result =
-                service.rotateRefreshToken(refreshSession, seller);
+        JwtTokenLifecycle.RotatedRefreshToken result =
+                service.rotateRefreshToken(refreshSession, customer);
 
         // then
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(result.accessToken());
@@ -106,16 +109,16 @@ class SellerJwtSessionServiceTest {
     @DisplayName("refresh 세션 사용자와 회전 대상 사용자가 다르면 재발급에 실패한다")
     void rotateRefreshTokenThrowsExceptionWhenSessionOwnerMismatch() {
         // given
-        UserView seller = sellerView(UUID.randomUUID(), "seller");
-        UserView otherSeller = sellerView(UUID.randomUUID(), "other");
-        SellerJwtSessionService.IssuedTokenPair tokenPair = service.issueTokenPair(seller);
-        SellerJwtSessionService.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
+        UserView customer = customerView(UUID.randomUUID(), "customer");
+        UserView otherCustomer = customerView(UUID.randomUUID(), "other");
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = service.issueTokenPair(customer);
+        JwtTokenLifecycle.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
 
         // when & then
-        assertThatThrownBy(() -> service.rotateRefreshToken(refreshSession, otherSeller))
-                .isInstanceOf(SellerException.class)
+        assertThatThrownBy(() -> service.rotateRefreshToken(refreshSession, otherCustomer))
+                .isInstanceOf(CustomerException.class)
                 .extracting("errorCode")
-                .isEqualTo(SellerErrorCode.INVALID_REFRESH_TOKEN);
+                .isEqualTo(CustomerErrorCode.INVALID_REFRESH_TOKEN);
         verify(refreshTokenStore, never()).rotate(any(), any(), any(), any());
         verify(sessionRevocationStore, never()).revoke(any());
     }
@@ -124,18 +127,18 @@ class SellerJwtSessionServiceTest {
     @DisplayName("refresh token 회전 실패 시 해당 sid 세션을 폐기한다")
     void rotateRefreshTokenRevokesSessionWhenReuseDetected() {
         // given
-        UserView seller = sellerView(UUID.randomUUID(), "seller");
-        SellerJwtSessionService.IssuedTokenPair tokenPair = service.issueTokenPair(seller);
+        UserView customer = customerView(UUID.randomUUID(), "customer");
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = service.issueTokenPair(customer);
         JwtTokenClaims oldRefreshClaims = jwtTokenProvider.parseToken(tokenPair.refreshToken());
         when(refreshTokenStore.rotate(eq(oldRefreshClaims.sessionId()), eq(oldRefreshClaims.tokenId()), any(), any()))
                 .thenReturn(false);
-        SellerJwtSessionService.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
+        JwtTokenLifecycle.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
 
         // when & then
-        assertThatThrownBy(() -> service.rotateRefreshToken(refreshSession, seller))
-                .isInstanceOf(SellerException.class)
+        assertThatThrownBy(() -> service.rotateRefreshToken(refreshSession, customer))
+                .isInstanceOf(CustomerException.class)
                 .extracting("errorCode")
-                .isEqualTo(SellerErrorCode.INVALID_REFRESH_TOKEN);
+                .isEqualTo(CustomerErrorCode.INVALID_REFRESH_TOKEN);
         verify(refreshTokenStore).deleteBySessionId(oldRefreshClaims.sessionId());
         verify(sessionRevocationStore).revoke(oldRefreshClaims.sessionId());
     }
@@ -144,14 +147,14 @@ class SellerJwtSessionServiceTest {
     @DisplayName("닉네임 변경 시 기존 access token id를 폐기하고 같은 sid로 새 access token을 발급한다")
     void replaceAccessTokenForNicknameBlacklistsOldAccessToken() {
         // given
-        UserView seller = sellerView(UUID.randomUUID(), "seller");
-        SellerJwtSessionService.IssuedTokenPair tokenPair = service.issueTokenPair(seller);
-        SellerJwtSessionService.AccessSession accessSession =
+        UserView customer = customerView(UUID.randomUUID(), "customer");
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = service.issueTokenPair(customer);
+        JwtTokenLifecycle.AccessSession accessSession =
                 service.requireAccessToken(tokenPair.accessToken());
-        UserView savedSeller = sellerView(seller.userId(), "updated");
+        UserView savedCustomer = customerView(customer.userId(), "updated");
 
         // when
-        String newAccessToken = service.replaceAccessTokenForNickname(accessSession, savedSeller);
+        String newAccessToken = service.replaceAccessTokenForNickname(accessSession, savedCustomer);
 
         // then
         JwtTokenClaims oldAccessClaims = jwtTokenProvider.parseToken(tokenPair.accessToken());
@@ -163,19 +166,19 @@ class SellerJwtSessionServiceTest {
         assertThat(ttlCaptor.getValue()).isEqualTo(Duration.between(NOW, oldAccessClaims.expiresAt()));
     }
 
-    private UserView sellerView(UUID userId, String nickname) {
+    private UserView customerView(UUID userId, String nickname) {
         return new UserView(
                 userId,
-                UserRole.SELLER,
+                UserRole.USER,
                 UserStatus.ACTIVE,
                 nickname,
                 NOW,
-                "판매자",
-                LocalDate.of(1990, 1, 1),
-                null,
+                "구매자",
+                LocalDate.of(1995, 1, 1),
+                UserGender.FEMALE,
                 "01012345678",
                 null,
-                "seller@example.com",
+                "customer@example.com",
                 UserGrade.BRONZE,
                 0,
                 true,
