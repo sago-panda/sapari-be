@@ -12,13 +12,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-import com.sapari.common.securityjwt.jwt.JwtSubject;
-import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
-import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
-import com.sapari.common.securityjwt.jwt.JwtTokenType;
-import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
-import com.sapari.common.securityjwt.store.RefreshTokenStore;
-import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.application.mapper.SellerViewMapper;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
@@ -56,10 +49,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier;
     private final SellerSignupProcessor sellerSignupProcessor;
     private final PasswordEncoder passwordEncoder;
-    private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenStore refreshTokenStore;
-    private final SessionRevocationStore sessionRevocationStore;
-    private final AccessTokenBlacklist accessTokenBlacklist;
+    private final SellerJwtSessionService sellerJwtSessionService;
     private final TimeProvider timeProvider;
     private final SellerViewMapper sellerViewMapper;
 
@@ -114,41 +104,31 @@ public class SellerAuthService implements SellerAuthUseCase {
             throw new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS);
         }
 
-        UUID sessionId = UUID.randomUUID();
-        JwtSubject subject = toJwtSubject(seller, sessionId);
-        String accessToken = jwtTokenProvider.createAccessToken(subject);
-        String refreshToken = issueRefreshToken(subject);
+        SellerJwtSessionService.IssuedTokenPair tokenPair = sellerJwtSessionService.issueTokenPair(seller);
 
-        return new SellerLoginResult(seller.userId(), accessToken, refreshToken);
+        return new SellerLoginResult(seller.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
     }
 
     @Override
     @Transactional
     public SellerTokenReissueResult reissueAccessToken(String refreshToken) {
-        JwtTokenClaims claims = parseRefreshToken(refreshToken);
-
-        UserView seller = findRefreshTokenSeller(claims.userId());
-        JwtSubject subject = toJwtSubject(seller, claims.sessionId());
-        String accessToken = jwtTokenProvider.createAccessToken(subject);
-        RotatedRefreshToken rotatedRefreshToken = rotateRefreshToken(subject, claims);
+        SellerJwtSessionService.RefreshSession refreshSession = sellerJwtSessionService.requireRefreshToken(refreshToken);
+        UserView seller = findRefreshTokenSeller(refreshSession.userId());
+        SellerJwtSessionService.RotatedRefreshToken rotatedRefreshToken =
+                sellerJwtSessionService.rotateRefreshToken(refreshSession, seller);
 
         return new SellerTokenReissueResult(
                 seller.userId(),
-                accessToken,
-                rotatedRefreshToken.token(),
-                rotatedRefreshToken.maxAgeSeconds()
+                rotatedRefreshToken.accessToken(),
+                rotatedRefreshToken.refreshToken(),
+                rotatedRefreshToken.refreshTokenMaxAgeSeconds()
         );
     }
 
     @Override
     @Transactional
     public void logout(SellerLogoutCommand command) {
-        JwtTokenClaims claims = parseAccessToken(command.accessToken());
-        validateAccessTokenOwner(claims, command.userId());
-
-        // 로그아웃은 현재 sid 세션 전체를 폐기해 같은 세션의 Access Token까지 차단한다.
-        refreshTokenStore.deleteBySessionId(claims.sessionId());
-        sessionRevocationStore.revoke(claims.sessionId());
+        sellerJwtSessionService.revokeSession(command.accessToken());
     }
 
     @Override
@@ -163,10 +143,9 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
-        JwtTokenClaims accessClaims = parseAccessToken(command.accessToken());
-        validateAccessTokenOwner(accessClaims, command.userId());
-
-        UserView seller = findSeller(command.userId());
+        SellerJwtSessionService.AccessSession accessSession =
+                sellerJwtSessionService.requireAccessToken(command.accessToken());
+        UserView seller = findSeller(accessSession.userId());
 
         validateDuplicatedNickname(command.nickname());
 
@@ -174,11 +153,9 @@ public class SellerAuthService implements SellerAuthUseCase {
         validateNicknameChangeAllowed(seller, now);
 
         try {
-            UserView savedSeller = userAccountUseCase.changeNickname(command.userId(), command.nickname());
-            SellerProfile sellerProfile = findSellerProfile(command.userId());
-            // nickname snapshot이 바뀌었으므로 기존 access jti를 폐기하고 같은 sid로 새 Access Token을 발급
-            blacklistAccessToken(accessClaims);
-            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedSeller, accessClaims.sessionId()));
+            UserView savedSeller = userAccountUseCase.changeNickname(accessSession.userId(), command.nickname());
+            SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
+            String accessToken = sellerJwtSessionService.replaceAccessTokenForNickname(accessSession, savedSeller);
 
             return sellerViewMapper.toNicknameUpdateResult(savedSeller, sellerProfile, accessToken);
         } catch (DataIntegrityViolationException e) {
@@ -285,119 +262,4 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
     }
 
-    private JwtTokenClaims parseRefreshToken(String refreshToken) {
-        if (refreshToken == null || refreshToken.isBlank()) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        JwtTokenClaims claims = parseToken(refreshToken, SellerErrorCode.INVALID_REFRESH_TOKEN);
-
-        if (claims.tokenType() != JwtTokenType.REFRESH) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        return claims;
-    }
-
-    private JwtTokenClaims parseAccessToken(String accessToken) {
-        if (accessToken == null || accessToken.isBlank()) {
-            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
-        }
-
-        JwtTokenClaims claims = parseToken(accessToken, SellerErrorCode.INVALID_ACCESS_TOKEN);
-
-        if (claims.tokenType() != JwtTokenType.ACCESS) {
-            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
-        }
-
-        return claims;
-    }
-
-    private JwtTokenClaims parseToken(String token, SellerErrorCode errorCode) {
-        try {
-            return jwtTokenProvider.parseToken(token);
-        } catch (RuntimeException e) {
-            throw new SellerException(errorCode, e);
-        }
-    }
-
-    /**
-     * 로그인 세션의 Refresh Token을 발급하고 현재 Refresh Token ID를 저장한다.
-     */
-    private String issueRefreshToken(JwtSubject subject) {
-        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
-        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
-
-        refreshTokenStore.save(
-                refreshClaims.sessionId(),
-                refreshClaims.tokenId(),
-                getRemainingExpiration(refreshClaims)
-        );
-
-        return refreshToken;
-    }
-
-    /**
-     * 같은 로그인 세션에서 현재 Refresh Token ID를 새 Refresh Token ID로 교체한다.
-     */
-    private RotatedRefreshToken rotateRefreshToken(JwtSubject subject, JwtTokenClaims previousRefreshClaims) {
-        String refreshToken = jwtTokenProvider.createRefreshTokenForRotation(subject, previousRefreshClaims.expiresAt());
-        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
-        Duration refreshTokenTtl = getRemainingExpiration(refreshClaims);
-
-        if (refreshTokenTtl.toMillis() < 1) {
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        boolean rotated = refreshTokenStore.rotate(
-                previousRefreshClaims.sessionId(),
-                previousRefreshClaims.tokenId(),
-                refreshClaims.tokenId(),
-                refreshTokenTtl
-        );
-
-        if (!rotated) {
-            refreshTokenStore.deleteBySessionId(previousRefreshClaims.sessionId());
-            sessionRevocationStore.revoke(previousRefreshClaims.sessionId());
-            throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        return new RotatedRefreshToken(refreshToken, refreshTokenTtl.toSeconds());
-    }
-
-    private void validateAccessTokenOwner(JwtTokenClaims claims, UUID userId) {
-        if (!claims.userId().equals(userId)) {
-            throw new SellerException(SellerErrorCode.INVALID_ACCESS_TOKEN);
-        }
-    }
-
-    private void blacklistAccessToken(JwtTokenClaims claims) {
-        Duration remainingExpiration = getRemainingExpiration(claims);
-
-        if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
-            return;
-        }
-
-        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
-    }
-
-    private Duration getRemainingExpiration(JwtTokenClaims claims) {
-        Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
-
-        if (remainingExpiration.isNegative()) {
-            return Duration.ZERO;
-        }
-
-        return remainingExpiration;
-    }
-
-    private JwtSubject toJwtSubject(UserView seller, UUID sessionId) {
-        return new JwtSubject(seller.userId(), sessionId, seller.role().name(), seller.nickname(), seller.email());
-    }
-
-    private record RotatedRefreshToken(
-            String token,
-            long maxAgeSeconds
-    ) {
-    }
 }

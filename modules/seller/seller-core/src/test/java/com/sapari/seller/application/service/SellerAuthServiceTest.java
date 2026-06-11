@@ -85,6 +85,13 @@ class SellerAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
+    private final SellerJwtSessionService sellerJwtSessionService = new SellerJwtSessionService(
+            jwtTokenProvider,
+            refreshTokenStore,
+            sessionRevocationStore,
+            accessTokenBlacklist,
+            timeProvider()
+    );
     private final SellerAuthService sellerAuthService = new SellerAuthService(
             userAccountUseCase,
             localCredentialRepository,
@@ -92,10 +99,7 @@ class SellerAuthServiceTest {
             sellerBusinessRegistrationVerifier,
             sellerSignupProcessor,
             passwordEncoder,
-            jwtTokenProvider,
-            refreshTokenStore,
-            sessionRevocationStore,
-            accessTokenBlacklist,
+            sellerJwtSessionService,
             timeProvider(),
             Mappers.getMapper(SellerViewMapper.class)
     );
@@ -342,6 +346,13 @@ class SellerAuthServiceTest {
         String previousRefreshToken = "previous-refresh-token";
         String rotatedRefreshToken = "rotated-refresh-token";
         JwtTokenProvider tokenProvider = mock(JwtTokenProvider.class);
+        SellerJwtSessionService jwtSessionService = new SellerJwtSessionService(
+                tokenProvider,
+                refreshTokenStore,
+                sessionRevocationStore,
+                accessTokenBlacklist,
+                timeProvider()
+        );
         SellerAuthService service = new SellerAuthService(
                 userAccountUseCase,
                 localCredentialRepository,
@@ -349,10 +360,7 @@ class SellerAuthServiceTest {
                 sellerBusinessRegistrationVerifier,
                 sellerSignupProcessor,
                 passwordEncoder,
-                tokenProvider,
-                refreshTokenStore,
-                sessionRevocationStore,
-                accessTokenBlacklist,
+                jwtSessionService,
                 timeProvider(),
                 Mappers.getMapper(SellerViewMapper.class)
         );
@@ -451,7 +459,7 @@ class SellerAuthServiceTest {
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(accessToken);
 
         // when
-        sellerAuthService.logout(new SellerLogoutCommand(userId, accessToken));
+        sellerAuthService.logout(new SellerLogoutCommand(accessToken));
 
         // then
         verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
@@ -519,7 +527,6 @@ class SellerAuthServiceTest {
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         JwtTokenClaims oldAccessClaims = jwtTokenProvider.parseToken(oldAccessToken);
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -564,7 +571,6 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -588,7 +594,6 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
-                userId,
                 "seller",
                 oldAccessToken
         );
@@ -611,7 +616,6 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -632,7 +636,6 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
         SellerNicknameUpdateCommand command = new SellerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );

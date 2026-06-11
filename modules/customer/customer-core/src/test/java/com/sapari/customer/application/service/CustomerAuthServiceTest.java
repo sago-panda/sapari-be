@@ -79,14 +79,18 @@ class CustomerAuthServiceTest {
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final CustomerAuthService customerAuthService = new CustomerAuthService(
-            socialSignupRedisRepository,
-            socialLoginCodeRedisRepository,
-            userAccountUseCase,
+    private final CustomerJwtSessionService customerJwtSessionService = new CustomerJwtSessionService(
             jwtTokenProvider,
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
+            timeProvider()
+    );
+    private final CustomerAuthService customerAuthService = new CustomerAuthService(
+            socialSignupRedisRepository,
+            socialLoginCodeRedisRepository,
+            userAccountUseCase,
+            customerJwtSessionService,
             timeProvider(),
             objectMapper,
             Mappers.getMapper(CustomerViewMapper.class)
@@ -253,14 +257,18 @@ class CustomerAuthServiceTest {
         String previousRefreshToken = "previous-refresh-token";
         String rotatedRefreshToken = "rotated-refresh-token";
         JwtTokenProvider tokenProvider = mock(JwtTokenProvider.class);
-        CustomerAuthService service = new CustomerAuthService(
-                socialSignupRedisRepository,
-                socialLoginCodeRedisRepository,
-                userAccountUseCase,
+        CustomerJwtSessionService jwtSessionService = new CustomerJwtSessionService(
                 tokenProvider,
                 refreshTokenStore,
                 sessionRevocationStore,
                 accessTokenBlacklist,
+                timeProvider()
+        );
+        CustomerAuthService service = new CustomerAuthService(
+                socialSignupRedisRepository,
+                socialLoginCodeRedisRepository,
+                userAccountUseCase,
+                jwtSessionService,
                 timeProvider(),
                 objectMapper,
                 Mappers.getMapper(CustomerViewMapper.class)
@@ -354,7 +362,7 @@ class CustomerAuthServiceTest {
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(accessToken);
 
         // when
-        customerAuthService.logout(new CustomerLogoutCommand(userId, accessToken));
+        customerAuthService.logout(new CustomerLogoutCommand(accessToken));
 
         // then
         verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
@@ -384,7 +392,6 @@ class CustomerAuthServiceTest {
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         JwtTokenClaims oldAccessClaims = jwtTokenProvider.parseToken(oldAccessToken);
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -424,7 +431,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -448,7 +454,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "customer",
                 oldAccessToken
         );
@@ -471,7 +476,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -492,7 +496,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );

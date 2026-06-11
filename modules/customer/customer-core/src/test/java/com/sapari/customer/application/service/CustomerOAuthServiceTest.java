@@ -32,7 +32,9 @@ import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
 import com.sapari.customer.view.CustomerOAuthResult;
 import com.sapari.customer.view.CustomerOAuthResultType;
 import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -57,14 +59,23 @@ class CustomerOAuthServiceTest {
     );
     private final RefreshTokenStore refreshTokenStore =
             mock(RefreshTokenStore.class);
+    private final SessionRevocationStore sessionRevocationStore =
+            mock(SessionRevocationStore.class);
+    private final AccessTokenBlacklist accessTokenBlacklist =
+            mock(AccessTokenBlacklist.class);
+    private final CustomerJwtSessionService customerJwtSessionService = new CustomerJwtSessionService(
+            jwtTokenProvider,
+            refreshTokenStore,
+            sessionRevocationStore,
+            accessTokenBlacklist,
+            timeProvider()
+    );
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final CustomerOAuthService customerOAuthService = new CustomerOAuthService(
             userAccountUseCase,
             socialSignupRedisRepository,
             socialLoginCodeRedisRepository,
-            jwtTokenProvider,
-            refreshTokenStore,
-            timeProvider(),
+            customerJwtSessionService,
             objectMapper
     );
 

@@ -164,10 +164,9 @@ public class CustomerAuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
-        customerAuthUseCase.logout(new CustomerLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
+        customerAuthUseCase.logout(new CustomerLogoutCommand(resolveAccessToken(authorizationHeader)));
 
         return ResponseEntity
                 .noContent()
@@ -188,12 +187,11 @@ public class CustomerAuthController {
 
     @PutMapping("/me/nickname")
     public ResponseEntity<CustomerMeResponse> updateNickname(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody CustomerNicknameUpdateRequest request
     ) {
         CustomerNicknameUpdateResult result = customerAuthUseCase.updateNickname(
-                request.toCommand(userId, resolveAccessToken(authorizationHeader))
+                request.toCommand(resolveAccessToken(authorizationHeader))
         );
 
         return ResponseEntity
