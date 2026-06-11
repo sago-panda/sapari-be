@@ -18,8 +18,8 @@ import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerOAuthCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
-import com.sapari.customer.infrastructure.redis.SocialLoginCodeRedisRepository;
-import com.sapari.customer.infrastructure.redis.SocialSignupRedisRepository;
+import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
+import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.port.CustomerOAuthUseCase;
 import com.sapari.customer.view.CustomerOAuthResult;
 import com.sapari.customer.view.SocialLoginTokenResult;
@@ -34,8 +34,8 @@ import com.sapari.user.view.UserView;
 public class CustomerOAuthService implements CustomerOAuthUseCase {
 
     private final UserAccountUseCase userAccountUseCase;
-    private final SocialSignupRedisRepository socialSignupRedisRepository;
-    private final SocialLoginCodeRedisRepository socialLoginCodeRedisRepository;
+    private final SocialSignupRepository socialSignupRepository;
+    private final SocialLoginCodeRepository socialLoginCodeRepository;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenStore refreshTokenStore;
     private final TimeProvider timeProvider;
@@ -74,7 +74,7 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
                 refreshToken
         ));
 
-        socialLoginCodeRedisRepository.save(loginCode, socialLoginTokenInfoJson);
+        socialLoginCodeRepository.save(loginCode, socialLoginTokenInfoJson);
 
         return CustomerOAuthResult.loginSuccess(loginCode);
     }
@@ -86,7 +86,7 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
         String signupSid = UUID.randomUUID().toString();
         String socialSignupInfoJson = toJson(SocialSignupInfo.from(command));
 
-        socialSignupRedisRepository.save(signupSid, socialSignupInfoJson);
+        socialSignupRepository.save(signupSid, socialSignupInfoJson);
 
         return CustomerOAuthResult.signupRequired(signupSid);
     }

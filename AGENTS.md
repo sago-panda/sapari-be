@@ -10,7 +10,7 @@ Non-obvious / decision-bearing only; defaults (Spring Boot, Lombok, JUnit) → `
 | Area | Choice |
 |---|---|
 | Runtime | Java 21 · **Spring Boot 4.0.6** (Gradle, Groovy DSL) |
-| Persistence | PostgreSQL (JPA/Hibernate) · **QueryDSL** · Redis · **MapStruct** (entity ↔ domain record) |
+| Persistence | PostgreSQL (JPA/Hibernate) · **QueryDSL** · Redis · **MapStruct** (entity ↔ domain record) · **Flyway** (schema-per-domain DDL) |
 | Media | **LiveKit** SFU + HLS Egress → S3 |
 | Test fixtures | **FixtureMonkey** |
 
@@ -22,6 +22,7 @@ common/    domain-agnostic shared code (core / web / global)
 storage/   persistence adapters (db-core / redis-core / search-core / object-storage)
 modules/   domain modules — each an -api / -core pair (internal layout: modules/AGENTS.md)
            live ✅ broadcast (chat WIP) · customer, seller, product, order, promotion, notification ⚠️ skeleton only — follow live
+db/        Flyway DDL — schema = domain, db/migration/<domain>/V*.sql (runner: infra/migration; see infra/AGENTS.md)
 ```
 
 Module-specific conventions: **prefer the `AGENTS.md` inside that directory**.
@@ -74,6 +75,7 @@ Create a missing referenced file only when starting work in that area.
 | New domain module layout | `modules/AGENTS.md` |
 | Order / payment domain | `modules/order/AGENTS.md` |
 | JPA entities | `storage/db-core/AGENTS.md` |
+| DB schema / Flyway migrations | `infra/AGENTS.md` (Migrations) |
 | Redis cache patterns | `storage/redis-core/AGENTS.md` |
 | WebSocket / STOMP | `apps/streaming-app/AGENTS.md` |
 | LiveKit integration | `.claude/skills/livekit-integration.md` |
