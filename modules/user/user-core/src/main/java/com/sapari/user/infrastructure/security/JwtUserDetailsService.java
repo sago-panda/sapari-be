@@ -8,29 +8,27 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import com.sapari.user.domain.model.User;
-import com.sapari.user.domain.repository.UserRepository;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.UserView;
 
 @Service
 @RequiredArgsConstructor
 public class JwtUserDetailsService implements UserDetailsService {
 
-    private final UserRepository userRepository;
+    private final UserAccountUseCase userAccountUseCase;
 
     @Override
-    @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
         UUID userId = parseUserId(username);
 
-        User user = userRepository.findById(userId)
+        UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new UsernameNotFoundException("해당하는 유저가 없습니다."));
 
         return new JwtUserDetails(toUserDetailsInfo(user));
     }
 
-    private JwtUserDetailsInfo toUserDetailsInfo(User user) {
+    private JwtUserDetailsInfo toUserDetailsInfo(UserView user) {
         return new JwtUserDetailsInfo(
                 user.userId(),
                 user.role().name(),
