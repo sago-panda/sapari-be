@@ -25,11 +25,7 @@ public class SellerJwtTokenAdapter {
      * 판매자 정보를 JWT 발급용 snapshot으로 변환해 새 토큰 쌍을 발급한다.
      */
     public JwtTokenLifecycle.IssuedTokenPair issueTokenPair(UserView seller) {
-        try {
-            return jwtTokenLifecycle.issueTokenPair(toJwtTokenPrincipal(seller));
-        } catch (JwtTokenLifecycleException e) {
-            throw invalidRefreshToken(e);
-        }
+        return jwtTokenLifecycle.issueTokenPair(toJwtTokenPrincipal(seller));
     }
 
     /**

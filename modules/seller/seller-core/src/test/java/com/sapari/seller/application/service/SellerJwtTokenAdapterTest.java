@@ -20,6 +20,7 @@ import org.mockito.ArgumentCaptor;
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycleException;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
@@ -77,6 +78,20 @@ class SellerJwtTokenAdapterTest {
                 eq(refreshClaims.tokenId()),
                 eq(Duration.between(NOW, refreshClaims.expiresAt()))
         );
+    }
+
+    @Test
+    @DisplayName("신규 토큰 발급 실패는 refresh token 오류로 변환하지 않는다")
+    void issueTokenPairPropagatesLifecycleException() {
+        // given
+        JwtTokenLifecycle tokenLifecycle = mock(JwtTokenLifecycle.class);
+        SellerJwtTokenAdapter adapter = new SellerJwtTokenAdapter(tokenLifecycle);
+        JwtTokenLifecycleException exception = new JwtTokenLifecycleException("token issue failed.");
+        when(tokenLifecycle.issueTokenPair(any())).thenThrow(exception);
+
+        // when & then
+        assertThatThrownBy(() -> adapter.issueTokenPair(sellerView(UUID.randomUUID(), "seller")))
+                .isSameAs(exception);
     }
 
     @Test
