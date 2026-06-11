@@ -1,4 +1,4 @@
-package com.sapari.chat.infrastructure.messaging;
+package com.sapari.chat.application.protocol;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

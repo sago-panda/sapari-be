@@ -2,8 +2,8 @@ package com.sapari.chat.application.port;
 
 import java.util.UUID;
 
+import com.sapari.chat.application.protocol.ChatEnvelope;
 import com.sapari.chat.domain.model.ChatMessage;
-import com.sapari.chat.infrastructure.messaging.ChatEnvelope;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
