@@ -116,9 +116,15 @@ class ArchitectureTest {
         return parts.length >= 3 ? parts[2] : "";
     }
 
-    // <layer>가 application/domain/infrastructure 면 -core 내부로 본다 (common.core·common.web 등은 제외)
+    // <layer>가 application/domain/infrastructure 면 -core 내부로 본다 (common.core·common.web 등은 제외).
+    // com.sapari 한정 — 서드파티(org.springframework.data.domain.Sort 등)가 parts[3]=domain 휴리스틱에
+    // 걸리는 오탐을 차단한다.
     private static boolean isCoreLayer(JavaClass clazz) {
-        String[] parts = clazz.getPackageName().split("\\.");
+        String packageName = clazz.getPackageName();
+        if (!packageName.startsWith("com.sapari.")) {
+            return false;
+        }
+        String[] parts = packageName.split("\\.");
         return parts.length >= 4 && CORE_LAYERS.contains(parts[3]);
     }
 
