@@ -7,7 +7,7 @@ package com.sapari.chat.view;
  * 프론트가 공지·강퇴·원문토글 버튼 노출 여부를 결정한다(방 주인일 때만 노출).
  * (role은 클라이언트가 자기 JWT claim으로 이미 알 수 있어 중복이라 싣지 않는다.)
  */
-public record ChatSessionInfo(
+public record ChatSessionView(
         long activeCount,
         boolean isRoomOwner
 ) {

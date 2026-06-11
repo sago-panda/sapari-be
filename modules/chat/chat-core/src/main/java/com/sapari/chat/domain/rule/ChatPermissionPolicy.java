@@ -1,4 +1,4 @@
-package com.sapari.chat.domain.service;
+package com.sapari.chat.domain.rule;
 
 import java.util.UUID;
 
