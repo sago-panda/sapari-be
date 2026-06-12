@@ -14,7 +14,7 @@ import jakarta.persistence.Table;
 
 @Entity
 @Getter
-@Table(name = "local_credentials")
+@Table(name = "local_credentials", schema = "seller_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class LocalCredentialEntity {
 

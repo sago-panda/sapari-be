@@ -22,7 +22,7 @@ import com.sapari.user.model.UserStatus;
 
 @Entity
 @Getter
-@Table(name = "users")
+@Table(name = "users", schema = "user_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class UserEntity extends BaseUuidEntity {
 
