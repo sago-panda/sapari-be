@@ -30,4 +30,10 @@ public class LocalCredentialRepositoryImpl implements LocalCredentialRepository 
         return localCredentialJpaRepository.findById(userId)
                 .map(localCredentialMapper::toDomain);
     }
+
+    @Override
+    public Optional<LocalCredential> findByIdForUpdate(UUID userId) {
+        return localCredentialJpaRepository.findWithLockByUserId(userId)
+                .map(localCredentialMapper::toDomain);
+    }
 }

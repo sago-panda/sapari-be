@@ -43,6 +43,8 @@ import com.sapari.user.view.UserView;
 public class SellerAuthService implements SellerAuthUseCase {
 
     private static final Duration NICKNAME_CHANGE_INTERVAL = Duration.ofDays(30);
+    private static final Duration LOGIN_LOCK_DURATION = Duration.ofMinutes(10);
+    private static final int LOGIN_LOCK_THRESHOLD = 5;
 
     private final UserAccountUseCase userAccountUseCase;
     private final LocalCredentialRepository localCredentialRepository;
@@ -96,15 +98,29 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     @Override
-    @Transactional
+    // 비밀번호 실패 이력은 인증 실패 응답을 반환하더라도 커밋되어야 하므로 SellerException으로 rollback하지 않는다.
+    @Transactional(noRollbackFor = SellerException.class)
     public SellerLoginResult login(SellerLoginCommand command) {
         UserView seller = findSellerByEmail(command.email());
-        LocalCredential localCredential = findLocalCredential(seller.userId());
+        LocalCredential localCredential = findLocalCredentialForUpdate(seller.userId());
+        Instant now = timeProvider.now();
 
-        if (!passwordEncoder.matches(command.password(), localCredential.passwordHash())) {
+        // 잠금 중에는 계정 존재 여부나 잠금 상태를 드러내지 않고 비밀번호 검증 전에 차단한다.
+        if (localCredential.isLocked(now, LOGIN_LOCK_DURATION)) {
             throw new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS);
         }
 
+        // 잠금이 만료된 계정은 실패 횟수를 새 로그인 시도 기준으로 다시 계산한다.
+        LocalCredential loginAttemptCredential = resetExpiredLock(localCredential, now);
+        if (!passwordEncoder.matches(command.password(), loginAttemptCredential.passwordHash())) {
+            localCredentialRepository.save(loginAttemptCredential.recordLoginFailure(now, LOGIN_LOCK_THRESHOLD));
+            throw new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS);
+        }
+
+        // 로그인 성공 시 연속 실패 이력이나 잠금 상태가 남아 있는 경우에만 초기화한다.
+        if (loginAttemptCredential.hasLoginFailureHistory()) {
+            localCredentialRepository.save(loginAttemptCredential.resetLoginFailures());
+        }
         JwtTokenLifecycle.IssuedTokenPair tokenPair = sellerJwtTokenAdapter.issueTokenPair(seller);
 
         return new SellerLoginResult(seller.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
@@ -209,9 +225,22 @@ public class SellerAuthService implements SellerAuthUseCase {
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS));
     }
 
-    private LocalCredential findLocalCredential(UUID userId) {
-        return localCredentialRepository.findById(userId)
+    private LocalCredential findLocalCredentialForUpdate(UUID userId) {
+        // 같은 판매자 계정의 동시 로그인 실패 시도도 실패 횟수가 순차 반영되도록 row lock을 사용한다.
+        return localCredentialRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS));
+    }
+
+    private LocalCredential resetExpiredLock(LocalCredential localCredential, Instant now) {
+        if (localCredential.lockedAt() == null) {
+            return localCredential;
+        }
+
+        if (localCredential.isLocked(now, LOGIN_LOCK_DURATION)) {
+            return localCredential;
+        }
+
+        return localCredential.resetLoginFailures();
     }
 
     private UserView findRefreshTokenSeller(UUID userId) {
