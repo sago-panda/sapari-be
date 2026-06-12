@@ -25,6 +25,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
@@ -79,14 +80,20 @@ class CustomerAuthServiceTest {
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final CustomerAuthService customerAuthService = new CustomerAuthService(
-            socialSignupRepository,
-            socialLoginCodeRepository,
-            userAccountUseCase,
+    private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
+            timeProvider()
+    );
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter =
+            new CustomerJwtTokenAdapter(jwtTokenLifecycle);
+    private final CustomerAuthService customerAuthService = new CustomerAuthService(
+            socialSignupRepository,
+            socialLoginCodeRepository,
+            userAccountUseCase,
+            customerJwtTokenAdapter,
             timeProvider(),
             objectMapper,
             Mappers.getMapper(CustomerViewMapper.class)
@@ -253,14 +260,19 @@ class CustomerAuthServiceTest {
         String previousRefreshToken = "previous-refresh-token";
         String rotatedRefreshToken = "rotated-refresh-token";
         JwtTokenProvider tokenProvider = mock(JwtTokenProvider.class);
-        CustomerAuthService service = new CustomerAuthService(
-                socialSignupRepository,
-                socialLoginCodeRepository,
-                userAccountUseCase,
+        JwtTokenLifecycle tokenLifecycle = new JwtTokenLifecycle(
                 tokenProvider,
                 refreshTokenStore,
                 sessionRevocationStore,
                 accessTokenBlacklist,
+                timeProvider()
+        );
+        CustomerJwtTokenAdapter jwtTokenAdapter = new CustomerJwtTokenAdapter(tokenLifecycle);
+        CustomerAuthService service = new CustomerAuthService(
+                socialSignupRepository,
+                socialLoginCodeRepository,
+                userAccountUseCase,
+                jwtTokenAdapter,
                 timeProvider(),
                 objectMapper,
                 Mappers.getMapper(CustomerViewMapper.class)
@@ -354,7 +366,7 @@ class CustomerAuthServiceTest {
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(accessToken);
 
         // when
-        customerAuthService.logout(new CustomerLogoutCommand(userId, accessToken));
+        customerAuthService.logout(new CustomerLogoutCommand(accessToken));
 
         // then
         verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
@@ -384,7 +396,6 @@ class CustomerAuthServiceTest {
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         JwtTokenClaims oldAccessClaims = jwtTokenProvider.parseToken(oldAccessToken);
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -424,7 +435,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -448,7 +458,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "customer",
                 oldAccessToken
         );
@@ -471,7 +480,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -492,7 +500,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
