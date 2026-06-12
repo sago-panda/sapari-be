@@ -161,12 +161,11 @@ public class SellerAuthController {
 
     @PutMapping("/me/nickname")
     public ResponseEntity<SellerMeResponse> updateNickname(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
         SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(
-                request.toCommand(userId, resolveAccessToken(authorizationHeader))
+                request.toCommand(resolveAccessToken(authorizationHeader))
         );
 
         return ResponseEntity
@@ -177,10 +176,9 @@ public class SellerAuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
-        sellerAuthUseCase.logout(new SellerLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
+        sellerAuthUseCase.logout(new SellerLogoutCommand(resolveAccessToken(authorizationHeader)));
 
         return ResponseEntity
                 .noContent()

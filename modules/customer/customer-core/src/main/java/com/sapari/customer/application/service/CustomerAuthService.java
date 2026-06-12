@@ -12,13 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.securityjwt.jwt.JwtSubject;
-import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
-import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
-import com.sapari.common.securityjwt.jwt.JwtTokenType;
-import com.sapari.global.time.TimeProvider;
-import com.sapari.customer.application.mapper.CustomerViewMapper;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.customer.application.dto.SocialSignupInfo;
+import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.SocialSignupCommand;
@@ -33,10 +29,8 @@ import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.customer.view.SocialSignupResult;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
-import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
-import com.sapari.common.securityjwt.store.RefreshTokenStore;
-import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
@@ -51,10 +45,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final SocialSignupRepository socialSignupRepository;
     private final SocialLoginCodeRepository socialLoginCodeRepository;
     private final UserAccountUseCase userAccountUseCase;
-    private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenStore refreshTokenStore;
-    private final SessionRevocationStore sessionRevocationStore;
-    private final AccessTokenBlacklist accessTokenBlacklist;
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter;
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
     private final CustomerViewMapper customerViewMapper;
@@ -70,13 +61,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         try {
             UserView savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
             socialSignupRepository.delete(signupSid);
+            JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(savedUser);
 
-            UUID sessionId = UUID.randomUUID();
-            JwtSubject subject = toJwtSubject(savedUser, sessionId);
-            String accessToken = jwtTokenProvider.createAccessToken(subject);
-            String refreshToken = issueRefreshToken(subject);
-
-            return new SocialSignupResult(savedUser.userId(), accessToken, refreshToken);
+            return new SocialSignupResult(savedUser.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
         } catch (DataIntegrityViolationException e) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
@@ -113,30 +100,23 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional
     public CustomerTokenReissueResult reissueAccessToken(String refreshToken) {
-        JwtTokenClaims claims = parseRefreshToken(refreshToken);
-
-        UserView customer = findRefreshTokenCustomer(claims.userId());
-        JwtSubject subject = toJwtSubject(customer, claims.sessionId());
-        String accessToken = jwtTokenProvider.createAccessToken(subject);
-        RotatedRefreshToken rotatedRefreshToken = rotateRefreshToken(subject, claims);
+        JwtTokenLifecycle.RefreshSession refreshSession = customerJwtTokenAdapter.requireRefreshToken(refreshToken);
+        UserView customer = findRefreshTokenCustomer(refreshSession.userId());
+        JwtTokenLifecycle.RotatedRefreshToken rotatedRefreshToken =
+                customerJwtTokenAdapter.rotateRefreshToken(refreshSession, customer);
 
         return new CustomerTokenReissueResult(
                 customer.userId(),
-                accessToken,
-                rotatedRefreshToken.token(),
-                rotatedRefreshToken.maxAgeSeconds()
+                rotatedRefreshToken.accessToken(),
+                rotatedRefreshToken.refreshToken(),
+                rotatedRefreshToken.refreshTokenMaxAgeSeconds()
         );
     }
 
     @Override
     @Transactional
     public void logout(CustomerLogoutCommand command) {
-        JwtTokenClaims claims = parseAccessToken(command.accessToken());
-        validateAccessTokenOwner(claims, command.userId());
-
-        // 로그아웃은 현재 sid 세션 전체를 폐기해 같은 세션의 Access Token까지 차단한다.
-        refreshTokenStore.deleteBySessionId(claims.sessionId());
-        sessionRevocationStore.revoke(claims.sessionId());
+        customerJwtTokenAdapter.revokeSession(command.accessToken());
     }
 
     @Override
@@ -166,10 +146,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional
     public CustomerNicknameUpdateResult updateNickname(CustomerNicknameUpdateCommand command) {
-        JwtTokenClaims accessClaims = parseAccessToken(command.accessToken());
-        validateAccessTokenOwner(accessClaims, command.userId());
-
-        UserView customer = findCustomer(command.userId());
+        JwtTokenLifecycle.AccessSession accessSession =
+                customerJwtTokenAdapter.requireAccessToken(command.accessToken());
+        UserView customer = findCustomer(accessSession.userId());
 
         validateDuplicatedNickname(command.nickname());
 
@@ -177,10 +156,8 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         validateNicknameChangeAllowed(customer, now);
 
         try {
-            UserView savedCustomer = userAccountUseCase.changeNickname(command.userId(), command.nickname());
-            // nickname이 바뀌었으므로 기존 access jti를 폐기하고 같은 sid로 새 Access Token을 발급
-            blacklistAccessToken(accessClaims);
-            String accessToken = jwtTokenProvider.createAccessToken(toJwtSubject(savedCustomer, accessClaims.sessionId()));
+            UserView savedCustomer = userAccountUseCase.changeNickname(accessSession.userId(), command.nickname());
+            String accessToken = customerJwtTokenAdapter.replaceAccessTokenForNickname(accessSession, savedCustomer);
 
             return customerViewMapper.toNicknameUpdateResult(savedCustomer, accessToken);
         } catch (DataIntegrityViolationException e) {
@@ -266,119 +243,4 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         return user;
     }
 
-    private JwtTokenClaims parseRefreshToken(String refreshToken) {
-        if (refreshToken == null || refreshToken.isBlank()) {
-            throw new CustomerException(CustomerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        JwtTokenClaims claims = parseToken(refreshToken, CustomerErrorCode.INVALID_REFRESH_TOKEN);
-
-        if (claims.tokenType() != JwtTokenType.REFRESH) {
-            throw new CustomerException(CustomerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        return claims;
-    }
-
-    private JwtTokenClaims parseAccessToken(String accessToken) {
-        if (accessToken == null || accessToken.isBlank()) {
-            throw new CustomerException(CustomerErrorCode.INVALID_ACCESS_TOKEN);
-        }
-
-        JwtTokenClaims claims = parseToken(accessToken, CustomerErrorCode.INVALID_ACCESS_TOKEN);
-
-        if (claims.tokenType() != JwtTokenType.ACCESS) {
-            throw new CustomerException(CustomerErrorCode.INVALID_ACCESS_TOKEN);
-        }
-
-        return claims;
-    }
-
-    private JwtTokenClaims parseToken(String token, CustomerErrorCode errorCode) {
-        try {
-            return jwtTokenProvider.parseToken(token);
-        } catch (RuntimeException e) {
-            throw new CustomerException(errorCode, e);
-        }
-    }
-
-    /**
-     * 로그인 세션의 Refresh Token을 발급하고 현재 Refresh Token ID를 저장한다.
-     */
-    private String issueRefreshToken(JwtSubject subject) {
-        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
-        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
-
-        refreshTokenStore.save(
-                refreshClaims.sessionId(),
-                refreshClaims.tokenId(),
-                getRemainingExpiration(refreshClaims)
-        );
-
-        return refreshToken;
-    }
-
-    /**
-     * 같은 로그인 세션에서 현재 Refresh Token ID를 새 Refresh Token ID로 교체한다.
-     */
-    private RotatedRefreshToken rotateRefreshToken(JwtSubject subject, JwtTokenClaims previousRefreshClaims) {
-        String refreshToken = jwtTokenProvider.createRefreshTokenForRotation(subject, previousRefreshClaims.expiresAt());
-        JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
-        Duration refreshTokenTtl = getRemainingExpiration(refreshClaims);
-
-        if (refreshTokenTtl.toMillis() < 1) {
-            throw new CustomerException(CustomerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        boolean rotated = refreshTokenStore.rotate(
-                previousRefreshClaims.sessionId(),
-                previousRefreshClaims.tokenId(),
-                refreshClaims.tokenId(),
-                refreshTokenTtl
-        );
-
-        if (!rotated) {
-            refreshTokenStore.deleteBySessionId(previousRefreshClaims.sessionId());
-            sessionRevocationStore.revoke(previousRefreshClaims.sessionId());
-            throw new CustomerException(CustomerErrorCode.INVALID_REFRESH_TOKEN);
-        }
-
-        return new RotatedRefreshToken(refreshToken, refreshTokenTtl.toSeconds());
-    }
-
-    private void validateAccessTokenOwner(JwtTokenClaims claims, UUID userId) {
-        if (!claims.userId().equals(userId)) {
-            throw new CustomerException(CustomerErrorCode.INVALID_ACCESS_TOKEN);
-        }
-    }
-
-    private void blacklistAccessToken(JwtTokenClaims claims) {
-        Duration remainingExpiration = getRemainingExpiration(claims);
-
-        if (remainingExpiration.isZero() || remainingExpiration.isNegative()) {
-            return;
-        }
-
-        accessTokenBlacklist.save(claims.tokenId(), remainingExpiration);
-    }
-
-    private Duration getRemainingExpiration(JwtTokenClaims claims) {
-        Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
-
-        if (remainingExpiration.isNegative()) {
-            return Duration.ZERO;
-        }
-
-        return remainingExpiration;
-    }
-
-    private JwtSubject toJwtSubject(UserView customer, UUID sessionId) {
-        return new JwtSubject(customer.userId(), sessionId, customer.role().name(), customer.nickname(), customer.email());
-    }
-
-    private record RotatedRefreshToken(
-            String token,
-            long maxAgeSeconds
-    ) {
-    }
 }
