@@ -135,6 +135,7 @@ class CustomerAuthServiceTest {
 
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
+                eq(userId),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
@@ -249,6 +250,24 @@ class CustomerAuthServiceTest {
                 eq(rotatedRefreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+    @Test
+    @DisplayName("탈퇴 유예 상태 구매자는 Refresh Token 재발급에 실패한다")
+    void reissueAccessTokenThrowsExceptionWhenCustomerIsWithdrawing() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String refreshToken =
+                jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId, UserStatus.WITHDRAWING)));
+
+        // when, then
+        assertThatThrownBy(() -> customerAuthService.reissueAccessToken(refreshToken))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.INVALID_REFRESH_TOKEN)
+                );
+        verify(refreshTokenStore, never())
+                .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
     }
 
     @Test
@@ -375,6 +394,26 @@ class CustomerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("회원 탈퇴 요청 시 상태를 탈퇴 유예로 바꾸고 사용자의 모든 세션을 폐기한다")
+    void requestWithdrawalMarksCustomerWithdrawingAndRevokesAllSessions() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken =
+                jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
+        when(userAccountUseCase.requestWithdrawal(userId))
+                .thenReturn(customerView(userId, UserStatus.WITHDRAWING));
+
+        // when
+        customerAuthService.requestWithdrawal(accessToken);
+
+        // then
+        verify(userAccountUseCase).requestWithdrawal(userId);
+        verify(refreshTokenStore).deleteAllByUserId(userId);
+        verify(sessionRevocationStore).revokeAll(userId);
+    }
+
+    @Test
     @DisplayName("내정보 조회 시 구매자가 아니면 실패한다")
     void getMyInfoThrowsExceptionWhenUserIsNotCustomer() {
         // given
@@ -424,7 +463,7 @@ class CustomerAuthServiceTest {
         verify(userAccountUseCase).existsByNickname("updated");
         verify(userAccountUseCase).changeNickname(userId, "updated");
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
-        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(Duration.class));
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
         verifyNoInteractions(sessionRevocationStore);
     }
 
@@ -574,18 +613,26 @@ class CustomerAuthServiceTest {
     }
 
     private UserView customerView(UUID userId) {
-        return customerView(userId, "customer", providerCreatedAt());
+        return customerView(userId, UserStatus.ACTIVE);
+    }
+
+    private UserView customerView(UUID userId, UserStatus status) {
+        return customerView(userId, "customer", providerCreatedAt(), status);
     }
 
     private UserView customerView(UUID userId, Instant nicknameChangedAt) {
-        return customerView(userId, "customer", nicknameChangedAt);
+        return customerView(userId, "customer", nicknameChangedAt, UserStatus.ACTIVE);
     }
 
     private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt) {
+        return customerView(userId, nickname, nicknameChangedAt, UserStatus.ACTIVE);
+    }
+
+    private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status) {
         return new UserView(
                 userId,
                 UserRole.USER,
-                UserStatus.ACTIVE,
+                status,
                 nickname,
                 nicknameChangedAt,
                 "구매자",

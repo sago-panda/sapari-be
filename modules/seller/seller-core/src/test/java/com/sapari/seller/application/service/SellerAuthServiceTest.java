@@ -277,10 +277,27 @@ class SellerAuthServiceTest {
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
         verify(refreshTokenStore).save(
+                eq(userId),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+    @Test
+    @DisplayName("탈퇴 유예 상태 판매자는 로그인에 실패한다")
+    void loginThrowsExceptionWhenSellerIsWithdrawing() {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId, UserStatus.WITHDRAWING)));
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.login(new SellerLoginCommand(EMAIL, PASSWORD)))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_LOGIN_CREDENTIALS)
+                );
+        verifyNoInteractions(localCredentialRepository, passwordEncoder, refreshTokenStore);
     }
 
     @Test
@@ -493,6 +510,23 @@ class SellerAuthServiceTest {
                 eq(rotatedRefreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+    @Test
+    @DisplayName("탈퇴 유예 상태 판매자는 Refresh Token 재발급에 실패한다")
+    void reissueAccessTokenThrowsExceptionWhenSellerIsWithdrawing() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId, UserStatus.WITHDRAWING)));
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.reissueAccessToken(refreshToken))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_REFRESH_TOKEN)
+                );
+        verify(refreshTokenStore, never())
+                .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
     }
 
     @Test
@@ -719,7 +753,7 @@ class SellerAuthServiceTest {
         verify(userAccountUseCase).existsByNickname("updated");
         verify(userAccountUseCase).changeNickname(userId, "updated");
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
-        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(Duration.class));
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
         verifyNoInteractions(sessionRevocationStore);
     }
 
@@ -883,18 +917,26 @@ class SellerAuthServiceTest {
     }
 
     private UserView sellerView(UUID userId) {
-        return sellerView(userId, "seller", passwordChangedAt());
+        return sellerView(userId, UserStatus.ACTIVE);
+    }
+
+    private UserView sellerView(UUID userId, UserStatus status) {
+        return sellerView(userId, "seller", passwordChangedAt(), status);
     }
 
     private UserView sellerView(UUID userId, Instant nicknameChangedAt) {
-        return sellerView(userId, "seller", nicknameChangedAt);
+        return sellerView(userId, "seller", nicknameChangedAt, UserStatus.ACTIVE);
     }
 
     private UserView sellerView(UUID userId, String nickname, Instant nicknameChangedAt) {
+        return sellerView(userId, nickname, nicknameChangedAt, UserStatus.ACTIVE);
+    }
+
+    private UserView sellerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status) {
         return new UserView(
                 userId,
                 UserRole.SELLER,
-                UserStatus.ACTIVE,
+                status,
                 nickname,
                 nicknameChangedAt,
                 "판매자",

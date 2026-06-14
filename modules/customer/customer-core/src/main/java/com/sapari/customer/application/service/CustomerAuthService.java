@@ -33,6 +33,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
 
@@ -117,6 +118,18 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Transactional
     public void logout(CustomerLogoutCommand command) {
         customerJwtTokenAdapter.revokeSession(command.accessToken());
+    }
+
+    @Override
+    @Transactional
+    public void requestWithdrawal(String accessToken) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                customerJwtTokenAdapter.requireAccessToken(accessToken);
+        UserView customer = findCustomer(accessSession.userId());
+
+        userAccountUseCase.requestWithdrawal(customer.userId());
+        // 회원 탈퇴는 현재 기기 로그아웃이 아니라 모든 기기 세션을 즉시 폐기해야 한다.
+        customerJwtTokenAdapter.revokeAllSessions(customer.userId());
     }
 
     @Override
@@ -236,7 +249,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new CustomerException(CustomerErrorCode.INVALID_REFRESH_TOKEN));
 
-        if (user.role() != UserRole.USER) {
+        if (user.role() != UserRole.USER || user.status() != UserStatus.ACTIVE) {
             throw new CustomerException(CustomerErrorCode.INVALID_REFRESH_TOKEN);
         }
 

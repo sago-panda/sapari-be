@@ -35,6 +35,7 @@ import com.sapari.seller.view.SellerNicknameUpdateResult;
 import com.sapari.seller.view.SellerSignupResult;
 import com.sapari.seller.view.SellerTokenReissueResult;
 import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
 
@@ -149,6 +150,18 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     @Override
+    @Transactional
+    public void requestWithdrawal(String accessToken) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                sellerJwtTokenAdapter.requireAccessToken(accessToken);
+        UserView seller = findSeller(accessSession.userId());
+
+        userAccountUseCase.requestWithdrawal(seller.userId());
+        // 회원 탈퇴는 현재 기기 로그아웃이 아니라 모든 기기 세션을 즉시 폐기해야 한다.
+        sellerJwtTokenAdapter.revokeAllSessions(seller.userId());
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public SellerMeView getMyInfo(UUID userId) {
         UserView seller = findSeller(userId);
@@ -221,8 +234,20 @@ public class SellerAuthService implements SellerAuthUseCase {
     }
 
     private UserView findSellerByEmail(String email) {
-        return userAccountUseCase.findByEmailAndRole(email, UserRole.SELLER)
+        UserView seller = userAccountUseCase.findByEmailAndRole(email, UserRole.SELLER)
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS));
+
+        validateActiveSellerForLogin(seller);
+        return seller;
+    }
+
+    private void validateActiveSellerForLogin(UserView seller) {
+        if (seller.status() == UserStatus.ACTIVE) {
+            return;
+        }
+
+        // 탈퇴 유예/삭제 계정도 계정 존재 여부를 노출하지 않도록 일반 로그인 실패로 응답한다.
+        throw new SellerException(SellerErrorCode.INVALID_LOGIN_CREDENTIALS);
     }
 
     private LocalCredential findLocalCredentialForUpdate(UUID userId) {
@@ -247,7 +272,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         UserView user = userAccountUseCase.findById(userId)
                 .orElseThrow(() -> new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN));
 
-        if (user.role() != UserRole.SELLER) {
+        if (user.role() != UserRole.SELLER || user.status() != UserStatus.ACTIVE) {
             throw new SellerException(SellerErrorCode.INVALID_REFRESH_TOKEN);
         }
 

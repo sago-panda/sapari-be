@@ -112,6 +112,15 @@ public class UserAccountService implements UserAccountUseCase {
         return toView(userRepository.save(updated));
     }
 
+    @Override
+    @Transactional
+    public UserView requestWithdrawal(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
+        User updated = user.requestWithdrawal(timeProvider.now());
+        return toView(userRepository.save(updated));
+    }
+
     private UserView toView(User user) {
         return new UserView(
                 user.userId(),

@@ -14,6 +14,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -183,6 +184,20 @@ public class CustomerAuthController {
         CustomerMeView result = customerAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(CustomerMeResponse.from(result));
+    }
+
+    @DeleteMapping("/me")
+    public ResponseEntity<Void> withdraw(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
+    ) {
+        customerAuthUseCase.requestWithdrawal(resolveAccessToken(authorizationHeader));
+
+        return ResponseEntity
+                .noContent()
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .toString())
+                .build();
     }
 
     @PutMapping("/me/nickname")

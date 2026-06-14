@@ -75,6 +75,7 @@ class CustomerJwtTokenAdapterTest {
         assertThat(refreshClaims.sessionId()).isEqualTo(accessClaims.sessionId());
         assertThat(refreshClaims.tokenId()).isNotEqualTo(accessClaims.tokenId());
         verify(refreshTokenStore).save(
+                eq(customer.userId()),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 eq(Duration.between(NOW, refreshClaims.expiresAt()))

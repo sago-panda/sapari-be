@@ -33,4 +33,6 @@ public interface UserAccountUseCase {
     boolean existsByNickname(String nickname);
 
     UserView changeNickname(UUID userId, String nickname);
+
+    UserView requestWithdrawal(UUID userId);
 }

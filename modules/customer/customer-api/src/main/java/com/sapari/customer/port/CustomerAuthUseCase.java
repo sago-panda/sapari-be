@@ -5,6 +5,7 @@ import java.util.UUID;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.SocialSignupCommand;
+
 import com.sapari.customer.view.CustomerMeView;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
 import com.sapari.customer.view.CustomerTokenReissueResult;
@@ -23,6 +24,8 @@ public interface CustomerAuthUseCase {
     CustomerTokenReissueResult reissueAccessToken(String refreshToken);
 
     void logout(CustomerLogoutCommand command);
+
+    void requestWithdrawal(String accessToken);
 
     boolean isPhoneNumberDuplicated(String phoneNumber);
 

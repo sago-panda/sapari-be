@@ -30,6 +30,8 @@ public interface SellerAuthUseCase {
 
     void logout(SellerLogoutCommand command);
 
+    void requestWithdrawal(String accessToken);
+
     SellerMeView getMyInfo(UUID userId);
 
     SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command);

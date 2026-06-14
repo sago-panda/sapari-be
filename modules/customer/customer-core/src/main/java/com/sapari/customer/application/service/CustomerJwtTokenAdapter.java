@@ -2,6 +2,8 @@ package com.sapari.customer.application.service;
 
 import lombok.RequiredArgsConstructor;
 
+import java.util.UUID;
+
 import org.springframework.stereotype.Component;
 
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
@@ -73,6 +75,13 @@ public class CustomerJwtTokenAdapter {
         } catch (JwtTokenLifecycleException e) {
             throw invalidAccessToken(e);
         }
+    }
+
+    /**
+     * 회원 탈퇴 시 userId에 묶인 모든 기기의 Refresh Token과 Access Token 세션을 폐기한다.
+     */
+    public void revokeAllSessions(UUID userId) {
+        jwtTokenLifecycle.revokeAllSessions(userId);
     }
 
     /**
