@@ -22,7 +22,6 @@ CREATE TABLE user_schema.users (
     suspended_until         timestamptz,
     suspension_reason       text,
     deleted_at              timestamptz,
-    personal_data_purged_at timestamptz,
     provider                varchar(255),
     provider_id             varchar(255),
     provider_email          varchar(255),
@@ -33,6 +32,9 @@ CREATE TABLE user_schema.users (
     CONSTRAINT uk_users_email        UNIQUE (email)
 );
 CREATE INDEX ON user_schema.users (status, role);
+CREATE INDEX idx_users_withdrawing_deleted_at
+    ON user_schema.users (deleted_at)
+    WHERE status = 'WITHDRAWING';
 
 -- 구매자 전용 소셜 로그인 연동. users와 N:1 — 제공자별 복수 연동 가능 (설계 DDL)
 -- ⚠️ 현 코드(UserEntity)는 provider 컬럼을 users에 내장 — 코드가 설계를 따라가면 이 테이블로 이관

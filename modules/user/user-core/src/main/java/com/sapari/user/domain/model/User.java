@@ -33,7 +33,6 @@ public record User(
         Instant suspendedUntil,
         String suspensionReason,
         Instant deletedAt,
-        Instant personalDataPurgedAt,
         ProviderType provider,
         String providerId,
         String providerEmail,
@@ -116,8 +115,22 @@ public record User(
                 .build();
     }
 
+    public User requestWithdrawal(Instant deletedAt) {
+        Assert.notNull(deletedAt, "deletedAt은 필수입니다.");
+
+        // deletedAt은 실제 삭제 완료 시각이 아니라 탈퇴 신청 후 30일 유예 시작 시각이다.
+        return toBuilder()
+                .status(UserStatus.WITHDRAWING)
+                .deletedAt(deletedAt)
+                .build();
+    }
+
     public boolean isActive() {
         return status == UserStatus.ACTIVE;
+    }
+
+    public boolean isWithdrawing() {
+        return status == UserStatus.WITHDRAWING;
     }
 
     public boolean isSuspended() {

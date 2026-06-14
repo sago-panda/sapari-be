@@ -75,8 +75,6 @@ public class UserEntity extends BaseUuidEntity {
 
     private Instant deletedAt;
 
-    private Instant personalDataPurgedAt;
-
     @Enumerated(EnumType.STRING)
     private ProviderType provider;
 
@@ -166,5 +164,14 @@ public class UserEntity extends BaseUuidEntity {
         this.profileImageKey = profileImageKey;
         this.email = email;
         this.marketingAgreed = marketingAgreed;
+    }
+
+    public void updateWithdrawalState(
+            UserStatus status,
+            Instant deletedAt
+    ) {
+        // 탈퇴 상태 전환은 프로필 수정과 별도 책임이라 명시적 메서드로 분리한다.
+        this.status = status;
+        this.deletedAt = deletedAt;
     }
 }
