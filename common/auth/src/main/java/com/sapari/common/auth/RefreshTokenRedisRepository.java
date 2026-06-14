@@ -3,7 +3,9 @@ package com.sapari.common.auth;
 import lombok.RequiredArgsConstructor;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -38,9 +40,12 @@ public class RefreshTokenRedisRepository implements RefreshTokenStore {
      * 로그인 세션의 현재 Refresh Token ID를 저장한다.
      */
     @Override
-    public void save(UUID sessionId, UUID refreshTokenId, Duration ttl) {
+    public void save(UUID userId, UUID sessionId, UUID refreshTokenId, Duration ttl) {
         stringRedisTemplate.opsForValue()
                 .set(createKey(sessionId), refreshTokenId.toString(), ttl);
+        String userSessionsKey = createUserSessionsKey(userId);
+        stringRedisTemplate.opsForSet().add(userSessionsKey, sessionId.toString());
+        stringRedisTemplate.expire(userSessionsKey, ttl);
     }
 
     /**
@@ -67,7 +72,28 @@ public class RefreshTokenRedisRepository implements RefreshTokenStore {
         stringRedisTemplate.delete(createKey(sessionId));
     }
 
+    @Override
+    public void deleteAllByUserId(UUID userId) {
+        String userSessionsKey = createUserSessionsKey(userId);
+        Set<String> sessionIds = stringRedisTemplate.opsForSet().members(userSessionsKey);
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            stringRedisTemplate.delete(userSessionsKey);
+            return;
+        }
+
+        List<String> keys = new ArrayList<>();
+        for (String sessionId : sessionIds) {
+            keys.add(TokenStoreKeys.REFRESH_TOKEN_SESSION_PREFIX + sessionId);
+        }
+        keys.add(userSessionsKey);
+        stringRedisTemplate.delete(keys);
+    }
+
     private String createKey(UUID sessionId) {
         return TokenStoreKeys.REFRESH_TOKEN_SESSION_PREFIX + sessionId;
+    }
+
+    private String createUserSessionsKey(UUID userId) {
+        return TokenStoreKeys.REFRESH_TOKEN_USER_SESSIONS_PREFIX + userId;
     }
 }

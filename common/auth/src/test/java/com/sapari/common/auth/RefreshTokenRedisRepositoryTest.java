@@ -11,6 +11,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.ValueOperations;
 
@@ -21,19 +22,22 @@ class RefreshTokenRedisRepositoryTest {
 
     private final StringRedisTemplate stringRedisTemplate = mock(StringRedisTemplate.class);
     private final ValueOperations<String, String> valueOperations = valueOperations();
+    private final SetOperations<String, String> setOperations = setOperations();
     private final RefreshTokenRedisRepository repository = new RefreshTokenRedisRepository(stringRedisTemplate);
 
     @Test
     @DisplayName("세션 ID 기준으로 현재 Refresh Token ID를 TTL과 함께 저장한다")
     void saveStoresRefreshTokenWithTtl() {
         // given
+        UUID userId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
         UUID refreshTokenId = UUID.randomUUID();
         String key = "refresh-token:session:" + sessionId;
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(stringRedisTemplate.opsForSet()).thenReturn(setOperations);
 
         // when
-        repository.save(sessionId, refreshTokenId, REFRESH_TOKEN_TTL);
+        repository.save(userId, sessionId, refreshTokenId, REFRESH_TOKEN_TTL);
 
         // then
         verify(valueOperations).set(
@@ -41,6 +45,27 @@ class RefreshTokenRedisRepositoryTest {
                 refreshTokenId.toString(),
                 REFRESH_TOKEN_TTL
         );
+    }
+
+    @Test
+    @DisplayName("사용자 ID 기준 세션 Set과 함께 Refresh Token을 저장한다")
+    void saveStoresRefreshTokenAndUserSessionSetWithTtl() {
+        // given
+        UUID userId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID refreshTokenId = UUID.randomUUID();
+        String refreshKey = "refresh-token:session:" + sessionId;
+        String userSessionKey = "refresh-token:user-sessions:" + userId;
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(stringRedisTemplate.opsForSet()).thenReturn(setOperations);
+
+        // when
+        repository.save(userId, sessionId, refreshTokenId, REFRESH_TOKEN_TTL);
+
+        // then
+        verify(valueOperations).set(refreshKey, refreshTokenId.toString(), REFRESH_TOKEN_TTL);
+        verify(stringRedisTemplate.opsForSet()).add(userSessionKey, sessionId.toString());
+        verify(stringRedisTemplate).expire(userSessionKey, REFRESH_TOKEN_TTL);
     }
 
     @Test
@@ -106,5 +131,10 @@ class RefreshTokenRedisRepositoryTest {
     @SuppressWarnings("unchecked")
     private ValueOperations<String, String> valueOperations() {
         return mock(ValueOperations.class);
+    }
+
+    @SuppressWarnings("unchecked")
+    private SetOperations<String, String> setOperations() {
+        return mock(SetOperations.class);
     }
 }

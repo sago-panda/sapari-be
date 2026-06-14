@@ -34,7 +34,7 @@ public class JwtTokenLifecycle {
         UUID sessionId = UUID.randomUUID();
         JwtSubject subject = toJwtSubject(principal, sessionId);
         String accessToken = jwtTokenProvider.createAccessToken(subject);
-        String refreshToken = issueRefreshToken(subject);
+        String refreshToken = issueRefreshToken(principal.userId(), subject);
 
         return new IssuedTokenPair(accessToken, refreshToken);
     }
@@ -94,6 +94,14 @@ public class JwtTokenLifecycle {
     }
 
     /**
+     * 사용자 계정 탈퇴처럼 모든 기기에서 로그아웃해야 하는 경우 userId에 묶인 모든 sid를 폐기한다.
+     */
+    public void revokeAllSessions(UUID userId) {
+        sessionRevocationStore.revokeAll(userId);
+        refreshTokenStore.deleteAllByUserId(userId);
+    }
+
+    /**
      * 기존 Access Token jti를 폐기하고 같은 sid로 새 Access Token을 발급한다.
      */
     public String replaceAccessToken(AccessSession accessSession, JwtTokenPrincipal principal) {
@@ -138,11 +146,12 @@ public class JwtTokenLifecycle {
         }
     }
 
-    private String issueRefreshToken(JwtSubject subject) {
+    private String issueRefreshToken(UUID userId, JwtSubject subject) {
         String refreshToken = jwtTokenProvider.createRefreshToken(subject);
         JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
 
         refreshTokenStore.save(
+                userId,
                 refreshClaims.sessionId(),
                 refreshClaims.tokenId(),
                 getRemainingExpiration(refreshClaims)

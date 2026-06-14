@@ -3,6 +3,7 @@ package com.sapari.common.auth;
 import lombok.RequiredArgsConstructor;
 
 import java.time.Duration;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -33,6 +34,19 @@ public class SessionRevocationRedisRepository implements SessionRevocationStore,
                         REVOKED_VALUE,
                         Duration.ofSeconds(jwtProperties.accessTokenExpirationSeconds())
                 );
+    }
+
+    @Override
+    public void revokeAll(UUID userId) {
+        Set<String> sessionIds = stringRedisTemplate.opsForSet()
+                .members(TokenStoreKeys.REFRESH_TOKEN_USER_SESSIONS_PREFIX + userId);
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return;
+        }
+
+        for (String sessionId : sessionIds) {
+            revoke(UUID.fromString(sessionId));
+        }
     }
 
     /**

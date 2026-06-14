@@ -12,7 +12,7 @@ public interface RefreshTokenStore {
     /**
      * 로그인 세션의 현재 Refresh Token ID를 저장한다.
      */
-    void save(UUID sessionId, UUID refreshTokenId, Duration ttl);
+    void save(UUID userId, UUID sessionId, UUID refreshTokenId, Duration ttl);
 
     /**
      * 현재 저장된 Refresh Token ID가 기대값과 같을 때 새 ID로 교체한다.
@@ -23,4 +23,9 @@ public interface RefreshTokenStore {
      * 로그인 세션의 Refresh Token 정보를 삭제한다.
      */
     void deleteBySessionId(UUID sessionId);
+
+    /**
+     * 사용자의 모든 로그인 세션 Refresh Token 정보를 삭제한다.
+     */
+    void deleteAllByUserId(UUID userId);
 }
