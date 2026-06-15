@@ -3,6 +3,8 @@ package com.sapari.user.application;
 import lombok.RequiredArgsConstructor;
 
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -13,7 +15,9 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.domain.model.User;
+import com.sapari.user.domain.model.WithdrawnUserRetention;
 import com.sapari.user.domain.repository.UserRepository;
+import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
@@ -27,7 +31,11 @@ import com.sapari.user.view.UserView;
 @RequiredArgsConstructor
 public class UserAccountService implements UserAccountUseCase {
 
+    private static final long WITHDRAWN_USER_RETENTION_YEARS = 5L;
+
     private final UserRepository userRepository;
+    private final WithdrawnUserRetentionRepository withdrawnUserRetentionRepository;
+    private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker;
     private final TimeProvider timeProvider;
 
     @Override
@@ -115,10 +123,35 @@ public class UserAccountService implements UserAccountUseCase {
     @Override
     @Transactional
     public UserView requestWithdrawal(UUID userId) {
+        Instant now = timeProvider.now();
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
-        User updated = user.requestWithdrawal(timeProvider.now());
+
+        createRetentionIfAbsent(user, now);
+
+        User updated = user.requestWithdrawal(now);
         return toView(userRepository.save(updated));
+    }
+
+    private void createRetentionIfAbsent(User user, Instant now) {
+        if (withdrawnUserRetentionRepository.existsByOriginalUserId(user.userId())) {
+            return;
+        }
+
+        withdrawnUserRetentionRepository.save(WithdrawnUserRetention.create(
+                user.userId(),
+                withdrawnUserRetentionMasker.maskName(user.name()),
+                withdrawnUserRetentionMasker.maskEmail(user.email()),
+                withdrawnUserRetentionMasker.maskPhoneNumber(user.phoneNumber()),
+                retentionUntil(now),
+                now
+        ));
+    }
+
+    private Instant retentionUntil(Instant withdrawalRequestedAt) {
+        return ZonedDateTime.ofInstant(withdrawalRequestedAt, ZoneOffset.UTC)
+                .plusYears(WITHDRAWN_USER_RETENTION_YEARS)
+                .toInstant();
     }
 
     private UserView toView(User user) {
