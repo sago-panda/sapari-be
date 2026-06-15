@@ -12,4 +12,6 @@ public interface LocalCredentialRepository {
     Optional<LocalCredential> findById(UUID userId);
 
     Optional<LocalCredential> findByIdForUpdate(UUID userId);
+
+    void deleteByUserId(UUID userId);
 }

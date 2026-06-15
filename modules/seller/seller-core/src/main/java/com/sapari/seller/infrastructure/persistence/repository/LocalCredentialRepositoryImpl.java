@@ -36,4 +36,9 @@ public class LocalCredentialRepositoryImpl implements LocalCredentialRepository 
         return localCredentialJpaRepository.findWithLockByUserId(userId)
                 .map(localCredentialMapper::toDomain);
     }
+
+    @Override
+    public void deleteByUserId(UUID userId) {
+        localCredentialJpaRepository.deleteById(userId);
+    }
 }

@@ -28,4 +28,6 @@ public interface UserRepository {
     boolean existsByPhoneNumberAndUserIdNot(String phoneNumber, UUID userId);
 
     boolean existsByEmailAndUserIdNot(String email, UUID userId);
+
+    void deleteById(UUID userId);
 }
