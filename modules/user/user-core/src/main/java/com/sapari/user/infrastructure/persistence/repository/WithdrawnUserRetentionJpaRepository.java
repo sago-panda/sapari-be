@@ -1,5 +1,6 @@
 package com.sapari.user.infrastructure.persistence.repository;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -12,4 +13,6 @@ public interface WithdrawnUserRetentionJpaRepository extends JpaRepository<Withd
     boolean existsByOriginalUserId(UUID originalUserId);
 
     Optional<WithdrawnUserRetentionEntity> findByOriginalUserId(UUID originalUserId);
+
+    int deleteByRetentionUntilLessThanEqual(Instant retentionUntil);
 }

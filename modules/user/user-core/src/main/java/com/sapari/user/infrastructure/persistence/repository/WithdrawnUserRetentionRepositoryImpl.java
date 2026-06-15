@@ -2,6 +2,7 @@ package com.sapari.user.infrastructure.persistence.repository;
 
 import lombok.RequiredArgsConstructor;
 
+import java.time.Instant;
 import java.util.UUID;
 
 import org.springframework.stereotype.Repository;
@@ -27,5 +28,10 @@ public class WithdrawnUserRetentionRepositoryImpl implements WithdrawnUserRetent
     @Override
     public boolean existsByOriginalUserId(UUID originalUserId) {
         return withdrawnUserRetentionJpaRepository.existsByOriginalUserId(originalUserId);
+    }
+
+    @Override
+    public int deleteExpiredBefore(Instant now) {
+        return withdrawnUserRetentionJpaRepository.deleteByRetentionUntilLessThanEqual(now);
     }
 }

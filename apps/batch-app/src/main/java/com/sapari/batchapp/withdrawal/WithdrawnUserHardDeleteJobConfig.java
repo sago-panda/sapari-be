@@ -27,6 +27,8 @@ public class WithdrawnUserHardDeleteJobConfig {
 
     public static final String JOB_NAME = "withdrawnUserHardDeleteJob";
     public static final String STEP_NAME = "withdrawnUserHardDeleteStep";
+    public static final String RETENTION_PURGE_JOB_NAME = "withdrawnUserRetentionPurgeJob";
+    public static final String RETENTION_PURGE_STEP_NAME = "withdrawnUserRetentionPurgeStep";
 
     @Bean
     public Job withdrawnUserHardDeleteJob(
@@ -50,6 +52,27 @@ public class WithdrawnUserHardDeleteJobConfig {
                 .<UUID, UUID>chunk(properties.chunkSize(), transactionManager)
                 .reader(withdrawnUserHardDeleteReader)
                 .writer(withdrawnUserHardDeleteWriter)
+                .build();
+    }
+
+    @Bean
+    public Job withdrawnUserRetentionPurgeJob(
+            JobRepository jobRepository,
+            Step withdrawnUserRetentionPurgeStep
+    ) {
+        return new JobBuilder(RETENTION_PURGE_JOB_NAME, jobRepository)
+                .start(withdrawnUserRetentionPurgeStep)
+                .build();
+    }
+
+    @Bean
+    public Step withdrawnUserRetentionPurgeStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            WithdrawnUserRetentionPurgeTasklet withdrawnUserRetentionPurgeTasklet
+    ) {
+        return new StepBuilder(RETENTION_PURGE_STEP_NAME, jobRepository)
+                .tasklet(withdrawnUserRetentionPurgeTasklet, transactionManager)
                 .build();
     }
 
