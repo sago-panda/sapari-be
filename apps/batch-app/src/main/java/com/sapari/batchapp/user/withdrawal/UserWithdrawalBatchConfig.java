@@ -1,4 +1,4 @@
-package com.sapari.batchapp.withdrawal;
+package com.sapari.batchapp.user.withdrawal;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -23,69 +23,70 @@ import org.springframework.transaction.PlatformTransactionManager;
 import com.sapari.global.time.TimeProvider;
 
 @Configuration(proxyBeanMethods = false)
-public class WithdrawnUserHardDeleteJobConfig {
+public class UserWithdrawalBatchConfig {
 
-    public static final String JOB_NAME = "withdrawnUserHardDeleteJob";
-    public static final String STEP_NAME = "withdrawnUserHardDeleteStep";
-    public static final String RETENTION_PURGE_JOB_NAME = "withdrawnUserRetentionPurgeJob";
-    public static final String RETENTION_PURGE_STEP_NAME = "withdrawnUserRetentionPurgeStep";
+    public static final String HARD_DELETE_JOB_NAME = "userWithdrawalHardDeleteJob";
+    public static final String HARD_DELETE_STEP_NAME = "userWithdrawalHardDeleteStep";
+    public static final String RETENTION_PURGE_JOB_NAME = "userWithdrawalRetentionPurgeJob";
+    public static final String RETENTION_PURGE_STEP_NAME = "userWithdrawalRetentionPurgeStep";
 
     @Bean
-    public Job withdrawnUserHardDeleteJob(
+    public Job userWithdrawalHardDeleteJob(
             JobRepository jobRepository,
-            Step withdrawnUserHardDeleteStep
+            Step userWithdrawalHardDeleteStep
     ) {
-        return new JobBuilder(JOB_NAME, jobRepository)
-                .start(withdrawnUserHardDeleteStep)
+        return new JobBuilder(HARD_DELETE_JOB_NAME, jobRepository)
+                .start(userWithdrawalHardDeleteStep)
                 .build();
     }
 
     @Bean
-    public Step withdrawnUserHardDeleteStep(
+    public Step userWithdrawalHardDeleteStep(
             JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
-            JdbcPagingItemReader<UUID> withdrawnUserHardDeleteReader,
-            WithdrawnUserHardDeleteWriter withdrawnUserHardDeleteWriter,
-            WithdrawnUserHardDeleteProperties properties
+            JdbcPagingItemReader<UUID> userWithdrawalHardDeleteReader,
+            UserWithdrawalHardDeleteWriter userWithdrawalHardDeleteWriter,
+            UserWithdrawalHardDeleteProperties properties
     ) {
-        return new StepBuilder(STEP_NAME, jobRepository)
-                .<UUID, UUID>chunk(properties.chunkSize(), transactionManager)
-                .reader(withdrawnUserHardDeleteReader)
-                .writer(withdrawnUserHardDeleteWriter)
+        return new StepBuilder(HARD_DELETE_STEP_NAME, jobRepository)
+                .<UUID, UUID>chunk(properties.chunkSize())
+                .transactionManager(transactionManager)
+                .reader(userWithdrawalHardDeleteReader)
+                .writer(userWithdrawalHardDeleteWriter)
                 .build();
     }
 
     @Bean
-    public Job withdrawnUserRetentionPurgeJob(
+    public Job userWithdrawalRetentionPurgeJob(
             JobRepository jobRepository,
-            Step withdrawnUserRetentionPurgeStep
+            Step userWithdrawalRetentionPurgeStep
     ) {
         return new JobBuilder(RETENTION_PURGE_JOB_NAME, jobRepository)
-                .start(withdrawnUserRetentionPurgeStep)
+                .start(userWithdrawalRetentionPurgeStep)
                 .build();
     }
 
     @Bean
-    public Step withdrawnUserRetentionPurgeStep(
+    public Step userWithdrawalRetentionPurgeStep(
             JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
-            WithdrawnUserRetentionPurgeTasklet withdrawnUserRetentionPurgeTasklet
+            UserWithdrawalRetentionPurgeTasklet userWithdrawalRetentionPurgeTasklet
     ) {
         return new StepBuilder(RETENTION_PURGE_STEP_NAME, jobRepository)
-                .tasklet(withdrawnUserRetentionPurgeTasklet, transactionManager)
+                .tasklet(userWithdrawalRetentionPurgeTasklet, transactionManager)
                 .build();
     }
 
     @Bean
-    public JdbcPagingItemReader<UUID> withdrawnUserHardDeleteReader(
+    public JdbcPagingItemReader<UUID> userWithdrawalHardDeleteReader(
             DataSource dataSource,
             TimeProvider timeProvider,
-            WithdrawnUserHardDeleteProperties properties
+            UserWithdrawalHardDeleteProperties properties
     ) throws Exception {
         Instant threshold = timeProvider.now().minus(properties.retentionDays(), ChronoUnit.DAYS);
 
         return new JdbcPagingItemReaderBuilder<UUID>()
-                .name("withdrawnUserHardDeleteReader")
+                .name("userWithdrawalHardDeleteReader")
                 .dataSource(dataSource)
                 .selectClause("SELECT id")
                 .fromClause("FROM user_schema.users")

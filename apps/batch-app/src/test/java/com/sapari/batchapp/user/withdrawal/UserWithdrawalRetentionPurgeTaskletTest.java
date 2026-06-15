@@ -1,4 +1,4 @@
-package com.sapari.batchapp.withdrawal;
+package com.sapari.batchapp.user.withdrawal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
@@ -17,8 +17,8 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
 
 @ExtendWith(MockitoExtension.class)
-@DisplayName("WithdrawnUserRetentionPurgeTasklet 테스트")
-class WithdrawnUserRetentionPurgeTaskletTest {
+@DisplayName("UserWithdrawalRetentionPurgeTasklet 테스트")
+class UserWithdrawalRetentionPurgeTaskletTest {
 
     @Mock
     private WithdrawnUserRetentionRepository withdrawnUserRetentionRepository;
@@ -32,7 +32,7 @@ class WithdrawnUserRetentionPurgeTaskletTest {
         // given
         Instant now = Instant.parse("2031-06-15T09:40:00Z");
         when(timeProvider.now()).thenReturn(now);
-        WithdrawnUserRetentionPurgeTasklet tasklet = new WithdrawnUserRetentionPurgeTasklet(
+        UserWithdrawalRetentionPurgeTasklet tasklet = new UserWithdrawalRetentionPurgeTasklet(
                 withdrawnUserRetentionRepository,
                 timeProvider
         );

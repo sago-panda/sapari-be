@@ -1,10 +1,10 @@
-package com.sapari.batchapp.withdrawal;
+package com.sapari.batchapp.user.withdrawal;
 
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.StepContribution;
 import org.springframework.batch.core.step.tasklet.Tasklet;
-import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.infrastructure.repeat.RepeatStatus;
 import org.springframework.stereotype.Component;
 
@@ -13,7 +13,7 @@ import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
 
 @Component
 @RequiredArgsConstructor
-public class WithdrawnUserRetentionPurgeTasklet implements Tasklet {
+public class UserWithdrawalRetentionPurgeTasklet implements Tasklet {
 
     private final WithdrawnUserRetentionRepository withdrawnUserRetentionRepository;
     private final TimeProvider timeProvider;

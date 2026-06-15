@@ -1,4 +1,4 @@
-package com.sapari.batchapp.withdrawal;
+package com.sapari.batchapp.user.withdrawal;
 
 import static org.mockito.Mockito.inOrder;
 
@@ -18,8 +18,8 @@ import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.user.domain.repository.UserRepository;
 
 @ExtendWith(MockitoExtension.class)
-@DisplayName("WithdrawnUserHardDeleteWriter 테스트")
-class WithdrawnUserHardDeleteWriterTest {
+@DisplayName("UserWithdrawalHardDeleteWriter 테스트")
+class UserWithdrawalHardDeleteWriterTest {
 
     @Mock
     private LocalCredentialRepository localCredentialRepository;
@@ -35,7 +35,7 @@ class WithdrawnUserHardDeleteWriterTest {
     void writeDeletesUserOwnedDataBeforeUserRow() throws Exception {
         // given
         UUID userId = UUID.randomUUID();
-        WithdrawnUserHardDeleteWriter writer = new WithdrawnUserHardDeleteWriter(
+        UserWithdrawalHardDeleteWriter writer = new UserWithdrawalHardDeleteWriter(
                 localCredentialRepository,
                 sellerProfileRepository,
                 userRepository

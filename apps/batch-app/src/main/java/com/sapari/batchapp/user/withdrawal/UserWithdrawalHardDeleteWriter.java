@@ -1,4 +1,4 @@
-package com.sapari.batchapp.withdrawal;
+package com.sapari.batchapp.user.withdrawal;
 
 import lombok.RequiredArgsConstructor;
 
@@ -14,7 +14,7 @@ import com.sapari.user.domain.repository.UserRepository;
 
 @Component
 @RequiredArgsConstructor
-public class WithdrawnUserHardDeleteWriter implements ItemWriter<UUID> {
+public class UserWithdrawalHardDeleteWriter implements ItemWriter<UUID> {
 
     private final LocalCredentialRepository localCredentialRepository;
     private final SellerProfileRepository sellerProfileRepository;
