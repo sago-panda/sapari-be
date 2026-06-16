@@ -69,7 +69,7 @@ class ChatKickRedisRepositoryTest {
     }
 
     @Test
-    @DisplayName("fail-closed 계약 — Redis 장애 시 false로 흡수하지 않고 error를 전파한다(강퇴 유저 우회 방지)")
+    @DisplayName("어댑터 계약 — Redis 장애 시 false로 흡수하지 않고 error를 전파한다(정책은 소비처 fail-open 몫; 삼키면 '조회 불가'와 '비강퇴'를 구분 못 함)")
     @SuppressWarnings("unchecked")
     void redis_failure_propagates_error_not_false() {
         // isMember는 (K,Object)/(K,Object...) 오버로드라 deep-stub은 매칭이 모호 → 명시적 mock으로 단일 오버로드 스텁

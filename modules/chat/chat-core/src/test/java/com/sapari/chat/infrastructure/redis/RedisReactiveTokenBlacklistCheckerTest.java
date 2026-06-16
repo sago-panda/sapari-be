@@ -58,7 +58,7 @@ class RedisReactiveTokenBlacklistCheckerTest {
     }
 
     @Test
-    @DisplayName("fail-closed 계약 — Redis 장애 시 false로 흡수하지 않고 error를 전파한다(로그아웃 토큰 우회 방지)")
+    @DisplayName("어댑터 계약 — Redis 장애 시 false로 흡수하지 않고 error를 전파한다(정책은 소비처 fail-open 몫; 삼키면 '조회 불가'와 '미등재'를 구분 못 함)")
     void redis_failure_propagates_error_not_false() {
         ReactiveStringRedisTemplate broken = Mockito.mock(ReactiveStringRedisTemplate.class);
         Mockito.when(broken.hasKey(Mockito.anyString()))
