@@ -15,6 +15,7 @@ dependencies {
 
     // 영속 어댑터 (T6) — Mongo 메시지 저장소 · Redis 세션/강퇴/레이트리밋/블랙리스트
     implementation(project(':storage:mongo-core'))
+    implementation(project(':common:security-jwt'))   // TokenStoreKeys 공유 (blocking write측과 키 drift 방지)
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
 
