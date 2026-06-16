@@ -4,29 +4,38 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-@SpringBootTest(properties = "spring.mongodb.representation.uuid=standard")
 @Testcontainers
 class RedisReactiveTokenBlacklistCheckerTest {
 
     @Container
-    @ServiceConnection
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
-    @Autowired
-    private RedisReactiveTokenBlacklistChecker checker;
+    private static LettuceConnectionFactory connectionFactory;
+    private static ReactiveStringRedisTemplate redisTemplate;
+    private static RedisReactiveTokenBlacklistChecker checker;
 
-    @Autowired
-    private ReactiveStringRedisTemplate redisTemplate;
+    @BeforeAll
+    static void startTemplate() {
+        connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
+        connectionFactory.afterPropertiesSet();
+        redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
+        checker = new RedisReactiveTokenBlacklistChecker(redisTemplate);
+    }
+
+    @AfterAll
+    static void stopTemplate() {
+        connectionFactory.destroy();
+    }
 
     @Test
     @DisplayName("blacklist 등재 jti는 true — blocking write측(common/auth)과 같은 키를 읽는다")

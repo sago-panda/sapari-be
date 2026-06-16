@@ -5,12 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Duration;
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -21,22 +21,31 @@ import com.sapari.chat.application.port.RateLimitResult;
 import reactor.core.publisher.Mono;
 
 /**
- * 실제 Redis로 3초 fixed window 검증. TC 번호는 RateLimiter 표(§12.1).
+ * 3초 fixed window 검증. TC 번호는 RateLimiter 표(§12.1).
  * TTL 경과류(TC#2·#7)는 Redis EXPIRE 직접 조작으로 실시간 대기 없이 검증한다(flaky 방지).
  */
-@SpringBootTest(properties = "spring.mongodb.representation.uuid=standard")
 @Testcontainers
 class RedisRateLimiterTest {
 
     @Container
-    @ServiceConnection
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
-    @Autowired
-    private RedisRateLimiter rateLimiter;
+    private static LettuceConnectionFactory connectionFactory;
+    private static ReactiveStringRedisTemplate redisTemplate;
+    private static RedisRateLimiter rateLimiter;
 
-    @Autowired
-    private ReactiveStringRedisTemplate redisTemplate;
+    @BeforeAll
+    static void startTemplate() {
+        connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
+        connectionFactory.afterPropertiesSet();
+        redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
+        rateLimiter = new RedisRateLimiter(redisTemplate);
+    }
+
+    @AfterAll
+    static void stopTemplate() {
+        connectionFactory.destroy();
+    }
 
     @Test
     @DisplayName("TC#1 — 첫 요청은 허용")
@@ -76,9 +85,7 @@ class RedisRateLimiterTest {
         UUID userA = UUID.randomUUID();
         rateLimiter.tryAcquire(userA).block();
 
-        // 같은 유저 — 방 개념 자체가 키에 없으므로 어디서 보내든 거부
         assertThat(rateLimiter.tryAcquire(userA).block().allowed()).isFalse();
-        // 다른 유저 — 독립 허용
         assertThat(rateLimiter.tryAcquire(UUID.randomUUID()).block().allowed()).isTrue();
     }
 
@@ -89,7 +96,7 @@ class RedisRateLimiterTest {
         rateLimiter.tryAcquire(userId).block();
         Duration before = redisTemplate.getExpire("ratelimit:chat:" + userId).block();
 
-        rateLimiter.tryAcquire(userId).block(); // 거부 — TTL 갱신 없어야
+        rateLimiter.tryAcquire(userId).block();
         Duration after = redisTemplate.getExpire("ratelimit:chat:" + userId).block();
 
         assertThat(after.toMillis()).isLessThanOrEqualTo(before.toMillis());
@@ -100,7 +107,7 @@ class RedisRateLimiterTest {
     void request_after_window_expiry_is_allowed() {
         UUID userId = UUID.randomUUID();
         rateLimiter.tryAcquire(userId).block();
-        redisTemplate.delete("ratelimit:chat:" + userId).block(); // TTL 만료를 즉시 재현
+        redisTemplate.delete("ratelimit:chat:" + userId).block();
 
         assertThat(rateLimiter.tryAcquire(userId).block().allowed()).isTrue();
     }

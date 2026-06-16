@@ -34,8 +34,7 @@ import reactor.test.StepVerifier;
  * TC 번호는 GetChatHistoryService 표(§12.1) 중 repository 책임 항목.
  * (Boot 4는 @DataMongoTest 슬라이스가 없어 @SpringBootTest 사용 — chat-core 컨텍스트는 어댑터뿐이라 작다)
  */
-// uuid representation 미지정 시 드라이버가 UUID 인코딩 거부 — 런타임(streaming-app yml)도 동일 값 필요
-@SpringBootTest(properties = "spring.mongodb.representation.uuid=standard")
+@SpringBootTest  // UUID 인코딩은 ChatMongoConfig의 MongoClientSettingsBuilderCustomizer가 STANDARD로 고정
 @Testcontainers
 class ChatMessageRepositoryImplTest {
 
@@ -56,7 +55,7 @@ class ChatMessageRepositoryImplTest {
     void setUp() {
         // 컬렉션 drop은 인덱스도 지우므로 매번 재생성 (멱등)
         mongoTemplate.dropCollection(ChatMessageDocument.class).block();
-        new ChatMongoConfig(mongoTemplate).createChatMessagesIndexes();
+        ChatMongoConfig.createChatMessagesIndexes(mongoTemplate);
     }
 
     @Test

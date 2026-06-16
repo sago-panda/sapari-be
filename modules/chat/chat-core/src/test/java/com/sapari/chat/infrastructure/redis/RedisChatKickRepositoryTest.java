@@ -4,33 +4,41 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-
-@SpringBootTest(properties = "spring.mongodb.representation.uuid=standard")
 @Testcontainers
 class RedisChatKickRepositoryTest {
 
     @Container
-    @ServiceConnection
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
-    @Autowired
-    private RedisChatKickRepository repository;
-
-    @Autowired
-    private ReactiveStringRedisTemplate redisTemplate;
+    private static LettuceConnectionFactory connectionFactory;
+    private static ReactiveStringRedisTemplate redisTemplate;
+    private static RedisChatKickRepository repository;
 
     private final UUID roomId = UUID.randomUUID();
     private final UUID userId = UUID.randomUUID();
+
+    @BeforeAll
+    static void startTemplate() {
+        connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
+        connectionFactory.afterPropertiesSet();
+        redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
+        repository = new RedisChatKickRepository(redisTemplate);
+    }
+
+    @AfterAll
+    static void stopTemplate() {
+        connectionFactory.destroy();
+    }
 
     @Test
     @DisplayName("kicked SET 멤버면 true (재접속 차단 판정)")

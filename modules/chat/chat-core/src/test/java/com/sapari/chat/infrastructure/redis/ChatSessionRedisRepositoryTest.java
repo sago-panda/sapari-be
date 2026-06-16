@@ -4,40 +4,51 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * 실제 Redis(TestContainers)로 세션 HASH 동작 검증.
+ * Redis 세션 HASH 어댑터 단위 통합 테스트 — 컨테이너 + 수동 조립.
+ * 어댑터 1개만 검증하므로 @SpringBootTest(전체 컴포넌트 스캔=mongo 저장소까지 부트스트랩)를 쓰지 않는다.
  * TC 번호는 WebSocket 연결 표(§12.2) 중 sessions HASH 책임 항목.
  */
-@SpringBootTest(properties = "spring.mongodb.representation.uuid=standard")
 @Testcontainers
 class ChatSessionRedisRepositoryTest {
 
     @Container
-    @ServiceConnection
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
-    @Autowired
-    private ChatSessionRedisRepository repository;
+    private static LettuceConnectionFactory connectionFactory;
+    private static ReactiveStringRedisTemplate redisTemplate;
 
-    @Autowired
-    private ReactiveStringRedisTemplate redisTemplate;
+    private ChatSessionRedisRepository repository;
 
     private final UUID roomId = UUID.randomUUID();
     private final UUID userId = UUID.randomUUID();
 
+    @BeforeAll
+    static void startTemplate() {
+        connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
+        connectionFactory.afterPropertiesSet();
+        redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
+    }
+
+    @AfterAll
+    static void stopTemplate() {
+        connectionFactory.destroy();
+    }
+
     @BeforeEach
     void setUp() {
+        repository = new ChatSessionRedisRepository(redisTemplate);
         redisTemplate.delete("room:" + roomId + ":sessions").block();
     }
 
