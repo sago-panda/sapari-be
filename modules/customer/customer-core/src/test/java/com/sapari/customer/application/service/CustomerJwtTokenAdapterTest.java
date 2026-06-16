@@ -155,7 +155,7 @@ class CustomerJwtTokenAdapterTest {
                 .isInstanceOf(CustomerException.class)
                 .extracting("errorCode")
                 .isEqualTo(CustomerErrorCode.INVALID_REFRESH_TOKEN);
-        verify(refreshTokenStore).deleteBySessionId(oldRefreshClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(oldRefreshClaims.userId(), oldRefreshClaims.sessionId());
         verify(sessionRevocationStore).revoke(oldRefreshClaims.sessionId());
     }
 

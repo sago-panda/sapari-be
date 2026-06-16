@@ -89,7 +89,7 @@ public class JwtTokenLifecycle {
     public void revokeSession(String accessToken) {
         AccessSession accessSession = requireAccessToken(accessToken);
 
-        refreshTokenStore.deleteBySessionId(accessSession.sessionId());
+        refreshTokenStore.deleteBySessionId(accessSession.userId(), accessSession.sessionId());
         sessionRevocationStore.revoke(accessSession.sessionId());
     }
 
@@ -178,7 +178,7 @@ public class JwtTokenLifecycle {
 
         if (!rotated) {
             // 저장된 refresh jti와 맞지 않으면 재사용으로 보고 해당 sid 세션을 폐기한다.
-            refreshTokenStore.deleteBySessionId(refreshSession.sessionId());
+            refreshTokenStore.deleteBySessionId(refreshSession.userId(), refreshSession.sessionId());
             sessionRevocationStore.revoke(refreshSession.sessionId());
             throw new JwtTokenLifecycleException("Refresh Token rotation failed.");
         }

@@ -20,9 +20,9 @@ public interface RefreshTokenStore {
     boolean rotate(UUID sessionId, UUID expectedRefreshTokenId, UUID newRefreshTokenId, Duration ttl);
 
     /**
-     * 로그인 세션의 Refresh Token 정보를 삭제한다.
+     * 로그인 세션의 Refresh Token 정보와 사용자별 세션 ZSet의 sid를 삭제한다.
      */
-    void deleteBySessionId(UUID sessionId);
+    void deleteBySessionId(UUID userId, UUID sessionId);
 
     /**
      * 사용자의 모든 로그인 세션 Refresh Token 정보를 삭제한다.

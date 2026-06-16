@@ -591,7 +591,7 @@ class SellerAuthServiceTest {
                 );
         verify(refreshTokenStore, never())
                 .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
-        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class));
+        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class), any(UUID.class));
         verifyNoInteractions(sessionRevocationStore);
     }
 
@@ -624,7 +624,7 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_REFRESH_TOKEN)
         );
-        verify(refreshTokenStore).deleteBySessionId(refreshClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(refreshClaims.userId(), refreshClaims.sessionId());
         verify(sessionRevocationStore).revoke(refreshClaims.sessionId());
     }
 
@@ -655,7 +655,7 @@ class SellerAuthServiceTest {
         sellerAuthService.logout(new SellerLogoutCommand(accessToken));
 
         // then
-        verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(accessClaims.userId(), accessClaims.sessionId());
         verify(sessionRevocationStore).revoke(accessClaims.sessionId());
         verify(accessTokenBlacklist, never()).save(any(UUID.class), any(Duration.class));
     }
