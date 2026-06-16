@@ -16,7 +16,7 @@ import reactor.core.publisher.Mono;
  */
 @Repository
 @RequiredArgsConstructor
-public class RedisChatKickRepository implements ChatKickRepository {
+public class ChatKickRedisRepository implements ChatKickRepository {
 
     private final ReactiveStringRedisTemplate redisTemplate;
 

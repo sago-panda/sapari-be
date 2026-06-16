@@ -2,17 +2,22 @@ package com.sapari.chat.infrastructure.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 @Testcontainers
 class RedisReactiveTokenBlacklistCheckerTest {
@@ -50,5 +55,17 @@ class RedisReactiveTokenBlacklistCheckerTest {
     @DisplayName("미등재 jti는 false")
     void unknown_jti_is_false() {
         assertThat(checker.isBlacklisted(UUID.randomUUID().toString()).block()).isFalse();
+    }
+
+    @Test
+    @DisplayName("fail-closed 계약 — Redis 장애 시 false로 흡수하지 않고 error를 전파한다(로그아웃 토큰 우회 방지)")
+    void redis_failure_propagates_error_not_false() {
+        ReactiveStringRedisTemplate broken = Mockito.mock(ReactiveStringRedisTemplate.class);
+        Mockito.when(broken.hasKey(Mockito.anyString()))
+                .thenReturn(Mono.error(new RuntimeException("connection refused")));
+
+        StepVerifier.create(new RedisReactiveTokenBlacklistChecker(broken).isBlacklisted("some-jti"))
+                .expectError(RuntimeException.class)
+                .verify(Duration.ofSeconds(5));
     }
 }
