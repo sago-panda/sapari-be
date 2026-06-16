@@ -128,6 +128,14 @@ class ChatMessageRepositoryImplTest {
     }
 
     @Test
+    @DisplayName("size<=0은 IllegalArgumentException — Mongo limit(0) 무제한 전량조회 차단")
+    void non_positive_size_fails() {
+        StepVerifier.create(repository.findByRoomIdBefore(roomId, null, 0))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+    }
+
+    @Test
     @DisplayName("TC#15 — 다른 방 메시지는 섞이지 않는다 (roomId 격리)")
     void other_room_messages_are_isolated() {
         repository.save(message("mine", null)).block();
