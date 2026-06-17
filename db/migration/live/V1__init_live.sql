@@ -1,5 +1,5 @@
 -- live 도메인 초기 스키마 (설계 DDL 정렬판 + 합의된 변경 3건)
---  1) 미디어 = 합집합: LiveKit(sfu/egress/hls) + Ingress 송출(stream_type/stream_key/ingress_id)
+--  1) 미디어 = 합집합: LiveKit(sfu/egress/hls) + Ingress 송출(stream_type/ingress_id; streamKey는 미저장)
 --  2) 상태 = 코드 모델 유지: SCHEDULED → LIVE → ENDED, SUSPENDED 측면 분기 (CANCELLED/force_ended 미채택)
 --  3) live_products = DDL 구조 + live_price(최종가 캐시) 추가, 가격 불변·핀/순서 가변
 -- ⚠️ 테이블/참조 컬럼명은 코드의 LiveRoomEntity(live_rooms)·LiveProductEntity(live_room_id)에 맞춰 정렬했다.
@@ -14,13 +14,13 @@ CREATE TABLE live_schema.live_rooms (
     seller_id                uuid         NOT NULL,      -- ref: user_schema.users.id
     title                    varchar(100) NOT NULL,
     description              varchar(500),
+    seller_nickname          varchar(50)  NOT NULL,      -- 판매자 닉네임 스냅샷 (도메인 create 필수)
+    thumbnail_url            varchar(500),               -- 대표 썸네일 캐시 (커버 원천은 live_thumbnails)
     status                   varchar(20)  NOT NULL DEFAULT 'SCHEDULED',  -- SCHEDULED | LIVE | ENDED | SUSPENDED
     -- 송출 (합집합: WEBRTC=토큰 publish / RTMP=LiveKit Ingress)
-    stream_type              varchar(10)  NOT NULL,      -- WEBRTC | RTMP
+    stream_type              varchar(10)  NOT NULL DEFAULT 'WEBRTC',  -- WEBRTC | RTMP
     sfu_room_id              varchar(255),               -- LiveKit room (공통)
-    ingress_id               varchar(255),               -- RTMP일 때 LiveKit Ingress 식별자
-    stream_key               varchar(255),               -- RTMP 송출 키 (자격증명 — 1회 노출·로그 금지)
-    stream_key_issued_at     timestamptz,
+    ingress_id               varchar(255),               -- RTMP Ingress 참조 (streamKey는 미저장 — LiveKit 보관, 재조회 시 listIngress)
     -- 시청 (HLS Egress, 공통)
     egress_id                varchar(255),
     hls_url                  varchar(255),
@@ -48,14 +48,13 @@ CREATE TABLE live_schema.live_rooms (
     vod_duration_seconds     integer,
     vod_status               varchar(20)  NOT NULL DEFAULT 'NONE',
     vod_failed_reason        text,
-    vod_is_public            boolean      NOT NULL DEFAULT true,
+    is_vod_public            boolean      NOT NULL DEFAULT true,
     created_at               timestamptz  NOT NULL,
     updated_at               timestamptz  NOT NULL,
     CONSTRAINT pk_live_rooms PRIMARY KEY (id)
 );
 CREATE INDEX ON live_schema.live_rooms (seller_id, status, created_at);
 CREATE INDEX ON live_schema.live_rooms (status, scheduled_at);
-CREATE INDEX ON live_schema.live_rooms (stream_key);
 CREATE INDEX ON live_schema.live_rooms (started_at);
 CREATE INDEX ON live_schema.live_rooms (concurrent_viewers);
 CREATE INDEX ON live_schema.live_rooms (deactivate_after);
@@ -65,19 +64,19 @@ CREATE INDEX ON live_schema.live_rooms (deactivate_after);
 -- 가격 4필드(list/selling/discount_*/live_price)는 등록 후 불변, 핀·sort_order만 가변
 -- ============================================================
 CREATE TABLE live_schema.live_products (
-    id              uuid        NOT NULL DEFAULT gen_random_uuid(),
-    live_room_id uuid        NOT NULL,
-    product_id      uuid        NOT NULL,                -- ref: product_schema.products.id
-    list_price      integer,                             -- 비교 표시가 (취소선). NULL=미설정
-    selling_price   integer     NOT NULL,                -- 등록 시점 판매가 스냅샷
-    discount_type   varchar(15),                         -- RATE | FIXED_AMOUNT. NULL=라이브 할인 없음
-    discount_value  integer,
-    live_price      integer     NOT NULL,                -- 최종가 캐시 = selling_price − 할인 (등록 시 1회 산출, 결제 사용)
-    sort_order      integer     NOT NULL DEFAULT 0,
-    is_pinned       boolean     NOT NULL DEFAULT false,
-    pinned_at       timestamptz,
-    created_at      timestamptz NOT NULL,
-    updated_at      timestamptz NOT NULL,
+    id                  uuid        NOT NULL DEFAULT gen_random_uuid(),
+    live_room_id        uuid        NOT NULL,
+    product_id          uuid        NOT NULL,                -- ref: product_schema.products.id
+    original_price      integer     NOT NULL,                -- 정가 (취소선 비교 표시가)
+    discount_price      integer     NOT NULL,                -- 일반 판매가 (등록 시점 스냅샷)
+    discount_type       varchar(15),                         -- RATE | FIXED_AMOUNT. NULL=라이브 할인 없음
+    discount_value      integer,
+    live_discount_price integer     NOT NULL,                -- 라이브 최종가 캐시 = discount_price − 할인 (등록 시 1회 산출, 결제 사용)
+    sort_order          integer     NOT NULL DEFAULT 0,
+    is_pinned           boolean     NOT NULL DEFAULT false,
+    pinned_at           timestamptz,
+    created_at          timestamptz NOT NULL,
+    updated_at          timestamptz NOT NULL,
     CONSTRAINT pk_live_products PRIMARY KEY (id)
 );
 CREATE INDEX ON live_schema.live_products (live_room_id, sort_order);

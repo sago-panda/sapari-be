@@ -14,70 +14,114 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import com.sapari.storage.db.entity.BaseUuidEntity;
+import com.sapari.storage.db.entity.UuidTimeEntity;
 
 @Entity
 @Getter
-@Table(name = "live_rooms")
+@Table(name = "live_rooms", schema = "live_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class LiveRoomEntity extends BaseUuidEntity {
-
-    @Column(name = "seller_id", nullable = false)
-    private UUID sellerId;
+public class LiveRoomEntity extends UuidTimeEntity {
 
     @Column(nullable = false)
+    private UUID sellerId;
+
+    @Column(nullable = false, length = 100)
     private String title;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(length = 500)
     private String description;
 
-    @Column(name = "seller_nickname")
+    @Column(nullable = false, length = 50)
     private String sellerNickname;
 
-    @Column(name = "thumbnail_url")
+    @Column(length = 500)
     private String thumbnailUrl;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "status", nullable = false, length = 20)
     private LiveRoomStatus liveStatus;
 
+    // --- 송출: WEBRTC=토큰 publish / RTMP=LiveKit Ingress ---
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 10)
+    private StreamType streamType = StreamType.WEBRTC;
+
     private String sfuRoomId;
+
+    // RTMP Ingress 참조. streamKey(자격증명)는 저장하지 않음 — 발급 시 1회 전달, 재조회는 LiveKit(listIngress).
+    private String ingressId;
+
+    // --- 시청 (HLS Egress, 공통) ---
     private String egressId;
+
     private String hlsUrl;
+
     private String hlsArchiveUrl;
 
-    private String suspendedReason;
-
-    private Instant suspendedAt;
-
+    // --- 일정/운영 ---
     private Instant scheduledAt;
+
+    private Instant scheduledEndAt;
+
+    @Column(nullable = false)
+    private int maxDurationSeconds = 7200;
+
+    @Column(nullable = false)
+    private int disconnectGraceSeconds = 300;
 
     private Instant startedAt;
 
     private Instant endedAt;
 
-    private int peakViewers;
+    private Instant deactivateAfter;
 
-    private int totalViewers;
+    // --- 정지 (코드 상태머신 유지) ---
+    @Column(columnDefinition = "TEXT")
+    private String suspendedReason;
 
+    private Instant suspendedAt;
+
+    // --- 집계 캐시 ---
+    @Column(nullable = false)
+    private int peakViewers = 0;
+
+    @Column(nullable = false)
+    private int concurrentViewers = 0;
+
+    @Column(nullable = false)
+    private int uniqueViewers = 0;
+
+    @Column(nullable = false)
+    private int chatCount = 0;
+
+    @Column(nullable = false)
+    private boolean chatDisabled = false;
+
+    @Column(nullable = false)
+    private int likeCount = 0;
+
+    // --- VOD ---
+    @Column(length = 500)
     private String vodKey;
 
-    private int vodDurationSeconds;
+    private Integer vodDurationSeconds;
 
     @Enumerated(EnumType.STRING)
-    private VodStatus vodStatus;
+    @Column(nullable = false, length = 20)
+    private VodStatus vodStatus = VodStatus.NONE;
 
-    private boolean isVodPublic;
+    @Column(columnDefinition = "TEXT")
+    private String vodFailedReason;
+
+    @Column(nullable = false)
+    private boolean isVodPublic = true;
 
     @Builder
     public LiveRoomEntity(UUID sellerId, String title, String description, String sellerNickname,
                           String thumbnailUrl, LiveRoomStatus liveStatus,
-                          String sfuRoomId,
-                          String egressId, String hlsUrl, String hlsArchiveUrl, String suspendedReason,
-                          Instant suspendedAt, Instant scheduledAt, Instant startedAt,
-                          Instant endedAt, int peakViewers, int totalViewers, String vodKey,
-                          int vodDurationSeconds,
-                          VodStatus vodStatus, boolean isVodPublic) {
+                          String sfuRoomId, String egressId, String hlsUrl, String hlsArchiveUrl,
+                          String suspendedReason, Instant suspendedAt, Instant scheduledAt,
+                          Instant startedAt, Instant endedAt) {
         this.sellerId = sellerId;
         this.title = title;
         this.description = description;
@@ -93,12 +137,6 @@ public class LiveRoomEntity extends BaseUuidEntity {
         this.scheduledAt = scheduledAt;
         this.startedAt = startedAt;
         this.endedAt = endedAt;
-        this.peakViewers = peakViewers;
-        this.totalViewers = totalViewers;
-        this.vodKey = vodKey;
-        this.vodDurationSeconds = vodDurationSeconds;
-        this.vodStatus = vodStatus;
-        this.isVodPublic = isVodPublic;
     }
 
 
@@ -145,6 +183,22 @@ public class LiveRoomEntity extends BaseUuidEntity {
         this.sfuRoomId = sfuRoomId;
         this.egressId = egressId;
         this.hlsUrl = hlsUrl;
+    }
+
+    /**
+     * WEBRTC 송출로 설정 — ingress 컬럼을 함께 비워 판별자↔ingress 불일치를 차단.
+     */
+    public void assignWebRtc() {
+        this.streamType = StreamType.WEBRTC;
+        this.ingressId = null;
+    }
+
+    /**
+     *  RTMP Ingress 자격 배정 — 판별자(RTMP)와 ingress 컬럼을 항상 함께 세팅.
+     */
+    public void assignRtmpIngress(String ingressId) {
+        this.streamType = StreamType.RTMP;
+        this.ingressId = ingressId;
     }
 
     public void updateLiveStatus(LiveRoomStatus liveStatus) {
