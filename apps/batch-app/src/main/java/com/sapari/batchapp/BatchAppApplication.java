@@ -5,7 +5,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
-import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication(scanBasePackages = {
         "com.sapari.batchapp",
@@ -22,7 +21,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         "com.sapari.user.infrastructure.persistence"
 })
 @ConfigurationPropertiesScan
-@EnableScheduling
 public class BatchAppApplication {
 
     public static void main(String[] args) {

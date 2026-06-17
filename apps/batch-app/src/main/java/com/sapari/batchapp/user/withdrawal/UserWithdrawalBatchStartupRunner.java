@@ -7,22 +7,24 @@ import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.sapari.global.time.TimeProvider;
 
 @Component
-@ConditionalOnProperty(prefix = "sapari.batch.user.withdrawal.scheduler", name = "enabled", havingValue = "true")
-public class UserWithdrawalBatchScheduler {
+// 로컬/초기 테스트용 실행 경로다. 운영 스케줄 방식이 정해지기 전까지는 property로 명시적으로 켤 때만 동작한다.
+@ConditionalOnProperty(prefix = "sapari.batch.user.withdrawal.startup", name = "enabled", havingValue = "true")
+public class UserWithdrawalBatchStartupRunner implements ApplicationRunner {
 
     private final JobOperator jobOperator;
     private final Job userWithdrawalHardDeleteJob;
     private final Job userWithdrawalRetentionPurgeJob;
     private final TimeProvider timeProvider;
 
-    public UserWithdrawalBatchScheduler(
+    public UserWithdrawalBatchStartupRunner(
             JobOperator jobOperator,
             @Qualifier("userWithdrawalHardDeleteJob") Job userWithdrawalHardDeleteJob,
             @Qualifier("userWithdrawalRetentionPurgeJob") Job userWithdrawalRetentionPurgeJob,
@@ -34,21 +36,12 @@ public class UserWithdrawalBatchScheduler {
         this.timeProvider = timeProvider;
     }
 
-    @Scheduled(
-            cron = "#{@userWithdrawalBatchSchedulerProperties.hardDeleteCron}",
-            zone = "#{@userWithdrawalBatchSchedulerProperties.zone}"
-    )
-    public void runHardDeleteJob() throws Exception {
-        jobOperator.start(userWithdrawalHardDeleteJob, createRunAtParameters());
-    }
-
-    // hard delete와 보존정보 파기 작업은 부하와 실패 이력을 분리하기 위해 별도 cron으로 실행한다.
-    @Scheduled(
-            cron = "#{@userWithdrawalBatchSchedulerProperties.retentionPurgeCron}",
-            zone = "#{@userWithdrawalBatchSchedulerProperties.zone}"
-    )
-    public void runRetentionPurgeJob() throws Exception {
-        jobOperator.start(userWithdrawalRetentionPurgeJob, createRunAtParameters());
+    @Override
+    public void run(ApplicationArguments args) throws Exception {
+        // 앱 시작 시 두 탈퇴회원 배치를 한 번씩 실행한다.
+        JobParameters parameters = createRunAtParameters();
+        jobOperator.start(userWithdrawalHardDeleteJob, parameters);
+        jobOperator.start(userWithdrawalRetentionPurgeJob, parameters);
     }
 
     private JobParameters createRunAtParameters() {

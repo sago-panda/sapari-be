@@ -5,6 +5,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
+import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -41,5 +42,24 @@ class WithdrawnUserRetentionRepositoryImplTest {
         // then
         assertThat(deletedCount).isEqualTo(3);
         verify(withdrawnUserRetentionJpaRepository).deleteByRetentionUntilLessThanEqual(now);
+    }
+
+    @Test
+    @DisplayName("원본 user id로 탈퇴회원 보존 row를 삭제한다")
+    void deleteByOriginalUserIdDeletesRetentionRow() {
+        // given
+        UUID originalUserId = UUID.randomUUID();
+        WithdrawnUserRetentionRepositoryImpl repository = new WithdrawnUserRetentionRepositoryImpl(
+                withdrawnUserRetentionJpaRepository,
+                withdrawnUserRetentionMapper
+        );
+        when(withdrawnUserRetentionJpaRepository.deleteByOriginalUserId(originalUserId)).thenReturn(1);
+
+        // when
+        int deletedCount = repository.deleteByOriginalUserId(originalUserId);
+
+        // then
+        assertThat(deletedCount).isEqualTo(1);
+        verify(withdrawnUserRetentionJpaRepository).deleteByOriginalUserId(originalUserId);
     }
 }

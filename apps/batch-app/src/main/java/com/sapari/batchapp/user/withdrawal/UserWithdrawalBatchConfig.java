@@ -18,6 +18,8 @@ import org.springframework.batch.infrastructure.item.database.Order;
 import org.springframework.batch.infrastructure.item.database.builder.JdbcPagingItemReaderBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.sapari.global.time.TimeProvider;
@@ -53,6 +55,11 @@ public class UserWithdrawalBatchConfig {
                 .transactionManager(transactionManager)
                 .reader(userWithdrawalHardDeleteReader)
                 .writer(userWithdrawalHardDeleteWriter)
+                // DB 잠금/데드락/일시 장애는 같은 chunk를 재시도하면 성공할 수 있다.
+                .faultTolerant()
+                .retryLimit(properties.retryLimit())
+                .retry(TransientDataAccessException.class)
+                .retry(CannotAcquireLockException.class)
                 .build();
     }
 
@@ -70,10 +77,20 @@ public class UserWithdrawalBatchConfig {
     public Step userWithdrawalRetentionPurgeStep(
             JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
-            UserWithdrawalRetentionPurgeTasklet userWithdrawalRetentionPurgeTasklet
+            JdbcPagingItemReader<UUID> userWithdrawalRetentionPurgeReader,
+            UserWithdrawalRetentionPurgeWriter userWithdrawalRetentionPurgeWriter,
+            UserWithdrawalRetentionPurgeProperties properties
     ) {
         return new StepBuilder(RETENTION_PURGE_STEP_NAME, jobRepository)
-                .tasklet(userWithdrawalRetentionPurgeTasklet, transactionManager)
+                .<UUID, UUID>chunk(properties.chunkSize())
+                .transactionManager(transactionManager)
+                .reader(userWithdrawalRetentionPurgeReader)
+                .writer(userWithdrawalRetentionPurgeWriter)
+                // DB 잠금/데드락/일시 장애는 같은 chunk를 재시도하면 성공할 수 있다.
+                .faultTolerant()
+                .retryLimit(properties.retryLimit())
+                .retry(TransientDataAccessException.class)
+                .retry(CannotAcquireLockException.class)
                 .build();
     }
 
@@ -97,6 +114,30 @@ public class UserWithdrawalBatchConfig {
                 ))
                 .parameterValues(Map.of("threshold", Timestamp.from(threshold)))
                 .rowMapper((rs, rowNum) -> rs.getObject("id", UUID.class))
+                .pageSize(properties.chunkSize())
+                .build();
+    }
+
+    @Bean
+    public JdbcPagingItemReader<UUID> userWithdrawalRetentionPurgeReader(
+            DataSource dataSource,
+            TimeProvider timeProvider,
+            UserWithdrawalRetentionPurgeProperties properties
+    ) throws Exception {
+        Instant now = timeProvider.now();
+
+        return new JdbcPagingItemReaderBuilder<UUID>()
+                .name("userWithdrawalRetentionPurgeReader")
+                .dataSource(dataSource)
+                .selectClause("SELECT original_user_id")
+                .fromClause("FROM user_schema.withdrawn_user_retentions")
+                .whereClause("WHERE purged_at IS NULL AND retention_until <= :now")
+                .sortKeys(Map.of(
+                        "retention_until", Order.ASCENDING,
+                        "original_user_id", Order.ASCENDING
+                ))
+                .parameterValues(Map.of("now", Timestamp.from(now)))
+                .rowMapper((rs, rowNum) -> rs.getObject("original_user_id", UUID.class))
                 .pageSize(properties.chunkSize())
                 .build();
     }

@@ -34,4 +34,9 @@ public class WithdrawnUserRetentionRepositoryImpl implements WithdrawnUserRetent
     public int deleteExpiredBefore(Instant now) {
         return withdrawnUserRetentionJpaRepository.deleteByRetentionUntilLessThanEqual(now);
     }
+
+    @Override
+    public int deleteByOriginalUserId(UUID originalUserId) {
+        return withdrawnUserRetentionJpaRepository.deleteByOriginalUserId(originalUserId);
+    }
 }

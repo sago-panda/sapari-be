@@ -12,4 +12,6 @@ public interface WithdrawnUserRetentionRepository {
     boolean existsByOriginalUserId(UUID originalUserId);
 
     int deleteExpiredBefore(Instant now);
+
+    int deleteByOriginalUserId(UUID originalUserId);
 }

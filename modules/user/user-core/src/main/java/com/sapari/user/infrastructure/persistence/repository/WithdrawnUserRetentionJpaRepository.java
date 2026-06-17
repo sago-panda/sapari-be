@@ -15,4 +15,6 @@ public interface WithdrawnUserRetentionJpaRepository extends JpaRepository<Withd
     Optional<WithdrawnUserRetentionEntity> findByOriginalUserId(UUID originalUserId);
 
     int deleteByRetentionUntilLessThanEqual(Instant retentionUntil);
+
+    int deleteByOriginalUserId(UUID originalUserId);
 }
