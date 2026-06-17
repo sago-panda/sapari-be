@@ -18,6 +18,7 @@ public interface ChatMessageRepository {
     // 중복 전송(DuplicateKey) 발생 시 기존 메시지 재조회용
     Mono<ChatMessage> findByRoomIdAndSenderIdAndClientMsgId(UUID roomId, UUID senderId, String clientMsgId);
 
-    // 이력 역순 페이징 — beforeId 이전(_id 기준 내림차순) size건
+    // 이력 역순 페이징 — beforeId 이전(_id 기준 내림차순) size건. size > 0 불변식(0 이하는 IllegalArgumentException).
+    // 상한(VOD 최대 200, §10.8)은 호출처 입력검증 책임.
     Flux<ChatMessage> findByRoomIdBefore(UUID roomId, String beforeId, int size);
 }

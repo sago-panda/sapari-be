@@ -13,8 +13,26 @@ dependencies {
     testImplementation('com.fasterxml.jackson.core:jackson-databind')
     testImplementation('com.fasterxml.jackson.datatype:jackson-datatype-jsr310')
 
+    // 영속 어댑터 (T6) — Mongo 메시지 저장소 · Redis 세션/강퇴/레이트리밋/블랙리스트
+    implementation(project(':storage:mongo-core'))
+    implementation(project(':common:security-jwt'))   // TokenStoreKeys 공유 (blocking write측과 키 drift 방지)
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
+
+    // MapStruct — document↔domain 매퍼 (live-core와 동일 와이어링)
+    implementation 'org.mapstruct:mapstruct:1.5.5.Final'
+    annotationProcessor 'org.mapstruct:mapstruct-processor:1.5.5.Final'
+    annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
+
+    // 어댑터 통합 테스트 — TestContainers로 실제 Mongo/Redis 기동 (Phase 3 처방)
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:mongodb'
+    testImplementation 'io.projectreactor:reactor-test'
+
     // 순수 정책·도메인 단위테스트는 enum/primitive 입력이라 픽스처 생성기가 불필요(루트 spring-boot-starter-test로 충분).
-    // FixtureMonkey는 필드 많은 ChatMessage/ChatSession 픽스처가 필요한 T6(영속)·T7(서비스) 테스트에서 testImplementation으로 추가.
+    // FixtureMonkey는 필드 많은 ChatMessage/ChatSession 픽스처가 필요한 T7(서비스) 테스트에서 testImplementation으로 추가.
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
