@@ -24,6 +24,7 @@ import com.sapari.chat.view.ChatMessageView;
 import com.sapari.global.time.TimeProvider;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
@@ -35,6 +36,7 @@ import reactor.core.publisher.Mono;
  * <p>{@code @Transactional}을 두지 않는다 — 단일 Mongo 문서 저장 + Redis 발행이라 다중 엔티티 트랜잭션이 없고,
  * 재전송 멱등은 (roomId,senderId,clientMsgId) unique 인덱스가 보장한다(DuplicateKey → 기존 메시지 재조회).
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SendChatService implements SendChatUseCase {
@@ -116,7 +118,16 @@ public class SendChatService implements SendChatUseCase {
 
         // persist-then-publish: DuplicateKey를 발행 전에 잡아 중복 broadcast를 억제(§7.2)
         return chatMessageRepository.save(message)
-                .flatMap(saved -> broadcaster.publish(command.roomId(), saved).thenReturn(saved.toView()))
+                .flatMap(saved -> broadcaster.publish(command.roomId(), saved)
+                        // publish 실패는 흡수한다 — 저장은 됐으므로 발신자에겐 view를 반환(가용성 우선).
+                        // 크로스 Pod·동일 Pod 타 세션은 미전달(허용). 발신자 본인 세션 직접 에코는
+                        // senderSessionId(WS 세션)를 쥔 transport(T9) 책임이라 여기선 흡수까지만 한다.
+                        .onErrorResume(err -> {
+                            log.error("Redis publish 실패 — 저장은 보장, 발신자 에코는 transport(T9) 책임 roomId={}",
+                                    command.roomId(), err);
+                            return Mono.empty();
+                        })
+                        .thenReturn(saved.toView()))
                 .onErrorResume(DuplicateKeyException.class, e -> recoverDuplicate(command));
     }
 

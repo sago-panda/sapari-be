@@ -227,6 +227,20 @@ class SendChatServiceTest {
     }
 
     @Test
+    @DisplayName("publish 실패(비-Duplicate) → 에러 흡수, 저장 메시지 view 반환 (TC#22 — 발신자에겐 성공)")
+    void publish_failure_absorbed_returns_saved_view() {
+        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
+        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
+        when(chatMessageRepository.save(any())).thenAnswer(inv ->
+                Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()));
+        when(broadcaster.publish(any(), any())).thenReturn(Mono.error(new RuntimeException("redis publish down")));
+
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
+                .verifyComplete();
+    }
+
+    @Test
     @DisplayName("dedup miss — DuplicateKey인데 재조회도 empty면 IllegalStateException (무응답 complete·재시도 루프 방지)")
     void duplicate_key_but_recovery_empty_errors() {
         when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
