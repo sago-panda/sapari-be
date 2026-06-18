@@ -119,11 +119,11 @@ public class SendChatService implements SendChatUseCase {
         // persist-then-publish: DuplicateKey를 발행 전에 잡아 중복 broadcast를 억제(§7.2)
         return chatMessageRepository.save(message)
                 .flatMap(saved -> broadcaster.publish(command.roomId(), saved)
-                        // publish 실패는 흡수한다 — 저장은 됐으므로 발신자에겐 view를 반환(가용성 우선).
-                        // 크로스 Pod·동일 Pod 타 세션은 미전달(허용). 발신자 본인 세션 직접 에코는
-                        // senderSessionId(WS 세션)를 쥔 transport(T9) 책임이라 여기선 흡수까지만 한다.
+                        // publish 실패는 흡수한다 — 저장은 됐으므로 반환 view(=ack)를 그대로 돌려준다.
+                        // 낙관적 렌더 모델: 발신자는 send 시점에 자기 메시지를 이미 로컬 렌더했고 이 ack로 확정한다
+                        // → 서버 에코 불필요. 크로스 Pod·동일 Pod 타 세션은 실시간 미전달(허용, 메시지는 영속됨).
                         .onErrorResume(err -> {
-                            log.error("Redis publish 실패 — 저장은 보장, 발신자 에코는 transport(T9) 책임 roomId={}",
+                            log.error("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시 roomId={}",
                                     command.roomId(), err);
                             return Mono.empty();
                         })
