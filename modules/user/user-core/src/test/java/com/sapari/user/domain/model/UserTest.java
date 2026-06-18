@@ -114,6 +114,55 @@ class UserTest {
     }
 
     @Test
+    @DisplayName("탈퇴 신청 시 탈퇴 진행 상태와 유예 시작 시각을 설정한다")
+    void requestWithdrawalSetsWithdrawingStatusAndDeletedAt() {
+        // given
+        User user = User.createSocialCustomer(
+                "tester",
+                "테스터",
+                LocalDate.of(1995, 5, 15),
+                UserGender.MALE,
+                "01012345678",
+                "tester@example.com",
+                false,
+                ProviderType.NAVER,
+                "provider-id",
+                "provider@example.com",
+                providerCreatedAt(),
+                nicknameChangedAt()
+        );
+        Instant deletedAt = Instant.parse("2026-06-13T12:00:00Z");
+
+        // when
+        User withdrawingUser = user.requestWithdrawal(deletedAt);
+
+        // then
+        assertThat(withdrawingUser.status()).isEqualTo(UserStatus.WITHDRAWING);
+        assertThat(withdrawingUser.deletedAt()).isEqualTo(deletedAt);
+        assertThat(withdrawingUser.isActive()).isFalse();
+        assertThat(withdrawingUser.isWithdrawing()).isTrue();
+    }
+
+    @Test
+    @DisplayName("탈퇴 유예 시작 시각이 없으면 예외가 발생한다")
+    void requestWithdrawalThrowsExceptionWhenDeletedAtIsNull() {
+        // given
+        User user = User.createSeller(
+                "seller",
+                "판매자",
+                LocalDate.of(1990, 1, 1),
+                "01087654321",
+                "seller@example.com",
+                null,
+                nicknameChangedAt()
+        );
+
+        // when, then
+        assertThatThrownBy(() -> user.requestWithdrawal(null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("필수값이 비어 있으면 예외가 발생한다")
     void createSocialCustomerThrowsExceptionWhenRequiredValueIsBlank() {
         // given

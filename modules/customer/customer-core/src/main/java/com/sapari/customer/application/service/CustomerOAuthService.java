@@ -21,6 +21,7 @@ import com.sapari.customer.view.CustomerOAuthResult;
 import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
 
@@ -52,7 +53,8 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
      * 기존 고객에게 전달할 임시 로그인 code를 만들고 Redis에 token 정보를 짧게 저장
      */
     private CustomerOAuthResult createLoginSuccessResult(UserView user) {
-        if (user.role() != UserRole.USER) {
+        if (user.role() != UserRole.USER || user.status() != UserStatus.ACTIVE) {
+            // 탈퇴 유예 계정은 로그인 성공도 재가입 세션 생성도 하지 않도록 일반 실패로 처리한다.
             throw new CustomerException(CustomerErrorCode.USER_NOT_FOUND);
         }
 

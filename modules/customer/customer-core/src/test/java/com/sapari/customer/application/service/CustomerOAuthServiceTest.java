@@ -118,6 +118,7 @@ class CustomerOAuthServiceTest {
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
         verify(refreshTokenStore).save(
+                eq(userId),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
@@ -181,6 +182,20 @@ class CustomerOAuthServiceTest {
     }
 
     @Test
+    @DisplayName("탈퇴 유예 상태 기존 고객이면 OAuth 로그인에 실패한다")
+    void handleOAuthSuccessThrowsExceptionWhenExistingCustomerIsWithdrawing() {
+        UUID userId = UUID.randomUUID();
+        when(userAccountUseCase.findBySocialAccount(ProviderType.NAVER, "naver-id"))
+                .thenReturn(Optional.of(customerView(userId, UserStatus.WITHDRAWING)));
+
+        assertThatThrownBy(() -> customerOAuthService.handleOAuthSuccess(oAuthCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.USER_NOT_FOUND)
+                );
+        verifyNoInteractions(refreshTokenStore, socialLoginCodeRepository, socialSignupRepository);
+    }
+
+    @Test
     @DisplayName("기존 고객이 구매자가 아니면 OAuth 로그인에 실패한다")
     void handleOAuthSuccessThrowsExceptionWhenExistingUserIsNotCustomer() {
         UUID userId = UUID.randomUUID();
@@ -212,10 +227,14 @@ class CustomerOAuthServiceTest {
     }
 
     private UserView customerView(UUID userId) {
+        return customerView(userId, UserStatus.ACTIVE);
+    }
+
+    private UserView customerView(UUID userId, UserStatus status) {
         return new UserView(
                 userId,
                 UserRole.USER,
-                UserStatus.ACTIVE,
+                status,
                 "customer",
                 providerCreatedAt(),
                 "구매자",

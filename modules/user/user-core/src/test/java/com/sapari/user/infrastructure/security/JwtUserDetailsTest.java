@@ -75,11 +75,11 @@ class JwtUserDetailsTest {
     }
 
     @Test
-    @DisplayName("DELETED 상태는 비활성 사용자로 판단한다")
-    void isEnabledReturnsFalseWhenStatusIsDeleted() {
+    @DisplayName("WITHDRAWING 상태는 비활성 사용자로 판단한다")
+    void isEnabledReturnsFalseWhenStatusIsWithdrawing() {
         // given
         JwtUserDetails userDetails = new JwtUserDetails(
-                new JwtUserDetailsInfo(UUID.randomUUID(), "USER", "DELETED")
+                new JwtUserDetailsInfo(UUID.randomUUID(), "USER", "WITHDRAWING")
         );
 
         // when

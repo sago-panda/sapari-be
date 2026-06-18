@@ -131,7 +131,7 @@ class JwtAuthenticationFilterTest {
         String token = jwtTokenProvider.createAccessToken(jwtSubject(userId, "USER"));
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
                 jwtTokenProvider,
-                userDetailsService(userId, "USER", "DELETED"),
+                userDetailsService(userId, "USER", "WITHDRAWING"),
                 activeTokenChecker(),
                 activeSessionChecker()
         );

@@ -74,6 +74,7 @@ class SellerJwtTokenAdapterTest {
         assertThat(refreshClaims.sessionId()).isEqualTo(accessClaims.sessionId());
         assertThat(refreshClaims.tokenId()).isNotEqualTo(accessClaims.tokenId());
         verify(refreshTokenStore).save(
+                eq(seller.userId()),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 eq(Duration.between(NOW, refreshClaims.expiresAt()))
@@ -153,7 +154,7 @@ class SellerJwtTokenAdapterTest {
                 .isInstanceOf(SellerException.class)
                 .extracting("errorCode")
                 .isEqualTo(SellerErrorCode.INVALID_REFRESH_TOKEN);
-        verify(refreshTokenStore).deleteBySessionId(oldRefreshClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(oldRefreshClaims.userId(), oldRefreshClaims.sessionId());
         verify(sessionRevocationStore).revoke(oldRefreshClaims.sessionId());
     }
 

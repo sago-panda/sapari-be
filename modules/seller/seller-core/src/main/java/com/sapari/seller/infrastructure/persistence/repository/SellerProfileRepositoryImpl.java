@@ -52,4 +52,9 @@ public class SellerProfileRepositoryImpl implements SellerProfileRepository {
     public boolean existsByStoreName(String storeName) {
         return sellerProfileJpaRepository.existsByStoreName(storeName);
     }
+
+    @Override
+    public void deleteByUserId(UUID userId) {
+        sellerProfileJpaRepository.deleteByUserId(userId);
+    }
 }
