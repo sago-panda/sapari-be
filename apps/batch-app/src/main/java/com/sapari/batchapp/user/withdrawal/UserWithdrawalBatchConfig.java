@@ -32,6 +32,9 @@ public class UserWithdrawalBatchConfig {
     public static final String RETENTION_PURGE_JOB_NAME = "userWithdrawalRetentionPurgeJob";
     public static final String RETENTION_PURGE_STEP_NAME = "userWithdrawalRetentionPurgeStep";
 
+    /**
+     * 탈퇴 유예 기간이 지난 사용자 계정을 실제 삭제하는 Job을 구성한다.
+     */
     @Bean
     public Job userWithdrawalHardDeleteJob(
             JobRepository jobRepository,
@@ -42,6 +45,9 @@ public class UserWithdrawalBatchConfig {
                 .build();
     }
 
+    /**
+     * WITHDRAWING 상태이고 deleted_at이 보존 기준일을 지난 사용자 ID를 chunk 단위로 삭제한다.
+     */
     @Bean
     public Step userWithdrawalHardDeleteStep(
             JobRepository jobRepository,
@@ -63,6 +69,9 @@ public class UserWithdrawalBatchConfig {
                 .build();
     }
 
+    /**
+     * 법정 보존 기간이 끝난 탈퇴회원 보존 정보를 삭제하는 Job을 구성한다.
+     */
     @Bean
     public Job userWithdrawalRetentionPurgeJob(
             JobRepository jobRepository,
@@ -73,6 +82,9 @@ public class UserWithdrawalBatchConfig {
                 .build();
     }
 
+    /**
+     * retention_until이 지난 withdrawn_user_retentions row를 chunk 단위로 삭제한다.
+     */
     @Bean
     public Step userWithdrawalRetentionPurgeStep(
             JobRepository jobRepository,
@@ -94,6 +106,9 @@ public class UserWithdrawalBatchConfig {
                 .build();
     }
 
+    /**
+     * 탈퇴 유예 기간이 지난 사용자 ID를 오래된 deleted_at 순으로 읽는다.
+     */
     @Bean
     public JdbcPagingItemReader<UUID> userWithdrawalHardDeleteReader(
             DataSource dataSource,
@@ -118,6 +133,9 @@ public class UserWithdrawalBatchConfig {
                 .build();
     }
 
+    /**
+     * 법정 보존 만료 시각이 지난 원 사용자 ID를 오래된 retention_until 순으로 읽는다.
+     */
     @Bean
     public JdbcPagingItemReader<UUID> userWithdrawalRetentionPurgeReader(
             DataSource dataSource,

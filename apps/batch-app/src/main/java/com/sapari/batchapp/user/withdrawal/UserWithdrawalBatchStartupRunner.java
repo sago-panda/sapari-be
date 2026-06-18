@@ -36,6 +36,9 @@ public class UserWithdrawalBatchStartupRunner implements ApplicationRunner {
         this.timeProvider = timeProvider;
     }
 
+    /**
+     * property로 활성화된 경우 앱 시작 직후 탈퇴회원 하드삭제와 보존정보 삭제 Job을 한 번 실행한다.
+     */
     @Override
     public void run(ApplicationArguments args) throws Exception {
         // 앱 시작 시 두 탈퇴회원 배치를 한 번씩 실행한다.
@@ -44,10 +47,12 @@ public class UserWithdrawalBatchStartupRunner implements ApplicationRunner {
         jobOperator.start(userWithdrawalRetentionPurgeJob, parameters);
     }
 
+    /**
+     * 같은 Job을 반복 실행할 수 있도록 매 실행마다 고유한 runAt JobParameter를 만든다.
+     */
     private JobParameters createRunAtParameters() {
         Instant runAt = timeProvider.now();
         return new JobParametersBuilder()
-                // 같은 Job을 반복 실행할 수 있도록 매 실행마다 고유한 JobInstance를 만든다.
                 .addString("runAt", runAt.toString())
                 .toJobParameters();
     }

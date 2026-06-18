@@ -9,6 +9,9 @@ public record UserWithdrawalHardDeleteProperties(
         int retryLimit
 ) {
 
+    /**
+     * 잘못된 설정값이 들어오면 안전한 기본값으로 보정한다.
+     */
     public UserWithdrawalHardDeleteProperties {
         if (chunkSize <= 0) {
             chunkSize = 500;

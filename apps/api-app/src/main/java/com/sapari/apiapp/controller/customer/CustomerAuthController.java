@@ -186,6 +186,10 @@ public class CustomerAuthController {
         return ResponseEntity.ok(CustomerMeResponse.from(result));
     }
 
+    /**
+     * 현재 로그인한 고객의 회원탈퇴를 신청한다.
+     * 탈퇴 처리 후 모든 기기 세션이 폐기되므로 클라이언트의 refresh token 쿠키도 즉시 만료시킨다.
+     */
     @DeleteMapping("/me")
     public ResponseEntity<Void> withdraw(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader

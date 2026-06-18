@@ -120,6 +120,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         customerJwtTokenAdapter.revokeSession(command.accessToken());
     }
 
+    /**
+     * Access Token을 검증해 고객 계정을 탈퇴 유예 상태로 전환하고 모든 refresh/access 세션을 폐기한다.
+     */
     @Override
     @Transactional
     public void requestWithdrawal(String accessToken) {

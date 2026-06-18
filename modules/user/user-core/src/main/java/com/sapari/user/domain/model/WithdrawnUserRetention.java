@@ -16,6 +16,10 @@ public record WithdrawnUserRetention(
         Instant purgedAt
 ) {
 
+    /**
+     * 탈퇴회원 보존 레코드를 생성한다.
+     * 원문 개인정보 대신 이미 마스킹된 값만 받아 법정 보존 만료 시각과 함께 저장한다.
+     */
     public static WithdrawnUserRetention create(
             UUID originalUserId,
             String nameMasked,

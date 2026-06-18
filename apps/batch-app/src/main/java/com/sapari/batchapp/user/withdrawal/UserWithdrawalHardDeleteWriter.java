@@ -20,6 +20,9 @@ public class UserWithdrawalHardDeleteWriter implements ItemWriter<UUID> {
     private final SellerProfileRepository sellerProfileRepository;
     private final UserRepository userRepository;
 
+    /**
+     * 탈퇴 유예 기간이 끝난 사용자와 직접 연결된 인증·판매자 프로필 데이터를 삭제한 뒤 사용자 row를 삭제한다.
+     */
     @Override
     public void write(Chunk<? extends UUID> chunk) {
         for (UUID userId : chunk) {

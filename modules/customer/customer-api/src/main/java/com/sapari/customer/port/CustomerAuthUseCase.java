@@ -25,6 +25,9 @@ public interface CustomerAuthUseCase {
 
     void logout(CustomerLogoutCommand command);
 
+    /**
+     * Access Token으로 현재 고객을 식별해 회원탈퇴를 신청하고 모든 세션을 폐기한다.
+     */
     void requestWithdrawal(String accessToken);
 
     boolean isPhoneNumberDuplicated(String phoneNumber);

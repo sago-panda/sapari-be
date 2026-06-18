@@ -16,6 +16,9 @@ public class UserWithdrawalRetentionPurgeWriter implements ItemWriter<UUID> {
 
     private final WithdrawnUserRetentionRepository withdrawnUserRetentionRepository;
 
+    /**
+     * 법정 보존 기간이 끝난 탈퇴회원 보존 row를 원 사용자 ID 기준으로 삭제한다.
+     */
     @Override
     public void write(Chunk<? extends UUID> chunk) {
         for (UUID originalUserId : chunk) {

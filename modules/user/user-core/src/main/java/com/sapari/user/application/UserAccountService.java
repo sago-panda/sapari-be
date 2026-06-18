@@ -120,6 +120,10 @@ public class UserAccountService implements UserAccountUseCase {
         return toView(userRepository.save(updated));
     }
 
+    /**
+     * 회원탈퇴 신청 시 사용자 상태를 WITHDRAWING으로 변경하고 deletedAt에 유예 시작 시각을 기록한다.
+     * 원문 개인정보는 남기지 않고 보존 테이블에는 마스킹된 식별 힌트만 한 번 저장한다.
+     */
     @Override
     @Transactional
     public UserView requestWithdrawal(UUID userId) {
@@ -133,6 +137,9 @@ public class UserAccountService implements UserAccountUseCase {
         return toView(userRepository.save(updated));
     }
 
+    /**
+     * 동일 사용자에 대한 보존 row가 없을 때만 생성해 탈퇴 신청 재호출에도 중복 보존정보를 만들지 않는다.
+     */
     private void createRetentionIfAbsent(User user, Instant now) {
         if (withdrawnUserRetentionRepository.existsByOriginalUserId(user.userId())) {
             return;
@@ -148,6 +155,9 @@ public class UserAccountService implements UserAccountUseCase {
         ));
     }
 
+    /**
+     * 법정 보존 만료 시각을 UTC 기준으로 계산한다.
+     */
     private Instant retentionUntil(Instant withdrawalRequestedAt) {
         return ZonedDateTime.ofInstant(withdrawalRequestedAt, ZoneOffset.UTC)
                 .plusYears(WITHDRAWN_USER_RETENTION_YEARS)
