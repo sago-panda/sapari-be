@@ -13,8 +13,6 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import org.springframework.util.Assert;
-
 import com.sapari.storage.db.entity.BaseUuidEntity;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
@@ -24,7 +22,7 @@ import com.sapari.user.model.UserStatus;
 
 @Entity
 @Getter
-@Table(name = "users")
+@Table(name = "users", schema = "user_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class UserEntity extends BaseUuidEntity {
 
@@ -77,8 +75,6 @@ public class UserEntity extends BaseUuidEntity {
 
     private Instant deletedAt;
 
-    private Instant personalDataPurgedAt;
-
     @Enumerated(EnumType.STRING)
     private ProviderType provider;
 
@@ -102,15 +98,6 @@ public class UserEntity extends BaseUuidEntity {
             Instant providerCreatedAt,
             Instant nicknameChangedAt
     ) {
-        Assert.hasText(nickname, "닉네임은 필수입니다.");
-        Assert.hasText(name, "name은 필수입니다.");
-        Assert.notNull(birthDate, "birthDate은 필수입니다.");
-        Assert.notNull(gender, "gender은 필수입니다.");
-        Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
-        Assert.hasText(email, "email은 필수입니다.");
-        Assert.notNull(providerCreatedAt, "providerCreatedAt은 필수입니다.");
-        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
-
         UserEntity user = new UserEntity();
 
         user.role = UserRole.USER;
@@ -142,13 +129,6 @@ public class UserEntity extends BaseUuidEntity {
             Boolean marketingAgreed,
             Instant nicknameChangedAt
     ) {
-        Assert.hasText(nickname, "닉네임은 필수입니다.");
-        Assert.hasText(name, "name은 필수입니다.");
-        Assert.notNull(birthDate, "birthDate은 필수입니다.");
-        Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
-        Assert.hasText(email, "email은 필수입니다.");
-        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
-
         UserEntity user = new UserEntity();
 
         user.role = UserRole.SELLER;
@@ -176,14 +156,6 @@ public class UserEntity extends BaseUuidEntity {
             Boolean marketingAgreed,
             Instant nicknameChangedAt
     ) {
-        Assert.hasText(nickname, "닉네임은 필수입니다.");
-        Assert.hasText(name, "name은 필수입니다.");
-        Assert.notNull(birthDate, "birthDate은 필수입니다.");
-        Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
-        Assert.hasText(email, "email은 필수입니다.");
-        Assert.notNull(marketingAgreed, "marketingAgreed은 필수입니다.");
-        Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
-
         this.nickname = nickname;
         this.nicknameChangedAt = nicknameChangedAt;
         this.name = name;
@@ -192,5 +164,14 @@ public class UserEntity extends BaseUuidEntity {
         this.profileImageKey = profileImageKey;
         this.email = email;
         this.marketingAgreed = marketingAgreed;
+    }
+
+    public void updateWithdrawalState(
+            UserStatus status,
+            Instant deletedAt
+    ) {
+        // 탈퇴 상태 전환은 프로필 수정과 별도 책임이라 명시적 메서드로 분리한다.
+        this.status = status;
+        this.deletedAt = deletedAt;
     }
 }

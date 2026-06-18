@@ -1,7 +1,6 @@
 package com.sapari.user.infrastructure.persistence.entity;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -132,29 +131,6 @@ class UserEntityTest {
         assertThat(user.getEmail()).isEqualTo("updated@example.com");
         assertThat(user.getMarketingAgreed()).isTrue();
         assertThat(user.getNicknameChangedAt()).isEqualTo(changedAt);
-    }
-
-    @Test
-    @DisplayName("소셜 고객 생성 시 필수값이 비어 있으면 예외가 발생한다")
-    void createSocialCustomerThrowsExceptionWhenRequiredValueIsBlank() {
-        // given
-        String blankNickname = " ";
-
-        // when, then
-        assertThatThrownBy(() -> UserEntity.createSocialCustomer(
-                blankNickname,
-                "테스터",
-                LocalDate.of(1995, 5, 15),
-                UserGender.MALE,
-                "01012345678",
-                "tester@example.com",
-                false,
-                ProviderType.KAKAO,
-                "provider-id",
-                "provider@example.com",
-                providerCreatedAt(),
-                nicknameChangedAt()
-        )).isInstanceOf(IllegalArgumentException.class);
     }
 
     private Instant providerCreatedAt() {

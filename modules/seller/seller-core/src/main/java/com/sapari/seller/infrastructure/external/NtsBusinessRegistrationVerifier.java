@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
 
@@ -78,7 +79,7 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
             NtsBusinessRegistrationResponse response,
             String businessNumber
     ) {
-        if (response == null || !OK_STATUS_CODE.equals(response.status_code())) {
+        if (response == null || !OK_STATUS_CODE.equals(response.statusCode())) {
             return SellerBusinessRegistrationVerification.unavailable();
         }
 
@@ -87,7 +88,7 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
         }
 
         NtsBusinessRegistrationData registrationData = response.data().getFirst();
-        if (!businessNumber.equals(registrationData.b_no())) {
+        if (!businessNumber.equals(registrationData.businessNumber())) {
             return SellerBusinessRegistrationVerification.invalid();
         }
 
@@ -96,7 +97,7 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
         }
 
         NtsBusinessStatusData statusData = registrationData.status();
-        if (statusData == null || !ACTIVE_BUSINESS_STATUS_CODE.equals(statusData.b_stt_cd())) {
+        if (statusData == null || !ACTIVE_BUSINESS_STATUS_CODE.equals(statusData.businessStatusCode())) {
             return SellerBusinessRegistrationVerification.invalid();
         }
 
@@ -104,7 +105,7 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
     }
 
     /**
-     * 국세청 진위확인 API 요청 body다. API 스펙에 맞춰 필드명은 businesses를 그대로 사용한다.
+     * 국세청 진위확인 API 요청 body다.
      */
     private record NtsBusinessRegistrationRequest(
             // 진위확인 대상 사업자 정보 목록. 가입 검증에서는 1개만 보낸다.
@@ -117,11 +118,14 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
      */
     private record NtsBusinessRegistrationPayload(
             // 사업자등록번호.
-            String b_no,
+            @JsonProperty("b_no")
+            String businessNumber,
             // 개업일자. yyyyMMdd 형식으로 전송한다.
-            String start_dt,
+            @JsonProperty("start_dt")
+            String businessStartDate,
             // 대표자명. 판매자 가입 요청의 이름을 사용한다.
-            String p_nm
+            @JsonProperty("p_nm")
+            String representativeName
     ) {
 
         private static NtsBusinessRegistrationPayload of(
@@ -142,11 +146,14 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
      */
     private record NtsBusinessRegistrationResponse(
             // API 처리 결과 코드. OK일 때만 data를 가입 검증에 사용한다.
-            String status_code,
+            @JsonProperty("status_code")
+            String statusCode,
             // 진위확인에 성공한 사업자 수.
-            Integer valid_cnt,
+            @JsonProperty("valid_cnt")
+            Integer validCount,
             // 요청한 사업자 정보 개수.
-            Integer request_cnt,
+            @JsonProperty("request_cnt")
+            Integer requestCount,
             // 사업자별 진위확인 결과 목록.
             List<NtsBusinessRegistrationData> data
     ) {
@@ -157,11 +164,13 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
      */
     private record NtsBusinessRegistrationData(
             // 조회된 사업자등록번호.
-            String b_no,
+            @JsonProperty("b_no")
+            String businessNumber,
             // 진위확인 결과 코드. 01이면 요청 정보가 국세청 정보와 일치한다.
             String valid,
             // 진위확인 결과 메시지.
-            String valid_msg,
+            @JsonProperty("valid_msg")
+            String validMessage,
             // 진위확인된 사업자의 현재 상태 정보.
             NtsBusinessStatusData status
     ) {
@@ -172,9 +181,11 @@ public class NtsBusinessRegistrationVerifier implements SellerBusinessRegistrati
      */
     private record NtsBusinessStatusData(
             // 사업자 상태명. 예: 계속사업자, 휴업자, 폐업자.
-            String b_stt,
+            @JsonProperty("b_stt")
+            String businessStatus,
             // 사업자 상태 코드. 01이면 계속사업자다.
-            String b_stt_cd
+            @JsonProperty("b_stt_cd")
+            String businessStatusCode
     ) {
     }
 }

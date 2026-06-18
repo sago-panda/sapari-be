@@ -2,7 +2,6 @@ package com.sapari.customer.application.service;
 
 import lombok.RequiredArgsConstructor;
 
-import java.time.Duration;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -10,10 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.securityjwt.jwt.JwtSubject;
-import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
-import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
-import com.sapari.global.time.TimeProvider;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerOAuthCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
@@ -21,11 +17,11 @@ import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.port.CustomerOAuthUseCase;
-import com.sapari.customer.result.CustomerOAuthResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.customer.view.CustomerOAuthResult;
+import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
 
@@ -34,11 +30,9 @@ import com.sapari.user.view.UserView;
 public class CustomerOAuthService implements CustomerOAuthUseCase {
 
     private final UserAccountUseCase userAccountUseCase;
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter;
     private final SocialSignupRepository socialSignupRepository;
     private final SocialLoginCodeRepository socialLoginCodeRepository;
-    private final JwtTokenProvider jwtTokenProvider;
-    private final RefreshTokenStore refreshTokenStore;
-    private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
 
     /**
@@ -59,19 +53,17 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
      * 기존 고객에게 전달할 임시 로그인 code를 만들고 Redis에 token 정보를 짧게 저장
      */
     private CustomerOAuthResult createLoginSuccessResult(UserView user) {
-        if (user.role() != UserRole.USER) {
+        if (user.role() != UserRole.USER || user.status() != UserStatus.ACTIVE) {
+            // 탈퇴 유예 계정은 로그인 성공도 재가입 세션 생성도 하지 않도록 일반 실패로 처리한다.
             throw new CustomerException(CustomerErrorCode.USER_NOT_FOUND);
         }
 
-        UUID sessionId = UUID.randomUUID();
-        JwtSubject subject = toJwtSubject(user, sessionId);
-        String accessToken = jwtTokenProvider.createAccessToken(subject);
-        String refreshToken = issueRefreshToken(subject);
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(user);
         String loginCode = UUID.randomUUID().toString();
         String socialLoginTokenInfoJson = toJson(new SocialLoginTokenResult(
                 user.userId(),
-                accessToken,
-                refreshToken
+                tokenPair.accessToken(),
+                tokenPair.refreshToken()
         ));
 
         socialLoginCodeRepository.save(loginCode, socialLoginTokenInfoJson);
@@ -117,33 +109,4 @@ public class CustomerOAuthService implements CustomerOAuthUseCase {
         }
     }
 
-    /**
-     * 로그인 세션의 Refresh Token을 발급하고 현재 Refresh Token ID를 저장한다.
-     */
-    private String issueRefreshToken(JwtSubject subject) {
-        String refreshToken = jwtTokenProvider.createRefreshToken(subject);
-        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
-
-        refreshTokenStore.save(
-                refreshClaims.sessionId(),
-                refreshClaims.tokenId(),
-                getRemainingExpiration(refreshClaims)
-        );
-
-        return refreshToken;
-    }
-
-    private Duration getRemainingExpiration(JwtTokenClaims claims) {
-        Duration remainingExpiration = Duration.between(timeProvider.now(), claims.expiresAt());
-
-        if (remainingExpiration.isNegative()) {
-            return Duration.ZERO;
-        }
-
-        return remainingExpiration;
-    }
-
-    private JwtSubject toJwtSubject(UserView customer, UUID sessionId) {
-        return new JwtSubject(customer.userId(), sessionId, customer.role().name(), customer.nickname(), customer.email());
-    }
 }

@@ -19,27 +19,28 @@ import com.sapari.seller.infrastructure.persistence.mapper.SellerProfileMapper;
 public class SellerProfileRepositoryImpl implements SellerProfileRepository {
 
     private final SellerProfileJpaRepository sellerProfileJpaRepository;
+    private final SellerProfileMapper sellerProfileMapper;
 
     @Override
     public SellerProfile save(SellerProfile sellerProfile) {
         if (sellerProfile.sellerProfileId() == null) {
-            return SellerProfileMapper.toDomain(
-                    sellerProfileJpaRepository.save(SellerProfileMapper.toEntity(sellerProfile))
+            return sellerProfileMapper.toDomain(
+                    sellerProfileJpaRepository.save(sellerProfileMapper.toEntity(sellerProfile))
             );
         }
 
         SellerProfileEntity existingEntity = sellerProfileJpaRepository.findById(sellerProfile.sellerProfileId())
                 .orElseThrow(() -> new SellerException(SellerErrorCode.SELLER_PROFILE_NOT_FOUND));
 
-        SellerProfileMapper.updateEntityFromDomain(existingEntity, sellerProfile);
+        sellerProfileMapper.updateEntityFromDomain(existingEntity, sellerProfile);
 
-        return SellerProfileMapper.toDomain(sellerProfileJpaRepository.save(existingEntity));
+        return sellerProfileMapper.toDomain(sellerProfileJpaRepository.save(existingEntity));
     }
 
     @Override
     public Optional<SellerProfile> findByUserId(UUID userId) {
         return sellerProfileJpaRepository.findByUserId(userId)
-                .map(SellerProfileMapper::toDomain);
+                .map(sellerProfileMapper::toDomain);
     }
 
     @Override
@@ -50,5 +51,10 @@ public class SellerProfileRepositoryImpl implements SellerProfileRepository {
     @Override
     public boolean existsByStoreName(String storeName) {
         return sellerProfileJpaRepository.existsByStoreName(storeName);
+    }
+
+    @Override
+    public void deleteByUserId(UUID userId) {
+        sellerProfileJpaRepository.deleteByUserId(userId);
     }
 }
