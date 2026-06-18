@@ -9,10 +9,8 @@ public record SocialSignupCommand(
         String name,
         LocalDate birthDate,
         String gender,
-        Boolean marketingAgreed
+        String profileImageUrl,
+        boolean privacyAgreed,
+        boolean marketingAgreed
 ) {
-
-    public boolean isMarketingAgreed() {
-        return Boolean.TRUE.equals(marketingAgreed);
-    }
 }

@@ -12,7 +12,8 @@ public record RegisterSocialCustomerCommand(
         UserGender gender,
         String phoneNumber,
         String email,
-        Boolean marketingAgreed,
+        String profileImageUrl,
+        boolean marketingAgreed,
         ProviderType provider,
         String providerId,
         String providerEmail

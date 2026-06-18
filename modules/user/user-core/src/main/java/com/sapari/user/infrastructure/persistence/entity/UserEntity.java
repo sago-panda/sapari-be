@@ -91,6 +91,7 @@ public class UserEntity extends BaseUuidEntity {
             UserGender gender,
             String phoneNumber,
             String email,
+            String profileImageKey,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
@@ -108,6 +109,7 @@ public class UserEntity extends BaseUuidEntity {
         user.birthDate = birthDate;
         user.gender = gender;
         user.phoneNumber = phoneNumber;
+        user.profileImageKey = profileImageKey;
         user.email = email;
         user.grade = UserGrade.BRONZE;
         user.pointBalance = 0;
@@ -123,7 +125,6 @@ public class UserEntity extends BaseUuidEntity {
     public static UserEntity createSeller(
             String nickname,
             String name,
-            LocalDate birthDate,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
@@ -136,7 +137,6 @@ public class UserEntity extends BaseUuidEntity {
         user.nickname = nickname;
         user.nicknameChangedAt = nicknameChangedAt;
         user.name = name;
-        user.birthDate = birthDate;
         user.phoneNumber = phoneNumber;
         user.email = email;
         user.grade = UserGrade.BRONZE;

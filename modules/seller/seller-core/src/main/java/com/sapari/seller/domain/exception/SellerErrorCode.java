@@ -23,7 +23,8 @@ public enum SellerErrorCode implements ErrorCode {
     DUPLICATED_STORE_NAME(409, "SELLER-012", "이미 사용 중인 상호명입니다."),
     INVALID_BUSINESS_REGISTRATION(400, "SELLER-013", "가입 가능한 사업자등록번호가 아닙니다."),
     BUSINESS_REGISTRATION_CHECK_UNAVAILABLE(503, "SELLER-014", "사업자등록번호 확인이 지연되고 있습니다."),
-    SELLER_PROFILE_NOT_FOUND(404, "SELLER-015", "판매자 프로필을 찾을 수 없습니다.");
+    SELLER_PROFILE_NOT_FOUND(404, "SELLER-015", "판매자 프로필을 찾을 수 없습니다."),
+    PASSWORD_CONFIRM_MISMATCH(400, "SELLER-016", "비밀번호와 비밀번호 확인이 일치하지 않습니다.");
 
     private final int status;
     private final String code;

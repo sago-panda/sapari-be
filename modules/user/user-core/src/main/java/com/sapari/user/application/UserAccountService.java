@@ -49,6 +49,7 @@ public class UserAccountService implements UserAccountUseCase {
                 command.gender(),
                 command.phoneNumber(),
                 command.email(),
+                command.profileImageUrl(),
                 command.marketingAgreed(),
                 command.provider(),
                 command.providerId(),
@@ -66,7 +67,6 @@ public class UserAccountService implements UserAccountUseCase {
         User user = User.createSeller(
                 command.nickname(),
                 command.name(),
-                command.birthDate(),
                 command.phoneNumber(),
                 command.email(),
                 command.marketingAgreed(),
