@@ -7,14 +7,17 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mapstruct.factory.Mappers;
 
-import com.sapari.seller.domain.model.SellerApprovalStatus;
-import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.model.SellerApprovalStatus;
+import com.sapari.seller.model.SellerBusinessType;
 import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.infrastructure.persistence.entity.SellerProfileEntity;
 
 @DisplayName("판매자 프로필 매퍼 테스트")
 class SellerProfileMapperTest {
+
+    private final SellerProfileMapper mapper = Mappers.getMapper(SellerProfileMapper.class);
 
     @Test
     @DisplayName("도메인 모델을 JPA 엔티티로 변환한다")
@@ -33,7 +36,7 @@ class SellerProfileMapperTest {
         );
 
         // when
-        SellerProfileEntity entity = SellerProfileMapper.toEntity(sellerProfile);
+        SellerProfileEntity entity = mapper.toEntity(sellerProfile);
 
         // then
         assertThat(entity.getUserId()).isEqualTo(userId);
@@ -62,7 +65,7 @@ class SellerProfileMapperTest {
         );
 
         // when
-        SellerProfile sellerProfile = SellerProfileMapper.toDomain(entity);
+        SellerProfile sellerProfile = mapper.toDomain(entity);
 
         // then
         assertThat(sellerProfile.userId()).isEqualTo(userId);
@@ -101,7 +104,7 @@ class SellerProfileMapperTest {
         );
 
         // when
-        SellerProfileMapper.updateEntityFromDomain(entity, sellerProfile);
+        mapper.updateEntityFromDomain(entity, sellerProfile);
 
         // then
         assertThat(entity.getUserId()).isEqualTo(userId);

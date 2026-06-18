@@ -11,11 +11,10 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import org.springframework.util.Assert;
 
 @Entity
 @Getter
-@Table(name = "local_credentials")
+@Table(name = "local_credentials", schema = "seller_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class LocalCredentialEntity {
 
@@ -41,11 +40,6 @@ public class LocalCredentialEntity {
             Instant lockedAt,
             Instant lastChangedAt
     ) {
-        Assert.notNull(userId, "userId는 필수입니다.");
-        Assert.hasText(passwordHash, "passwordHash는 필수입니다.");
-        Assert.notNull(failedLoginCount, "failedLoginCount는 필수입니다.");
-        Assert.notNull(lastChangedAt, "lastChangedAt은 필수입니다.");
-
         LocalCredentialEntity entity = new LocalCredentialEntity();
 
         entity.userId = userId;

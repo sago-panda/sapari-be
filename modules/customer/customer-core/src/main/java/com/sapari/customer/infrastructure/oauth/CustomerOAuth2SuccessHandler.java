@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
 
 import com.sapari.customer.command.CustomerOAuthCommand;
 import com.sapari.customer.port.CustomerOAuthUseCase;
-import com.sapari.customer.result.CustomerOAuthResult;
+import com.sapari.customer.view.CustomerOAuthResult;
 
 @Component
 @RequiredArgsConstructor

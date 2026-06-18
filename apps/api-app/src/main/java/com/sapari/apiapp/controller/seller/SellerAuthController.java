@@ -16,6 +16,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -40,11 +41,11 @@ import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.port.SellerAuthUseCase;
-import com.sapari.seller.result.SellerLoginResult;
-import com.sapari.seller.result.SellerMeResult;
-import com.sapari.seller.result.SellerNicknameUpdateResult;
-import com.sapari.seller.result.SellerSignupResult;
-import com.sapari.seller.result.SellerTokenReissueResult;
+import com.sapari.seller.view.SellerLoginResult;
+import com.sapari.seller.view.SellerMeView;
+import com.sapari.seller.view.SellerNicknameUpdateResult;
+import com.sapari.seller.view.SellerSignupResult;
+import com.sapari.seller.view.SellerTokenReissueResult;
 
 @RestController
 @RequestMapping("/api/v1/sellers/auth")
@@ -154,19 +155,32 @@ public class SellerAuthController {
     public ResponseEntity<SellerMeResponse> getMyInfo(
             @CurrentUserId UUID userId
     ) {
-        SellerMeResult result = sellerAuthUseCase.getMyInfo(userId);
+        SellerMeView result = sellerAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(SellerMeResponse.from(result));
     }
 
+    @DeleteMapping("/me")
+    public ResponseEntity<Void> withdraw(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
+    ) {
+        sellerAuthUseCase.requestWithdrawal(resolveAccessToken(authorizationHeader));
+
+        return ResponseEntity
+                .noContent()
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .toString())
+                .build();
+    }
+
     @PutMapping("/me/nickname")
     public ResponseEntity<SellerMeResponse> updateNickname(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
         SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(
-                request.toCommand(userId, resolveAccessToken(authorizationHeader))
+                request.toCommand(resolveAccessToken(authorizationHeader))
         );
 
         return ResponseEntity
@@ -177,10 +191,9 @@ public class SellerAuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
-        sellerAuthUseCase.logout(new SellerLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
+        sellerAuthUseCase.logout(new SellerLogoutCommand(resolveAccessToken(authorizationHeader)));
 
         return ResponseEntity
                 .noContent()

@@ -47,6 +47,7 @@ promotion:promotion_schema
 notification:notification_schema
 settlement:settlement_schema
 live:live_schema
+batch:batch_schema
 "
 
 for entry in $SCHEMAS; do

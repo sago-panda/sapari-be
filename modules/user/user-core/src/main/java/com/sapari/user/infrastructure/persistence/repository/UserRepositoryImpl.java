@@ -21,40 +21,41 @@ import com.sapari.user.infrastructure.persistence.mapper.UserMapper;
 public class UserRepositoryImpl implements UserRepository {
 
     private final UserJpaRepository userJpaRepository;
+    private final UserMapper userMapper;
 
     @Override
     public User save(User user) {
         if (user.userId() == null) {
-            UserEntity entity = UserMapper.toEntity(user);
+            UserEntity entity = userMapper.toEntity(user);
             UserEntity saved = userJpaRepository.save(entity);
 
-            return UserMapper.toDomain(saved);
+            return userMapper.toDomain(saved);
         }
 
         UserEntity existingEntity = userJpaRepository.findById(user.userId())
                 .orElseThrow(() -> new EntityNotFoundException("해당 유저를 찾을 수 없습니다."));
 
-        UserMapper.updateEntityFromDomain(existingEntity, user);
+        userMapper.updateEntityFromDomain(existingEntity, user);
 
-        return UserMapper.toDomain(userJpaRepository.save(existingEntity));
+        return userMapper.toDomain(userJpaRepository.save(existingEntity));
     }
 
     @Override
     public Optional<User> findById(UUID userId) {
         return userJpaRepository.findById(userId)
-                .map(UserMapper::toDomain);
+                .map(userMapper::toDomain);
     }
 
     @Override
     public Optional<User> findByProviderAndProviderId(ProviderType provider, String providerId) {
         return userJpaRepository.findByProviderAndProviderId(provider, providerId)
-                .map(UserMapper::toDomain);
+                .map(userMapper::toDomain);
     }
 
     @Override
     public Optional<User> findByEmailAndRole(String email, UserRole role) {
         return userJpaRepository.findByEmailAndRole(email, role)
-                .map(UserMapper::toDomain);
+                .map(userMapper::toDomain);
     }
 
     @Override
@@ -85,5 +86,10 @@ public class UserRepositoryImpl implements UserRepository {
     @Override
     public boolean existsByEmailAndUserIdNot(String email, UUID userId) {
         return userJpaRepository.existsByEmailAndIdNot(email, userId);
+    }
+
+    @Override
+    public void deleteById(UUID userId) {
+        userJpaRepository.deleteById(userId);
     }
 }
