@@ -20,6 +20,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
@@ -29,10 +30,12 @@ import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
-import com.sapari.customer.result.CustomerOAuthResult;
-import com.sapari.customer.result.CustomerOAuthResultType;
-import com.sapari.customer.result.SocialLoginTokenResult;
+import com.sapari.customer.view.CustomerOAuthResult;
+import com.sapari.customer.view.CustomerOAuthResultType;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
+import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -57,14 +60,25 @@ class CustomerOAuthServiceTest {
     );
     private final RefreshTokenStore refreshTokenStore =
             mock(RefreshTokenStore.class);
+    private final SessionRevocationStore sessionRevocationStore =
+            mock(SessionRevocationStore.class);
+    private final AccessTokenBlacklist accessTokenBlacklist =
+            mock(AccessTokenBlacklist.class);
+    private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
+            jwtTokenProvider,
+            refreshTokenStore,
+            sessionRevocationStore,
+            accessTokenBlacklist,
+            timeProvider()
+    );
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter =
+            new CustomerJwtTokenAdapter(jwtTokenLifecycle);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final CustomerOAuthService customerOAuthService = new CustomerOAuthService(
             userAccountUseCase,
+            customerJwtTokenAdapter,
             socialSignupRepository,
             socialLoginCodeRepository,
-            jwtTokenProvider,
-            refreshTokenStore,
-            timeProvider(),
             objectMapper
     );
 
@@ -104,6 +118,7 @@ class CustomerOAuthServiceTest {
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
         verify(refreshTokenStore).save(
+                eq(userId),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
@@ -167,6 +182,20 @@ class CustomerOAuthServiceTest {
     }
 
     @Test
+    @DisplayName("탈퇴 유예 상태 기존 고객이면 OAuth 로그인에 실패한다")
+    void handleOAuthSuccessThrowsExceptionWhenExistingCustomerIsWithdrawing() {
+        UUID userId = UUID.randomUUID();
+        when(userAccountUseCase.findBySocialAccount(ProviderType.NAVER, "naver-id"))
+                .thenReturn(Optional.of(customerView(userId, UserStatus.WITHDRAWING)));
+
+        assertThatThrownBy(() -> customerOAuthService.handleOAuthSuccess(oAuthCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.USER_NOT_FOUND)
+                );
+        verifyNoInteractions(refreshTokenStore, socialLoginCodeRepository, socialSignupRepository);
+    }
+
+    @Test
     @DisplayName("기존 고객이 구매자가 아니면 OAuth 로그인에 실패한다")
     void handleOAuthSuccessThrowsExceptionWhenExistingUserIsNotCustomer() {
         UUID userId = UUID.randomUUID();
@@ -198,10 +227,14 @@ class CustomerOAuthServiceTest {
     }
 
     private UserView customerView(UUID userId) {
+        return customerView(userId, UserStatus.ACTIVE);
+    }
+
+    private UserView customerView(UUID userId, UserStatus status) {
         return new UserView(
                 userId,
                 UserRole.USER,
-                UserStatus.ACTIVE,
+                status,
                 "customer",
                 providerCreatedAt(),
                 "구매자",

@@ -2,7 +2,7 @@ package com.sapari.apiapp.controller.customer.dto.response;
 
 import java.util.UUID;
 
-import com.sapari.customer.result.CustomerTokenReissueResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
 
 public record TokenReissueResponse(
         UUID userId

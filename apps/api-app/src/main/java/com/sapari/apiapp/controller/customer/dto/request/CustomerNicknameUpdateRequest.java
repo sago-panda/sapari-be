@@ -1,7 +1,5 @@
 package com.sapari.apiapp.controller.customer.dto.request;
 
-import java.util.UUID;
-
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 
@@ -16,9 +14,8 @@ public record CustomerNicknameUpdateRequest(
         String nickname
 ) {
 
-    public CustomerNicknameUpdateCommand toCommand(UUID userId, String accessToken) {
+    public CustomerNicknameUpdateCommand toCommand(String accessToken) {
         return new CustomerNicknameUpdateCommand(
-                userId,
                 nickname,
                 accessToken
         );

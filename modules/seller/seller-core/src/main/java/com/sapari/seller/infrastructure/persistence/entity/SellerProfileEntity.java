@@ -13,13 +13,13 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import com.sapari.seller.domain.model.SellerApprovalStatus;
-import com.sapari.seller.domain.model.SellerBusinessType;
+import com.sapari.seller.model.SellerApprovalStatus;
+import com.sapari.seller.model.SellerBusinessType;
 import com.sapari.storage.db.entity.BaseUuidEntity;
 
 @Entity
 @Getter
-@Table(name = "seller_profile")
+@Table(name = "seller_profiles", schema = "seller_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class SellerProfileEntity extends BaseUuidEntity {
 

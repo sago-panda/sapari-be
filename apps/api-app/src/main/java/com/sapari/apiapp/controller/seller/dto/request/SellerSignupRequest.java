@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import com.sapari.seller.command.SellerSignupCommand;
+import com.sapari.seller.model.SellerBusinessType;
 
 public record SellerSignupRequest(
         @NotBlank(message = "이메일은 필수입니다.")
@@ -72,7 +73,7 @@ public record SellerSignupRequest(
                 storeName,
                 businessNumber,
                 businessStartDate,
-                businessType
+                SellerBusinessType.valueOf(businessType)
         );
     }
 }

@@ -14,4 +14,6 @@ public interface SellerProfileJpaRepository extends JpaRepository<SellerProfileE
     boolean existsByBusinessNumber(String businessNumber);
 
     boolean existsByStoreName(String storeName);
+
+    void deleteByUserId(UUID userId);
 }

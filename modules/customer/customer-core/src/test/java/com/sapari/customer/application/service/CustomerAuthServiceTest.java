@@ -16,6 +16,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 
@@ -24,6 +25,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
+import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
@@ -33,17 +35,18 @@ import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
+import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
+import com.sapari.customer.view.SocialSignupInfoView;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
-import com.sapari.customer.result.CustomerNicknameUpdateResult;
-import com.sapari.customer.result.CustomerTokenReissueResult;
-import com.sapari.customer.result.SocialSignupInfoResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.customer.result.SocialSignupResult;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
+import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -77,16 +80,23 @@ class CustomerAuthServiceTest {
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final CustomerAuthService customerAuthService = new CustomerAuthService(
-            socialSignupRepository,
-            socialLoginCodeRepository,
-            userAccountUseCase,
+    private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
             refreshTokenStore,
             sessionRevocationStore,
             accessTokenBlacklist,
+            timeProvider()
+    );
+    private final CustomerJwtTokenAdapter customerJwtTokenAdapter =
+            new CustomerJwtTokenAdapter(jwtTokenLifecycle);
+    private final CustomerAuthService customerAuthService = new CustomerAuthService(
+            socialSignupRepository,
+            socialLoginCodeRepository,
+            userAccountUseCase,
+            customerJwtTokenAdapter,
             timeProvider(),
-            objectMapper
+            objectMapper,
+            Mappers.getMapper(CustomerViewMapper.class)
     );
 
     @Test
@@ -125,6 +135,7 @@ class CustomerAuthServiceTest {
 
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
+                eq(userId),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
@@ -150,7 +161,7 @@ class CustomerAuthServiceTest {
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
 
         // when
-        SocialSignupInfoResult result = customerAuthService.getSocialSignupInfo(SIGNUP_SID);
+        SocialSignupInfoView result = customerAuthService.getSocialSignupInfo(SIGNUP_SID);
 
         // then
         assertThat(result.phoneNumber()).isEqualTo("01012345678");
@@ -242,6 +253,24 @@ class CustomerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("탈퇴 유예 상태 구매자는 Refresh Token 재발급에 실패한다")
+    void reissueAccessTokenThrowsExceptionWhenCustomerIsWithdrawing() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String refreshToken =
+                jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId, UserStatus.WITHDRAWING)));
+
+        // when, then
+        assertThatThrownBy(() -> customerAuthService.reissueAccessToken(refreshToken))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.INVALID_REFRESH_TOKEN)
+                );
+        verify(refreshTokenStore, never())
+                .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+    }
+
+    @Test
     @DisplayName("회전된 Refresh Token의 남은 TTL이 1ms 미만이면 Redis 저장 없이 재발급에 실패한다")
     void reissueAccessTokenThrowsExceptionWhenRotatedRefreshTokenTtlIsExpired() {
         // given
@@ -250,16 +279,22 @@ class CustomerAuthServiceTest {
         String previousRefreshToken = "previous-refresh-token";
         String rotatedRefreshToken = "rotated-refresh-token";
         JwtTokenProvider tokenProvider = mock(JwtTokenProvider.class);
-        CustomerAuthService service = new CustomerAuthService(
-                socialSignupRepository,
-                socialLoginCodeRepository,
-                userAccountUseCase,
+        JwtTokenLifecycle tokenLifecycle = new JwtTokenLifecycle(
                 tokenProvider,
                 refreshTokenStore,
                 sessionRevocationStore,
                 accessTokenBlacklist,
+                timeProvider()
+        );
+        CustomerJwtTokenAdapter jwtTokenAdapter = new CustomerJwtTokenAdapter(tokenLifecycle);
+        CustomerAuthService service = new CustomerAuthService(
+                socialSignupRepository,
+                socialLoginCodeRepository,
+                userAccountUseCase,
+                jwtTokenAdapter,
                 timeProvider(),
-                objectMapper
+                objectMapper,
+                Mappers.getMapper(CustomerViewMapper.class)
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,
@@ -295,7 +330,7 @@ class CustomerAuthServiceTest {
                 );
         verify(refreshTokenStore, never())
                 .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
-        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class));
+        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class), any(UUID.class));
         verifyNoInteractions(sessionRevocationStore);
     }
 
@@ -320,7 +355,7 @@ class CustomerAuthServiceTest {
                 .isInstanceOfSatisfying(CustomerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.INVALID_REFRESH_TOKEN)
         );
-        verify(refreshTokenStore).deleteBySessionId(refreshClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(refreshClaims.userId(), refreshClaims.sessionId());
         verify(sessionRevocationStore).revoke(refreshClaims.sessionId());
     }
 
@@ -350,12 +385,32 @@ class CustomerAuthServiceTest {
         JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(accessToken);
 
         // when
-        customerAuthService.logout(new CustomerLogoutCommand(userId, accessToken));
+        customerAuthService.logout(new CustomerLogoutCommand(accessToken));
 
         // then
-        verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(accessClaims.userId(), accessClaims.sessionId());
         verify(sessionRevocationStore).revoke(accessClaims.sessionId());
         verify(accessTokenBlacklist, never()).save(any(UUID.class), any(Duration.class));
+    }
+
+    @Test
+    @DisplayName("회원 탈퇴 요청 시 상태를 탈퇴 유예로 바꾸고 사용자의 모든 세션을 폐기한다")
+    void requestWithdrawalMarksCustomerWithdrawingAndRevokesAllSessions() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken =
+                jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
+        when(userAccountUseCase.requestWithdrawal(userId))
+                .thenReturn(customerView(userId, UserStatus.WITHDRAWING));
+
+        // when
+        customerAuthService.requestWithdrawal(accessToken);
+
+        // then
+        verify(userAccountUseCase).requestWithdrawal(userId);
+        verify(refreshTokenStore).deleteAllByUserId(userId);
+        verify(sessionRevocationStore).revokeAll(userId);
     }
 
     @Test
@@ -380,7 +435,6 @@ class CustomerAuthServiceTest {
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         JwtTokenClaims oldAccessClaims = jwtTokenProvider.parseToken(oldAccessToken);
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -409,7 +463,7 @@ class CustomerAuthServiceTest {
         verify(userAccountUseCase).existsByNickname("updated");
         verify(userAccountUseCase).changeNickname(userId, "updated");
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
-        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(Duration.class));
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
         verifyNoInteractions(sessionRevocationStore);
     }
 
@@ -420,7 +474,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -444,7 +497,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "customer",
                 oldAccessToken
         );
@@ -467,7 +519,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -488,7 +539,6 @@ class CustomerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         String oldAccessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
         CustomerNicknameUpdateCommand command = new CustomerNicknameUpdateCommand(
-                userId,
                 "updated",
                 oldAccessToken
         );
@@ -563,18 +613,26 @@ class CustomerAuthServiceTest {
     }
 
     private UserView customerView(UUID userId) {
-        return customerView(userId, "customer", providerCreatedAt());
+        return customerView(userId, UserStatus.ACTIVE);
+    }
+
+    private UserView customerView(UUID userId, UserStatus status) {
+        return customerView(userId, "customer", providerCreatedAt(), status);
     }
 
     private UserView customerView(UUID userId, Instant nicknameChangedAt) {
-        return customerView(userId, "customer", nicknameChangedAt);
+        return customerView(userId, "customer", nicknameChangedAt, UserStatus.ACTIVE);
     }
 
     private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt) {
+        return customerView(userId, nickname, nicknameChangedAt, UserStatus.ACTIVE);
+    }
+
+    private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status) {
         return new UserView(
                 userId,
                 UserRole.USER,
-                UserStatus.ACTIVE,
+                status,
                 nickname,
                 nicknameChangedAt,
                 "구매자",
