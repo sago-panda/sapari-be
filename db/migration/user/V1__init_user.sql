@@ -22,7 +22,6 @@ CREATE TABLE user_schema.users (
     suspended_until         timestamptz,
     suspension_reason       text,
     deleted_at              timestamptz,
-    personal_data_purged_at timestamptz,
     provider                varchar(255),
     provider_id             varchar(255),
     provider_email          varchar(255),
@@ -33,6 +32,30 @@ CREATE TABLE user_schema.users (
     CONSTRAINT uk_users_email        UNIQUE (email)
 );
 CREATE INDEX ON user_schema.users (status, role);
+CREATE INDEX idx_users_withdrawing_deleted_at
+    ON user_schema.users (deleted_at)
+    WHERE status = 'WITHDRAWING';
+
+-- 탈퇴회원 법정 보존용 최소 식별정보.
+-- 주문/결제/환불 등 법정 보존 거래기록은 각 도메인 테이블에 그대로 보관하고,
+-- 이 테이블은 users hard delete 이후에도 거래기록의 buyer_id/user_id와 연결할 최소 힌트만 보관한다.
+-- 원문 개인정보, 해시, 복호화 가능한 암호화 식별정보는 저장하지 않고 마스킹 값만 저장한다.
+CREATE TABLE user_schema.withdrawn_user_retentions (
+    id                  uuid         NOT NULL DEFAULT gen_random_uuid(),
+    original_user_id    uuid         NOT NULL,              -- 탈퇴 전 users.id 값. soft reference이며 FK 아님
+    name_masked         varchar(20),                        -- 예: 홍길동 -> 홍*동
+    email_masked        varchar(255),                       -- 예: test@example.com -> te***@example.com
+    phone_number_masked varchar(20),                        -- 예: 01012345678 -> 010****5678
+    retention_until     timestamptz  NOT NULL,              -- 법정 보존 만료 시각. 탈퇴 요청 시각 + 5년
+    created_at          timestamptz  NOT NULL,
+    purged_at           timestamptz,                         -- 파기 완료 시각. null이면 아직 보존 중
+    CONSTRAINT pk_withdrawn_user_retentions PRIMARY KEY (id)
+);
+CREATE UNIQUE INDEX uk_withdrawn_user_retentions_original_user_id
+    ON user_schema.withdrawn_user_retentions (original_user_id);
+CREATE INDEX idx_withdrawn_user_retentions_retention_until
+    ON user_schema.withdrawn_user_retentions (retention_until)
+    WHERE purged_at IS NULL;
 
 -- 구매자 전용 소셜 로그인 연동. users와 N:1 — 제공자별 복수 연동 가능 (설계 DDL)
 -- ⚠️ 현 코드(UserEntity)는 provider 컬럼을 users에 내장 — 코드가 설계를 따라가면 이 테이블로 이관

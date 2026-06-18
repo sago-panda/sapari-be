@@ -14,6 +14,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -183,6 +184,24 @@ public class CustomerAuthController {
         CustomerMeView result = customerAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(CustomerMeResponse.from(result));
+    }
+
+    /**
+     * 현재 로그인한 고객의 회원탈퇴를 신청한다.
+     * 탈퇴 처리 후 모든 기기 세션이 폐기되므로 클라이언트의 refresh token 쿠키도 즉시 만료시킨다.
+     */
+    @DeleteMapping("/me")
+    public ResponseEntity<Void> withdraw(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
+    ) {
+        customerAuthUseCase.requestWithdrawal(resolveAccessToken(authorizationHeader));
+
+        return ResponseEntity
+                .noContent()
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .toString())
+                .build();
     }
 
     @PutMapping("/me/nickname")

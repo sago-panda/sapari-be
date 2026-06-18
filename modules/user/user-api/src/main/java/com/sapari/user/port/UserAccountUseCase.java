@@ -33,4 +33,10 @@ public interface UserAccountUseCase {
     boolean existsByNickname(String nickname);
 
     UserView changeNickname(UUID userId, String nickname);
+
+    /**
+     * 회원탈퇴를 신청해 계정을 탈퇴 유예 상태로 전환한다.
+     * 구현체는 법정 보존용 마스킹 정보를 함께 남긴다.
+     */
+    UserView requestWithdrawal(UUID userId);
 }

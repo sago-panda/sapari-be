@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Instant;
 import java.util.UUID;
 
+import jakarta.persistence.Table;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -74,5 +76,16 @@ class SellerProfileEntityTest {
         assertThat(entity.getBusinessType()).isEqualTo(SellerBusinessType.CORPORATE);
         assertThat(entity.getRejectionReason()).isNull();
         assertThat(entity.getApprovedAt()).isEqualTo(approvedAt);
+    }
+
+    @Test
+    @DisplayName("마이그레이션 테이블명과 동일한 seller_profiles를 사용한다")
+    void tableNameMatchesMigration() {
+        // when
+        Table table = SellerProfileEntity.class.getAnnotation(Table.class);
+
+        // then
+        assertThat(table.name()).isEqualTo("seller_profiles");
+        assertThat(table.schema()).isEqualTo("seller_schema");
     }
 }

@@ -14,4 +14,6 @@ public interface SellerProfileRepository {
     boolean existsByBusinessNumber(String businessNumber);
 
     boolean existsByStoreName(String storeName);
+
+    void deleteByUserId(UUID userId);
 }

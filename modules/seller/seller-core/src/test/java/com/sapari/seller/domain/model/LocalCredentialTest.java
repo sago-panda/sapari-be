@@ -44,6 +44,54 @@ class LocalCredentialTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    @DisplayName("잠금 임계치가 1보다 작으면 로그인 실패 기록에 실패한다")
+    void recordLoginFailureThrowsExceptionWhenLockThresholdIsNotPositive() {
+        LocalCredential localCredential = LocalCredential.create(
+                UUID.randomUUID(),
+                "hashed-password",
+                lastChangedAt()
+        );
+
+        assertThatThrownBy(() -> localCredential.recordLoginFailure(lastChangedAt(), 0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("로그인 실패 횟수나 잠금 시각이 있으면 실패 이력이 있다고 본다")
+    void hasLoginFailureHistoryReturnsTrueWhenFailureCountOrLockExists() {
+        UUID userId = UUID.randomUUID();
+        LocalCredential failedCredential = new LocalCredential(
+                userId,
+                "hashed-password",
+                1,
+                null,
+                lastChangedAt()
+        );
+        LocalCredential lockedCredential = new LocalCredential(
+                userId,
+                "hashed-password",
+                0,
+                lastChangedAt(),
+                lastChangedAt()
+        );
+
+        assertThat(failedCredential.hasLoginFailureHistory()).isTrue();
+        assertThat(lockedCredential.hasLoginFailureHistory()).isTrue();
+    }
+
+    @Test
+    @DisplayName("로그인 실패 횟수와 잠금 시각이 없으면 실패 이력이 없다고 본다")
+    void hasLoginFailureHistoryReturnsFalseWhenFailureCountAndLockAreEmpty() {
+        LocalCredential localCredential = LocalCredential.create(
+                UUID.randomUUID(),
+                "hashed-password",
+                lastChangedAt()
+        );
+
+        assertThat(localCredential.hasLoginFailureHistory()).isFalse();
+    }
+
     private Instant lastChangedAt() {
         return Instant.parse("2025-01-01T00:00:00Z");
     }

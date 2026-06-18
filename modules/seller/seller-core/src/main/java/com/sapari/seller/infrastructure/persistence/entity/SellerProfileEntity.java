@@ -19,7 +19,7 @@ import com.sapari.storage.db.entity.BaseUuidEntity;
 
 @Entity
 @Getter
-@Table(name = "seller_profile", schema = "seller_schema")
+@Table(name = "seller_profiles", schema = "seller_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class SellerProfileEntity extends BaseUuidEntity {
 

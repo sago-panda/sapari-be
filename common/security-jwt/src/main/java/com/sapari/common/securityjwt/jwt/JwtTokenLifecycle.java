@@ -34,7 +34,7 @@ public class JwtTokenLifecycle {
         UUID sessionId = UUID.randomUUID();
         JwtSubject subject = toJwtSubject(principal, sessionId);
         String accessToken = jwtTokenProvider.createAccessToken(subject);
-        String refreshToken = issueRefreshToken(subject);
+        String refreshToken = issueRefreshToken(principal.userId(), subject);
 
         return new IssuedTokenPair(accessToken, refreshToken);
     }
@@ -89,8 +89,16 @@ public class JwtTokenLifecycle {
     public void revokeSession(String accessToken) {
         AccessSession accessSession = requireAccessToken(accessToken);
 
-        refreshTokenStore.deleteBySessionId(accessSession.sessionId());
+        refreshTokenStore.deleteBySessionId(accessSession.userId(), accessSession.sessionId());
         sessionRevocationStore.revoke(accessSession.sessionId());
+    }
+
+    /**
+     * 사용자 계정 탈퇴처럼 모든 기기에서 로그아웃해야 하는 경우 userId에 묶인 모든 sid를 폐기한다.
+     */
+    public void revokeAllSessions(UUID userId) {
+        sessionRevocationStore.revokeAll(userId);
+        refreshTokenStore.deleteAllByUserId(userId);
     }
 
     /**
@@ -138,11 +146,12 @@ public class JwtTokenLifecycle {
         }
     }
 
-    private String issueRefreshToken(JwtSubject subject) {
+    private String issueRefreshToken(UUID userId, JwtSubject subject) {
         String refreshToken = jwtTokenProvider.createRefreshToken(subject);
         JwtTokenClaims refreshClaims = parseRefreshToken(refreshToken);
 
         refreshTokenStore.save(
+                userId,
                 refreshClaims.sessionId(),
                 refreshClaims.tokenId(),
                 getRemainingExpiration(refreshClaims)
@@ -169,7 +178,7 @@ public class JwtTokenLifecycle {
 
         if (!rotated) {
             // 저장된 refresh jti와 맞지 않으면 재사용으로 보고 해당 sid 세션을 폐기한다.
-            refreshTokenStore.deleteBySessionId(refreshSession.sessionId());
+            refreshTokenStore.deleteBySessionId(refreshSession.userId(), refreshSession.sessionId());
             sessionRevocationStore.revoke(refreshSession.sessionId());
             throw new JwtTokenLifecycleException("Refresh Token rotation failed.");
         }

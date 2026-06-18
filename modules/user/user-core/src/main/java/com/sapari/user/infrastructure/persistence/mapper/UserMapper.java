@@ -36,6 +36,10 @@ public interface UserMapper {
                     user.marketingAgreed(),
                     user.nicknameChangedAt()
             );
+            seller.updateWithdrawalState(
+                    user.status(),
+                    user.deletedAt()
+            );
             return seller;
         }
 
@@ -63,6 +67,10 @@ public interface UserMapper {
                 user.marketingAgreed(),
                 user.nicknameChangedAt()
         );
+        userEntity.updateWithdrawalState(
+                user.status(),
+                user.deletedAt()
+        );
         return userEntity;
     }
 
@@ -79,6 +87,10 @@ public interface UserMapper {
                 user.email(),
                 user.marketingAgreed(),
                 user.nicknameChangedAt()
+        );
+        entity.updateWithdrawalState(
+                user.status(),
+                user.deletedAt()
         );
     }
 }

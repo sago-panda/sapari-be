@@ -13,12 +13,14 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
@@ -255,7 +257,7 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
                 .thenReturn(Optional.of(sellerView(userId)));
-        when(localCredentialRepository.findById(userId))
+        when(localCredentialRepository.findByIdForUpdate(userId))
                 .thenReturn(Optional.of(LocalCredential.create(userId, PASSWORD_HASH, passwordChangedAt())));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
 
@@ -275,10 +277,27 @@ class SellerAuthServiceTest {
         assertThat(refreshClaims.nickname()).isNull();
         assertThat(refreshClaims.email()).isNull();
         verify(refreshTokenStore).save(
+                eq(userId),
                 eq(refreshClaims.sessionId()),
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+    @Test
+    @DisplayName("탈퇴 유예 상태 판매자는 로그인에 실패한다")
+    void loginThrowsExceptionWhenSellerIsWithdrawing() {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId, UserStatus.WITHDRAWING)));
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.login(new SellerLoginCommand(EMAIL, PASSWORD)))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_LOGIN_CREDENTIALS)
+                );
+        verifyNoInteractions(localCredentialRepository, passwordEncoder, refreshTokenStore);
     }
 
     @Test
@@ -288,7 +307,7 @@ class SellerAuthServiceTest {
         UUID userId = UUID.randomUUID();
         when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
                 .thenReturn(Optional.of(sellerView(userId)));
-        when(localCredentialRepository.findById(userId))
+        when(localCredentialRepository.findByIdForUpdate(userId))
                 .thenReturn(Optional.of(LocalCredential.create(userId, PASSWORD_HASH, passwordChangedAt())));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(false);
 
@@ -297,6 +316,159 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_LOGIN_CREDENTIALS)
                 );
+    }
+
+    @Test
+    @DisplayName("판매자 로그인 실패가 5회가 되면 계정을 잠근다")
+    void loginLocksSellerWhenPasswordFailsFiveTimes() {
+        // given
+        UUID userId = UUID.randomUUID();
+        LocalCredential localCredential = new LocalCredential(
+                userId,
+                PASSWORD_HASH,
+                4,
+                null,
+                passwordChangedAt()
+        );
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId)));
+        when(localCredentialRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(localCredential));
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(false);
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.login(new SellerLoginCommand(EMAIL, PASSWORD)))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_LOGIN_CREDENTIALS)
+                );
+        verify(localCredentialRepository).save(argThat(saved ->
+                saved.userId().equals(userId)
+                        && saved.failedLoginCount() == 5
+                        && NOW.equals(saved.lockedAt())
+        ));
+    }
+
+    @Test
+    @DisplayName("잠금 중인 판매자 로그인은 비밀번호 검증 전에 차단한다")
+    void loginBlocksLockedSellerBeforePasswordCheck() {
+        // given
+        UUID userId = UUID.randomUUID();
+        LocalCredential localCredential = new LocalCredential(
+                userId,
+                PASSWORD_HASH,
+                5,
+                NOW.minus(Duration.ofMinutes(5)),
+                passwordChangedAt()
+        );
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId)));
+        when(localCredentialRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(localCredential));
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.login(new SellerLoginCommand(EMAIL, PASSWORD)))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_LOGIN_CREDENTIALS)
+                );
+        verify(passwordEncoder, never()).matches(any(String.class), any(String.class));
+        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
+    }
+
+    @Test
+    @DisplayName("잠금 10분이 지나면 판매자 로그인을 다시 시도할 수 있고 첫 실패로 기록한다")
+    void loginAllowsRetryAfterLockExpiresAndRecordsFirstFailure() {
+        // given
+        UUID userId = UUID.randomUUID();
+        LocalCredential localCredential = new LocalCredential(
+                userId,
+                PASSWORD_HASH,
+                5,
+                NOW.minus(Duration.ofMinutes(10)).minusSeconds(1),
+                passwordChangedAt()
+        );
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId)));
+        when(localCredentialRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(localCredential));
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(false);
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.login(new SellerLoginCommand(EMAIL, PASSWORD)))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_LOGIN_CREDENTIALS)
+                );
+        verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
+        verify(localCredentialRepository).save(argThat(saved ->
+                saved.userId().equals(userId)
+                        && saved.failedLoginCount() == 1
+                        && saved.lockedAt() == null
+        ));
+    }
+
+    @Test
+    @DisplayName("판매자 로그인 성공 시 실패 횟수와 잠금 상태를 초기화한다")
+    void loginResetsFailureCountAndLockWhenPasswordMatches() {
+        // given
+        UUID userId = UUID.randomUUID();
+        AtomicReference<LocalCredential> savedCredential = new AtomicReference<>();
+        LocalCredential localCredential = new LocalCredential(
+                userId,
+                PASSWORD_HASH,
+                3,
+                null,
+                passwordChangedAt()
+        );
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId)));
+        when(localCredentialRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(localCredential));
+        when(localCredentialRepository.save(any(LocalCredential.class)))
+                .thenAnswer(invocation -> {
+                    LocalCredential saved = invocation.getArgument(0);
+                    savedCredential.set(saved);
+                    return saved;
+                });
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
+
+        // when
+        SellerLoginResult result = sellerAuthService.login(new SellerLoginCommand(EMAIL, PASSWORD));
+
+        // then
+        assertThat(result.userId()).isEqualTo(userId);
+        assertThat(savedCredential.get().failedLoginCount()).isZero();
+        assertThat(savedCredential.get().lockedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("실패 이력이 없는 판매자 로그인 성공 시 로컬 인증 정보를 저장하지 않는다")
+    void loginDoesNotSaveLocalCredentialWhenFailureHistoryIsEmpty() {
+        // given
+        UUID userId = UUID.randomUUID();
+        LocalCredential localCredential = LocalCredential.create(userId, PASSWORD_HASH, passwordChangedAt());
+        when(userAccountUseCase.findByEmailAndRole(EMAIL, UserRole.SELLER))
+                .thenReturn(Optional.of(sellerView(userId)));
+        when(localCredentialRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(localCredential));
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
+
+        // when
+        SellerLoginResult result = sellerAuthService.login(new SellerLoginCommand(EMAIL, PASSWORD));
+
+        // then
+        assertThat(result.userId()).isEqualTo(userId);
+        verify(localCredentialRepository, never()).save(any(LocalCredential.class));
+    }
+
+    @Test
+    @DisplayName("로그인 실패 이력 저장은 SellerException으로 롤백하지 않는다")
+    void loginDoesNotRollbackWhenSellerExceptionIsThrown() throws Exception {
+        // when
+        Transactional transactional = SellerAuthService.class
+                .getMethod("login", SellerLoginCommand.class)
+                .getAnnotation(Transactional.class);
+
+        // then
+        assertThat(transactional.noRollbackFor()).contains(SellerException.class);
     }
 
     @Test
@@ -338,6 +510,23 @@ class SellerAuthServiceTest {
                 eq(rotatedRefreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+    @Test
+    @DisplayName("탈퇴 유예 상태 판매자는 Refresh Token 재발급에 실패한다")
+    void reissueAccessTokenThrowsExceptionWhenSellerIsWithdrawing() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String refreshToken = jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.SELLER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId, UserStatus.WITHDRAWING)));
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.reissueAccessToken(refreshToken))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_REFRESH_TOKEN)
+                );
+        verify(refreshTokenStore, never())
+                .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
     }
 
     @Test
@@ -402,7 +591,7 @@ class SellerAuthServiceTest {
                 );
         verify(refreshTokenStore, never())
                 .rotate(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
-        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class));
+        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class), any(UUID.class));
         verifyNoInteractions(sessionRevocationStore);
     }
 
@@ -435,7 +624,7 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.INVALID_REFRESH_TOKEN)
         );
-        verify(refreshTokenStore).deleteBySessionId(refreshClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(refreshClaims.userId(), refreshClaims.sessionId());
         verify(sessionRevocationStore).revoke(refreshClaims.sessionId());
     }
 
@@ -466,7 +655,7 @@ class SellerAuthServiceTest {
         sellerAuthService.logout(new SellerLogoutCommand(accessToken));
 
         // then
-        verify(refreshTokenStore).deleteBySessionId(accessClaims.sessionId());
+        verify(refreshTokenStore).deleteBySessionId(accessClaims.userId(), accessClaims.sessionId());
         verify(sessionRevocationStore).revoke(accessClaims.sessionId());
         verify(accessTokenBlacklist, never()).save(any(UUID.class), any(Duration.class));
     }
@@ -564,7 +753,7 @@ class SellerAuthServiceTest {
         verify(userAccountUseCase).existsByNickname("updated");
         verify(userAccountUseCase).changeNickname(userId, "updated");
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
-        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(Duration.class));
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
         verifyNoInteractions(sessionRevocationStore);
     }
 
@@ -728,18 +917,26 @@ class SellerAuthServiceTest {
     }
 
     private UserView sellerView(UUID userId) {
-        return sellerView(userId, "seller", passwordChangedAt());
+        return sellerView(userId, UserStatus.ACTIVE);
+    }
+
+    private UserView sellerView(UUID userId, UserStatus status) {
+        return sellerView(userId, "seller", passwordChangedAt(), status);
     }
 
     private UserView sellerView(UUID userId, Instant nicknameChangedAt) {
-        return sellerView(userId, "seller", nicknameChangedAt);
+        return sellerView(userId, "seller", nicknameChangedAt, UserStatus.ACTIVE);
     }
 
     private UserView sellerView(UUID userId, String nickname, Instant nicknameChangedAt) {
+        return sellerView(userId, nickname, nicknameChangedAt, UserStatus.ACTIVE);
+    }
+
+    private UserView sellerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status) {
         return new UserView(
                 userId,
                 UserRole.SELLER,
-                UserStatus.ACTIVE,
+                status,
                 nickname,
                 nicknameChangedAt,
                 "판매자",
