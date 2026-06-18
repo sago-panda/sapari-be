@@ -123,7 +123,10 @@ public class SendChatService implements SendChatUseCase {
     private Mono<ChatMessageView> recoverDuplicate(SendChatCommand command) {
         return chatMessageRepository
                 .findByRoomIdAndSenderIdAndClientMsgId(command.roomId(), command.senderId(), command.clientMsgId())
-                .map(ChatMessage::toView);
+                .map(ChatMessage::toView)
+                // 재조회 miss 시 empty 전파를 막는다 — 그대로 두면 send()가 무응답 complete → 동일 clientMsgId 재시도 루프
+                .switchIfEmpty(Mono.error(new IllegalStateException(
+                        "DuplicateKey 후 재조회 miss — clientMsgId=" + command.clientMsgId())));
     }
 
     private ChatMessageType toType(String messageType) {

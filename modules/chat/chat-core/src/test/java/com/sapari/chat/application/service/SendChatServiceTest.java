@@ -225,4 +225,18 @@ class SendChatServiceTest {
                 .verifyComplete();
         verify(broadcaster, never()).publish(any(), any());
     }
+
+    @Test
+    @DisplayName("dedup miss — DuplicateKey인데 재조회도 empty면 IllegalStateException (무응답 complete·재시도 루프 방지)")
+    void duplicate_key_but_recovery_empty_errors() {
+        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
+        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
+        when(chatMessageRepository.save(any())).thenReturn(Mono.error(new DuplicateKeyException("dup")));
+        when(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .expectError(IllegalStateException.class)
+                .verify();
+    }
 }

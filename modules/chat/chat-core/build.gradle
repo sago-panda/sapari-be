@@ -2,7 +2,6 @@ dependencies {
     implementation(project(':modules:chat:chat-api'))
     implementation(project(':common:core'))
     implementation(project(':common:global'))   // TimeProvider — SendChatService createdAt 스탬프(T7)
-    implementation(project(':common:global'))
 
     // reactive 도메인 repository 포트(Mono/Flux 반환) 컴파일용. 소비자(streaming-app)는
     // webflux 스타터로 reactor를 자체 확보하므로 implementation으로 충분 (버전은 spring-boot BOM 관리)
