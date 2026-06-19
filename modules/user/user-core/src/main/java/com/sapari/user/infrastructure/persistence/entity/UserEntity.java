@@ -52,8 +52,8 @@ public class UserEntity extends UuidTimeEntity {
     @Column(nullable = false, unique = true, length = 11)
     private String phoneNumber;
 
-    @Column(length = 500)
-    private String profileImageUrl;
+    @Column(length = 200)
+    private String profileImageKey;
 
     @Column(nullable = false, unique = true, length = 255)
     private String email;
@@ -91,7 +91,7 @@ public class UserEntity extends UuidTimeEntity {
             UserGender gender,
             String phoneNumber,
             String email,
-            String profileImageUrl,
+            String profileImageKey,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
@@ -109,7 +109,7 @@ public class UserEntity extends UuidTimeEntity {
         user.birthDate = birthDate;
         user.gender = gender;
         user.phoneNumber = phoneNumber;
-        user.profileImageUrl = profileImageUrl;
+        user.profileImageKey = profileImageKey;
         user.email = email;
         user.grade = UserGrade.BRONZE;
         user.pointBalance = 0;
@@ -151,7 +151,7 @@ public class UserEntity extends UuidTimeEntity {
             String name,
             LocalDate birthDate,
             String phoneNumber,
-            String profileImageUrl,
+            String profileImageKey,
             String email,
             Boolean marketingAgreed,
             Instant nicknameChangedAt
@@ -161,7 +161,7 @@ public class UserEntity extends UuidTimeEntity {
         this.name = name;
         this.birthDate = birthDate;
         this.phoneNumber = phoneNumber;
-        this.profileImageUrl = profileImageUrl;
+        this.profileImageKey = profileImageKey;
         this.email = email;
         this.marketingAgreed = marketingAgreed;
     }

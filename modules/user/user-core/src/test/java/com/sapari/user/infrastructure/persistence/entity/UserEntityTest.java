@@ -118,7 +118,7 @@ class UserEntityTest {
                 "수정자",
                 changedBirthDate,
                 "01011112222",
-                "https://image.example/updated-profile.png",
+                "profile/image/key",
                 "updated@example.com",
                 true,
                 changedAt
@@ -129,20 +129,20 @@ class UserEntityTest {
         assertThat(user.getName()).isEqualTo("수정자");
         assertThat(user.getBirthDate()).isEqualTo(changedBirthDate);
         assertThat(user.getPhoneNumber()).isEqualTo("01011112222");
-        assertThat(user.getProfileImageUrl()).isEqualTo("https://image.example/updated-profile.png");
+        assertThat(user.getProfileImageKey()).isEqualTo("profile/image/key");
         assertThat(user.getEmail()).isEqualTo("updated@example.com");
         assertThat(user.getMarketingAgreed()).isTrue();
         assertThat(user.getNicknameChangedAt()).isEqualTo(changedAt);
     }
 
     @Test
-    @DisplayName("프로필 이미지 URL 컬럼 길이는 마이그레이션과 동일한 500자를 사용한다")
-    void profileImageUrlColumnLengthMatchesMigration() throws NoSuchFieldException {
+    @DisplayName("프로필 이미지 key 컬럼 길이는 마이그레이션과 동일한 200자를 사용한다")
+    void profileImageKeyColumnLengthMatchesMigration() throws NoSuchFieldException {
         // when
-        Column column = UserEntity.class.getDeclaredField("profileImageUrl").getAnnotation(Column.class);
+        Column column = UserEntity.class.getDeclaredField("profileImageKey").getAnnotation(Column.class);
 
         // then
-        assertThat(column.length()).isEqualTo(500);
+        assertThat(column.length()).isEqualTo(200);
     }
 
     private Instant providerCreatedAt() {
