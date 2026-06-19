@@ -5,9 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Instant;
 import java.time.LocalDate;
 
+import jakarta.persistence.Column;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.storage.db.entity.UuidTimeEntity;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -58,6 +61,7 @@ class UserEntityTest {
         assertThat(user.getProviderEmail()).isEqualTo("provider@example.com");
         assertThat(user.getProviderCreatedAt()).isEqualTo(providerCreatedAt);
         assertThat(user.getNicknameChangedAt()).isEqualTo(nicknameChangedAt);
+        assertThat(user).isInstanceOf(UuidTimeEntity.class);
     }
 
     @Test
@@ -114,7 +118,7 @@ class UserEntityTest {
                 "수정자",
                 changedBirthDate,
                 "01011112222",
-                "profile/image/key",
+                "https://image.example/updated-profile.png",
                 "updated@example.com",
                 true,
                 changedAt
@@ -125,10 +129,20 @@ class UserEntityTest {
         assertThat(user.getName()).isEqualTo("수정자");
         assertThat(user.getBirthDate()).isEqualTo(changedBirthDate);
         assertThat(user.getPhoneNumber()).isEqualTo("01011112222");
-        assertThat(user.getProfileImageKey()).isEqualTo("profile/image/key");
+        assertThat(user.getProfileImageUrl()).isEqualTo("https://image.example/updated-profile.png");
         assertThat(user.getEmail()).isEqualTo("updated@example.com");
         assertThat(user.getMarketingAgreed()).isTrue();
         assertThat(user.getNicknameChangedAt()).isEqualTo(changedAt);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 URL 컬럼 길이는 마이그레이션과 동일한 500자를 사용한다")
+    void profileImageUrlColumnLengthMatchesMigration() throws NoSuchFieldException {
+        // when
+        Column column = UserEntity.class.getDeclaredField("profileImageUrl").getAnnotation(Column.class);
+
+        // then
+        assertThat(column.length()).isEqualTo(500);
     }
 
     private Instant providerCreatedAt() {

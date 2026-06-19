@@ -150,8 +150,7 @@ public class UserAccountService implements UserAccountUseCase {
                 withdrawnUserRetentionMasker.maskName(user.name()),
                 withdrawnUserRetentionMasker.maskEmail(user.email()),
                 withdrawnUserRetentionMasker.maskPhoneNumber(user.phoneNumber()),
-                retentionUntil(now),
-                now
+                retentionUntil(now)
         ));
     }
 
@@ -175,7 +174,7 @@ public class UserAccountService implements UserAccountUseCase {
                 user.birthDate(),
                 user.gender(),
                 user.phoneNumber(),
-                user.profileImageKey(),
+                user.profileImageUrl(),
                 user.email(),
                 user.grade(),
                 user.pointBalance(),

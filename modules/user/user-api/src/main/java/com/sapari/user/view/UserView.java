@@ -20,7 +20,7 @@ public record UserView(
         LocalDate birthDate,
         UserGender gender,
         String phoneNumber,
-        String profileImageKey,
+        String profileImageUrl,
         String email,
         UserGrade grade,
         Integer pointBalance,

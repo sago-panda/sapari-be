@@ -14,7 +14,7 @@ CREATE TABLE user_schema.users (
     birth_date              date,
     gender                  varchar(10),
     phone_number            varchar(11)  NOT NULL,
-    profile_image_key       varchar(500),
+    profile_image_url       varchar(500),
     email                   varchar(255) NOT NULL,
     grade                   varchar(30)  NOT NULL,
     point_balance           integer      NOT NULL,

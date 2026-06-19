@@ -13,7 +13,7 @@ public record SellerMeView(
         String name,
         LocalDate birthDate,
         String phoneNumber,
-        String profileImageKey,
+        String profileImageUrl,
         String email,
         String role,
         String status,

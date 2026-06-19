@@ -13,7 +13,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import com.sapari.storage.db.entity.BaseUuidEntity;
+import com.sapari.storage.db.entity.UuidTimeEntity;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -24,7 +24,7 @@ import com.sapari.user.model.UserStatus;
 @Getter
 @Table(name = "users", schema = "user_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class UserEntity extends BaseUuidEntity {
+public class UserEntity extends UuidTimeEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 10)
@@ -53,7 +53,7 @@ public class UserEntity extends BaseUuidEntity {
     private String phoneNumber;
 
     @Column(length = 500)
-    private String profileImageKey;
+    private String profileImageUrl;
 
     @Column(nullable = false, unique = true, length = 255)
     private String email;
@@ -91,7 +91,7 @@ public class UserEntity extends BaseUuidEntity {
             UserGender gender,
             String phoneNumber,
             String email,
-            String profileImageKey,
+            String profileImageUrl,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
@@ -109,7 +109,7 @@ public class UserEntity extends BaseUuidEntity {
         user.birthDate = birthDate;
         user.gender = gender;
         user.phoneNumber = phoneNumber;
-        user.profileImageKey = profileImageKey;
+        user.profileImageUrl = profileImageUrl;
         user.email = email;
         user.grade = UserGrade.BRONZE;
         user.pointBalance = 0;
@@ -151,7 +151,7 @@ public class UserEntity extends BaseUuidEntity {
             String name,
             LocalDate birthDate,
             String phoneNumber,
-            String profileImageKey,
+            String profileImageUrl,
             String email,
             Boolean marketingAgreed,
             Instant nicknameChangedAt
@@ -161,7 +161,7 @@ public class UserEntity extends BaseUuidEntity {
         this.name = name;
         this.birthDate = birthDate;
         this.phoneNumber = phoneNumber;
-        this.profileImageKey = profileImageKey;
+        this.profileImageUrl = profileImageUrl;
         this.email = email;
         this.marketingAgreed = marketingAgreed;
     }

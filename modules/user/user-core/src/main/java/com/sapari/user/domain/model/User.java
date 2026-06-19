@@ -25,7 +25,7 @@ public record User(
         LocalDate birthDate,
         UserGender gender,
         String phoneNumber,
-        String profileImageKey,
+        String profileImageUrl,
         String email,
         UserGrade grade,
         Integer pointBalance,
@@ -46,7 +46,7 @@ public record User(
             UserGender gender,
             String phoneNumber,
             String email,
-            String profileImageKey,
+            String profileImageUrl,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
@@ -69,7 +69,7 @@ public record User(
                 .birthDate(birthDate)
                 .gender(gender)
                 .phoneNumber(phoneNumber)
-                .profileImageKey(profileImageKey)
+                .profileImageUrl(profileImageUrl)
                 .email(email)
                 .grade(UserGrade.BRONZE)
                 .pointBalance(0)

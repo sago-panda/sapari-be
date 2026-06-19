@@ -15,8 +15,8 @@ CREATE TABLE seller_schema.local_credentials (
 CREATE TABLE seller_schema.seller_profiles (
     id               uuid         NOT NULL DEFAULT gen_random_uuid(),
     user_id          uuid         NOT NULL,              -- ref: user_schema.users.id (1:1)
-    status           varchar(10)  NOT NULL DEFAULT 'PENDING',  -- PENDING | APPROVED | REJECTED
-    store_name       varchar(100) NOT NULL,
+    status           varchar(20)  NOT NULL DEFAULT 'PENDING',  -- PENDING | APPROVED | REJECTED
+    store_name       varchar(20)  NOT NULL,
     business_number  varchar(20)  NOT NULL,              -- 암호화
     business_type    varchar(10)  NOT NULL DEFAULT 'INDIVIDUAL',
     rejection_reason text,
@@ -26,6 +26,8 @@ CREATE TABLE seller_schema.seller_profiles (
     CONSTRAINT pk_seller_profiles PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX ON seller_schema.seller_profiles (user_id);
+CREATE UNIQUE INDEX ON seller_schema.seller_profiles (store_name);
+CREATE UNIQUE INDEX ON seller_schema.seller_profiles (business_number);
 
 -- 판매자 정산 계좌 이력. append-only — 교체 시 신규 INSERT, is_primary=true가 현행 (설계 DDL)
 CREATE TABLE seller_schema.seller_bank_accounts (

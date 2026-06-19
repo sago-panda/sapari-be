@@ -30,7 +30,7 @@ public interface UserMapper {
                     user.name(),
                     user.birthDate(),
                     user.phoneNumber(),
-                    user.profileImageKey(),
+                    user.profileImageUrl(),
                     user.email(),
                     user.marketingAgreed(),
                     user.nicknameChangedAt()
@@ -49,7 +49,7 @@ public interface UserMapper {
                 user.gender(),
                 user.phoneNumber(),
                 user.email(),
-                user.profileImageKey(),
+                user.profileImageUrl(),
                 user.marketingAgreed(),
                 user.provider(),
                 user.providerId(),
@@ -62,7 +62,7 @@ public interface UserMapper {
                 user.name(),
                 user.birthDate(),
                 user.phoneNumber(),
-                user.profileImageKey(),
+                user.profileImageUrl(),
                 user.email(),
                 user.marketingAgreed(),
                 user.nicknameChangedAt()
@@ -83,7 +83,7 @@ public interface UserMapper {
                 user.name(),
                 user.birthDate(),
                 user.phoneNumber(),
-                user.profileImageKey(),
+                user.profileImageUrl(),
                 user.email(),
                 user.marketingAgreed(),
                 user.nicknameChangedAt()

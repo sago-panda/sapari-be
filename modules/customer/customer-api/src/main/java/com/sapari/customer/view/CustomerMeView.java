@@ -10,7 +10,7 @@ public record CustomerMeView(
         LocalDate birthDate,
         String gender,
         String phoneNumber,
-        String profileImageKey,
+        String profileImageUrl,
         String email,
         String role,
         String status,
