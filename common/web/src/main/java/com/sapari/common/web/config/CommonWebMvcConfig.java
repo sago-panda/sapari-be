@@ -1,4 +1,4 @@
-package com.sapari.apiapp.config;
+package com.sapari.common.web.config;
 
 import java.util.List;
 
@@ -9,7 +9,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import com.sapari.common.web.security.CurrentUserIdArgumentResolver;
 
 @Configuration
-public class WebMvcConfig implements WebMvcConfigurer {
+public class CommonWebMvcConfig implements WebMvcConfigurer {
 
     @Override
     public void addArgumentResolvers(List<HandlerMethodArgumentResolver> resolvers) {

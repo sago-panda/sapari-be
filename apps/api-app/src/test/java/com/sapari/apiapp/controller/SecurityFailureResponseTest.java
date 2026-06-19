@@ -19,12 +19,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.sapari.apiapp.config.ApiSecurityConfig;
-import com.sapari.apiapp.config.WebMvcConfig;
 import com.sapari.apiapp.controller.customer.CustomerAuthController;
 import com.sapari.apiapp.controller.seller.SellerAuthController;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
@@ -39,7 +37,7 @@ import com.sapari.seller.port.SellerAuthUseCase;
 @WebMvcTest(controllers = {CustomerAuthController.class, SellerAuthController.class})
 @Import({
         ApiSecurityConfig.class,
-        WebMvcConfig.class,
+        com.sapari.common.web.config.CommonWebMvcConfig.class,
         TimeProvider.class,
         SecurityFailureResponseTest.FixedClockConfig.class
 })
