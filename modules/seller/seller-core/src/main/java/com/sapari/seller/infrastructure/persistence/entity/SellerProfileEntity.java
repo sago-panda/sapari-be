@@ -15,35 +15,34 @@ import jakarta.persistence.Table;
 
 import com.sapari.seller.model.SellerApprovalStatus;
 import com.sapari.seller.model.SellerBusinessType;
-import com.sapari.storage.db.entity.BaseUuidEntity;
+import com.sapari.storage.db.entity.UuidTimeEntity;
 
 @Entity
 @Getter
 @Table(name = "seller_profiles", schema = "seller_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class SellerProfileEntity extends BaseUuidEntity {
+public class SellerProfileEntity extends UuidTimeEntity {
 
-    @Column(name = "user_id", nullable = false, unique = true)
+    @Column(nullable = false, unique = true)
     private UUID userId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private SellerApprovalStatus status;
 
-    @Column(name = "store_name", nullable = false, unique = true, length = 20)
+    @Column(nullable = false, unique = true, length = 20)
     private String storeName;
 
-    @Column(name = "business_number", nullable = false, unique = true, length = 20)
+    @Column(nullable = false, unique = true, length = 20)
     private String businessNumber;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "business_type", nullable = false, length = 20)
+    @Column(nullable = false, length = 10)
     private SellerBusinessType businessType;
 
-    @Column(name = "rejection_reason", columnDefinition = "text")
+    @Column(columnDefinition = "text")
     private String rejectionReason;
 
-    @Column(name = "approved_at")
     private Instant approvedAt;
 
     public static SellerProfileEntity of(

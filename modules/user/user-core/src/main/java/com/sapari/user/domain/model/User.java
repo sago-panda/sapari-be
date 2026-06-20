@@ -46,6 +46,7 @@ public record User(
             UserGender gender,
             String phoneNumber,
             String email,
+            String profileImageKey,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
@@ -53,7 +54,8 @@ public record User(
             Instant providerCreatedAt,
             Instant nicknameChangedAt
     ) {
-        validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        validateRequiredProfile(nickname, name, phoneNumber, email);
+        Assert.notNull(birthDate, "birthDate은 필수입니다.");
         Assert.notNull(gender, "gender은 필수입니다.");
         Assert.notNull(providerCreatedAt, "providerCreatedAt은 필수입니다.");
         Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
@@ -67,6 +69,7 @@ public record User(
                 .birthDate(birthDate)
                 .gender(gender)
                 .phoneNumber(phoneNumber)
+                .profileImageKey(profileImageKey)
                 .email(email)
                 .grade(UserGrade.BRONZE)
                 .pointBalance(0)
@@ -81,13 +84,12 @@ public record User(
     public static User createSeller(
             String nickname,
             String name,
-            LocalDate birthDate,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
             Instant nicknameChangedAt
     ) {
-        validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        validateRequiredProfile(nickname, name, phoneNumber, email);
         Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return User.builder()
@@ -96,7 +98,6 @@ public record User(
                 .nickname(nickname)
                 .nicknameChangedAt(nicknameChangedAt)
                 .name(name)
-                .birthDate(birthDate)
                 .phoneNumber(phoneNumber)
                 .email(email)
                 .grade(UserGrade.BRONZE)
@@ -147,13 +148,11 @@ public record User(
     private static void validateRequiredProfile(
             String nickname,
             String name,
-            LocalDate birthDate,
             String phoneNumber,
             String email
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
-        Assert.notNull(birthDate, "birthDate은 필수입니다.");
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
     }

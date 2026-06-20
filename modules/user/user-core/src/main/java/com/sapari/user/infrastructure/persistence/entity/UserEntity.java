@@ -13,7 +13,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import com.sapari.storage.db.entity.BaseUuidEntity;
+import com.sapari.storage.db.entity.UuidTimeEntity;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -24,7 +24,7 @@ import com.sapari.user.model.UserStatus;
 @Getter
 @Table(name = "users", schema = "user_schema")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class UserEntity extends BaseUuidEntity {
+public class UserEntity extends UuidTimeEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 10)
@@ -52,7 +52,7 @@ public class UserEntity extends BaseUuidEntity {
     @Column(nullable = false, unique = true, length = 11)
     private String phoneNumber;
 
-    @Column(length = 500)
+    @Column(length = 200)
     private String profileImageKey;
 
     @Column(nullable = false, unique = true, length = 255)
@@ -91,6 +91,7 @@ public class UserEntity extends BaseUuidEntity {
             UserGender gender,
             String phoneNumber,
             String email,
+            String profileImageKey,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
@@ -108,6 +109,7 @@ public class UserEntity extends BaseUuidEntity {
         user.birthDate = birthDate;
         user.gender = gender;
         user.phoneNumber = phoneNumber;
+        user.profileImageKey = profileImageKey;
         user.email = email;
         user.grade = UserGrade.BRONZE;
         user.pointBalance = 0;
@@ -123,7 +125,6 @@ public class UserEntity extends BaseUuidEntity {
     public static UserEntity createSeller(
             String nickname,
             String name,
-            LocalDate birthDate,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
@@ -136,7 +137,6 @@ public class UserEntity extends BaseUuidEntity {
         user.nickname = nickname;
         user.nicknameChangedAt = nicknameChangedAt;
         user.name = name;
-        user.birthDate = birthDate;
         user.phoneNumber = phoneNumber;
         user.email = email;
         user.grade = UserGrade.BRONZE;

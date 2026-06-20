@@ -33,16 +33,15 @@ public record SellerSignupRequest(
         )
         String nickname,
 
-        @NotBlank(message = "이름은 필수입니다.")
-        @Size(max = 20, message = "이름은 20자 이하여야 합니다.")
+        @NotBlank(message = "대표자명은 필수입니다.")
+        @Size(max = 20, message = "대표자명은 20자 이하여야 합니다.")
         String name,
 
         @NotBlank(message = "전화번호는 필수입니다.")
         @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
         String phoneNumber,
 
-        @NotNull(message = "생년월일은 필수입니다.")
-        LocalDate birthDate,
+        Boolean privacyAgreed,
 
         Boolean marketingAgreed,
 
@@ -65,10 +64,11 @@ public record SellerSignupRequest(
         return new SellerSignupCommand(
                 email,
                 password,
+                passwordConfirm,
                 nickname,
                 name,
                 phoneNumber,
-                birthDate,
+                Boolean.TRUE.equals(privacyAgreed),
                 Boolean.TRUE.equals(marketingAgreed),
                 storeName,
                 businessNumber,

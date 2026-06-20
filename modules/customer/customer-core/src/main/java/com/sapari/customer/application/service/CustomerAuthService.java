@@ -189,7 +189,8 @@ public class CustomerAuthService implements CustomerAuthUseCase {
                 UserGender.valueOf(command.gender()),
                 command.phoneNumber(),
                 command.email(),
-                command.isMarketingAgreed(),
+                command.profileImageUrl(),
+                command.marketingAgreed(),
                 socialSignupInfo.provider(),
                 socialSignupInfo.providerId(),
                 socialSignupInfo.providerEmail()

@@ -37,6 +37,11 @@ public record SocialSignupRequest(
         @Pattern(regexp = "MALE|FEMALE", message = "성별 형식이 올바르지 않습니다.")
         String gender,
 
+        @Size(max = 500, message = "프로필 이미지 URL은 500자 이하여야 합니다.")
+        String profileImageUrl,
+
+        Boolean privacyAgreed,
+
         Boolean marketingAgreed
 ) {
 
@@ -48,6 +53,8 @@ public record SocialSignupRequest(
                 name,
                 birthDate,
                 gender,
+                profileImageUrl,
+                Boolean.TRUE.equals(privacyAgreed),
                 Boolean.TRUE.equals(marketingAgreed)
         );
     }

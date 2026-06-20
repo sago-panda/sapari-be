@@ -41,7 +41,7 @@ class SellerViewMapperTest {
         assertThat(view.name()).isEqualTo(seller.name());
         assertThat(view.birthDate()).isEqualTo(seller.birthDate());
         assertThat(view.phoneNumber()).isEqualTo(seller.phoneNumber());
-        assertThat(view.profileImageKey()).isEqualTo(seller.profileImageKey());
+        assertThat(view.profileImageUrl()).isEqualTo(seller.profileImageUrl());
         assertThat(view.email()).isEqualTo(seller.email());
         assertThat(view.role()).isEqualTo(seller.role().name());
         assertThat(view.status()).isEqualTo(seller.status().name());
@@ -85,7 +85,7 @@ class SellerViewMapperTest {
                 LocalDate.of(1998, 3, 14),
                 UserGender.MALE,
                 "01012345678",
-                "profile-key",
+                "https://image.example/profile.png",
                 "seller@example.com",
                 UserGrade.BRONZE,
                 100,

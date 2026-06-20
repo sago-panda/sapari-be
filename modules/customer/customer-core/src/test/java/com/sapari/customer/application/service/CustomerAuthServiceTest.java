@@ -132,6 +132,7 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().providerId()).isEqualTo("naver-id");
         assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
         assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
+        assertThat(commandCaptor.getValue().profileImageUrl()).isEqualTo("https://image.example/request-profile.png");
 
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
@@ -586,6 +587,8 @@ class CustomerAuthServiceTest {
                 "구매자",
                 LocalDate.of(2000, 1, 1),
                 UserGender.FEMALE.name(),
+                "https://image.example/request-profile.png",
+                true,
                 true
         );
     }

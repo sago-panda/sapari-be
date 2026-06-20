@@ -154,6 +154,20 @@ class SellerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("비밀번호와 비밀번호 확인이 다르면 회원가입에 실패한다")
+    void signupThrowsExceptionWhenPasswordConfirmMismatched() {
+        // given
+        SellerSignupCommand command = signupCommandWithPasswordConfirm("WrongPassword1!", SellerBusinessType.INDIVIDUAL);
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.signup(command))
+                .isInstanceOfSatisfying(SellerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.PASSWORD_CONFIRM_MISMATCH)
+                );
+        verifyNoInteractions(sellerBusinessRegistrationVerifier, sellerSignupProcessor);
+    }
+
+    @Test
     @DisplayName("사업자번호가 중복되면 회원가입에 실패한다")
     void signupThrowsExceptionWhenBusinessNumberIsDuplicated() {
         // given
@@ -889,17 +903,30 @@ class SellerAuthServiceTest {
     }
 
     private SellerSignupCommand signupCommand(SellerBusinessType businessType) {
-        return signupCommand("사파리 상점", businessType);
+        return signupCommand("사파리 상점", PASSWORD, businessType);
+    }
+
+    private SellerSignupCommand signupCommandWithPasswordConfirm(String passwordConfirm, SellerBusinessType businessType) {
+        return signupCommand("사파리 상점", passwordConfirm, businessType);
     }
 
     private SellerSignupCommand signupCommand(String storeName, SellerBusinessType businessType) {
+        return signupCommand(storeName, PASSWORD, businessType);
+    }
+
+    private SellerSignupCommand signupCommand(
+            String storeName,
+            String passwordConfirm,
+            SellerBusinessType businessType
+    ) {
         return new SellerSignupCommand(
                 EMAIL,
                 PASSWORD,
+                passwordConfirm,
                 "seller",
                 "판매자",
                 "01012345678",
-                LocalDate.of(1990, 1, 1),
+                true,
                 true,
                 storeName,
                 "1234567890",

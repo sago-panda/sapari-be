@@ -20,7 +20,6 @@ public interface WithdrawnUserRetentionMapper {
                 withdrawnUserRetention.emailMasked(),
                 withdrawnUserRetention.phoneNumberMasked(),
                 withdrawnUserRetention.retentionUntil(),
-                withdrawnUserRetention.createdAt(),
                 withdrawnUserRetention.purgedAt()
         );
     }

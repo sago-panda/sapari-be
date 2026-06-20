@@ -2,6 +2,7 @@ package com.sapari.user.infrastructure.persistence.mapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -11,6 +12,7 @@ import org.mapstruct.factory.Mappers;
 
 import com.sapari.user.domain.model.WithdrawnUserRetention;
 import com.sapari.user.infrastructure.persistence.entity.WithdrawnUserRetentionEntity;
+import com.sapari.storage.db.entity.BaseUuidEntity;
 
 @DisplayName("WithdrawnUserRetention 영속성 매퍼 테스트")
 class WithdrawnUserRetentionMapperTest {
@@ -29,8 +31,7 @@ class WithdrawnUserRetentionMapperTest {
                 "홍*동",
                 "te***@example.com",
                 "010****5678",
-                retentionUntil,
-                now
+                retentionUntil
         );
 
         // when
@@ -42,7 +43,8 @@ class WithdrawnUserRetentionMapperTest {
         assertThat(entity.getEmailMasked()).isEqualTo("te***@example.com");
         assertThat(entity.getPhoneNumberMasked()).isEqualTo("010****5678");
         assertThat(entity.getRetentionUntil()).isEqualTo(retentionUntil);
-        assertThat(entity.getCreatedAt()).isEqualTo(now);
+        assertThat(entity).isInstanceOf(BaseUuidEntity.class);
+        assertThat(entity.getCreatedAt()).isNull();
         assertThat(entity.getPurgedAt()).isNull();
     }
 
@@ -59,9 +61,9 @@ class WithdrawnUserRetentionMapperTest {
                 "te***@example.com",
                 "010****5678",
                 retentionUntil,
-                now,
                 null
         );
+        setCreatedAt(entity, now);
 
         // when
         WithdrawnUserRetention retention = mapper.toDomain(entity);
@@ -74,5 +76,15 @@ class WithdrawnUserRetentionMapperTest {
         assertThat(retention.retentionUntil()).isEqualTo(retentionUntil);
         assertThat(retention.createdAt()).isEqualTo(now);
         assertThat(retention.purgedAt()).isNull();
+    }
+
+    private void setCreatedAt(WithdrawnUserRetentionEntity entity, Instant createdAt) {
+        try {
+            Field createdAtField = BaseUuidEntity.class.getDeclaredField("createdAt");
+            createdAtField.setAccessible(true);
+            createdAtField.set(entity, createdAt);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("createdAt 테스트 세팅에 실패했습니다.", e);
+        }
     }
 }

@@ -62,6 +62,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         SellerBusinessType businessType = command.businessType();
         String normalizedStoreName = normalizeStoreName(command.storeName());
 
+        validatePasswordConfirm(command);
         validateBusinessRegistration(command);
         validateDuplicatedStoreName(normalizedStoreName);
         validateDuplicatedBusinessNumber(command.businessNumber());
@@ -191,6 +192,14 @@ public class SellerAuthService implements SellerAuthUseCase {
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
+    }
+
+    private void validatePasswordConfirm(SellerSignupCommand command) {
+        if (command.password() != null && command.password().equals(command.passwordConfirm())) {
+            return;
+        }
+
+        throw new SellerException(SellerErrorCode.PASSWORD_CONFIRM_MISMATCH);
     }
 
     private void validateDuplicatedBusinessNumber(String businessNumber) {
