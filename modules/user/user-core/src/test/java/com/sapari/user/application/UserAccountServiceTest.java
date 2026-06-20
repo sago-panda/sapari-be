@@ -91,7 +91,7 @@ class UserAccountServiceTest {
                 .ofInstant(now, ZoneOffset.UTC)
                 .plusYears(5)
                 .toInstant());
-        assertThat(retention.createdAt()).isEqualTo(now);
+        assertThat(retention.createdAt()).isNull();
         assertThat(retention.purgedAt()).isNull();
 
         ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);

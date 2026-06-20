@@ -34,6 +34,7 @@ class UserTest {
                 UserGender.FEMALE,
                 "01012345678",
                 "tester@example.com",
+                "https://image.example/profile.png",
                 true,
                 ProviderType.KAKAO,
                 "provider-id",
@@ -57,14 +58,10 @@ class UserTest {
     @Test
     @DisplayName("판매자 생성 시 판매자 기본 상태를 설정한다")
     void createSellerSetsSellerDefaults() {
-        // given
-        LocalDate birthDate = LocalDate.of(1990, 1, 1);
-
         // when
         User user = User.createSeller(
                 "seller",
                 "판매자",
-                birthDate,
                 "01087654321",
                 "seller@example.com",
                 null,
@@ -91,6 +88,7 @@ class UserTest {
                 UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
+                "https://image.example/profile.png",
                 false,
                 ProviderType.NAVER,
                 "provider-id",
@@ -124,6 +122,7 @@ class UserTest {
                 UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
+                "https://image.example/profile.png",
                 false,
                 ProviderType.NAVER,
                 "provider-id",
@@ -150,7 +149,6 @@ class UserTest {
         User user = User.createSeller(
                 "seller",
                 "판매자",
-                LocalDate.of(1990, 1, 1),
                 "01087654321",
                 "seller@example.com",
                 null,
@@ -176,6 +174,7 @@ class UserTest {
                 UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
+                "https://image.example/profile.png",
                 false,
                 ProviderType.KAKAO,
                 "provider-id",

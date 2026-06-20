@@ -5,9 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Instant;
 import java.time.LocalDate;
 
+import jakarta.persistence.Column;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.storage.db.entity.UuidTimeEntity;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -32,6 +35,7 @@ class UserEntityTest {
                 UserGender.FEMALE,
                 "01012345678",
                 "tester@example.com",
+                "https://image.example/profile.png",
                 true,
                 ProviderType.KAKAO,
                 "provider-id",
@@ -57,19 +61,16 @@ class UserEntityTest {
         assertThat(user.getProviderEmail()).isEqualTo("provider@example.com");
         assertThat(user.getProviderCreatedAt()).isEqualTo(providerCreatedAt);
         assertThat(user.getNicknameChangedAt()).isEqualTo(nicknameChangedAt);
+        assertThat(user).isInstanceOf(UuidTimeEntity.class);
     }
 
     @Test
     @DisplayName("판매자 생성 시 판매자 기본 상태를 설정한다")
     void createSeller() {
-        // given
-        LocalDate birthDate = LocalDate.of(1990, 1, 1);
-
         // when
         UserEntity user = UserEntity.createSeller(
                 "seller",
                 "판매자",
-                birthDate,
                 "01087654321",
                 "seller@example.com",
                 null,
@@ -81,7 +82,7 @@ class UserEntityTest {
         assertThat(user.getStatus()).isEqualTo(UserStatus.ACTIVE);
         assertThat(user.getNickname()).isEqualTo("seller");
         assertThat(user.getName()).isEqualTo("판매자");
-        assertThat(user.getBirthDate()).isEqualTo(birthDate);
+        assertThat(user.getBirthDate()).isNull();
         assertThat(user.getPhoneNumber()).isEqualTo("01087654321");
         assertThat(user.getEmail()).isEqualTo("seller@example.com");
         assertThat(user.getGrade()).isEqualTo(UserGrade.BRONZE);
@@ -100,6 +101,7 @@ class UserEntityTest {
                 UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
+                "https://image.example/profile.png",
                 false,
                 ProviderType.NAVER,
                 "provider-id",
@@ -131,6 +133,16 @@ class UserEntityTest {
         assertThat(user.getEmail()).isEqualTo("updated@example.com");
         assertThat(user.getMarketingAgreed()).isTrue();
         assertThat(user.getNicknameChangedAt()).isEqualTo(changedAt);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 key 컬럼 길이는 마이그레이션과 동일한 200자를 사용한다")
+    void profileImageKeyColumnLengthMatchesMigration() throws NoSuchFieldException {
+        // when
+        Column column = UserEntity.class.getDeclaredField("profileImageKey").getAnnotation(Column.class);
+
+        // then
+        assertThat(column.length()).isEqualTo(200);
     }
 
     private Instant providerCreatedAt() {
