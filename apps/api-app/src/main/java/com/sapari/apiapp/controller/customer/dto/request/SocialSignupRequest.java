@@ -2,6 +2,7 @@ package com.sapari.apiapp.controller.customer.dto.request;
 
 import java.time.LocalDate;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -40,11 +41,16 @@ public record SocialSignupRequest(
         @Size(max = 500, message = "프로필 이미지 URL은 500자 이하여야 합니다.")
         String profileImageUrl,
 
+        @NotNull(message = "개인정보 수집 및 이용 동의는 필수입니다.")
+        @AssertTrue(message = "개인정보 수집 및 이용 동의는 필수입니다.")
         Boolean privacyAgreed,
 
         Boolean marketingAgreed
 ) {
 
+    /**
+     * 필수 약관 거부/누락은 요청 검증에서 4xx로 차단하고, 선택 약관은 명시적 거부도 command에 전달한다.
+     */
     public SocialSignupCommand toCommand() {
         return new SocialSignupCommand(
                 phoneNumber,

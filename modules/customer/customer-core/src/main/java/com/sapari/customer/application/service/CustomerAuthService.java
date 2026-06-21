@@ -190,6 +190,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
                 command.phoneNumber(),
                 command.email(),
                 command.profileImageUrl(),
+                command.privacyAgreed(),
                 command.marketingAgreed(),
                 socialSignupInfo.provider(),
                 socialSignupInfo.providerId(),
