@@ -1,0 +1,14 @@
+dependencies {
+    implementation project(':common:web')
+    implementation project(':modules:product:product-core')
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}
+
+bootJar {
+    enabled = true
+}
+
+jar{
+    enabled = false
+}
