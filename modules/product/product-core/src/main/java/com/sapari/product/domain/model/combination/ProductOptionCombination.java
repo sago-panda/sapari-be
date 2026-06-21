@@ -74,4 +74,45 @@ public record ProductOptionCombination(
     public int availableStock() {
         return stock == null ? 0 : stock.availableStock();
     }
+
+    /**
+     * 판매가·정가를 즉시 변경한다 (재승인 불필요). 재고·옵션값 매핑 등 나머지는 보존한다.
+     *
+     * @throws IllegalArgumentException 가격이 0 미만인 경우(불변식)
+     */
+    public ProductOptionCombination changePrice(Integer price, Integer originalPrice, Instant now) {
+        return toBuilder().price(price)
+                .originalPrice(originalPrice)
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * 총 재고를 즉시 변경한다. 예약(잠금) 재고는 그대로 유지한다.
+     *
+     * @throws IllegalArgumentException 새 총 재고가 예약 재고보다 작은 경우(0<=reserved<=stock 불변식)
+     */
+    public ProductOptionCombination changeStock(Integer stock, Instant now) {
+        return toBuilder().stock(Stock.of(stock, this.stock.reservedStock()))
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * 단종 처리. {@code isAvailable=false}로 전환한다 (재고 0 품절과 구별되는 판매 중단).
+     */
+    public ProductOptionCombination discontinue(Instant now) {
+        return toBuilder().isAvailable(false)
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * 단종된 조합을 다시 판매 가능({@code isAvailable=true})으로 되돌린다.
+     */
+    public ProductOptionCombination makeAvailable(Instant now) {
+        return toBuilder().isAvailable(true)
+                .updatedAt(now)
+                .build();
+    }
 }

@@ -1,5 +1,6 @@
 package com.sapari.product.domain.model.product;
 
+import com.sapari.product.domain.exception.InvalidProductStateException;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -111,6 +112,64 @@ public record Product(
         }
         return toBuilder().status(ProductStatus.REJECTED)
                 .rejectionReason(reason)
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * 판매 중지. {@code ON_SALE} → {@code SUSPENDED}로 전이한다.
+     *
+     * @throws InvalidProductStateException 삭제됐거나 {@code ON_SALE}이 아닌 경우
+     */
+    public Product suspend(Instant now) {
+        if (isDeleted() || status != ProductStatus.ON_SALE) {
+            throw new InvalidProductStateException(
+                    "판매 중지할 수 없는 상태입니다: " + status + (isDeleted() ? " (deleted)" : ""));
+        }
+        return toBuilder().status(ProductStatus.SUSPENDED)
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * 판매 재개. {@code SUSPENDED} → {@code ON_SALE}로 전이한다.
+     *
+     * @throws InvalidProductStateException 삭제됐거나 {@code SUSPENDED}가 아닌 경우
+     */
+    public Product resume(Instant now) {
+        if (isDeleted() || status != ProductStatus.SUSPENDED) {
+            throw new InvalidProductStateException(
+                    "판매 재개할 수 없는 상태입니다: " + status + (isDeleted() ? " (deleted)" : ""));
+        }
+        return toBuilder().status(ProductStatus.ON_SALE)
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * 정보 수정(이름·설명·카테고리·배송) 후 재검수 대기로 전이한다. 반려 사유는 비운다(재제출). 옵션·조합·캐시 컬럼은 건드리지 않는다.
+     *
+     * @throws InvalidProductStateException 소프트 삭제된 상품인 경우
+     * @throws IllegalArgumentException     이름 등 불변식을 위반하는 경우
+     */
+    public Product updateInfo(
+            Long categoryId,
+            String name,
+            String description,
+            UUID shippingPolicyId,
+            Integer additionalShippingFee,
+            Instant now
+    ) {
+        if (isDeleted()) {
+            throw new InvalidProductStateException("삭제된 상품은 수정할 수 없습니다.");
+        }
+        return toBuilder().categoryId(categoryId)
+                .name(name)
+                .description(description)
+                .shippingPolicyId(shippingPolicyId)
+                .additionalShippingFee(additionalShippingFee == null ? 0 : additionalShippingFee)
+                .status(ProductStatus.PENDING_REVIEW)
+                .rejectionReason(null)
                 .updatedAt(now)
                 .build();
     }
