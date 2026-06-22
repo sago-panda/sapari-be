@@ -62,6 +62,7 @@ public class SellerSignupProcessor {
                 command.name(),
                 command.phoneNumber(),
                 command.email(),
+                command.privacyAgreed(),
                 command.marketingAgreed()
         );
     }

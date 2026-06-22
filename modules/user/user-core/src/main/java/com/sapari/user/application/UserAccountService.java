@@ -14,11 +14,16 @@ import org.springframework.transaction.annotation.Transactional;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.domain.model.Terms;
 import com.sapari.user.domain.model.User;
+import com.sapari.user.domain.model.UserTermsAgreement;
 import com.sapari.user.domain.model.WithdrawnUserRetention;
+import com.sapari.user.domain.repository.TermsRepository;
 import com.sapari.user.domain.repository.UserRepository;
+import com.sapari.user.domain.repository.UserTermsAgreementRepository;
 import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
 import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.TermsType;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
@@ -35,14 +40,29 @@ public class UserAccountService implements UserAccountUseCase {
 
     private final UserRepository userRepository;
     private final WithdrawnUserRetentionRepository withdrawnUserRetentionRepository;
+    private final TermsRepository termsRepository;
+    private final UserTermsAgreementRepository userTermsAgreementRepository;
     private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker;
     private final TimeProvider timeProvider;
 
+    /**
+     * 구매자 가입과 약관 증적 저장을 하나의 트랜잭션 성공 조건으로 처리한다.
+     */
     @Override
     @Transactional
     public UserView registerSocialCustomer(RegisterSocialCustomerCommand command) {
         Instant now = timeProvider.now();
-        User user = User.createSocialCustomer(
+        validateRequiredPrivacyAgreement(command.privacyAgreed());
+        Terms privacyTerms = findActiveTerms(TermsType.PRIVACY, now);
+        Terms marketingTerms = findActiveTerms(TermsType.MARKETING, now);
+        User user = createSocialCustomer(command, now);
+        User savedUser = userRepository.save(user);
+        saveSignupTermsAgreements(savedUser.userId(), privacyTerms, marketingTerms, command.marketingAgreed(), now);
+        return toView(savedUser);
+    }
+
+    private User createSocialCustomer(RegisterSocialCustomerCommand command, Instant now) {
+        return User.createSocialCustomer(
                 command.nickname(),
                 command.name(),
                 command.birthDate(),
@@ -57,14 +77,26 @@ public class UserAccountService implements UserAccountUseCase {
                 now,
                 now
         );
-        return toView(userRepository.save(user));
     }
 
+    /**
+     * 판매자 가입과 약관 증적 저장을 하나의 트랜잭션 성공 조건으로 처리한다.
+     */
     @Override
     @Transactional
     public UserView registerSeller(RegisterSellerCommand command) {
         Instant now = timeProvider.now();
-        User user = User.createSeller(
+        validateRequiredPrivacyAgreement(command.privacyAgreed());
+        Terms privacyTerms = findActiveTerms(TermsType.PRIVACY, now);
+        Terms marketingTerms = findActiveTerms(TermsType.MARKETING, now);
+        User user = createSeller(command, now);
+        User savedUser = userRepository.save(user);
+        saveSignupTermsAgreements(savedUser.userId(), privacyTerms, marketingTerms, command.marketingAgreed(), now);
+        return toView(savedUser);
+    }
+
+    private User createSeller(RegisterSellerCommand command, Instant now) {
+        return User.createSeller(
                 command.nickname(),
                 command.name(),
                 command.phoneNumber(),
@@ -72,7 +104,53 @@ public class UserAccountService implements UserAccountUseCase {
                 command.marketingAgreed(),
                 now
         );
-        return toView(userRepository.save(user));
+    }
+
+    /**
+     * 회원가입 시점의 활성 약관 버전과 사용자 선택값을 같은 트랜잭션의 증적 이력으로 고정한다.
+     * MARKETING은 선택 약관이므로 false도 명시적 거부 증적으로 저장한다.
+     */
+    private void saveSignupTermsAgreements(
+            UUID userId,
+            Terms privacyTerms,
+            Terms marketingTerms,
+            boolean marketingAgreed,
+            Instant agreedAt
+    ) {
+        // 필수 약관 저장
+        userTermsAgreementRepository.save(UserTermsAgreement.create(
+                userId,
+                privacyTerms.termsId(),
+                true,
+                agreedAt
+        ));
+
+        // 마케팅 약관 저장
+        userTermsAgreementRepository.save(UserTermsAgreement.create(
+                userId,
+                marketingTerms.termsId(),
+                marketingAgreed,
+                agreedAt
+        ));
+    }
+
+    /**
+     * HTTP DTO 검증을 거치지 않는 호출자도 필수 개인정보 동의 불변식을 우회하지 못하게 막는다.
+     */
+    private void validateRequiredPrivacyAgreement(boolean privacyAgreed) {
+        if (!privacyAgreed) {
+            throw new IllegalArgumentException("개인정보 수집 및 이용 동의는 필수입니다.");
+        }
+    }
+
+    /**
+     * 가입 증적은 가입 시각에 이미 효력이 시작된 활성 약관 버전을 참조해야 한다.
+     * active=true는 현재 유효 약관 1개라는 운영 상태이고, effectiveAt 조건은 미래 약관 오등록을 방어한다.
+     * 선택 약관인 MARKETING도 거부 증적을 버전과 함께 남겨야 하므로 누락 시 설정 오류로 간주한다.
+     */
+    private Terms findActiveTerms(TermsType type, Instant effectiveAt) {
+        return termsRepository.findActiveByTypeEffectiveAt(type, effectiveAt)
+                .orElseThrow(() -> new IllegalStateException("active terms not found: " + type));
     }
 
     @Override
@@ -174,7 +252,7 @@ public class UserAccountService implements UserAccountUseCase {
                 user.birthDate(),
                 user.gender(),
                 user.phoneNumber(),
-                user.profileImageUrl(),
+                user.profileImageKey(),
                 user.email(),
                 user.grade(),
                 user.pointBalance(),

@@ -133,6 +133,8 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
         assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
         assertThat(commandCaptor.getValue().profileImageUrl()).isEqualTo("https://image.example/request-profile.png");
+        assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
+        assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(

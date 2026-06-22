@@ -2,6 +2,7 @@ package com.sapari.apiapp.controller.seller.dto.request;
 
 import java.time.LocalDate;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -41,6 +42,8 @@ public record SellerSignupRequest(
         @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
         String phoneNumber,
 
+        @NotNull(message = "개인정보 수집 및 이용 동의는 필수입니다.")
+        @AssertTrue(message = "개인정보 수집 및 이용 동의는 필수입니다.")
         Boolean privacyAgreed,
 
         Boolean marketingAgreed,
@@ -60,6 +63,9 @@ public record SellerSignupRequest(
         @Pattern(regexp = "^(INDIVIDUAL|CORPORATE)$", message = "사업자 유형이 올바르지 않습니다.")
         String businessType
 ) {
+    /**
+     * 필수 약관 거부/누락은 요청 검증에서 4xx로 차단하고, 선택 약관은 명시적 거부도 command에 전달한다.
+     */
     public SellerSignupCommand toCommand() {
         return new SellerSignupCommand(
                 email,
