@@ -10,6 +10,7 @@ import com.sapari.user.model.TermsType;
 /**
  * 가입 시 사용자가 동의한 약관 버전을 식별하기 위한 불변 기준 데이터다.
  * 이미 증적에 사용된 약관은 삭제/수정하지 않고 새 version row로 변경해 당시 버전을 복원 가능하게 한다.
+ * Sapari는 필수 동의를 PRIVACY 타입의 단일 약관 번들로 운영하며, 필수 내용 변경은 같은 type의 새 version으로 처리한다.
  * 약관 전문은 DB에 저장하지 않고 contentUrl로 참조해 증적 row가 당시 전문 위치를 가리키게 한다.
  * required는 표시/메타데이터 성격이며, 현재 가입 필수 동의 검증은 TermsType.PRIVACY 정책으로 강제한다.
  */

@@ -38,9 +38,10 @@ CREATE INDEX idx_users_withdrawing_deleted_at
 
 -- 회원가입 시점의 약관 버전을 증적 row가 참조하기 위한 불변 기준 데이터.
 -- 이미 증적에 사용된 row는 삭제/수정하지 않고, 약관 변경은 새 version row를 추가한다.
+-- Sapari는 필수 동의를 PRIVACY 타입의 단일 약관 번들로 운영하며, 필수 내용 변경은 새 타입 추가가 아니라 같은 타입의 새 version으로 처리한다.
 -- active=true는 예약 약관이 아니라 현재 유효한 약관 1개를 뜻하며, content_url은 당시 전문 위치를 가리킨다.
 CREATE TABLE user_schema.terms (
-    id              uuid         NOT NULL DEFAULT gen_random_uuid(),
+    id              uuid         NOT NULL,
     type            varchar(30)  NOT NULL,
     version         varchar(30)  NOT NULL,
     title           varchar(100) NOT NULL,
@@ -57,6 +58,8 @@ CREATE UNIQUE INDEX uk_terms_type_version
     ON user_schema.terms (type, version);
 -- type별 active=true 현재 유효 약관은 하나만 유지한다.
 -- 가입 조회는 active=true와 effective_from <= 가입시각 조건을 함께 사용해 미래 약관 오등록을 방어한다.
+-- 약관 교체는 기존 active row 비활성화와 새 version active row 삽입을 단일 트랜잭션으로 수행해야 한다.
+-- 분리 실행 시 active=true 약관 공백으로 가입 요청이 실패할 수 있으며, 새 active row의 effective_from은 활성화 시점 이하로 둔다.
 CREATE UNIQUE INDEX uk_terms_type_active_true
     ON user_schema.terms (type)
     WHERE active = true;
@@ -66,7 +69,7 @@ CREATE UNIQUE INDEX uk_terms_type_active_true
 -- users hard delete와 증적 보존 정책이 충돌하지 않도록 정합성은 가입 서비스에서 보장한다.
 -- MARKETING 같은 선택 약관은 agreed=false도 명시적 거부 증적으로 저장한다.
 CREATE TABLE user_schema.user_terms_agreements (
-    id          uuid        NOT NULL DEFAULT gen_random_uuid(),
+    id          uuid        NOT NULL,
     user_id     uuid        NOT NULL,
     terms_id    uuid        NOT NULL,
     agreed      boolean     NOT NULL,
@@ -85,7 +88,7 @@ CREATE UNIQUE INDEX uk_user_terms_agreements_user_terms
 -- 이 테이블은 users hard delete 이후에도 거래기록의 buyer_id/user_id와 연결할 최소 힌트만 보관한다.
 -- 원문 개인정보, 해시, 복호화 가능한 암호화 식별정보는 저장하지 않고 마스킹 값만 저장한다.
 CREATE TABLE user_schema.withdrawn_user_retentions (
-    id                  uuid         NOT NULL DEFAULT gen_random_uuid(),
+    id                  uuid         NOT NULL,
     original_user_id    uuid         NOT NULL,              -- 탈퇴 전 users.id 값. soft reference이며 FK 아님
     name_masked         varchar(20),                        -- 예: 홍길동 -> 홍*동
     email_masked        varchar(255),                       -- 예: test@example.com -> te***@example.com
