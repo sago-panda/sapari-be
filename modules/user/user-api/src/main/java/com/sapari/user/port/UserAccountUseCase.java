@@ -16,8 +16,16 @@ import com.sapari.user.view.UserView;
  */
 public interface UserAccountUseCase {
 
+    /**
+     * 구매자 회원가입을 처리하고 가입 시점의 약관 증적까지 같은 성공 조건으로 저장한다.
+     * 약관 동의는 회원가입의 필수 정책이므로 별도 우회 포트를 두지 않는다.
+     */
     UserView registerSocialCustomer(RegisterSocialCustomerCommand command);
 
+    /**
+     * 판매자 회원가입을 처리하고 가입 시점의 약관 증적까지 같은 성공 조건으로 저장한다.
+     * 약관 동의는 회원가입의 필수 정책이므로 별도 우회 포트를 두지 않는다.
+     */
     UserView registerSeller(RegisterSellerCommand command);
 
     Optional<UserView> findById(UUID userId);

@@ -5,6 +5,7 @@ public record RegisterSellerCommand(
         String name,
         String phoneNumber,
         String email,
+        boolean privacyAgreed,
         boolean marketingAgreed
 ) {
 }

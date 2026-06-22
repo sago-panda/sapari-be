@@ -85,6 +85,8 @@ class SellerSignupProcessorTest {
         verify(userAccountUseCase).registerSeller(commandCaptor.capture());
         assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
         assertThat(commandCaptor.getValue().nickname()).isEqualTo("seller");
+        assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
+        assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
         ArgumentCaptor<LocalCredential> credentialCaptor = ArgumentCaptor.forClass(LocalCredential.class);
         verify(localCredentialRepository).save(credentialCaptor.capture());
