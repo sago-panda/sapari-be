@@ -26,4 +26,7 @@ public interface ChatSessionManager {
 
     // publish 실패 시 로컬 에코 폴백용 — 해당 세션에 직접 송신
     Mono<Void> sendToSession(String sessionId, OutboundMessage message);
+
+    // 이 Pod의 해당 방 로컬 세션 전체에 송신 — SYSTEM 로컬 렌더(SystemMessageService.renderToRoom)용
+    Mono<Void> sendToRoomLocal(UUID roomId, OutboundMessage message);
 }

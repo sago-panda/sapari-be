@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 
+import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
@@ -54,7 +55,7 @@ class ChatMessageMapperTest {
     @DisplayName("SYSTEM 메시지 영속 시도 — 거부 (각 Pod 로컬 렌더 전용)")
     void system_message_is_rejected_on_persist() {
         ChatMessage system = new ChatMessage(
-                null, UUID.randomUUID(), UUID.fromString("00000000-0000-0000-0000-000000000001"),
+                null, UUID.randomUUID(), ChatConstants.SYSTEM_SENDER_ID,
                 "SYSTEM", null,
                 ChatRole.SYSTEM, new ChatMessageType.System("KICKED"),
                 null, "강퇴되었습니다", null, Instant.now());
