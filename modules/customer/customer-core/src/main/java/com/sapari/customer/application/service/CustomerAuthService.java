@@ -17,6 +17,8 @@ import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
+import com.sapari.customer.command.CustomerPhoneVerificationConfirmCommand;
+import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
@@ -25,6 +27,8 @@ import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.customer.view.CustomerMeView;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerPhoneVerificationConfirmResult;
+import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
 import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
@@ -50,6 +54,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
     private final CustomerViewMapper customerViewMapper;
+    private final CustomerPhoneVerificationService customerPhoneVerificationService;
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입
@@ -58,6 +63,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Transactional
     public SocialSignupResult completeSocialSignup(String signupSid, SocialSignupCommand command) {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
+        // 회원가입 요청의 phoneVerified 값은 위조 가능하므로 Redis verified 상태만 서버 기준으로 소비한다.
+        // Redis GETDEL은 DB 트랜잭션과 함께 롤백되지 않으므로, 이후 가입 저장 실패 시 사용자는 재인증해야 한다.
+        customerPhoneVerificationService.consumeSignupVerification(command.phoneNumber());
 
         try {
             UserView savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
@@ -68,6 +76,24 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         } catch (DataIntegrityViolationException e) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
+    }
+
+    /**
+     * 구매자 회원가입 휴대폰 인증번호를 발송한다.
+     * 쿨다운 선점, SOLAPI 발송, codeHash 저장 정책은 휴대폰 인증 서비스가 처리한다.
+     */
+    @Override
+    public CustomerPhoneVerificationSendResult sendSignupPhoneVerification(CustomerPhoneVerificationSendCommand command) {
+        return customerPhoneVerificationService.sendSignupCode(command);
+    }
+
+    /**
+     * 구매자 회원가입 휴대폰 인증번호를 확인한다.
+     * 인증 성공 시 회원가입 API가 소비할 Redis verified 상태를 생성한다.
+     */
+    @Override
+    public CustomerPhoneVerificationConfirmResult confirmSignupPhoneVerification(CustomerPhoneVerificationConfirmCommand command) {
+        return customerPhoneVerificationService.confirmSignupCode(command);
     }
 
     @Override

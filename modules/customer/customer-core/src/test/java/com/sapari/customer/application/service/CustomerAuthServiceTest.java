@@ -79,6 +79,8 @@ class CustomerAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
+    private final CustomerPhoneVerificationService customerPhoneVerificationService =
+            mock(CustomerPhoneVerificationService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
@@ -96,7 +98,8 @@ class CustomerAuthServiceTest {
             customerJwtTokenAdapter,
             timeProvider(),
             objectMapper,
-            Mappers.getMapper(CustomerViewMapper.class)
+            Mappers.getMapper(CustomerViewMapper.class),
+            customerPhoneVerificationService
     );
 
     @Test
@@ -136,6 +139,7 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
         assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
+        verify(customerPhoneVerificationService).consumeSignupVerification("01012345678");
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
                 eq(userId),
@@ -143,6 +147,43 @@ class CustomerAuthServiceTest {
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+
+    @Test
+    @DisplayName("휴대폰 인증 소비 후 가입 저장이 실패하면 재인증이 필요하다")
+    void completeSocialSignupConsumesVerificationBeforeRegisterFailure() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenThrow(new DataIntegrityViolationException("duplicated"));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode())
+                                .isEqualTo(CustomerErrorCode.DUPLICATED_SIGNUP_INFO)
+                );
+
+        verify(customerPhoneVerificationService).consumeSignupVerification("01012345678");
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("휴대폰 인증이 완료되지 않으면 소셜 고객 가입을 저장하지 않는다")
+    void completeSocialSignupRequiresPhoneVerification() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        doThrow(new CustomerException(CustomerErrorCode.PHONE_VERIFICATION_REQUIRED))
+                .when(customerPhoneVerificationService).consumeSignupVerification("01012345678");
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode())
+                                .isEqualTo(CustomerErrorCode.PHONE_VERIFICATION_REQUIRED)
+                );
+
+        verify(customerPhoneVerificationService).consumeSignupVerification("01012345678");
+        verifyNoInteractions(userAccountUseCase);
     }
 
     @Test
@@ -297,7 +338,8 @@ class CustomerAuthServiceTest {
                 jwtTokenAdapter,
                 timeProvider(),
                 objectMapper,
-                Mappers.getMapper(CustomerViewMapper.class)
+                Mappers.getMapper(CustomerViewMapper.class),
+                customerPhoneVerificationService
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,
