@@ -108,6 +108,28 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
         }
 
         @Test
+        @DisplayName("findByProductId는 조합별로 옵션값을 정확히 그룹핑한다(다건 조합·다값, 어긋남 없음)")
+        void findByProductId_groups_values_per_combination() {
+            UUID productId = UUID.randomUUID();
+            UUID v1 = UUID.randomUUID();
+            UUID v2 = UUID.randomUUID();
+            UUID v3 = UUID.randomUUID();
+            repository.save(ProductOptionCombination.create(
+                    productId, CombinationKey.of("a"), Sku.of("A"), null, 1_000, Stock.of(10, 0), List.of(v1, v2), T0));
+            repository.save(ProductOptionCombination.create(
+                    productId, CombinationKey.of("b"), Sku.of("B"), null, 2_000, Stock.of(10, 0), List.of(v3), T0));
+            em.flush();
+            em.clear();
+
+            List<ProductOptionCombination> found = repository.findByProductId(productId);
+            assertThat(found).hasSize(2);
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("a"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactlyInAnyOrder(v1, v2));
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("b"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v3));
+        }
+
+        @Test
         @DisplayName("findByProductIdAndSku는 상품 범위 내 SKU로 단건 조회한다")
         void findByProductIdAndSku() {
             UUID productId = UUID.randomUUID();
