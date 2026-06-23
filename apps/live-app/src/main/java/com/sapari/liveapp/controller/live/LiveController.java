@@ -1,4 +1,4 @@
-package com.sapari.apiapp.controller.live;
+package com.sapari.liveapp.controller.live;
 
 import lombok.RequiredArgsConstructor;
 
@@ -15,8 +15,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.sapari.apiapp.controller.live.dto.CreateRoomRequest;
-import com.sapari.apiapp.controller.live.dto.StartBroadcastRequest;
+import com.sapari.liveapp.controller.live.dto.StartBroadcastRequest;
+import com.sapari.liveapp.controller.live.dto.CreateRoomRequest;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;

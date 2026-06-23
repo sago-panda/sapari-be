@@ -1,8 +1,6 @@
 dependencies {
     implementation project(':common:web')
     implementation project(':common:auth')
-    implementation(project(":modules:live:live-api"))
-    implementation(project(":modules:live:live-core"))
     implementation(project(":modules:customer:customer-api"))
     implementation(project(":modules:customer:customer-core"))
     implementation(project(":modules:seller:seller-api"))
