@@ -34,8 +34,7 @@ public class SwaggerConfig implements SwaggerConfigurer {
                         )
                 ),
                 new OpenApiDetails("product", "상품 API",  List.of("/api/v1/products/**")),
-                new OpenApiDetails("order",   "주문 API",  List.of("/api/v1/orders/**")),
-                new OpenApiDetails("live",    "라이브 API", List.of("/api/v1/lives/**"))
+                new OpenApiDetails("order",   "주문 API",  List.of("/api/v1/orders/**"))
         );
     }
 

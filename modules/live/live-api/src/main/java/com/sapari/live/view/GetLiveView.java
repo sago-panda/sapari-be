@@ -5,7 +5,7 @@ import lombok.Builder;
 import java.util.List;
 import java.util.UUID;
 
-public record GetLiveResult(
+public record GetLiveView(
         List<LiveRoomSummary> rooms
 ) {
     @Builder

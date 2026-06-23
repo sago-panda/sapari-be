@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,7 +25,7 @@ import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveProductRepository;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.StartLiveUseCase;
-import com.sapari.live.view.StartLiveResult;
+import com.sapari.live.view.StartLiveView;
 
 @Slf4j
 @Service
@@ -38,7 +39,7 @@ public class StartLiveService implements StartLiveUseCase {
 
     @Override
     @Transactional
-    public StartLiveResult start(StartLiveCommand command) {
+    public StartLiveView start(StartLiveCommand command) {
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
@@ -76,9 +77,14 @@ public class StartLiveService implements StartLiveUseCase {
         liveRoomRepository.save(updatedRoom);
 
         //liveProduct 도메인모델 list로 전환하여 전체 저장
-        List<LiveProduct> products = command.products().stream()
-                .map(p -> LiveProduct.create(command.roomId(), p.productId(), p.originalPrice(),
-                        p.discountPrice(), p.liveDiscountPrice(), p.isPinned()))
+        List<ProductEntry> entries = command.products();
+        List<LiveProduct> products = IntStream.range(0, entries.size())
+                .mapToObj(i -> {
+                    ProductEntry p = entries.get(i);
+                    return LiveProduct.create(command.roomId(), p.productId(), p.originalPrice(),
+                            p.discountPrice(), p.liveDiscountPrice(), p.isPinned(),
+                            i, p.isPinned() ? timeProvider.now() : null);
+                })
                 .toList();
         liveProductRepository.saveAll(products);
 

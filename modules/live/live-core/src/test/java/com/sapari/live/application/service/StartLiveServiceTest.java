@@ -21,6 +21,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -35,6 +36,7 @@ import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
+import com.sapari.live.domain.model.LiveProduct;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStatus.Live;
@@ -125,6 +127,42 @@ public class StartLiveServiceTest {
         verify(liveMediaManager).issueSellerToken(roomId, sellerId);
         verify(liveMediaManager).startHlsEgress(roomId);
         verify(liveRoomRepository).save(any(LiveRoom.class));
+    }
+
+    @Test
+    @DisplayName("방송 시작 시 상품의 sortOrder는 리스트 인덱스로, pinnedAt은 고정 상품에만 세팅된다.")
+    @SuppressWarnings("unchecked")
+    void start_persists_products_with_sortOrder_and_pinnedAt(){
+        // given: 상품 3개 중 index 1만 고정 (고정 상품은 정확히 1개여야 시작 가능)
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        StartLiveCommand.ProductEntry p0 = new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 8000, 7000, false);
+        StartLiveCommand.ProductEntry p1 = new StartLiveCommand.ProductEntry(UUID.randomUUID(), 20000, 15000, 12000, true);
+        StartLiveCommand.ProductEntry p2 = new StartLiveCommand.ProductEntry(UUID.randomUUID(), 30000, 25000, 20000, false);
+        StartLiveCommand multiCommand = new StartLiveCommand(roomId, sellerId, List.of(p0, p1, p2));
+
+        LiveRoom room = scheduledRoom();
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
+        given(liveMediaManager.startHlsEgress(roomId)).willReturn(new HlsEgressResult("egress-123", "http://hls.url/index.m3u8"));
+        given(timeProvider.now()).willReturn(now);
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        startLiveService.start(multiCommand);
+
+        // then: 저장되는 LiveProduct 리스트를 캡처해 sortOrder/pinnedAt 검증
+        ArgumentCaptor<List<LiveProduct>> captor = ArgumentCaptor.forClass(List.class);
+        verify(liveProductRepository).saveAll(captor.capture());
+        List<LiveProduct> saved = captor.getValue();
+
+        assertThat(saved.size()).isEqualTo(3);
+        assertThat(saved.get(0).sortOrder()).isEqualTo(0);
+        assertThat(saved.get(1).sortOrder()).isEqualTo(1);
+        assertThat(saved.get(2).sortOrder()).isEqualTo(2);
+        // 고정 상품(index 1)만 pinnedAt이 세팅되고 나머지는 null
+        assertThat(saved.get(0).pinnedAt()).isNull();
+        assertThat(saved.get(1).pinnedAt()).isEqualTo(now);
+        assertThat(saved.get(2).pinnedAt()).isNull();
     }
 
     @RepeatedTest(value = 10)
