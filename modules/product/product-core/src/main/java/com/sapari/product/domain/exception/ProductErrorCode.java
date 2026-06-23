@@ -22,7 +22,8 @@ public enum ProductErrorCode implements ErrorCode {
     INVALID_PRODUCT_IMAGE(400, "PRODUCT-006", "이미지 구성이 올바르지 않습니다."),
     INVALID_PRODUCT_TAG(400, "PRODUCT-007", "태그 형식이 올바르지 않습니다."),
     COMBINATION_NOT_FOUND(404, "PRODUCT-008", "옵션 조합을 찾을 수 없습니다."),
-    TOO_MANY_COMBINATIONS(400, "PRODUCT-009", "옵션 조합 수가 허용 한도를 초과했습니다.");
+    TOO_MANY_COMBINATIONS(400, "PRODUCT-009", "옵션 조합 수가 허용 한도를 초과했습니다."),
+    INTERNAL_PRODUCT_ERROR(500, "PRODUCT-010", "상품 처리 중 오류가 발생했습니다.");
 
     private final int status;
     private final String code;
