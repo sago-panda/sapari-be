@@ -18,6 +18,12 @@ public interface ProductOptionCombinationRepository {
      */
     ProductOptionCombination save(ProductOptionCombination combination);
 
+    /**
+     * 신규 조합을 일괄 저장하고 id만 채워 입력 순서대로 반환한다(재조회 없음).
+     * JDBC 배치는 {@code hibernate.jdbc.batch_size} 설정 시 동작한다.
+     */
+    List<ProductOptionCombination> saveAll(List<ProductOptionCombination> combinations);
+
     Optional<ProductOptionCombination> findById(UUID id);
 
     /**

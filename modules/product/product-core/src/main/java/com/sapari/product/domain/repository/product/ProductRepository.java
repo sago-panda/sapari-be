@@ -1,6 +1,7 @@
 package com.sapari.product.domain.repository.product;
 
 import com.sapari.product.domain.model.product.Product;
+import com.sapari.product.domain.model.product.ProductSummary;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,9 +24,10 @@ public interface ProductRepository {
     Optional<Product> findById(UUID id);
 
     /**
-     * 판매자의 상품 목록(각각 자식 포함). 소프트삭제(deletedAt) 필터링은 호출측 책임.
+     * 판매자의 삭제되지 않은 상품 <b>요약</b> 목록(목록 카드용). 프로젝션 쿼리로 스칼라 + 대표 이미지 키만 조회하고
+     * 옵션·조합 등 자식은 로딩하지 않는다({@code deleted_at IS NULL} 필터 포함).
      */
-    List<Product> findBySellerId(UUID sellerId);
+    List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId);
 
     /**
      * 카테고리(bigint id) 소속 상품 목록.

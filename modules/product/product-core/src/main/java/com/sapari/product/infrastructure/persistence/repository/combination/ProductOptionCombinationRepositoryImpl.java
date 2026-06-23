@@ -3,13 +3,18 @@ package com.sapari.product.infrastructure.persistence.repository.combination;
 import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationEntity;
 import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationValueEntity;
 
+import com.sapari.product.domain.exception.ProductDomainException;
+import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.infrastructure.persistence.mapper.combination.ProductOptionCombinationMapper;
 import jakarta.persistence.EntityNotFoundException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
@@ -43,6 +48,52 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
     }
 
     @Override
+    public List<ProductOptionCombination> saveAll(List<ProductOptionCombination> combinations) {
+        if (combinations.isEmpty()) {
+            return List.of();
+        }
+        // 신규(INSERT) 전용 가드 — id가 있으면 잘못된 호출(정상 흐름엔 도달 불가). 도메인 예외라 @Repository 변환 없이 그대로 전파·로그(500)
+        combinations.forEach(combination -> {
+            if (combination.id() != null) {
+                throw new ProductDomainException(
+                        ProductErrorCode.INTERNAL_PRODUCT_ERROR, "saveAll은 신규 조합 전용입니다");
+            }
+        });
+
+        // 1) 조합 행 일괄 INSERT
+        List<ProductOptionCombinationEntity> savedEntities = jpaRepository.saveAll(
+                combinations.stream()
+                        .map(mapper::toEntity)
+                        .toList());
+
+        // 2) 생성된 조합 id에 옵션값 매핑을 모아 일괄 INSERT (saveAll은 입력 순서를 보존)
+        List<ProductOptionCombinationValueEntity> valueEntities = new ArrayList<>();
+        for (int i = 0; i < savedEntities.size(); i++) {
+            UUID combinationId = savedEntities.get(i)
+                    .getId();
+            for (UUID valueId : combinations.get(i)
+                    .optionValueIds()) {
+                valueEntities.add(ProductOptionCombinationValueEntity.builder()
+                        .optionCombinationId(combinationId)
+                        .optionValueId(valueId)
+                        .build());
+            }
+        }
+        valueJpaRepository.saveAll(valueEntities);
+
+        // 3) 재조회 없이 입력 도메인에 부여된 id만 채워 반환 (read-back N+1 방지)
+        List<ProductOptionCombination> result = new ArrayList<>(savedEntities.size());
+        for (int i = 0; i < savedEntities.size(); i++) {
+            result.add(combinations.get(i)
+                    .toBuilder()
+                    .id(savedEntities.get(i)
+                            .getId())
+                    .build());
+        }
+        return result;
+    }
+
+    @Override
     public Optional<ProductOptionCombination> findById(UUID id) {
         return jpaRepository.findById(id)
                 .map(this::loadDomain);
@@ -50,9 +101,27 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
 
     @Override
     public List<ProductOptionCombination> findByProductId(UUID productId) {
-        return jpaRepository.findByProductId(productId)
-                .stream()
-                .map(this::loadDomain)
+        List<ProductOptionCombinationEntity> entities = jpaRepository.findByProductId(productId);
+        if (entities.isEmpty()) {
+            return List.of();
+        }
+        // 옵션값 매핑을 조합별 개별 조회(N+1) 대신 IN 한 쿼리로 모아 조합 id 기준 그룹핑
+        List<UUID> combinationIds = entities.stream()
+                .map(ProductOptionCombinationEntity::getId)
+                .toList();
+        Map<UUID, List<UUID>> valueIdsByCombination =
+                valueJpaRepository.findByOptionCombinationIdIn(combinationIds)
+                        .stream()
+                        .collect(Collectors.groupingBy(
+                                ProductOptionCombinationValueEntity::getOptionCombinationId,
+                                Collectors.mapping(
+                                        ProductOptionCombinationValueEntity::getOptionValueId,
+                                        Collectors.toList())));
+        return entities.stream()
+                .map(entity -> mapper.toDomain(entity)
+                        .toBuilder()
+                        .optionValueIds(valueIdsByCombination.getOrDefault(entity.getId(), List.of()))
+                        .build())
                 .toList();
     }
 

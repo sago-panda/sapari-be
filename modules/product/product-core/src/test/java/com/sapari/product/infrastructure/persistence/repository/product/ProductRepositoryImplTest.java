@@ -12,12 +12,15 @@ import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductImageRef;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
+import com.sapari.product.domain.model.product.ProductStatus;
+import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.support.AbstractRepositoryIntegrationTest;
 import com.sapari.product.support.ProductFixtures;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.PersistenceContext;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -253,19 +256,88 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
     class Finders {
 
         @Test
-        @DisplayName("판매자/카테고리로 필터링한다")
-        void filters_by_seller_and_category() {
+        @DisplayName("카테고리로 필터링한다")
+        void filters_by_category() {
             productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
             productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_2));
             productRepository.save(ProductFixtures.minimal(SELLER_B, CATEGORY_1));
             em.flush();
             em.clear();
 
-            assertThat(productRepository.findBySellerId(SELLER_A)).hasSize(2)
-                    .allSatisfy(p -> assertThat(p.sellerId()).isEqualTo(SELLER_A));
             assertThat(productRepository.findByCategoryId(CATEGORY_1)).hasSize(2)
                     .allSatisfy(p -> assertThat(p.categoryId()).isEqualTo(CATEGORY_1));
-            assertThat(productRepository.findBySellerId(UUID.randomUUID())).isEmpty();
+            assertThat(productRepository.findByCategoryId(9999L)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("findActiveSellerProductSummaries는 삭제 상품을 제외하고 스칼라·대표이미지(GALLERY 최소 sortOrder)를 채운다")
+        void findActiveSellerProductSummaries_maps_and_excludes_deleted() {
+            Product live = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+            productRepository.save(live.toBuilder()
+                    .status(ProductStatus.ON_SALE)
+                    .minPrice(9_000)
+                    .hasStock(true)
+                    .reviewCount(5)
+                    .avgRating(new BigDecimal("4.5"))
+                    .images(List.of(
+                            new ProductImageRef(null, live.id(), null, ImageRole.GALLERY, "g1.jpg", (short) 1),
+                            new ProductImageRef(null, live.id(), null, ImageRole.GALLERY, "g0.jpg", (short) 0),
+                            new ProductImageRef(null, live.id(), null, ImageRole.DETAIL, "d0.jpg", (short) 0)))
+                    .build());
+            Product deleted = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_2));
+            productRepository.save(deleted.toBuilder()
+                    .deletedAt(Instant.parse("2026-03-03T00:00:00Z"))
+                    .build());
+            em.flush();
+            em.clear();
+
+            List<ProductSummary> summaries = productRepository.findActiveSellerProductSummaries(SELLER_A);
+            assertThat(summaries).extracting(ProductSummary::id).containsExactly(live.id());
+            assertThat(summaries.get(0)).satisfies(s -> {
+                assertThat(s.status()).isEqualTo(ProductStatus.ON_SALE);
+                assertThat(s.minPrice()).isEqualTo(9_000);
+                assertThat(s.hasStock()).isTrue();
+                assertThat(s.reviewCount()).isEqualTo(5);
+                assertThat(s.avgRating()).isEqualByComparingTo("4.5");
+                assertThat(s.thumbnailKey()).isEqualTo("g0.jpg"); // GALLERY 최소 sortOrder, DETAIL 제외
+            });
+        }
+
+        @Test
+        @DisplayName("findActiveSellerProductSummaries는 여러 상품의 대표이미지를 각 상품에 올바르게 매핑한다 (IN 배치 zip)")
+        void findActiveSellerProductSummaries_thumbnail_per_product() {
+            Product p1 = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+            productRepository.save(p1.toBuilder()
+                    .images(List.of(new ProductImageRef(null, p1.id(), null, ImageRole.GALLERY, "p1-g.jpg", (short) 0)))
+                    .build());
+            Product p2 = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_2));
+            productRepository.save(p2.toBuilder()
+                    .images(List.of(new ProductImageRef(null, p2.id(), null, ImageRole.GALLERY, "p2-g.jpg", (short) 0)))
+                    .build());
+            em.flush();
+            em.clear();
+
+            List<ProductSummary> summaries = productRepository.findActiveSellerProductSummaries(SELLER_A);
+            assertThat(summaries).filteredOn(s -> s.id().equals(p1.id()))
+                    .singleElement().satisfies(s -> assertThat(s.thumbnailKey()).isEqualTo("p1-g.jpg"));
+            assertThat(summaries).filteredOn(s -> s.id().equals(p2.id()))
+                    .singleElement().satisfies(s -> assertThat(s.thumbnailKey()).isEqualTo("p2-g.jpg"));
+        }
+
+        @Test
+        @DisplayName("findActiveSellerProductSummaries는 GALLERY 이미지가 없으면 thumbnailKey가 null이다")
+        void findActiveSellerProductSummaries_nullThumbnail_whenNoGallery() {
+            Product live = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+            productRepository.save(live.toBuilder()
+                    .images(List.of(
+                            new ProductImageRef(null, live.id(), null, ImageRole.DETAIL, "d0.jpg", (short) 0)))
+                    .build());
+            em.flush();
+            em.clear();
+
+            assertThat(productRepository.findActiveSellerProductSummaries(SELLER_A))
+                    .singleElement()
+                    .satisfies(s -> assertThat(s.thumbnailKey()).isNull());
         }
 
         @Test
@@ -295,8 +367,8 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         }
 
         @Test
-        @DisplayName("소프트 삭제(deletedAt)는 저장되며 finder는 여전히 반환한다(필터링은 호출측 책임)")
-        void soft_delete_persisted_but_still_found() {
+        @DisplayName("소프트 삭제(deletedAt)가 저장되고 findById로 확인된다")
+        void soft_delete_persisted() {
             Product saved = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
             productRepository.save(saved.softDelete(Instant.parse("2026-03-03T00:00:00Z")));
             em.flush();
@@ -306,8 +378,6 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
                     .orElseThrow();
             assertThat(after.isDeleted()).isTrue();
             assertThat(after.deletedAt()).isNotNull();
-            assertThat(productRepository.findBySellerId(SELLER_A)).extracting(Product::id)
-                    .contains(saved.id());
         }
     }
 }
