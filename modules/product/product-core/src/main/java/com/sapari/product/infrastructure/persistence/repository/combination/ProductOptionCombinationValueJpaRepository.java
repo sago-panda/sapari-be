@@ -15,5 +15,7 @@ public interface ProductOptionCombinationValueJpaRepository
 
     List<ProductOptionCombinationValueEntity> findByOptionCombinationId(UUID optionCombinationId);
 
+    List<ProductOptionCombinationValueEntity> findByOptionCombinationIdIn(List<UUID> optionCombinationIds);
+
     void deleteByOptionCombinationId(UUID optionCombinationId);
 }

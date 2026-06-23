@@ -9,8 +9,10 @@ import com.sapari.product.infrastructure.persistence.mapper.combination.ProductO
 import jakarta.persistence.EntityNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
@@ -97,9 +99,27 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
 
     @Override
     public List<ProductOptionCombination> findByProductId(UUID productId) {
-        return jpaRepository.findByProductId(productId)
-                .stream()
-                .map(this::loadDomain)
+        List<ProductOptionCombinationEntity> entities = jpaRepository.findByProductId(productId);
+        if (entities.isEmpty()) {
+            return List.of();
+        }
+        // 옵션값 매핑을 조합별 개별 조회(N+1) 대신 IN 한 쿼리로 모아 조합 id 기준 그룹핑
+        List<UUID> combinationIds = entities.stream()
+                .map(ProductOptionCombinationEntity::getId)
+                .toList();
+        Map<UUID, List<UUID>> valueIdsByCombination =
+                valueJpaRepository.findByOptionCombinationIdIn(combinationIds)
+                        .stream()
+                        .collect(Collectors.groupingBy(
+                                ProductOptionCombinationValueEntity::getOptionCombinationId,
+                                Collectors.mapping(
+                                        ProductOptionCombinationValueEntity::getOptionValueId,
+                                        Collectors.toList())));
+        return entities.stream()
+                .map(entity -> mapper.toDomain(entity)
+                        .toBuilder()
+                        .optionValueIds(valueIdsByCombination.getOrDefault(entity.getId(), List.of()))
+                        .build())
                 .toList();
     }
 
