@@ -7,6 +7,7 @@ import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.infrastructure.persistence.mapper.combination.ProductOptionCombinationMapper;
 import jakarta.persistence.EntityNotFoundException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,6 +41,52 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
         }
         replaceValues(entity.getId(), combination.optionValueIds());
         return loadDomain(entity);
+    }
+
+    @Override
+    public List<ProductOptionCombination> saveAll(List<ProductOptionCombination> combinations) {
+        if (combinations.isEmpty()) {
+            return List.of();
+        }
+        // 신규(INSERT) 전용 — id가 있으면 toEntity가 id를 버려 중복 INSERT되므로 차단
+        combinations.forEach(combination -> {
+            if (combination.id() != null) {
+                throw new IllegalArgumentException(
+                        "saveAll은 신규 조합만 지원합니다(id가 이미 존재): " + combination.id());
+            }
+        });
+
+        // 1) 조합 행 일괄 INSERT
+        List<ProductOptionCombinationEntity> savedEntities = jpaRepository.saveAll(
+                combinations.stream()
+                        .map(mapper::toEntity)
+                        .toList());
+
+        // 2) 생성된 조합 id에 옵션값 매핑을 모아 일괄 INSERT (saveAll은 입력 순서를 보존)
+        List<ProductOptionCombinationValueEntity> valueEntities = new ArrayList<>();
+        for (int i = 0; i < savedEntities.size(); i++) {
+            UUID combinationId = savedEntities.get(i)
+                    .getId();
+            for (UUID valueId : combinations.get(i)
+                    .optionValueIds()) {
+                valueEntities.add(ProductOptionCombinationValueEntity.builder()
+                        .optionCombinationId(combinationId)
+                        .optionValueId(valueId)
+                        .build());
+            }
+        }
+        valueJpaRepository.saveAll(valueEntities);
+
+        // 3) 재조회 없이 입력 도메인에 부여된 id만 채워 반환 (read-back N+1 방지)
+        List<ProductOptionCombination> result = new ArrayList<>(savedEntities.size());
+        for (int i = 0; i < savedEntities.size(); i++) {
+            result.add(combinations.get(i)
+                    .toBuilder()
+                    .id(savedEntities.get(i)
+                            .getId())
+                    .build());
+        }
+        return result;
     }
 
     @Override

@@ -269,6 +269,24 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         }
 
         @Test
+        @DisplayName("findActiveBySellerId는 소프트 삭제된 상품을 제외한다 (deleted_at IS NULL)")
+        void findActiveBySellerId_excludes_deleted() {
+            Product live = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+            Product toDelete = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_2));
+            productRepository.save(toDelete.toBuilder()
+                    .deletedAt(Instant.parse("2026-03-03T00:00:00Z"))
+                    .build());
+            em.flush();
+            em.clear();
+
+            assertThat(productRepository.findActiveBySellerId(SELLER_A))
+                    .extracting(Product::id)
+                    .containsExactly(live.id());
+            // findBySellerId(무필터)는 삭제 포함 2건 그대로
+            assertThat(productRepository.findBySellerId(SELLER_A)).hasSize(2);
+        }
+
+        @Test
         @DisplayName("존재하지 않는 id 조회는 Optional.empty")
         void findById_unknown_empty() {
             assertThat(productRepository.findById(UUID.randomUUID())).isEmpty();

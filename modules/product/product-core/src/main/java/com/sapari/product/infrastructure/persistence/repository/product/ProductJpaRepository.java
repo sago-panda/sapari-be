@@ -12,5 +12,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface ProductJpaRepository extends JpaRepository<ProductEntity, UUID> {
     List<ProductEntity> findBySellerId(UUID sellerId);
 
+    List<ProductEntity> findBySellerIdAndDeletedAtIsNull(UUID sellerId);
+
     List<ProductEntity> findByCategoryId(Long categoryId);
 }

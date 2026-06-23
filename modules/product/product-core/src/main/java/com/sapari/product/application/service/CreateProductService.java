@@ -70,7 +70,7 @@ public class CreateProductService implements CreateProductUseCase {
                 .build();
         Product saved = productRepository.save(product);
 
-        // 2단계: 확정된 옵션값 id로 조합을 생성하고 각각 저장 (조합은 별도 애그리거트)
+        // 2단계: 확정된 옵션값 id로 조합을 생성하고 일괄 저장 (조합은 별도 애그리거트)
         List<ProductOptionCombination> combinations = CombinationGenerator.generate(
                 saved.id(),
                 saved.basePrice(),
@@ -79,7 +79,10 @@ public class CreateProductService implements CreateProductUseCase {
                 List.of(),
                 command.defaultStock(),
                 now);
-        combinations.forEach(combinationRepository::save);
+        // 조합은 한꺼번에 생성되므로 일괄 저장 — 건당 INSERT 왕복(N+1) 방지
+        if (!combinations.isEmpty()) {
+            combinationRepository.saveAll(combinations);
+        }
 
         return new CreateProductView(saved.id(), saved.status().name());
     }

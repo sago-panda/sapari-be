@@ -127,6 +127,47 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
     }
 
     @Nested
+    @DisplayName("일괄 저장(saveAll)")
+    class SaveAll {
+
+        @Test
+        @DisplayName("신규 조합들을 옵션값 매핑까지 일괄 저장하고 그대로 조립해 돌려준다")
+        void saveAll_persists_combinations_with_values() {
+            UUID productId = UUID.randomUUID();
+            UUID v1 = UUID.randomUUID();
+            UUID v2 = UUID.randomUUID();
+            ProductOptionCombination c1 = ProductOptionCombination.create(
+                    productId, CombinationKey.of("1"), Sku.of("SKU-1"), null, 1_000, Stock.of(10, 0), List.of(v1), T0);
+            ProductOptionCombination c2 = ProductOptionCombination.create(
+                    productId, CombinationKey.of("2"), Sku.of("SKU-2"), null, 2_000, Stock.of(20, 0), List.of(v2), T0);
+
+            List<ProductOptionCombination> saved = repository.saveAll(List.of(c1, c2));
+            // 반환값: 재조회 없이 id가 채워지고 각 조합의 옵션값 매핑이 올바르게 유지된다(zip 정확성)
+            assertThat(saved).hasSize(2).allSatisfy(c -> assertThat(c.id()).isNotNull());
+            assertThat(saved).filteredOn(c -> c.combinationKey().value().equals("1"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v1));
+            assertThat(saved).filteredOn(c -> c.combinationKey().value().equals("2"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v2));
+            em.flush();
+            em.clear();
+
+            // 재조회 시에도 키↔옵션값 매핑이 어긋나지 않는다
+            List<ProductOptionCombination> found = repository.findByProductId(productId);
+            assertThat(found).hasSize(2);
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("1"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v1));
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("2"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v2));
+        }
+
+        @Test
+        @DisplayName("빈 리스트면 아무것도 저장하지 않고 빈 리스트를 반환한다")
+        void saveAll_empty_isNoop() {
+            assertThat(repository.saveAll(List.of())).isEmpty();
+        }
+    }
+
+    @Nested
     @DisplayName("갱신(UPDATE)")
     class Update {
 

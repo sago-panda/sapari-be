@@ -23,13 +23,12 @@ public class GetSellerProductsService implements GetSellerProductsUseCase {
     private final ProductRepository productRepository;
 
     /**
-     * 판매자의 삭제되지 않은 상품 요약 목록을 조회한다(삭제 필터링은 이 서비스의 책임).
+     * 판매자의 삭제되지 않은 상품 요약 목록을 조회한다. 삭제 제외는 repository 쿼리({@code deleted_at IS NULL})가 담당한다.
      */
     @Override
     @Transactional(readOnly = true)
     public List<ProductSummaryView> get(GetSellerProductsCommand command) {
-        return productRepository.findBySellerId(command.sellerId()).stream()
-                .filter(product -> !product.isDeleted())
+        return productRepository.findActiveBySellerId(command.sellerId()).stream()
                 .map(this::toSummary)
                 .toList();
     }
