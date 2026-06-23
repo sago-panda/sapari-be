@@ -29,6 +29,11 @@ dependencies {
     annotationProcessor 'org.mapstruct:mapstruct-processor:1.5.5.Final'
     annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
 
+    // QueryDSL — querydsl-jpa는 db-core가 api로 전이 제공. Q클래스 생성용 apt만 모듈별로 필요
+    annotationProcessor 'com.querydsl:querydsl-apt:5.1.0:jakarta'
+    annotationProcessor 'jakarta.persistence:jakarta.persistence-api'
+    annotationProcessor 'jakarta.annotation:jakarta.annotation-api'
+
     // FixtureMonkey
     testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
 

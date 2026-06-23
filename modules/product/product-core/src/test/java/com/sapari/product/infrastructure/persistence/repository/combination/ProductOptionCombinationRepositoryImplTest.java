@@ -2,7 +2,10 @@ package com.sapari.product.infrastructure.persistence.repository.combination;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sapari.product.domain.exception.ProductDomainException;
+import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.product.domain.model.combination.CombinationKey;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.model.combination.Sku;
@@ -108,6 +111,28 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
         }
 
         @Test
+        @DisplayName("findByProductId는 조합별로 옵션값을 정확히 그룹핑한다(다건 조합·다값, 어긋남 없음)")
+        void findByProductId_groups_values_per_combination() {
+            UUID productId = UUID.randomUUID();
+            UUID v1 = UUID.randomUUID();
+            UUID v2 = UUID.randomUUID();
+            UUID v3 = UUID.randomUUID();
+            repository.save(ProductOptionCombination.create(
+                    productId, CombinationKey.of("a"), Sku.of("A"), null, 1_000, Stock.of(10, 0), List.of(v1, v2), T0));
+            repository.save(ProductOptionCombination.create(
+                    productId, CombinationKey.of("b"), Sku.of("B"), null, 2_000, Stock.of(10, 0), List.of(v3), T0));
+            em.flush();
+            em.clear();
+
+            List<ProductOptionCombination> found = repository.findByProductId(productId);
+            assertThat(found).hasSize(2);
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("a"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactlyInAnyOrder(v1, v2));
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("b"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v3));
+        }
+
+        @Test
         @DisplayName("findByProductIdAndSku는 상품 범위 내 SKU로 단건 조회한다")
         void findByProductIdAndSku() {
             UUID productId = UUID.randomUUID();
@@ -123,6 +148,69 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
         @DisplayName("존재하지 않는 id는 Optional.empty")
         void findById_unknown_empty() {
             assertThat(repository.findById(UUID.randomUUID())).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("일괄 저장(saveAll)")
+    class SaveAll {
+
+        @Test
+        @DisplayName("신규 조합들을 옵션값 매핑까지 일괄 저장하고 그대로 조립해 돌려준다")
+        void saveAll_persists_combinations_with_values() {
+            UUID productId = UUID.randomUUID();
+            UUID v1 = UUID.randomUUID();
+            UUID v2 = UUID.randomUUID();
+            ProductOptionCombination c1 = ProductOptionCombination.create(
+                    productId, CombinationKey.of("1"), Sku.of("SKU-1"), null, 1_000, Stock.of(10, 0), List.of(v1), T0);
+            ProductOptionCombination c2 = ProductOptionCombination.create(
+                    productId, CombinationKey.of("2"), Sku.of("SKU-2"), null, 2_000, Stock.of(20, 0), List.of(v2), T0);
+
+            List<ProductOptionCombination> saved = repository.saveAll(List.of(c1, c2));
+            // 반환값: 재조회 없이 id가 채워지고 각 조합의 옵션값 매핑이 올바르게 유지된다(zip 정확성)
+            assertThat(saved).hasSize(2).allSatisfy(c -> assertThat(c.id()).isNotNull());
+            assertThat(saved).filteredOn(c -> c.combinationKey().value().equals("1"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v1));
+            assertThat(saved).filteredOn(c -> c.combinationKey().value().equals("2"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v2));
+            em.flush();
+            em.clear();
+
+            // 재조회 시에도 키↔옵션값 매핑이 어긋나지 않는다
+            List<ProductOptionCombination> found = repository.findByProductId(productId);
+            assertThat(found).hasSize(2);
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("1"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v1));
+            assertThat(found).filteredOn(c -> c.combinationKey().value().equals("2"))
+                    .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v2));
+        }
+
+        @Test
+        @DisplayName("빈 리스트면 아무것도 저장하지 않고 빈 리스트를 반환한다")
+        void saveAll_empty_isNoop() {
+            assertThat(repository.saveAll(List.of())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("id가 이미 있는 조합을 넘기면 거부한다 (신규 전용 precondition)")
+        void saveAll_rejects_existing_combination() {
+            ProductOptionCombination existing = ProductOptionCombination.builder()
+                    .id(UUID.randomUUID())
+                    .productId(UUID.randomUUID())
+                    .combinationKey(CombinationKey.of("1"))
+                    .price(1_000)
+                    .stock(Stock.of(1, 0))
+                    .isAvailable(true)
+                    .optionValueIds(List.of())
+                    .createdAt(T0)
+                    .updatedAt(T0)
+                    .build();
+
+            // 도메인 예외라 @Repository 변환 없이 그대로 전파 (코드=동작=로그 일치)
+            assertThatThrownBy(() -> repository.saveAll(List.of(existing)))
+                    .isInstanceOf(ProductDomainException.class)
+                    .satisfies(ex -> assertThat(((ProductDomainException) ex).getErrorCode())
+                            .isEqualTo(ProductErrorCode.INTERNAL_PRODUCT_ERROR));
         }
     }
 

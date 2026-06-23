@@ -6,6 +6,7 @@ import com.sapari.product.infrastructure.persistence.entity.product.option.Produ
 
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
+import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.infrastructure.persistence.mapper.product.ProductMapper;
 import jakarta.persistence.EntityNotFoundException;
@@ -30,6 +31,7 @@ public class ProductRepositoryImpl implements ProductRepository {
     private final ProductOptionValueJpaRepository optionValueJpaRepository;
     private final ProductOptionConfigJpaRepository optionConfigJpaRepository;
     private final ProductMapper mapper;
+    private final ProductQueryDslRepository queryDslRepository;
 
     @Override
     public Product save(Product product) {
@@ -53,11 +55,9 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     @Override
-    public List<Product> findBySellerId(UUID sellerId) {
-        return productJpaRepository.findBySellerId(sellerId)
-                .stream()
-                .map(this::loadAggregate)
-                .toList();
+    public List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId) {
+        // 복잡 프로젝션 조회는 QueryDSL 전용 어댑터에 위임
+        return queryDslRepository.findActiveSellerProductSummaries(sellerId);
     }
 
     @Override
