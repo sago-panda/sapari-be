@@ -2,7 +2,10 @@ package com.sapari.product.infrastructure.persistence.repository.combination;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sapari.product.domain.exception.ProductDomainException;
+import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.product.domain.model.combination.CombinationKey;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.model.combination.Sku;
@@ -186,6 +189,28 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
         @DisplayName("빈 리스트면 아무것도 저장하지 않고 빈 리스트를 반환한다")
         void saveAll_empty_isNoop() {
             assertThat(repository.saveAll(List.of())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("id가 이미 있는 조합을 넘기면 거부한다 (신규 전용 precondition)")
+        void saveAll_rejects_existing_combination() {
+            ProductOptionCombination existing = ProductOptionCombination.builder()
+                    .id(UUID.randomUUID())
+                    .productId(UUID.randomUUID())
+                    .combinationKey(CombinationKey.of("1"))
+                    .price(1_000)
+                    .stock(Stock.of(1, 0))
+                    .isAvailable(true)
+                    .optionValueIds(List.of())
+                    .createdAt(T0)
+                    .updatedAt(T0)
+                    .build();
+
+            // 도메인 예외라 @Repository 변환 없이 그대로 전파 (코드=동작=로그 일치)
+            assertThatThrownBy(() -> repository.saveAll(List.of(existing)))
+                    .isInstanceOf(ProductDomainException.class)
+                    .satisfies(ex -> assertThat(((ProductDomainException) ex).getErrorCode())
+                            .isEqualTo(ProductErrorCode.INTERNAL_PRODUCT_ERROR));
         }
     }
 

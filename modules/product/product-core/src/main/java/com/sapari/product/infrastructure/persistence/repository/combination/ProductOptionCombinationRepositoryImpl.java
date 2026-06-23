@@ -3,6 +3,8 @@ package com.sapari.product.infrastructure.persistence.repository.combination;
 import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationEntity;
 import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationValueEntity;
 
+import com.sapari.product.domain.exception.ProductDomainException;
+import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.infrastructure.persistence.mapper.combination.ProductOptionCombinationMapper;
@@ -50,11 +52,11 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
         if (combinations.isEmpty()) {
             return List.of();
         }
-        // 신규(INSERT) 전용 — id가 있으면 toEntity가 id를 버려 중복 INSERT되므로 차단
+        // 신규(INSERT) 전용 가드 — id가 있으면 잘못된 호출(정상 흐름엔 도달 불가). 도메인 예외라 @Repository 변환 없이 그대로 전파·로그(500)
         combinations.forEach(combination -> {
             if (combination.id() != null) {
-                throw new IllegalArgumentException(
-                        "saveAll은 신규 조합만 지원합니다(id가 이미 존재): " + combination.id());
+                throw new ProductDomainException(
+                        ProductErrorCode.INTERNAL_PRODUCT_ERROR, "saveAll은 신규 조합 전용입니다");
             }
         });
 
