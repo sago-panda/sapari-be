@@ -4,18 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 
 import com.sapari.product.command.GetSellerProductsCommand;
-import com.sapari.product.domain.model.product.ImageRole;
-import com.sapari.product.domain.model.product.Product;
-import com.sapari.product.domain.model.product.ProductImageRef;
-import com.sapari.product.domain.model.product.ProductOptionModel;
+import com.sapari.product.domain.model.product.ProductStatus;
+import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.view.ProductSummaryView;
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -29,8 +25,6 @@ class GetSellerProductsServiceTest {
     private static final UUID SELLER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a1");
     private static final UUID PRODUCT_1 = UUID.fromString("00000000-0000-0000-0000-0000000000f1");
     private static final UUID PRODUCT_2 = UUID.fromString("00000000-0000-0000-0000-0000000000f2");
-    private static final Long CATEGORY_ID = 1001L;
-    private static final Instant NOW = Instant.parse("2026-06-21T00:00:00Z");
 
     @Mock
     private ProductRepository productRepository;
@@ -38,96 +32,60 @@ class GetSellerProductsServiceTest {
     @InjectMocks
     private GetSellerProductsService service;
 
-    private static ProductImageRef image(UUID productId, ImageRole role, String key, short sortOrder) {
-        return new ProductImageRef(UUID.randomUUID(), productId, null, role, key, sortOrder);
-    }
-
-    private static Product product(UUID id, Instant deletedAt, List<ProductImageRef> images) {
-        return Product.create(
-                        SELLER_ID, CATEGORY_ID, "상품 " + id, "설명", 10_000, null, 0, ProductOptionModel.COMBINATION, NOW)
-                .approve(NOW)
-                .toBuilder()
-                .id(id)
-                .minPrice(9_000)
-                .hasStock(true)
-                .avgRating(new BigDecimal("4.2"))
-                .reviewCount(5)
-                .deletedAt(deletedAt)
-                .images(images)
-                .build();
+    private static ProductSummary summary(UUID id, String thumbnailKey) {
+        return new ProductSummary(id, "상품 " + id, ProductStatus.ON_SALE, 9_000, true, 5, new BigDecimal("4.2"),
+                thumbnailKey);
     }
 
     private List<ProductSummaryView> get() {
         return service.get(new GetSellerProductsCommand(SELLER_ID));
     }
 
-    @Nested
-    @DisplayName("목록 매핑")
-    class Mapping {
+    @Test
+    @DisplayName("요약 read-model을 목록 뷰로 매핑한다(상태 enum은 이름 문자열)")
+    void mapsSummaryToView() {
+        given(productRepository.findActiveSellerProductSummaries(SELLER_ID))
+                .willReturn(List.of(summary(PRODUCT_1, "g0.jpg")));
 
-        @Test
-        @DisplayName("판매자 상품의 요약 필드를 매핑한다")
-        void mapsSummaryFields() {
-            Product product = product(PRODUCT_1, null,
-                    List.of(image(PRODUCT_1, ImageRole.GALLERY, "g0.jpg", (short) 0)));
-            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of(product));
-
-            ProductSummaryView view = get().get(0);
-
+        assertThat(get()).singleElement().satisfies(view -> {
             assertThat(view.productId()).isEqualTo(PRODUCT_1);
             assertThat(view.name()).isEqualTo("상품 " + PRODUCT_1);
             assertThat(view.status()).isEqualTo("ON_SALE");
             assertThat(view.minPrice()).isEqualTo(9_000);
             assertThat(view.hasStock()).isTrue();
-            assertThat(view.avgRating()).isEqualByComparingTo("4.2");
             assertThat(view.reviewCount()).isEqualTo(5);
+            assertThat(view.avgRating()).isEqualByComparingTo("4.2");
             assertThat(view.thumbnailKey()).isEqualTo("g0.jpg");
-        }
-
-        @Test
-        @DisplayName("대표 이미지는 sortOrder가 가장 낮은 GALLERY 이미지이며 DETAIL은 제외한다")
-        void thumbnailIsLowestSortGalleryImage() {
-            Product product = product(PRODUCT_1, null, List.of(
-                    image(PRODUCT_1, ImageRole.GALLERY, "g1.jpg", (short) 1),
-                    image(PRODUCT_1, ImageRole.GALLERY, "g0.jpg", (short) 0),
-                    image(PRODUCT_1, ImageRole.DETAIL, "d0.jpg", (short) 0)));
-            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of(product));
-
-            assertThat(get().get(0).thumbnailKey()).isEqualTo("g0.jpg");
-        }
-
-        @Test
-        @DisplayName("GALLERY 이미지가 없으면 thumbnailKey는 null이다")
-        void thumbnailNullWhenNoGallery() {
-            Product product = product(PRODUCT_1, null,
-                    List.of(image(PRODUCT_1, ImageRole.DETAIL, "d0.jpg", (short) 0)));
-            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of(product));
-
-            assertThat(get().get(0).thumbnailKey()).isNull();
-        }
+        });
     }
 
-    @Nested
-    @DisplayName("목록/빈")  // 삭제 제외는 repository 쿼리가 담당(통합테스트에서 검증)
-    class Filtering {
+    @Test
+    @DisplayName("nullable 값(thumbnailKey·minPrice·avgRating)은 그대로 전달한다")
+    void passesThroughNullables() {
+        given(productRepository.findActiveSellerProductSummaries(SELLER_ID))
+                .willReturn(List.of(new ProductSummary(
+                        PRODUCT_1, "상품", ProductStatus.ON_SALE, null, false, 0, null, null)));
 
-        @Test
-        @DisplayName("삭제되지 않은 상품이 여러 개면 모두 반환한다")
-        void returnsAllLiveProducts() {
-            given(productRepository.findActiveBySellerId(SELLER_ID))
-                    .willReturn(List.of(product(PRODUCT_1, null, List.of()), product(PRODUCT_2, null, List.of())));
+        ProductSummaryView view = get().get(0);
+        assertThat(view.thumbnailKey()).isNull();
+        assertThat(view.minPrice()).isNull();
+        assertThat(view.avgRating()).isNull();
+    }
 
-            assertThat(get())
-                    .extracting(ProductSummaryView::productId)
-                    .containsExactlyInAnyOrder(PRODUCT_1, PRODUCT_2);
-        }
+    @Test
+    @DisplayName("여러 건은 repository 반환 순서를 보존해 매핑한다")
+    void preservesOrder() {
+        given(productRepository.findActiveSellerProductSummaries(SELLER_ID))
+                .willReturn(List.of(summary(PRODUCT_1, "g1.jpg"), summary(PRODUCT_2, "g2.jpg")));
 
-        @Test
-        @DisplayName("판매자 상품이 없으면 빈 목록을 반환한다")
-        void emptyWhenNone() {
-            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of());
+        assertThat(get()).extracting(ProductSummaryView::productId).containsExactly(PRODUCT_1, PRODUCT_2);
+    }
 
-            assertThat(get()).isEmpty();
-        }
+    @Test
+    @DisplayName("요약이 없으면 빈 목록을 반환한다")
+    void emptyWhenNone() {
+        given(productRepository.findActiveSellerProductSummaries(SELLER_ID)).willReturn(List.of());
+
+        assertThat(get()).isEmpty();
     }
 }
