@@ -70,7 +70,7 @@ class GetSellerProductsServiceTest {
         void mapsSummaryFields() {
             Product product = product(PRODUCT_1, null,
                     List.of(image(PRODUCT_1, ImageRole.GALLERY, "g0.jpg", (short) 0)));
-            given(productRepository.findBySellerId(SELLER_ID)).willReturn(List.of(product));
+            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of(product));
 
             ProductSummaryView view = get().get(0);
 
@@ -91,7 +91,7 @@ class GetSellerProductsServiceTest {
                     image(PRODUCT_1, ImageRole.GALLERY, "g1.jpg", (short) 1),
                     image(PRODUCT_1, ImageRole.GALLERY, "g0.jpg", (short) 0),
                     image(PRODUCT_1, ImageRole.DETAIL, "d0.jpg", (short) 0)));
-            given(productRepository.findBySellerId(SELLER_ID)).willReturn(List.of(product));
+            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of(product));
 
             assertThat(get().get(0).thumbnailKey()).isEqualTo("g0.jpg");
         }
@@ -101,32 +101,20 @@ class GetSellerProductsServiceTest {
         void thumbnailNullWhenNoGallery() {
             Product product = product(PRODUCT_1, null,
                     List.of(image(PRODUCT_1, ImageRole.DETAIL, "d0.jpg", (short) 0)));
-            given(productRepository.findBySellerId(SELLER_ID)).willReturn(List.of(product));
+            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of(product));
 
             assertThat(get().get(0).thumbnailKey()).isNull();
         }
     }
 
     @Nested
-    @DisplayName("필터링")
+    @DisplayName("목록/빈")  // 삭제 제외는 repository 쿼리가 담당(통합테스트에서 검증)
     class Filtering {
-
-        @Test
-        @DisplayName("소프트 삭제된 상품은 목록에서 제외한다")
-        void excludesDeleted() {
-            Product live = product(PRODUCT_1, null, List.of());
-            Product deleted = product(PRODUCT_2, NOW, List.of());
-            given(productRepository.findBySellerId(SELLER_ID)).willReturn(List.of(live, deleted));
-
-            assertThat(get())
-                    .extracting(ProductSummaryView::productId)
-                    .containsExactly(PRODUCT_1);
-        }
 
         @Test
         @DisplayName("삭제되지 않은 상품이 여러 개면 모두 반환한다")
         void returnsAllLiveProducts() {
-            given(productRepository.findBySellerId(SELLER_ID))
+            given(productRepository.findActiveBySellerId(SELLER_ID))
                     .willReturn(List.of(product(PRODUCT_1, null, List.of()), product(PRODUCT_2, null, List.of())));
 
             assertThat(get())
@@ -137,16 +125,7 @@ class GetSellerProductsServiceTest {
         @Test
         @DisplayName("판매자 상품이 없으면 빈 목록을 반환한다")
         void emptyWhenNone() {
-            given(productRepository.findBySellerId(SELLER_ID)).willReturn(List.of());
-
-            assertThat(get()).isEmpty();
-        }
-
-        @Test
-        @DisplayName("삭제된 상품만 있으면 빈 목록을 반환한다")
-        void emptyWhenAllDeleted() {
-            given(productRepository.findBySellerId(SELLER_ID))
-                    .willReturn(List.of(product(PRODUCT_1, NOW, List.of())));
+            given(productRepository.findActiveBySellerId(SELLER_ID)).willReturn(List.of());
 
             assertThat(get()).isEmpty();
         }

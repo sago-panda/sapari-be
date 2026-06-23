@@ -28,6 +28,12 @@ public interface ProductRepository {
     List<Product> findBySellerId(UUID sellerId);
 
     /**
+     * 판매자의 <b>삭제되지 않은</b> 상품 목록(각각 자식 포함). 쿼리에서 {@code deleted_at IS NULL}로 걸러
+     * 삭제 상품을 로딩하지 않는다(목록 조회용).
+     */
+    List<Product> findActiveBySellerId(UUID sellerId);
+
+    /**
      * 카테고리(bigint id) 소속 상품 목록.
      */
     List<Product> findByCategoryId(Long categoryId);

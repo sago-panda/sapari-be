@@ -8,7 +8,6 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.product.command.CreateProductCommand;
@@ -27,7 +26,9 @@ import com.sapari.product.domain.repository.category.CategoryRepository;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.view.CreateProductView;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -41,7 +42,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -69,11 +69,16 @@ class CreateProductServiceTest {
     @Mock
     private CategoryRepository categoryRepository;
 
-    @Mock
-    private TimeProvider timeProvider;
+    // 실제 TimeProvider를 고정 Clock으로 — now()는 NOW를 결정적으로 반환(스텁 불필요)
+    private final TimeProvider timeProvider = new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
 
-    @InjectMocks
     private CreateProductService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new CreateProductService(
+                productRepository, combinationRepository, categoryRepository, timeProvider);
+    }
 
     private static Category aCategory() {
         return Category.create(null, "1001", "의류", (short) 1, 0, true);
@@ -116,10 +121,11 @@ class CreateProductServiceTest {
         return captor.getValue();
     }
 
-    private List<ProductOptionCombination> captureSavedCombinations(int count) {
-        ArgumentCaptor<ProductOptionCombination> captor = ArgumentCaptor.forClass(ProductOptionCombination.class);
-        then(combinationRepository).should(times(count)).save(captor.capture());
-        return captor.getAllValues();
+    @SuppressWarnings("unchecked")
+    private List<ProductOptionCombination> captureSavedCombinations() {
+        ArgumentCaptor<List<ProductOptionCombination>> captor = ArgumentCaptor.forClass(List.class);
+        then(combinationRepository).should().saveAll(captor.capture());
+        return captor.getValue();
     }
 
     @Nested
@@ -129,9 +135,8 @@ class CreateProductServiceTest {
         @BeforeEach
         void stubHappyPath() {
             given(categoryRepository.findById(CATEGORY_ID)).willReturn(Optional.of(aCategory()));
-            given(timeProvider.now()).willReturn(NOW);
             given(productRepository.save(any())).willReturn(savedProduct());
-            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+            given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
         }
 
         @Test
@@ -187,9 +192,8 @@ class CreateProductServiceTest {
         @BeforeEach
         void stubHappyPath() {
             given(categoryRepository.findById(CATEGORY_ID)).willReturn(Optional.of(aCategory()));
-            given(timeProvider.now()).willReturn(NOW);
             given(productRepository.save(any())).willReturn(savedProduct());
-            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+            given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
         }
 
         @Test
@@ -197,7 +201,7 @@ class CreateProductServiceTest {
         void buildsCombinationPerOptionValue() {
             service.create(command());
 
-            List<ProductOptionCombination> combinations = captureSavedCombinations(2);
+            List<ProductOptionCombination> combinations = captureSavedCombinations();
             assertThat(combinations).allSatisfy(c -> {
                 assertThat(c.productId()).isEqualTo(PRODUCT_ID);
                 assertThat(c.isAvailable()).isTrue();
@@ -217,7 +221,7 @@ class CreateProductServiceTest {
         void computesCombinationPrice() {
             service.create(command());
 
-            List<ProductOptionCombination> combinations = captureSavedCombinations(2);
+            List<ProductOptionCombination> combinations = captureSavedCombinations();
             assertThat(combinations)
                     .filteredOn(c -> c.optionValueIds().contains(S_ID))
                     .singleElement()
@@ -235,7 +239,7 @@ class CreateProductServiceTest {
 
             InOrder inOrder = inOrder(productRepository, combinationRepository);
             inOrder.verify(productRepository).save(any());
-            inOrder.verify(combinationRepository, times(2)).save(any());
+            inOrder.verify(combinationRepository).saveAll(any());
         }
 
         @Test
@@ -256,7 +260,6 @@ class CreateProductServiceTest {
         @DisplayName("옵션 타입이 없으면 상품만 저장하고 조합은 만들지 않는다")
         void savesProductWithoutCombinations() {
             given(categoryRepository.findById(CATEGORY_ID)).willReturn(Optional.of(aCategory()));
-            given(timeProvider.now()).willReturn(NOW);
             Product savedNoOptions = Product.create(
                             SELLER_ID, CATEGORY_ID, "단일 상품", "설명", BASE_PRICE,
                             null, 0, ProductOptionModel.COMBINATION, NOW)
@@ -266,7 +269,7 @@ class CreateProductServiceTest {
             CreateProductView view = service.create(commandWith(List.of()));
 
             then(productRepository).should().save(any());
-            then(combinationRepository).should(never()).save(any());
+            then(combinationRepository).should(never()).saveAll(any());
             assertThat(view.productId()).isEqualTo(PRODUCT_ID);
         }
     }
@@ -327,9 +330,8 @@ class CreateProductServiceTest {
         @DisplayName("경계 내 태그는 예외 없이 등록된다")
         void acceptsValidTags(List<String> tags) {
             given(categoryRepository.findById(CATEGORY_ID)).willReturn(Optional.of(aCategory()));
-            given(timeProvider.now()).willReturn(NOW);
             given(productRepository.save(any())).willReturn(savedProduct());
-            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+            given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             assertThatCode(() -> service.create(commandWith(tags, sizeOptionCommand())))
                     .doesNotThrowAnyException();
