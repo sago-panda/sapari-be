@@ -95,7 +95,8 @@ public class SendChatService implements SendChatUseCase {
         return rateLimiter.tryAcquire(senderId)
                 .flatMap(result -> result.allowed()
                         ? Mono.<Void>empty()
-                        : Mono.error(new ChatRateLimitException("메시지를 너무 빠르게 보내고 있습니다.")));
+                        : Mono.error(new ChatRateLimitException(
+                                "메시지를 너무 빠르게 보내고 있습니다.", result.retryAfterSeconds())));
     }
 
     /** 6) 욕설필터 → 도메인 생성 → 저장(먼저) → 발행. DuplicateKey(재전송)는 기존 메시지 재조회로 멱등 처리(재발행 생략). */

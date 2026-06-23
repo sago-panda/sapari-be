@@ -170,7 +170,11 @@ class SendChatServiceTest {
         when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
         when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(false, 3)));
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
-                .expectError(ChatRateLimitException.class)
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(ChatRateLimitException.class);
+                    // retryAfterSeconds가 예외에 실려 transport(RATE_LIMIT 응답)까지 운반되는지 — 유실 방지
+                    assertThat(((ChatRateLimitException) e).getRetryAfterSeconds()).isEqualTo(3);
+                })
                 .verify();
         verify(chatMessageRepository, never()).save(any());
     }
