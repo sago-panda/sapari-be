@@ -3,7 +3,7 @@ package com.sapari.apiapp.controller.customer.dto.response;
 import java.time.LocalDate;
 import java.util.UUID;
 
-import com.sapari.customer.result.CustomerMeResult;
+import com.sapari.customer.view.CustomerMeView;
 
 public record CustomerMeResponse(
         UUID userId,
@@ -22,7 +22,7 @@ public record CustomerMeResponse(
         String provider
 ) {
 
-    public static CustomerMeResponse from(CustomerMeResult result) {
+    public static CustomerMeResponse from(CustomerMeView result) {
         return new CustomerMeResponse(
                 result.userId(),
                 result.nickname(),

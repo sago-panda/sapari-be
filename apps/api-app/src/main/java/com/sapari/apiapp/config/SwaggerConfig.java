@@ -25,10 +25,16 @@ public class SwaggerConfig implements SwaggerConfigurer {
     @Override
     public List<OpenApiDetails> apiDetails() {
         return List.of(
-                new OpenApiDetails("user",    "회원 API",  List.of("/api/v1/users/**")),
+                new OpenApiDetails(
+                        "user",
+                        "회원 API",
+                        List.of(
+                                "/api/v1/customers/auth/**",
+                                "/api/v1/sellers/auth/**"
+                        )
+                ),
                 new OpenApiDetails("product", "상품 API",  List.of("/api/v1/products/**")),
-                new OpenApiDetails("order",   "주문 API",  List.of("/api/v1/orders/**")),
-                new OpenApiDetails("live",    "라이브 API", List.of("/api/v1/lives/**"))
+                new OpenApiDetails("order",   "주문 API",  List.of("/api/v1/orders/**"))
         );
     }
 

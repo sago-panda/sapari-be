@@ -1,12 +1,21 @@
 package com.sapari.user.infrastructure.persistence.mapper;
 
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+import org.mapstruct.MappingTarget;
+import org.mapstruct.ReportingPolicy;
+
 import com.sapari.user.domain.model.User;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.infrastructure.persistence.entity.UserEntity;
 
-public class UserMapper {
+@Mapper(
+        componentModel = "spring",
+        unmappedTargetPolicy = ReportingPolicy.ERROR
+)
+public interface UserMapper {
 
-    public static UserEntity toEntity(User user) {
+    default UserEntity toEntity(User user) {
         if (user.role() == UserRole.SELLER) {
             UserEntity seller = UserEntity.createSeller(
                     user.nickname(),
@@ -26,6 +35,10 @@ public class UserMapper {
                     user.email(),
                     user.marketingAgreed(),
                     user.nicknameChangedAt()
+            );
+            seller.updateWithdrawalState(
+                    user.status(),
+                    user.deletedAt()
             );
             return seller;
         }
@@ -54,37 +67,17 @@ public class UserMapper {
                 user.marketingAgreed(),
                 user.nicknameChangedAt()
         );
+        userEntity.updateWithdrawalState(
+                user.status(),
+                user.deletedAt()
+        );
         return userEntity;
     }
 
-    public static User toDomain(UserEntity entity) {
-        return User.builder()
-                .userId(entity.getId())
-                .role(entity.getRole())
-                .status(entity.getStatus())
-                .nickname(entity.getNickname())
-                .nicknameChangedAt(entity.getNicknameChangedAt())
-                .name(entity.getName())
-                .birthDate(entity.getBirthDate())
-                .gender(entity.getGender())
-                .phoneNumber(entity.getPhoneNumber())
-                .profileImageKey(entity.getProfileImageKey())
-                .email(entity.getEmail())
-                .grade(entity.getGrade())
-                .pointBalance(entity.getPointBalance())
-                .marketingAgreed(entity.getMarketingAgreed())
-                .suspendedUntil(entity.getSuspendedUntil())
-                .suspensionReason(entity.getSuspensionReason())
-                .deletedAt(entity.getDeletedAt())
-                .personalDataPurgedAt(entity.getPersonalDataPurgedAt())
-                .provider(entity.getProvider())
-                .providerId(entity.getProviderId())
-                .providerEmail(entity.getProviderEmail())
-                .providerCreatedAt(entity.getProviderCreatedAt())
-                .build();
-    }
+    @Mapping(target = "userId", source = "id")
+    User toDomain(UserEntity entity);
 
-    public static void updateEntityFromDomain(UserEntity entity, User user) {
+    default void updateEntityFromDomain(@MappingTarget UserEntity entity, User user) {
         entity.updateProfile(
                 user.nickname(),
                 user.name(),
@@ -94,6 +87,10 @@ public class UserMapper {
                 user.email(),
                 user.marketingAgreed(),
                 user.nicknameChangedAt()
+        );
+        entity.updateWithdrawalState(
+                user.status(),
+                user.deletedAt()
         );
     }
 }

@@ -5,6 +5,9 @@ import java.util.UUID;
 
 import org.springframework.util.Assert;
 
+import com.sapari.seller.model.SellerApprovalStatus;
+import com.sapari.seller.model.SellerBusinessType;
+
 public record SellerProfile(
         UUID sellerProfileId,
         UUID userId,

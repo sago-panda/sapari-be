@@ -2,6 +2,7 @@ package com.sapari.live.domain.model;
 
 import lombok.Builder;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @Builder(toBuilder = true)
@@ -12,7 +13,9 @@ public record LiveProduct(
         int originalPrice,
         int discountPrice,
         int liveDiscountPrice,
-        boolean isPinned
+        boolean isPinned,
+        int sortOrder,
+        Instant pinnedAt
 ) {
     /**
      * LiveProduct 도메인 모델 생성
@@ -24,7 +27,9 @@ public record LiveProduct(
             int originalPrice,
             int discountPrice,
             int liveDiscountPrice,
-            boolean isPinned
+            boolean isPinned,
+            int sortOrder,
+            Instant pinnedAt
     ) {
         if (liveRoomId == null) {
             throw new IllegalArgumentException("liveRoomId는 필수입니다.");
@@ -41,6 +46,9 @@ public record LiveProduct(
         if (liveDiscountPrice > discountPrice) {
             throw new IllegalArgumentException("라이브 할인가는 일반 할인가를 초과할 수 없습니다.");
         }
+        if (isPinned && pinnedAt == null) {
+            throw new IllegalArgumentException("고정 상품은 pinnedAt이 필수입니다.");
+        }
         return builder()
                 .liveRoomId(liveRoomId)
                 .productId(productId)
@@ -48,6 +56,8 @@ public record LiveProduct(
                 .discountPrice(discountPrice)
                 .liveDiscountPrice(liveDiscountPrice)
                 .isPinned(isPinned)
+                .sortOrder(sortOrder)
+                .pinnedAt(pinnedAt)
                 .build();
     }
 }

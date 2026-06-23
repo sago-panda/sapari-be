@@ -2,7 +2,7 @@ package com.sapari.apiapp.controller.customer.dto.response;
 
 import java.time.LocalDate;
 
-import com.sapari.customer.result.SocialSignupInfoResult;
+import com.sapari.customer.view.SocialSignupInfoView;
 
 public record SocialSignupInfoResponse(
         String phoneNumber,
@@ -14,7 +14,7 @@ public record SocialSignupInfoResponse(
         LocalDate birthDate
 ) {
 
-    public static SocialSignupInfoResponse from(SocialSignupInfoResult result) {
+    public static SocialSignupInfoResponse from(SocialSignupInfoView result) {
         return new SocialSignupInfoResponse(
                 result.phoneNumber(),
                 result.name(),

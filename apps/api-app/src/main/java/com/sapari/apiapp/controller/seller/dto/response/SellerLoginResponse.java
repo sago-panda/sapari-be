@@ -2,7 +2,7 @@ package com.sapari.apiapp.controller.seller.dto.response;
 
 import java.util.UUID;
 
-import com.sapari.seller.result.SellerLoginResult;
+import com.sapari.seller.view.SellerLoginResult;
 
 public record SellerLoginResponse(
         UUID userId

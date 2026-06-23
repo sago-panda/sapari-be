@@ -14,6 +14,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -38,12 +39,12 @@ import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.port.CustomerAuthUseCase;
-import com.sapari.customer.result.CustomerMeResult;
-import com.sapari.customer.result.CustomerNicknameUpdateResult;
-import com.sapari.customer.result.CustomerTokenReissueResult;
-import com.sapari.customer.result.SocialSignupInfoResult;
-import com.sapari.customer.result.SocialLoginTokenResult;
-import com.sapari.customer.result.SocialSignupResult;
+import com.sapari.customer.view.CustomerMeView;
+import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerTokenReissueResult;
+import com.sapari.customer.view.SocialSignupInfoView;
+import com.sapari.customer.view.SocialLoginTokenResult;
+import com.sapari.customer.view.SocialSignupResult;
 
 @RestController
 @RequestMapping("/api/v1/customers/auth")
@@ -81,7 +82,7 @@ public class CustomerAuthController {
     public ResponseEntity<SocialSignupInfoResponse> getSocialSignupInfo(
             @CookieValue(name = SIGNUP_SID_COOKIE_NAME) String signupSid
     ) {
-        SocialSignupInfoResult result = customerAuthUseCase.getSocialSignupInfo(signupSid);
+        SocialSignupInfoView result = customerAuthUseCase.getSocialSignupInfo(signupSid);
 
         return ResponseEntity
                 .ok()
@@ -164,10 +165,9 @@ public class CustomerAuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
     ) {
-        customerAuthUseCase.logout(new CustomerLogoutCommand(userId, resolveAccessToken(authorizationHeader)));
+        customerAuthUseCase.logout(new CustomerLogoutCommand(resolveAccessToken(authorizationHeader)));
 
         return ResponseEntity
                 .noContent()
@@ -181,19 +181,36 @@ public class CustomerAuthController {
     public ResponseEntity<CustomerMeResponse> getMyInfo(
             @CurrentUserId UUID userId
     ) {
-        CustomerMeResult result = customerAuthUseCase.getMyInfo(userId);
+        CustomerMeView result = customerAuthUseCase.getMyInfo(userId);
 
         return ResponseEntity.ok(CustomerMeResponse.from(result));
     }
 
+    /**
+     * 현재 로그인한 고객의 회원탈퇴를 신청한다.
+     * 탈퇴 처리 후 모든 기기 세션이 폐기되므로 클라이언트의 refresh token 쿠키도 즉시 만료시킨다.
+     */
+    @DeleteMapping("/me")
+    public ResponseEntity<Void> withdraw(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
+    ) {
+        customerAuthUseCase.requestWithdrawal(resolveAccessToken(authorizationHeader));
+
+        return ResponseEntity
+                .noContent()
+                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                        .toString())
+                .build();
+    }
+
     @PutMapping("/me/nickname")
     public ResponseEntity<CustomerMeResponse> updateNickname(
-            @CurrentUserId UUID userId,
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody CustomerNicknameUpdateRequest request
     ) {
         CustomerNicknameUpdateResult result = customerAuthUseCase.updateNickname(
-                request.toCommand(userId, resolveAccessToken(authorizationHeader))
+                request.toCommand(resolveAccessToken(authorizationHeader))
         );
 
         return ResponseEntity

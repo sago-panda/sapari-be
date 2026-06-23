@@ -7,12 +7,15 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mapstruct.factory.Mappers;
 
 import com.sapari.seller.domain.model.LocalCredential;
 import com.sapari.seller.infrastructure.persistence.entity.LocalCredentialEntity;
 
 @DisplayName("로컬 인증 정보 매퍼 테스트")
 class LocalCredentialMapperTest {
+
+    private final LocalCredentialMapper mapper = Mappers.getMapper(LocalCredentialMapper.class);
 
     @Test
     @DisplayName("도메인 모델을 JPA 엔티티로 변환한다")
@@ -30,7 +33,7 @@ class LocalCredentialMapperTest {
         );
 
         // when
-        LocalCredentialEntity entity = LocalCredentialMapper.toEntity(localCredential);
+        LocalCredentialEntity entity = mapper.toEntity(localCredential);
 
         // then
         assertThat(entity.getUserId()).isEqualTo(userId);
@@ -55,7 +58,7 @@ class LocalCredentialMapperTest {
         );
 
         // when
-        LocalCredential localCredential = LocalCredentialMapper.toDomain(entity);
+        LocalCredential localCredential = mapper.toDomain(entity);
 
         // then
         assertThat(localCredential.userId()).isEqualTo(userId);
