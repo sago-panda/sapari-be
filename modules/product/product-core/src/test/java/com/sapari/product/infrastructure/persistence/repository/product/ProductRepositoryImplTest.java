@@ -253,19 +253,17 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
     class Finders {
 
         @Test
-        @DisplayName("판매자/카테고리로 필터링한다")
-        void filters_by_seller_and_category() {
+        @DisplayName("카테고리로 필터링한다")
+        void filters_by_category() {
             productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
             productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_2));
             productRepository.save(ProductFixtures.minimal(SELLER_B, CATEGORY_1));
             em.flush();
             em.clear();
 
-            assertThat(productRepository.findBySellerId(SELLER_A)).hasSize(2)
-                    .allSatisfy(p -> assertThat(p.sellerId()).isEqualTo(SELLER_A));
             assertThat(productRepository.findByCategoryId(CATEGORY_1)).hasSize(2)
                     .allSatisfy(p -> assertThat(p.categoryId()).isEqualTo(CATEGORY_1));
-            assertThat(productRepository.findBySellerId(UUID.randomUUID())).isEmpty();
+            assertThat(productRepository.findByCategoryId(9999L)).isEmpty();
         }
 
         @Test
@@ -282,8 +280,6 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             assertThat(productRepository.findActiveBySellerId(SELLER_A))
                     .extracting(Product::id)
                     .containsExactly(live.id());
-            // findBySellerId(무필터)는 삭제 포함 2건 그대로
-            assertThat(productRepository.findBySellerId(SELLER_A)).hasSize(2);
         }
 
         @Test
@@ -313,8 +309,8 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         }
 
         @Test
-        @DisplayName("소프트 삭제(deletedAt)는 저장되며 finder는 여전히 반환한다(필터링은 호출측 책임)")
-        void soft_delete_persisted_but_still_found() {
+        @DisplayName("소프트 삭제(deletedAt)가 저장되고 findById로 확인된다")
+        void soft_delete_persisted() {
             Product saved = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
             productRepository.save(saved.softDelete(Instant.parse("2026-03-03T00:00:00Z")));
             em.flush();
@@ -324,8 +320,6 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
                     .orElseThrow();
             assertThat(after.isDeleted()).isTrue();
             assertThat(after.deletedAt()).isNotNull();
-            assertThat(productRepository.findBySellerId(SELLER_A)).extracting(Product::id)
-                    .contains(saved.id());
         }
     }
 }

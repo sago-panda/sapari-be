@@ -23,11 +23,6 @@ public interface ProductRepository {
     Optional<Product> findById(UUID id);
 
     /**
-     * 판매자의 상품 목록(각각 자식 포함). 소프트삭제(deletedAt) 필터링은 호출측 책임.
-     */
-    List<Product> findBySellerId(UUID sellerId);
-
-    /**
      * 판매자의 <b>삭제되지 않은</b> 상품 목록(각각 자식 포함). 쿼리에서 {@code deleted_at IS NULL}로 걸러
      * 삭제 상품을 로딩하지 않는다(목록 조회용).
      */
