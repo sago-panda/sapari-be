@@ -83,10 +83,10 @@ class StaleUpdateCombinationIntegrationTest extends ConcurrentTransactionTestSup
 
         ProductOptionCombination after = inNewTransaction(this::readCombination);
 
-        // 안전 속성: stale 제출은 충돌로 거부되어 B(2000)가 보존되어야 한다. 현재는 거부되지 않아(thrown=null) B가 유실된다(RED).
+        // 안전 속성: stale 제출은 충돌로 거부되어 B의 변경이 보존되어야 한다(거부 안 되면 B가 유실됨).
         assertThat(thrown)
-                .as("stale 제출은 ProductConcurrentModificationException으로 거부되어야 한다. "
-                        + "그러나 거부되지 않았고 최종 price=%s — B의 %s가 유실됨", after.price(), B_PRICE)
+                .as("stale 제출은 ProductConcurrentModificationException으로 거부되어야 함 (거부 실패 시 B 유실, 최종 price=%s)",
+                        after.price())
                 .isInstanceOf(ProductConcurrentModificationException.class);
     }
 

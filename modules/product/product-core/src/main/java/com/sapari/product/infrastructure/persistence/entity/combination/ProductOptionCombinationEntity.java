@@ -40,7 +40,7 @@ public class ProductOptionCombinationEntity extends UuidTimeEntity {
 
     private Instant searchIndexedAt;
 
-    // 낙관적 락 버전 — 동시 수정 시 lost update를 막는다. Hibernate가 관리(INSERT 시 0, UPDATE마다 증가).
+    // 낙관적 락 버전 — 동시 수정 lost update 방지. Hibernate 관리(INSERT 0, UPDATE 증가). 단 벌크 단종은 JPQL에서 수동 증가.
     @Version
     private Long version;
 
