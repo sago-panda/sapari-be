@@ -12,6 +12,10 @@ import com.sapari.product.domain.repository.combination.ProductOptionCombination
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.port.UpdateCombinationPriceStockUseCase;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,13 +53,21 @@ public class UpdateCombinationPriceStockService implements UpdateCombinationPric
         }
 
         Instant now = timeProvider.now();
+        // 조합을 건별 findById(N+1) 대신 한 번에 모아 조회
+        List<UUID> combinationIds = command.combinations()
+                .stream()
+                .map(CombinationUpdateCommand::combinationId)
+                .toList();
+        Map<UUID, ProductOptionCombination> combinationsById = combinationRepository.findAllById(combinationIds)
+                .stream()
+                .collect(Collectors.toMap(ProductOptionCombination::id, found -> found));
+
         for (CombinationUpdateCommand update : command.combinations()) {
             // 조합이 존재하고 이 상품 소속인지 확인 (타 상품 조합 위변조 차단)
-            ProductOptionCombination combination = combinationRepository.findById(update.combinationId())
-                    .filter(found -> found.productId().equals(product.id()))
-                    .orElseThrow(() -> new CombinationNotFoundException(
-                            "옵션 조합을 찾을 수 없습니다: " + update.combinationId()));
-
+            ProductOptionCombination combination = combinationsById.get(update.combinationId());
+            if (combination == null || !combination.productId().equals(product.id())) {
+                throw new CombinationNotFoundException("옵션 조합을 찾을 수 없습니다: " + update.combinationId());
+            }
             combinationRepository.save(applyChanges(combination, update, now));
         }
     }

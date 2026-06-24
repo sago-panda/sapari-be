@@ -278,4 +278,89 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
             assertThat(reload(saved.id()).optionValueIds()).containsExactlyInAnyOrder(value1, value3);
         }
     }
+
+    @Nested
+    @DisplayName("배치 조회·벌크 단종 (N+1 제거)")
+    class BatchOps {
+
+        @Test
+        @DisplayName("findAllById는 주어진 id들의 조합을 옵션값까지 조립해 일괄 조회하고, 미존재 id는 무시한다")
+        void findAllById_returnsRequestedWithValues_ignoresMissing() {
+            UUID productId = UUID.randomUUID();
+            UUID a1 = UUID.randomUUID();
+            UUID a2 = UUID.randomUUID();
+            UUID b1 = UUID.randomUUID();
+            ProductOptionCombination comboA = repository.save(ProductOptionCombination.create(
+                    productId, CombinationKey.of("a"), Sku.of("SKU-A"), null, 1_000, Stock.of(10, 0),
+                    List.of(a1, a2), T0));
+            ProductOptionCombination comboB = repository.save(ProductOptionCombination.create(
+                    productId, CombinationKey.of("b"), Sku.of("SKU-B"), null, 2_000, Stock.of(5, 0),
+                    List.of(b1), T0));
+            repository.save(newCombo(productId, "c", "SKU-C", 3_000)); // 요청 대상 아님
+            em.flush();
+            em.clear();
+
+            List<ProductOptionCombination> found =
+                    repository.findAllById(List.of(comboA.id(), comboB.id(), UUID.randomUUID()));
+
+            // 요청한 둘만 반환(미존재 id 무시)
+            assertThat(found).extracting(ProductOptionCombination::id)
+                    .containsExactlyInAnyOrder(comboA.id(), comboB.id());
+            // 옵션값이 조합별로 정확히 그룹핑(어긋남 없음)
+            assertThat(found).filteredOn(c -> c.id().equals(comboA.id())).singleElement()
+                    .satisfies(c -> assertThat(c.optionValueIds()).containsExactlyInAnyOrder(a1, a2));
+            assertThat(found).filteredOn(c -> c.id().equals(comboB.id())).singleElement()
+                    .satisfies(c -> assertThat(c.optionValueIds()).containsExactly(b1));
+        }
+
+        @Test
+        @DisplayName("findAllById에 빈 컬렉션이면 빈 리스트를 반환한다")
+        void findAllById_empty() {
+            assertThat(repository.findAllById(List.of())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("discontinueAllByProductId는 해당 상품의 판매가능 조합만 단종(옵션값 보존·updatedAt 갱신)하고 행 수를 반환한다")
+        void discontinueAllByProductId_retiresOnlyAvailableOfProduct() {
+            UUID productId = UUID.randomUUID();
+            UUID v1 = UUID.randomUUID();
+            ProductOptionCombination available = repository.save(ProductOptionCombination.create(
+                    productId, CombinationKey.of("1"), Sku.of("S1"), null, 1_000, Stock.of(10, 0),
+                    List.of(v1), T0));
+            // 이미 단종된 조합 — WHERE is_available=true에 안 걸려 카운트·갱신 대상 아님
+            repository.save(newCombo(productId, "2", "S2", 2_000).discontinue(T0));
+            // 타 상품 조합 — product_id로 제외
+            ProductOptionCombination otherProduct =
+                    repository.save(newCombo(UUID.randomUUID(), "1", "S3", 3_000));
+            em.flush();
+            em.clear();
+
+            Instant retiredAt = Instant.parse("2026-02-02T03:04:05Z");
+            int affected = repository.discontinueAllByProductId(productId, retiredAt);
+            em.clear(); // 벌크 UPDATE는 영속성 컨텍스트를 우회하므로 비우고 재조회
+
+            assertThat(affected).isEqualTo(1); // 판매가능 1건만
+            ProductOptionCombination reloaded = repository.findById(available.id()).orElseThrow();
+            assertThat(reloaded.isAvailable()).isFalse();
+            assertThat(reloaded.updatedAt()).isEqualTo(retiredAt);
+            // 벌크 UPDATE는 조합 행만 건드린다 — 옵션값 매핑(자식)은 보존(주문 이력 참조)
+            assertThat(reloaded.optionValueIds()).containsExactly(v1);
+            // 타 상품 조합은 영향 없음
+            assertThat(repository.findById(otherProduct.id()).orElseThrow().isAvailable()).isTrue();
+        }
+
+        @Test
+        @DisplayName("이미 모두 단종된 상품에 다시 호출하면 0건을 반환한다(멱등)")
+        void discontinueAllByProductId_idempotentReturnsZero() {
+            UUID productId = UUID.randomUUID();
+            repository.save(newCombo(productId, "1", "S1", 1_000));
+            repository.save(newCombo(productId, "2", "S2", 2_000));
+            em.flush();
+            em.clear();
+
+            assertThat(repository.discontinueAllByProductId(productId, T0)).isEqualTo(2);
+            em.clear();
+            assertThat(repository.discontinueAllByProductId(productId, T0)).isZero();
+        }
+    }
 }

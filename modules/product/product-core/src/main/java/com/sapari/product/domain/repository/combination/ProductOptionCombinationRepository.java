@@ -1,6 +1,8 @@
 package com.sapari.product.domain.repository.combination;
 
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
+import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,6 +27,20 @@ public interface ProductOptionCombinationRepository {
     List<ProductOptionCombination> saveAll(List<ProductOptionCombination> combinations);
 
     Optional<ProductOptionCombination> findById(UUID id);
+
+    /**
+     * 주어진 id들의 조합을 일괄 조회한다(개별 {@link #findById} 반복으로 인한 N+1 방지). 존재하는 것만 반환하며 순서는 보장하지 않는다.
+     */
+    List<ProductOptionCombination> findAllById(Collection<UUID> ids);
+
+    /**
+     * 상품의 판매가능 조합을 모두 단종({@code is_available=false})한다. 옵션 교체 시 기존 조합을 일괄 은퇴시키는 용도의 벌크 갱신이다.
+     *
+     * <p>벌크 UPDATE라 {@code @Version}을 증가시키지 않고 영속성 컨텍스트를 우회한다(전량 은퇴라 동시성 보호 불필요). 옵션값 매핑은 보존한다(주문 이력 참조).
+     *
+     * @return 단종 처리된 행 수
+     */
+    int discontinueAllByProductId(UUID productId, Instant now);
 
     /**
      * 상품의 모든 조합. 상품 상세·옵션 트리 구성용.
