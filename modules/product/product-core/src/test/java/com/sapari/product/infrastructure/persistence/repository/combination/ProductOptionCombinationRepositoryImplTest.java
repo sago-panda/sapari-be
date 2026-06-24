@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sapari.product.domain.exception.ProductConcurrentModificationException;
 import com.sapari.product.domain.exception.ProductDomainException;
 import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.product.domain.model.combination.CombinationKey;
@@ -361,6 +362,46 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
             assertThat(repository.discontinueAllByProductId(productId, T0)).isEqualTo(2);
             em.clear();
             assertThat(repository.discontinueAllByProductId(productId, T0)).isZero();
+        }
+
+        @Test
+        @DisplayName("벌크 단종은 @Version을 증가시킨다 (동시 stale save 차단용)")
+        void discontinueAllByProductId_bumpsVersion() {
+            UUID productId = UUID.randomUUID();
+            ProductOptionCombination combo = repository.save(newCombo(productId, "1", "S1", 1_000));
+            em.flush();
+            em.clear();
+            long before = repository.findById(combo.id()).orElseThrow().version();
+            em.clear();
+
+            repository.discontinueAllByProductId(productId, Instant.parse("2026-02-02T00:00:00Z"));
+            em.clear();
+
+            ProductOptionCombination after = repository.findById(combo.id()).orElseThrow();
+            assertThat(after.isAvailable()).isFalse();
+            assertThat(after.version()).isEqualTo(before + 1);
+        }
+
+        @Test
+        @DisplayName("벌크 단종 후 단종 전 스냅샷으로 저장하면 충돌로 거부되어 단종이 되살아나지 않는다")
+        void discontinueAll_thenStaleSave_isRejected() {
+            UUID productId = UUID.randomUUID();
+            ProductOptionCombination combo = repository.save(newCombo(productId, "1", "S1", 1_000));
+            em.flush();
+            em.clear();
+            // 단종 전(판매가능·version v0)에 읽어둔 스냅샷 — 동시 가격수정 요청을 모사
+            ProductOptionCombination staleSnapshot = repository.findById(combo.id()).orElseThrow();
+            em.clear();
+
+            repository.discontinueAllByProductId(productId, Instant.parse("2026-02-02T00:00:00Z"));
+            em.clear();
+
+            // 스냅샷(v0) 기준 가격 변경 저장 → 벌크가 version을 올렸으므로 충돌로 거부
+            assertThatThrownBy(() -> repository.save(staleSnapshot.changePrice(2_000, null, T0)))
+                    .isInstanceOf(ProductConcurrentModificationException.class);
+            // 단종(is_available=false) 보존 — DB 상태로 재확인
+            em.clear();
+            assertThat(repository.findById(combo.id()).orElseThrow().isAvailable()).isFalse();
         }
     }
 }
