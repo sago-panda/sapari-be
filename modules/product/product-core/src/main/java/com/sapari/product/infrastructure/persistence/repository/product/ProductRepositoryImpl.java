@@ -55,6 +55,13 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     @Override
+    public Optional<Product> findActiveById(UUID id) {
+        // 루트에서 deleted_at IS NULL로 거른다 — 삭제 상품이면 빈 결과라 자식(loadAggregate)도 로딩 안 함
+        return productJpaRepository.findByIdAndDeletedAtIsNull(id)
+                .map(this::loadAggregate);
+    }
+
+    @Override
     public List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId) {
         // 복잡 프로젝션 조회는 QueryDSL 전용 어댑터에 위임
         return queryDslRepository.findActiveSellerProductSummaries(sellerId);

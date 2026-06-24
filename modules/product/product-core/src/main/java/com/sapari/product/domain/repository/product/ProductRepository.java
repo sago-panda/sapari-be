@@ -19,9 +19,15 @@ public interface ProductRepository {
     Product save(Product product);
 
     /**
-     * id로 단일 상품을 자식까지 조립해 조회한다.
+     * id로 단일 상품을 자식까지 조립해 조회한다(삭제 포함).
      */
     Optional<Product> findById(UUID id);
+
+    /**
+     * id로 <b>삭제되지 않은</b> 상품을 자식까지 조립해 조회한다. 쿼리에서 {@code deleted_at IS NULL}로 걸러
+     * 삭제 상품은 빈 결과로 돌려준다(수정·삭제·상세 조회 등 활성 상품 대상). 삭제 상품은 자식도 로딩하지 않는다.
+     */
+    Optional<Product> findActiveById(UUID id);
 
     /**
      * 판매자의 삭제되지 않은 상품 <b>요약</b> 목록(목록 카드용). 프로젝션 쿼리로 스칼라 + 대표 이미지 키만 조회하고

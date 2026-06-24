@@ -379,5 +379,53 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             assertThat(after.isDeleted()).isTrue();
             assertThat(after.deletedAt()).isNotNull();
         }
+
+        @Test
+        @DisplayName("findActiveById: 활성 상품은 루트+자식(태그·옵션·config)까지 조립해 반환한다")
+        void findActiveById_returns_active_with_aggregate() {
+            Product input = ProductFixtures.full(SELLER_A, CATEGORY_1);
+            Product active = productRepository.save(input);
+            em.flush();
+            em.clear();
+
+            assertThat(productRepository.findActiveById(active.id()))
+                    .get()
+                    .satisfies(p -> {
+                        assertThat(p.id()).isEqualTo(active.id());
+                        assertThat(p.isDeleted()).isFalse();
+                        assertThat(p.deletedAt()).isNull();
+                        // 자식까지 조립됐는지(loadAggregate 실행) — 빈 껍데기가 아니라 전체 애그리거트
+                        assertThat(p.name()).isEqualTo(input.name());
+                        assertThat(p.tags()).containsExactlyInAnyOrderElementsOf(input.tags());
+                        assertThat(p.optionTypes()).hasSameSizeAs(input.optionTypes());
+                        assertThat(p.optionConfig()).isNotNull();
+                    });
+        }
+
+        @Test
+        @DisplayName("findActiveById: 소프트 삭제 상품은 쿼리에서 제외(빈 결과)하되 delete-inclusive findById로는 여전히 조회된다")
+        void findActiveById_excludes_softDeleted() {
+            Instant deletedAt = Instant.parse("2026-03-03T00:00:00Z");
+            Product active = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            Product deleted = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            productRepository.save(deleted.softDelete(deletedAt));
+            em.flush();
+            em.clear();
+
+            // 같은 판매자의 활성 상품은 영향 없이 조회되고, 삭제 상품만 제외된다
+            assertThat(productRepository.findActiveById(active.id())).isPresent();
+            assertThat(productRepository.findActiveById(deleted.id())).isEmpty();
+
+            // delete-inclusive findById로는 삭제 상품도 조회됨 — 제외가 쿼리 레벨임을 대비로 증명
+            assertThat(productRepository.findById(deleted.id()))
+                    .get()
+                    .satisfies(p -> {
+                        assertThat(p.isDeleted()).isTrue();
+                        assertThat(p.deletedAt()).isEqualTo(deletedAt);
+                    });
+
+            // 존재하지 않는 id도 빈 결과
+            assertThat(productRepository.findActiveById(UUID.randomUUID())).isEmpty();
+        }
     }
 }

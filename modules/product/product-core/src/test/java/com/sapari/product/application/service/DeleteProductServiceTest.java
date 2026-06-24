@@ -59,7 +59,7 @@ class DeleteProductServiceTest {
     @Test
     @DisplayName("성공: 소프트 삭제(deletedAt 기록)하고 저장한다")
     void softDeletes() {
-        given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+        given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
         given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
         service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID));
@@ -72,21 +72,9 @@ class DeleteProductServiceTest {
     }
 
     @Test
-    @DisplayName("이미 삭제된 상품은 ProductNotFoundException")
-    void alreadyDeleted() {
-        given(productRepository.findById(PRODUCT_ID))
-                .willReturn(Optional.of(product(SELLER_ID).softDelete(NOW)));
-
-        assertThatThrownBy(() -> service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID)))
-                .isInstanceOf(ProductNotFoundException.class);
-
-        then(productRepository).should(never()).save(any());
-    }
-
-    @Test
     @DisplayName("다른 판매자의 상품이면 ProductAccessDeniedException")
     void notOwner() {
-        given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(OTHER_SELLER)));
+        given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(OTHER_SELLER)));
 
         assertThatThrownBy(() -> service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID)))
                 .isInstanceOf(ProductAccessDeniedException.class);
@@ -97,7 +85,7 @@ class DeleteProductServiceTest {
     @Test
     @DisplayName("상품이 없으면 ProductNotFoundException")
     void productMissing() {
-        given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.empty());
+        given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID)))
                 .isInstanceOf(ProductNotFoundException.class);

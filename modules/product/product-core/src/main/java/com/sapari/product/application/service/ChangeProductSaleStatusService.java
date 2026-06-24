@@ -34,8 +34,7 @@ public class ChangeProductSaleStatusService implements ChangeProductSaleStatusUs
     @Override
     @Transactional
     public void change(ChangeSaleStatusCommand command) {
-        Product product = productRepository.findById(command.productId())
-                .filter(found -> !found.isDeleted())
+        Product product = productRepository.findActiveById(command.productId())
                 .orElseThrow(() -> new ProductNotFoundException(
                         "상품을 찾을 수 없습니다: " + command.productId()));
 

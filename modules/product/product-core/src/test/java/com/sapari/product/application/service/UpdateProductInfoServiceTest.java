@@ -100,7 +100,7 @@ class UpdateProductInfoServiceTest {
         @Test
         @DisplayName("대상 필드를 갱신하고 PENDING_REVIEW로 전환하며 태그를 교체한다 (가격·생성시각 보존)")
         void updatesInfoAndMovesToReview() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
             given(categoryRepository.findById(NEW_CATEGORY)).willReturn(Optional.of(aCategory()));
             given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -124,7 +124,7 @@ class UpdateProductInfoServiceTest {
         @DisplayName("반려 상품을 수정하면 rejectionReason이 비워지고 재검수 대기가 된다")
         void clearsRejectionReasonOnResubmit() {
             Product rejected = onSaleProduct().reject("이미지 부적절", NOW);
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(rejected));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(rejected));
             given(categoryRepository.findById(NEW_CATEGORY)).willReturn(Optional.of(aCategory()));
             given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -138,7 +138,7 @@ class UpdateProductInfoServiceTest {
         @Test
         @DisplayName("태그가 null이면 빈 태그로 교체한다")
         void replacesWithEmptyTagsWhenNull() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
             given(categoryRepository.findById(NEW_CATEGORY)).willReturn(Optional.of(aCategory()));
             given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -155,7 +155,7 @@ class UpdateProductInfoServiceTest {
         @Test
         @DisplayName("상품이 없으면 ProductNotFoundException")
         void productMissing() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.empty());
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.update(command()))
                     .isInstanceOf(ProductNotFoundException.class);
@@ -165,23 +165,12 @@ class UpdateProductInfoServiceTest {
         }
 
         @Test
-        @DisplayName("소프트 삭제된 상품은 ProductNotFoundException")
-        void productDeleted() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct().softDelete(NOW)));
-
-            assertThatThrownBy(() -> service.update(command()))
-                    .isInstanceOf(ProductNotFoundException.class);
-
-            then(productRepository).should(never()).save(any());
-        }
-
-        @Test
         @DisplayName("다른 판매자의 상품이면 ProductAccessDeniedException")
         void notOwner() {
             Product othersProduct = Product.create(
                             OTHER_SELLER, OLD_CATEGORY, "남의 상품", "설명", 10_000, null, 0, ProductOptionModel.COMBINATION, NOW)
                     .approve(NOW).toBuilder().id(PRODUCT_ID).build();
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(othersProduct));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(othersProduct));
 
             assertThatThrownBy(() -> service.update(command()))
                     .isInstanceOf(ProductAccessDeniedException.class);
@@ -193,7 +182,7 @@ class UpdateProductInfoServiceTest {
         @Test
         @DisplayName("변경할 카테고리가 없으면 CategoryNotFoundException")
         void categoryMissing() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
             given(categoryRepository.findById(NEW_CATEGORY)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.update(command()))
@@ -205,7 +194,7 @@ class UpdateProductInfoServiceTest {
         @Test
         @DisplayName("태그 규칙을 위반하면 InvalidProductTagException")
         void invalidTag() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
 
             assertThatThrownBy(() -> service.update(commandWithTags(List.of("가을!"))))
                     .isInstanceOf(InvalidProductTagException.class);

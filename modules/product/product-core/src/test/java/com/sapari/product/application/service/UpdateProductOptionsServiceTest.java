@@ -124,7 +124,7 @@ class UpdateProductOptionsServiceTest {
     class Success {
 
         private void stubHappyPath() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
             given(combinationRepository.findByProductId(PRODUCT_ID))
                     .willReturn(List.of(oldCombo(OLD_COMBO_1, OLD_S), oldCombo(OLD_COMBO_2, OLD_M)));
             given(productRepository.save(any())).willReturn(savedWithNewOptions());
@@ -191,7 +191,7 @@ class UpdateProductOptionsServiceTest {
         @Test
         @DisplayName("옵션을 비우면 기존 조합은 모두 단종하고 새 조합 saveAll은 호출하지 않는다 (옵션 없는 단일 상품)")
         void emptyOptionsRetiresAllAndCreatesNone() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
             given(combinationRepository.findByProductId(PRODUCT_ID))
                     .willReturn(List.of(oldCombo(OLD_COMBO_1, OLD_S), oldCombo(OLD_COMBO_2, OLD_M)));
             given(productRepository.save(any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
@@ -220,7 +220,7 @@ class UpdateProductOptionsServiceTest {
             ProductOptionTypeModel emptyType =
                     new ProductOptionTypeModel(UUID.randomUUID(), null, "색상", (short) 1, List.of());
             Product savedWithEmptyType = onSaleProduct(SELLER_ID).toBuilder().optionTypes(List.of(emptyType)).build();
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
             given(combinationRepository.findByProductId(PRODUCT_ID)).willReturn(List.of());
             given(productRepository.save(any())).willReturn(savedWithEmptyType);
 
@@ -242,7 +242,7 @@ class UpdateProductOptionsServiceTest {
         @Test
         @DisplayName("상품이 없으면 ProductNotFoundException")
         void productMissing() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.empty());
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.update(command()))
                     .isInstanceOf(ProductNotFoundException.class);
@@ -252,21 +252,9 @@ class UpdateProductOptionsServiceTest {
         }
 
         @Test
-        @DisplayName("소프트 삭제된 상품은 ProductNotFoundException")
-        void productDeleted() {
-            given(productRepository.findById(PRODUCT_ID))
-                    .willReturn(Optional.of(onSaleProduct(SELLER_ID).softDelete(NOW)));
-
-            assertThatThrownBy(() -> service.update(command()))
-                    .isInstanceOf(ProductNotFoundException.class);
-
-            then(combinationRepository).shouldHaveNoInteractions();
-        }
-
-        @Test
         @DisplayName("다른 판매자의 상품이면 ProductAccessDeniedException")
         void notOwner() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(OTHER_SELLER)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(OTHER_SELLER)));
 
             assertThatThrownBy(() -> service.update(command()))
                     .isInstanceOf(ProductAccessDeniedException.class);

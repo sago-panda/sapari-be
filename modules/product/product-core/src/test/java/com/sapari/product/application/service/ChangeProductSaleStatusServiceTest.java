@@ -80,7 +80,7 @@ class ChangeProductSaleStatusServiceTest {
         @Test
         @DisplayName("ON_SALE 상품을 SUSPENDED로 전환한다")
         void suspend() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
             given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED"));
@@ -93,7 +93,7 @@ class ChangeProductSaleStatusServiceTest {
         @Test
         @DisplayName("SUSPENDED 상품을 ON_SALE로 전환한다")
         void resume() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(suspended()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(suspended()));
             given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "ON_SALE"));
@@ -109,7 +109,7 @@ class ChangeProductSaleStatusServiceTest {
         @Test
         @DisplayName("허용되지 않는 target 값이면 InvalidProductStateException")
         void invalidTarget() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
 
             assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "DELETED")))
                     .isInstanceOf(InvalidProductStateException.class);
@@ -120,7 +120,7 @@ class ChangeProductSaleStatusServiceTest {
         @Test
         @DisplayName("target이 null이면 NPE 없이 InvalidProductStateException")
         void nullTarget() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
 
             assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, null)))
                     .isInstanceOf(InvalidProductStateException.class);
@@ -131,7 +131,7 @@ class ChangeProductSaleStatusServiceTest {
         @Test
         @DisplayName("허용되지 않는 전이면 InvalidProductStateException (PENDING_REVIEW → SUSPENDED)")
         void illegalTransition() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(create(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(create(SELLER_ID)));
 
             assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED")))
                     .isInstanceOf(InvalidProductStateException.class);
@@ -142,7 +142,7 @@ class ChangeProductSaleStatusServiceTest {
         @Test
         @DisplayName("다른 판매자의 상품이면 ProductAccessDeniedException")
         void notOwner() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(create(OTHER_SELLER).approve(NOW)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(create(OTHER_SELLER).approve(NOW)));
 
             assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED")))
                     .isInstanceOf(ProductAccessDeniedException.class);
@@ -153,7 +153,7 @@ class ChangeProductSaleStatusServiceTest {
         @Test
         @DisplayName("상품이 없으면 ProductNotFoundException")
         void productMissing() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.empty());
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED")))
                     .isInstanceOf(ProductNotFoundException.class);
