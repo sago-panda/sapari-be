@@ -101,7 +101,7 @@ class UpdateCombinationPriceStockServiceTest {
         @DisplayName("가격·정가·재고·판매여부를 한꺼번에 적용하고 가용재고를 다시 계산한다")
         void appliesAllChanges() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
-            given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
+            given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.update(command(new CombinationUpdateCommand(COMBO_ID, 8_900, 9_900, 50, false)));
@@ -124,7 +124,7 @@ class UpdateCombinationPriceStockServiceTest {
         @DisplayName("재고만 지정하면 가격·판매여부는 그대로 둔다")
         void appliesStockOnly() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
-            given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
+            given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.update(command(new CombinationUpdateCommand(COMBO_ID, null, null, 30, null)));
@@ -142,7 +142,7 @@ class UpdateCombinationPriceStockServiceTest {
         @DisplayName("price 없이 originalPrice만 지정하면 가격은 그대로 둔다 (price=null 분기)")
         void originalPriceWithoutPriceIsIgnored() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
-            given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
+            given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.update(command(new CombinationUpdateCommand(COMBO_ID, null, 9_900, null, null)));
@@ -170,8 +170,7 @@ class UpdateCombinationPriceStockServiceTest {
                     .updatedAt(NOW)
                     .build();
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
-            given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
-            given(combinationRepository.findById(COMBO_2)).willReturn(Optional.of(combo2));
+            given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID), combo2));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.update(command(
@@ -217,7 +216,7 @@ class UpdateCombinationPriceStockServiceTest {
         @DisplayName("조합이 없으면 CombinationNotFoundException")
         void combinationMissing() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
-            given(combinationRepository.findById(MISSING_COMBO)).willReturn(Optional.empty());
+            given(combinationRepository.findAllById(any())).willReturn(List.of());
 
             assertThatThrownBy(() -> service.update(
                     command(new CombinationUpdateCommand(MISSING_COMBO, 100, null, null, null))))
@@ -230,7 +229,7 @@ class UpdateCombinationPriceStockServiceTest {
         @DisplayName("조합이 이 상품 소속이 아니면 CombinationNotFoundException")
         void combinationOfOtherProduct() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
-            given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(OTHER_PRODUCT)));
+            given(combinationRepository.findAllById(any())).willReturn(List.of(combo(OTHER_PRODUCT)));
 
             assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null))))
                     .isInstanceOf(CombinationNotFoundException.class);

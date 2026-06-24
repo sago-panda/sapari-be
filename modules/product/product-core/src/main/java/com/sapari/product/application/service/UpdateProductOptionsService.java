@@ -53,9 +53,8 @@ public class UpdateProductOptionsService implements UpdateProductOptionsUseCase 
 
         Instant now = timeProvider.now();
 
-        // 기존 조합 단종 — 주문 참조 보존을 위해 삭제 대신 isAvailable=false로 은퇴
-        combinationRepository.findByProductId(product.id())
-                .forEach(combination -> combinationRepository.save(combination.discontinue(now)));
+        // 기존 조합 일괄 단종 — 주문 참조 보존을 위해 삭제 대신 isAvailable=false로 은퇴 (건당 save N+1 대신 벌크 UPDATE)
+        combinationRepository.discontinueAllByProductId(product.id(), now);
 
         // 새 옵션 타입/값으로 교체 저장 → 옵션값 id 확정
         Product withNewOptions = product.toBuilder()

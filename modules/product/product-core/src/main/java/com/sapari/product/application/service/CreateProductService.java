@@ -17,7 +17,6 @@ import com.sapari.product.view.CreateProductView;
 import java.time.Instant;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,7 +25,6 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Product와 옵션 조합은 별도 애그리거트라 한 트랜잭션 안에서 2단계로 저장한다. 이미지·추가금/제외 룰·조합별 오버라이드는 후속 증분에서 추가한다.
  */
-@Slf4j
 @Service
 @RequiredArgsConstructor
 public class CreateProductService implements CreateProductUseCase {

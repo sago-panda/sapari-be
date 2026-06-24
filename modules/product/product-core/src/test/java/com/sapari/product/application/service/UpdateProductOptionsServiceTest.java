@@ -6,7 +6,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.product.command.ProductOptionTypeCommand;
@@ -15,10 +14,7 @@ import com.sapari.product.command.UpdateProductOptionsCommand;
 import com.sapari.product.domain.exception.InvalidProductOptionException;
 import com.sapari.product.domain.exception.ProductAccessDeniedException;
 import com.sapari.product.domain.exception.ProductNotFoundException;
-import com.sapari.product.domain.model.combination.CombinationKey;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
-import com.sapari.product.domain.model.combination.Sku;
-import com.sapari.product.domain.model.combination.Stock;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionModel;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
@@ -48,10 +44,6 @@ class UpdateProductOptionsServiceTest {
     private static final UUID SELLER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a1");
     private static final UUID OTHER_SELLER = UUID.fromString("00000000-0000-0000-0000-0000000000b2");
     private static final Long CATEGORY_ID = 1001L;
-    private static final UUID OLD_COMBO_1 = UUID.fromString("00000000-0000-0000-0000-0000000000d1");
-    private static final UUID OLD_COMBO_2 = UUID.fromString("00000000-0000-0000-0000-0000000000d2");
-    private static final UUID OLD_S = UUID.fromString("00000000-0000-0000-0000-00000000000a");
-    private static final UUID OLD_M = UUID.fromString("00000000-0000-0000-0000-00000000000b");
     private static final UUID NEW_S = UUID.fromString("00000000-0000-0000-0000-000000000021");
     private static final UUID NEW_M = UUID.fromString("00000000-0000-0000-0000-000000000022");
     private static final Instant NOW = Instant.parse("2026-06-21T00:00:00Z");
@@ -90,21 +82,6 @@ class UpdateProductOptionsServiceTest {
         return onSaleProduct(SELLER_ID).toBuilder().optionTypes(List.of(size)).build();
     }
 
-    private static ProductOptionCombination oldCombo(UUID id, UUID valueId) {
-        return ProductOptionCombination.builder()
-                .id(id)
-                .productId(PRODUCT_ID)
-                .combinationKey(CombinationKey.of(valueId.toString()))
-                .sku(Sku.of("OLD-" + valueId))
-                .price(10_000)
-                .stock(Stock.of(100, 0))
-                .isAvailable(true)
-                .optionValueIds(List.of(valueId))
-                .createdAt(NOW)
-                .updatedAt(NOW)
-                .build();
-    }
-
     private static UpdateProductOptionsCommand command() {
         ProductOptionValueCommand s = new ProductOptionValueCommand("S", null, null, 0, (short) 1);
         ProductOptionValueCommand m = new ProductOptionValueCommand("M", null, null, 0, (short) 2);
@@ -125,10 +102,7 @@ class UpdateProductOptionsServiceTest {
 
         private void stubHappyPath() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
-            given(combinationRepository.findByProductId(PRODUCT_ID))
-                    .willReturn(List.of(oldCombo(OLD_COMBO_1, OLD_S), oldCombo(OLD_COMBO_2, OLD_M)));
             given(productRepository.save(any())).willReturn(savedWithNewOptions());
-            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
             given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
         }
 
@@ -150,20 +124,14 @@ class UpdateProductOptionsServiceTest {
         }
 
         @Test
-        @DisplayName("기존 조합 2건은 save로 단종(isAvailable=false) 처리한다")
+        @DisplayName("기존 조합을 벌크로 단종한다 (건당 save 아님, discontinueAllByProductId 1회)")
         void retiresExistingCombinations() {
             stubHappyPath();
 
             service.update(command());
 
-            ArgumentCaptor<ProductOptionCombination> retireCaptor =
-                    ArgumentCaptor.forClass(ProductOptionCombination.class);
-            then(combinationRepository).should(times(2)).save(retireCaptor.capture());
-            assertThat(retireCaptor.getAllValues())
-                    .extracting(ProductOptionCombination::id)
-                    .containsExactlyInAnyOrder(OLD_COMBO_1, OLD_COMBO_2);
-            assertThat(retireCaptor.getAllValues())
-                    .allSatisfy(c -> assertThat(c.isAvailable()).isFalse());
+            then(combinationRepository).should().discontinueAllByProductId(PRODUCT_ID, LATER);
+            then(combinationRepository).should(never()).save(any());
         }
 
         @Test
@@ -189,23 +157,14 @@ class UpdateProductOptionsServiceTest {
         }
 
         @Test
-        @DisplayName("옵션을 비우면 기존 조합은 모두 단종하고 새 조합 saveAll은 호출하지 않는다 (옵션 없는 단일 상품)")
+        @DisplayName("옵션을 비우면 기존 조합은 벌크 단종하고 새 조합 saveAll은 호출하지 않는다 (옵션 없는 단일 상품)")
         void emptyOptionsRetiresAllAndCreatesNone() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
-            given(combinationRepository.findByProductId(PRODUCT_ID))
-                    .willReturn(List.of(oldCombo(OLD_COMBO_1, OLD_S), oldCombo(OLD_COMBO_2, OLD_M)));
             given(productRepository.save(any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
-            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50));
 
-            ArgumentCaptor<ProductOptionCombination> captor =
-                    ArgumentCaptor.forClass(ProductOptionCombination.class);
-            then(combinationRepository).should(times(2)).save(captor.capture());
-            assertThat(captor.getAllValues())
-                    .allSatisfy(c -> assertThat(c.isAvailable()).isFalse())
-                    .extracting(ProductOptionCombination::id)
-                    .containsExactlyInAnyOrder(OLD_COMBO_1, OLD_COMBO_2);
+            then(combinationRepository).should().discontinueAllByProductId(PRODUCT_ID, LATER);
             then(combinationRepository).should(never()).saveAll(any());
         }
     }
@@ -221,7 +180,6 @@ class UpdateProductOptionsServiceTest {
                     new ProductOptionTypeModel(UUID.randomUUID(), null, "색상", (short) 1, List.of());
             Product savedWithEmptyType = onSaleProduct(SELLER_ID).toBuilder().optionTypes(List.of(emptyType)).build();
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
-            given(combinationRepository.findByProductId(PRODUCT_ID)).willReturn(List.of());
             given(productRepository.save(any())).willReturn(savedWithEmptyType);
 
             ProductOptionTypeCommand colorWithoutValues =

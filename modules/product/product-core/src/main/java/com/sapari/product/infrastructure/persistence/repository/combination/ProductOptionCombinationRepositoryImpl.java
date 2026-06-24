@@ -10,7 +10,9 @@ import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.infrastructure.persistence.mapper.combination.ProductOptionCombinationMapper;
 import jakarta.persistence.EntityNotFoundException;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -110,11 +112,29 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
 
     @Override
     public List<ProductOptionCombination> findByProductId(UUID productId) {
-        List<ProductOptionCombinationEntity> entities = jpaRepository.findByProductId(productId);
+        return assembleWithValues(jpaRepository.findByProductId(productId));
+    }
+
+    @Override
+    public List<ProductOptionCombination> findAllById(Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return assembleWithValues(jpaRepository.findAllById(ids));
+    }
+
+    @Override
+    public int discontinueAllByProductId(UUID productId, Instant now) {
+        return jpaRepository.discontinueAllByProductId(productId, now);
+    }
+
+    /**
+     * 조합 엔티티들에 옵션값 매핑을 IN 한 쿼리로 모아 붙여 도메인으로 조립한다(조합별 개별 조회 N+1 방지).
+     */
+    private List<ProductOptionCombination> assembleWithValues(List<ProductOptionCombinationEntity> entities) {
         if (entities.isEmpty()) {
             return List.of();
         }
-        // 옵션값 매핑을 조합별 개별 조회(N+1) 대신 IN 한 쿼리로 모아 조합 id 기준 그룹핑
         List<UUID> combinationIds = entities.stream()
                 .map(ProductOptionCombinationEntity::getId)
                 .toList();
