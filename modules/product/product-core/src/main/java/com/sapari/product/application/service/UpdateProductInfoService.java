@@ -39,8 +39,7 @@ public class UpdateProductInfoService implements UpdateProductInfoUseCase {
     @Transactional
     public void update(UpdateProductInfoCommand command) {
         // 삭제된 상품은 없는 것으로 취급
-        Product product = productRepository.findById(command.productId())
-                .filter(found -> !found.isDeleted())
+        Product product = productRepository.findActiveById(command.productId())
                 .orElseThrow(() -> new ProductNotFoundException(
                         "상품을 찾을 수 없습니다: " + command.productId()));
 

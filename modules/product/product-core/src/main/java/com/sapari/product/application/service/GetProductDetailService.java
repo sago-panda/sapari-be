@@ -39,8 +39,7 @@ public class GetProductDetailService implements GetProductDetailUseCase {
     @Transactional(readOnly = true)
     public ProductDetailView get(GetProductDetailCommand command) {
         // 삭제된 상품은 없는 것으로 취급 — 조합 조회 전에 차단한다
-        Product product = productRepository.findById(command.productId())
-                .filter(found -> !found.isDeleted())
+        Product product = productRepository.findActiveById(command.productId())
                 .orElseThrow(() -> new ProductNotFoundException(
                         "상품을 찾을 수 없습니다: " + command.productId()));
 

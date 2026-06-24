@@ -100,7 +100,7 @@ class UpdateCombinationPriceStockServiceTest {
         @Test
         @DisplayName("가격·정가·재고·판매여부를 한꺼번에 적용하고 가용재고를 다시 계산한다")
         void appliesAllChanges() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
             given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -123,7 +123,7 @@ class UpdateCombinationPriceStockServiceTest {
         @Test
         @DisplayName("재고만 지정하면 가격·판매여부는 그대로 둔다")
         void appliesStockOnly() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
             given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -141,7 +141,7 @@ class UpdateCombinationPriceStockServiceTest {
         @Test
         @DisplayName("price 없이 originalPrice만 지정하면 가격은 그대로 둔다 (price=null 분기)")
         void originalPriceWithoutPriceIsIgnored() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
             given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -169,7 +169,7 @@ class UpdateCombinationPriceStockServiceTest {
                     .createdAt(NOW)
                     .updatedAt(NOW)
                     .build();
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
             given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(PRODUCT_ID)));
             given(combinationRepository.findById(COMBO_2)).willReturn(Optional.of(combo2));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
@@ -194,7 +194,7 @@ class UpdateCombinationPriceStockServiceTest {
         @Test
         @DisplayName("상품이 없으면 ProductNotFoundException")
         void productMissing() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.empty());
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null))))
                     .isInstanceOf(ProductNotFoundException.class);
@@ -205,7 +205,7 @@ class UpdateCombinationPriceStockServiceTest {
         @Test
         @DisplayName("다른 판매자의 상품이면 ProductAccessDeniedException")
         void notOwner() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(OTHER_SELLER)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(OTHER_SELLER)));
 
             assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null))))
                     .isInstanceOf(ProductAccessDeniedException.class);
@@ -216,7 +216,7 @@ class UpdateCombinationPriceStockServiceTest {
         @Test
         @DisplayName("조합이 없으면 CombinationNotFoundException")
         void combinationMissing() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
             given(combinationRepository.findById(MISSING_COMBO)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.update(
@@ -229,7 +229,7 @@ class UpdateCombinationPriceStockServiceTest {
         @Test
         @DisplayName("조합이 이 상품 소속이 아니면 CombinationNotFoundException")
         void combinationOfOtherProduct() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
             given(combinationRepository.findById(COMBO_ID)).willReturn(Optional.of(combo(OTHER_PRODUCT)));
 
             assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null))))

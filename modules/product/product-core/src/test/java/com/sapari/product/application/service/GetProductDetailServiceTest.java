@@ -57,7 +57,7 @@ class GetProductDetailServiceTest {
     @InjectMocks
     private GetProductDetailService service;
 
-    private static Product onSaleProduct(Instant deletedAt) {
+    private static Product onSaleProduct() {
         ProductOptionValueModel s = new ProductOptionValueModel(S_ID, null, "S", null, 0, (short) 1);
         ProductOptionValueModel m = new ProductOptionValueModel(M_ID, null, "M", "{\"k\":1}", 1_000, (short) 2);
         ProductOptionTypeModel size = new ProductOptionTypeModel(UUID.randomUUID(), null, "사이즈", (short) 1, List.of(s, m));
@@ -71,7 +71,6 @@ class GetProductDetailServiceTest {
                 .hasStock(true)
                 .avgRating(new BigDecimal("4.5"))
                 .reviewCount(12)
-                .deletedAt(deletedAt)
                 .tags(List.of("여름"))
                 .images(List.of(image))
                 .optionTypes(List.of(size))
@@ -101,7 +100,7 @@ class GetProductDetailServiceTest {
         @Test
         @DisplayName("상품 기본 정보·태그·이미지를 뷰로 매핑한다")
         void mapsProductScalarsTagsImages() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(null)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
             given(combinationRepository.findByProductId(PRODUCT_ID))
                     .willReturn(List.of(combo(COMBO_S_ID, S_ID, 10_000)));
 
@@ -130,7 +129,7 @@ class GetProductDetailServiceTest {
         @Test
         @DisplayName("옵션 타입/값을 중첩 뷰로 매핑한다")
         void mapsOptionTree() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(null)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
             given(combinationRepository.findByProductId(PRODUCT_ID)).willReturn(List.of());
 
             ProductDetailView view = service.get(new GetProductDetailCommand(PRODUCT_ID));
@@ -147,7 +146,7 @@ class GetProductDetailServiceTest {
         @Test
         @DisplayName("조합을 뷰로 매핑하고 가용재고(stock-reserved)·sku를 계산·노출한다")
         void mapsCombinationsWithAvailableStock() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(null)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
             given(combinationRepository.findByProductId(PRODUCT_ID))
                     .willReturn(List.of(combo(COMBO_S_ID, S_ID, 10_000), combo(COMBO_M_ID, M_ID, 11_000)));
 
@@ -169,7 +168,7 @@ class GetProductDetailServiceTest {
         @Test
         @DisplayName("조합이 없으면 combinations는 빈 목록이다")
         void emptyCombinations() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(null)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct()));
             given(combinationRepository.findByProductId(PRODUCT_ID)).willReturn(List.of());
 
             ProductDetailView view = service.get(new GetProductDetailCommand(PRODUCT_ID));
@@ -185,18 +184,7 @@ class GetProductDetailServiceTest {
         @Test
         @DisplayName("상품이 없으면 ProductNotFoundException, 조합은 조회하지 않는다")
         void rejectsWhenMissing() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.empty());
-
-            assertThatThrownBy(() -> service.get(new GetProductDetailCommand(PRODUCT_ID)))
-                    .isInstanceOf(ProductNotFoundException.class);
-
-            then(combinationRepository).shouldHaveNoInteractions();
-        }
-
-        @Test
-        @DisplayName("소프트 삭제된 상품은 없는 것으로 간주해 ProductNotFoundException")
-        void rejectsWhenDeleted() {
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(NOW)));
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.get(new GetProductDetailCommand(PRODUCT_ID)))
                     .isInstanceOf(ProductNotFoundException.class);
