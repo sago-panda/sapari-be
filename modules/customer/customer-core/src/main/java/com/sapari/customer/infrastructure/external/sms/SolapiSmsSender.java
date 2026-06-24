@@ -28,6 +28,7 @@ public class SolapiSmsSender implements SmsSender {
     /**
      * SOLAPI로 인증번호 문자를 발송한다.
      * 공식 SDK 요구사항에 맞춰 발신/수신번호는 숫자만 남기고, provider 장애는 사용자에게 발송 지연으로 안내한다.
+     * SDK 예외 메시지에는 수신번호나 인증번호 본문이 포함될 수 있으므로 원본 예외를 로그/cause로 남기지 않는다.
      *
      * @throws CustomerException SOLAPI 설정이 없거나 SDK 발송이 실패한 경우
      */
@@ -43,8 +44,12 @@ public class SolapiSmsSender implements SmsSender {
             messageClient.send(from, to, text);
             return new SmsSendResult(true, null);
         } catch (Exception e) {
-            log.warn("SOLAPI verification SMS send failed.", e);
-            throw new CustomerException(CustomerErrorCode.SMS_SEND_UNAVAILABLE, e);
+            // SDK 예외에는 to/from/text가 포함될 수 있어 exception type만 남기고 원본 cause는 버린다.
+            log.warn(
+                    "SOLAPI verification SMS send failed. exceptionType={}",
+                    e.getClass().getSimpleName()
+            );
+            throw new CustomerException(CustomerErrorCode.SMS_SEND_UNAVAILABLE);
         }
     }
 

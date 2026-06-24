@@ -25,6 +25,13 @@ public interface CustomerPhoneVerificationRepository {
     void deleteCodeAndFailures(String phoneHash);
 
     /**
+     * 새 인증번호 재발급 시 이전 인증번호의 실패 횟수만 초기화한다.
+     * 실패 횟수는 전화번호 잠금이 아니라 현재 발급된 code 단위의 무차별 대입 방어이므로,
+     * 재발급된 새 code에 이전 code의 실패 횟수가 이어지면 안 된다.
+     */
+    void deleteFailures(String phoneHash);
+
+    /**
      * 인증 성공 후 회원가입 API가 소비할 verified 상태를 TTL과 함께 저장한다.
      */
     void saveVerified(String phoneHash, Duration ttl);

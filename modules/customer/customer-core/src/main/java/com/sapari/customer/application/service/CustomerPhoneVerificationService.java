@@ -129,9 +129,12 @@ public class CustomerPhoneVerificationService {
 
     /**
      * SOLAPI 발송 성공 후 사용자가 받은 code만 Redis에 유효한 codeHash로 저장한다.
+     * 새 code를 받은 경우에만 실패 횟수를 초기화하며, 발송 실패 시에는 기존 시도 상태를 유지한다.
+     * 5회 실패 정책은 전화번호 잠금이 아니라 현재 code 폐기 정책이므로 이전 실패 횟수를 새 code에 넘기지 않는다.
      */
     private void saveIssuedCode(String phoneHash, String codeHash) {
         repository.saveCode(phoneHash, codeHash, properties.getCodeTtl());
+        repository.deleteFailures(phoneHash);
     }
 
     /**

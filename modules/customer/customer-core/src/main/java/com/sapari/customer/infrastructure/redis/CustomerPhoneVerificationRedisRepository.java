@@ -76,6 +76,14 @@ public class CustomerPhoneVerificationRedisRepository implements CustomerPhoneVe
     }
 
     /**
+     * 새 인증번호 재발급은 새 검증 단위의 시작이므로 이전 code의 실패 횟수만 삭제한다.
+     */
+    @Override
+    public void deleteFailures(String phoneHash) {
+        stringRedisTemplate.delete(failureKey(phoneHash));
+    }
+
+    /**
      * 인증번호 확인 성공 후 회원가입 API가 소비할 서버 기준 verified 상태를 저장한다.
      */
     @Override

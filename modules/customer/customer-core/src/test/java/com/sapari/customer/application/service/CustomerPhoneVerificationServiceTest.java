@@ -74,11 +74,12 @@ class CustomerPhoneVerificationServiceTest {
         verifyNoInteractions(codeGenerator, smsSender);
         verify(repository, never()).releaseCooldown(any(), any());
         verify(repository, never()).saveCode(any(), any(), any());
+        verify(repository, never()).deleteFailures(any());
     }
 
     @Test
-    @DisplayName("쿨다운 선점 후 인증번호를 생성하고 문자 발송 성공 시 code만 저장한다")
-    void sendSignupCodeAcquiresCooldownGeneratesCodeSendsSmsAndSavesCode() {
+    @DisplayName("쿨다운 선점 후 문자 발송 성공 시 code를 저장하고 기존 실패 횟수를 리셋한다")
+    void sendSignupCodeAcquiresCooldownGeneratesCodeSendsSmsSavesCodeAndDeletesFailures() {
         givenPhoneHash();
         when(repository.acquireCooldown(eq(PHONE_HASH), anyString(), eq(Duration.ofSeconds(60)))).thenReturn(true);
         when(codeGenerator.generateNumericCode(6)).thenReturn(CODE);
@@ -91,6 +92,7 @@ class CustomerPhoneVerificationServiceTest {
         assertThat(result.expiresInSeconds()).isEqualTo(300L);
         assertThat(result.resendAvailableInSeconds()).isEqualTo(60L);
         verify(repository).saveCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5));
+        verify(repository).deleteFailures(PHONE_HASH);
         verify(repository, never()).releaseCooldown(eq(PHONE_HASH), anyString());
     }
 
@@ -110,6 +112,7 @@ class CustomerPhoneVerificationServiceTest {
 
         verify(repository).releaseCooldown(eq(PHONE_HASH), anyString());
         verify(repository, never()).saveCode(any(), any(), any());
+        verify(repository, never()).deleteFailures(any());
     }
 
     @Test
@@ -128,6 +131,7 @@ class CustomerPhoneVerificationServiceTest {
 
         verify(repository).releaseCooldown(eq(PHONE_HASH), anyString());
         verify(repository, never()).saveCode(any(), any(), any());
+        verify(repository, never()).deleteFailures(any());
     }
 
     @Test
