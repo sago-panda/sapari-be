@@ -8,6 +8,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -69,6 +70,10 @@ public class ProductEntity extends UuidTimeEntity {
     private ProductOptionModel optionModel;
 
     private Instant searchIndexedAt;
+
+    // 낙관적 락 버전 — 동시 수정 시 lost update를 막는다. Hibernate가 관리(INSERT 시 0, UPDATE마다 증가).
+    @Version
+    private Long version;
 
     /**
      * 빌더 전용 생성자. JPA가 요구하는 protected 기본 생성자와 구분해 private으로 두고, MapStruct 매퍼·테스트 픽스처가 빌더로만 신규 생성/재구성하도록 강제한다.

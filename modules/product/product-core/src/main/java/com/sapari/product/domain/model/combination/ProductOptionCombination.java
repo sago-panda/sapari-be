@@ -11,6 +11,7 @@ import lombok.Builder;
 @Builder(toBuilder = true)
 public record ProductOptionCombination(
         UUID id,
+        Long version,
         UUID productId,
         Sku sku,
         CombinationKey combinationKey,
