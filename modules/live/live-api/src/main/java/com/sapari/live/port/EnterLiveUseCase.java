@@ -1,8 +1,8 @@
 package com.sapari.live.port;
 
 import com.sapari.live.command.EnterLiveCommand;
-import com.sapari.live.view.EnterLiveResult;
+import com.sapari.live.view.EnterLiveView;
 
 public interface EnterLiveUseCase {
-    EnterLiveResult enter(EnterLiveCommand command);
+    EnterLiveView enter(EnterLiveCommand command);
 }

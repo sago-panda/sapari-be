@@ -12,7 +12,7 @@ import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.EnterLiveUseCase;
-import com.sapari.live.view.EnterLiveResult;
+import com.sapari.live.view.EnterLiveView;
 
 @Slf4j
 @Service
@@ -23,7 +23,7 @@ public class EnterLiveService implements EnterLiveUseCase {
 
     @Override
     @Transactional(readOnly = true)
-    public EnterLiveResult enter(EnterLiveCommand command) {
+    public EnterLiveView enter(EnterLiveCommand command) {
         LiveRoom room = liveRoomRepository.findById(command.roomId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 

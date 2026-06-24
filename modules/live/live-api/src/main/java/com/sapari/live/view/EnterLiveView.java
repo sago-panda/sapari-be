@@ -1,6 +1,6 @@
 package com.sapari.live.view;
 
-public record EnterLiveResult(
+public record EnterLiveView(
         String hlsUrl
 ) {
 }

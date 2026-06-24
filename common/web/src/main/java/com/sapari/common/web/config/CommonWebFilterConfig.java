@@ -1,4 +1,4 @@
-package com.sapari.apiapp.config;
+package com.sapari.common.web.config;
 
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -8,7 +8,7 @@ import org.springframework.core.Ordered;
 import com.sapari.common.web.security.MdcContextFilter;
 
 @Configuration
-public class WebFilterConfig {
+public class CommonWebFilterConfig {
 
     /**
      * MDC 컨텍스트 필터를 시큐리티 필터 체인보다 먼저 등록한다.
