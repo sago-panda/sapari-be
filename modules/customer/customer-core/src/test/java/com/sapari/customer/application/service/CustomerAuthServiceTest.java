@@ -32,10 +32,12 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
+import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
 import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
@@ -195,6 +197,34 @@ class CustomerAuthServiceTest {
                 );
 
         verifyNoInteractions(userAccountUseCase, refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("이미 가입된 휴대폰 번호는 회원가입 인증번호를 발송하지 않는다")
+    void sendSignupPhoneVerificationWhenPhoneNumberDuplicatedThrowsDuplicatedPhoneNumber() {
+        CustomerPhoneVerificationSendCommand command = new CustomerPhoneVerificationSendCommand("01012345678");
+        when(userAccountUseCase.existsByPhoneNumber("01012345678")).thenReturn(true);
+
+        assertThatThrownBy(() -> customerAuthService.sendSignupPhoneVerification(command))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.DUPLICATED_PHONE_NUMBER)
+                );
+
+        verifyNoInteractions(customerPhoneVerificationService);
+    }
+
+    @Test
+    @DisplayName("미가입 휴대폰 번호는 회원가입 인증번호 발송을 진행한다")
+    void sendSignupPhoneVerificationWhenPhoneNumberAvailableSendsCode() {
+        CustomerPhoneVerificationSendCommand command = new CustomerPhoneVerificationSendCommand("01012345678");
+        CustomerPhoneVerificationSendResult sendResult = new CustomerPhoneVerificationSendResult(true, 300L, 60L);
+        when(userAccountUseCase.existsByPhoneNumber("01012345678")).thenReturn(false);
+        when(customerPhoneVerificationService.sendSignupCode(command)).thenReturn(sendResult);
+
+        CustomerPhoneVerificationSendResult result = customerAuthService.sendSignupPhoneVerification(command);
+
+        assertThat(result).isEqualTo(sendResult);
+        verify(customerPhoneVerificationService).sendSignupCode(command);
     }
 
     @Test

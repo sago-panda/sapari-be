@@ -80,11 +80,22 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     /**
      * 구매자 회원가입 휴대폰 인증번호를 발송한다.
-     * 쿨다운 선점, SOLAPI 발송, codeHash 저장 정책은 휴대폰 인증 서비스가 처리한다.
+     * 가입 가능한 미등록 번호만 발송을 허용하고, 쿨다운 선점·SOLAPI 발송·codeHash 저장 정책은 휴대폰 인증 서비스가 처리한다.
      */
     @Override
     public CustomerPhoneVerificationSendResult sendSignupPhoneVerification(CustomerPhoneVerificationSendCommand command) {
+        validateSignupPhoneNumberAvailable(command.phoneNumber());
         return customerPhoneVerificationService.sendSignupCode(command);
+    }
+
+    /**
+     * 회원가입용 SMS는 최종 가입 가능한 미등록 번호에만 발송한다.
+     * 이미 가입된 번호는 가입이 불가능하므로 기존 회원 SMS 스팸과 SOLAPI 과금을 줄이기 위해 발송 전에 차단한다.
+     */
+    private void validateSignupPhoneNumberAvailable(String phoneNumber) {
+        if (userAccountUseCase.existsByPhoneNumber(phoneNumber)) {
+            throw new CustomerException(CustomerErrorCode.DUPLICATED_PHONE_NUMBER);
+        }
     }
 
     /**
