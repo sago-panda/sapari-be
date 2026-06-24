@@ -32,10 +32,12 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
+import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
 import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
@@ -79,6 +81,8 @@ class CustomerAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
+    private final CustomerPhoneVerificationService customerPhoneVerificationService =
+            mock(CustomerPhoneVerificationService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
@@ -96,7 +100,8 @@ class CustomerAuthServiceTest {
             customerJwtTokenAdapter,
             timeProvider(),
             objectMapper,
-            Mappers.getMapper(CustomerViewMapper.class)
+            Mappers.getMapper(CustomerViewMapper.class),
+            customerPhoneVerificationService
     );
 
     @Test
@@ -136,6 +141,7 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
         assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
+        verify(customerPhoneVerificationService).consumeSignupVerification("01012345678");
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
                 eq(userId),
@@ -143,6 +149,43 @@ class CustomerAuthServiceTest {
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+
+    @Test
+    @DisplayName("휴대폰 인증 소비 후 가입 저장이 실패하면 재인증이 필요하다")
+    void completeSocialSignupConsumesVerificationBeforeRegisterFailure() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenThrow(new DataIntegrityViolationException("duplicated"));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode())
+                                .isEqualTo(CustomerErrorCode.DUPLICATED_SIGNUP_INFO)
+                );
+
+        verify(customerPhoneVerificationService).consumeSignupVerification("01012345678");
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("휴대폰 인증이 완료되지 않으면 소셜 고객 가입을 저장하지 않는다")
+    void completeSocialSignupRequiresPhoneVerification() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        doThrow(new CustomerException(CustomerErrorCode.PHONE_VERIFICATION_REQUIRED))
+                .when(customerPhoneVerificationService).consumeSignupVerification("01012345678");
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode())
+                                .isEqualTo(CustomerErrorCode.PHONE_VERIFICATION_REQUIRED)
+                );
+
+        verify(customerPhoneVerificationService).consumeSignupVerification("01012345678");
+        verifyNoInteractions(userAccountUseCase);
     }
 
     @Test
@@ -154,6 +197,34 @@ class CustomerAuthServiceTest {
                 );
 
         verifyNoInteractions(userAccountUseCase, refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("이미 가입된 휴대폰 번호는 회원가입 인증번호를 발송하지 않는다")
+    void sendSignupPhoneVerificationWhenPhoneNumberDuplicatedThrowsDuplicatedPhoneNumber() {
+        CustomerPhoneVerificationSendCommand command = new CustomerPhoneVerificationSendCommand("01012345678");
+        when(userAccountUseCase.existsByPhoneNumber("01012345678")).thenReturn(true);
+
+        assertThatThrownBy(() -> customerAuthService.sendSignupPhoneVerification(command))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.DUPLICATED_PHONE_NUMBER)
+                );
+
+        verifyNoInteractions(customerPhoneVerificationService);
+    }
+
+    @Test
+    @DisplayName("미가입 휴대폰 번호는 회원가입 인증번호 발송을 진행한다")
+    void sendSignupPhoneVerificationWhenPhoneNumberAvailableSendsCode() {
+        CustomerPhoneVerificationSendCommand command = new CustomerPhoneVerificationSendCommand("01012345678");
+        CustomerPhoneVerificationSendResult sendResult = new CustomerPhoneVerificationSendResult(true, 300L, 60L);
+        when(userAccountUseCase.existsByPhoneNumber("01012345678")).thenReturn(false);
+        when(customerPhoneVerificationService.sendSignupCode(command)).thenReturn(sendResult);
+
+        CustomerPhoneVerificationSendResult result = customerAuthService.sendSignupPhoneVerification(command);
+
+        assertThat(result).isEqualTo(sendResult);
+        verify(customerPhoneVerificationService).sendSignupCode(command);
     }
 
     @Test
@@ -297,7 +368,8 @@ class CustomerAuthServiceTest {
                 jwtTokenAdapter,
                 timeProvider(),
                 objectMapper,
-                Mappers.getMapper(CustomerViewMapper.class)
+                Mappers.getMapper(CustomerViewMapper.class),
+                customerPhoneVerificationService
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,
