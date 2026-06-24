@@ -26,7 +26,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.apiapp.controller.auth.AuthCookieSupport;
 import com.sapari.apiapp.controller.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.auth.dto.request.PhoneVerificationConfirmRequest;
+import com.sapari.apiapp.controller.auth.dto.request.PhoneVerificationSendRequest;
 import com.sapari.apiapp.controller.auth.dto.response.DuplicateCheckResponse;
+import com.sapari.apiapp.controller.auth.dto.response.PhoneVerificationConfirmResponse;
+import com.sapari.apiapp.controller.auth.dto.response.PhoneVerificationSendResponse;
 import com.sapari.apiapp.controller.customer.dto.request.CustomerNicknameUpdateRequest;
 import com.sapari.apiapp.controller.customer.dto.request.SocialSignupRequest;
 import com.sapari.apiapp.controller.customer.dto.response.CustomerMeResponse;
@@ -41,6 +45,8 @@ import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.customer.view.CustomerMeView;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerPhoneVerificationConfirmResult;
+import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
 import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
@@ -88,6 +94,33 @@ public class CustomerAuthController {
                 .ok()
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .body(SocialSignupInfoResponse.from(result));
+    }
+
+    /**
+     * 구매자 회원가입 휴대폰 인증번호를 발송한다.
+     * 서버는 Redis 쿨다운을 먼저 원자 선점한 요청에 한해 SOLAPI 발송을 진행한다.
+     */
+    @PostMapping("/signup/phone-verifications")
+    public ResponseEntity<PhoneVerificationSendResponse> sendSignupPhoneVerification(
+            @Valid @RequestBody PhoneVerificationSendRequest request
+    ) {
+        CustomerPhoneVerificationSendResult result = customerAuthUseCase.sendSignupPhoneVerification(request.toCommand());
+
+        return ResponseEntity.ok(PhoneVerificationSendResponse.from(result));
+    }
+
+    /**
+     * 구매자 회원가입 휴대폰 인증번호를 확인한다.
+     * 인증 성공 시 회원가입 API가 소비할 서버 verified 상태를 생성한다.
+     */
+    @PostMapping("/signup/phone-verifications/confirm")
+    public ResponseEntity<PhoneVerificationConfirmResponse> confirmSignupPhoneVerification(
+            @Valid @RequestBody PhoneVerificationConfirmRequest request
+    ) {
+        CustomerPhoneVerificationConfirmResult result =
+                customerAuthUseCase.confirmSignupPhoneVerification(request.toCommand());
+
+        return ResponseEntity.ok(PhoneVerificationConfirmResponse.from(result));
     }
 
     @GetMapping("/signup/check-phone")
