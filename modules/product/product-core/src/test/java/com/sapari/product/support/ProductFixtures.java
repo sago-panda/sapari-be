@@ -53,6 +53,7 @@ public final class ProductFixtures {
     public static ArbitraryBuilder<Product> aProduct(UUID sellerId, Long categoryId) {
         return FM.giveMeBuilder(Product.class)
                 .setNull("id")
+                .setNull("version")          // 신규 INSERT 경로 — version은 Hibernate가 시드(랜덤 non-null 방지)
                 .set("sellerId", sellerId)
                 .set("categoryId", categoryId)
                 .set("name", Arbitraries.strings()

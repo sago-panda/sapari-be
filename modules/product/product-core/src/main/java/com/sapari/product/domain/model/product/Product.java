@@ -14,6 +14,7 @@ import lombok.Builder;
 @Builder(toBuilder = true)
 public record Product(
         UUID id,
+        Long version,
         UUID sellerId,
         Long categoryId,
         String name,
