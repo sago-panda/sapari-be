@@ -17,6 +17,8 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.application.mapper.SellerViewMapper;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
+import com.sapari.seller.command.SellerEmailVerificationConfirmCommand;
+import com.sapari.seller.command.SellerEmailVerificationSendCommand;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
@@ -29,6 +31,8 @@ import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.seller.port.SellerAuthUseCase;
+import com.sapari.seller.view.SellerEmailVerificationConfirmResult;
+import com.sapari.seller.view.SellerEmailVerificationSendResult;
 import com.sapari.seller.view.SellerLoginResult;
 import com.sapari.seller.view.SellerMeView;
 import com.sapari.seller.view.SellerNicknameUpdateResult;
@@ -52,6 +56,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final SellerProfileRepository sellerProfileRepository;
     private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier;
     private final SellerSignupProcessor sellerSignupProcessor;
+    private final SellerSignupContactVerificationAdapter signupContactVerificationAdapter;
     private final PasswordEncoder passwordEncoder;
     private final SellerJwtTokenAdapter sellerJwtTokenAdapter;
     private final TimeProvider timeProvider;
@@ -66,6 +71,9 @@ public class SellerAuthService implements SellerAuthUseCase {
         validateBusinessRegistration(command);
         validateDuplicatedStoreName(normalizedStoreName);
         validateDuplicatedBusinessNumber(command.businessNumber());
+        // 판매자 가입 요청의 emailVerified 값은 위조 가능하므로 Redis verified 상태만 서버 기준으로 소비한다.
+        // Redis GETDEL은 DB 트랜잭션과 함께 롤백되지 않으므로, 이후 가입 저장 실패 시 사용자는 재인증해야 한다.
+        signupContactVerificationAdapter.consumeEmailVerification(command.email());
 
         try {
             return sellerSignupProcessor.signup(command, normalizedStoreName, businessType);
@@ -73,6 +81,24 @@ public class SellerAuthService implements SellerAuthUseCase {
             // 트랜잭션 commit/flush 시점 unique 충돌까지 서비스 예외로 변환한다.
             throw new SellerException(SellerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
+    }
+
+    /**
+     * 판매자 회원가입 이메일 인증번호를 발송한다.
+     * 가입 가능 이메일 확인, 쿨다운, 발송·저장 정책은 user가 처리하되 seller API 오류 계약으로 변환해 반환한다.
+     */
+    @Override
+    public SellerEmailVerificationSendResult sendSignupEmailVerification(SellerEmailVerificationSendCommand command) {
+        return signupContactVerificationAdapter.sendEmailVerification(command);
+    }
+
+    /**
+     * 판매자 회원가입 이메일 인증번호를 확인한다.
+     * 인증 성공 시 회원가입 API가 소비할 Redis verified 상태를 생성하고, 실패 사유는 SELLER-* 코드로 노출한다.
+     */
+    @Override
+    public SellerEmailVerificationConfirmResult confirmSignupEmailVerification(SellerEmailVerificationConfirmCommand command) {
+        return signupContactVerificationAdapter.confirmEmailVerification(command);
     }
 
     @Override

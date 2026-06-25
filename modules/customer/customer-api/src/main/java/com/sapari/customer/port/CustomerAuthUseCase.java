@@ -3,12 +3,16 @@ package com.sapari.customer.port;
 import java.util.UUID;
 
 import com.sapari.customer.command.CustomerLogoutCommand;
+import com.sapari.customer.command.CustomerEmailVerificationConfirmCommand;
+import com.sapari.customer.command.CustomerEmailVerificationSendCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationConfirmCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 
 import com.sapari.customer.view.CustomerMeView;
+import com.sapari.customer.view.CustomerEmailVerificationConfirmResult;
+import com.sapari.customer.view.CustomerEmailVerificationSendResult;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
 import com.sapari.customer.view.CustomerPhoneVerificationConfirmResult;
 import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
@@ -32,6 +36,18 @@ public interface CustomerAuthUseCase {
      * 구현체는 인증번호 불일치 횟수를 관리하고, 성공 시 회원가입 API가 소비할 verified 상태를 저장한다.
      */
     CustomerPhoneVerificationConfirmResult confirmSignupPhoneVerification(CustomerPhoneVerificationConfirmCommand command);
+
+    /**
+     * 구매자 회원가입 이메일 인증번호를 발송한다.
+     * 구현체는 user 인증 정책을 호출하되 CUSTOMER 오류 계약으로 변환한다.
+     */
+    CustomerEmailVerificationSendResult sendSignupEmailVerification(CustomerEmailVerificationSendCommand command);
+
+    /**
+     * 구매자 회원가입 이메일 인증번호를 확인한다.
+     * 성공 결과는 화면 상태용이며, 최종 가입 허용은 가입 API의 verified 소비가 기준이다.
+     */
+    CustomerEmailVerificationConfirmResult confirmSignupEmailVerification(CustomerEmailVerificationConfirmCommand command);
 
     SocialSignupInfoView getSocialSignupInfo(String signupSid);
 

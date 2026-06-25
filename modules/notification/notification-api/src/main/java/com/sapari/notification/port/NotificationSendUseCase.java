@@ -1,6 +1,7 @@
 package com.sapari.notification.port;
 
 import com.sapari.notification.command.SendSignupVerificationSmsCommand;
+import com.sapari.notification.command.SendSignupVerificationEmailCommand;
 import com.sapari.notification.view.MessageSendResult;
 
 /**
@@ -14,4 +15,10 @@ public interface NotificationSendUseCase {
      * 호출 도메인은 인증번호 생성·검증 정책만 소유하고, 사용자 노출 문구는 notification이 소유한다.
      */
     MessageSendResult sendSignupVerificationSms(SendSignupVerificationSmsCommand command);
+
+    /**
+     * 회원가입 인증 이메일 템플릿을 notification에서 렌더링한 뒤 발송한다.
+     * 호출 도메인은 인증번호 생성·검증 정책만 소유하고, 사용자 노출 문구는 notification이 소유한다.
+     */
+    MessageSendResult sendSignupVerificationEmail(SendSignupVerificationEmailCommand command);
 }

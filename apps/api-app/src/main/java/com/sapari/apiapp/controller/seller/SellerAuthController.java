@@ -28,7 +28,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.apiapp.controller.auth.AuthCookieSupport;
 import com.sapari.apiapp.controller.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationConfirmRequest;
+import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationSendRequest;
 import com.sapari.apiapp.controller.auth.dto.response.DuplicateCheckResponse;
+import com.sapari.apiapp.controller.auth.dto.response.EmailVerificationConfirmResponse;
+import com.sapari.apiapp.controller.auth.dto.response.EmailVerificationSendResponse;
 import com.sapari.apiapp.controller.seller.dto.request.SellerLoginRequest;
 import com.sapari.apiapp.controller.seller.dto.request.SellerNicknameUpdateRequest;
 import com.sapari.apiapp.controller.seller.dto.request.SellerSignupRequest;
@@ -42,6 +46,8 @@ import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.view.SellerLoginResult;
+import com.sapari.seller.view.SellerEmailVerificationConfirmResult;
+import com.sapari.seller.view.SellerEmailVerificationSendResult;
 import com.sapari.seller.view.SellerMeView;
 import com.sapari.seller.view.SellerNicknameUpdateResult;
 import com.sapari.seller.view.SellerSignupResult;
@@ -67,6 +73,35 @@ public class SellerAuthController {
         return ResponseEntity
                 .created(URI.create("/api/v1/sellers/" + result.userId()))
                 .body(SellerSignupResponse.from(result));
+    }
+
+    /**
+     * 판매자 회원가입 이메일 인증번호를 발송한다.
+     * 이메일은 로그인 ID이자 운영 안내 수신 채널이므로, 가입 이메일 자체의 수신 가능성을 확인한다.
+     * 다른 이메일 우회 인증은 허용하지 않고, 회사 메일 정책으로 수신이 불가능하면 관리자 문의로 처리한다.
+     */
+    @PostMapping("/signup/email-verifications")
+    public ResponseEntity<EmailVerificationSendResponse> sendSignupEmailVerification(
+            @Valid @RequestBody EmailVerificationSendRequest request
+    ) {
+        SellerEmailVerificationSendResult result = sellerAuthUseCase.sendSignupEmailVerification(request.toSellerCommand());
+
+        return ResponseEntity.ok(EmailVerificationSendResponse.from(result));
+    }
+
+    /**
+     * 판매자 회원가입 이메일 인증번호를 확인한다.
+     * 인증 email은 가입 요청 email과 같아야 하며, emailVerified=true 응답은 화면 상태용이다.
+     * 최종 가입 API가 같은 email의 Redis verified 상태를 다시 소비한다.
+     */
+    @PostMapping("/signup/email-verifications/confirm")
+    public ResponseEntity<EmailVerificationConfirmResponse> confirmSignupEmailVerification(
+            @Valid @RequestBody EmailVerificationConfirmRequest request
+    ) {
+        SellerEmailVerificationConfirmResult result =
+                sellerAuthUseCase.confirmSignupEmailVerification(request.toSellerCommand());
+
+        return ResponseEntity.ok(EmailVerificationConfirmResponse.from(result));
     }
 
     @GetMapping("/signup/check-email")

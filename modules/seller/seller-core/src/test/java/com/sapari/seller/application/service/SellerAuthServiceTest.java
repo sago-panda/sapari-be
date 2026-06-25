@@ -57,6 +57,7 @@ import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.port.UserSignupEmailVerificationUseCase;
 import com.sapari.user.view.UserView;
 
 @DisplayName("판매자 인증 서비스 테스트")
@@ -88,6 +89,10 @@ class SellerAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
+    private final UserSignupEmailVerificationUseCase userSignupEmailVerificationUseCase =
+            mock(UserSignupEmailVerificationUseCase.class);
+    private final SellerSignupContactVerificationAdapter signupContactVerificationAdapter =
+            new SellerSignupContactVerificationAdapter(userSignupEmailVerificationUseCase);
     private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
             refreshTokenStore,
@@ -103,6 +108,7 @@ class SellerAuthServiceTest {
             sellerProfileRepository,
             sellerBusinessRegistrationVerifier,
             sellerSignupProcessor,
+            signupContactVerificationAdapter,
             passwordEncoder,
             sellerJwtTokenAdapter,
             timeProvider(),
@@ -566,6 +572,7 @@ class SellerAuthServiceTest {
                 sellerProfileRepository,
                 sellerBusinessRegistrationVerifier,
                 sellerSignupProcessor,
+                signupContactVerificationAdapter,
                 passwordEncoder,
                 jwtTokenAdapter,
                 timeProvider(),

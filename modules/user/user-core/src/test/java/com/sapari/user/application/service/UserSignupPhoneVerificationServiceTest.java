@@ -65,7 +65,7 @@ public class UserSignupPhoneVerificationServiceTest {
     void setUp() {
         properties = new UserSignupPhoneVerificationProperties();
         properties.setCodeTtl(Duration.ofMinutes(5));
-        properties.setVerifiedTtl(Duration.ofMinutes(10));
+        properties.setVerifiedTtl(Duration.ofMinutes(30));
         properties.setResendCooldown(Duration.ofSeconds(60));
         properties.setMaxAttempts(5);
         service = new UserSignupPhoneVerificationService(repository, notificationSendUseCase, codeGenerator, codeHasher, userRepository, properties);
@@ -140,9 +140,9 @@ public class UserSignupPhoneVerificationServiceTest {
                 service.confirmSignupPhoneVerification(new SignupPhoneVerificationConfirmCommand(PHONE_NUMBER, CODE));
 
         assertThat(result.phoneNumberVerified()).isTrue();
-        assertThat(result.verifiedExpiresInSeconds()).isEqualTo(600L);
+        assertThat(result.verifiedExpiresInSeconds()).isEqualTo(1800L);
         verify(repository).deleteCodeAndFailures(PHONE_HASH);
-        verify(repository).saveVerified(PHONE_HASH, Duration.ofMinutes(10));
+        verify(repository).saveVerified(PHONE_HASH, Duration.ofMinutes(30));
     }
 
     @Test

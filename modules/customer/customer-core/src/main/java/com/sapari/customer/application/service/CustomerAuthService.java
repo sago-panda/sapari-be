@@ -16,6 +16,8 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.customer.command.CustomerLogoutCommand;
+import com.sapari.customer.command.CustomerEmailVerificationConfirmCommand;
+import com.sapari.customer.command.CustomerEmailVerificationSendCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationConfirmCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
@@ -26,6 +28,8 @@ import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.customer.view.CustomerMeView;
+import com.sapari.customer.view.CustomerEmailVerificationConfirmResult;
+import com.sapari.customer.view.CustomerEmailVerificationSendResult;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
 import com.sapari.customer.view.CustomerPhoneVerificationConfirmResult;
 import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
@@ -58,15 +62,16 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입을 완료한다.
-     * 가입 직전에는 프론트 요청값이 아니라 서버가 보관한 휴대폰 verified 상태를 1회 소비한다.
+     * 가입 직전에는 프론트 요청값이 아니라 서버가 보관한 휴대폰·이메일 verified 상태를 함께 소비한다.
      */
     @Override
     @Transactional
     public SocialSignupResult completeSocialSignup(String signupSid, SocialSignupCommand command) {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
-        // 회원가입 요청의 phoneVerified 값은 위조 가능하므로 Redis verified 상태만 서버 기준으로 소비한다.
-        // Redis GETDEL은 DB 트랜잭션과 함께 롤백되지 않으므로, 이후 가입 저장 실패 시 사용자는 재인증해야 한다.
-        signupContactVerificationAdapter.consumePhoneVerification(command.phoneNumber());
+        // 회원가입 요청의 phone/email verified 값은 위조 가능하므로 Redis verified 상태만 서버 기준으로 소비한다.
+        // user use case가 phone/email 둘 다 있을 때만 둘 다 삭제해, 하나가 만료되어도 다른 인증은 보존한다.
+        // 단, 둘 다 소비한 뒤 DB 저장 실패가 발생하면 Redis 소비는 롤백되지 않아 재인증이 필요하다.
+        signupContactVerificationAdapter.consumePhoneAndEmailVerification(command.phoneNumber(), command.email());
 
         try {
             UserView savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
@@ -95,6 +100,24 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     public CustomerPhoneVerificationConfirmResult confirmSignupPhoneVerification(CustomerPhoneVerificationConfirmCommand command) {
         return signupContactVerificationAdapter.confirmPhoneVerification(command);
+    }
+
+    /**
+     * 구매자 회원가입 이메일 인증번호를 발송한다.
+     * 가입 가능 이메일 확인, 쿨다운, 발송·저장 정책은 user가 처리하되 customer API 오류 계약으로 변환해 반환한다.
+     */
+    @Override
+    public CustomerEmailVerificationSendResult sendSignupEmailVerification(CustomerEmailVerificationSendCommand command) {
+        return signupContactVerificationAdapter.sendEmailVerification(command);
+    }
+
+    /**
+     * 구매자 회원가입 이메일 인증번호를 확인한다.
+     * 인증 성공 시 회원가입 API가 소비할 Redis verified 상태를 생성하고, 실패 사유는 CUSTOMER-* 코드로 노출한다.
+     */
+    @Override
+    public CustomerEmailVerificationConfirmResult confirmSignupEmailVerification(CustomerEmailVerificationConfirmCommand command) {
+        return signupContactVerificationAdapter.confirmEmailVerification(command);
     }
 
     @Override

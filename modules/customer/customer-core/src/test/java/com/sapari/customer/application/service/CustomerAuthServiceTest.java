@@ -50,6 +50,7 @@ import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SignupContactVerificationConsumeCommand;
 import com.sapari.user.command.SignupPhoneVerificationConfirmCommand;
 import com.sapari.user.command.SignupPhoneVerificationSendCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
@@ -62,6 +63,8 @@ import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.port.UserSignupContactVerificationUseCase;
+import com.sapari.user.port.UserSignupEmailVerificationUseCase;
 import com.sapari.user.port.UserSignupPhoneVerificationUseCase;
 import com.sapari.user.view.SignupPhoneVerificationConfirmResult;
 import com.sapari.user.view.SignupPhoneVerificationSendResult;
@@ -93,8 +96,16 @@ class CustomerAuthServiceTest {
             mock(AccessTokenBlacklist.class);
     private final UserSignupPhoneVerificationUseCase userSignupPhoneVerificationUseCase =
             mock(UserSignupPhoneVerificationUseCase.class);
+    private final UserSignupEmailVerificationUseCase userSignupEmailVerificationUseCase =
+            mock(UserSignupEmailVerificationUseCase.class);
+    private final UserSignupContactVerificationUseCase userSignupContactVerificationUseCase =
+            mock(UserSignupContactVerificationUseCase.class);
     private final CustomerSignupContactVerificationAdapter signupContactVerificationAdapter =
-            new CustomerSignupContactVerificationAdapter(userSignupPhoneVerificationUseCase);
+            new CustomerSignupContactVerificationAdapter(
+                    userSignupPhoneVerificationUseCase,
+                    userSignupEmailVerificationUseCase,
+                    userSignupContactVerificationUseCase
+            );
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
@@ -153,7 +164,11 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
         assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
-        verify(userSignupPhoneVerificationUseCase).consumeSignupPhoneVerification("01012345678");
+        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
+                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
+        );
+        verify(userSignupPhoneVerificationUseCase, never()).consumeSignupPhoneVerification(any());
+        verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
                 eq(userId),
@@ -165,7 +180,7 @@ class CustomerAuthServiceTest {
 
 
     @Test
-    @DisplayName("휴대폰 인증 소비 후 가입 저장이 실패하면 재인증이 필요하다")
+    @DisplayName("휴대폰·이메일 인증 소비 후 가입 저장이 실패하면 재인증이 필요하다")
     void completeSocialSignupConsumesVerificationBeforeRegisterFailure() throws Exception {
         when(socialSignupRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
@@ -178,7 +193,9 @@ class CustomerAuthServiceTest {
                                 .isEqualTo(CustomerErrorCode.DUPLICATED_SIGNUP_INFO)
                 );
 
-        verify(userSignupPhoneVerificationUseCase).consumeSignupPhoneVerification("01012345678");
+        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
+                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
+        );
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
     }
 
@@ -189,7 +206,8 @@ class CustomerAuthServiceTest {
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
         TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_PHONE_VERIFICATION_REQUIRED);
         doThrow(verificationRequired)
-                .when(userSignupPhoneVerificationUseCase).consumeSignupPhoneVerification("01012345678");
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
 
         assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
                 .isInstanceOfSatisfying(CustomerException.class, exception -> {
@@ -197,7 +215,33 @@ class CustomerAuthServiceTest {
                     assertThat(exception).hasCause(verificationRequired);
                 });
 
-        verify(userSignupPhoneVerificationUseCase).consumeSignupPhoneVerification("01012345678");
+        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
+                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
+        );
+        verifyNoInteractions(userAccountUseCase);
+    }
+
+    @Test
+    @DisplayName("이메일 인증이 완료되지 않으면 CUSTOMER 이메일 인증 필요 예외로 매핑하고 휴대폰 인증 상태는 보존한다")
+    void completeSocialSignupRequiresEmailVerification() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_EMAIL_VERIFICATION_REQUIRED);
+        doThrow(verificationRequired)
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.EMAIL_VERIFICATION_REQUIRED);
+                    assertThat(exception).hasCause(verificationRequired);
+                });
+
+        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
+                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
+        );
+        verify(userSignupPhoneVerificationUseCase, never()).consumeSignupPhoneVerification(any());
+        verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
         verifyNoInteractions(userAccountUseCase);
     }
 
@@ -815,7 +859,8 @@ class CustomerAuthServiceTest {
 
         SIGNUP_PHONE_VERIFICATION_REQUIRED(400, "USER-101", "휴대폰 인증이 필요합니다."),
         SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH(400, "USER-103", "인증번호가 올바르지 않습니다."),
-        DUPLICATED_PHONE_NUMBER(409, "USER-107", "이미 사용 중인 전화번호입니다.");
+        DUPLICATED_PHONE_NUMBER(409, "USER-107", "이미 사용 중인 전화번호입니다."),
+        SIGNUP_EMAIL_VERIFICATION_REQUIRED(400, "USER-108", "이메일 인증이 필요합니다.");
 
         private final int status;
         private final String code;
