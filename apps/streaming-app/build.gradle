@@ -1,9 +1,12 @@
 dependencies {
     implementation project(':common:security-jwt')
+    implementation project(':modules:chat:chat-core')   // 핸드셰이크가 쓰는 chat 포트(ReactiveTokenBlacklistChecker 등)
     implementation 'io.livekit:livekit-server:0.12.1'
     implementation 'org.springframework.boot:spring-boot-starter-webflux'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
+
+    testImplementation 'io.projectreactor:reactor-test'   // StepVerifier (reactive 단위 테스트)
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
