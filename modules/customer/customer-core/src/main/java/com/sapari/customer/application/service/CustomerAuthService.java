@@ -54,10 +54,11 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final TimeProvider timeProvider;
     private final ObjectMapper objectMapper;
     private final CustomerViewMapper customerViewMapper;
-    private final CustomerPhoneVerificationService customerPhoneVerificationService;
+    private final CustomerSignupContactVerificationAdapter signupContactVerificationAdapter;
 
     /**
-     * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입
+     * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입을 완료한다.
+     * 가입 직전에는 프론트 요청값이 아니라 서버가 보관한 휴대폰 verified 상태를 1회 소비한다.
      */
     @Override
     @Transactional
@@ -65,7 +66,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
         // 회원가입 요청의 phoneVerified 값은 위조 가능하므로 Redis verified 상태만 서버 기준으로 소비한다.
         // Redis GETDEL은 DB 트랜잭션과 함께 롤백되지 않으므로, 이후 가입 저장 실패 시 사용자는 재인증해야 한다.
-        customerPhoneVerificationService.consumeSignupVerification(command.phoneNumber());
+        signupContactVerificationAdapter.consumePhoneVerification(command.phoneNumber());
 
         try {
             UserView savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
@@ -80,31 +81,20 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     /**
      * 구매자 회원가입 휴대폰 인증번호를 발송한다.
-     * 가입 가능한 미등록 번호만 발송을 허용하고, 쿨다운 선점·SOLAPI 발송·codeHash 저장 정책은 휴대폰 인증 서비스가 처리한다.
+     * 가입 가능 번호 확인, 쿨다운, 발송·저장 정책은 user가 처리하되 customer API 오류 계약으로 변환해 반환한다.
      */
     @Override
     public CustomerPhoneVerificationSendResult sendSignupPhoneVerification(CustomerPhoneVerificationSendCommand command) {
-        validateSignupPhoneNumberAvailable(command.phoneNumber());
-        return customerPhoneVerificationService.sendSignupCode(command);
-    }
-
-    /**
-     * 회원가입용 SMS는 최종 가입 가능한 미등록 번호에만 발송한다.
-     * 이미 가입된 번호는 가입이 불가능하므로 기존 회원 SMS 스팸과 SOLAPI 과금을 줄이기 위해 발송 전에 차단한다.
-     */
-    private void validateSignupPhoneNumberAvailable(String phoneNumber) {
-        if (userAccountUseCase.existsByPhoneNumber(phoneNumber)) {
-            throw new CustomerException(CustomerErrorCode.DUPLICATED_PHONE_NUMBER);
-        }
+        return signupContactVerificationAdapter.sendPhoneVerification(command);
     }
 
     /**
      * 구매자 회원가입 휴대폰 인증번호를 확인한다.
-     * 인증 성공 시 회원가입 API가 소비할 Redis verified 상태를 생성한다.
+     * 인증 성공 시 회원가입 API가 소비할 Redis verified 상태를 생성하고, 실패 사유는 CUSTOMER-* 코드로 노출한다.
      */
     @Override
     public CustomerPhoneVerificationConfirmResult confirmSignupPhoneVerification(CustomerPhoneVerificationConfirmCommand command) {
-        return customerPhoneVerificationService.confirmSignupCode(command);
+        return signupContactVerificationAdapter.confirmPhoneVerification(command);
     }
 
     @Override
@@ -235,7 +225,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         );
     }
 
-    // redis에 저장된 소셜정보 가지고 오는 메서드
+    /**
+     * OAuth 콜백 이후 Redis에 임시 보관한 소셜 가입 정보를 조회한다.
+     */
     private SocialSignupInfo findSocialSignupInfo(String signupSid) {
         if (signupSid == null || signupSid.isBlank()) {
             throw new CustomerException(CustomerErrorCode.INVALID_SIGNUP_SESSION);
