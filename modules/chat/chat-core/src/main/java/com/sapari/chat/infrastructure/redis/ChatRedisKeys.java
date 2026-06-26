@@ -25,4 +25,9 @@ final class ChatRedisKeys {
     static String rateLimit(UUID userId) {
         return "ratelimit:chat:" + userId;
     }
+
+    /** Pod 간 채팅 중계 Pub/Sub 채널 — CHAT·KICK_EVENT 봉투를 함께 실어 나른다 (§6.1) */
+    static String pubsub(UUID roomId) {
+        return "chat:pubsub:" + roomId;
+    }
 }
