@@ -42,7 +42,7 @@ class ChatSessionRegistryTest {
     }
 
     private OutboundMessage out(String type) {
-        return new OutboundMessage(type, null, null, null, null, null, null, null, null, null, null, null, null);
+        return new OutboundMessage(type, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     @Test
