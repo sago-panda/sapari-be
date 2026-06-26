@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -26,8 +27,8 @@ import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
 class RedisChatBroadcasterTest {
@@ -35,6 +36,7 @@ class RedisChatBroadcasterTest {
     private ReactiveStringRedisTemplate redis;
     private RedisChatBroadcaster broadcaster;
     private ObjectMapper mapper;   // 검증용(동일 계약)
+    private Sinks.Many<ReactiveSubscription.Message<String, String>> pattern;   // 상시 가동 hot 소스 주입
 
     private final UUID roomId = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private final String channel = "chat:pubsub:" + roomId;
@@ -42,6 +44,9 @@ class RedisChatBroadcasterTest {
     @BeforeEach
     void setUp() {
         redis = mock(ReactiveStringRedisTemplate.class);
+        pattern = Sinks.many().multicast().onBackpressureBuffer();
+        // 생성자가 패턴 구독을 즉시 연결(autoConnect 0)하므로 stub을 먼저 건다.
+        doReturn(pattern.asFlux()).when(redis).listenToPattern("chat:pubsub:*");
         broadcaster = new RedisChatBroadcaster(redis);
         mapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
@@ -64,32 +69,50 @@ class RedisChatBroadcasterTest {
     }
 
     @Test
-    @DisplayName("subscribe — 채널 메시지를 ChatEnvelope로 역직렬화한다")
+    @DisplayName("subscribe — 패턴 스트림의 해당 방 메시지를 ChatEnvelope로 역직렬화한다")
     void subscribe_deserializes_envelope() throws Exception {
         String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
-        doReturn(Flux.just(message(wire))).when(redis).listenToChannel(channel);
 
         StepVerifier.create(broadcaster.subscribe(roomId))
+                .then(() -> pattern.tryEmitNext(message(channel, wire)))
                 .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg cm
                         && cm.message().equals(sampleMessage()))
-                .verifyComplete();
+                .thenCancel()
+                .verify(Duration.ofSeconds(2));
+    }
+
+    @Test
+    @DisplayName("subscribe — 다른 방 채널 메시지는 받지 않는다(roomId 필터)")
+    void subscribe_filters_other_room() throws Exception {
+        String otherWire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
+        String otherChannel = "chat:pubsub:" + UUID.randomUUID();
+
+        StepVerifier.create(broadcaster.subscribe(roomId))
+                .then(() -> pattern.tryEmitNext(message(otherChannel, otherWire)))
+                .expectNoEvent(Duration.ofMillis(150))
+                .thenCancel()
+                .verify();
     }
 
     @Test
     @DisplayName("subscribe — 깨진 봉투 1건은 skip하고 스트림은 살아남는다(poison 생존)")
     void subscribe_skips_poison_message() throws Exception {
         String good = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
-        doReturn(Flux.just(message("{깨진 json"), message(good)))
-                .when(redis).listenToChannel(channel);
 
         StepVerifier.create(broadcaster.subscribe(roomId))
+                .then(() -> {
+                    pattern.tryEmitNext(message(channel, "{깨진 json"));
+                    pattern.tryEmitNext(message(channel, good));
+                })
                 .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg)   // 깨진 건 skip, 정상 1건만
-                .verifyComplete();
+                .thenCancel()
+                .verify(Duration.ofSeconds(2));
     }
 
     @SuppressWarnings("unchecked")
-    private ReactiveSubscription.Message<String, String> message(String body) {
+    private ReactiveSubscription.Message<String, String> message(String channel, String body) {
         ReactiveSubscription.Message<String, String> m = mock(ReactiveSubscription.Message.class);
+        when(m.getChannel()).thenReturn(channel);
         when(m.getMessage()).thenReturn(body);
         return m;
     }
