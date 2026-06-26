@@ -52,7 +52,8 @@ public class SystemMessageService {
                 null,                            // userId — KICK 타입 전용
                 null,                            // activeCount — ROOM_INFO 전용
                 null,                            // retryAfterSeconds — RATE_LIMIT 전용
-                null                             // clientMsgId — send 결과(ACK/ERROR/RATE_LIMIT)만 운반, SYSTEM은 null
+                null,                            // clientMsgId — send 결과(ACK/ERROR/RATE_LIMIT)만 운반, SYSTEM은 null
+                null                             // isRoomOwner — ROOM_INFO 전용
         );
     }
 }

@@ -1,10 +1,13 @@
 dependencies {
     implementation project(':common:security-jwt')
+    implementation project(':common:core')              // chat 예외 조상 BusinessException (핸들러 에러 매핑 instanceof)
     implementation project(':modules:chat:chat-core')   // chat 도메인·포트(ChatSession, ChatKickRepository, ChatSessionRepository 등)
+    implementation project(':modules:chat:chat-api')    // 핸들러가 쓰는 계약(SendChatUseCase·SendChatCommand·ChatMessageView)
     implementation 'io.livekit:livekit-server:0.12.1'
     implementation 'org.springframework.boot:spring-boot-starter-webflux'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'   // 핸들러 ObjectMapper(Instant)
 
     testImplementation 'io.projectreactor:reactor-test'   // StepVerifier (reactive 단위 테스트)
 }

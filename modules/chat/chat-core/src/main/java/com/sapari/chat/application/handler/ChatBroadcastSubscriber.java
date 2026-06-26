@@ -92,7 +92,8 @@ public class ChatBroadcastSubscriber {
                 null,                                     // userId — KICK 전용
                 null,                                     // activeCount — ROOM_INFO 전용
                 null,                                     // retryAfterSeconds — RATE_LIMIT 전용
-                null                                      // clientMsgId — 브로드캐스트라 없음(send 결과만 운반)
+                null,                                     // clientMsgId — 브로드캐스트라 없음(send 결과만 운반)
+                null                                      // isRoomOwner — ROOM_INFO 전용
         );
     }
 
@@ -109,13 +110,13 @@ public class ChatBroadcastSubscriber {
         return new OutboundMessage(
                 "SYSTEM", SystemMessageCode.KICKED.name(), null,
                 ChatConstants.SYSTEM_SENDER_ID, SYSTEM_NICKNAME, null,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     /** 그 외 세션에게 보내는 KICK(userId) — 프론트가 해당 userId 메시지 숨김. */
     private OutboundMessage kickNotice(UUID kickedUserId) {
         return new OutboundMessage(
                 "KICK", null, null, null, null, null,
-                null, null, null, null, kickedUserId, null, null, null);
+                null, null, null, null, kickedUserId, null, null, null, null);
     }
 }
