@@ -1,6 +1,7 @@
 package com.sapari.notification.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -13,8 +14,6 @@ import com.sapari.notification.command.SendSignupVerificationEmailCommand;
 import com.sapari.notification.command.SendSignupVerificationSmsCommand;
 import com.sapari.notification.view.MessageSendResult;
 
-import static org.mockito.Mockito.mock;
-
 @DisplayName("알림 발송 서비스 테스트")
 class NotificationSendServiceTest {
 
@@ -23,12 +22,11 @@ class NotificationSendServiceTest {
     private final NotificationSendService service = new NotificationSendService(
             smsSender,
             emailSender,
-            new SignupVerificationSmsTemplate(),
-            new SignupVerificationEmailTemplate()
+            new SignupVerificationSmsTemplate()
     );
 
     @Test
-    @DisplayName("회원가입 인증 SMS는 notification이 템플릿을 렌더링해 발송한다")
+    @DisplayName("회원가입 인증 SMS는 notification 템플릿을 렌더링해 SMS sender에 위임한다")
     void sendSignupVerificationSmsRendersTemplateAndDelegatesToSmsSenderPort() {
         SendSignupVerificationSmsCommand command = new SendSignupVerificationSmsCommand("01012345678", "123456");
         MessageSendResult sendResult = new MessageSendResult(true, "message-id");
@@ -42,16 +40,16 @@ class NotificationSendServiceTest {
     }
 
     @Test
-    @DisplayName("회원가입 인증 이메일은 notification이 템플릿을 렌더링해 발송한다")
-    void sendSignupVerificationEmailRendersTemplateAndDelegatesToEmailSenderPort() {
+    @DisplayName("회원가입 인증 이메일은 이메일과 인증번호만 email sender port에 위임한다")
+    void sendSignupVerificationEmailDelegatesEmailAndCodeToEmailSenderPort() {
         SendSignupVerificationEmailCommand command = new SendSignupVerificationEmailCommand("user@example.com", "123456");
         MessageSendResult sendResult = new MessageSendResult(true, "email-message-id");
-        when(emailSender.send(command.email(), "Sapari 이메일 인증번호", new SignupVerificationEmailTemplate().render("123456")))
+        when(emailSender.sendSignupVerification(command.email(), command.verificationCode()))
                 .thenReturn(sendResult);
 
         MessageSendResult result = service.sendSignupVerificationEmail(command);
 
         assertThat(result).isEqualTo(sendResult);
-        verify(emailSender).send(command.email(), "Sapari 이메일 인증번호", new SignupVerificationEmailTemplate().render("123456"));
+        verify(emailSender).sendSignupVerification(command.email(), command.verificationCode());
     }
 }

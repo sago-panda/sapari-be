@@ -9,20 +9,29 @@ import com.resend.Resend;
 
 /**
  * Resend SDK client를 Spring bean으로 등록한다.
- * API key 누락은 운영 발송 실패를 늦게 발견하지 않도록 시작 시점에 차단한다.
+ * provider 필수 설정 누락은 발송 시점이 아니라 애플리케이션 시작 시점에 차단한다.
  */
 @Configuration
 @EnableConfigurationProperties(ResendEmailProperties.class)
 public class ResendEmailConfig {
 
     /**
-     * Resend SDK client를 생성하고 API key 누락 시 애플리케이션 시작을 실패시킨다.
+     * Resend SDK client를 생성하고 API key/from/template id 누락 시 시작을 실패시킨다.
      */
     @Bean
     public Resend resend(ResendEmailProperties properties) {
-        if (!StringUtils.hasText(properties.apiKey())) {
-            throw new IllegalArgumentException("sapari.email.resend.api-key must not be blank");
-        }
+        validateNotBlank(properties.apiKey(), "sapari.email.resend.api-key");
+        validateNotBlank(properties.from(), "sapari.email.from");
+        validateNotBlank(properties.signupVerificationTemplateId(), "sapari.email.signup-verification-template-id");
         return new Resend(properties.apiKey());
+    }
+
+    /**
+     * 비어 있는 provider 설정은 명시적인 설정명과 함께 실패시켜 배포 설정 누락을 빠르게 찾게 한다.
+     */
+    private void validateNotBlank(String value, String propertyName) {
+        if (!StringUtils.hasText(value)) {
+            throw new IllegalArgumentException(propertyName + " must not be blank");
+        }
     }
 }

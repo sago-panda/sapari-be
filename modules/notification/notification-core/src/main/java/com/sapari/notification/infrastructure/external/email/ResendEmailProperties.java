@@ -4,11 +4,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * Resend 이메일 발송 설정이다.
- * API key와 발신자 주소는 코드에 저장하지 않고 환경변수/Secret을 통해 주입한다.
+ * API key, 발신자, template id는 환경변수/Secret을 통해 주입한다.
  */
 @ConfigurationProperties(prefix = "sapari.email")
 public record ResendEmailProperties(
         String from,
+        String signupVerificationTemplateId,
         Resend resend
 ) {
 
