@@ -27,10 +27,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.MasterPlaylistPublisher;
 import com.sapari.live.application.port.SfuRoomResult;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.infrastructure.config.LiveKitProperties;
@@ -49,6 +51,8 @@ public class LiveKitMediaManager implements LiveMediaManager {
     // master.m3u8 업로드 도입 전까지 서빙하는 대표 화질 (이 화질의 변형 m3u8을 직접 재생)
     private static final HlsRendition DEFAULT_RENDITION = HlsRendition.P720;
     private final EgressServiceClient egressServiceClient;
+    // master 업로더(NCP 어댑터)는 링크 확정 후 빈으로 등록 — 없으면 720p 강등(ObjectProvider로 선택 주입)
+    private final ObjectProvider<MasterPlaylistPublisher> masterPlaylistPublisher;
 
     @Override
     public SfuRoomResult createRoom(UUID roomId){
@@ -107,6 +111,11 @@ public class LiveKitMediaManager implements LiveMediaManager {
 
         String basePath = s3.keyPrefix() + roomId + "/";
 
+        // 업로더(NCP 어댑터)가 없으면 master.m3u8을 못 줘서 ABR 불가 → 기본 화질만 인코딩(1080p·360p 스킵)해
+        // "3배 인코딩하고 720p만 서빙"하는 낭비를 막는다. 어댑터 빈이 등록되면 자동으로 전 화질 + master로 전환.
+        MasterPlaylistPublisher publisher = masterPlaylistPublisher.getIfAvailable();
+        boolean abrEnabled = publisher != null;
+
         // 시작에 성공한 egressId를 직접 추적 — 보상 시 listEgress 전파 지연(TOCTOU)에 기대지 않고 이들을 바로 중단한다.
         List<String> startedEgressIds = new ArrayList<>();
 
@@ -114,6 +123,9 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // HlsRendition(단일 출처)을 돌며 화질별 egress를 시작. master.m3u8도 같은 enum을 쓰므로 화질 목록이 항상 일치.
             String defaultEgressId = null;
             for (HlsRendition rendition : HlsRendition.values()) {
+                if (!abrEnabled && rendition != DEFAULT_RENDITION) {
+                    continue; // ABR 불가 시 비기본 화질은 인코딩하지 않음(낭비 방지)
+                }
                 String egressId = startRenditionEgress(roomId, s3Upload, basePath + rendition.getPathSegment() + "/",
                         presetFor(rendition), customEncodingFor(rendition), hls.segmentDuration());
                 startedEgressIds.add(egressId);
@@ -122,11 +134,11 @@ public class LiveKitMediaManager implements LiveMediaManager {
                 }
             }
 
-            // 대표 재생 URL = 기본 화질(720p) 변형. master.m3u8 업로드 도입 시 이 한 줄을 master.m3u8로 교체한다.
-            String hlsUrl = hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.variantPlaylistPath();
+            // 업로더가 있으면 master.m3u8 게시 후 master URL, 없으면(또는 업로드 실패) 기본 화질 variant 직접 서빙.
+            String hlsUrl = publishMaster(publisher, hls, basePath, roomId, startedEgressIds, defaultEgressId);
             UrlValidator.validateHlsUrl(hlsUrl);
-            log.info("HLS Egress 시작(1080p/720p/360p): roomId={}, defaultEgressId={}, hlsUrl={}",
-                    roomId, defaultEgressId, hlsUrl);
+            log.info("HLS Egress 시작: roomId={}, abrEnabled={}, defaultEgressId={}, hlsUrl={}",
+                    roomId, abrEnabled, defaultEgressId, hlsUrl);
 
             // egressId 는 대표(720p) 1건만 보존 — 중단은 room 기준 일괄 처리(stopHlsEgress)라 전 화질 ID 저장 불필요.
             return new HlsEgressResult(defaultEgressId, hlsUrl);
@@ -135,7 +147,41 @@ public class LiveKitMediaManager implements LiveMediaManager {
             log.error("HLS Egress 다중 화질 시작 실패 → 시작분 {}건 보상 중단: roomId={}", startedEgressIds.size(), roomId, e);
             startedEgressIds.forEach(egressId -> safeStopEgress(roomId, egressId));
             stopAllRoomEgress(roomId);
-            throw e;
+            // 인프라 예외(예: URL 검증 IllegalArgumentException)는 도메인 예외로 번역해 누출 방지(AGENTS Errors 규칙).
+            if (e instanceof LiveMediaException) {
+                throw e;
+            }
+            throw new LiveMediaException("HLS Egress 시작 실패: " + roomId, e);
+        }
+    }
+
+    /**
+     * 업로더가 있으면 master.m3u8을 게시하고 master URL을 반환한다.
+     * 업로더 미등록(링크 전)이거나 업로드 실패 시 기본 화질 variant URL로 강등한다(방송은 정상, ABR만 비활성).
+     * 업로드 실패 시에는 어차피 참조되지 않을 비기본 화질 egress를 중단해 잔여 비용(3배 인코딩)을 막는다.
+     */
+    private String publishMaster(MasterPlaylistPublisher publisher, LiveKitProperties.Hls hls, String basePath,
+                                 UUID roomId, List<String> startedEgressIds, String defaultEgressId) {
+        if (publisher != null) {
+            try {
+                String masterKey = basePath + "master.m3u8";
+                publisher.publish(masterKey, MasterPlaylistGenerator.generate());
+                return hls.cdnBaseUrl() + "/" + masterKey;
+            } catch (RuntimeException e) {
+                // master 업로드 실패 → ABR 불가. 참조되지 않을 비기본 화질 egress를 중단하고 720p로 강등(방송은 정상).
+                log.warn("master.m3u8 업로드 실패 → 비기본 화질 egress 중단 + 720p 강등: basePath={}", basePath, e);
+                stopNonDefaultEgresses(roomId, startedEgressIds, defaultEgressId);
+            }
+        }
+        return hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.variantPlaylistPath();
+    }
+
+    /** 기본 화질을 제외한 시작분 egress를 best-effort 중단(업로드 실패로 ABR 강등 시 잔여 비용 차단). */
+    private void stopNonDefaultEgresses(UUID roomId, List<String> startedEgressIds, String defaultEgressId) {
+        for (String egressId : startedEgressIds) {
+            if (!egressId.equals(defaultEgressId)) {
+                safeStopEgress(roomId, egressId);
+            }
         }
     }
 
@@ -146,6 +192,10 @@ public class LiveKitMediaManager implements LiveMediaManager {
             UUID roomId, S3Upload s3Upload, String renditionPath,
             EncodingOptionsPreset preset, EncodingOptions customOptions, int segmentDuration) {
 
+        // 안전 형태: filename_prefix·playlist_name 모두에 화질 경로를 포함한다.
+        // LiveKit egress가 StorageDir을 playlist_name 디렉터리에서 유도하든(같은 디렉터리는 dedupe) 두 필드를
+        // 독립으로 보든, 어느 해석에서도 세그먼트·인덱스가 동일하게 {basePath}{rendition}/ 아래에 떨어져 안전하다.
+        // (bare "segment_"는 한 해석에서만 동작 → egress 통합 테스트로 확정 전까지 이 형태 유지.)
         SegmentedFileOutput hlsOutput = SegmentedFileOutput.newBuilder()
                 .setProtocol(SegmentedFileProtocol.HLS_PROTOCOL)
                 .setFilenamePrefix(renditionPath + "segment_")

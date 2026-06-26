@@ -17,10 +17,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
 import java.io.IOException;
@@ -32,12 +36,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.live.application.port.HlsEgressResult;
+import com.sapari.live.application.port.MasterPlaylistPublisher;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.infrastructure.config.LiveKitProperties;
 
@@ -48,6 +55,8 @@ public class LiveKitMediaManagerTest {
     private RoomServiceClient roomServiceClient;
     @Mock
     private EgressServiceClient egressServiceClient;
+    @Mock
+    private ObjectProvider<MasterPlaylistPublisher> masterPlaylistPublisher;
 
     private static final FixtureMonkey fixtureMonkey = FixtureMonkey.builder()
             .objectIntrospector(ConstructorPropertiesArbitraryIntrospector.INSTANCE)
@@ -75,25 +84,25 @@ public class LiveKitMediaManagerTest {
                 .set("s3", s3)
                 .set("hls", hls)
                 .sample();
-        liveKitMediaManager = new LiveKitMediaManager(roomServiceClient, liveKitProperties, egressServiceClient);
+        liveKitMediaManager = new LiveKitMediaManager(
+                roomServiceClient, liveKitProperties, egressServiceClient, masterPlaylistPublisher);
         egressId = "egress-" + UUID.randomUUID();
         roomId = UUID.randomUUID();
     }
 
     @RepeatedTest(value = 10)
-    @DisplayName("HLS Egress 시작: 1080p/720p/360p 세 화질을 각각 egress로 시작한다")
-    void startHlsEgressTest() throws IOException {
+    @DisplayName("HLS Egress 시작: 업로더 미배선이면 기본 화질(720p) 1개만 인코딩하고 720p를 서빙한다")
+    void startHlsEgress_singleRendition_whenNoPublisher() throws IOException {
         UUID roomId = UUID.randomUUID();
 
         EgressInfo mockEgressInfo = fixtureMonkey.giveMeOne(EgressInfo.class);
-
 
         Call<EgressInfo> mockCall = mock(Call.class);
         given(egressServiceClient.startRoomCompositeEgress(
                 anyString(),
                 any(SegmentedFileOutput.class),
                 anyString(),
-                nullable(EncodingOptionsPreset.class), // 360p는 preset=null + custom EncodingOptions로 호출
+                nullable(EncodingOptionsPreset.class),
                 nullable(EncodingOptions.class),
                 anyBoolean(),
                 anyBoolean(),
@@ -101,22 +110,155 @@ public class LiveKitMediaManagerTest {
                 any(AudioMixing.class)
         )).willReturn(mockCall);
         given(mockCall.execute()).willReturn(Response.success(mockEgressInfo));
+        given(masterPlaylistPublisher.getIfAvailable()).willReturn(null); // 업로더 미배선 → ABR 비활성
 
         // when
         HlsEgressResult result = liveKitMediaManager.startHlsEgress(roomId);
 
-        // then
-        // 세 화질을 각각 egress로 시작
-        then(egressServiceClient).should(times(3)).startRoomCompositeEgress(
+        // then: 비기본 화질(1080p·360p)은 스킵 → 720p 1개만 시작(낭비 방지 가드)
+        then(egressServiceClient).should(times(1)).startRoomCompositeEgress(
                 anyString(), any(SegmentedFileOutput.class), anyString(),
                 nullable(EncodingOptionsPreset.class), nullable(EncodingOptions.class),
                 anyBoolean(), anyBoolean(), anyString(), any(AudioMixing.class));
-        // 대표(720p) egressId를 반환
         assertThat(result.egressId()).isEqualTo(mockEgressInfo.getEgressId());
-        // URL 조합이 도메인 규칙을 따르는지 검증
         assertThat(result.hlsUrl()).contains(liveKitProperties.hls().cdnBaseUrl());
-        assertThat(result.hlsUrl()).contains(liveKitProperties.s3().keyPrefix());
         assertThat(result.hlsUrl()).contains("720p");
+        assertThat(result.hlsUrl()).doesNotContain("master.m3u8");
+    }
+
+    @Test
+    @DisplayName("HLS Egress 시작(ABR): 화질별 경로를 filename_prefix·playlist_name 모두에 담는다(안전 형태)")
+    void startHlsEgress_buildsPerRenditionPaths_whenAbr() throws IOException {
+        UUID roomId = UUID.randomUUID();
+        EgressInfo info = EgressInfo.newBuilder().setEgressId("eg").build();
+        Call<EgressInfo> call = mock(Call.class);
+        given(egressServiceClient.startRoomCompositeEgress(
+                anyString(),
+                any(SegmentedFileOutput.class),
+                anyString(),
+                nullable(EncodingOptionsPreset.class),
+                nullable(EncodingOptions.class),
+                anyBoolean(),
+                anyBoolean(),
+                anyString(),
+                any(AudioMixing.class)
+        )).willReturn(call);
+        given(call.execute()).willReturn(Response.success(info));
+        given(masterPlaylistPublisher.getIfAvailable())
+                .willReturn(mock(MasterPlaylistPublisher.class)); // ABR ON → 3화질
+
+        liveKitMediaManager.startHlsEgress(roomId);
+
+        ArgumentCaptor<SegmentedFileOutput> captor = ArgumentCaptor.forClass(SegmentedFileOutput.class);
+        then(egressServiceClient).should(times(3)).startRoomCompositeEgress(
+                anyString(),
+                captor.capture(),
+                anyString(),
+                nullable(EncodingOptionsPreset.class),
+                nullable(EncodingOptions.class),
+                anyBoolean(),
+                anyBoolean(),
+                anyString(),
+                any(AudioMixing.class));
+
+        String base = liveKitProperties.s3().keyPrefix() + roomId + "/"; // "live/{roomId}/"
+        List<SegmentedFileOutput> outputs = captor.getAllValues();
+
+        // playlist_name·live_playlist_name = 화질별 디렉터리 + index.m3u8
+        assertThat(outputs).extracting(SegmentedFileOutput::getPlaylistName)
+                .containsExactlyInAnyOrder(
+                        base + "1080p/index.m3u8",
+                        base + "720p/index.m3u8",
+                        base + "360p/index.m3u8");
+        assertThat(outputs).extracting(SegmentedFileOutput::getLivePlaylistName)
+                .containsExactlyInAnyOrder(
+                        base + "1080p/index.m3u8",
+                        base + "720p/index.m3u8",
+                        base + "360p/index.m3u8");
+        // 안전 형태: filename_prefix도 화질 경로 포함(LiveKit StorageDir 해석과 무관하게 같은 경로 보장)
+        assertThat(outputs).extracting(SegmentedFileOutput::getFilenamePrefix)
+                .containsExactlyInAnyOrder(
+                        base + "1080p/segment_",
+                        base + "720p/segment_",
+                        base + "360p/segment_");
+    }
+
+    @Test
+    @DisplayName("HLS Egress 시작: master 업로더가 있으면 master.m3u8을 게시하고 master URL을 반환한다")
+    void startHlsEgress_publishesMaster_whenPublisherAvailable() throws IOException {
+        UUID roomId = UUID.randomUUID();
+        EgressInfo info = EgressInfo.newBuilder().setEgressId("eg").build();
+        Call<EgressInfo> call = mock(Call.class);
+        given(egressServiceClient.startRoomCompositeEgress(
+                anyString(),
+                any(SegmentedFileOutput.class),
+                anyString(),
+                nullable(EncodingOptionsPreset.class),
+                nullable(EncodingOptions.class),
+                anyBoolean(),
+                anyBoolean(),
+                anyString(),
+                any(AudioMixing.class)
+        )).willReturn(call);
+        given(call.execute()).willReturn(Response.success(info));
+
+        MasterPlaylistPublisher publisher = mock(MasterPlaylistPublisher.class);
+        given(masterPlaylistPublisher.getIfAvailable()).willReturn(publisher);
+
+        HlsEgressResult result = liveKitMediaManager.startHlsEgress(roomId);
+
+        String base = liveKitProperties.s3().keyPrefix() + roomId + "/"; // "live/{roomId}/"
+        // master.m3u8(3화질 목차)을 같은 경로에 게시
+        then(publisher).should().publish(eq(base + "master.m3u8"), contains("#EXT-X-STREAM-INF"));
+        // 서빙 URL이 master로 전환됨
+        assertThat(result.hlsUrl())
+                .isEqualTo(liveKitProperties.hls().cdnBaseUrl() + "/" + base + "master.m3u8");
+    }
+
+    @Test
+    @DisplayName("HLS Egress 시작: master 업로드 실패 시 예외 없이 720p 강등 + 비기본 화질 egress 중단(잔여 비용 차단)")
+    void startHlsEgress_fallsBackTo720p_andStopsExtraEgress_whenMasterUploadFails() throws IOException {
+        UUID roomId = UUID.randomUUID();
+
+        // 화질별 distinct egressId (시작 순서: 1080p → 720p(기본) → 360p)
+        Call<EgressInfo> call = mock(Call.class);
+        given(egressServiceClient.startRoomCompositeEgress(
+                anyString(),
+                any(SegmentedFileOutput.class),
+                anyString(),
+                nullable(EncodingOptionsPreset.class),
+                nullable(EncodingOptions.class),
+                anyBoolean(),
+                anyBoolean(),
+                anyString(),
+                any(AudioMixing.class)
+        )).willReturn(call);
+        given(call.execute())
+                .willReturn(Response.success(EgressInfo.newBuilder().setEgressId("eg-1080").build()))
+                .willReturn(Response.success(EgressInfo.newBuilder().setEgressId("eg-720").build()))
+                .willReturn(Response.success(EgressInfo.newBuilder().setEgressId("eg-360").build()));
+
+        MasterPlaylistPublisher publisher = mock(MasterPlaylistPublisher.class);
+        given(masterPlaylistPublisher.getIfAvailable()).willReturn(publisher);
+        willThrow(new RuntimeException("object storage 다운"))
+                .given(publisher).publish(anyString(), anyString());
+
+        // 비기본 화질(1080p, 360p) 중단 stub
+        Call stop1080 = mock(Call.class);
+        given(egressServiceClient.stopEgress("eg-1080")).willReturn(stop1080);
+        Call stop360 = mock(Call.class);
+        given(egressServiceClient.stopEgress("eg-360")).willReturn(stop360);
+
+        // when: 업로드 실패해도 예외가 밖으로 던져지지 않음
+        HlsEgressResult result = liveKitMediaManager.startHlsEgress(roomId);
+
+        // then: master 대신 기본 화질(720p) variant로 강등
+        assertThat(result.hlsUrl()).contains("720p");
+        assertThat(result.hlsUrl()).doesNotContain("master.m3u8");
+        // 참조되지 않을 비기본 화질 egress는 중단, 기본(720p)은 유지
+        then(stop1080).should().execute();
+        then(stop360).should().execute();
+        then(egressServiceClient).should(never()).stopEgress("eg-720");
     }
 
     @Test
@@ -141,6 +283,8 @@ public class LiveKitMediaManagerTest {
         given(startCall.execute())
                 .willReturn(Response.success(first))
                 .willThrow(new IOException("네트워크 실패"));
+        given(masterPlaylistPublisher.getIfAvailable())
+                .willReturn(mock(MasterPlaylistPublisher.class)); // ABR ON → 다중 egress 시작(부분 실패 재현)
 
         // 보상: 시작분(egress-1080) 직접 중단 + listEgress 백스톱(빈 목록)
         Call stopCall = mock(Call.class);
@@ -178,6 +322,8 @@ public class LiveKitMediaManagerTest {
         given(startCall.execute())
                 .willReturn(Response.success(tracked))
                 .willThrow(new IOException("네트워크 실패"));
+        given(masterPlaylistPublisher.getIfAvailable())
+                .willReturn(mock(MasterPlaylistPublisher.class)); // ABR ON → 다중 egress 시작(부분 실패 재현)
 
         // 직접 추적분 중단
         Call directStop = mock(Call.class);
