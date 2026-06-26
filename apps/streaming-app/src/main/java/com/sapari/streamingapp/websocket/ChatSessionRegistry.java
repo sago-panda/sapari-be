@@ -105,7 +105,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 .forEach(ls -> ls.sink().tryEmitComplete()));
     }
 
-    // best-effort emit — 느린/끊긴 클라로의 drop은 허용(slow-consumer는 별도 한계 항목). null 세션은 무시.
+    // best-effort emit — Sink는 무계 버퍼라 느린/끊긴 클라엔 적체될 수 있다(슬로우 컨슈머 bounded buffer는 후속 한계 항목). null 세션은 무시.
     private void emit(LocalSession ls, OutboundMessage message) {
         if (ls != null) {
             ls.sink().tryEmitNext(message);

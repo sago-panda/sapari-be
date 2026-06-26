@@ -26,8 +26,16 @@ final class ChatRedisKeys {
         return "ratelimit:chat:" + userId;
     }
 
+    /** Pod 간 채팅 중계 Pub/Sub 채널 prefix — 발행 키·구독 패턴·채널명 파싱의 단일 소스(drift 방지). */
+    static final String PUBSUB_PREFIX = "chat:pubsub:";
+
     /** Pod 간 채팅 중계 Pub/Sub 채널 — CHAT·KICK_EVENT 봉투를 함께 실어 나른다 (§6.1) */
     static String pubsub(UUID roomId) {
-        return "chat:pubsub:" + roomId;
+        return PUBSUB_PREFIX + roomId;
+    }
+
+    /** 전 방 패턴 구독용 (RedisChatBroadcaster 상시 가동 hot 스트림) */
+    static String pubsubPattern() {
+        return PUBSUB_PREFIX + "*";
     }
 }

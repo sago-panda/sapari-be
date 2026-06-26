@@ -39,9 +39,6 @@ import reactor.util.retry.Retry;
 @Component
 public class RedisChatBroadcaster implements ChatBroadcaster {
 
-    private static final String CHANNEL_PATTERN = "chat:pubsub:*";
-    private static final String CHANNEL_PREFIX = "chat:pubsub:";
-
     private final ReactiveStringRedisTemplate redis;
     private final ObjectMapper objectMapper;
 
@@ -58,7 +55,7 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
                 .addMixIn(ChatMessageType.class, ChatMessageTypeMixin.class);
 
         // publish().autoConnect(0): 생성 즉시 업스트림 연결 + 구독자 0이어도 끊지 않음(상시 가동 → 구독 레이스 제거).
-        this.shared = redis.listenToPattern(CHANNEL_PATTERN)
+        this.shared = redis.listenToPattern(ChatRedisKeys.pubsubPattern())
                 .mapNotNull(msg -> toRaw(msg.getChannel(), msg.getMessage()))
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(30))
                         .doBeforeRetry(s -> log.warn("chat:pubsub 패턴 구독 재시도 — 끊김 후 자가복구", s.failure())))
@@ -82,11 +79,11 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
 
     /** 채널명(chat:pubsub:{roomId})에서 roomId만 추출 — 역직렬화 없이 라우팅 키 확보. 깨진 채널은 null로 skip. */
     private RawMessage toRaw(String channel, String body) {
-        if (channel == null || !channel.startsWith(CHANNEL_PREFIX)) {
+        if (channel == null || !channel.startsWith(ChatRedisKeys.PUBSUB_PREFIX)) {
             return null;
         }
         try {
-            UUID roomId = UUID.fromString(channel.substring(CHANNEL_PREFIX.length()));
+            UUID roomId = UUID.fromString(channel.substring(ChatRedisKeys.PUBSUB_PREFIX.length()));
             return new RawMessage(roomId, body);
         } catch (IllegalArgumentException e) {
             log.error("chat:pubsub 채널명 roomId 파싱 실패 — skip channel={}", channel);
