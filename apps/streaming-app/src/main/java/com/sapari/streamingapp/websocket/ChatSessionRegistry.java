@@ -3,6 +3,7 @@ package com.sapari.streamingapp.websocket;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 import org.springframework.stereotype.Component;
 
@@ -74,6 +75,19 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return Mono.fromRunnable(() -> local.values().stream()
                 .filter(ls -> ls.session().roomId().equals(roomId))
                 .forEach(ls -> emit(ls, message)));
+    }
+
+    @Override
+    public Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver) {
+        // 세션별 차등 fan-out — resolver가 세션마다 메시지 생성(방주인 PII 게이팅·kick 분기). null이면 그 세션 skip.
+        return Mono.fromRunnable(() -> local.values().stream()
+                .filter(ls -> ls.session().roomId().equals(roomId))
+                .forEach(ls -> {
+                    OutboundMessage message = resolver.apply(ls.session());
+                    if (message != null) {
+                        emit(ls, message);
+                    }
+                }));
     }
 
     @Override
