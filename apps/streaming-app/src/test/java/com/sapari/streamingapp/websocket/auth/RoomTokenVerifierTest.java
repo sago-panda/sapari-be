@@ -160,4 +160,32 @@ class RoomTokenVerifierTest {
                 .expectError(WebSocketAuthException.class)
                 .verify();
     }
+
+    @Test
+    @DisplayName("거부 — exp 클레임 부재(영구 토큰 방지)")
+    void reject_missing_exp() {
+        String token = Jwts.builder()
+                .issuer("live").audience().add("chat").and()
+                .subject(userId.toString())
+                .claim("room", roomId.toString())
+                .claim("role", "BUYER")
+                .claim("owner", false)
+                .signWith(liveKeys.getPrivate())
+                .compact();   // exp 없음
+
+        StepVerifier.create(verifier.verify(token, roomId))
+                .expectError(WebSocketAuthException.class)
+                .verify();
+    }
+
+    @Test
+    @DisplayName("거부 — role=SYSTEM(서버 내부 role) 입장 불가")
+    void reject_system_role() {
+        String token = sign(liveKeys.getPrivate(), "live", "chat", roomId, userId,
+                "SYSTEM", false, null, null, in60s());
+
+        StepVerifier.create(verifier.verify(token, roomId))
+                .expectError(WebSocketAuthException.class)
+                .verify();
+    }
 }

@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket.auth;
 
 import java.security.PublicKey;
+import java.util.EnumSet;
 import java.util.Set;
 import java.util.UUID;
 
@@ -31,10 +32,14 @@ public class RoomTokenVerifier {
     private static final String ISSUER = "live";
     private static final String AUDIENCE = "chat";
 
+    /** 입장 가능한 role 화이트리스트 — SYSTEM(서버 내부 발신 주체)은 입장 세션에 와선 안 된다. */
+    private static final Set<ChatRole> PARTICIPANT_ROLES =
+            EnumSet.of(ChatRole.BUYER, ChatRole.SELLER, ChatRole.ADMIN, ChatRole.GUEST);
+
     private final JwtParser parser;
 
     public RoomTokenVerifier(PublicKey roomTokenPublicKey) {
-        // verifyWith(공개키): RS256 서명 검증 / requireIssuer: iss!=live면 거부 / 만료(exp)는 parse 시 자동 검증
+        // verifyWith(공개키): RS256 서명 검증 / requireIssuer: iss!=live면 거부 / exp는 *있을 때만* parse가 만료 검사(부재는 parseToSession에서 강제)
         this.parser = Jwts.parser()
                 .verifyWith(roomTokenPublicKey)
                 .requireIssuer(ISSUER)
@@ -56,7 +61,13 @@ public class RoomTokenVerifier {
     }
 
     private ChatSession parseToSession(String token, UUID expectedRoomId) {
-        Claims claims = parser.parseSignedClaims(token).getPayload();   // 서명·exp·iss 검증(실패 시 throw)
+        Claims claims = parser.parseSignedClaims(token).getPayload();   // 서명·iss 검증 + exp가 있으면 만료 검증
+
+        // exp 존재 강제 — jjwt는 exp가 *있을 때만* 만료를 검사한다. blacklist를 제거한 모델에서 짧은 TTL(exp)이
+        // 유일한 폐기 백스톱이라(정본 §563·§565), exp 부재 토큰은 영구 입장권이 되므로 거부한다.
+        if (claims.getExpiration() == null) {
+            throw new WebSocketAuthException("exp 누락");
+        }
 
         // aud == chat (토큰 혼동/타 용도 토큰 재사용 차단) — jjwt에서 aud는 Set
         Set<String> audience = claims.getAudience();
@@ -72,6 +83,9 @@ public class RoomTokenVerifier {
 
         UUID userId = UUID.fromString(claims.getSubject());
         ChatRole role = ChatRole.valueOf(claims.get("role", String.class));
+        if (!PARTICIPANT_ROLES.contains(role)) {
+            throw new WebSocketAuthException("입장 불가 role: " + role);   // SYSTEM 등 서버 내부 role 차단
+        }
         boolean owner = Boolean.TRUE.equals(claims.get("owner", Boolean.class));
         String nickname = claims.get("nickname", String.class);   // 게스트는 null
         String email = claims.get("email", String.class);         // 게스트는 null
