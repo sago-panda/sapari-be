@@ -20,6 +20,11 @@ dependencies {
 
 tasks.register("prepareKotlinBuildScriptModel"){}
 
+// DevTokenMintTest 활성화용 — `-Dmint=on`을 forked 테스트 JVM으로 전달
+tasks.named('test') {
+    systemProperty 'mint', System.getProperty('mint', 'off')
+}
+
 bootJar {
     enabled = true
 }
