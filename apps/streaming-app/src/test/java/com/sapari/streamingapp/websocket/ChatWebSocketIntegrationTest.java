@@ -1,0 +1,144 @@
+package com.sapari.streamingapp.websocket;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.net.URI;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.PrivateKey;
+import java.time.Duration;
+import java.util.Base64;
+import java.util.Date;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.reactive.socket.WebSocketMessage;
+import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.MongoDBContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import io.jsonwebtoken.Jwts;
+import reactor.core.publisher.Mono;
+
+/**
+ * C6 — WS 핸드셰이크~송수신 end-to-end. 풀 부팅(RANDOM_PORT) + Redis/Mongo 컨테이너 + 실제 RS256 키쌍.
+ * live 개인키로 룸 토큰을 서명하고, 앱은 주입된 공개키로 검증 → 입장·ROOM_INFO·송신 ACK·위조 거부를 실증한다.
+ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Testcontainers
+class ChatWebSocketIntegrationTest {
+
+    private static KeyPair liveKeys;    // 발급용(앱이 공개키로 검증)
+    private static KeyPair otherKeys;   // 위조 서명용
+
+    @Container
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+
+    @Container
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+
+    @Value("${local.server.port}")
+    int port;
+
+    @BeforeAll
+    static void genKeys() throws Exception {
+        KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+        gen.initialize(2048);
+        liveKeys = gen.generateKeyPair();
+        otherKeys = gen.generateKeyPair();
+    }
+
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", redis::getHost);
+        registry.add("spring.data.redis.port", () -> redis.getFirstMappedPort());
+        registry.add("spring.data.mongodb.uri", mongo::getReplicaSetUrl);
+        registry.add("chat.room-token.public-key",
+                () -> Base64.getEncoder().encodeToString(liveKeys.getPublic().getEncoded()));
+    }
+
+    private String roomToken(PrivateKey key, UUID roomId, UUID userId, String role, boolean owner,
+            String nickname, String email) {
+        return Jwts.builder()
+                .issuer("live").audience().add("chat").and()
+                .subject(userId.toString())
+                .claim("room", roomId.toString())
+                .claim("role", role)
+                .claim("owner", owner)
+                .claim("nickname", nickname)
+                .claim("email", email)
+                .expiration(new Date(System.currentTimeMillis() + 60_000))
+                .signWith(key)
+                .compact();
+    }
+
+    private URI wsUri(UUID roomId, String token) {
+        return URI.create("ws://localhost:" + port + "/ws/chat?roomId=" + roomId + "&token=" + token);
+    }
+
+    @Test
+    @DisplayName("연결 — 유효 룸 토큰이면 ROOM_INFO를 받는다")
+    void valid_token_receives_room_info() {
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+
+        List<String> frames = new CopyOnWriteArrayList<>();
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId, token), session ->
+                session.receive().map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(frames::add).take(1).then())
+                .block(Duration.ofSeconds(15));
+
+        assertThat(frames).hasSize(1);
+        assertThat(frames.get(0)).contains("\"type\":\"ROOM_INFO\"");
+    }
+
+    @Test
+    @DisplayName("송신 — NORMAL 전송 시 clientMsgId가 실린 ACK를 받는다")
+    void send_receives_ack() {
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"hello\",\"clientMsgId\":\"c1\"}";
+
+        List<String> frames = new CopyOnWriteArrayList<>();
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId, token), session ->
+                session.send(Mono.just(session.textMessage(payload)).delaySubscription(Duration.ofMillis(500)))
+                        .and(session.receive().map(WebSocketMessage::getPayloadAsText)
+                                .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
+                .block(Duration.ofSeconds(20));
+
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ROOM_INFO\""));
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ACK\"") && f.contains("\"clientMsgId\":\"c1\""));
+    }
+
+    @Test
+    @DisplayName("거부 — 위조 서명(다른 키) 토큰이면 ROOM_INFO 없이 닫힌다")
+    void forged_token_rejected() {
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String forged = roomToken(otherKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+
+        List<String> frames = new CopyOnWriteArrayList<>();
+        try {
+            new ReactorNettyWebSocketClient().execute(wsUri(roomId, forged), session ->
+                    session.receive().map(WebSocketMessage::getPayloadAsText)
+                            .doOnNext(frames::add).then())
+                    .block(Duration.ofSeconds(10));
+        } catch (Exception ignored) {
+            // 서버 1008 close가 클라에 에러로 surface될 수 있음 — 핵심은 ROOM_INFO 미수신
+        }
+
+        assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
+    }
+}

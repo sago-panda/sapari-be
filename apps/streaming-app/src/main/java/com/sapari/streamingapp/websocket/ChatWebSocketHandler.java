@@ -30,6 +30,7 @@ import com.sapari.streamingapp.websocket.auth.WebSocketAuthException;
 
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -97,8 +98,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         UUID roomId = chatSession.roomId();
         acquireRoom(roomId);
 
+        // Flux.defer: outbound()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
         Mono<Void> outbound = session.send(
-                registry.outbound(sid).map(message -> session.textMessage(serialize(message))));
+                Flux.defer(() -> registry.outbound(sid)).map(message -> session.textMessage(serialize(message))));
 
         Mono<Void> inbound = session.receive()
                 .map(WebSocketMessage::getPayloadAsText)
