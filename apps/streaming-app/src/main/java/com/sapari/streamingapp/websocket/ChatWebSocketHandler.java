@@ -12,6 +12,7 @@ import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -71,7 +72,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         this.registry = registry;
         this.sendUseCase = sendUseCase;
         this.subscriber = subscriber;
-        this.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        // createdAt(Instant)을 epoch 숫자가 아니라 ISO-8601 문자열로 직렬화(프론트 계약)
+        this.objectMapper = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
     @Override
@@ -110,7 +114,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return registry.register(sid, chatSession)
                 .then(registry.getActiveCount(roomId))
                 .flatMap(count -> registry.sendToSession(sid, roomInfo(count, chatSession.isRoomOwner())))
-                .then(Mono.when(outbound, inbound))
+                // firstWithSignal: 둘 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound 완료)뿐 아니라
+                // 강제 close(KICK/ROOM_ENDED → sink complete → outbound 완료) 시에도 WS를 즉시 닫는다.
+                .then(Mono.firstWithSignal(outbound, inbound))
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 

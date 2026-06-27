@@ -126,7 +126,9 @@ class ChatWebSocketIntegrationTest {
                 .block(Duration.ofSeconds(20));
 
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ROOM_INFO\""));
-        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ACK\"") && f.contains("\"clientMsgId\":\"c1\""));
+        // ACK에 clientMsgId + createdAt이 ISO-8601 문자열(따옴표)로 — epoch 숫자가 아님(프론트 계약, F2 회귀)
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ACK\"")
+                && f.contains("\"clientMsgId\":\"c1\"") && f.contains("\"createdAt\":\""));
     }
 
     @Test
