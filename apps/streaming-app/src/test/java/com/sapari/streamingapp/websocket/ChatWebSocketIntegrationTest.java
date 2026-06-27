@@ -16,12 +16,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
+
+import reactor.core.publisher.Flux;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -49,6 +53,9 @@ class ChatWebSocketIntegrationTest {
 
     @Value("${local.server.port}")
     int port;
+
+    @Autowired
+    ReactiveStringRedisTemplate redisTemplate;
 
     @BeforeAll
     static void genKeys() throws Exception {
@@ -140,5 +147,69 @@ class ChatWebSocketIntegrationTest {
         }
 
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
+    }
+
+    @Test
+    @DisplayName("강퇴 — kicked SET에 있으면 SYSTEM(KICKED) 후 ROOM_INFO 없이 닫힌다")
+    void kicked_member_rejected() {
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        redisTemplate.opsForSet().add("kicked:" + roomId, userId.toString()).block();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+
+        List<String> frames = collect(wsUri(roomId, token), null, Duration.ofSeconds(3));
+
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"SYSTEM\"") && f.contains("KICKED"));
+        assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
+    }
+
+    @Test
+    @DisplayName("권한 — BUYER가 NOTICE 시도하면 ERROR(PERMISSION)")
+    void buyer_notice_denied() {
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String notice = "{\"type\":\"NOTICE\",\"content\":\"공지\",\"clientMsgId\":\"n1\"}";
+
+        List<String> frames = collect(wsUri(roomId, token), notice, Duration.ofSeconds(3));
+
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ERROR\"")
+                && f.contains("PERMISSION") && f.contains("\"clientMsgId\":\"n1\""));
+    }
+
+    @Test
+    @DisplayName("레이트리밋 — BUYER 연속 전송 시 2번째는 RATE_LIMIT")
+    void rapid_send_rate_limited() {
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String m1 = "{\"type\":\"NORMAL\",\"content\":\"a\",\"clientMsgId\":\"r1\"}";
+        String m2 = "{\"type\":\"NORMAL\",\"content\":\"b\",\"clientMsgId\":\"r2\"}";
+
+        List<String> frames = new CopyOnWriteArrayList<>();
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId, token), session ->
+                session.send(Flux.concat(
+                                Mono.just(session.textMessage(m1)).delaySubscription(Duration.ofMillis(500)),
+                                Mono.just(session.textMessage(m2)).delaySubscription(Duration.ofMillis(150))))
+                        .and(session.receive().map(WebSocketMessage::getPayloadAsText)
+                                .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
+                .block(Duration.ofSeconds(20));
+
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"") && f.contains("\"clientMsgId\":\"r2\""));
+    }
+
+    /** WS 접속 → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */
+    private List<String> collect(URI uri, String sendPayload, Duration window) {
+        List<String> frames = new CopyOnWriteArrayList<>();
+        new ReactorNettyWebSocketClient().execute(uri, session -> {
+            Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
+                    .doOnNext(frames::add).take(window).then();
+            if (sendPayload == null) {
+                return receive;
+            }
+            return session.send(Mono.just(session.textMessage(sendPayload)).delaySubscription(Duration.ofMillis(500)))
+                    .and(receive);
+        }).block(window.plusSeconds(15));
+        return frames;
     }
 }
