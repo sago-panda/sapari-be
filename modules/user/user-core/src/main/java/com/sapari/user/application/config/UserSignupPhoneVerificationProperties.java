@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component;
 @Getter
 @Setter
 @Component
-@ConfigurationProperties(prefix = "sapari.customer-phone-verification")
+@ConfigurationProperties(prefix = "sapari.signup-verification.phone")
 public class UserSignupPhoneVerificationProperties {
 
     private static final Duration FIXED_CODE_TTL = Duration.ofMinutes(5);

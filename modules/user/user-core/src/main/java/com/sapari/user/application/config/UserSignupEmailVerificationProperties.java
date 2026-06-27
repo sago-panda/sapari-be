@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component;
 @Getter
 @Setter
 @Component
-@ConfigurationProperties(prefix = "sapari.signup-email-verification")
+@ConfigurationProperties(prefix = "sapari.signup-verification.email")
 public class UserSignupEmailVerificationProperties {
 
     private static final Duration FIXED_CODE_TTL = Duration.ofMinutes(5);

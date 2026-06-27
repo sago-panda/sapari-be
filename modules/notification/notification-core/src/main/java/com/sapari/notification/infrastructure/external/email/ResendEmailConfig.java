@@ -20,9 +20,9 @@ public class ResendEmailConfig {
      */
     @Bean
     public Resend resend(ResendEmailProperties properties) {
-        validateNotBlank(properties.apiKey(), "sapari.email.resend.api-key");
-        validateNotBlank(properties.from(), "sapari.email.from");
-        validateNotBlank(properties.signupVerificationTemplateId(), "sapari.email.signup-verification-template-id");
+        validateNotBlank(properties.apiKey(), "sapari.notification.email.resend.api-key");
+        validateNotBlank(properties.from(), "sapari.notification.email.from");
+        validateNotBlank(properties.signupVerificationTemplateId(), "sapari.notification.email.signup-verification-template-id");
         return new Resend(properties.apiKey());
     }
 
