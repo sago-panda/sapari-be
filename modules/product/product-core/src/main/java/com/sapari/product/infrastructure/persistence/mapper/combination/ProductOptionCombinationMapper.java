@@ -35,6 +35,7 @@ public interface ProductOptionCombinationMapper {
         }
         return ProductOptionCombination.builder()
                 .id(e.getId())
+                .version(e.getVersion())
                 .productId(e.getProductId())
                 .sku(Sku.of(e.getSku()))
                 .combinationKey(e.getCombinationKey() == null ? null : new CombinationKey(e.getCombinationKey()))

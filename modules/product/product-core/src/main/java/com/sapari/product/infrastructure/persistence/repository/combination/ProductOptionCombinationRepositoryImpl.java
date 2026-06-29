@@ -3,15 +3,19 @@ package com.sapari.product.infrastructure.persistence.repository.combination;
 import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationEntity;
 import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationValueEntity;
 
+import com.sapari.product.domain.exception.ProductConcurrentModificationException;
 import com.sapari.product.domain.exception.ProductDomainException;
 import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.infrastructure.persistence.mapper.combination.ProductOptionCombinationMapper;
 import jakarta.persistence.EntityNotFoundException;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -40,6 +44,13 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
         } else {
             entity = jpaRepository.findById(combination.id())
                     .orElseThrow(() -> new EntityNotFoundException("해당 옵션 조합을 찾을 수 없습니다."));
+            // 낙관적 락(stale 덮어쓰기 방지): 도메인이 (이전 요청에서) 읽은 version과 현재 행 version이 다르면, 그 사이 다른 요청이
+            // 먼저 수정한 것이므로 충돌로 거부한다. 같은 트랜잭션에서 읽었으면 version이 같아 통과한다(버전 미상이면 검사 생략).
+            // 동시 in-flight 레이스는 커밋 시 @Version이 OptimisticLockingFailureException으로 잡아 웹 레이어가 409로 매핑한다.
+            if (combination.version() != null && !Objects.equals(entity.getVersion(), combination.version())) {
+                throw new ProductConcurrentModificationException(
+                        "옵션 조합이 다른 요청에 의해 이미 수정되었습니다: " + combination.id());
+            }
             mapper.updateEntityFromDomain(entity, combination);
             entity = jpaRepository.save(entity);
         }
@@ -101,11 +112,29 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
 
     @Override
     public List<ProductOptionCombination> findByProductId(UUID productId) {
-        List<ProductOptionCombinationEntity> entities = jpaRepository.findByProductId(productId);
+        return assembleWithValues(jpaRepository.findByProductId(productId));
+    }
+
+    @Override
+    public List<ProductOptionCombination> findAllById(Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return assembleWithValues(jpaRepository.findAllById(ids));
+    }
+
+    @Override
+    public int discontinueAllByProductId(UUID productId, Instant now) {
+        return jpaRepository.discontinueAllByProductId(productId, now);
+    }
+
+    /**
+     * 조합 엔티티들에 옵션값 매핑을 IN 한 쿼리로 모아 붙여 도메인으로 조립한다(조합별 개별 조회 N+1 방지).
+     */
+    private List<ProductOptionCombination> assembleWithValues(List<ProductOptionCombinationEntity> entities) {
         if (entities.isEmpty()) {
             return List.of();
         }
-        // 옵션값 매핑을 조합별 개별 조회(N+1) 대신 IN 한 쿼리로 모아 조합 id 기준 그룹핑
         List<UUID> combinationIds = entities.stream()
                 .map(ProductOptionCombinationEntity::getId)
                 .toList();

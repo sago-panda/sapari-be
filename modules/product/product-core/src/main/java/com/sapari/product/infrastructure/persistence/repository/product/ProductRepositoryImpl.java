@@ -4,6 +4,7 @@ import com.sapari.product.infrastructure.persistence.entity.product.ProductEntit
 import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionTypeEntity;
 import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionValueEntity;
 
+import com.sapari.product.domain.exception.ProductConcurrentModificationException;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductSummary;
@@ -11,6 +12,7 @@ import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.infrastructure.persistence.mapper.product.ProductMapper;
 import jakarta.persistence.EntityNotFoundException;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -41,6 +43,13 @@ public class ProductRepositoryImpl implements ProductRepository {
         } else {
             entity = productJpaRepository.findById(product.id())
                     .orElseThrow(() -> new EntityNotFoundException("상품을 찾을 수 없습니다: " + product.id()));
+            // 낙관적 락(stale 덮어쓰기 방지): 도메인이 (이전 요청에서) 읽은 version과 현재 행 version이 다르면, 그 사이 다른 요청이
+            // 먼저 수정한 것이므로 충돌로 거부한다. 같은 트랜잭션에서 읽었으면 version이 같아 통과한다(버전 미상이면 검사 생략).
+            // 동시 in-flight 레이스는 커밋 시 @Version이 OptimisticLockingFailureException으로 잡아 웹 레이어가 409로 매핑한다.
+            if (product.version() != null && !Objects.equals(entity.getVersion(), product.version())) {
+                throw new ProductConcurrentModificationException(
+                        "상품이 다른 요청에 의해 이미 수정되었습니다: " + product.id());
+            }
             mapper.updateEntityFromDomain(entity, product);
             entity = productJpaRepository.save(entity);
         }
@@ -51,6 +60,13 @@ public class ProductRepositoryImpl implements ProductRepository {
     @Override
     public Optional<Product> findById(UUID id) {
         return productJpaRepository.findById(id)
+                .map(this::loadAggregate);
+    }
+
+    @Override
+    public Optional<Product> findActiveById(UUID id) {
+        // 루트에서 deleted_at IS NULL로 거른다 — 삭제 상품이면 빈 결과라 자식(loadAggregate)도 로딩 안 함
+        return productJpaRepository.findByIdAndDeletedAtIsNull(id)
                 .map(this::loadAggregate);
     }
 

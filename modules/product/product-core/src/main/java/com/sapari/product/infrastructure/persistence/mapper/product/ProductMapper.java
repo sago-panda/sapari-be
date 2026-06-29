@@ -59,6 +59,7 @@ public interface ProductMapper {
 
         return Product.builder()
                 .id(entity.getId())
+                .version(entity.getVersion())
                 .sellerId(entity.getSellerId())
                 .categoryId(entity.getCategoryId())
                 .name(entity.getName())

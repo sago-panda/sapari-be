@@ -3,6 +3,7 @@ package com.sapari.product.infrastructure.persistence.entity.combination;
 import com.sapari.storage.db.entity.UuidTimeEntity;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.time.Instant;
 import java.util.UUID;
 import lombok.AccessLevel;
@@ -38,6 +39,10 @@ public class ProductOptionCombinationEntity extends UuidTimeEntity {
     private Boolean isAvailable;
 
     private Instant searchIndexedAt;
+
+    // 낙관적 락 버전 — 동시 수정 lost update 방지. Hibernate 관리(INSERT 0, UPDATE 증가). 단 벌크 단종은 JPQL에서 수동 증가.
+    @Version
+    private Long version;
 
     /**
      * 빌더 전용 생성자. JPA용 protected 기본 생성자와 구분해 private으로 두고 빌더로만 생성/재구성한다.
