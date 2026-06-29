@@ -246,6 +246,25 @@ class CustomerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("회원가입 연락처 인증 소비 중 알 수 없는 USER 오류는 CUSTOMER 일반 인증 오류로 매핑한다")
+    void completeSocialSignupWhenUnknownUserVerificationErrorMapsGenericCustomerException() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        TestUserException unknownUserError = new TestUserException(TestUserErrorCode.UNKNOWN_USER_ERROR);
+        doThrow(unknownUserError)
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SIGNUP_VERIFICATION_UNAVAILABLE);
+                    assertThat(exception).hasCause(unknownUserError);
+                });
+
+        verifyNoInteractions(userAccountUseCase);
+    }
+
+    @Test
     @DisplayName("가입 sid가 없으면 소셜 고객 가입에 실패한다")
     void completeSocialSignupThrowsExceptionWhenSignupSidIsMissing() {
         assertThatThrownBy(() -> customerAuthService.completeSocialSignup(null, signupCommand()))
@@ -304,6 +323,22 @@ class CustomerAuthServiceTest {
                 .isInstanceOfSatisfying(CustomerException.class, exception -> {
                     assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.PHONE_VERIFICATION_CODE_MISMATCH);
                     assertThat(exception).hasCause(codeMismatch);
+                });
+    }
+
+    @Test
+    @DisplayName("휴대폰 인증 확인 중 알 수 없는 USER 오류는 CUSTOMER 일반 인증 오류로 매핑한다")
+    void confirmSignupPhoneVerificationWhenUnknownUserErrorMapsGenericCustomerException() {
+        CustomerPhoneVerificationConfirmCommand command = new CustomerPhoneVerificationConfirmCommand("01012345678", "000000");
+        SignupPhoneVerificationConfirmCommand userCommand = new SignupPhoneVerificationConfirmCommand("01012345678", "000000");
+        TestUserException unknownUserError = new TestUserException(TestUserErrorCode.UNKNOWN_USER_ERROR);
+        doThrow(unknownUserError)
+                .when(userSignupPhoneVerificationUseCase).confirmSignupPhoneVerification(userCommand);
+
+        assertThatThrownBy(() -> customerAuthService.confirmSignupPhoneVerification(command))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SIGNUP_VERIFICATION_UNAVAILABLE);
+                    assertThat(exception).hasCause(unknownUserError);
                 });
     }
 
@@ -860,7 +895,8 @@ class CustomerAuthServiceTest {
         SIGNUP_PHONE_VERIFICATION_REQUIRED(400, "USER-101", "휴대폰 인증이 필요합니다."),
         SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH(400, "USER-103", "인증번호가 올바르지 않습니다."),
         DUPLICATED_PHONE_NUMBER(409, "USER-107", "이미 사용 중인 전화번호입니다."),
-        SIGNUP_EMAIL_VERIFICATION_REQUIRED(400, "USER-108", "이메일 인증이 필요합니다.");
+        SIGNUP_EMAIL_VERIFICATION_REQUIRED(400, "USER-108", "이메일 인증이 필요합니다."),
+        UNKNOWN_USER_ERROR(500, "USER-999", "알 수 없는 user 오류입니다.");
 
         private final int status;
         private final String code;

@@ -43,6 +43,27 @@ class SecureRandomVerificationCodeGeneratorTest {
                 .hasMessageContaining("code length");
     }
 
+    @Test
+    @DisplayName("9자리 숫자 인증번호까지 생성할 수 있다")
+    void generateNumericCodeAllowsLengthNine() {
+        SecureRandomVerificationCodeGenerator generator =
+                new SecureRandomVerificationCodeGenerator(new FixedSecureRandom(123456789));
+
+        String code = generator.generateNumericCode(9);
+
+        assertThat(code).isEqualTo("123456789");
+    }
+
+    @Test
+    @DisplayName("10자리 이상 길이는 int bound 오버플로 위험 때문에 거부한다")
+    void generateNumericCodeRejectsLengthOverNine() {
+        SecureRandomVerificationCodeGenerator generator = new SecureRandomVerificationCodeGenerator();
+
+        assertThatThrownBy(() -> generator.generateNumericCode(10))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("between 1 and 9");
+    }
+
     private static final class FixedSecureRandom extends SecureRandom {
 
         private final int fixedValue;

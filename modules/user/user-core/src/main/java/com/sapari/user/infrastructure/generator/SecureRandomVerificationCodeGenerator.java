@@ -25,8 +25,9 @@ public class SecureRandomVerificationCodeGenerator implements VerificationCodeGe
 
     @Override
     public String generateNumericCode(int length) {
-        if (length <= 0) {
-            throw new IllegalArgumentException("code length must be positive");
+        // 현재 숫자 OTP는 SecureRandom.nextInt(int bound)를 사용하므로 10^length가 int 범위 안인 길이만 허용한다.
+        if (length < 1 || length > 9) {
+            throw new IllegalArgumentException("code length must be between 1 and 9");
         }
 
         int bound = (int) Math.pow(10, length);

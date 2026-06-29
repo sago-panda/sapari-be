@@ -17,6 +17,7 @@ import com.sapari.user.command.SignupEmailVerificationSendCommand;
 import com.sapari.user.domain.exception.UserErrorCode;
 import com.sapari.user.domain.exception.UserException;
 import com.sapari.user.domain.repository.SignupEmailVerificationRepository;
+import com.sapari.user.domain.repository.SignupEmailVerificationRepository.ConfirmResult;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.port.UserSignupEmailVerificationUseCase;
 import com.sapari.user.view.SignupEmailVerificationConfirmResult;
@@ -70,12 +71,16 @@ public class UserSignupEmailVerificationService implements UserSignupEmailVerifi
     @Override
     public SignupEmailVerificationConfirmResult confirmSignupEmailVerification(SignupEmailVerificationConfirmCommand command) {
         String emailHash = codeHasher.hashEmail(command.email());
-        String storedCodeHash = findStoredCodeHash(emailHash);
         String requestedCodeHash = codeHasher.hashEmailCode(command.email(), command.code());
+        ConfirmResult confirmResult = repository.confirmCode(
+                emailHash,
+                requestedCodeHash,
+                properties.getCodeTtl(),
+                properties.getVerifiedTtl(),
+                properties.getMaxAttempts()
+        );
 
-        validateCodeMatch(emailHash, storedCodeHash, requestedCodeHash);
-        saveVerified(emailHash);
-
+        validateConfirmResult(confirmResult);
         return new SignupEmailVerificationConfirmResult(true, properties.getVerifiedTtl().toSeconds());
     }
 
@@ -156,47 +161,17 @@ public class UserSignupEmailVerificationService implements UserSignupEmailVerifi
     }
 
     /**
-     * Redis에 유효한 codeHash가 없으면 만료되었거나 발급되지 않은 인증번호로 보고 재발급을 요구한다.
+     * Redis Lua confirm 결과를 user-api 오류 계약으로 변환한다.
+     * code/fail 삭제와 verified 저장은 이미 원자 script 안에서 끝났으므로 여기서는 상태를 다시 변경하지 않는다.
      */
-    private String findStoredCodeHash(String emailHash) {
-        return repository.findCodeHash(emailHash)
-                .orElseThrow(() -> new UserException(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_CODE_NOT_FOUND));
-    }
-
-    /**
-     * 인증번호 원문은 저장하지 않고 요청 시점에 다시 hash해 저장된 codeHash와 비교한다.
-     * 불일치 시도는 TTL 안에서 누적해 짧은 숫자 코드에 대한 반복 대입을 제한한다.
-     */
-    private void validateCodeMatch(String emailHash, String storedCodeHash, String requestedCodeHash) {
-        if (storedCodeHash.equals(requestedCodeHash)) {
-            return;
+    private void validateConfirmResult(ConfirmResult confirmResult) {
+        switch (confirmResult) {
+            case VERIFIED -> {
+            }
+            case CODE_NOT_FOUND -> throw new UserException(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_CODE_NOT_FOUND);
+            case ATTEMPTS_EXCEEDED -> throw new UserException(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_ATTEMPTS_EXCEEDED);
+            case CODE_MISMATCH -> throw new UserException(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_CODE_MISMATCH);
         }
-
-        long failedAttempts = repository.incrementFailure(emailHash, properties.getCodeTtl());
-        validateFailureAttempts(emailHash, failedAttempts);
-        throw new UserException(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_CODE_MISMATCH);
-    }
-
-    /**
-     * 최대 실패 횟수에 도달하면 기존 codeHash를 폐기한다.
-     * 같은 인증번호로 계속 시도하지 못하게 하고, 사용자는 새 인증번호를 다시 발급받아야 한다.
-     */
-    private void validateFailureAttempts(String emailHash, long failedAttempts) {
-        if (failedAttempts < properties.getMaxAttempts()) {
-            return;
-        }
-
-        repository.deleteCodeAndFailures(emailHash);
-        throw new UserException(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_ATTEMPTS_EXCEEDED);
-    }
-
-    /**
-     * 인증번호 검증이 끝나면 code/fail 상태를 제거하고 가입 완료 단계가 소비할 verified 상태만 남긴다.
-     * 검증 성공과 가입 완료를 분리해 구매자/판매자 추가정보 입력 흐름을 지원한다.
-     */
-    private void saveVerified(String emailHash) {
-        repository.deleteCodeAndFailures(emailHash);
-        repository.saveVerified(emailHash, properties.getVerifiedTtl());
     }
 
     /**

@@ -9,7 +9,6 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
-import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -130,70 +129,67 @@ public class UserSignupPhoneVerificationServiceTest {
     }
 
     @Test
-    @DisplayName("인증번호가 일치하면 verified 상태를 저장한다")
-    void confirmSignupPhoneVerificationWhenCodeMatchesSavesVerified() {
+    @DisplayName("인증번호가 일치하면 원자 confirm 결과에 따라 verified 응답을 반환한다")
+    void confirmSignupPhoneVerificationWhenCodeMatchesReturnsVerified() {
         givenPhoneHash();
-        when(repository.findCodeHash(PHONE_HASH)).thenReturn(Optional.of(CODE_HASH));
         when(codeHasher.hashCode(PHONE_NUMBER, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupPhoneVerificationRepository.ConfirmResult.VERIFIED);
 
         SignupPhoneVerificationConfirmResult result =
                 service.confirmSignupPhoneVerification(new SignupPhoneVerificationConfirmCommand(PHONE_NUMBER, CODE));
 
         assertThat(result.phoneNumberVerified()).isTrue();
         assertThat(result.verifiedExpiresInSeconds()).isEqualTo(1800L);
-        verify(repository).deleteCodeAndFailures(PHONE_HASH);
-        verify(repository).saveVerified(PHONE_HASH, Duration.ofMinutes(30));
+        verify(repository).confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
     }
 
     @Test
     @DisplayName("저장된 인증번호가 없으면 인증번호 없음 예외를 던진다")
     void confirmSignupPhoneVerificationWhenCodeMissingThrowsCodeNotFound() {
         givenPhoneHash();
-        when(repository.findCodeHash(PHONE_HASH)).thenReturn(Optional.empty());
+        when(codeHasher.hashCode(PHONE_NUMBER, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupPhoneVerificationRepository.ConfirmResult.CODE_NOT_FOUND);
 
         assertThatThrownBy(() -> service.confirmSignupPhoneVerification(new SignupPhoneVerificationConfirmCommand(PHONE_NUMBER, CODE)))
                 .isInstanceOfSatisfying(UserException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.SIGNUP_PHONE_VERIFICATION_CODE_NOT_FOUND)
                 );
 
-        verify(repository, never()).incrementFailure(anyString(), any(Duration.class));
-        verify(repository, never()).deleteCodeAndFailures(anyString());
-        verify(repository, never()).saveVerified(anyString(), any(Duration.class));
+        verify(repository).confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
     }
 
     @Test
-    @DisplayName("인증번호가 불일치하면 실패 횟수를 누적하고 불일치 예외를 던진다")
-    void confirmSignupPhoneVerificationWhenCodeMismatchesIncrementsFailuresAndThrowsMismatch() {
+    @DisplayName("인증번호가 불일치하면 원자 confirm 결과에 따라 불일치 예외를 던진다")
+    void confirmSignupPhoneVerificationWhenCodeMismatchesThrowsMismatch() {
         givenPhoneHash();
-        when(repository.findCodeHash(PHONE_HASH)).thenReturn(Optional.of(CODE_HASH));
-        when(codeHasher.hashCode(PHONE_NUMBER, CODE)).thenReturn("wrong-code-hash");
-        when(repository.incrementFailure(PHONE_HASH, Duration.ofMinutes(5))).thenReturn(4L);
+        when(codeHasher.hashCode(PHONE_NUMBER, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupPhoneVerificationRepository.ConfirmResult.CODE_MISMATCH);
 
         assertThatThrownBy(() -> service.confirmSignupPhoneVerification(new SignupPhoneVerificationConfirmCommand(PHONE_NUMBER, CODE)))
                 .isInstanceOfSatisfying(UserException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH)
                 );
 
-        verify(repository).incrementFailure(PHONE_HASH, Duration.ofMinutes(5));
-        verify(repository, never()).deleteCodeAndFailures(anyString());
-        verify(repository, never()).saveVerified(anyString(), any(Duration.class));
+        verify(repository).confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
     }
 
     @Test
-    @DisplayName("인증번호 실패 횟수가 최대치에 도달하면 code와 실패 상태를 폐기한다")
-    void confirmSignupPhoneVerificationWhenMaxAttemptsReachedDeletesCodeAndThrowsAttemptsExceeded() {
+    @DisplayName("인증번호 실패 횟수가 최대치에 도달하면 초과 예외를 던진다")
+    void confirmSignupPhoneVerificationWhenMaxAttemptsReachedThrowsAttemptsExceeded() {
         givenPhoneHash();
-        when(repository.findCodeHash(PHONE_HASH)).thenReturn(Optional.of(CODE_HASH));
-        when(codeHasher.hashCode(PHONE_NUMBER, CODE)).thenReturn("wrong-code-hash");
-        when(repository.incrementFailure(PHONE_HASH, Duration.ofMinutes(5))).thenReturn(5L);
+        when(codeHasher.hashCode(PHONE_NUMBER, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupPhoneVerificationRepository.ConfirmResult.ATTEMPTS_EXCEEDED);
 
         assertThatThrownBy(() -> service.confirmSignupPhoneVerification(new SignupPhoneVerificationConfirmCommand(PHONE_NUMBER, CODE)))
                 .isInstanceOfSatisfying(UserException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.SIGNUP_PHONE_VERIFICATION_ATTEMPTS_EXCEEDED)
                 );
 
-        verify(repository).deleteCodeAndFailures(PHONE_HASH);
-        verify(repository, never()).saveVerified(anyString(), any(Duration.class));
+        verify(repository).confirmCode(PHONE_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
     }
 
     @Test

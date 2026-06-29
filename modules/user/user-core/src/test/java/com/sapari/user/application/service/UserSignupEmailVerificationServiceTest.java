@@ -9,7 +9,6 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
-import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -130,19 +129,67 @@ class UserSignupEmailVerificationServiceTest {
     }
 
     @Test
-    @DisplayName("인증번호가 일치하면 verified 상태를 저장한다")
-    void confirmSignupEmailVerificationWhenCodeMatchesSavesVerified() {
+    @DisplayName("인증번호가 일치하면 원자 confirm 결과에 따라 verified 응답을 반환한다")
+    void confirmSignupEmailVerificationWhenCodeMatchesReturnsVerified() {
         givenEmailHash();
-        when(repository.findCodeHash(EMAIL_HASH)).thenReturn(Optional.of(CODE_HASH));
         when(codeHasher.hashEmailCode(EMAIL, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupEmailVerificationRepository.ConfirmResult.VERIFIED);
 
         SignupEmailVerificationConfirmResult result =
                 service.confirmSignupEmailVerification(new SignupEmailVerificationConfirmCommand(EMAIL, CODE));
 
         assertThat(result.emailVerified()).isTrue();
         assertThat(result.verifiedExpiresInSeconds()).isEqualTo(1800L);
-        verify(repository).deleteCodeAndFailures(EMAIL_HASH);
-        verify(repository).saveVerified(EMAIL_HASH, Duration.ofMinutes(30));
+        verify(repository).confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
+    }
+
+    @Test
+    @DisplayName("저장된 인증번호가 없으면 인증번호 없음 예외를 던진다")
+    void confirmSignupEmailVerificationWhenCodeMissingThrowsCodeNotFound() {
+        givenEmailHash();
+        when(codeHasher.hashEmailCode(EMAIL, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupEmailVerificationRepository.ConfirmResult.CODE_NOT_FOUND);
+
+        assertThatThrownBy(() -> service.confirmSignupEmailVerification(new SignupEmailVerificationConfirmCommand(EMAIL, CODE)))
+                .isInstanceOfSatisfying(UserException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_CODE_NOT_FOUND)
+                );
+
+        verify(repository).confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
+    }
+
+    @Test
+    @DisplayName("인증번호가 불일치하면 원자 confirm 결과에 따라 불일치 예외를 던진다")
+    void confirmSignupEmailVerificationWhenCodeMismatchesThrowsMismatch() {
+        givenEmailHash();
+        when(codeHasher.hashEmailCode(EMAIL, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupEmailVerificationRepository.ConfirmResult.CODE_MISMATCH);
+
+        assertThatThrownBy(() -> service.confirmSignupEmailVerification(new SignupEmailVerificationConfirmCommand(EMAIL, CODE)))
+                .isInstanceOfSatisfying(UserException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_CODE_MISMATCH)
+                );
+
+        verify(repository).confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
+    }
+
+    @Test
+    @DisplayName("인증번호 실패 횟수가 최대치에 도달하면 초과 예외를 던진다")
+    void confirmSignupEmailVerificationWhenMaxAttemptsReachedThrowsAttemptsExceeded() {
+        givenEmailHash();
+        when(codeHasher.hashEmailCode(EMAIL, CODE)).thenReturn(CODE_HASH);
+        when(repository.confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5))
+                .thenReturn(SignupEmailVerificationRepository.ConfirmResult.ATTEMPTS_EXCEEDED);
+
+        assertThatThrownBy(() -> service.confirmSignupEmailVerification(new SignupEmailVerificationConfirmCommand(EMAIL, CODE)))
+                .isInstanceOfSatisfying(UserException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.SIGNUP_EMAIL_VERIFICATION_ATTEMPTS_EXCEEDED)
+                );
+
+        verify(repository).confirmCode(EMAIL_HASH, CODE_HASH, Duration.ofMinutes(5), Duration.ofMinutes(30), 5);
     }
 
     @Test

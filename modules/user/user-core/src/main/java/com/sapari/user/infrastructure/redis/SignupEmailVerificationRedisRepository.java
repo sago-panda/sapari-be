@@ -4,7 +4,6 @@ import lombok.RequiredArgsConstructor;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Optional;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -26,11 +25,55 @@ public class SignupEmailVerificationRedisRepository implements SignupEmailVerifi
     private static final String FAILURE_KEY_PREFIX = "email:fail";
     private static final String COOLDOWN_KEY_PREFIX = "email:cooldown";
     private static final String VERIFIED_VALUE = "true";
+    private static final Long VERIFIED = 0L;
+    private static final Long CODE_NOT_FOUND = 1L;
+    private static final Long CODE_MISMATCH = 2L;
+    private static final Long ATTEMPTS_EXCEEDED = 3L;
+
+    /**
+     * 인증번호 확인은 code 조회, 실패 횟수 증가, code 폐기, verified 저장이 하나의 정책 전이다.
+     * 여러 Redis 명령으로 나누면 병렬 confirm 요청에서 성공/실패/초과 처리 순서가 흔들리므로 Lua로 원자화한다.
+     * result: 0=인증 성공, 1=code 없음/만료, 2=code 불일치, 3=실패 횟수 초과로 code 폐기.
+     */
+    private static final DefaultRedisScript<Long> CONFIRM_CODE_SCRIPT = new DefaultRedisScript<>(
+            """
+            local storedCodeHash = redis.call('get', KEYS[1])
+            local requestedCodeHash = ARGV[1]
+            local verifiedValue = ARGV[2]
+            local codeTtlSeconds = tonumber(ARGV[3])
+            local verifiedTtlSeconds = tonumber(ARGV[4])
+            local maxAttempts = tonumber(ARGV[5])
+
+            if storedCodeHash == false then
+                return 1
+            end
+
+            if storedCodeHash == requestedCodeHash then
+                redis.call('del', KEYS[1], KEYS[2])
+                redis.call('set', KEYS[3], verifiedValue, 'EX', verifiedTtlSeconds)
+                return 0
+            end
+
+            local failedAttempts = redis.call('incr', KEYS[2])
+            if failedAttempts == 1 then
+                redis.call('expire', KEYS[2], codeTtlSeconds)
+            end
+
+            if failedAttempts >= maxAttempts then
+                redis.call('del', KEYS[1], KEYS[2])
+                return 3
+            end
+
+            return 2
+            """,
+            Long.class
+    );
 
     /**
      * 발송 실패 보상 시 cooldownToken이 일치하는 key만 삭제한다.
      * GET 후 DEL을 분리하면 뒤따른 재요청의 쿨다운을 지울 수 있어 Lua로 비교·삭제를 원자화한다.
-     * KEYS[1]은 cooldown key, ARGV[1]은 현재 요청이 선점한 token이며 일치할 때만 DEL 결과를 반환한다.
+     * KEYS[1]은 cooldown key, ARGV[1]은 현재 요청이 선점한 token이며 일치할 때만 삭제한다.
+     * result: 1=현재 요청의 cooldown 삭제, 0=token 불일치/이미 없음으로 삭제하지 않음.
      */
     private static final DefaultRedisScript<Long> RELEASE_COOLDOWN_SCRIPT = new DefaultRedisScript<>(
             """
@@ -48,6 +91,34 @@ public class SignupEmailVerificationRedisRepository implements SignupEmailVerifi
 
     private final StringRedisTemplate stringRedisTemplate;
 
+    @Override
+    public ConfirmResult confirmCode(String emailHash, String requestedCodeHash, Duration codeTtl, Duration verifiedTtl, int maxAttempts) {
+        Long result = stringRedisTemplate.execute(
+                CONFIRM_CODE_SCRIPT,
+                List.of(codeKey(emailHash), failureKey(emailHash), verifiedKey(emailHash)),
+                requestedCodeHash,
+                VERIFIED_VALUE,
+                String.valueOf(codeTtl.toSeconds()),
+                String.valueOf(verifiedTtl.toSeconds()),
+                String.valueOf(maxAttempts)
+        );
+
+        if (VERIFIED.equals(result)) {
+            return ConfirmResult.VERIFIED;
+        }
+        if (CODE_NOT_FOUND.equals(result)) {
+            return ConfirmResult.CODE_NOT_FOUND;
+        }
+        if (CODE_MISMATCH.equals(result)) {
+            return ConfirmResult.CODE_MISMATCH;
+        }
+        if (ATTEMPTS_EXCEEDED.equals(result)) {
+            return ConfirmResult.ATTEMPTS_EXCEEDED;
+        }
+        // Redis script와 Java enum 매핑 계약이 어긋난 경우 사용자 입력 오류로 숨기지 않는다.
+        throw new IllegalStateException("Unexpected signup email verification confirm result: " + result);
+    }
+
     /**
      * 발송 성공 후에만 이메일별 codeHash를 TTL과 함께 저장한다.
      */
@@ -57,35 +128,11 @@ public class SignupEmailVerificationRedisRepository implements SignupEmailVerifi
     }
 
     /**
-     * 이메일 인증번호 확인 시 원문 code 대신 저장된 codeHash만 조회한다.
-     */
-    @Override
-    public Optional<String> findCodeHash(String emailHash) {
-        return Optional.ofNullable(stringRedisTemplate.opsForValue().get(codeKey(emailHash)));
-    }
-
-    /**
-     * 인증 성공 또는 실패 횟수 초과 시 code/fail 상태를 함께 제거해 이전 code 재사용을 막는다.
-     */
-    @Override
-    public void deleteCodeAndFailures(String emailHash) {
-        stringRedisTemplate.delete(List.of(codeKey(emailHash), failureKey(emailHash)));
-    }
-
-    /**
      * 새 인증번호가 정상 발송되면 이전 code의 실패 횟수만 초기화한다.
      */
     @Override
     public void deleteFailures(String emailHash) {
         stringRedisTemplate.delete(failureKey(emailHash));
-    }
-
-    /**
-     * 인증번호 확인 성공 후 최종 가입 API가 소비할 verified 상태를 별도 TTL로 저장한다.
-     */
-    @Override
-    public void saveVerified(String emailHash, Duration ttl) {
-        stringRedisTemplate.opsForValue().set(verifiedKey(emailHash), VERIFIED_VALUE, ttl);
     }
 
     /**
@@ -112,20 +159,6 @@ public class SignupEmailVerificationRedisRepository implements SignupEmailVerifi
     @Override
     public void releaseCooldown(String emailHash, String cooldownToken) {
         stringRedisTemplate.execute(RELEASE_COOLDOWN_SCRIPT, List.of(cooldownKey(emailHash)), cooldownToken);
-    }
-
-    /**
-     * code TTL 창 안에서 이메일별 실패 횟수를 누적해 짧은 숫자 코드 brute-force를 제한한다.
-     */
-    @Override
-    public long incrementFailure(String emailHash, Duration ttl) {
-        String key = failureKey(emailHash);
-        Long failureCount = stringRedisTemplate.opsForValue().increment(key);
-        // 첫 실패 시점에만 TTL을 부여해 code TTL과 같은 창 안에서 실패 횟수를 누적한다.
-        if (Long.valueOf(1L).equals(failureCount)) {
-            stringRedisTemplate.expire(key, ttl);
-        }
-        return failureCount == null ? 0L : failureCount;
     }
 
     /**

@@ -24,6 +24,7 @@ public class HmacVerificationCodeHasher implements VerificationCodeHasher {
 
     private final String hmacSecret;
 
+    // 생성자가 2개라 Spring이 properties 주입 생성자를 명확히 선택하도록 지정한다.
     @Autowired
     public HmacVerificationCodeHasher(UserSignupVerificationSecurityProperties properties) {
         this(properties.getHmacSecret());

@@ -1,12 +1,14 @@
 package com.sapari.user.infrastructure.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
+import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,6 +18,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.core.script.RedisScript;
+
+import com.sapari.user.domain.repository.SignupPhoneVerificationRepository.ConfirmResult;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("회원가입 휴대폰 인증 Redis repository 테스트")
@@ -94,6 +98,78 @@ class SignupPhoneVerificationRedisRepositoryTest {
                 eq(java.util.List.of(COOLDOWN_KEY)),
                 eq(COOLDOWN_TOKEN)
         );
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("인증번호 confirm script가 성공을 반환하면 verified 결과로 매핑한다")
+    void confirmCodeWhenScriptReturnsVerifiedReturnsVerified() {
+        SignupPhoneVerificationRedisRepository repository = repository();
+        when(stringRedisTemplate.execute(
+                any(RedisScript.class),
+                eq(List.of(CODE_KEY, FAILURE_KEY, "sms:verified:SIGN_UP:" + PHONE_HASH)),
+                eq(CODE_HASH),
+                eq("true"),
+                eq("300"),
+                eq("1800"),
+                eq("5")
+        )).thenReturn(0L);
+
+        ConfirmResult result = repository.confirmCode(PHONE_HASH, CODE_HASH, CODE_TTL, Duration.ofMinutes(30), 5);
+
+        assertThat(result).isEqualTo(ConfirmResult.VERIFIED);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("인증번호 confirm script가 code 없음을 반환하면 code 없음 결과로 매핑한다")
+    void confirmCodeWhenScriptReturnsCodeNotFoundReturnsCodeNotFound() {
+        SignupPhoneVerificationRedisRepository repository = repository();
+        when(stringRedisTemplate.execute(any(RedisScript.class), any(List.class), eq(CODE_HASH), eq("true"), eq("300"), eq("1800"), eq("5")))
+                .thenReturn(1L);
+
+        ConfirmResult result = repository.confirmCode(PHONE_HASH, CODE_HASH, CODE_TTL, Duration.ofMinutes(30), 5);
+
+        assertThat(result).isEqualTo(ConfirmResult.CODE_NOT_FOUND);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("인증번호 confirm script가 불일치를 반환하면 불일치 결과로 매핑한다")
+    void confirmCodeWhenScriptReturnsMismatchReturnsMismatch() {
+        SignupPhoneVerificationRedisRepository repository = repository();
+        when(stringRedisTemplate.execute(any(RedisScript.class), any(List.class), eq(CODE_HASH), eq("true"), eq("300"), eq("1800"), eq("5")))
+                .thenReturn(2L);
+
+        ConfirmResult result = repository.confirmCode(PHONE_HASH, CODE_HASH, CODE_TTL, Duration.ofMinutes(30), 5);
+
+        assertThat(result).isEqualTo(ConfirmResult.CODE_MISMATCH);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("인증번호 confirm script가 시도 초과를 반환하면 시도 초과 결과로 매핑한다")
+    void confirmCodeWhenScriptReturnsAttemptsExceededReturnsAttemptsExceeded() {
+        SignupPhoneVerificationRedisRepository repository = repository();
+        when(stringRedisTemplate.execute(any(RedisScript.class), any(List.class), eq(CODE_HASH), eq("true"), eq("300"), eq("1800"), eq("5")))
+                .thenReturn(3L);
+
+        ConfirmResult result = repository.confirmCode(PHONE_HASH, CODE_HASH, CODE_TTL, Duration.ofMinutes(30), 5);
+
+        assertThat(result).isEqualTo(ConfirmResult.ATTEMPTS_EXCEEDED);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("인증번호 confirm script가 알 수 없는 값을 반환하면 인프라 오류로 실패한다")
+    void confirmCodeWhenScriptReturnsUnknownResultThrowsIllegalStateException() {
+        SignupPhoneVerificationRedisRepository repository = repository();
+        when(stringRedisTemplate.execute(any(RedisScript.class), any(List.class), eq(CODE_HASH), eq("true"), eq("300"), eq("1800"), eq("5")))
+                .thenReturn(99L);
+
+        assertThatThrownBy(() -> repository.confirmCode(PHONE_HASH, CODE_HASH, CODE_TTL, Duration.ofMinutes(30), 5))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Unexpected signup phone verification confirm result");
     }
 
     private SignupPhoneVerificationRedisRepository repository() {

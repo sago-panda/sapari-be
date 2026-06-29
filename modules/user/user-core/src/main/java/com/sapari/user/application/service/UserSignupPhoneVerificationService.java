@@ -17,6 +17,7 @@ import com.sapari.user.command.SignupPhoneVerificationSendCommand;
 import com.sapari.user.domain.exception.UserErrorCode;
 import com.sapari.user.domain.exception.UserException;
 import com.sapari.user.domain.repository.SignupPhoneVerificationRepository;
+import com.sapari.user.domain.repository.SignupPhoneVerificationRepository.ConfirmResult;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.port.UserSignupPhoneVerificationUseCase;
 import com.sapari.user.view.SignupPhoneVerificationConfirmResult;
@@ -70,12 +71,16 @@ public class UserSignupPhoneVerificationService implements UserSignupPhoneVerifi
     @Override
     public SignupPhoneVerificationConfirmResult confirmSignupPhoneVerification(SignupPhoneVerificationConfirmCommand command) {
         String phoneHash = codeHasher.hashPhoneNumber(command.phoneNumber());
-        String storedCodeHash = findStoredCodeHash(phoneHash);
         String requestedCodeHash = codeHasher.hashCode(command.phoneNumber(), command.code());
+        ConfirmResult confirmResult = repository.confirmCode(
+                phoneHash,
+                requestedCodeHash,
+                properties.getCodeTtl(),
+                properties.getVerifiedTtl(),
+                properties.getMaxAttempts()
+        );
 
-        validateCodeMatch(phoneHash, storedCodeHash, requestedCodeHash);
-        saveVerified(phoneHash);
-
+        validateConfirmResult(confirmResult);
         return new SignupPhoneVerificationConfirmResult(true, properties.getVerifiedTtl().toSeconds());
     }
 
@@ -155,45 +160,18 @@ public class UserSignupPhoneVerificationService implements UserSignupPhoneVerifi
         repository.deleteFailures(phoneHash);
     }
 
-    private String findStoredCodeHash(String phoneHash) {
-        return repository.findCodeHash(phoneHash)
-                .orElseThrow(() -> new UserException(UserErrorCode.SIGNUP_PHONE_VERIFICATION_CODE_NOT_FOUND));
-    }
-
     /**
-     * 인증번호 원문은 저장하지 않고 요청 시점에 다시 hash해 저장된 codeHash와 비교한다.
-     * 불일치 시도는 TTL 안에서 누적해 짧은 숫자 코드에 대한 반복 대입을 제한한다.
+     * Redis Lua confirm 결과를 user-api 오류 계약으로 변환한다.
+     * code/fail 삭제와 verified 저장은 이미 원자 script 안에서 끝났으므로 여기서는 상태를 다시 변경하지 않는다.
      */
-    private void validateCodeMatch(String phoneHash, String storedCodeHash, String requestedCodeHash) {
-        if (storedCodeHash.equals(requestedCodeHash)) {
-            return;
+    private void validateConfirmResult(ConfirmResult confirmResult) {
+        switch (confirmResult) {
+            case VERIFIED -> {
+            }
+            case CODE_NOT_FOUND -> throw new UserException(UserErrorCode.SIGNUP_PHONE_VERIFICATION_CODE_NOT_FOUND);
+            case ATTEMPTS_EXCEEDED -> throw new UserException(UserErrorCode.SIGNUP_PHONE_VERIFICATION_ATTEMPTS_EXCEEDED);
+            case CODE_MISMATCH -> throw new UserException(UserErrorCode.SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH);
         }
-
-        long failedAttempts = repository.incrementFailure(phoneHash, properties.getCodeTtl());
-        validateFailureAttempts(phoneHash, failedAttempts);
-        throw new UserException(UserErrorCode.SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH);
-    }
-
-    /**
-     * 최대 실패 횟수에 도달하면 기존 codeHash를 폐기한다.
-     * 같은 인증번호로 계속 시도하지 못하게 하고, 사용자는 새 번호를 다시 발급받아야 한다.
-     */
-    private void validateFailureAttempts(String phoneHash, long failedAttempts) {
-        if (failedAttempts < properties.getMaxAttempts()) {
-            return;
-        }
-
-        repository.deleteCodeAndFailures(phoneHash);
-        throw new UserException(UserErrorCode.SIGNUP_PHONE_VERIFICATION_ATTEMPTS_EXCEEDED);
-    }
-
-    /**
-     * 인증번호 검증이 끝나면 code/fail 상태를 제거하고 가입 완료 단계가 소비할 verified 상태만 남긴다.
-     * 검증 성공과 가입 완료를 분리해 소셜 가입 추가정보 입력 흐름을 지원한다.
-     */
-    private void saveVerified(String phoneHash) {
-        repository.deleteCodeAndFailures(phoneHash);
-        repository.saveVerified(phoneHash, properties.getVerifiedTtl());
     }
 
     /**

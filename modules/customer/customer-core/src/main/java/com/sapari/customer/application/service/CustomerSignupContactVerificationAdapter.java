@@ -151,8 +151,39 @@ public class CustomerSignupContactVerificationAdapter {
      * user-api 뒤 구현체에서 발생한 회원가입 휴대폰 인증 오류를 customer API 오류 계약으로 변환한다.
      */
     private RuntimeException mapUserPhoneVerificationException(BusinessException exception) {
+        return toCustomerException(mapUserPhoneVerificationErrorCode(exception), exception);
+    }
+
+    /**
+     * user-api 뒤 구현체에서 발생한 회원가입 이메일 인증 오류를 customer API 오류 계약으로 변환한다.
+     */
+    private RuntimeException mapUserEmailVerificationException(BusinessException exception) {
+        return toCustomerException(mapUserEmailVerificationErrorCode(exception), exception);
+    }
+
+    /**
+     * user의 단일 연락처 소비 use case에서 발생한 phone/email 인증 오류를 customer 오류 계약으로 변환한다.
+     */
+    private RuntimeException mapUserContactVerificationException(BusinessException exception) {
+        CustomerErrorCode customerErrorCode = mapUserPhoneVerificationErrorCode(exception);
+        if (customerErrorCode == null) {
+            customerErrorCode = mapUserEmailVerificationErrorCode(exception);
+        }
+
+        return toCustomerException(customerErrorCode, exception);
+    }
+
+    private CustomerException toCustomerException(CustomerErrorCode customerErrorCode, BusinessException exception) {
+        if (customerErrorCode == null) {
+            return new CustomerException(CustomerErrorCode.SIGNUP_VERIFICATION_UNAVAILABLE, exception);
+        }
+
+        return new CustomerException(customerErrorCode, exception);
+    }
+
+    private CustomerErrorCode mapUserPhoneVerificationErrorCode(BusinessException exception) {
         // customer-core는 user-core에 의존할 수 없으므로 ErrorCode의 공개 문자열 계약만 보고 변환한다.
-        CustomerErrorCode customerErrorCode = switch (exception.getErrorCode().getCode()) {
+        return switch (exception.getErrorCode().getCode()) {
             case "USER-101" -> CustomerErrorCode.PHONE_VERIFICATION_REQUIRED;
             case "USER-102" -> CustomerErrorCode.PHONE_VERIFICATION_CODE_NOT_FOUND;
             case "USER-103" -> CustomerErrorCode.PHONE_VERIFICATION_CODE_MISMATCH;
@@ -162,20 +193,11 @@ public class CustomerSignupContactVerificationAdapter {
             case "USER-107" -> CustomerErrorCode.DUPLICATED_PHONE_NUMBER;
             default -> null;
         };
-
-        if (customerErrorCode == null) {
-            return exception;
-        }
-
-        return new CustomerException(customerErrorCode, exception);
     }
 
-    /**
-     * user-api 뒤 구현체에서 발생한 회원가입 이메일 인증 오류를 customer API 오류 계약으로 변환한다.
-     */
-    private RuntimeException mapUserEmailVerificationException(BusinessException exception) {
+    private CustomerErrorCode mapUserEmailVerificationErrorCode(BusinessException exception) {
         // customer-core는 user-core에 의존할 수 없으므로 ErrorCode의 공개 문자열 계약만 보고 변환한다.
-        CustomerErrorCode customerErrorCode = switch (exception.getErrorCode().getCode()) {
+        return switch (exception.getErrorCode().getCode()) {
             case "USER-108" -> CustomerErrorCode.EMAIL_VERIFICATION_REQUIRED;
             case "USER-109" -> CustomerErrorCode.EMAIL_VERIFICATION_CODE_NOT_FOUND;
             case "USER-110" -> CustomerErrorCode.EMAIL_VERIFICATION_CODE_MISMATCH;
@@ -185,23 +207,5 @@ public class CustomerSignupContactVerificationAdapter {
             case "USER-113" -> CustomerErrorCode.DUPLICATED_EMAIL;
             default -> null;
         };
-
-        if (customerErrorCode == null) {
-            return exception;
-        }
-
-        return new CustomerException(customerErrorCode, exception);
-    }
-
-    /**
-     * user의 단일 연락처 소비 use case에서 발생한 phone/email 인증 오류를 customer 오류 계약으로 변환한다.
-     */
-    private RuntimeException mapUserContactVerificationException(BusinessException exception) {
-        RuntimeException phoneMapped = mapUserPhoneVerificationException(exception);
-        if (phoneMapped instanceof CustomerException) {
-            return phoneMapped;
-        }
-
-        return mapUserEmailVerificationException(exception);
     }
 }
