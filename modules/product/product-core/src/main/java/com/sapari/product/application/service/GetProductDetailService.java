@@ -69,7 +69,8 @@ public class GetProductDetailService implements GetProductDetailUseCase {
                 product.tags(),
                 product.images().stream().map(this::toImageView).toList(),
                 product.optionTypes().stream().map(this::toOptionTypeView).toList(),
-                combinations.stream().map(this::toCombinationView).toList());
+                combinations.stream().map(this::toCombinationView).toList(),
+                product.version());
     }
 
     /**
@@ -113,6 +114,7 @@ public class GetProductDetailService implements GetProductDetailUseCase {
                 combination.stock().stock(),
                 combination.availableStock(),
                 combination.isAvailable(),
-                sku == null ? null : sku.value());
+                sku == null ? null : sku.value(),
+                combination.version());
     }
 }

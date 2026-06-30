@@ -11,13 +11,15 @@ import java.util.UUID;
  *
  * @param productId    수정할 상품 id
  * @param sellerId     요청 판매자 id(소유권 확인용)
- * @param optionTypes  교체할 옵션 타입/값
- * @param defaultStock 재생성되는 모든 조합의 기본 재고
+ * @param optionTypes     교체할 옵션 타입/값
+ * @param defaultStock    재생성되는 모든 조합의 기본 재고
+ * @param expectedVersion 클라이언트가 수정 폼에서 본 상품 version(stale-form 충돌 감지용)
  */
 public record UpdateProductOptionsCommand(
         UUID productId,
         UUID sellerId,
         List<ProductOptionTypeCommand> optionTypes,
-        int defaultStock
+        int defaultStock,
+        Long expectedVersion
 ) {
 }

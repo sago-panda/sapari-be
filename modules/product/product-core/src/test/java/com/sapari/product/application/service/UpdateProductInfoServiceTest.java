@@ -8,6 +8,7 @@ import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.product.application.port.HtmlSanitizer;
 import com.sapari.product.command.UpdateProductInfoCommand;
 import com.sapari.product.domain.exception.CategoryNotFoundException;
 import com.sapari.product.domain.exception.InvalidProductTagException;
@@ -46,6 +47,7 @@ class UpdateProductInfoServiceTest {
     private static final Long NEW_CATEGORY = 2002L;
     private static final Instant NOW = Instant.parse("2026-06-21T00:00:00Z");
     private static final Instant LATER = Instant.parse("2026-06-22T00:00:00Z");
+    private static final Long EXPECTED_VERSION = 7L;
 
     @Mock
     private ProductRepository productRepository;
@@ -56,11 +58,17 @@ class UpdateProductInfoServiceTest {
     // 실제 TimeProvider를 고정 Clock으로 — now()는 LATER를 결정적으로 반환(스텁 불필요)
     private final TimeProvider timeProvider = new TimeProvider(Clock.fixed(LATER, ZoneOffset.UTC));
 
+    // 정제 알고리즘은 어댑터 단위테스트가 담당. 여기서는 서비스가 저장 전 description을 정제기로 통과시키는지를
+    // 센티넬 변환으로 검증한다 — 항등 람다면 정제 우회 회귀를 못 잡으므로 접두어를 붙여 호출 사실을 단언한다.
+    private static final String SANITIZED_PREFIX = "정제됨:";
+    private final HtmlSanitizer htmlSanitizer = html -> html == null ? null : SANITIZED_PREFIX + html;
+
     private UpdateProductInfoService service;
 
     @BeforeEach
     void setUp() {
-        service = new UpdateProductInfoService(productRepository, categoryRepository, timeProvider);
+        service = new UpdateProductInfoService(
+                productRepository, categoryRepository, timeProvider, htmlSanitizer);
     }
 
     private static Category aCategory() {
@@ -79,12 +87,14 @@ class UpdateProductInfoServiceTest {
 
     private static UpdateProductInfoCommand command() {
         return new UpdateProductInfoCommand(
-                PRODUCT_ID, SELLER_ID, NEW_CATEGORY, "수정 상품", "수정 설명", SHIPPING_ID, 3_000, List.of("가을"));
+                PRODUCT_ID, SELLER_ID, NEW_CATEGORY, "수정 상품", "수정 설명", SHIPPING_ID, 3_000, List.of("가을"),
+                EXPECTED_VERSION);
     }
 
     private static UpdateProductInfoCommand commandWithTags(List<String> tags) {
         return new UpdateProductInfoCommand(
-                PRODUCT_ID, SELLER_ID, NEW_CATEGORY, "수정 상품", "수정 설명", SHIPPING_ID, 3_000, tags);
+                PRODUCT_ID, SELLER_ID, NEW_CATEGORY, "수정 상품", "수정 설명", SHIPPING_ID, 3_000, tags,
+                EXPECTED_VERSION);
     }
 
     private Product captureSaved() {
@@ -111,13 +121,16 @@ class UpdateProductInfoServiceTest {
             assertThat(saved.status()).isEqualTo(ProductStatus.PENDING_REVIEW);
             assertThat(saved.categoryId()).isEqualTo(NEW_CATEGORY);
             assertThat(saved.name()).isEqualTo("수정 상품");
-            assertThat(saved.description()).isEqualTo("수정 설명");
+            // 저장 전 정제기를 거쳤음을 단언(센티넬 접두어) — 정제 우회 회귀 방지
+            assertThat(saved.description()).isEqualTo(SANITIZED_PREFIX + "수정 설명");
             assertThat(saved.shippingPolicyId()).isEqualTo(SHIPPING_ID);
             assertThat(saved.additionalShippingFee()).isEqualTo(3_000);
             assertThat(saved.tags()).containsExactly("가을");
             assertThat(saved.updatedAt()).isEqualTo(LATER);
             assertThat(saved.basePrice()).isEqualTo(10_000);
             assertThat(saved.createdAt()).isEqualTo(NOW);
+            // 클라이언트가 본 version으로 덮어써 stale 비교가 동작하도록 보장한다(§13)
+            assertThat(saved.version()).isEqualTo(EXPECTED_VERSION);
         }
 
         @Test

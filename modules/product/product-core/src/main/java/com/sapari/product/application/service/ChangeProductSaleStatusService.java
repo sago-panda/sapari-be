@@ -43,7 +43,12 @@ public class ChangeProductSaleStatusService implements ChangeProductSaleStatusUs
                     "상품 소유자가 아닙니다: product=" + command.productId() + ", seller=" + command.sellerId());
         }
 
-        productRepository.save(transition(product, command.target(), timeProvider.now()));
+        // 클라이언트가 본 version으로 덮어써야 저장 시 stale 비교가 동작한다(§13)
+        Product transitioned = transition(product, command.target(), timeProvider.now())
+                .toBuilder()
+                .version(command.expectedVersion())
+                .build();
+        productRepository.save(transitioned);
     }
 
     /**
