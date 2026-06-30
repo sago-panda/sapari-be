@@ -10,6 +10,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.product.application.port.HtmlSanitizer;
 import com.sapari.product.command.CreateProductCommand;
 import com.sapari.product.command.ProductOptionTypeCommand;
 import com.sapari.product.command.ProductOptionValueCommand;
@@ -72,12 +73,17 @@ class CreateProductServiceTest {
     // 실제 TimeProvider를 고정 Clock으로 — now()는 NOW를 결정적으로 반환(스텁 불필요)
     private final TimeProvider timeProvider = new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
 
+    // 정제 알고리즘은 어댑터 단위테스트가 담당. 여기서는 서비스가 저장 전 description을 정제기로 통과시키는지를
+    // 센티넬 변환으로 검증한다 — 항등 람다면 정제 우회 회귀를 못 잡으므로 접두어를 붙여 호출 사실을 단언한다.
+    private static final String SANITIZED_PREFIX = "정제됨:";
+    private final HtmlSanitizer htmlSanitizer = html -> html == null ? null : SANITIZED_PREFIX + html;
+
     private CreateProductService service;
 
     @BeforeEach
     void setUp() {
         service = new CreateProductService(
-                productRepository, combinationRepository, categoryRepository, timeProvider);
+                productRepository, combinationRepository, categoryRepository, timeProvider, htmlSanitizer);
     }
 
     private static Category aCategory() {
@@ -149,7 +155,8 @@ class CreateProductServiceTest {
             assertThat(toSave.sellerId()).isEqualTo(SELLER_ID);
             assertThat(toSave.categoryId()).isEqualTo(CATEGORY_ID);
             assertThat(toSave.name()).isEqualTo("베이직 티셔츠");
-            assertThat(toSave.description()).isEqualTo("상세 설명");
+            // 저장 전 정제기를 거쳤음을 단언(센티넬 접두어) — 정제 우회 회귀 방지
+            assertThat(toSave.description()).isEqualTo(SANITIZED_PREFIX + "상세 설명");
             assertThat(toSave.basePrice()).isEqualTo(BASE_PRICE);
             assertThat(toSave.shippingPolicyId()).isEqualTo(SHIPPING_POLICY_ID);
             assertThat(toSave.additionalShippingFee()).isEqualTo(2_500);

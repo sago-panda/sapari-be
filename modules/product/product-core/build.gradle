@@ -10,6 +10,10 @@ dependencies {
     implementation(project(':modules:product:product-api'))
 
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+
+    // 사용자 작성 HTML(상품 상세 설명) 저장형 XSS 차단 — 허용 목록 정제
+    implementation 'com.googlecode.owasp-java-html-sanitizer:owasp-java-html-sanitizer:20240325.1'
+
     testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
 
     // test container
