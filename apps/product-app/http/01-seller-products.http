@@ -1,0 +1,247 @@
+# 판매자 상품 관리 7개 엔드포인트 단건 검증. 00-auth.http 먼저 실행해 sellerToken을 채운 뒤, 위→아래로 실행한다.
+# expectedVersion: 신규(PENDING_REVIEW) 상품은 '판매자 목록'에서, ON_SALE 상품은 '공개 상세'에서 캡처한다.
+
+### [1/9] 상품 등록 (POST) → 201, productId 캡처
+# sellerId는 본문이 아니라 토큰(@CurrentUserId)에서. metadata는 jsonb '문자열'(JSON object를 escape).
+# description의 <script>는 서버 정제로 제거된다(저장형 XSS 차단).
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}},
+  "name": "테스트 코튼 티셔츠",
+  "description": "<p>상세 설명 <strong>HTML</strong></p><script>alert(1)</script>",
+  "basePrice": 19900,
+  "shippingPolicyId": null,
+  "additionalShippingFee": 2500,
+  "tags": ["여름", "코튼"],
+  "optionTypes": [
+    {
+      "name": "색상",
+      "attributeGroupId": null,
+      "sortOrder": 1,
+      "values": [
+        { "value": "빨강", "attributePresetId": null, "metadata": "{\"hex\":\"#FF0000\"}", "priceDelta": 0, "sortOrder": 1 },
+        { "value": "파랑", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 2 }
+      ]
+    },
+    {
+      "name": "사이즈",
+      "attributeGroupId": null,
+      "sortOrder": 2,
+      "values": [
+        { "value": "S", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 1 },
+        { "value": "M", "attributePresetId": null, "metadata": null, "priceDelta": 1000, "sortOrder": 2 }
+      ]
+    }
+  ],
+  "defaultStock": 100
+}
+
+> {%
+    client.test("201 Created", function () {
+        client.assert(response.status === 201, "expected 201, got " + response.status);
+    });
+    client.test("productId 반환", function () {
+        client.assert(response.body.productId != null, "productId 없음");
+    });
+    client.test("status=PENDING_REVIEW", function () {
+        client.assert(response.body.status === "PENDING_REVIEW", "status=" + response.body.status);
+    });
+    client.global.set("freshProductId", response.body.productId);
+%}
+
+### [2/9] 판매자 목록 (GET) → 200, 방금 등록 상품의 version 캡처
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    client.test("200 OK", function () {
+        client.assert(response.status === 200, "expected 200, got " + response.status);
+    });
+    client.test("배열 응답", function () {
+        client.assert(Array.isArray(response.body), "배열 아님");
+    });
+    const id = client.global.get("freshProductId");
+    const p = response.body.find(x => x.productId === id);
+    client.test("등록 상품이 목록에 존재", function () {
+        client.assert(p !== undefined, "등록 상품 미발견: " + id);
+    });
+    client.test("요약 필드(version 포함) 존재", function () {
+        client.assert(p.version != null, "version 없음");
+        client.assert(p.status === "PENDING_REVIEW", "status=" + p.status);
+        client.assert("minPrice" in p && "hasStock" in p && "thumbnailKey" in p, "요약 필드 누락");
+    });
+    client.global.set("freshProductVersion", p.version);
+%}
+
+### [3/9] 기본 정보 수정 (PUT) → 204 (재승인 대상). expectedVersion=목록에서 캡처한 version
+PUT {{productBaseUrl}}/api/v1/seller/products/{{freshProductId}}
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}},
+  "name": "테스트 코튼 티셔츠 (리뉴얼)",
+  "description": "<p>리뉴얼 설명</p>",
+  "shippingPolicyId": null,
+  "additionalShippingFee": 0,
+  "tags": ["여름", "코튼", "신상"],
+  "expectedVersion": {{freshProductVersion}}
+}
+
+> {%
+    client.test("204 No Content", function () {
+        client.assert(response.status === 204, "expected 204, got " + response.status);
+    });
+%}
+
+### [4/9] 판매자 목록 재조회 → 수정 후 version 재캡처(수정으로 version 증가)
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const id = client.global.get("freshProductId");
+    const p = response.body.find(x => x.productId === id);
+    client.test("이름 리뉴얼 반영", function () {
+        client.assert(p.name === "테스트 코튼 티셔츠 (리뉴얼)", "name=" + p.name);
+    });
+    client.global.set("freshProductVersion", p.version);
+%}
+
+### [5/9] 옵션 수정 (PUT /options) → 204 (옵션 교체 + 조합 재생성)
+PUT {{productBaseUrl}}/api/v1/seller/products/{{freshProductId}}/options
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "optionTypes": [
+    {
+      "name": "사이즈",
+      "attributeGroupId": null,
+      "sortOrder": 1,
+      "values": [
+        { "value": "S", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 1 },
+        { "value": "L", "attributePresetId": null, "metadata": null, "priceDelta": 2000, "sortOrder": 2 }
+      ]
+    }
+  ],
+  "defaultStock": 50,
+  "expectedVersion": {{freshProductVersion}}
+}
+
+> {%
+    client.test("204 No Content", function () {
+        client.assert(response.status === 204, "expected 204, got " + response.status);
+    });
+%}
+
+### [6/9] 공개 상세로 ON_SALE 상품의 version·조합 캡처 (조합/상태 수정 준비)
+# onSaleProductId는 ON_SALE 상태 상품의 UUID(README 6번 참고).
+GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
+
+> {%
+    client.test("200 OK (ON_SALE 상품)", function () {
+        client.assert(response.status === 200, "ON_SALE 상품이 아님/없음: status=" + response.status
+            + " — onSaleProductId 설정 확인");
+    });
+    const d = response.body;
+    client.global.set("onSaleId", d.productId);
+    client.global.set("onSaleVersion", d.version);
+    client.test("조합 존재", function () {
+        client.assert(Array.isArray(d.combinations) && d.combinations.length > 0, "조합 없음");
+    });
+    const c = d.combinations[0];
+    client.global.set("combinationId", c.combinationId);
+    client.global.set("combinationVersion", c.version);
+%}
+
+### [7/9] 조합 가격·재고 수정 (PATCH /combinations) → 204 (즉시 반영). 조합별 expectedVersion
+PATCH {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}/combinations
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "combinations": [
+    {
+      "combinationId": "{{combinationId}}",
+      "price": 18900,
+      "originalPrice": 22000,
+      "stock": 30,
+      "isAvailable": true,
+      "expectedVersion": {{combinationVersion}}
+    }
+  ]
+}
+
+> {%
+    client.test("204 No Content", function () {
+        client.assert(response.status === 204, "expected 204, got " + response.status);
+    });
+%}
+
+### [8/9] 판매 상태 전환 (PATCH /status) → 204. ON_SALE → SUSPENDED
+PATCH {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}/status
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "target": "SUSPENDED",
+  "expectedVersion": {{onSaleVersion}}
+}
+
+> {%
+    client.test("204 No Content", function () {
+        client.assert(response.status === 204, "expected 204, got " + response.status);
+    });
+%}
+
+### [8.1/9] 상태 복구 준비 — SUSPENDED 상품의 version은 공개 상세에 안 보이므로 목록에서 캡처
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const onSaleId = client.global.get("onSaleId");
+    const p = response.body.find(x => x.productId === onSaleId);
+    client.test("SUSPENDED 반영", function () {
+        client.assert(p && p.status === "SUSPENDED", "status=" + (p && p.status));
+    });
+    client.global.set("onSaleVersion", p.version);
+%}
+
+### [8.2/9] 상태 복구 — SUSPENDED → ON_SALE (seed 원복)
+PATCH {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}/status
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "target": "ON_SALE",
+  "expectedVersion": {{onSaleVersion}}
+}
+
+> {%
+    client.test("204 No Content (원복)", function () {
+        client.assert(response.status === 204, "expected 204, got " + response.status);
+    });
+%}
+
+### [9/9] 상품 삭제 (DELETE) → 204. expectedVersion은 쿼리 파라미터
+# 삭제 전 신규 상품의 최신 version을 목록에서 캡처
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const p = response.body.find(x => x.productId === client.global.get("freshProductId"));
+    client.global.set("freshProductVersion", p.version);
+%}
+
+###
+DELETE {{productBaseUrl}}/api/v1/seller/products/{{freshProductId}}?expectedVersion={{freshProductVersion}}
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    client.test("204 No Content", function () {
+        client.assert(response.status === 204, "expected 204, got " + response.status);
+    });
+%}
