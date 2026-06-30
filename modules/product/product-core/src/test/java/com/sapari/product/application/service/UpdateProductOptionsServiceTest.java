@@ -48,6 +48,7 @@ class UpdateProductOptionsServiceTest {
     private static final UUID NEW_M = UUID.fromString("00000000-0000-0000-0000-000000000022");
     private static final Instant NOW = Instant.parse("2026-06-21T00:00:00Z");
     private static final Instant LATER = Instant.parse("2026-06-22T00:00:00Z");
+    private static final Long EXPECTED_VERSION = 7L;
 
     @Mock
     private ProductRepository productRepository;
@@ -86,7 +87,7 @@ class UpdateProductOptionsServiceTest {
         ProductOptionValueCommand s = new ProductOptionValueCommand("S", null, null, 0, (short) 1);
         ProductOptionValueCommand m = new ProductOptionValueCommand("M", null, null, 0, (short) 2);
         ProductOptionTypeCommand size = new ProductOptionTypeCommand("사이즈", null, (short) 1, List.of(s, m));
-        return new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(size), 50);
+        return new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(size), 50, EXPECTED_VERSION);
     }
 
     @SuppressWarnings("unchecked")
@@ -121,6 +122,8 @@ class UpdateProductOptionsServiceTest {
                         assertThat(type.values()).extracting(ProductOptionValueModel::value).containsExactly("S", "M");
                         assertThat(type.values()).extracting(ProductOptionValueModel::id).containsOnlyNulls();
                     });
+            // 클라이언트가 본 version으로 덮어써 stale 비교가 동작하도록 보장한다(§13)
+            assertThat(productCaptor.getValue().version()).isEqualTo(EXPECTED_VERSION);
         }
 
         @Test
@@ -162,7 +165,7 @@ class UpdateProductOptionsServiceTest {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
             given(productRepository.save(any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
 
-            service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50));
+            service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50, EXPECTED_VERSION));
 
             then(combinationRepository).should().discontinueAllByProductId(PRODUCT_ID, LATER);
             then(combinationRepository).should(never()).saveAll(any());
@@ -186,7 +189,7 @@ class UpdateProductOptionsServiceTest {
                     new ProductOptionTypeCommand("색상", null, (short) 1, List.of());
 
             assertThatThrownBy(() -> service.update(
-                    new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(colorWithoutValues), 50)))
+                    new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(colorWithoutValues), 50, EXPECTED_VERSION)))
                     .isInstanceOf(InvalidProductOptionException.class);
 
             then(combinationRepository).should(never()).saveAll(any());

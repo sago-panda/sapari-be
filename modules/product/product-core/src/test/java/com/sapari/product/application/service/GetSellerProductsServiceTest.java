@@ -32,9 +32,11 @@ class GetSellerProductsServiceTest {
     @InjectMocks
     private GetSellerProductsService service;
 
+    private static final long VERSION = 3L;
+
     private static ProductSummary summary(UUID id, String thumbnailKey) {
         return new ProductSummary(id, "상품 " + id, ProductStatus.ON_SALE, 9_000, true, 5, new BigDecimal("4.2"),
-                thumbnailKey);
+                thumbnailKey, VERSION);
     }
 
     private List<ProductSummaryView> get() {
@@ -56,6 +58,7 @@ class GetSellerProductsServiceTest {
             assertThat(view.reviewCount()).isEqualTo(5);
             assertThat(view.avgRating()).isEqualByComparingTo("4.2");
             assertThat(view.thumbnailKey()).isEqualTo("g0.jpg");
+            assertThat(view.version()).isEqualTo(VERSION);
         });
     }
 
@@ -64,7 +67,7 @@ class GetSellerProductsServiceTest {
     void passesThroughNullables() {
         given(productRepository.findActiveSellerProductSummaries(SELLER_ID))
                 .willReturn(List.of(new ProductSummary(
-                        PRODUCT_1, "상품", ProductStatus.ON_SALE, null, false, 0, null, null)));
+                        PRODUCT_1, "상품", ProductStatus.ON_SALE, null, false, 0, null, null, VERSION)));
 
         ProductSummaryView view = get().get(0);
         assertThat(view.thumbnailKey()).isNull();

@@ -57,9 +57,11 @@ public class UpdateProductOptionsService implements UpdateProductOptionsUseCase 
         combinationRepository.discontinueAllByProductId(product.id(), now);
 
         // 새 옵션 타입/값으로 교체 저장 → 옵션값 id 확정
+        // 클라이언트가 본 version으로 덮어써야 저장 시 stale 비교가 동작한다(§13)
         Product withNewOptions = product.toBuilder()
                 .optionTypes(ProductOptionCommandMapper.toOptionTypeModels(command.optionTypes()))
                 .updatedAt(now)
+                .version(command.expectedVersion())
                 .build();
         Product saved = productRepository.save(withNewOptions);
 
