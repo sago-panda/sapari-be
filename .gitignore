@@ -54,3 +54,6 @@ docker-compose.local.yml
 
 ### Hermes local workspace ###
 .hermes/
+
+### IntelliJ HTTP Client private env (비밀값 — 절대 커밋 금지) ###
+http-client.private.env.json

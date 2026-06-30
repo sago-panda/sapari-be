@@ -1,0 +1,136 @@
+# 음성(에러) 케이스. 인증/인가/입력검증/낙관적 락. 400 검증은 sellerToken 필요(시큐리티 통과 후 @Valid).
+# 00-auth.http로 sellerToken을 먼저 채운다. customerToken(비-SELLER)은 private env에 직접 넣는다.
+
+### [401] 토큰 없이 등록 → 401 (시큐리티)
+POST {{productBaseUrl}}/api/v1/seller/products
+Content-Type: application/json
+
+{ "categoryId": {{categoryId}}, "name": "x", "basePrice": 1000, "optionTypes": [], "defaultStock": 1 }
+
+> {%
+    client.test("401 Unauthorized", function () { client.assert(response.status === 401, "got " + response.status); });
+%}
+
+### [403] 비-SELLER 토큰으로 등록 → 403 (ROLE_SELLER 아님)
+# customerToken: ROLE_SELLER가 아닌 유효 access token (private env).
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{ "categoryId": {{categoryId}}, "name": "x", "basePrice": 1000, "optionTypes": [], "defaultStock": 1 }
+
+> {%
+    client.test("403 Forbidden", function () { client.assert(response.status === 403, "got " + response.status); });
+%}
+
+### [400] 필수 누락 — name 없음 → 400 (@NotBlank)
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{ "categoryId": {{categoryId}}, "basePrice": 1000, "optionTypes": [], "defaultStock": 1 }
+
+> {%
+    client.test("400 Bad Request", function () { client.assert(response.status === 400, "got " + response.status); });
+    client.test("실패 봉투", function () { client.assert(response.body.success === false, "success!=false"); });
+%}
+
+### [400] metadata 비-JSON 문자열 → 400 (@JsonObjectString)
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}}, "name": "메타불량", "basePrice": 1000, "shippingPolicyId": null,
+  "additionalShippingFee": 0, "tags": [], "defaultStock": 1,
+  "optionTypes": [
+    {
+      "name": "색상", "attributeGroupId": null, "sortOrder": 1,
+      "values": [
+        { "value": "빨강", "attributePresetId": null, "metadata": "not-a-json", "priceDelta": 0, "sortOrder": 1 }
+      ]
+    }
+  ]
+}
+
+> {%
+    client.test("400 Bad Request (metadata)", function () { client.assert(response.status === 400, "got " + response.status); });
+%}
+
+### [400] basePrice 음수 → 400 (@PositiveOrZero)
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{ "categoryId": {{categoryId}}, "name": "음수가격", "basePrice": -100, "optionTypes": [], "defaultStock": 1 }
+
+> {%
+    client.test("400 Bad Request (basePrice)", function () { client.assert(response.status === 400, "got " + response.status); });
+%}
+
+### [400] 태그 11개(상한 10 초과) → 400 (@Size)
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}}, "name": "태그초과", "basePrice": 1000, "shippingPolicyId": null,
+  "additionalShippingFee": 0, "defaultStock": 1, "optionTypes": [],
+  "tags": ["1","2","3","4","5","6","7","8","9","10","11"]
+}
+
+> {%
+    client.test("400 Bad Request (tags)", function () { client.assert(response.status === 400, "got " + response.status); });
+%}
+
+### [400] 상태 전환 target 화이트리스트 위반 → 400 (@Pattern). 검증이 서비스보다 먼저라 version 무관
+PATCH {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}/status
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{ "target": "DELETED", "expectedVersion": 1 }
+
+> {%
+    client.test("400 Bad Request (target)", function () { client.assert(response.status === 400, "got " + response.status); });
+%}
+
+### [400] 수정 시 expectedVersion 누락 → 400 (@NotNull)
+PUT {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}}, "name": "버전누락", "description": null,
+  "shippingPolicyId": null, "additionalShippingFee": 0, "tags": []
+}
+
+> {%
+    client.test("400 Bad Request (expectedVersion)", function () { client.assert(response.status === 400, "got " + response.status); });
+%}
+
+### [404] 존재하지 않는 상품 수정 → 404 PRODUCT-001
+PUT {{productBaseUrl}}/api/v1/seller/products/22222222-2222-2222-2222-222222222222
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}}, "name": "없는상품", "description": null,
+  "shippingPolicyId": null, "additionalShippingFee": 0, "tags": [], "expectedVersion": 0
+}
+
+> {%
+    client.test("404 Not Found", function () { client.assert(response.status === 404, "got " + response.status); });
+    client.test("PRODUCT-001", function () { client.assert(response.body.error.code === "PRODUCT-001", "code=" + response.body.error.code); });
+%}
+
+###
+# [409 stale-form] → 03-flow-lifecycle.http의 Flow C 참고(같은 version 2회 수정 → PRODUCT-011).
+#
+# [403 IDOR] 타 판매자 상품 수정/삭제 시 PRODUCT-003. 검증하려면 '다른 판매자 소유' 상품 UUID가 필요하다.
+# 그런 상품 id를 가진 경우 아래처럼 sellerToken(내 토큰)으로 호출하면 403이어야 한다:
+#
+# PUT {{productBaseUrl}}/api/v1/seller/products/<OTHER_SELLER_PRODUCT_ID>
+# Authorization: Bearer {{sellerToken}}
+# Content-Type: application/json
+# { "categoryId": {{categoryId}}, "name": "idor", "shippingPolicyId": null, "additionalShippingFee": 0, "tags": [], "expectedVersion": 0 }
+# → 기대: 403 PRODUCT-003
