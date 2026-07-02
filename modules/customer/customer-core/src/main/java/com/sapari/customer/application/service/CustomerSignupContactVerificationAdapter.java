@@ -76,18 +76,6 @@ public class CustomerSignupContactVerificationAdapter {
     }
 
     /**
-     * 회원가입 저장 직전에 휴대폰 verified 상태를 1회 소비해 동일 인증 결과의 재사용을 막는다.
-     */
-    public void consumePhoneVerification(String phoneNumber) {
-        try {
-            userSignupPhoneVerificationUseCase.consumeSignupPhoneVerification(phoneNumber);
-        } catch (BusinessException e) {
-            throw mapUserPhoneVerificationException(e);
-        }
-    }
-
-
-    /**
      * user가 소유한 회원가입 이메일 인증 발송 정책을 호출하고 customer 응답 모델로 변환한다.
      */
     public CustomerEmailVerificationSendResult sendEmailVerification(CustomerEmailVerificationSendCommand command) {
@@ -117,17 +105,6 @@ public class CustomerSignupContactVerificationAdapter {
                     result.emailVerified(),
                     result.verifiedExpiresInSeconds()
             );
-        } catch (BusinessException e) {
-            throw mapUserEmailVerificationException(e);
-        }
-    }
-
-    /**
-     * 회원가입 저장 직전에 이메일 verified 상태를 1회 소비해 동일 인증 결과의 재사용을 막는다.
-     */
-    public void consumeEmailVerification(String email) {
-        try {
-            userSignupEmailVerificationUseCase.consumeSignupEmailVerification(email);
         } catch (BusinessException e) {
             throw mapUserEmailVerificationException(e);
         }

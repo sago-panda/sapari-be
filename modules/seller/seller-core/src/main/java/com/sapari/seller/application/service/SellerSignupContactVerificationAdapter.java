@@ -78,7 +78,21 @@ public class SellerSignupContactVerificationAdapter {
      */
     private RuntimeException mapUserEmailVerificationException(BusinessException exception) {
         // seller-core는 user-core에 의존할 수 없으므로 ErrorCode의 공개 문자열 계약만 보고 변환한다.
-        SellerErrorCode sellerErrorCode = switch (exception.getErrorCode().getCode()) {
+        SellerErrorCode sellerErrorCode = mapUserEmailVerificationErrorCode(exception);
+        return toSellerException(sellerErrorCode, exception);
+    }
+
+    private SellerException toSellerException(SellerErrorCode sellerErrorCode, BusinessException exception) {
+        if (sellerErrorCode == null) {
+            return new SellerException(SellerErrorCode.SIGNUP_VERIFICATION_UNAVAILABLE, exception);
+        }
+
+        return new SellerException(sellerErrorCode, exception);
+    }
+
+    private SellerErrorCode mapUserEmailVerificationErrorCode(BusinessException exception) {
+        // seller-core는 user-core에 의존할 수 없으므로 ErrorCode의 공개 문자열 계약만 보고 변환한다.
+        return switch (exception.getErrorCode().getCode()) {
             case "USER-108" -> SellerErrorCode.EMAIL_VERIFICATION_REQUIRED;
             case "USER-109" -> SellerErrorCode.EMAIL_VERIFICATION_CODE_NOT_FOUND;
             case "USER-110" -> SellerErrorCode.EMAIL_VERIFICATION_CODE_MISMATCH;
@@ -88,11 +102,5 @@ public class SellerSignupContactVerificationAdapter {
             case "USER-113" -> SellerErrorCode.DUPLICATED_EMAIL;
             default -> null;
         };
-
-        if (sellerErrorCode == null) {
-            return exception;
-        }
-
-        return new SellerException(sellerErrorCode, exception);
     }
 }
