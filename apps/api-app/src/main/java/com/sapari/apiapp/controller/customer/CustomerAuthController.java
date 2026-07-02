@@ -26,9 +26,13 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.apiapp.controller.auth.AuthCookieSupport;
 import com.sapari.apiapp.controller.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationConfirmRequest;
+import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationSendRequest;
 import com.sapari.apiapp.controller.auth.dto.request.PhoneVerificationConfirmRequest;
 import com.sapari.apiapp.controller.auth.dto.request.PhoneVerificationSendRequest;
 import com.sapari.apiapp.controller.auth.dto.response.DuplicateCheckResponse;
+import com.sapari.apiapp.controller.auth.dto.response.EmailVerificationConfirmResponse;
+import com.sapari.apiapp.controller.auth.dto.response.EmailVerificationSendResponse;
 import com.sapari.apiapp.controller.auth.dto.response.PhoneVerificationConfirmResponse;
 import com.sapari.apiapp.controller.auth.dto.response.PhoneVerificationSendResponse;
 import com.sapari.apiapp.controller.customer.dto.request.CustomerNicknameUpdateRequest;
@@ -44,6 +48,8 @@ import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.customer.view.CustomerMeView;
+import com.sapari.customer.view.CustomerEmailVerificationConfirmResult;
+import com.sapari.customer.view.CustomerEmailVerificationSendResult;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
 import com.sapari.customer.view.CustomerPhoneVerificationConfirmResult;
 import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
@@ -121,6 +127,33 @@ public class CustomerAuthController {
                 customerAuthUseCase.confirmSignupPhoneVerification(request.toCommand());
 
         return ResponseEntity.ok(PhoneVerificationConfirmResponse.from(result));
+    }
+
+    /**
+     * 구매자 회원가입 이메일 인증번호를 발송한다.
+     * 서버는 Resend 발송 성공 후에만 Redis codeHash를 저장한다.
+     */
+    @PostMapping("/signup/email-verifications")
+    public ResponseEntity<EmailVerificationSendResponse> sendSignupEmailVerification(
+            @Valid @RequestBody EmailVerificationSendRequest request
+    ) {
+        CustomerEmailVerificationSendResult result = customerAuthUseCase.sendSignupEmailVerification(request.toCustomerCommand());
+
+        return ResponseEntity.ok(EmailVerificationSendResponse.from(result));
+    }
+
+    /**
+     * 구매자 회원가입 이메일 인증번호를 확인한다.
+     * emailVerified=true 응답은 화면 상태용이며, 최종 가입 API가 Redis verified 상태를 다시 소비한다.
+     */
+    @PostMapping("/signup/email-verifications/confirm")
+    public ResponseEntity<EmailVerificationConfirmResponse> confirmSignupEmailVerification(
+            @Valid @RequestBody EmailVerificationConfirmRequest request
+    ) {
+        CustomerEmailVerificationConfirmResult result =
+                customerAuthUseCase.confirmSignupEmailVerification(request.toCustomerCommand());
+
+        return ResponseEntity.ok(EmailVerificationConfirmResponse.from(result));
     }
 
     @GetMapping("/signup/check-phone")
