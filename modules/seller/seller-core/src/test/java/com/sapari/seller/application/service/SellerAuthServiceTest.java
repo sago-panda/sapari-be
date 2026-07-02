@@ -22,6 +22,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.common.core.exception.BusinessException;
+import com.sapari.common.core.exception.ErrorCode;
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
@@ -57,6 +59,7 @@ import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.port.UserSignupEmailVerificationUseCase;
 import com.sapari.user.view.UserView;
 
 @DisplayName("판매자 인증 서비스 테스트")
@@ -88,6 +91,10 @@ class SellerAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
+    private final UserSignupEmailVerificationUseCase userSignupEmailVerificationUseCase =
+            mock(UserSignupEmailVerificationUseCase.class);
+    private final SellerSignupContactVerificationAdapter signupContactVerificationAdapter =
+            new SellerSignupContactVerificationAdapter(userSignupEmailVerificationUseCase);
     private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
             refreshTokenStore,
@@ -103,6 +110,7 @@ class SellerAuthServiceTest {
             sellerProfileRepository,
             sellerBusinessRegistrationVerifier,
             sellerSignupProcessor,
+            signupContactVerificationAdapter,
             passwordEncoder,
             sellerJwtTokenAdapter,
             timeProvider(),
@@ -262,6 +270,29 @@ class SellerAuthServiceTest {
                 .isInstanceOfSatisfying(SellerException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_SIGNUP_INFO)
                 );
+    }
+
+    @Test
+    @DisplayName("회원가입 이메일 인증 소비 중 알 수 없는 USER 오류는 SELLER 일반 인증 오류로 매핑한다")
+    void signupWhenUnknownUserVerificationErrorMapsGenericSellerException() {
+        // given
+        TestUserException unknownUserError = new TestUserException(TestUserErrorCode.UNKNOWN_USER_ERROR);
+        when(sellerBusinessRegistrationVerifier.verify(
+                "1234567890",
+                "판매자",
+                LocalDate.of(2020, 1, 1)
+        )).thenReturn(SellerBusinessRegistrationVerification.available());
+        doThrow(unknownUserError)
+                .when(userSignupEmailVerificationUseCase)
+                .consumeSignupEmailVerification(EMAIL);
+
+        // when, then
+        assertThatThrownBy(() -> sellerAuthService.signup(signupCommand()))
+                .isInstanceOfSatisfying(SellerException.class, exception -> {
+                    assertThat(exception.getErrorCode().getCode()).isEqualTo("SELLER-023");
+                    assertThat(exception).hasCause(unknownUserError);
+                });
+        verifyNoInteractions(sellerSignupProcessor);
     }
 
     @Test
@@ -566,6 +597,7 @@ class SellerAuthServiceTest {
                 sellerProfileRepository,
                 sellerBusinessRegistrationVerifier,
                 sellerSignupProcessor,
+                signupContactVerificationAdapter,
                 passwordEncoder,
                 jwtTokenAdapter,
                 timeProvider(),
@@ -1014,5 +1046,42 @@ class SellerAuthServiceTest {
                 "1234567890",
                 SellerBusinessType.INDIVIDUAL
         );
+    }
+
+    private static class TestUserException extends BusinessException {
+
+        TestUserException(TestUserErrorCode errorCode) {
+            super(errorCode);
+        }
+    }
+
+    private enum TestUserErrorCode implements ErrorCode {
+
+        UNKNOWN_USER_ERROR(500, "USER-999", "알 수 없는 user 오류입니다.");
+
+        private final int status;
+        private final String code;
+        private final String message;
+
+        TestUserErrorCode(int status, String code, String message) {
+            this.status = status;
+            this.code = code;
+            this.message = message;
+        }
+
+        @Override
+        public int getStatus() {
+            return status;
+        }
+
+        @Override
+        public String getCode() {
+            return code;
+        }
+
+        @Override
+        public String getMessage() {
+            return message;
+        }
     }
 }

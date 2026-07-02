@@ -26,7 +26,14 @@ public enum CustomerErrorCode implements ErrorCode {
     PHONE_VERIFICATION_CODE_MISMATCH(400, "CUSTOMER-015", "인증번호가 올바르지 않습니다."),
     PHONE_VERIFICATION_ATTEMPTS_EXCEEDED(400, "CUSTOMER-016", "인증번호 입력 횟수를 초과했습니다. 다시 요청해 주세요."),
     PHONE_VERIFICATION_COOLDOWN(429, "CUSTOMER-017", "인증번호 재요청은 잠시 후 가능합니다."),
-    SMS_SEND_UNAVAILABLE(503, "CUSTOMER-018", "인증번호 발송이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.");
+    SMS_SEND_UNAVAILABLE(503, "CUSTOMER-018", "인증번호 발송이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."),
+    EMAIL_VERIFICATION_REQUIRED(400, "CUSTOMER-019", "이메일 인증이 필요합니다."),
+    EMAIL_VERIFICATION_CODE_NOT_FOUND(400, "CUSTOMER-020", "인증번호가 만료되었거나 다시 요청이 필요합니다."),
+    EMAIL_VERIFICATION_CODE_MISMATCH(400, "CUSTOMER-021", "인증번호가 올바르지 않습니다."),
+    EMAIL_VERIFICATION_ATTEMPTS_EXCEEDED(400, "CUSTOMER-022", "인증번호 입력 횟수를 초과했습니다. 다시 요청해 주세요."),
+    EMAIL_VERIFICATION_COOLDOWN(429, "CUSTOMER-023", "인증번호 재요청은 잠시 후 가능합니다."),
+    EMAIL_SEND_UNAVAILABLE(503, "CUSTOMER-024", "인증번호 발송이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."),
+    SIGNUP_VERIFICATION_UNAVAILABLE(503, "CUSTOMER-025", "회원가입 인증 처리가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.");
 
     private final int status;
     private final String code;
