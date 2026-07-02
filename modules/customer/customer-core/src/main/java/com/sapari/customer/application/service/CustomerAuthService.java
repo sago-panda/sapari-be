@@ -136,13 +136,10 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             throw new CustomerException(CustomerErrorCode.INVALID_LOGIN_CODE);
         }
 
-        SocialLoginTokenResult tokenResult = socialLoginCodeRepository.findByCode(temporaryLoginCode)
+        // temporary_login_code는 토큰 교환용 one-time code이므로 Redis GETDEL 기반 consume으로 중복 교환을 막는다.
+        return socialLoginCodeRepository.consumeByCode(temporaryLoginCode)
                 .map(this::readSocialLoginTokenResult)
                 .orElseThrow(() -> new CustomerException(CustomerErrorCode.INVALID_LOGIN_CODE));
-
-        socialLoginCodeRepository.delete(temporaryLoginCode);
-
-        return tokenResult;
     }
 
     /**
