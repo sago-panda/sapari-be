@@ -1,5 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,7 +39,7 @@ import reactor.core.publisher.Mono;
 /**
  * 채팅 WS 핸들러 — 입장 게이트(룸 토큰·강퇴)부터 송수신 배선까지 한 연결의 생애를 묶는다.
  *
- * <p>흐름: 쿼리(roomId·token) 파싱 → 룸 토큰 검증({@link RoomTokenVerifier}) → 입장 게이트({@link EntryGate})
+ * <p>흐름: roomId(쿼리) + 룸 토큰(Sec-WebSocket-Protocol 헤더) 파싱 → 룸 토큰 검증({@link RoomTokenVerifier}) → 입장 게이트({@link EntryGate})
  * → register + 방 구독 acquire → ROOM_INFO 송신 → 아웃바운드(Sink→session.send)·인바운드(receive→send())
  * 동시 가동 → 종료 시 unregister + 방 구독 release.
  *
@@ -51,6 +53,9 @@ import reactor.core.publisher.Mono;
 public class ChatWebSocketHandler implements WebSocketHandler {
 
     private static final String SYSTEM_NICKNAME = "SYSTEM";
+    /** 룸 토큰을 실어 나르는 서브프로토콜 이름. 클라는 ["bearer", <token>] 두 개를 제시한다. */
+    private static final String TOKEN_SUBPROTOCOL = "bearer";
+    private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
 
     private final RoomTokenVerifier verifier;
     private final EntryGate entryGate;
@@ -78,6 +83,24 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
+    // getSubProtocols()는 의도적으로 비운다(응답에 subprotocol echo 안 함). 서버가 offered subprotocol을
+    // 응답에 실으면 클라 handshaker가 "기대 목록에 없다"며 거부하는 구현이 있어(Reactor Netty) 호환성 위험.
+    // no-echo는 브라우저·Netty 모두 허용된다. 토큰은 아래 extractToken이 요청 헤더에서 직접 읽는다.
+
+    /** Sec-WebSocket-Protocol 헤더에서 룸 토큰 추출 — 클라 제시 ["bearer", token] 중 "bearer"가 아닌 값. */
+    private String extractToken(WebSocketSession session) {
+        List<String> values = session.getHandshakeInfo().getHeaders().get(SEC_WEBSOCKET_PROTOCOL);
+        if (values == null) {
+            return null;
+        }
+        return values.stream()
+                .flatMap(v -> Arrays.stream(v.split(",")))
+                .map(String::trim)
+                .filter(p -> !p.isEmpty() && !p.equalsIgnoreCase(TOKEN_SUBPROTOCOL))
+                .findFirst()
+                .orElse(null);
+    }
+
     @Override
     public Mono<Void> handle(WebSocketSession session) {
         UUID roomId;
@@ -85,9 +108,13 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         try {
             var params = UriComponentsBuilder.fromUri(session.getHandshakeInfo().getUri()).build().getQueryParams();
             roomId = UUID.fromString(params.getFirst("roomId"));
-            token = params.getFirst("token");
+            // 토큰(email PII 포함)은 쿼리 아닌 Sec-WebSocket-Protocol 헤더로 — access log·Referer·브라우저 히스토리 잔류 방지
+            token = extractToken(session);
         } catch (Exception e) {
-            return session.close(CloseStatus.POLICY_VIOLATION);   // 잘못된 쿼리 — 상세 미노출
+            return session.close(CloseStatus.POLICY_VIOLATION);   // 잘못된 핸드셰이크 — 상세 미노출
+        }
+        if (token == null) {
+            return session.close(CloseStatus.POLICY_VIOLATION);
         }
 
         return verifier.verify(token, roomId)

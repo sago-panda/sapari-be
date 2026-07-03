@@ -20,6 +20,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.reactive.socket.WebSocketMessage;
@@ -37,6 +38,8 @@ import reactor.core.publisher.Mono;
 /**
  * C6 — WS 핸드셰이크~송수신 end-to-end. 풀 부팅(RANDOM_PORT) + Redis/Mongo 컨테이너 + 실제 RS256 키쌍.
  * live 개인키로 룸 토큰을 서명하고, 앱은 주입된 공개키로 검증 → 입장·ROOM_INFO·송신 ACK·위조 거부를 실증한다.
+ *
+ * <p>토큰은 쿼리가 아니라 Sec-WebSocket-Protocol 헤더(["bearer", token])로 전달한다(PII 토큰 access log 잔류 방지).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
@@ -89,8 +92,16 @@ class ChatWebSocketIntegrationTest {
                 .compact();
     }
 
-    private URI wsUri(UUID roomId, String token) {
-        return URI.create("ws://localhost:" + port + "/ws/chat?roomId=" + roomId + "&token=" + token);
+    private URI wsUri(UUID roomId) {
+        return URI.create("ws://localhost:" + port + "/ws/chat?roomId=" + roomId);
+    }
+
+    /** 룸 토큰을 Sec-WebSocket-Protocol 서브프로토콜(["bearer", token])로 실어 보낸다. */
+    private HttpHeaders tokenHeaders(String token) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("Sec-WebSocket-Protocol", "bearer");
+        headers.add("Sec-WebSocket-Protocol", token);
+        return headers;
     }
 
     @Test
@@ -101,7 +112,7 @@ class ChatWebSocketIntegrationTest {
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
 
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId, token), session ->
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
                 session.receive().map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(frames::add).take(1).then())
                 .block(Duration.ofSeconds(15));
@@ -119,7 +130,7 @@ class ChatWebSocketIntegrationTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"hello\",\"clientMsgId\":\"c1\"}";
 
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId, token), session ->
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
                 session.send(Mono.just(session.textMessage(payload)).delaySubscription(Duration.ofMillis(500)))
                         .and(session.receive().map(WebSocketMessage::getPayloadAsText)
                                 .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
@@ -140,7 +151,7 @@ class ChatWebSocketIntegrationTest {
 
         List<String> frames = new CopyOnWriteArrayList<>();
         try {
-            new ReactorNettyWebSocketClient().execute(wsUri(roomId, forged), session ->
+            new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(forged), session ->
                     session.receive().map(WebSocketMessage::getPayloadAsText)
                             .doOnNext(frames::add).then())
                     .block(Duration.ofSeconds(10));
@@ -159,7 +170,7 @@ class ChatWebSocketIntegrationTest {
         redisTemplate.opsForSet().add("kicked:" + roomId, userId.toString()).block();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
 
-        List<String> frames = collect(wsUri(roomId, token), null, Duration.ofSeconds(3));
+        List<String> frames = collect(roomId, token, null, Duration.ofSeconds(3));
 
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"SYSTEM\"") && f.contains("KICKED"));
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
@@ -173,7 +184,7 @@ class ChatWebSocketIntegrationTest {
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
         String notice = "{\"type\":\"NOTICE\",\"content\":\"공지\",\"clientMsgId\":\"n1\"}";
 
-        List<String> frames = collect(wsUri(roomId, token), notice, Duration.ofSeconds(3));
+        List<String> frames = collect(roomId, token, notice, Duration.ofSeconds(3));
 
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ERROR\"")
                 && f.contains("PERMISSION") && f.contains("\"clientMsgId\":\"n1\""));
@@ -189,7 +200,7 @@ class ChatWebSocketIntegrationTest {
         String m2 = "{\"type\":\"NORMAL\",\"content\":\"b\",\"clientMsgId\":\"r2\"}";
 
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId, token), session ->
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
                 session.send(Flux.concat(
                                 Mono.just(session.textMessage(m1)).delaySubscription(Duration.ofMillis(500)),
                                 Mono.just(session.textMessage(m2)).delaySubscription(Duration.ofMillis(150))))
@@ -200,10 +211,10 @@ class ChatWebSocketIntegrationTest {
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"") && f.contains("\"clientMsgId\":\"r2\""));
     }
 
-    /** WS 접속 → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */
-    private List<String> collect(URI uri, String sendPayload, Duration window) {
+    /** WS 접속(토큰=서브프로토콜) → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */
+    private List<String> collect(UUID roomId, String token, String sendPayload, Duration window) {
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(uri, session -> {
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
             Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
                     .doOnNext(frames::add).take(window).then();
             if (sendPayload == null) {
