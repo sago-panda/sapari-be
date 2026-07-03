@@ -13,6 +13,7 @@ import com.sapari.live.application.port.RoomTokenIssuer;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
+import com.sapari.live.domain.exception.UnsupportedRoleException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.EnterLiveUseCase;
@@ -74,12 +75,16 @@ public class EnterLiveService implements EnterLiveUseCase {
     /**
      * api-app role(USER/SELLER) → chat ChatRole 매핑. ADMIN은 출처가 별도라 여기서 다루지 않는다.
      * 게스트(GUEST)는 미인증 경로에서 처리하므로 이 메서드에 도달하지 않는다.
+     * role이 null이거나 지원하지 않는 값이면 원본을 노출하지 않고 UnsupportedRoleException으로 실패시킨다(fail-closed).
      */
     private String toChatRole(String apiRole) {
+        if (apiRole == null) {
+            throw new UnsupportedRoleException();
+        }
         return switch (apiRole) {
             case "USER" -> "BUYER";
             case "SELLER" -> "SELLER";
-            default -> throw new InvalidLiveStateException("지원하지 않는 role: " + apiRole);
+            default -> throw new UnsupportedRoleException();
         };
     }
 }

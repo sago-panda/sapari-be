@@ -24,4 +24,13 @@ public record LiveUserPrincipal(
     public String getName() {
         return userId.toString();
     }
+
+    /**
+     * email(PII)·nickname이 로그로 유출되지 않도록 마스킹한다. record 기본 toString()은 전 필드를
+     * 노출하므로(Spring Security DEBUG·{@code log.info("{}", authentication)} 등) 반드시 오버라이드한다.
+     */
+    @Override
+    public String toString() {
+        return "LiveUserPrincipal[userId=" + userId + ", role=" + role + ", nickname=***, email=***]";
+    }
 }

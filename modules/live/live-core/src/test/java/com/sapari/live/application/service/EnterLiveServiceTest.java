@@ -23,6 +23,7 @@ import com.sapari.live.application.port.RoomTokenClaims;
 import com.sapari.live.application.port.RoomTokenIssuer;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.UnsupportedRoleException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveRoomRepository;
@@ -129,6 +130,43 @@ class EnterLiveServiceTest {
         verify(roomTokenIssuer, org.mockito.Mockito.times(2)).issue(captor.capture());
         assertThat(captor.getAllValues().get(0).userId())
                 .isNotEqualTo(captor.getAllValues().get(1).userId());
+    }
+
+    @Test
+    @DisplayName("인증됐지만 role이 null이면 UnsupportedRoleException으로 실패한다(NPE 방지·fail-closed)")
+    void rejects_whenRoleNull() {
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+
+        EnterLiveCommand command = new EnterLiveCommand(roomId, UUID.randomUUID(), null, "닉", "e@e.com");
+
+        assertThatThrownBy(() -> enterLiveService.enter(command))
+                .isInstanceOf(UnsupportedRoleException.class);
+        verify(roomTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("지원하지 않는 role은 원본 값을 노출하지 않고 UnsupportedRoleException으로 실패한다")
+    void rejects_whenUnsupportedRole() {
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+
+        EnterLiveCommand command = new EnterLiveCommand(roomId, UUID.randomUUID(), "ADMIN", "닉", "e@e.com");
+
+        assertThatThrownBy(() -> enterLiveService.enter(command))
+                .isInstanceOf(UnsupportedRoleException.class)
+                .hasMessageNotContaining("ADMIN");
+        verify(roomTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("RoomTokenClaims.toString()은 email/nickname을 마스킹한다")
+    void roomTokenClaimsToStringMasksPii() {
+        RoomTokenClaims claims = new RoomTokenClaims(
+                UUID.randomUUID(), roomId, "SELLER", true, "판매자닉", "seller@sapari.com");
+
+        String s = claims.toString();
+
+        assertThat(s).contains("nickname=***", "email=***");
+        assertThat(s).doesNotContain("seller@sapari.com", "판매자닉");
     }
 
     @Test

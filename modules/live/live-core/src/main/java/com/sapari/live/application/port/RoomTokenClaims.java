@@ -22,4 +22,10 @@ public record RoomTokenClaims(
         String nickname,
         String email
 ) {
+    /** email(PII)·nickname을 마스킹한다 — record 기본 toString()의 로그 유출 방지. */
+    @Override
+    public String toString() {
+        return "RoomTokenClaims[userId=" + userId + ", roomId=" + roomId
+                + ", role=" + role + ", owner=" + owner + ", nickname=***, email=***]";
+    }
 }
