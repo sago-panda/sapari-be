@@ -13,17 +13,21 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
@@ -41,6 +45,9 @@ public class EndLiveServiceTest {
 
     @Mock
     private LiveMediaManager liveMediaManager;
+
+    @Mock
+    private LiveEventPublisher liveEventPublisher;
 
     @Mock
     private TimeProvider timeProvider;
@@ -141,5 +148,58 @@ public class EndLiveServiceTest {
         // 검증
         then(liveMediaManager).shouldHaveNoInteractions();
         then(liveRoomRepository).should(times(0)).save(any());
+    }
+
+    @Test
+    @DisplayName("종료 커밋 후 RoomEnded를 발행한다 (afterCommit)")
+    void publishesRoomEnded_afterCommit() {
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+        Instant endedAt = Instant.parse("2026-07-03T00:00:00Z");
+        LiveStatus.Live liveStatus = new LiveStatus.Live(endedAt, "sfu", "eg", "http://hls/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8");
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId).set("sellerId", sellerId)
+                .set("status", liveStatus).set("streamInfo", streamInfo).sample();
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(endedAt);
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            endLiveService.end(command);
+
+            // 커밋 전에는 미발행
+            then(liveEventPublisher).shouldHaveNoInteractions();
+
+            // afterCommit 수동 트리거 → 발행
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+            }
+            then(liveEventPublisher).should(times(1)).publishRoomEnded(roomId, endedAt);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    @DisplayName("종료가 롤백되면(afterCommit 미호출) RoomEnded를 발행하지 않는다")
+    void doesNotPublish_whenRolledBack() {
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+        Instant endedAt = Instant.parse("2026-07-03T00:00:00Z");
+        LiveStatus.Live liveStatus = new LiveStatus.Live(endedAt, "sfu", "eg", "http://hls/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8");
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId).set("sellerId", sellerId)
+                .set("status", liveStatus).set("streamInfo", streamInfo).sample();
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(endedAt);
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            endLiveService.end(command);
+            // 롤백 시나리오: afterCommit을 호출하지 않는다 → 발행 없음
+            then(liveEventPublisher).shouldHaveNoInteractions();
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 }
