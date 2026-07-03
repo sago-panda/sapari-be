@@ -8,7 +8,6 @@ import java.util.UUID;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
 import com.sapari.live.view.CreateLiveView;
-import com.sapari.live.view.EnterLiveView;
 import com.sapari.live.view.StartLiveView;
 
 @Builder(toBuilder = true)
@@ -132,10 +131,6 @@ public record LiveRoom(
 
     public CreateLiveView toCreateLiveView(){
         return new CreateLiveView(id, title, description);
-    }
-
-    public EnterLiveView toEnterLiveResult(){
-        return new EnterLiveView(hlsUrl());
     }
 
     public StartLiveView toStartLiveResult(String sfuToken, String sfuUrl){
