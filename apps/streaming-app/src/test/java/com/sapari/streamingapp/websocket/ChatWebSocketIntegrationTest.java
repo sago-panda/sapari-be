@@ -211,6 +211,26 @@ class ChatWebSocketIntegrationTest {
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"") && f.contains("\"clientMsgId\":\"r2\""));
     }
 
+    @Test
+    @DisplayName("거부 — 토큰 서브프로토콜 누락(bearer만)이면 ROOM_INFO 없이 닫힌다")
+    void missing_token_rejected() {
+        UUID roomId = UUID.randomUUID();
+        HttpHeaders onlyBearer = new HttpHeaders();
+        onlyBearer.add("Sec-WebSocket-Protocol", "bearer");   // 토큰 값 없음 → extractToken null
+
+        List<String> frames = new CopyOnWriteArrayList<>();
+        try {
+            new ReactorNettyWebSocketClient().execute(wsUri(roomId), onlyBearer, session ->
+                    session.receive().map(WebSocketMessage::getPayloadAsText)
+                            .doOnNext(frames::add).then())
+                    .block(Duration.ofSeconds(10));
+        } catch (Exception ignored) {
+            // 서버 1008 close가 에러로 surface될 수 있음
+        }
+
+        assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
+    }
+
     /** WS 접속(토큰=서브프로토콜) → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */
     private List<String> collect(UUID roomId, String token, String sendPayload, Duration window) {
         List<String> frames = new CopyOnWriteArrayList<>();
