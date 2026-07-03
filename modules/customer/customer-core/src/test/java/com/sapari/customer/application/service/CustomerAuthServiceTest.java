@@ -387,13 +387,13 @@ class CustomerAuthServiceTest {
     }
 
     @Test
-    @DisplayName("임시 로그인 code가 있으면 저장된 토큰 정보를 반환하고 code를 삭제한다")
-    void exchangeTemporaryLoginCodeReturnsTokenInfoAndDeletesCode() throws Exception {
+    @DisplayName("임시 로그인 code가 있으면 원자적으로 소비한 토큰 정보를 반환한다")
+    void exchangeTemporaryLoginCodeReturnsAtomicallyConsumedTokenInfo() throws Exception {
         // given
         UUID userId = UUID.randomUUID();
         SocialLoginTokenResult tokenResult =
                 new SocialLoginTokenResult(userId, "access-token", "refresh-token");
-        when(socialLoginCodeRepository.findByCode(TEMPORARY_LOGIN_CODE))
+        when(socialLoginCodeRepository.consumeByCode(TEMPORARY_LOGIN_CODE))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(tokenResult)));
 
         // when
@@ -402,7 +402,7 @@ class CustomerAuthServiceTest {
 
         // then
         assertThat(result).isEqualTo(tokenResult);
-        verify(socialLoginCodeRepository).delete(TEMPORARY_LOGIN_CODE);
+        verify(socialLoginCodeRepository).consumeByCode(TEMPORARY_LOGIN_CODE);
     }
 
     @Test

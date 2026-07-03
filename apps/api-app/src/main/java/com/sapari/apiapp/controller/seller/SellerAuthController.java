@@ -40,6 +40,7 @@ import com.sapari.apiapp.controller.seller.dto.response.SellerLoginResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerMeResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerSignupResponse;
 import com.sapari.apiapp.controller.seller.dto.response.SellerTokenReissueResponse;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
@@ -65,14 +66,14 @@ public class SellerAuthController {
     private long refreshTokenExpirationSeconds;
 
     @PostMapping("/signup")
-    public ResponseEntity<SellerSignupResponse> signup(
+    public ResponseEntity<ResponseEnvelope<SellerSignupResponse>> signup(
             @Valid @RequestBody SellerSignupRequest request
     ) {
         SellerSignupResult result = sellerAuthUseCase.signup(request.toCommand());
 
         return ResponseEntity
                 .created(URI.create("/api/v1/sellers/" + result.userId()))
-                .body(SellerSignupResponse.from(result));
+                .body(ResponseEnvelope.success(SellerSignupResponse.from(result)));
     }
 
     /**
@@ -81,12 +82,12 @@ public class SellerAuthController {
      * 다른 이메일 우회 인증은 허용하지 않고, 회사 메일 정책으로 수신이 불가능하면 관리자 문의로 처리한다.
      */
     @PostMapping("/signup/email-verifications")
-    public ResponseEntity<EmailVerificationSendResponse> sendSignupEmailVerification(
+    public ResponseEntity<ResponseEnvelope<EmailVerificationSendResponse>> sendSignupEmailVerification(
             @Valid @RequestBody EmailVerificationSendRequest request
     ) {
         SellerEmailVerificationSendResult result = sellerAuthUseCase.sendSignupEmailVerification(request.toSellerCommand());
 
-        return ResponseEntity.ok(EmailVerificationSendResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(EmailVerificationSendResponse.from(result)));
     }
 
     /**
@@ -95,40 +96,40 @@ public class SellerAuthController {
      * 최종 가입 API가 같은 email의 Redis verified 상태를 다시 소비한다.
      */
     @PostMapping("/signup/email-verifications/confirm")
-    public ResponseEntity<EmailVerificationConfirmResponse> confirmSignupEmailVerification(
+    public ResponseEntity<ResponseEnvelope<EmailVerificationConfirmResponse>> confirmSignupEmailVerification(
             @Valid @RequestBody EmailVerificationConfirmRequest request
     ) {
         SellerEmailVerificationConfirmResult result =
                 sellerAuthUseCase.confirmSignupEmailVerification(request.toSellerCommand());
 
-        return ResponseEntity.ok(EmailVerificationConfirmResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(EmailVerificationConfirmResponse.from(result)));
     }
 
     @GetMapping("/signup/check-email")
-    public ResponseEntity<DuplicateCheckResponse> checkEmail(
+    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkEmail(
             @RequestParam
             @NotBlank(message = "이메일은 필수입니다.")
             @Email(message = "이메일 형식이 올바르지 않습니다.")
             String email
     ) {
-        return ResponseEntity.ok(
+        return ResponseEntity.ok(ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isEmailDuplicated(email))
-        );
+        ));
     }
 
     @GetMapping("/signup/check-phone")
-    public ResponseEntity<DuplicateCheckResponse> checkPhoneNumber(
+    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkPhoneNumber(
             @RequestParam
             @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
             String phoneNumber
     ) {
-        return ResponseEntity.ok(
+        return ResponseEntity.ok(ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isPhoneNumberDuplicated(phoneNumber))
-        );
+        ));
     }
 
     @GetMapping("/check-nickname")
-    public ResponseEntity<DuplicateCheckResponse> checkNickname(
+    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkNickname(
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
             @Pattern(
@@ -137,25 +138,25 @@ public class SellerAuthController {
             )
             String nickname
     ) {
-        return ResponseEntity.ok(
+        return ResponseEntity.ok(ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isNicknameDuplicated(nickname))
-        );
+        ));
     }
 
     @GetMapping("/signup/check-store-name")
-    public ResponseEntity<DuplicateCheckResponse> checkStoreName(
+    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkStoreName(
             @RequestParam
             @NotBlank(message = "상호명은 필수입니다.")
             @Size(max = 20, message = "상호명은 20자 이하여야 합니다.")
             String storeName
     ) {
-        return ResponseEntity.ok(
+        return ResponseEntity.ok(ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isStoreNameDuplicated(storeName))
-        );
+        ));
     }
 
     @PostMapping("/login")
-    public ResponseEntity<SellerLoginResponse> login(
+    public ResponseEntity<ResponseEnvelope<SellerLoginResponse>> login(
             @Valid @RequestBody SellerLoginRequest request
     ) {
         SellerLoginResult result = sellerAuthUseCase.login(request.toCommand());
@@ -167,11 +168,11 @@ public class SellerAuthController {
                         result.refreshToken(),
                         refreshTokenExpirationSeconds
                 ).toString())
-                .body(SellerLoginResponse.from(result));
+                .body(ResponseEnvelope.success(SellerLoginResponse.from(result)));
     }
 
     @PostMapping("/token/reissue")
-    public ResponseEntity<SellerTokenReissueResponse> reissueAccessToken(
+    public ResponseEntity<ResponseEnvelope<SellerTokenReissueResponse>> reissueAccessToken(
             @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME) String refreshToken
     ) {
         SellerTokenReissueResult result = sellerAuthUseCase.reissueAccessToken(refreshToken);
@@ -183,16 +184,16 @@ public class SellerAuthController {
                         result.refreshToken(),
                         result.refreshTokenMaxAgeSeconds()
                 ).toString())
-                .body(SellerTokenReissueResponse.from(result));
+                .body(ResponseEnvelope.success(SellerTokenReissueResponse.from(result)));
     }
 
     @GetMapping("/me")
-    public ResponseEntity<SellerMeResponse> getMyInfo(
+    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> getMyInfo(
             @CurrentUserId UUID userId
     ) {
         SellerMeView result = sellerAuthUseCase.getMyInfo(userId);
 
-        return ResponseEntity.ok(SellerMeResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(SellerMeResponse.from(result)));
     }
 
     @DeleteMapping("/me")
@@ -210,7 +211,7 @@ public class SellerAuthController {
     }
 
     @PutMapping("/me/nickname")
-    public ResponseEntity<SellerMeResponse> updateNickname(
+    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> updateNickname(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody SellerNicknameUpdateRequest request
     ) {
@@ -221,7 +222,7 @@ public class SellerAuthController {
         return ResponseEntity
                 .ok()
                 .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
-                .body(SellerMeResponse.from(result.seller()));
+                .body(ResponseEnvelope.success(SellerMeResponse.from(result.seller())));
     }
 
     @PostMapping("/logout")

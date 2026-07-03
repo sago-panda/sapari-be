@@ -42,6 +42,7 @@ import com.sapari.apiapp.controller.customer.dto.response.SocialSignupInfoRespon
 import com.sapari.apiapp.controller.customer.dto.response.SocialLoginResponse;
 import com.sapari.apiapp.controller.customer.dto.response.SocialSignupResponse;
 import com.sapari.apiapp.controller.customer.dto.response.TokenReissueResponse;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
@@ -73,7 +74,7 @@ public class CustomerAuthController {
     private long refreshTokenExpirationSeconds;
 
     @PostMapping("/signup/social")
-    public ResponseEntity<SocialSignupResponse> completeSocialSignup(
+    public ResponseEntity<ResponseEnvelope<SocialSignupResponse>> completeSocialSignup(
             @CookieValue(name = SIGNUP_SID_COOKIE_NAME) String signupSid,
             @Valid @RequestBody SocialSignupRequest request
     ) {
@@ -87,11 +88,11 @@ public class CustomerAuthController {
                         refreshTokenExpirationSeconds
                 ).toString())
                 .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createExpiredCookie(SIGNUP_SID_COOKIE_NAME).toString())
-                .body(SocialSignupResponse.from(result));
+                .body(ResponseEnvelope.success(SocialSignupResponse.from(result)));
     }
 
     @GetMapping("/signup/social-info")
-    public ResponseEntity<SocialSignupInfoResponse> getSocialSignupInfo(
+    public ResponseEntity<ResponseEnvelope<SocialSignupInfoResponse>> getSocialSignupInfo(
             @CookieValue(name = SIGNUP_SID_COOKIE_NAME) String signupSid
     ) {
         SocialSignupInfoView result = customerAuthUseCase.getSocialSignupInfo(signupSid);
@@ -99,7 +100,7 @@ public class CustomerAuthController {
         return ResponseEntity
                 .ok()
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
-                .body(SocialSignupInfoResponse.from(result));
+                .body(ResponseEnvelope.success(SocialSignupInfoResponse.from(result)));
     }
 
     /**
@@ -107,12 +108,12 @@ public class CustomerAuthController {
      * 서버는 Redis 쿨다운을 먼저 원자 선점한 요청에 한해 SOLAPI 발송을 진행한다.
      */
     @PostMapping("/signup/phone-verifications")
-    public ResponseEntity<PhoneVerificationSendResponse> sendSignupPhoneVerification(
+    public ResponseEntity<ResponseEnvelope<PhoneVerificationSendResponse>> sendSignupPhoneVerification(
             @Valid @RequestBody PhoneVerificationSendRequest request
     ) {
         CustomerPhoneVerificationSendResult result = customerAuthUseCase.sendSignupPhoneVerification(request.toCommand());
 
-        return ResponseEntity.ok(PhoneVerificationSendResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(PhoneVerificationSendResponse.from(result)));
     }
 
     /**
@@ -120,13 +121,13 @@ public class CustomerAuthController {
      * 인증 성공 시 회원가입 API가 소비할 서버 verified 상태를 생성한다.
      */
     @PostMapping("/signup/phone-verifications/confirm")
-    public ResponseEntity<PhoneVerificationConfirmResponse> confirmSignupPhoneVerification(
+    public ResponseEntity<ResponseEnvelope<PhoneVerificationConfirmResponse>> confirmSignupPhoneVerification(
             @Valid @RequestBody PhoneVerificationConfirmRequest request
     ) {
         CustomerPhoneVerificationConfirmResult result =
                 customerAuthUseCase.confirmSignupPhoneVerification(request.toCommand());
 
-        return ResponseEntity.ok(PhoneVerificationConfirmResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(PhoneVerificationConfirmResponse.from(result)));
     }
 
     /**
@@ -134,12 +135,12 @@ public class CustomerAuthController {
      * 서버는 Resend 발송 성공 후에만 Redis codeHash를 저장한다.
      */
     @PostMapping("/signup/email-verifications")
-    public ResponseEntity<EmailVerificationSendResponse> sendSignupEmailVerification(
+    public ResponseEntity<ResponseEnvelope<EmailVerificationSendResponse>> sendSignupEmailVerification(
             @Valid @RequestBody EmailVerificationSendRequest request
     ) {
         CustomerEmailVerificationSendResult result = customerAuthUseCase.sendSignupEmailVerification(request.toCustomerCommand());
 
-        return ResponseEntity.ok(EmailVerificationSendResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(EmailVerificationSendResponse.from(result)));
     }
 
     /**
@@ -147,40 +148,40 @@ public class CustomerAuthController {
      * emailVerified=true 응답은 화면 상태용이며, 최종 가입 API가 Redis verified 상태를 다시 소비한다.
      */
     @PostMapping("/signup/email-verifications/confirm")
-    public ResponseEntity<EmailVerificationConfirmResponse> confirmSignupEmailVerification(
+    public ResponseEntity<ResponseEnvelope<EmailVerificationConfirmResponse>> confirmSignupEmailVerification(
             @Valid @RequestBody EmailVerificationConfirmRequest request
     ) {
         CustomerEmailVerificationConfirmResult result =
                 customerAuthUseCase.confirmSignupEmailVerification(request.toCustomerCommand());
 
-        return ResponseEntity.ok(EmailVerificationConfirmResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(EmailVerificationConfirmResponse.from(result)));
     }
 
     @GetMapping("/signup/check-phone")
-    public ResponseEntity<DuplicateCheckResponse> checkPhoneNumber(
+    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkPhoneNumber(
             @RequestParam
             @Pattern(regexp = "^010\\d{8}$", message = "전화번호는 010으로 시작하는 숫자 11자리여야 합니다.")
             String phoneNumber
     ) {
-        return ResponseEntity.ok(
+        return ResponseEntity.ok(ResponseEnvelope.success(
                 new DuplicateCheckResponse(customerAuthUseCase.isPhoneNumberDuplicated(phoneNumber))
-        );
+        ));
     }
 
     @GetMapping("/signup/check-email")
-    public ResponseEntity<DuplicateCheckResponse> checkEmail(
+    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkEmail(
             @RequestParam
             @NotBlank(message = "이메일은 필수입니다.")
             @Email(message = "이메일 형식이 올바르지 않습니다.")
             String email
     ) {
-        return ResponseEntity.ok(
+        return ResponseEntity.ok(ResponseEnvelope.success(
                 new DuplicateCheckResponse(customerAuthUseCase.isEmailDuplicated(email))
-        );
+        ));
     }
 
     @GetMapping("/check-nickname")
-    public ResponseEntity<DuplicateCheckResponse> checkNickname(
+    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkNickname(
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
             @Pattern(
@@ -189,13 +190,13 @@ public class CustomerAuthController {
             )
             String nickname
     ) {
-        return ResponseEntity.ok(
+        return ResponseEntity.ok(ResponseEnvelope.success(
                 new DuplicateCheckResponse(customerAuthUseCase.isNicknameDuplicated(nickname))
-        );
+        ));
     }
 
     @PostMapping("/login/social/code")
-    public ResponseEntity<SocialLoginResponse> exchangeSocialLoginCode(
+    public ResponseEntity<ResponseEnvelope<SocialLoginResponse>> exchangeSocialLoginCode(
             @CookieValue(name = TEMPORARY_LOGIN_CODE_COOKIE_NAME) String temporaryLoginCode
     ) {
         SocialLoginTokenResult result = customerAuthUseCase.exchangeTemporaryLoginCode(temporaryLoginCode);
@@ -210,11 +211,11 @@ public class CustomerAuthController {
                 .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
                         .createExpiredCookie(TEMPORARY_LOGIN_CODE_COOKIE_NAME)
                         .toString())
-                .body(SocialLoginResponse.from(result));
+                .body(ResponseEnvelope.success(SocialLoginResponse.from(result)));
     }
 
     @PostMapping("/token/reissue")
-    public ResponseEntity<TokenReissueResponse> reissueAccessToken(
+    public ResponseEntity<ResponseEnvelope<TokenReissueResponse>> reissueAccessToken(
             @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME) String refreshToken
     ) {
         CustomerTokenReissueResult result = customerAuthUseCase.reissueAccessToken(refreshToken);
@@ -226,7 +227,7 @@ public class CustomerAuthController {
                         result.refreshToken(),
                         result.refreshTokenMaxAgeSeconds()
                 ).toString())
-                .body(TokenReissueResponse.from(result));
+                .body(ResponseEnvelope.success(TokenReissueResponse.from(result)));
     }
 
     @PostMapping("/logout")
@@ -244,12 +245,12 @@ public class CustomerAuthController {
     }
 
     @GetMapping("/me")
-    public ResponseEntity<CustomerMeResponse> getMyInfo(
+    public ResponseEntity<ResponseEnvelope<CustomerMeResponse>> getMyInfo(
             @CurrentUserId UUID userId
     ) {
         CustomerMeView result = customerAuthUseCase.getMyInfo(userId);
 
-        return ResponseEntity.ok(CustomerMeResponse.from(result));
+        return ResponseEntity.ok(ResponseEnvelope.success(CustomerMeResponse.from(result)));
     }
 
     /**
@@ -271,7 +272,7 @@ public class CustomerAuthController {
     }
 
     @PutMapping("/me/nickname")
-    public ResponseEntity<CustomerMeResponse> updateNickname(
+    public ResponseEntity<ResponseEnvelope<CustomerMeResponse>> updateNickname(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @Valid @RequestBody CustomerNicknameUpdateRequest request
     ) {
@@ -282,7 +283,7 @@ public class CustomerAuthController {
         return ResponseEntity
                 .ok()
                 .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
-                .body(CustomerMeResponse.from(result.customer()));
+                .body(ResponseEnvelope.success(CustomerMeResponse.from(result.customer())));
     }
 
     private String resolveAccessToken(String authorizationHeader) {
