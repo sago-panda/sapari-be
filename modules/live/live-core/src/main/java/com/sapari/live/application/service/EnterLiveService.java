@@ -3,6 +3,8 @@ package com.sapari.live.application.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.UUID;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,10 +37,23 @@ public class EnterLiveService implements EnterLiveUseCase {
             throw new InvalidLiveStateException(command.roomId().toString());
         }
 
-        String roomToken = command.isAuthenticated() ? issueRoomToken(command, room) : null;
+        // 회원은 신원 기반 토큰, 게스트(미인증)는 에페메랄 GUEST 토큰 — 둘 다 채팅 입장은 가능(GUEST는 수신 전용).
+        String roomToken = command.isAuthenticated()
+                ? issueRoomToken(command, room)
+                : issueGuestToken(command.roomId());
 
         log.info("live 입장. roomId={}, authenticated={}", command.roomId(), command.isAuthenticated());
         return new EnterLiveView(room.hlsUrl(), roomToken);
+    }
+
+    /**
+     * 비로그인 게스트용 에페메랄 룸 토큰. 매 입장마다 새 임의 userId를 부여하고 role=GUEST, owner=false로 둔다
+     * (nickname/email 없음). chat은 GUEST를 수신 전용으로 게이팅한다.
+     */
+    private String issueGuestToken(UUID roomId) {
+        UUID guestId = UUID.randomUUID();
+        RoomTokenClaims claims = new RoomTokenClaims(guestId, roomId, "GUEST", false, null, null);
+        return roomTokenIssuer.issue(claims);
     }
 
     private String issueRoomToken(EnterLiveCommand command, LiveRoom room) {

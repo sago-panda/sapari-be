@@ -93,16 +93,42 @@ class EnterLiveServiceTest {
     }
 
     @Test
-    @DisplayName("미인증(게스트) 입장은 룸 토큰을 발급하지 않고 hlsUrl만 반환한다")
-    void noToken_whenUnauthenticated() {
+    @DisplayName("미인증(게스트) 입장은 에페메랄 GUEST 토큰(owner=false, 에페메랄 userId)을 발급한다")
+    void issuesGuestToken_whenUnauthenticated() {
         given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+        given(roomTokenIssuer.issue(org.mockito.ArgumentMatchers.any())).willReturn("guest-token");
 
         EnterLiveCommand command = new EnterLiveCommand(roomId, null, null, null, null);
         EnterLiveView view = enterLiveService.enter(command);
 
-        assertThat(view.roomToken()).isNull();
+        ArgumentCaptor<RoomTokenClaims> captor = ArgumentCaptor.forClass(RoomTokenClaims.class);
+        verify(roomTokenIssuer).issue(captor.capture());
+        RoomTokenClaims claims = captor.getValue();
+
+        assertThat(claims.role()).isEqualTo("GUEST");
+        assertThat(claims.owner()).isFalse();
+        assertThat(claims.userId()).isNotNull();          // 에페메랄 id 부여
+        assertThat(claims.nickname()).isNull();
+        assertThat(claims.email()).isNull();
+        assertThat(claims.roomId()).isEqualTo(roomId);
+        assertThat(view.roomToken()).isEqualTo("guest-token");
         assertThat(view.hlsUrl()).isEqualTo("http://cdn/master.m3u8");
-        verify(roomTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("게스트 토큰의 userId는 매 입장마다 새로 부여된다(에페메랄)")
+    void guestUserId_isEphemeral() {
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+        given(roomTokenIssuer.issue(org.mockito.ArgumentMatchers.any())).willReturn("guest-token");
+        EnterLiveCommand command = new EnterLiveCommand(roomId, null, null, null, null);
+
+        enterLiveService.enter(command);
+        enterLiveService.enter(command);
+
+        ArgumentCaptor<RoomTokenClaims> captor = ArgumentCaptor.forClass(RoomTokenClaims.class);
+        verify(roomTokenIssuer, org.mockito.Mockito.times(2)).issue(captor.capture());
+        assertThat(captor.getAllValues().get(0).userId())
+                .isNotEqualTo(captor.getAllValues().get(1).userId());
     }
 
     @Test
