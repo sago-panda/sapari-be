@@ -7,15 +7,14 @@ dependencies {
     // webflux 스타터로 reactor를 자체 확보하므로 implementation으로 충분 (버전은 spring-boot BOM 관리)
     implementation('io.projectreactor:reactor-core')
 
-    // ChatEnvelope의 @JsonTypeInfo/@JsonSubTypes 직렬화 계약(애너테이션만). 실제 ObjectMapper는 어댑터(T6).
+    // ChatEnvelope의 @JsonTypeInfo/@JsonSubTypes 직렬화 계약(애너테이션). RedisChatBroadcaster(T10)의 ObjectMapper가
+    // databind·jsr310(Instant)을 직접 사용 → implementation으로 승격.
     implementation('com.fasterxml.jackson.core:jackson-annotations')
-    // ChatEnvelope 직렬화 계약 테스트용
-    testImplementation('com.fasterxml.jackson.core:jackson-databind')
-    testImplementation('com.fasterxml.jackson.datatype:jackson-datatype-jsr310')
+    implementation('com.fasterxml.jackson.core:jackson-databind')
+    implementation('com.fasterxml.jackson.datatype:jackson-datatype-jsr310')
 
-    // 영속 어댑터 (T6) — Mongo 메시지 저장소 · Redis 세션/강퇴/레이트리밋/블랙리스트
+    // 영속 어댑터 (T6) — Mongo 메시지 저장소 · Redis 세션/강퇴/레이트리밋
     implementation(project(':storage:mongo-core'))
-    implementation(project(':common:security-jwt'))   // TokenStoreKeys 공유 (blocking write측과 키 drift 방지)
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
 
