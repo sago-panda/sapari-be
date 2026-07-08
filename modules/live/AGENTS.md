@@ -62,6 +62,29 @@ A process crash still orphans the egress → needs a reconciliation batch, not b
   (`LiveRoomCache`), no DB hit; empty list when nothing is live. Keys in `LiveRedisKeys`
   (`live:room:{id}`, `live:ranking`) — package-private, keep them there.
 
+## Room Token — chat (streaming-app) entry auth
+
+`enter` issues an **RS256 room token** alongside the viewing URL; chat verifies it with the public key
+as its entry gate. live **signs with a private key** (`live.room-token.private-key`, env-injected) —
+distinct key, algorithm, and `aud` from the api-app auth token (HMAC, shared `JwtTokenProvider`), so the
+two are never interchangeable.
+
+- **Issued in** `EnterLiveService` — after authoritatively checking the room is live, signs via
+  `RoomTokenIssuer` (← `RoomTokenProvider`). Members get identity-based tokens; unauthenticated viewers
+  get an **ephemeral GUEST token** (fresh userId per entry).
+- **Claims**: `iss=live`, `aud=chat`, `sub=userId`, `room`, `role` (USER→BUYER / SELLER→SELLER /
+  unauth→GUEST), `owner` (`userId==sellerId` — chat's PII/notice gate), `nickname`/`email` for members
+  only, `exp` (default 90s).
+- **email is PII**: a JWT is signed, not encrypted → never log the raw token (see `EnterLiveView`,
+  filter, principal comments). chat must **not pass it as a query param** (access-log leakage) — use a
+  subprotocol / first frame instead.
+- **Not single-use**: short TTL only, no jti → replayable within the TTL window. True one-time use needs
+  jti + a SETNX consume-mark on the chat side (out of scope).
+- **live-app principal**: the filter carries `LiveUserPrincipal` (userId·role·nickname·email); its
+  `getName()=userId` keeps the shared `CurrentUserIdArgumentResolver` working (backward compatible).
+- **Undecided**: `ADMIN` role source (api-app has only USER/SELLER) — not issued until agreed. Public
+  key is a single static key (v1); promote to `kid`+JWKS if rotation is needed.
+
 ## Errors
 
 Throw the domain exceptions (`LiveNotFoundException`, `InvalidLiveStateException`,
