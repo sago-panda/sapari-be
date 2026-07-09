@@ -13,6 +13,7 @@ import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
@@ -24,10 +25,13 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
-import com.sapari.apiapp.controller.auth.AuthCookieSupport;
-import com.sapari.apiapp.controller.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.support.auth.AuthCookieSupport;
+import com.sapari.apiapp.controller.support.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.support.multipart.ProfileImageMultipartFileReader;
 import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationConfirmRequest;
 import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationSendRequest;
 import com.sapari.apiapp.controller.auth.dto.response.DuplicateCheckResponse;
@@ -43,6 +47,7 @@ import com.sapari.apiapp.controller.seller.dto.response.SellerTokenReissueRespon
 import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.seller.command.SellerLogoutCommand;
+import com.sapari.seller.command.SellerProfileImageChangeCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
 import com.sapari.seller.port.SellerAuthUseCase;
@@ -53,6 +58,7 @@ import com.sapari.seller.view.SellerMeView;
 import com.sapari.seller.view.SellerNicknameUpdateResult;
 import com.sapari.seller.view.SellerSignupResult;
 import com.sapari.seller.view.SellerTokenReissueResult;
+
 
 @RestController
 @RequestMapping("/api/v1/sellers/auth")
@@ -223,6 +229,32 @@ public class SellerAuthController {
                 .ok()
                 .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
                 .body(ResponseEnvelope.success(SellerMeResponse.from(result.seller())));
+    }
+
+    @PutMapping(value = "/me/profile-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> updateProfileImage(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
+            @RequestPart("file") MultipartFile file
+    ) {
+        ProfileImageMultipartFileReader.ProfileImageFile profileImageFile =
+                ProfileImageMultipartFileReader.read(file);
+        SellerMeView result = sellerAuthUseCase.updateProfileImage(new SellerProfileImageChangeCommand(
+                resolveAccessToken(authorizationHeader),
+                profileImageFile.originalFilename(),
+                profileImageFile.contentType(),
+                profileImageFile.content()
+        ));
+
+        return ResponseEntity.ok(ResponseEnvelope.success(SellerMeResponse.from(result)));
+    }
+
+    @DeleteMapping("/me/profile-image")
+    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> deleteProfileImage(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
+    ) {
+        SellerMeView result = sellerAuthUseCase.deleteProfileImage(resolveAccessToken(authorizationHeader));
+
+        return ResponseEntity.ok(ResponseEnvelope.success(SellerMeResponse.from(result)));
     }
 
     @PostMapping("/logout")

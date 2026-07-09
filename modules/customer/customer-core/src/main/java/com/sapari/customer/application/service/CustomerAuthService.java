@@ -21,6 +21,7 @@ import com.sapari.customer.command.CustomerEmailVerificationSendCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationConfirmCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
+import com.sapari.customer.command.CustomerProfileImageChangeCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
@@ -38,6 +39,7 @@ import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserRole;
@@ -228,6 +230,32 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         }
     }
 
+    @Override
+    public CustomerMeView updateProfileImage(CustomerProfileImageChangeCommand command) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                customerJwtTokenAdapter.requireAccessToken(command.accessToken());
+        findCustomer(accessSession.userId());
+
+        UserView savedCustomer = userAccountUseCase.changeProfileImage(new ProfileImageChangeCommand(
+                accessSession.userId(),
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        ));
+
+        return customerViewMapper.toMeView(savedCustomer);
+    }
+
+    @Override
+    public CustomerMeView deleteProfileImage(String accessToken) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                customerJwtTokenAdapter.requireAccessToken(accessToken);
+        findCustomer(accessSession.userId());
+
+        UserView savedCustomer = userAccountUseCase.removeProfileImage(accessSession.userId());
+        return customerViewMapper.toMeView(savedCustomer);
+    }
+
     private RegisterSocialCustomerCommand toRegisterCommand(SocialSignupCommand command, SocialSignupInfo socialSignupInfo) {
         return new RegisterSocialCustomerCommand(
                 command.nickname(),
@@ -236,7 +264,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
                 UserGender.valueOf(command.gender()),
                 command.phoneNumber(),
                 command.email(),
-                command.profileImageUrl(),
+                null,
                 command.privacyAgreed(),
                 command.marketingAgreed(),
                 socialSignupInfo.provider(),

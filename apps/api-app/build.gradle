@@ -8,6 +8,7 @@ dependencies {
     implementation(project(":modules:notification:notification-core"))
     implementation(project(":modules:user:user-core"))
     implementation(project(":storage:redis-core"))
+    implementation(project(":storage:object-storage"))
 
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-web'

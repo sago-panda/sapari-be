@@ -7,6 +7,7 @@ import com.sapari.seller.command.SellerEmailVerificationConfirmCommand;
 import com.sapari.seller.command.SellerEmailVerificationSendCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
+import com.sapari.seller.command.SellerProfileImageChangeCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.view.SellerLoginResult;
 import com.sapari.seller.view.SellerEmailVerificationConfirmResult;
@@ -51,4 +52,8 @@ public interface SellerAuthUseCase {
     SellerMeView getMyInfo(UUID userId);
 
     SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command);
+
+    SellerMeView updateProfileImage(SellerProfileImageChangeCommand command);
+
+    SellerMeView deleteProfileImage(String accessToken);
 }

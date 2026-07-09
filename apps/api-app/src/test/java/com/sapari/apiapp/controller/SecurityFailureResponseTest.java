@@ -1,7 +1,9 @@
 package com.sapari.apiapp.controller;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -17,6 +19,8 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -88,6 +92,72 @@ class SecurityFailureResponseTest {
     @DisplayName("USER 권한 사용자가 판매자 보호 API에 접근하면 403 ErrorResponse를 반환한다")
     void userRoleSellerRequestReturnsForbiddenErrorResponse() throws Exception {
         mockMvc.perform(get("/api/v1/sellers/auth/me")
+                        .with(user("019e6e30-ea61-7392-8123-1047154d4660").roles("USER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(403))
+                .andExpect(jsonPath("$.error.message").value("접근 권한이 없습니다."));
+    }
+
+    @Test
+    @DisplayName("미인증 사용자가 고객 프로필 이미지 변경 API에 접근하면 401 ErrorResponse를 반환한다")
+    void unauthenticatedCustomerProfileImageUpdateReturnsUnauthorizedErrorResponse() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "profile.png",
+                MediaType.IMAGE_PNG_VALUE,
+                new byte[] {1, 2, 3}
+        );
+
+        mockMvc.perform(multipart("/api/v1/customers/auth/me/profile-image")
+                        .file(file)
+                        .with(request -> {
+                            request.setMethod("PUT");
+                            return request;
+                        }))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(401))
+                .andExpect(jsonPath("$.error.message").value("인증이 필요합니다."));
+    }
+
+    @Test
+    @DisplayName("미인증 사용자가 고객 프로필 이미지 삭제 API에 접근하면 401 ErrorResponse를 반환한다")
+    void unauthenticatedCustomerProfileImageDeleteReturnsUnauthorizedErrorResponse() throws Exception {
+        mockMvc.perform(delete("/api/v1/customers/auth/me/profile-image"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(401))
+                .andExpect(jsonPath("$.error.message").value("인증이 필요합니다."));
+    }
+
+    @Test
+    @DisplayName("USER 권한 사용자가 판매자 프로필 이미지 변경 API에 접근하면 403 ErrorResponse를 반환한다")
+    void userRoleSellerProfileImageUpdateReturnsForbiddenErrorResponse() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "profile.png",
+                MediaType.IMAGE_PNG_VALUE,
+                new byte[] {1, 2, 3}
+        );
+
+        mockMvc.perform(multipart("/api/v1/sellers/auth/me/profile-image")
+                        .file(file)
+                        .with(user("019e6e30-ea61-7392-8123-1047154d4660").roles("USER"))
+                        .with(request -> {
+                            request.setMethod("PUT");
+                            return request;
+                        }))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(403))
+                .andExpect(jsonPath("$.error.message").value("접근 권한이 없습니다."));
+    }
+
+    @Test
+    @DisplayName("USER 권한 사용자가 판매자 프로필 이미지 삭제 API에 접근하면 403 ErrorResponse를 반환한다")
+    void userRoleSellerProfileImageDeleteReturnsForbiddenErrorResponse() throws Exception {
+        mockMvc.perform(delete("/api/v1/sellers/auth/me/profile-image")
                         .with(user("019e6e30-ea61-7392-8123-1047154d4660").roles("USER")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.success").value(false))

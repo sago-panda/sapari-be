@@ -22,6 +22,7 @@ import com.sapari.seller.command.SellerEmailVerificationSendCommand;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
+import com.sapari.seller.command.SellerProfileImageChangeCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
@@ -38,6 +39,7 @@ import com.sapari.seller.view.SellerMeView;
 import com.sapari.seller.view.SellerNicknameUpdateResult;
 import com.sapari.seller.view.SellerSignupResult;
 import com.sapari.seller.view.SellerTokenReissueResult;
+import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
@@ -218,6 +220,34 @@ public class SellerAuthService implements SellerAuthUseCase {
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
+    }
+
+    @Override
+    public SellerMeView updateProfileImage(SellerProfileImageChangeCommand command) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                sellerJwtTokenAdapter.requireAccessToken(command.accessToken());
+        findSeller(accessSession.userId());
+
+        UserView savedSeller = userAccountUseCase.changeProfileImage(new ProfileImageChangeCommand(
+                accessSession.userId(),
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        ));
+        SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
+
+        return sellerViewMapper.toMeView(savedSeller, sellerProfile);
+    }
+
+    @Override
+    public SellerMeView deleteProfileImage(String accessToken) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                sellerJwtTokenAdapter.requireAccessToken(accessToken);
+        findSeller(accessSession.userId());
+
+        UserView savedSeller = userAccountUseCase.removeProfileImage(accessSession.userId());
+        SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
+        return sellerViewMapper.toMeView(savedSeller, sellerProfile);
     }
 
     private void validatePasswordConfirm(SellerSignupCommand command) {

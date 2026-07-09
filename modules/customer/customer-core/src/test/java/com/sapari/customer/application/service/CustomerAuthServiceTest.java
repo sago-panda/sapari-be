@@ -36,6 +36,7 @@ import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationConfirmCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
+import com.sapari.customer.command.CustomerProfileImageChangeCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
@@ -50,6 +51,7 @@ import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.command.SignupContactVerificationConsumeCommand;
 import com.sapari.user.command.SignupPhoneVerificationConfirmCommand;
 import com.sapari.user.command.SignupPhoneVerificationSendCommand;
@@ -160,7 +162,7 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().providerId()).isEqualTo("naver-id");
         assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
         assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
-        assertThat(commandCaptor.getValue().profileImageUrl()).isEqualTo("https://image.example/request-profile.png");
+        assertThat(commandCaptor.getValue().profileImageKey()).isNull();
         assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
         assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
@@ -633,6 +635,56 @@ class CustomerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("프로필 이미지 변경 시 Access Token 사용자 기준으로 user 프로필 이미지를 변경한다")
+    void updateProfileImageChangesCurrentCustomerProfileImage() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        CustomerProfileImageChangeCommand command = new CustomerProfileImageChangeCommand(
+                accessToken,
+                "profile.png",
+                "image/png",
+                new byte[] {1, 2, 3}
+        );
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
+        when(userAccountUseCase.changeProfileImage(any(ProfileImageChangeCommand.class)))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "https://cdn.example/users/%s/profile/new.png".formatted(userId)));
+
+        // when
+        CustomerMeView result = customerAuthService.updateProfileImage(command);
+
+        // then
+        assertThat(result.profileImageUrl()).isEqualTo("https://cdn.example/users/%s/profile/new.png".formatted(userId));
+        ArgumentCaptor<ProfileImageChangeCommand> commandCaptor = ArgumentCaptor.forClass(ProfileImageChangeCommand.class);
+        verify(userAccountUseCase).changeProfileImage(commandCaptor.capture());
+        assertThat(commandCaptor.getValue().userId()).isEqualTo(userId);
+        assertThat(commandCaptor.getValue().originalFilename()).isEqualTo("profile.png");
+        assertThat(commandCaptor.getValue().contentType()).isEqualTo("image/png");
+        assertThat(commandCaptor.getValue().content()).containsExactly(1, 2, 3);
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 삭제 시 Access Token 사용자 기준으로 user 프로필 이미지를 제거한다")
+    void deleteProfileImageRemovesCurrentCustomerProfileImage() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
+        when(userAccountUseCase.removeProfileImage(userId)).thenReturn(customerViewWithProfileImageUrl(userId, null));
+
+        // when
+        CustomerMeView result = customerAuthService.deleteProfileImage(accessToken);
+
+        // then
+        assertThat(result.profileImageUrl()).isNull();
+        verify(userAccountUseCase).removeProfileImage(userId);
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
+    @Test
     @DisplayName("30일이 지난 뒤 닉네임 수정 시 중복을 검증하고 닉네임만 저장한다")
     void updateNicknameUpdatesCustomerNickname() {
         // given
@@ -836,6 +888,14 @@ class CustomerAuthServiceTest {
     }
 
     private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status) {
+        return customerView(userId, nickname, nicknameChangedAt, status, null);
+    }
+
+    private UserView customerViewWithProfileImageUrl(UUID userId, String profileImageUrl) {
+        return customerView(userId, "customer", providerCreatedAt(), UserStatus.ACTIVE, profileImageUrl);
+    }
+
+    private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status, String profileImageUrl) {
         return new UserView(
                 userId,
                 UserRole.USER,
@@ -846,7 +906,7 @@ class CustomerAuthServiceTest {
                 LocalDate.of(2000, 1, 1),
                 UserGender.MALE,
                 "01012345678",
-                null,
+                profileImageUrl,
                 EMAIL,
                 UserGrade.BRONZE,
                 0,

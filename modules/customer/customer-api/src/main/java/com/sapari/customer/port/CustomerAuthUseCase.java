@@ -8,6 +8,7 @@ import com.sapari.customer.command.CustomerEmailVerificationSendCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationConfirmCommand;
 import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
+import com.sapari.customer.command.CustomerProfileImageChangeCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 
 import com.sapari.customer.view.CustomerMeView;
@@ -71,4 +72,8 @@ public interface CustomerAuthUseCase {
     CustomerMeView getMyInfo(UUID userId);
 
     CustomerNicknameUpdateResult updateNickname(CustomerNicknameUpdateCommand command);
+
+    CustomerMeView updateProfileImage(CustomerProfileImageChangeCommand command);
+
+    CustomerMeView deleteProfileImage(String accessToken);
 }

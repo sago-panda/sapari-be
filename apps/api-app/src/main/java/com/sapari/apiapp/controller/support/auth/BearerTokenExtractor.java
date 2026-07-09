@@ -1,4 +1,4 @@
-package com.sapari.apiapp.controller.auth;
+package com.sapari.apiapp.controller.support.auth;
 
 import java.util.Optional;
 

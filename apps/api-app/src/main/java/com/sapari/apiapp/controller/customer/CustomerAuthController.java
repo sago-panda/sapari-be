@@ -11,6 +11,7 @@ import jakarta.validation.constraints.Pattern;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.CookieValue;
@@ -22,10 +23,13 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
-import com.sapari.apiapp.controller.auth.AuthCookieSupport;
-import com.sapari.apiapp.controller.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.support.auth.AuthCookieSupport;
+import com.sapari.apiapp.controller.support.auth.BearerTokenExtractor;
+import com.sapari.apiapp.controller.support.multipart.ProfileImageMultipartFileReader;
 import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationConfirmRequest;
 import com.sapari.apiapp.controller.auth.dto.request.EmailVerificationSendRequest;
 import com.sapari.apiapp.controller.auth.dto.request.PhoneVerificationConfirmRequest;
@@ -45,6 +49,7 @@ import com.sapari.apiapp.controller.customer.dto.response.TokenReissueResponse;
 import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.customer.command.CustomerLogoutCommand;
+import com.sapari.customer.command.CustomerProfileImageChangeCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.port.CustomerAuthUseCase;
@@ -58,6 +63,7 @@ import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.customer.view.SocialSignupResult;
+
 
 @RestController
 @RequestMapping("/api/v1/customers/auth")
@@ -284,6 +290,32 @@ public class CustomerAuthController {
                 .ok()
                 .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
                 .body(ResponseEnvelope.success(CustomerMeResponse.from(result.customer())));
+    }
+
+    @PutMapping(value = "/me/profile-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ResponseEnvelope<CustomerMeResponse>> updateProfileImage(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
+            @RequestPart("file") MultipartFile file
+    ) {
+        ProfileImageMultipartFileReader.ProfileImageFile profileImageFile =
+                ProfileImageMultipartFileReader.read(file);
+        CustomerMeView result = customerAuthUseCase.updateProfileImage(new CustomerProfileImageChangeCommand(
+                resolveAccessToken(authorizationHeader),
+                profileImageFile.originalFilename(),
+                profileImageFile.contentType(),
+                profileImageFile.content()
+        ));
+
+        return ResponseEntity.ok(ResponseEnvelope.success(CustomerMeResponse.from(result)));
+    }
+
+    @DeleteMapping("/me/profile-image")
+    public ResponseEntity<ResponseEnvelope<CustomerMeResponse>> deleteProfileImage(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
+    ) {
+        CustomerMeView result = customerAuthUseCase.deleteProfileImage(resolveAccessToken(authorizationHeader));
+
+        return ResponseEntity.ok(ResponseEnvelope.success(CustomerMeResponse.from(result)));
     }
 
     private String resolveAccessToken(String authorizationHeader) {
