@@ -31,7 +31,7 @@ public class ProductQueryDslRepository {
         // 1) 요약 스칼라만 프로젝션 — 자식(옵션·조합·config) 미로딩, deleted_at IS NULL
         List<Tuple> rows = queryFactory
                 .select(product.id, product.name, product.status, product.minPrice,
-                        product.hasStock, product.reviewCount, product.avgRating)
+                        product.hasStock, product.reviewCount, product.avgRating, product.version)
                 .from(product)
                 .where(product.sellerId.eq(sellerId), product.deletedAt.isNull())
                 .orderBy(product.createdAt.desc(), product.id.asc())   // 최신순, id로 tie-break(결정적)
@@ -53,7 +53,8 @@ public class ProductQueryDslRepository {
                         row.get(product.hasStock),
                         row.get(product.reviewCount),
                         row.get(product.avgRating),
-                        thumbnailByProduct.get(row.get(product.id))))
+                        thumbnailByProduct.get(row.get(product.id)),
+                        row.get(product.version)))
                 .toList();
     }
 

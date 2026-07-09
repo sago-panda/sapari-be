@@ -87,6 +87,9 @@ public class UpdateCombinationPriceStockService implements UpdateCombinationPric
         if (update.isAvailable() != null) {
             changed = update.isAvailable() ? changed.makeAvailable(now) : changed.discontinue(now);
         }
-        return changed;
+        // 클라이언트가 본 조합 version으로 덮어써야 저장 시 조합별 stale 비교가 동작한다(§13)
+        return changed.toBuilder()
+                .version(update.expectedVersion())
+                .build();
     }
 }

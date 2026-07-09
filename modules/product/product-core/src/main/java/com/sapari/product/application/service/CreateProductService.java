@@ -1,6 +1,7 @@
 package com.sapari.product.application.service;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.product.application.port.HtmlSanitizer;
 import com.sapari.product.command.CreateProductCommand;
 import com.sapari.product.domain.exception.CategoryNotFoundException;
 import com.sapari.product.domain.exception.InvalidProductTagException;
@@ -33,6 +34,7 @@ public class CreateProductService implements CreateProductUseCase {
     private final ProductOptionCombinationRepository combinationRepository;
     private final CategoryRepository categoryRepository;
     private final TimeProvider timeProvider;
+    private final HtmlSanitizer htmlSanitizer;
 
     /**
      * 상품을 등록한다. 태그·카테고리를 검증하고, 상품을 검수 대기 상태로 저장한 뒤 옵션 조합을 자동 생성·저장한다.
@@ -56,7 +58,7 @@ public class CreateProductService implements CreateProductUseCase {
                         command.sellerId(),
                         command.categoryId(),
                         command.name(),
-                        command.description(),
+                        htmlSanitizer.sanitize(command.description()),
                         command.basePrice(),
                         command.shippingPolicyId(),
                         command.additionalShippingFee(),

@@ -1,0 +1,315 @@
+# API 연계(flow) 테스트. 각 응답에서 다음 단계가 쓸 값(id·version)을 캡처해 체이닝한다.
+# 00-auth.http로 sellerToken을 먼저 채운다. 위→아래 순서로 실행.
+
+# ============================================================
+#  Flow A — 신규 상품 라이프사이클 (등록 → 수정 → 옵션교체 → 삭제)
+#  PENDING_REVIEW 상태에서 가능한 전 과정. version은 매 단계 '판매자 목록'에서 재캡처.
+# ============================================================
+
+### A1. 등록 → flowA_id
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}},
+  "name": "Flow A 상품",
+  "description": "<p>flow A</p>",
+  "basePrice": 12000,
+  "shippingPolicyId": null,
+  "additionalShippingFee": 0,
+  "tags": ["flowA"],
+  "optionTypes": [
+    {
+      "name": "사이즈", "attributeGroupId": null, "sortOrder": 1,
+      "values": [
+        { "value": "S", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 1 },
+        { "value": "M", "attributePresetId": null, "metadata": null, "priceDelta": 1000, "sortOrder": 2 }
+      ]
+    }
+  ],
+  "defaultStock": 10
+}
+
+> {%
+    client.test("A1 201", function () { client.assert(response.status === 201, "got " + response.status); });
+    client.global.set("flowA_id", response.body.productId);
+%}
+
+### A2. 목록 → version 캡처 + PENDING_REVIEW 확인
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    client.test("A2 목록에 존재 + PENDING_REVIEW", function () {
+        client.assert(p !== undefined, "미발견");
+        client.assert(p.status === "PENDING_REVIEW", "status=" + p.status);
+    });
+    client.global.set("flowA_version", p.version);
+%}
+
+### A3. 기본 정보 수정 (version 사용) → 204
+PUT {{productBaseUrl}}/api/v1/seller/products/{{flowA_id}}
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}},
+  "name": "Flow A 상품 (수정)",
+  "description": "<p>flow A 수정</p>",
+  "shippingPolicyId": null,
+  "additionalShippingFee": 0,
+  "tags": ["flowA", "수정"],
+  "expectedVersion": {{flowA_version}}
+}
+
+> {%
+    client.test("A3 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}
+
+### A4. 목록 → 수정 반영 확인 + version 재캡처
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    client.test("A4 이름 수정 반영", function () { client.assert(p.name === "Flow A 상품 (수정)", "name=" + p.name); });
+    client.global.set("flowA_version", p.version);
+%}
+
+### A5. 옵션 교체 (version 사용) → 204
+PUT {{productBaseUrl}}/api/v1/seller/products/{{flowA_id}}/options
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "optionTypes": [
+    {
+      "name": "색상", "attributeGroupId": null, "sortOrder": 1,
+      "values": [
+        { "value": "검정", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 1 }
+      ]
+    }
+  ],
+  "defaultStock": 5,
+  "expectedVersion": {{flowA_version}}
+}
+
+> {%
+    client.test("A5 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}
+
+### A6. 목록 → 삭제용 version 재캡처
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    client.global.set("flowA_version", p.version);
+%}
+
+### A7. 삭제 (version=쿼리) → 204
+DELETE {{productBaseUrl}}/api/v1/seller/products/{{flowA_id}}?expectedVersion={{flowA_version}}
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    client.test("A7 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}
+
+### A8. 목록 → 삭제 상품이 더 이상 없음
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    client.test("A8 삭제 상품 목록에서 제외", function () { client.assert(p === undefined, "삭제됐는데 목록에 남음"); });
+%}
+
+### A9. 이미 삭제된 상품 재삭제 → 404 PRODUCT-001
+DELETE {{productBaseUrl}}/api/v1/seller/products/{{flowA_id}}?expectedVersion=0
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    client.test("A9 404", function () { client.assert(response.status === 404, "got " + response.status); });
+    client.test("A9 PRODUCT-001", function () { client.assert(response.body.error.code === "PRODUCT-001", "code=" + response.body.error.code); });
+%}
+
+
+# ============================================================
+#  Flow B — ON_SALE 상품 조합 수정 → 상태 전환 → 복구
+#  onSaleProductId(ON_SALE 상품) 필요. 공개 상세에서 조합 id·version 캡처.
+# ============================================================
+
+### B1. 공개 상세 → 상품 version + 조합 id·version + 현재가 캡처
+GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
+
+> {%
+    client.test("B1 200 (ON_SALE)", function () { client.assert(response.status === 200, "ON_SALE 상품 필요: " + response.status); });
+    const d = response.body;
+    client.global.set("flowB_onSaleId", d.productId);
+    client.global.set("flowB_pVersion", d.version);
+    const c = d.combinations[0];
+    client.global.set("flowB_comboId", c.combinationId);
+    client.global.set("flowB_comboVersion", c.version);
+    client.log("조합 현재가=" + c.price + ", stock=" + c.stock);
+%}
+
+### B2. 조합 가격·재고 수정 (조합 version) → 204
+PATCH {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}/combinations
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "combinations": [
+    {
+      "combinationId": "{{flowB_comboId}}",
+      "price": 17900,
+      "originalPrice": 21000,
+      "stock": 7,
+      "isAvailable": true,
+      "expectedVersion": {{flowB_comboVersion}}
+    }
+  ]
+}
+
+> {%
+    client.test("B2 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}
+
+### B3. 공개 상세 → 조합 수정 반영 확인 + 새 조합 version 캡처
+GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
+
+> {%
+    const d = response.body;
+    const c = d.combinations.find(x => x.combinationId === client.global.get("flowB_comboId"));
+    client.test("B3 가격 17900 반영", function () { client.assert(c.price === 17900, "price=" + c.price); });
+    client.test("B3 재고 7 반영", function () { client.assert(c.stock === 7, "stock=" + c.stock); });
+    client.global.set("flowB_pVersion", d.version);
+%}
+
+### B4. 판매 중지 (ON_SALE → SUSPENDED) → 204
+PATCH {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}/status
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{ "target": "SUSPENDED", "expectedVersion": {{flowB_pVersion}} }
+
+> {%
+    client.test("B4 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}
+
+### B5. 공개 상세 → SUSPENDED는 비공개 게이트로 404
+GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
+
+> {%
+    client.test("B5 SUSPENDED는 404", function () { client.assert(response.status === 404, "got " + response.status); });
+%}
+
+### B6. 목록 → SUSPENDED 상품 version 캡처(복구용)
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const onSaleId = client.global.get("flowB_onSaleId");
+    const p = response.body.find(x => x.productId === onSaleId);
+    client.test("B6 SUSPENDED 확인", function () { client.assert(p && p.status === "SUSPENDED", "status=" + (p && p.status)); });
+    client.global.set("flowB_pVersion", p.version);
+%}
+
+### B7. 판매 재개 (SUSPENDED → ON_SALE) → 204 (seed 원복)
+PATCH {{productBaseUrl}}/api/v1/seller/products/{{onSaleProductId}}/status
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{ "target": "ON_SALE", "expectedVersion": {{flowB_pVersion}} }
+
+> {%
+    client.test("B7 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}
+
+### B8. 공개 상세 → 다시 200 (원복 확인)
+GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
+
+> {%
+    client.test("B8 다시 200", function () { client.assert(response.status === 200, "got " + response.status); });
+%}
+
+
+# ============================================================
+#  Flow C — stale-form 낙관적 락 충돌 (409 PRODUCT-011)
+#  같은 version으로 두 번 수정 → 두 번째는 stale로 거부.
+# ============================================================
+
+### C1. 등록 → flowC_id
+POST {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}}, "name": "Flow C 상품", "description": "<p>c</p>",
+  "basePrice": 9000, "shippingPolicyId": null, "additionalShippingFee": 0, "tags": ["flowC"],
+  "optionTypes": [], "defaultStock": 1
+}
+
+> {%
+    client.test("C1 201", function () { client.assert(response.status === 201, "got " + response.status); });
+    client.global.set("flowC_id", response.body.productId);
+%}
+
+### C2. 목록 → version V 캡처
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const p = response.body.find(x => x.productId === client.global.get("flowC_id"));
+    client.global.set("flowC_version", p.version);
+%}
+
+### C3. 1차 수정 (version V) → 204 성공 (이 시점에 서버 version은 V+1로 증가)
+PUT {{productBaseUrl}}/api/v1/seller/products/{{flowC_id}}
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}}, "name": "Flow C (1차)", "description": "<p>c1</p>",
+  "shippingPolicyId": null, "additionalShippingFee": 0, "tags": ["flowC"],
+  "expectedVersion": {{flowC_version}}
+}
+
+> {%
+    client.test("C3 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}
+
+### C4. 2차 수정 — 같은(이미 낡은) version V 재사용 → 409 PRODUCT-011 (stale-form 충돌)
+PUT {{productBaseUrl}}/api/v1/seller/products/{{flowC_id}}
+Authorization: Bearer {{sellerToken}}
+Content-Type: application/json
+
+{
+  "categoryId": {{categoryId}}, "name": "Flow C (2차 stale)", "description": "<p>c2</p>",
+  "shippingPolicyId": null, "additionalShippingFee": 0, "tags": ["flowC"],
+  "expectedVersion": {{flowC_version}}
+}
+
+> {%
+    client.test("C4 409 Conflict", function () { client.assert(response.status === 409, "stale인데 " + response.status); });
+    client.test("C4 PRODUCT-011", function () { client.assert(response.body.error.code === "PRODUCT-011", "code=" + response.body.error.code); });
+%}
+
+### C5. 정리 — 최신 version 재캡처 후 삭제
+GET {{productBaseUrl}}/api/v1/seller/products
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    const p = response.body.find(x => x.productId === client.global.get("flowC_id"));
+    client.global.set("flowC_version", p.version);
+%}
+
+###
+DELETE {{productBaseUrl}}/api/v1/seller/products/{{flowC_id}}?expectedVersion={{flowC_version}}
+Authorization: Bearer {{sellerToken}}
+
+> {%
+    client.test("C5 정리 삭제 204", function () { client.assert(response.status === 204, "got " + response.status); });
+%}

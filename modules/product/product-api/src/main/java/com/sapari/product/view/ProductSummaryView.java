@@ -14,6 +14,7 @@ import java.util.UUID;
  * @param thumbnailKey 대표 이미지(GALLERY) 스토리지 키, 없으면 null
  * @param reviewCount  리뷰 수(캐시)
  * @param avgRating    평균 별점(캐시), 리뷰 없으면 null
+ * @param version      낙관적 락 버전(상품). 수정 폼이 받아 expectedVersion으로 되돌려준다(stale-form 차단)
  */
 public record ProductSummaryView(
         UUID productId,
@@ -23,6 +24,7 @@ public record ProductSummaryView(
         Boolean hasStock,
         String thumbnailKey,
         Integer reviewCount,
-        BigDecimal avgRating
+        BigDecimal avgRating,
+        Long version
 ) {
 }

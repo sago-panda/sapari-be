@@ -24,6 +24,7 @@ import java.util.UUID;
  * @param images                상품·옵션 이미지
  * @param optionTypes           옵션 타입/값 트리
  * @param combinations          옵션 조합(재고·가격 단위)
+ * @param version               낙관적 락 버전. 수정 폼이 받아 expectedVersion으로 되돌려준다(stale-form 차단)
  */
 public record ProductDetailView(
         UUID productId,
@@ -42,6 +43,7 @@ public record ProductDetailView(
         List<String> tags,
         List<ProductImageView> images,
         List<OptionTypeView> optionTypes,
-        List<CombinationView> combinations
+        List<CombinationView> combinations,
+        Long version
 ) {
 }
