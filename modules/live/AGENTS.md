@@ -51,6 +51,26 @@ A process crash still orphans the egress → needs a reconciliation batch, not b
 
 **Pinned product rule:** starting requires **exactly one** pinned product (`validatePinnedProduct`).
 
+## LiveKit Webhooks — receiver + handler contract
+
+LiveKit calls `POST /webhooks/livekit` (live-app) for events we can't learn from our own API —
+`room_finished` (seller left without ending), `ingress_started`/`track_published` (RTMP actually
+connected), `egress_ended`, etc. Auth is **body signature**, not Spring Security: the path is
+`permitAll` and `WebhookVerifier` (← `LiveKitWebhookVerifier` wrapping SDK `WebhookReceiver`) verifies
+the `Authorization` JWT. Body is read via **bounded streaming read** (not `@RequestBody byte[]`) so
+chunked requests can't buffer unbounded (memory DoS); raw bytes go through as-is (UTF-8) for the signature.
+
+`LiveWebhookService` verifies then dispatches to every `LiveWebhookHandler` whose `supports(type)` matches.
+
+**Handlers are owned by each domain feature, not by the webhook package.** The receiver only provides the
+`LiveWebhookHandler` port; RTMP transition / end-cleanup / orphan-ingress work each add its own
+`@Component` handler (auto-registered into the injected `List`). A handler is a **thin trigger adapter** →
+call the domain use-case; keep logic in the service. **Handlers MUST be idempotent** — LiveKit re-sends on
+failure and replays are possible within the token TTL, so the same event may arrive more than once
+(e.g. no-op if already ended, or consume-mark by event id). The service **isolates + logs** handler
+exceptions and still returns 200 (a thrown exception does NOT trigger re-send), so loss-critical work must
+guarantee itself via retry/reconciliation inside the handler.
+
 ## Persistence & Cache
 
 - **Schema is `live_schema`** (DDL: `db/migration/live/`, Flyway-owned).

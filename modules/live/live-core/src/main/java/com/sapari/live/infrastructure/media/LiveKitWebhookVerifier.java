@@ -24,7 +24,8 @@ import com.sapari.live.domain.exception.InvalidWebhookException;
 @RequiredArgsConstructor
 public class LiveKitWebhookVerifier implements WebhookVerifier {
 
-    // 정상 LiveKit webhook 본문은 수 KB 수준 — 이를 크게 넘으면 비정상/공격으로 보고 검증 전에 거부한다.
+    // 본문 상한은 컨트롤러의 bounded read가 강제한다(chunked 포함). 여기서는 포트가 직접 호출되는 경우까지
+    // 대비한 방어적 상한이며, 이것이 유일한 메모리 DoS 방어는 아니다.
     private static final int MAX_BODY_BYTES = 64 * 1024;
 
     private final WebhookReceiver webhookReceiver;
