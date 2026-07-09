@@ -2,6 +2,7 @@ package com.sapari.live.infrastructure.config;
 
 import io.livekit.server.EgressServiceClient;
 import io.livekit.server.RoomServiceClient;
+import io.livekit.server.WebhookReceiver;
 
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -19,5 +20,10 @@ public class LiveKitConfig {
     @Bean
     public EgressServiceClient egressServiceClient(LiveKitProperties liveKitProperties){
         return EgressServiceClient.createClient(liveKitProperties.host(), liveKitProperties.apiKey(), liveKitProperties.apiSecret());
+    }
+
+    @Bean
+    public WebhookReceiver webhookReceiver(LiveKitProperties liveKitProperties){
+        return new WebhookReceiver(liveKitProperties.apiKey(), liveKitProperties.apiSecret());
     }
 }
