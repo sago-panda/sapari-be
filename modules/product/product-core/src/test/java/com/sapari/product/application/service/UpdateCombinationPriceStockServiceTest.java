@@ -51,6 +51,7 @@ class UpdateCombinationPriceStockServiceTest {
     private static final Long CATEGORY_ID = 1001L;
     private static final Instant NOW = Instant.parse("2026-06-21T00:00:00Z");
     private static final Instant LATER = Instant.parse("2026-06-22T00:00:00Z");
+    private static final Long EXPECTED_VERSION = 7L;
 
     @Mock
     private ProductRepository productRepository;
@@ -104,7 +105,7 @@ class UpdateCombinationPriceStockServiceTest {
             given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
-            service.update(command(new CombinationUpdateCommand(COMBO_ID, 8_900, 9_900, 50, false)));
+            service.update(command(new CombinationUpdateCommand(COMBO_ID, 8_900, 9_900, 50, false, EXPECTED_VERSION)));
 
             ArgumentCaptor<ProductOptionCombination> captor =
                     ArgumentCaptor.forClass(ProductOptionCombination.class);
@@ -118,6 +119,8 @@ class UpdateCombinationPriceStockServiceTest {
             assertThat(saved.availableStock()).isEqualTo(40);
             assertThat(saved.isAvailable()).isFalse();
             assertThat(saved.updatedAt()).isEqualTo(LATER);
+            // 클라이언트가 본 조합 version으로 덮어써 조합별 stale 비교가 동작하도록 보장한다(§13)
+            assertThat(saved.version()).isEqualTo(EXPECTED_VERSION);
         }
 
         @Test
@@ -127,7 +130,7 @@ class UpdateCombinationPriceStockServiceTest {
             given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
-            service.update(command(new CombinationUpdateCommand(COMBO_ID, null, null, 30, null)));
+            service.update(command(new CombinationUpdateCommand(COMBO_ID, null, null, 30, null, EXPECTED_VERSION)));
 
             ArgumentCaptor<ProductOptionCombination> captor =
                     ArgumentCaptor.forClass(ProductOptionCombination.class);
@@ -145,7 +148,7 @@ class UpdateCombinationPriceStockServiceTest {
             given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID)));
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
-            service.update(command(new CombinationUpdateCommand(COMBO_ID, null, 9_900, null, null)));
+            service.update(command(new CombinationUpdateCommand(COMBO_ID, null, 9_900, null, null, EXPECTED_VERSION)));
 
             ArgumentCaptor<ProductOptionCombination> captor =
                     ArgumentCaptor.forClass(ProductOptionCombination.class);
@@ -174,8 +177,8 @@ class UpdateCombinationPriceStockServiceTest {
             given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
             service.update(command(
-                    new CombinationUpdateCommand(COMBO_ID, 8_000, null, null, null),
-                    new CombinationUpdateCommand(COMBO_2, null, null, 5, null)));
+                    new CombinationUpdateCommand(COMBO_ID, 8_000, null, null, null, EXPECTED_VERSION),
+                    new CombinationUpdateCommand(COMBO_2, null, null, 5, null, EXPECTED_VERSION)));
 
             ArgumentCaptor<ProductOptionCombination> captor =
                     ArgumentCaptor.forClass(ProductOptionCombination.class);
@@ -195,7 +198,7 @@ class UpdateCombinationPriceStockServiceTest {
         void productMissing() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
-            assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null))))
+            assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null, EXPECTED_VERSION))))
                     .isInstanceOf(ProductNotFoundException.class);
 
             then(combinationRepository).shouldHaveNoInteractions();
@@ -206,7 +209,7 @@ class UpdateCombinationPriceStockServiceTest {
         void notOwner() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(OTHER_SELLER)));
 
-            assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null))))
+            assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null, EXPECTED_VERSION))))
                     .isInstanceOf(ProductAccessDeniedException.class);
 
             then(combinationRepository).shouldHaveNoInteractions();
@@ -219,7 +222,7 @@ class UpdateCombinationPriceStockServiceTest {
             given(combinationRepository.findAllById(any())).willReturn(List.of());
 
             assertThatThrownBy(() -> service.update(
-                    command(new CombinationUpdateCommand(MISSING_COMBO, 100, null, null, null))))
+                    command(new CombinationUpdateCommand(MISSING_COMBO, 100, null, null, null, EXPECTED_VERSION))))
                     .isInstanceOf(CombinationNotFoundException.class);
 
             then(combinationRepository).should(never()).save(any());
@@ -231,7 +234,7 @@ class UpdateCombinationPriceStockServiceTest {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
             given(combinationRepository.findAllById(any())).willReturn(List.of(combo(OTHER_PRODUCT)));
 
-            assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null))))
+            assertThatThrownBy(() -> service.update(command(new CombinationUpdateCommand(COMBO_ID, 100, null, null, null, EXPECTED_VERSION))))
                     .isInstanceOf(CombinationNotFoundException.class);
 
             then(combinationRepository).should(never()).save(any());

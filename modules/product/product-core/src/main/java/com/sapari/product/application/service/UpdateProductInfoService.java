@@ -1,6 +1,7 @@
 package com.sapari.product.application.service;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.product.application.port.HtmlSanitizer;
 import com.sapari.product.command.UpdateProductInfoCommand;
 import com.sapari.product.domain.exception.CategoryNotFoundException;
 import com.sapari.product.domain.exception.ProductAccessDeniedException;
@@ -27,6 +28,7 @@ public class UpdateProductInfoService implements UpdateProductInfoUseCase {
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
     private final TimeProvider timeProvider;
+    private final HtmlSanitizer htmlSanitizer;
 
     /**
      * 상품 기본 정보를 수정한다. 존재·소유권·태그·카테고리를 검증한 뒤 정보를 갱신하고 태그를 교체해 저장한다.
@@ -60,12 +62,14 @@ public class UpdateProductInfoService implements UpdateProductInfoUseCase {
         Product updated = product.updateInfo(
                         command.categoryId(),
                         command.name(),
-                        command.description(),
+                        htmlSanitizer.sanitize(command.description()),
                         command.shippingPolicyId(),
                         command.additionalShippingFee(),
                         timeProvider.now())
                 .toBuilder()
                 .tags(tags)
+                // 클라이언트가 폼에서 본 version으로 덮어써야 저장 시 stale 비교가 동작한다(§13)
+                .version(command.expectedVersion())
                 .build();
         productRepository.save(updated);
     }

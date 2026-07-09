@@ -42,6 +42,7 @@ public class GetSellerProductsService implements GetSellerProductsUseCase {
                 summary.hasStock(),
                 summary.thumbnailKey(),
                 summary.reviewCount(),
-                summary.avgRating());
+                summary.avgRating(),
+                summary.version());
     }
 }

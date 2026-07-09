@@ -40,6 +40,7 @@ class ChangeProductSaleStatusServiceTest {
     private static final Long CATEGORY_ID = 1001L;
     private static final Instant NOW = Instant.parse("2026-06-21T00:00:00Z");
     private static final Instant LATER = Instant.parse("2026-06-22T00:00:00Z");
+    private static final Long EXPECTED_VERSION = 7L;
 
     @Mock
     private ProductRepository productRepository;
@@ -83,11 +84,13 @@ class ChangeProductSaleStatusServiceTest {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
             given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
-            service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED"));
+            service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED", EXPECTED_VERSION));
 
             Product saved = captureSaved();
             assertThat(saved.status()).isEqualTo(ProductStatus.SUSPENDED);
             assertThat(saved.updatedAt()).isEqualTo(LATER);
+            // 클라이언트가 본 version으로 덮어써 stale 비교가 동작하도록 보장한다(§13)
+            assertThat(saved.version()).isEqualTo(EXPECTED_VERSION);
         }
 
         @Test
@@ -96,7 +99,7 @@ class ChangeProductSaleStatusServiceTest {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(suspended()));
             given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
-            service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "ON_SALE"));
+            service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "ON_SALE", EXPECTED_VERSION));
 
             assertThat(captureSaved().status()).isEqualTo(ProductStatus.ON_SALE);
         }
@@ -111,7 +114,7 @@ class ChangeProductSaleStatusServiceTest {
         void invalidTarget() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
 
-            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "DELETED")))
+            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "DELETED", EXPECTED_VERSION)))
                     .isInstanceOf(InvalidProductStateException.class);
 
             then(productRepository).should(never()).save(any());
@@ -122,7 +125,7 @@ class ChangeProductSaleStatusServiceTest {
         void nullTarget() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSale()));
 
-            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, null)))
+            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, null, EXPECTED_VERSION)))
                     .isInstanceOf(InvalidProductStateException.class);
 
             then(productRepository).should(never()).save(any());
@@ -133,7 +136,7 @@ class ChangeProductSaleStatusServiceTest {
         void illegalTransition() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(create(SELLER_ID)));
 
-            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED")))
+            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED", EXPECTED_VERSION)))
                     .isInstanceOf(InvalidProductStateException.class);
 
             then(productRepository).should(never()).save(any());
@@ -144,7 +147,7 @@ class ChangeProductSaleStatusServiceTest {
         void notOwner() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(create(OTHER_SELLER).approve(NOW)));
 
-            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED")))
+            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED", EXPECTED_VERSION)))
                     .isInstanceOf(ProductAccessDeniedException.class);
 
             then(productRepository).should(never()).save(any());
@@ -155,7 +158,7 @@ class ChangeProductSaleStatusServiceTest {
         void productMissing() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
-            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED")))
+            assertThatThrownBy(() -> service.change(new ChangeSaleStatusCommand(PRODUCT_ID, SELLER_ID, "SUSPENDED", EXPECTED_VERSION)))
                     .isInstanceOf(ProductNotFoundException.class);
 
             then(productRepository).should(never()).save(any());

@@ -16,6 +16,7 @@ import java.util.UUID;
  * @param shippingPolicyId      배송 정책 id, 없으면 null
  * @param additionalShippingFee 상품 단독 배송비, 없으면 0
  * @param tags                  교체할 태그 목록(최대 10개, 각 20자, 특수문자 불가). null이면 태그 제거
+ * @param expectedVersion       클라이언트가 수정 폼에서 본 상품 version(stale-form 충돌 감지용)
  */
 public record UpdateProductInfoCommand(
         UUID productId,
@@ -25,6 +26,7 @@ public record UpdateProductInfoCommand(
         String description,
         UUID shippingPolicyId,
         Integer additionalShippingFee,
-        List<String> tags
+        List<String> tags,
+        Long expectedVersion
 ) {
 }

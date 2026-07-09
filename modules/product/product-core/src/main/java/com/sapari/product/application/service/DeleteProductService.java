@@ -39,6 +39,11 @@ public class DeleteProductService implements DeleteProductUseCase {
                     "상품 소유자가 아닙니다: product=" + command.productId() + ", seller=" + command.sellerId());
         }
 
-        productRepository.save(product.softDelete(timeProvider.now()));
+        // 클라이언트가 본 version으로 덮어써야 저장 시 stale 비교가 동작한다(§13)
+        Product deleted = product.softDelete(timeProvider.now())
+                .toBuilder()
+                .version(command.expectedVersion())
+                .build();
+        productRepository.save(deleted);
     }
 }

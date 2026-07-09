@@ -37,6 +37,7 @@ class DeleteProductServiceTest {
     private static final Long CATEGORY_ID = 1001L;
     private static final Instant NOW = Instant.parse("2026-06-21T00:00:00Z");
     private static final Instant LATER = Instant.parse("2026-06-22T00:00:00Z");
+    private static final Long EXPECTED_VERSION = 7L;
 
     @Mock
     private ProductRepository productRepository;
@@ -62,13 +63,15 @@ class DeleteProductServiceTest {
         given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
         given(productRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
 
-        service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID));
+        service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID, EXPECTED_VERSION));
 
         ArgumentCaptor<Product> captor = ArgumentCaptor.forClass(Product.class);
         then(productRepository).should().save(captor.capture());
         Product saved = captor.getValue();
         assertThat(saved.isDeleted()).isTrue();
         assertThat(saved.deletedAt()).isEqualTo(LATER);
+        // 클라이언트가 본 version으로 덮어써 stale 비교가 동작하도록 보장한다(§13)
+        assertThat(saved.version()).isEqualTo(EXPECTED_VERSION);
     }
 
     @Test
@@ -76,7 +79,7 @@ class DeleteProductServiceTest {
     void notOwner() {
         given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(OTHER_SELLER)));
 
-        assertThatThrownBy(() -> service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID)))
+        assertThatThrownBy(() -> service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID, EXPECTED_VERSION)))
                 .isInstanceOf(ProductAccessDeniedException.class);
 
         then(productRepository).should(never()).save(any());
@@ -87,7 +90,7 @@ class DeleteProductServiceTest {
     void productMissing() {
         given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID)))
+        assertThatThrownBy(() -> service.delete(new DeleteProductCommand(PRODUCT_ID, SELLER_ID, EXPECTED_VERSION)))
                 .isInstanceOf(ProductNotFoundException.class);
 
         then(productRepository).should(never()).save(any());
