@@ -3,6 +3,7 @@ package com.sapari.user.port;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.model.ProviderType;
@@ -41,6 +42,16 @@ public interface UserAccountUseCase {
     boolean existsByNickname(String nickname);
 
     UserView changeNickname(UUID userId, String nickname);
+
+    /**
+     * 인증된 사용자의 프로필 이미지를 검증·저장하고 DB에는 새 object key만 반영한다.
+     */
+    UserView changeProfileImage(ProfileImageChangeCommand command);
+
+    /**
+     * 인증된 사용자의 프로필 이미지 key를 제거하고 기존 object는 best-effort로 정리한다.
+     */
+    UserView removeProfileImage(UUID userId);
 
     /**
      * 회원탈퇴를 신청해 계정을 탈퇴 유예 상태로 전환한다.

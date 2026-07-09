@@ -12,17 +12,25 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.application.dto.ProfileImageChangeResult;
+import com.sapari.user.application.dto.ProfileImageRemoveResult;
+import com.sapari.user.application.dto.ProfileImageStoreCommand;
+import com.sapari.user.application.dto.StoredProfileImage;
+import com.sapari.user.application.port.ProfileImageStorage;
 import com.sapari.user.domain.model.Terms;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.model.UserTermsAgreement;
 import com.sapari.user.domain.model.WithdrawnUserRetention;
 import com.sapari.user.application.support.WithdrawnUserRetentionMasker;
+import com.sapari.user.application.support.ProfileImageUploadValidator;
 import com.sapari.user.domain.repository.TermsRepository;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.domain.repository.UserTermsAgreementRepository;
 import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
+import com.sapari.user.application.port.ProfileImageUrlResolver;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.TermsType;
 import com.sapari.user.model.UserRole;
@@ -44,6 +52,10 @@ public class UserAccountService implements UserAccountUseCase {
     private final TermsRepository termsRepository;
     private final UserTermsAgreementRepository userTermsAgreementRepository;
     private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker;
+    private final ProfileImageUploadValidator profileImageUploadValidator;
+    private final ProfileImageStorage profileImageStorage;
+    private final ProfileImageMutationProcessor profileImageMutationProcessor;
+    private final ProfileImageUrlResolver profileImageUrlResolver;
     private final TimeProvider timeProvider;
 
     /**
@@ -70,7 +82,7 @@ public class UserAccountService implements UserAccountUseCase {
                 command.gender(),
                 command.phoneNumber(),
                 command.email(),
-                command.profileImageUrl(),
+                command.profileImageKey(),
                 command.marketingAgreed(),
                 command.provider(),
                 command.providerId(),
@@ -200,6 +212,44 @@ public class UserAccountService implements UserAccountUseCase {
     }
 
     /**
+     * 프로필 이미지 원본을 검증·저장한 뒤 DB에는 새 object key만 반영한다.
+     * 저장소 업로드는 DB 트랜잭션 밖에서 수행하고, DB key 교체 실패 시 새 object를 best-effort로 보상 삭제한다.
+     */
+    @Override
+    public UserView changeProfileImage(ProfileImageChangeCommand command) {
+        ProfileImageStoreCommand storeCommand = profileImageUploadValidator.validate(
+                command.userId(),
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        );
+        StoredProfileImage storedProfileImage = profileImageStorage.store(storeCommand);
+
+        ProfileImageChangeResult result;
+        try {
+            result = profileImageMutationProcessor.replaceProfileImageKey(command.userId(), storedProfileImage.key());
+        } catch (RuntimeException e) {
+            // 새 object 업로드 후 DB key 교체가 실패하면 참조되지 않는 object를 줄이기 위해 보상 삭제한다.
+            profileImageStorage.deleteQuietly(storedProfileImage.key());
+            throw e;
+        }
+
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+    /**
+     * DB의 프로필 이미지 key를 비운 뒤 커밋된 기존 object만 best-effort로 정리한다.
+     */
+    @Override
+    public UserView removeProfileImage(UUID userId) {
+        ProfileImageRemoveResult result = profileImageMutationProcessor.removeProfileImageKey(userId);
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+
+    /**
      * 회원탈퇴 신청 시 사용자 상태를 WITHDRAWING으로 변경하고 deletedAt에 유예 시작 시각을 기록한다.
      * 원문 개인정보는 남기지 않고 보존 테이블에는 마스킹된 식별 힌트만 한 번 저장한다.
      */
@@ -253,7 +303,7 @@ public class UserAccountService implements UserAccountUseCase {
                 user.birthDate(),
                 user.gender(),
                 user.phoneNumber(),
-                user.profileImageKey(),
+                profileImageUrlResolver.resolve(user.profileImageKey()),
                 user.email(),
                 user.grade(),
                 user.pointBalance(),

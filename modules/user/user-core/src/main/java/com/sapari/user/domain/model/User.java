@@ -116,6 +116,20 @@ public record User(
                 .build();
     }
 
+    public User updateProfileImageKey(String profileImageKey) {
+        Assert.hasText(profileImageKey, "profileImageKey는 필수입니다.");
+
+        return toBuilder()
+                .profileImageKey(profileImageKey)
+                .build();
+    }
+
+    public User removeProfileImage() {
+        return toBuilder()
+                .profileImageKey(null)
+                .build();
+    }
+
     /**
      * 회원탈퇴 유예 상태로 전환한다.
      * deletedAt은 실제 삭제 완료 시각이 아니라 30일 유예 기간의 시작 시각으로 사용한다.

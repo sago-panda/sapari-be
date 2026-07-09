@@ -112,6 +112,49 @@ class UserTest {
     }
 
     @Test
+    @DisplayName("프로필 이미지 key 수정 시 profileImageKey만 변경한 User를 반환한다")
+    void updateProfileImageKeyReturnsUpdatedUser() {
+        // given
+        User user = activeSocialCustomer("users/old/profile/image.jpg");
+
+        // when
+        User updatedUser = user.updateProfileImageKey("users/new/profile/image.png");
+
+        // then
+        assertThat(updatedUser.profileImageKey()).isEqualTo("users/new/profile/image.png");
+        assertThat(updatedUser.nickname()).isEqualTo(user.nickname());
+        assertThat(updatedUser.email()).isEqualTo(user.email());
+        assertThat(updatedUser.role()).isEqualTo(user.role());
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 key가 비어 있으면 수정할 수 없다")
+    void updateProfileImageKeyThrowsExceptionWhenBlank() {
+        // given
+        User user = activeSocialCustomer("users/old/profile/image.jpg");
+
+        // when, then
+        assertThatThrownBy(() -> user.updateProfileImageKey(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 삭제 시 profileImageKey를 비운 User를 반환한다")
+    void removeProfileImageReturnsUserWithoutProfileImageKey() {
+        // given
+        User user = activeSocialCustomer("users/old/profile/image.jpg");
+
+        // when
+        User updatedUser = user.removeProfileImage();
+
+        // then
+        assertThat(updatedUser.profileImageKey()).isNull();
+        assertThat(updatedUser.nickname()).isEqualTo(user.nickname());
+        assertThat(updatedUser.email()).isEqualTo(user.email());
+        assertThat(updatedUser.role()).isEqualTo(user.role());
+    }
+
+    @Test
     @DisplayName("탈퇴 신청 시 탈퇴 진행 상태와 유예 시작 시각을 설정한다")
     void requestWithdrawalSetsWithdrawingStatusAndDeletedAt() {
         // given
@@ -190,5 +233,23 @@ class UserTest {
 
     private Instant nicknameChangedAt() {
         return Instant.parse("2025-01-01T00:00:00Z");
+    }
+
+    private User activeSocialCustomer(String profileImageKey) {
+        return User.createSocialCustomer(
+                "tester",
+                "테스터",
+                LocalDate.of(1995, 5, 15),
+                UserGender.MALE,
+                "01012345678",
+                "tester@example.com",
+                profileImageKey,
+                false,
+                ProviderType.NAVER,
+                "provider-id",
+                "provider@example.com",
+                providerCreatedAt(),
+                nicknameChangedAt()
+        );
     }
 }
