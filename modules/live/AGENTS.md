@@ -51,6 +51,27 @@ A process crash still orphans the egress → needs a reconciliation batch, not b
 
 **Pinned product rule:** starting requires **exactly one** pinned product (`validatePinnedProduct`).
 
+## RTMP Ingress — seller external-encoder (OBS) input
+
+Besides WEBRTC (browser token publish), OBS / pro encoders push over **RTMP**. This is a **prep step
+decoupled from scheduling**: the seller calls `POST /rooms/{roomId}/ingress` (`PrepareIngressService`)
+to get an `rtmpUrl` + `streamKey` and configures the encoder — the stream type is **not** fixed at
+reservation (a room defaults to `LiveStreamType.WebRtc`).
+
+- **streamKey is a credential — never store or log it.** Only `ingressId` is persisted
+  (`LiveStreamType.Rtmp` / `assignRtmpIngress`); the streamKey is returned **once** in the issue response
+  (re-fetch via LiveKit `listIngress`). `IngressResult` / `IngressCredentialView` mask it in `toString()`.
+- **Guards**: Scheduled only (`canPrepareIngress`) + ownership (`findByIdAndSellerId`). **Idempotent**:
+  reject if already RTMP (`isRtmp`) — decided from the DB alone (no LiveKit re-fetch). Re-issue on a lost
+  streamKey is a separate ticket.
+- **The ingress is bound to the room by roomId** and LiveKit auto-creates that room when OBS connects, so
+  it does not depend on reservation-time SFU room creation / `empty_timeout`.
+- **Not done yet (follow-up tickets)**: the go-live transition for RTMP rooms (OBS connect =
+  `ingress_started` webhook → Live) and the `issueSellerToken` skip branch, plus orphan-ingress
+  reconciliation / `deleteIngress` — which also closes the concurrent double-`prepare` race (two
+  simultaneous calls both pass the `isRtmp` guard → duplicate ingress → one orphan). For now calling
+  `StartLive` on an RTMP room does not break — it just issues an unused seller token.
+
 ## LiveKit Webhooks — receiver + handler contract
 
 LiveKit calls `POST /webhooks/livekit` (live-app) for events we can't learn from our own API —
