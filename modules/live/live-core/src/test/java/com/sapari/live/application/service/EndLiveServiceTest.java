@@ -33,6 +33,7 @@ import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveRoomRepository;
@@ -83,6 +84,7 @@ public class EndLiveServiceTest {
                 .set("sellerId", sellerId)
                 .set("status", liveStatus)
                 .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
 
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
@@ -159,7 +161,8 @@ public class EndLiveServiceTest {
         StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8");
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId).set("sellerId", sellerId)
-                .set("status", liveStatus).set("streamInfo", streamInfo).sample();
+                .set("status", liveStatus).set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc()).sample();
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(endedAt);
 
@@ -189,7 +192,8 @@ public class EndLiveServiceTest {
         StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8");
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId).set("sellerId", sellerId)
-                .set("status", liveStatus).set("streamInfo", streamInfo).sample();
+                .set("status", liveStatus).set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc()).sample();
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(endedAt);
 

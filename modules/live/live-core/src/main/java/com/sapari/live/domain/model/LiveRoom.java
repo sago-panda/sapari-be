@@ -19,6 +19,7 @@ public record LiveRoom(
         String sellerNickname,
         String thumbnailUrl,
         StreamInfo streamInfo,
+        LiveStreamType streamType,
         LiveStatus status,
         Instant scheduledAt,
         Instant createdAt,
@@ -52,6 +53,7 @@ public record LiveRoom(
                 .sellerNickname(sellerNickname)
                 .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
+                .streamType(new LiveStreamType.WebRtc())
                 .scheduledAt(scheduledAt)
                 .createdAt(now)
                 .updatedAt(now)
@@ -105,6 +107,21 @@ public record LiveRoom(
                 .build();
     }
 
+    /**
+     * RTMP 송출로 전환하고 발급받은 ingress를 배정한다(방송 전 준비 단계).
+     * 방송 시작 전(Scheduled)에만 허용 — 진행 중/종료된 방의 송출 방식은 바꾸지 않는다.
+     * ingressId 유효성은 {@link LiveStreamType.Rtmp} 컴팩트 생성자가 검증한다.
+     */
+    public LiveRoom assignRtmpIngress(String ingressId, Instant now){
+        if (!canPrepareIngress()) {
+            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        return toBuilder()
+                .streamType(new LiveStreamType.Rtmp(ingressId))
+                .updatedAt(now)
+                .build();
+    }
+
     public String sfuRoomId(){
         return streamInfo.sfuRoomId();
     }
@@ -127,6 +144,10 @@ public record LiveRoom(
 
     public boolean canEndLive(){
         return status instanceof LiveStatus.Live || status instanceof LiveStatus.Suspended;
+    }
+
+    public boolean canPrepareIngress(){
+        return status instanceof LiveStatus.Scheduled;
     }
 
     public CreateLiveView toCreateLiveView(){
