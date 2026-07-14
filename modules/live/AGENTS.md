@@ -35,7 +35,7 @@ transitions return a new `LiveRoom`. Guards gate every transition — never set 
 
 All LiveKit access goes through `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter).
 Never call LiveKit SDK from a service. Port surface: `createRoom`, `issueSellerToken`,
-`startHlsEgress`, `stopHlsEgress`, `closeRoom`, `getSfuUrl`.
+`createIngress`, `startHlsEgress`, `stopHlsEgress`, `closeRoom`, `getSfuUrl`.
 
 **Intentional exception — external calls inside `@Transactional` (`StartLiveService`).**
 The root rule is "minimize external calls in a tx"; here it is deliberate. Order:

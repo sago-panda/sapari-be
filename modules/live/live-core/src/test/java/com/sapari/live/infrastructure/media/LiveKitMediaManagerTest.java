@@ -2,12 +2,15 @@ package com.sapari.live.infrastructure.media;
 
 import io.livekit.server.AudioMixing;
 import io.livekit.server.EgressServiceClient;
+import io.livekit.server.IngressServiceClient;
 import io.livekit.server.RoomServiceClient;
 import livekit.LivekitEgress.EgressInfo;
 import livekit.LivekitEgress.EgressStatus;
 import livekit.LivekitEgress.EncodingOptions;
 import livekit.LivekitEgress.EncodingOptionsPreset;
 import livekit.LivekitEgress.SegmentedFileOutput;
+import livekit.LivekitIngress.IngressInfo;
+import livekit.LivekitIngress.IngressInput;
 import retrofit2.Call;
 import retrofit2.Response;
 
@@ -44,6 +47,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.live.application.port.HlsEgressResult;
+import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.MasterPlaylistPublisher;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.infrastructure.config.LiveKitProperties;
@@ -55,6 +59,8 @@ public class LiveKitMediaManagerTest {
     private RoomServiceClient roomServiceClient;
     @Mock
     private EgressServiceClient egressServiceClient;
+    @Mock
+    private IngressServiceClient ingressServiceClient;
     @Mock
     private ObjectProvider<MasterPlaylistPublisher> masterPlaylistPublisher;
 
@@ -85,7 +91,7 @@ public class LiveKitMediaManagerTest {
                 .set("hls", hls)
                 .sample();
         liveKitMediaManager = new LiveKitMediaManager(
-                roomServiceClient, liveKitProperties, egressServiceClient, masterPlaylistPublisher);
+                roomServiceClient, liveKitProperties, egressServiceClient, ingressServiceClient, masterPlaylistPublisher);
         egressId = "egress-" + UUID.randomUUID();
         roomId = UUID.randomUUID();
     }
@@ -409,5 +415,61 @@ public class LiveKitMediaManagerTest {
 
         // when & then
         assertDoesNotThrow(() -> liveKitMediaManager.closeRoom(sfuRoomId));
+    }
+
+    @Test
+    @DisplayName("RTMP Ingress 발급 성공: RTMP_INPUT 으로 방(roomId)·판매자(sellerId) 배정, ingressId·url·streamKey 반환")
+    void createIngress_Success() throws IOException {
+        UUID sellerId = UUID.randomUUID();
+        IngressInfo info = IngressInfo.newBuilder()
+                .setIngressId("ingress-1")
+                .setUrl("rtmp://livekit.example/live")
+                .setStreamKey("super-secret-key")
+                .build();
+        Call<IngressInfo> call = mock(Call.class);
+        given(ingressServiceClient.createIngress(
+                anyString(), anyString(), anyString(), anyString(), any(IngressInput.class)))
+                .willReturn(call);
+        given(call.execute()).willReturn(Response.success(info));
+
+        IngressResult result = liveKitMediaManager.createIngress(roomId, sellerId);
+
+        // 결과 매핑
+        assertThat(result.ingressId()).isEqualTo("ingress-1");
+        assertThat(result.rtmpUrl()).isEqualTo("rtmp://livekit.example/live");
+        assertThat(result.streamKey()).isEqualTo("super-secret-key");
+        // 호출 계약: name=라벨("rtmp-"+roomId), roomName=roomId, identity·name=sellerId, RTMP 입력
+        then(ingressServiceClient).should().createIngress(
+                eq("rtmp-" + roomId), eq(roomId.toString()),
+                eq(sellerId.toString()), eq(sellerId.toString()),
+                eq(IngressInput.RTMP_INPUT));
+    }
+
+    @Test
+    @DisplayName("RTMP Ingress 발급: 응답이 실패(비 2xx)면 LiveMediaException")
+    void createIngress_httpFailure() throws IOException {
+        Call<IngressInfo> call = mock(Call.class);
+        Response failed = mock(Response.class);
+        given(failed.isSuccessful()).willReturn(false);
+        given(ingressServiceClient.createIngress(
+                anyString(), anyString(), anyString(), anyString(), any(IngressInput.class)))
+                .willReturn(call);
+        given(call.execute()).willReturn(failed);
+
+        assertThrows(LiveMediaException.class,
+                () -> liveKitMediaManager.createIngress(roomId, UUID.randomUUID()));
+    }
+
+    @Test
+    @DisplayName("RTMP Ingress 발급: 통신 오류(IOException)를 LiveMediaException 으로 번역")
+    void createIngress_ioError() throws IOException {
+        Call<IngressInfo> call = mock(Call.class);
+        given(ingressServiceClient.createIngress(
+                anyString(), anyString(), anyString(), anyString(), any(IngressInput.class)))
+                .willReturn(call);
+        given(call.execute()).willThrow(new IOException("네트워크 실패"));
+
+        assertThrows(LiveMediaException.class,
+                () -> liveKitMediaManager.createIngress(roomId, UUID.randomUUID()));
     }
 }

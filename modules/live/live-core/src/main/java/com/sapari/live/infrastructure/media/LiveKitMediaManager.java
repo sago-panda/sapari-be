@@ -6,6 +6,7 @@ import io.livekit.server.CanPublish;
 import io.livekit.server.CanPublishData;
 import io.livekit.server.CanSubscribe;
 import io.livekit.server.EgressServiceClient;
+import io.livekit.server.IngressServiceClient;
 import io.livekit.server.RoomJoin;
 import io.livekit.server.RoomName;
 import io.livekit.server.RoomServiceClient;
@@ -16,6 +17,8 @@ import livekit.LivekitEgress.EncodingOptionsPreset;
 import livekit.LivekitEgress.S3Upload;
 import livekit.LivekitEgress.SegmentedFileOutput;
 import livekit.LivekitEgress.SegmentedFileProtocol;
+import livekit.LivekitIngress.IngressInfo;
+import livekit.LivekitIngress.IngressInput;
 import livekit.LivekitModels.Room;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +34,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import com.sapari.live.application.port.HlsEgressResult;
+import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.MasterPlaylistPublisher;
 import com.sapari.live.application.port.SfuRoomResult;
@@ -51,6 +55,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
     // master.m3u8 업로드 도입 전까지 서빙하는 대표 화질 (이 화질의 변형 m3u8을 직접 재생)
     private static final HlsRendition DEFAULT_RENDITION = HlsRendition.P720;
     private final EgressServiceClient egressServiceClient;
+    private final IngressServiceClient ingressServiceClient;
     // master 업로더(NCP 어댑터)는 링크 확정 후 빈으로 등록 — 없으면 720p 강등(ObjectProvider로 선택 주입)
     private final ObjectProvider<MasterPlaylistPublisher> masterPlaylistPublisher;
 
@@ -90,6 +95,38 @@ public class LiveKitMediaManager implements LiveMediaManager {
         );
 
         return accessToken.toJwt();
+    }
+
+    /**
+     * RTMP Ingress 발급 — OBS/전문 인코더가 push 할 수 있는 rtmpUrl·streamKey 를 생성한다.
+     * ingress 는 roomId 기준으로 방에 묶이며(입력 시 방 자동 생성), 판별자 identity 는 sellerId 로 둔다.
+     * streamKey 는 자격증명이라 로깅하지 않고 {@link IngressResult}로 1회 반환한다(재조회는 listIngress).
+     */
+    @Override
+    public IngressResult createIngress(UUID roomId, UUID sellerId){
+        try {
+            Response<IngressInfo> response = ingressServiceClient.createIngress(
+                    "rtmp-" + roomId,      // name — 대시보드 식별용 라벨(자유 문자열), 방 바인딩은 roomName 이 담당
+                    roomId.toString(),     // roomName — 이 ingress 가 publish 할 방
+                    sellerId.toString(),   // participantIdentity
+                    sellerId.toString(),   // participantName
+                    IngressInput.RTMP_INPUT
+            ).execute();
+
+            if (!response.isSuccessful() || response.body() == null) {
+                log.error("LiveKit Ingress 생성 실패: roomId={}, code={}, message={}",
+                        roomId, response.code(), response.message());
+                throw new LiveMediaException("RTMP Ingress 생성에 실패했습니다: " + roomId);
+            }
+
+            IngressInfo info = response.body();
+            // streamKey 는 자격증명 — 로그에 남기지 않는다(ingressId/url 만 기록).
+            log.info("RTMP Ingress 생성: roomId={}, ingressId={}", roomId, info.getIngressId());
+            return new IngressResult(info.getIngressId(), info.getUrl(), info.getStreamKey());
+        } catch (IOException e) {
+            log.error("LiveKit Ingress 생성 통신 오류: roomId={}", roomId, e);
+            throw new LiveMediaException("RTMP Ingress 생성 중 통신 오류: " + roomId, e);
+        }
     }
 
     /**
