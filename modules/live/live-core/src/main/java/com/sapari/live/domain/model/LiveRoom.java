@@ -150,6 +150,10 @@ public record LiveRoom(
         return status instanceof LiveStatus.Scheduled;
     }
 
+    public boolean isRtmp(){
+        return streamType instanceof LiveStreamType.Rtmp;
+    }
+
     public CreateLiveView toCreateLiveView(){
         return new CreateLiveView(id, title, description);
     }
