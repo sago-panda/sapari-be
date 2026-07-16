@@ -4,7 +4,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.IngressResult;
@@ -26,8 +25,11 @@ public class PrepareIngressService implements PrepareIngressUseCase {
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
 
+    // @Transactional 없음(의도): createIngress(외부 I/O)를 트랜잭션 밖에서 호출해 네트워크 왕복 동안
+    // DB 커넥션을 점유하지 않는다(루트 AGENTS "Minimize external calls inside a transaction").
+    // egressId를 room 저장과 원자적으로 커밋해야 하는 StartLiveService와 달리, 여기선 단건 save 뿐이라
+    // 원자성 요구가 없고(고아 ingress는 reconciliation에 위임), save 자체는 Spring Data가 트랜잭션을 관리한다.
     @Override
-    @Transactional
     public IngressCredentialView prepare(PrepareIngressCommand command){
         // 소유권: 판매자 본인의 방만 조회됨(남의 방에 ingress 발급 차단)
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
