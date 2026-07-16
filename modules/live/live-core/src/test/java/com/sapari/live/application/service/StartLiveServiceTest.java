@@ -38,6 +38,7 @@ import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveProduct;
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStatus.Live;
 import com.sapari.live.domain.model.StreamInfo;
@@ -106,6 +107,7 @@ public class StartLiveServiceTest {
                 .set("sellerId", sellerId)
                 .set("status", new LiveStatus.Scheduled(Instant.now()))
                 .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
 
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
@@ -189,6 +191,7 @@ public class StartLiveServiceTest {
                 .set("id", roomId)
                 .set("sellerId", sellerId)
                 .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
                 .set("status", new Live(Instant.now(), streamInfo.sfuRoomId(), streamInfo.egressId(), streamInfo.hlsUrl()))
                 .sample();
 
@@ -294,6 +297,7 @@ public class StartLiveServiceTest {
                 .set("sellerId", sellerId)
                 .set("status", new LiveStatus.Scheduled(Instant.now()))
                 .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
     }
 

@@ -11,8 +11,10 @@ import org.mapstruct.factory.Mappers;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
+import com.sapari.live.infrastructure.persistence.entity.StreamType;
 
 /**
  * MapStruct 생성 구현체({@code Mappers.getMapper})로 동작을 고정한다.
@@ -130,5 +132,92 @@ class LiveRoomMapperTest {
         assertThat(entity.getLiveStatus()).isEqualTo(LiveRoomStatus.LIVE);
         assertThat(entity.getStartedAt()).isEqualTo(startedAt);
         assertThat(entity.getSfuRoomId()).isEqualTo("sfu-1");
+    }
+
+    @Test
+    @DisplayName("toDomain — 기본 WEBRTC: streamType 을 WebRtc 로 복원")
+    void toDomain_webrtc() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .build();
+
+        LiveRoom room = mapper.toDomain(entity);
+
+        assertThat(room.streamType()).isInstanceOf(LiveStreamType.WebRtc.class);
+    }
+
+    @Test
+    @DisplayName("toDomain — RTMP: streamType 을 Rtmp(ingressId) 로 복원")
+    void toDomain_rtmp() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .build();
+        entity.assignRtmpIngress("ing-1");
+
+        LiveRoom room = mapper.toDomain(entity);
+
+        assertThat(room.streamType()).isInstanceOf(LiveStreamType.Rtmp.class);
+        assertThat(((LiveStreamType.Rtmp) room.streamType()).ingressId()).isEqualTo("ing-1");
+    }
+
+    @Test
+    @DisplayName("toEntity — create()는 WEBRTC: streamType=WEBRTC, ingressId=null")
+    void toEntity_defaultsWebRtc() {
+        LiveRoom room = LiveRoom.create(
+                UUID.randomUUID(), "제목", "설명", "닉네임", "https://thumb",
+                Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"));
+
+        LiveRoomEntity entity = mapper.toEntity(room);
+
+        assertThat(entity.getStreamType()).isEqualTo(StreamType.WEBRTC);
+        assertThat(entity.getIngressId()).isNull();
+    }
+
+    @Test
+    @DisplayName("updateEntityFromDomain — RTMP 배정: streamType=RTMP, ingressId 세팅")
+    void updateEntityFromDomain_assignsRtmp() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .build();
+
+        LiveRoom room = LiveRoom.create(
+                        entity.getSellerId(), "제목", "설명", "닉네임", "https://thumb",
+                        Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"))
+                .assignRtmpIngress("ing-9", Instant.parse("2026-06-09T01:00:00Z"));
+
+        mapper.updateEntityFromDomain(entity, room);
+
+        assertThat(entity.getStreamType()).isEqualTo(StreamType.RTMP);
+        assertThat(entity.getIngressId()).isEqualTo("ing-9");
+    }
+
+    @Test
+    @DisplayName("updateEntityFromDomain — WebRtc 방: RTMP 였던 엔티티의 streamType=WEBRTC, ingressId clear")
+    void updateEntityFromDomain_clearsIngressOnWebRtc() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .build();
+        entity.assignRtmpIngress("ing-old"); // 기존 RTMP 상태
+
+        LiveRoom webRtcRoom = LiveRoom.create(
+                entity.getSellerId(), "제목", "설명", "닉네임", "https://thumb",
+                Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"));
+
+        mapper.updateEntityFromDomain(entity, webRtcRoom);
+
+        assertThat(entity.getStreamType()).isEqualTo(StreamType.WEBRTC);
+        assertThat(entity.getIngressId()).isNull();
     }
 }

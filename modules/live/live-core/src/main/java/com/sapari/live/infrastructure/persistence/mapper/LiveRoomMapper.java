@@ -6,6 +6,7 @@ import org.mapstruct.ReportingPolicy;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.LiveStatus.Ended;
 import com.sapari.live.domain.model.LiveStatus.Live;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
@@ -33,6 +34,7 @@ public interface LiveRoomMapper {
     // streamInfo·top-level scheduledAt 은 비워 둔다(상태가 보유) — 기존 동작 보존
     @Mapping(target = "streamInfo", ignore = true)
     @Mapping(target = "scheduledAt", ignore = true)
+    @Mapping(target = "streamType", expression = "java(toStreamType(entity))")
     @Mapping(target = "status", expression = "java(toStatus(entity))")
     LiveRoom toDomain(LiveRoomEntity entity);
 
@@ -40,6 +42,7 @@ public interface LiveRoomMapper {
     default LiveRoomEntity toEntity(LiveRoom room) {
         LiveRoomEntity entity = toEntityBase(room);
         applyStatusOnInsert(room, entity);
+        applyStreamType(entity, room);
         return entity;
     }
 
@@ -72,6 +75,7 @@ public interface LiveRoomMapper {
                     room.streamInfo().hlsUrl()
             );
         }
+        applyStreamType(entity, room);
 
         applyStatusFields(entity, room.status());
         entity.updateLiveStatus(toStatusEnum(room.status()));
@@ -88,6 +92,29 @@ public interface LiveRoomMapper {
             case SUSPENDED -> new Suspended(
                     entity.getStartedAt(), entity.getSuspendedAt(), entity.getSuspendedReason());
         };
+    }
+
+    /** streamType 판별자 + ingressId 컬럼 → sealed LiveStreamType 복원(status ↔ enum 과 동일 패턴). */
+    default LiveStreamType toStreamType(LiveRoomEntity entity) {
+        return switch (entity.getStreamType()) {
+            case WEBRTC -> new LiveStreamType.WebRtc();
+            case RTMP -> new LiveStreamType.Rtmp(entity.getIngressId());
+        };
+    }
+
+    /**
+     * 도메인 streamType → 엔티티 streamType/ingressId 컬럼(뮤테이터로 판별자↔ingress 항상 동반 세팅).
+     * 빌더로 직접 만든 도메인 등 streamType 이 없으면 컬럼을 건드리지 않는다(기존 동작 보존).
+     */
+    private void applyStreamType(LiveRoomEntity entity, LiveRoom room) {
+        LiveStreamType streamType = room.streamType();
+        if (streamType == null) {
+            return;
+        }
+        switch (streamType) {
+            case LiveStreamType.WebRtc w -> entity.assignWebRtc();
+            case LiveStreamType.Rtmp r -> entity.assignRtmpIngress(r.ingressId());
+        }
     }
 
     private LiveRoomStatus toStatusEnum(LiveStatus status) {

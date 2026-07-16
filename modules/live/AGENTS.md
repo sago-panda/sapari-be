@@ -35,7 +35,7 @@ transitions return a new `LiveRoom`. Guards gate every transition — never set 
 
 All LiveKit access goes through `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter).
 Never call LiveKit SDK from a service. Port surface: `createRoom`, `issueSellerToken`,
-`startHlsEgress`, `stopHlsEgress`, `closeRoom`, `getSfuUrl`.
+`createIngress`, `startHlsEgress`, `stopHlsEgress`, `closeRoom`, `getSfuUrl`.
 
 **Intentional exception — external calls inside `@Transactional` (`StartLiveService`).**
 The root rule is "minimize external calls in a tx"; here it is deliberate. Order:
@@ -50,6 +50,27 @@ stops the egress (rules + intentional catch-log are commented inline — don't "
 A process crash still orphans the egress → needs a reconciliation batch, not built yet.
 
 **Pinned product rule:** starting requires **exactly one** pinned product (`validatePinnedProduct`).
+
+## RTMP Ingress — seller external-encoder (OBS) input
+
+Besides WEBRTC (browser token publish), OBS / pro encoders push over **RTMP**. This is a **prep step
+decoupled from scheduling**: the seller calls `POST /rooms/{roomId}/ingress` (`PrepareIngressService`)
+to get an `rtmpUrl` + `streamKey` and configures the encoder — the stream type is **not** fixed at
+reservation (a room defaults to `LiveStreamType.WebRtc`).
+
+- **streamKey is a credential — never store or log it.** Only `ingressId` is persisted
+  (`LiveStreamType.Rtmp` / `assignRtmpIngress`); the streamKey is returned **once** in the issue response
+  (re-fetch via LiveKit `listIngress`). `IngressResult` / `IngressCredentialView` mask it in `toString()`.
+- **Guards**: Scheduled only (`canPrepareIngress`) + ownership (`findByIdAndSellerId`). **Idempotent**:
+  reject if already RTMP (`isRtmp`) — decided from the DB alone (no LiveKit re-fetch). Re-issue on a lost
+  streamKey is a separate ticket.
+- **The ingress is bound to the room by roomId** and LiveKit auto-creates that room when OBS connects, so
+  it does not depend on reservation-time SFU room creation / `empty_timeout`.
+- **Not done yet (follow-up tickets)**: the go-live transition for RTMP rooms (OBS connect =
+  `ingress_started` webhook → Live) and the `issueSellerToken` skip branch, plus orphan-ingress
+  reconciliation / `deleteIngress` — which also closes the concurrent double-`prepare` race (two
+  simultaneous calls both pass the `isRtmp` guard → duplicate ingress → one orphan). For now calling
+  `StartLive` on an RTMP room does not break — it just issues an unused seller token.
 
 ## LiveKit Webhooks — receiver + handler contract
 

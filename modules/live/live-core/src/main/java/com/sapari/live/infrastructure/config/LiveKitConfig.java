@@ -1,6 +1,7 @@
 package com.sapari.live.infrastructure.config;
 
 import io.livekit.server.EgressServiceClient;
+import io.livekit.server.IngressServiceClient;
 import io.livekit.server.RoomServiceClient;
 import io.livekit.server.WebhookReceiver;
 
@@ -20,6 +21,11 @@ public class LiveKitConfig {
     @Bean
     public EgressServiceClient egressServiceClient(LiveKitProperties liveKitProperties){
         return EgressServiceClient.createClient(liveKitProperties.host(), liveKitProperties.apiKey(), liveKitProperties.apiSecret());
+    }
+
+    @Bean
+    public IngressServiceClient ingressServiceClient(LiveKitProperties liveKitProperties){
+        return IngressServiceClient.createClient(liveKitProperties.host(), liveKitProperties.apiKey(), liveKitProperties.apiSecret());
     }
 
     @Bean
