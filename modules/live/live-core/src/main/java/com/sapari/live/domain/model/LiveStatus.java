@@ -3,10 +3,19 @@ package com.sapari.live.domain.model;
 import java.time.Instant;
 
 public sealed interface LiveStatus
-        permits LiveStatus.Scheduled, LiveStatus.Live, LiveStatus.Ended, LiveStatus.Suspended {
+        permits LiveStatus.Scheduled, LiveStatus.Ready, LiveStatus.Live, LiveStatus.Ended, LiveStatus.Suspended {
 
     record Scheduled(Instant scheduledAt) implements LiveStatus {
         public Scheduled {
+            if (scheduledAt == null) throw new IllegalArgumentException("scheduledAt은 필수입니다.");
+        }
+    }
+
+    // RTMP 방송 시작 대기: 판매자가 방송 시작(상품 등록)을 눌렀으나 OBS가 아직 ingress에 연결되지 않은 상태.
+    // ingress_started webhook(또는 시작 시점의 ingress 활성 확인)이 도착하면 Live로 전이한다.
+    // scheduledAt은 Scheduled에서 이어받아 보존한다(예약 알림·통계가 참조).
+    record Ready(Instant scheduledAt) implements LiveStatus {
+        public Ready {
             if (scheduledAt == null) throw new IllegalArgumentException("scheduledAt은 필수입니다.");
         }
     }

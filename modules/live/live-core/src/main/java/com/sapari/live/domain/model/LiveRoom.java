@@ -87,6 +87,42 @@ public record LiveRoom(
                 .build();
     }
 
+    /**
+     * RTMP 방송 시작 대기(Ready)로 전이한다 — 판매자가 방송 시작(상품 등록)을 눌렀으나 OBS가 아직 미연결인 단계.
+     * Scheduled 에서만 허용하며, OBS 연결 webhook(또는 시작 시점 ingress 활성 확인)이 {@link #goLiveFromReady}로
+     * Live 전이를 마무리한다. WebRTC 방은 이 단계 없이 곧바로 {@link #startLive}로 Live 가 된다.
+     */
+    public LiveRoom arm(Instant now){
+        if (!(this.status instanceof LiveStatus.Scheduled scheduled)) {
+            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        return toBuilder()
+                .status(new LiveStatus.Ready(scheduled.scheduledAt()))
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * RTMP 방송 시작 대기(Ready) → Live 전이. OBS가 ingress 에 연결됐을 때(webhook 또는 시작 시점 확인) 호출한다.
+     * 이미 sfuRoomId 가 배정된 방(예약 시 createRoom)을 전제로, egress 정보를 실은 새 StreamInfo 로 Live 를 연다.
+     */
+    public LiveRoom goLiveFromReady(StreamInfo newStreamInfo, Instant now){
+        if (!canGoLiveByRtmp()) {
+            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        var nextStatus = new LiveStatus.Live(
+                now,
+                newStreamInfo.sfuRoomId(),
+                newStreamInfo.egressId(),
+                newStreamInfo.hlsUrl()
+        );
+        return toBuilder()
+                .streamInfo(newStreamInfo)
+                .status(nextStatus)
+                .updatedAt(now)
+                .build();
+    }
+
     public LiveRoom endLive(Instant now){
         if (!canEndLive()) {
             throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
@@ -144,6 +180,11 @@ public record LiveRoom(
 
     public boolean canEndLive(){
         return status instanceof LiveStatus.Live || status instanceof LiveStatus.Suspended;
+    }
+
+    /** RTMP OBS 연결 시 Ready → Live 전이 가능 여부. Ready 이고 RTMP 송출인 방만 해당(멱등 가드). */
+    public boolean canGoLiveByRtmp(){
+        return status instanceof LiveStatus.Ready && isRtmp();
     }
 
     public boolean canPrepareIngress(){

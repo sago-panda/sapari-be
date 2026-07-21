@@ -19,6 +19,7 @@ import livekit.LivekitEgress.SegmentedFileOutput;
 import livekit.LivekitEgress.SegmentedFileProtocol;
 import livekit.LivekitIngress.IngressInfo;
 import livekit.LivekitIngress.IngressInput;
+import livekit.LivekitIngress.IngressState;
 import livekit.LivekitModels.Room;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -126,6 +127,34 @@ public class LiveKitMediaManager implements LiveMediaManager {
         } catch (IOException e) {
             log.error("LiveKit Ingress 생성 통신 오류: roomId={}", roomId, e);
             throw new LiveMediaException("RTMP Ingress 생성 중 통신 오류: " + roomId, e);
+        }
+    }
+
+    /**
+     * 방의 RTMP ingress 가 실제 송출 중(OBS 연결·publish)인지 확인한다.
+     * 시작 시점 랑데부(판매자가 방송 시작을 누른 순간 OBS가 이미 붙어 있는 경우)를 판정하는 데 쓴다.
+     * roomName(=roomId)으로 필터해 조회하며, 상태가 PUBLISHING 인 ingress 가 하나라도 있으면 활성으로 본다.
+     *
+     * <p>조회 실패 시 false 를 반환한다(fail-safe — 활성으로 단정해 무단 Live 전이를 만들지 않음). 보통은 곧
+     * 도착할 {@code ingress_started} webhook 이 전이를 이어받지만, "OBS 가 시작 이전에 이미 연결(그때 webhook 은
+     * 방이 아직 Scheduled 라 no-op) + 마침 이 조회마저 실패"인 드문 경우엔 재전송될 이벤트가 없어 방이 Ready 로
+     * 남을 수 있다 — 이는 orphan reconciliation 배치의 몫(미구현 follow-up 버킷).
+     */
+    @Override
+    public boolean isIngressActive(UUID roomId){
+        try {
+            List<IngressInfo> ingresses = ingressServiceClient.listIngress(roomId.toString()).execute().body();
+            if (ingresses == null || ingresses.isEmpty()) {
+                return false;
+            }
+            return ingresses.stream().anyMatch(ingress ->
+                    ingress.hasState()
+                            && ingress.getState().getStatus() == IngressState.Status.ENDPOINT_PUBLISHING);
+        } catch (Exception e) {
+            // 조회 실패 시 활성으로 단정하지 않고 false. 보통은 후속 ingress_started webhook 이 전이를 이어받으나,
+            // OBS 선연결 + 조회 실패가 겹치면 재전송 이벤트가 없어 Ready 로 남을 수 있음(reconciliation 대상).
+            log.warn("RTMP ingress 활성 조회 실패 — 비활성으로 간주: roomId={}", roomId, e);
+            return false;
         }
     }
 
