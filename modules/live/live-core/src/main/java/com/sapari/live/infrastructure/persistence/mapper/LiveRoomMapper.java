@@ -9,6 +9,7 @@ import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.LiveStatus.Ended;
 import com.sapari.live.domain.model.LiveStatus.Live;
+import com.sapari.live.domain.model.LiveStatus.Ready;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
 import com.sapari.live.domain.model.LiveStatus.Suspended;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
@@ -54,9 +55,7 @@ public interface LiveRoomMapper {
     private void applyStatusOnInsert(LiveRoom room, LiveRoomEntity entity) {
         LiveStatus status = room.status();
         entity.updateLiveStatus(toStatusEnum(status));
-        if (status instanceof Scheduled scheduled) {
-            entity.updateScheduledAt(scheduled.scheduledAt());
-        }
+        applyScheduledAt(entity, status);
         applyStatusFields(entity, status);
     }
 
@@ -66,7 +65,9 @@ public interface LiveRoomMapper {
         entity.updateDescription(room.description());
         entity.updateSellerNickname(room.sellerNickname());
         entity.updateThumbnailUrl(room.thumbnailUrl());
-        entity.updateScheduledAt(room.scheduledAt());
+        // scheduledAt 은 top-level 이 아니라 상태(Scheduled/Ready)에만 담긴다(toDomain 이 top-level 을 비움).
+        // room.scheduledAt() 을 그대로 쓰면 되저장 시 scheduled_at 컬럼이 null 로 지워지므로 상태 기반으로 세팅한다.
+        applyScheduledAt(entity, room.status());
 
         if (room.streamInfo() != null) {
             entity.updateStreamInfo(
@@ -85,6 +86,7 @@ public interface LiveRoomMapper {
     default LiveStatus toStatus(LiveRoomEntity entity) {
         return switch (entity.getLiveStatus()) {
             case SCHEDULED -> new Scheduled(entity.getScheduledAt());
+            case READY -> new Ready(entity.getScheduledAt());
             case LIVE -> new Live(
                     entity.getStartedAt(), entity.getSfuRoomId(), entity.getEgressId(), entity.getHlsUrl());
             case ENDED -> new Ended(
@@ -120,15 +122,28 @@ public interface LiveRoomMapper {
     private LiveRoomStatus toStatusEnum(LiveStatus status) {
         return switch (status) {
             case Scheduled s -> LiveRoomStatus.SCHEDULED;
+            case Ready r -> LiveRoomStatus.READY;
             case Live l -> LiveRoomStatus.LIVE;
             case Ended e -> LiveRoomStatus.ENDED;
             case Suspended s -> LiveRoomStatus.SUSPENDED;
         };
     }
 
+    /** Scheduled/Ready 는 scheduled_at 컬럼을 상태에서 세팅. 그 외 상태는 컬럼을 건드리지 않아 기존 값을 보존한다. */
+    private void applyScheduledAt(LiveRoomEntity entity, LiveStatus status) {
+        switch (status) {
+            case Scheduled s -> entity.updateScheduledAt(s.scheduledAt());
+            case Ready r -> entity.updateScheduledAt(r.scheduledAt());
+            case Live l -> { }
+            case Ended e -> { }
+            case Suspended s -> { }
+        }
+    }
+
     private void applyStatusFields(LiveRoomEntity entity, LiveStatus status) {
         switch (status) {
             case Scheduled s -> { }
+            case Ready r -> { }
             case Live l -> entity.applyLive(l.startedAt(), l.sfuRoomId(), l.egressId(), l.hlsUrl());
             case Ended e -> entity.applyEnded(e.endedAt(), e.hlsArchiveUrl());
             case Suspended s -> entity.applySuspended(s.suspendedAt(), s.reason());

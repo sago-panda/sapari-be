@@ -44,7 +44,7 @@ public class LiveKitWebhookVerifier implements WebhookVerifier {
             WebhookEvent event = webhookReceiver.receive(payload, authHeader);
             return new LiveWebhookEvent(
                     event.getEvent(),
-                    event.hasRoom() ? event.getRoom().getName() : null,
+                    resolveRoomName(event),
                     event.hasIngressInfo() ? event.getIngressInfo().getIngressId() : null,
                     event.hasEgressInfo() ? event.getEgressInfo().getEgressId() : null
             );
@@ -52,5 +52,20 @@ public class LiveKitWebhookVerifier implements WebhookVerifier {
             // 서명 불일치·파싱 실패 등 — 원본 값은 담지 않고 도메인 예외로 변환.
             throw new InvalidWebhookException(e);
         }
+    }
+
+    /**
+     * 이벤트가 가리키는 방 이름을 뽑는다. room 이벤트(room_finished 등)는 {@code room}에,
+     * ingress 이벤트(ingress_started 등)는 {@code ingressInfo.roomName}에 담기므로 room 우선·ingress fallback.
+     * (proto 기본값은 빈 문자열이라 blank 는 미설정으로 간주.)
+     */
+    private String resolveRoomName(WebhookEvent event) {
+        if (event.hasRoom() && !event.getRoom().getName().isBlank()) {
+            return event.getRoom().getName();
+        }
+        if (event.hasIngressInfo() && !event.getIngressInfo().getRoomName().isBlank()) {
+            return event.getIngressInfo().getRoomName();
+        }
+        return null;
     }
 }

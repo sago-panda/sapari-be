@@ -11,6 +11,7 @@ import livekit.LivekitEgress.EncodingOptionsPreset;
 import livekit.LivekitEgress.SegmentedFileOutput;
 import livekit.LivekitIngress.IngressInfo;
 import livekit.LivekitIngress.IngressInput;
+import livekit.LivekitIngress.IngressState;
 import retrofit2.Call;
 import retrofit2.Response;
 
@@ -471,5 +472,52 @@ public class LiveKitMediaManagerTest {
 
         assertThrows(LiveMediaException.class,
                 () -> liveKitMediaManager.createIngress(roomId, UUID.randomUUID()));
+    }
+
+    @Test
+    @DisplayName("isIngressActive: PUBLISHING 상태의 ingress 가 있으면 true (roomId 로 필터 조회)")
+    void isIngressActive_true_whenPublishing() throws IOException {
+        IngressInfo info = IngressInfo.newBuilder()
+                .setIngressId("ingress-1")
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_PUBLISHING).build())
+                .build();
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(info)));
+
+        assertThat(liveKitMediaManager.isIngressActive(roomId)).isTrue();
+    }
+
+    @Test
+    @DisplayName("isIngressActive: INACTIVE/BUFFERING 뿐이면 false")
+    void isIngressActive_false_whenNotPublishing() throws IOException {
+        IngressInfo buffering = IngressInfo.newBuilder()
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_BUFFERING).build())
+                .build();
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(buffering)));
+
+        assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isIngressActive: ingress 가 없으면 false")
+    void isIngressActive_false_whenEmpty() throws IOException {
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of()));
+
+        assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isIngressActive: 조회 실패(IOException)면 활성으로 단정하지 않고 false (webhook 전이에 위임)")
+    void isIngressActive_false_whenListFails() throws IOException {
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willThrow(new IOException("네트워크 실패"));
+
+        assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
     }
 }

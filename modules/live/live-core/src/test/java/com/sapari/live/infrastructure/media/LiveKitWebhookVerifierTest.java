@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 
 import io.livekit.server.WebhookReceiver;
 import livekit.LivekitEgress.EgressInfo;
+import livekit.LivekitIngress.IngressInfo;
 import livekit.LivekitModels.Room;
 import livekit.LivekitWebhook.WebhookEvent;
 
@@ -58,6 +59,25 @@ class LiveKitWebhookVerifierTest {
         assertThat(result.type()).isEqualTo("egress_ended");
         assertThat(result.egressId()).isEqualTo("eg-1");
         assertThat(result.roomName()).isNull();
+    }
+
+    @Test
+    @DisplayName("ingress 이벤트는 room 이 비어도 ingressInfo.roomName 으로 roomName·ingressId 를 채운다")
+    void mapsIngressEventFromIngressInfo() {
+        WebhookEvent event = WebhookEvent.newBuilder()
+                .setEvent("ingress_started")
+                .setIngressInfo(IngressInfo.newBuilder()
+                        .setIngressId("ing-1")
+                        .setRoomName("room-42")
+                        .build())
+                .build();
+        given(receiver.receive("body", "Bearer sig")).willReturn(event);
+
+        LiveWebhookEvent result = verifier.verify(bytes("body"), "Bearer sig");
+
+        assertThat(result.type()).isEqualTo("ingress_started");
+        assertThat(result.roomName()).isEqualTo("room-42");
+        assertThat(result.ingressId()).isEqualTo("ing-1");
     }
 
     @Test

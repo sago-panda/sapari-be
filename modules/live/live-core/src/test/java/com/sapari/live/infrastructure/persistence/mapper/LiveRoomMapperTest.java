@@ -135,6 +135,24 @@ class LiveRoomMapperTest {
     }
 
     @Test
+    @DisplayName("updateEntityFromDomain — DB 에서 읽은 Scheduled 방을 되저장해도 scheduled_at 이 보존된다")
+    void updateEntityFromDomain_preservesScheduledAt() {
+        Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .sellerNickname("닉네임")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(scheduledAt)
+                .build();
+
+        LiveRoom loaded = mapper.toDomain(entity);
+        mapper.updateEntityFromDomain(entity, loaded);
+
+        assertThat(entity.getScheduledAt()).isEqualTo(scheduledAt);
+    }
+
+    @Test
     @DisplayName("toDomain — 기본 WEBRTC: streamType 을 WebRtc 로 복원")
     void toDomain_webrtc() {
         LiveRoomEntity entity = LiveRoomEntity.builder()
@@ -164,6 +182,44 @@ class LiveRoomMapperTest {
 
         assertThat(room.streamType()).isInstanceOf(LiveStreamType.Rtmp.class);
         assertThat(((LiveStreamType.Rtmp) room.streamType()).ingressId()).isEqualTo("ing-1");
+    }
+
+    @Test
+    @DisplayName("toDomain — READY: 상태는 Ready, scheduledAt 복원")
+    void toDomain_ready() {
+        Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.READY)
+                .scheduledAt(scheduledAt)
+                .build();
+
+        LiveRoom room = mapper.toDomain(entity);
+
+        assertThat(room.status()).isInstanceOf(LiveStatus.Ready.class);
+        assertThat(((LiveStatus.Ready) room.status()).scheduledAt()).isEqualTo(scheduledAt);
+    }
+
+    @Test
+    @DisplayName("updateEntityFromDomain — Scheduled→Ready 전이 시 status=READY, scheduled_at 보존")
+    void updateEntityFromDomain_appliesReadyTransition() {
+        Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .sellerNickname("닉네임")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(scheduledAt)
+                .build();
+
+        LiveRoom ready = mapper.toDomain(entity)
+                .arm(Instant.parse("2026-06-09T03:00:00Z"));
+
+        mapper.updateEntityFromDomain(entity, ready);
+
+        assertThat(entity.getLiveStatus()).isEqualTo(LiveRoomStatus.READY);
+        assertThat(entity.getScheduledAt()).isEqualTo(scheduledAt);
     }
 
     @Test

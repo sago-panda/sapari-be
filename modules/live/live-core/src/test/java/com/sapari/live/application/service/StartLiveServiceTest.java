@@ -34,6 +34,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
+import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveProduct;
@@ -215,7 +216,7 @@ public class StartLiveServiceTest {
 
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BroadcastStartException.class)
                 .hasMessageContaining("트랜잭션 동기화 비활성");
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
@@ -288,6 +289,68 @@ public class StartLiveServiceTest {
 
         // then
         verify(liveMediaManager, never()).stopHlsEgress(any(UUID.class), anyString());
+    }
+
+    @Test
+    @DisplayName("RTMP 방 시작: OBS 미연결이면 상품만 등록하고 Ready로 저장 — 셀러 토큰·egress 없음")
+    void rtmp_start_arms_when_ingress_inactive(){
+        // given
+        LiveRoom room = rtmpScheduledRoom();
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveMediaManager.isIngressActive(roomId)).willReturn(false);
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        var result = startLiveService.start(command);
+
+        // then: 시작 대기(Ready)로 저장, 토큰·HLS·egress 없음, 상품은 등록
+        assertThat(result.sfuToken()).isNull();
+        assertThat(result.hlsUrl()).isNull();
+        verify(liveProductRepository).saveAll(any());
+        verify(liveMediaManager, never()).issueSellerToken(any(UUID.class), any(UUID.class));
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+
+        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveRoomRepository).save(captor.capture());
+        assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ready.class);
+    }
+
+    @Test
+    @DisplayName("RTMP 방 시작: OBS가 이미 연결돼 있으면(랑데부) 즉시 egress 시작하고 Live로 전이한다")
+    void rtmp_start_goes_live_when_ingress_active(){
+        // given
+        LiveRoom room = rtmpScheduledRoom();
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveMediaManager.isIngressActive(roomId)).willReturn(true);
+        given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        var result = startLiveService.start(command);
+
+        // then: Live로 전이, HLS URL 반환, 셀러 토큰은 미발급(RTMP는 ingress push)
+        assertThat(result.sfuToken()).isNull();
+        assertThat(result.hlsUrl()).isEqualTo(egressResult.hlsUrl());
+        verify(liveMediaManager, never()).issueSellerToken(any(UUID.class), any(UUID.class));
+        verify(liveMediaManager).startHlsEgress(roomId);
+
+        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveRoomRepository).save(captor.capture());
+        assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Live.class);
+    }
+
+    private LiveRoom rtmpScheduledRoom(){
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", null, null);
+        return fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId)
+                .set("sellerId", sellerId)
+                .set("status", new LiveStatus.Scheduled(Instant.now()))
+                .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.Rtmp("ingress-1"))
+                .sample();
     }
 
     private LiveRoom scheduledRoom(){
