@@ -34,6 +34,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
+import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveProduct;
@@ -215,7 +216,7 @@ public class StartLiveServiceTest {
 
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BroadcastStartException.class)
                 .hasMessageContaining("트랜잭션 동기화 비활성");
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));

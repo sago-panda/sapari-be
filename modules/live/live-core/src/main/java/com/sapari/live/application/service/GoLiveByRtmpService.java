@@ -12,6 +12,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.StreamInfo;
@@ -50,7 +51,7 @@ public class GoLiveByRtmpService {
 
         // 사전 가드: 보상 훅을 등록할 수 없는 상태면 egress를 시작하기 전에 실패시킨다(고아 egress 방지).
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            throw new IllegalStateException("egress 보상 훅 등록 불가 — 트랜잭션 동기화 비활성");
+            throw new BroadcastStartException("egress 보상 훅 등록 불가 — 트랜잭션 동기화 비활성");
         }
 
         HlsEgressResult egressResult = liveMediaManager.startHlsEgress(roomId);

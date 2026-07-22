@@ -27,6 +27,7 @@ import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitra
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -129,5 +130,21 @@ class GoLiveByRtmpServiceTest {
         assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId))
                 .isInstanceOf(LiveNotFoundException.class)
                 .hasMessageContaining(roomId.toString());
+    }
+
+    @Test
+    @DisplayName("트랜잭션 동기화가 비활성이면 egress 시작 전에 BroadcastStartException — 고아 egress 방지 사전 가드")
+    void throws_before_egress_when_synchronization_inactive() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(ready));
+        // tx 없이 호출되는 회귀 상황 재현 (setup 의 initSynchronization 을 되돌림)
+        TransactionSynchronizationManager.clearSynchronization();
+
+        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId))
+                .isInstanceOf(BroadcastStartException.class)
+                .hasMessageContaining("트랜잭션 동기화 비활성");
+
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
     }
 }

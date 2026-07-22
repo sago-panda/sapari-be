@@ -16,6 +16,7 @@ import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.command.StartLiveCommand.ProductEntry;
+import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveProduct;
@@ -107,7 +108,7 @@ public class StartLiveService implements StartLiveUseCase {
     private HlsEgressResult startEgressWithCompensation(UUID roomId) {
         // 사전 가드: 보상 훅을 등록할 수 없는 상태면 egress를 시작하기 전에 실패시킨다
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            throw new IllegalStateException("egress 보상 훅 등록 불가 — 트랜잭션 동기화 비활성");
+            throw new BroadcastStartException("egress 보상 훅 등록 불가 — 트랜잭션 동기화 비활성");
         }
         // 방송자가 publish하면 자동으로 S3에 세그먼트 기록. egressId는 나중에 중단할 때 필요.
         HlsEgressResult egressResult = liveMediaManager.startHlsEgress(roomId);
