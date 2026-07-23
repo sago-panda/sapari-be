@@ -33,7 +33,7 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 
 All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); never call the SDK from a
 service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive`, `startHlsEgress`,
-`stopHlsEgress`, `closeRoom`, `getSfuUrl`.
+`stopHlsEgress`, `deleteIngress`, `closeRoom`, `getSfuUrl`.
 
 **Intentional in-`@Transactional` external calls (`StartLiveService`, `GoLiveByRtmpService`).** The root
 rule is "minimize external calls in a tx"; here it's deliberate — media calls run inside the tx *after*
@@ -65,9 +65,16 @@ reservation (defaults `WebRtc`).
   **no-op**; room found by **roomId alone** (ownership checked earlier). `LiveKitWebhookVerifier` reads
   `roomName` from `room`, falling back to `ingressInfo.roomName`.
 
-**Follow-ups (not built):** orphan-ingress/egress reconciliation + `deleteIngress`. Same bucket:
-concurrent double-`prepare`, and **concurrent** `ingress_started` (both read `Ready` → double
-`startHlsEgress` → orphan egresses; no `@Version` lock). Sequential re-sends are safe.
+**End cleanup** (`EndLiveService`): RTMP rooms delete ingress on end — **room-wide** (`deleteIngress(roomId)`
+lists by roomName and deletes all, sweeping double-`prepare` orphans too), best-effort (failure never blocks
+the end tx → reconciliation), ordered **before `closeRoom`** (a surviving ingress lets OBS auto-reconnect
+re-create the closed SFU room). Stale `ingress_id` stays on the Ended row by design (`Rtmp` forbids blank;
+it's broadcast history).
+
+**Follow-ups (not built):** orphan-ingress/egress reconciliation batch — covers rooms that never reach
+`endLive()`: `Ready` stuck (OBS never connected; `canEndLive` false so no cancel path), `Scheduled` with
+prepared ingress, process crash mid-start. Same bucket: **concurrent** `ingress_started` (both read `Ready`
+→ double `startHlsEgress` → orphan egresses; no `@Version` lock). Sequential re-sends are safe.
 
 ## LiveKit Webhooks — receiver + handler contract
 
