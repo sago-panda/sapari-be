@@ -6,7 +6,7 @@ a new domain. Root `AGENTS.md` owns the cross-cutting rules (hexagonal, immutabl
 
 ## Status
 
-- ✅ broadcast: create / start / enter / end / get-list — done & tested.
+- ✅ broadcast: create / start (WebRTC·RTMP) / enter / end (incl. ingress cleanup) / get-list — done & tested.
 - 🚧 chat — not started; add its conventions here when work begins.
 
 `infrastructure/` adapters: `media/` (LiveKit) · `persistence/` · `redis/` · `config/`. Layout: `modules/AGENTS.md`.
@@ -26,7 +26,8 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 | `Live`/`Suspended` | `endLive()` | `Ended` | `canEndLive()` |
 
 - `Ready` carries only `scheduledAt` (reuses the `scheduled_at` column; `status` has no CHECK → adding a state needs no migration).
-- `Suspended.startedAt`: `null` if suspended before broadcast, else `Live.startedAt`.
+- `Suspended.startedAt`: `null` if suspended before broadcast, else `Live.startedAt`. **No transition INTO
+  `Suspended` is built** (the record + `endLive()` exit exist; admin suspend is future work).
 - Adding a state = update `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum together (the compiler forces the switches; no `default` branches).
 
 ## Media (SFU / HLS) — port-isolated
@@ -35,13 +36,18 @@ All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); n
 service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive`, `startHlsEgress`,
 `stopHlsEgress`, `deleteIngress`, `closeRoom`, `getSfuUrl`.
 
-**Intentional in-`@Transactional` external calls (`StartLiveService`, `GoLiveByRtmpService`).** The root
-rule is "minimize external calls in a tx"; here it's deliberate — media calls run inside the tx *after*
-re-validation, so we never hit the server in a bad state and `egressId` commits with the room.
-**Accepted risk:** the DB connection is held across media I/O. **Reviewers must NOT flag this in-tx network
-call.** On rollback after `startHlsEgress`, the shared `EgressRollbackCompensation` `afterCompletion` hook
-stops the egress (delicate — the rollback-status check + intentional catch-log are load-bearing; don't
-"fix" them). A process crash still orphans the egress → reconciliation batch, not built.
+**Intentional in-`@Transactional` external calls (`StartLiveService`, `GoLiveByRtmpService`,
+`EndLiveService`).** The root rule is "minimize external calls in a tx"; here it's deliberate — start-side
+media calls run inside the tx *after* re-validation, so we never hit the server in a bad state and
+`egressId` commits with the room. **Accepted risk:** the DB connection is held across media I/O — sized by the fact that the LiveKit clients
+(`LiveKitConfig`) run on OkHttp defaults (**no `callTimeout`**); explicit client timeouts are a follow-up.
+**Reviewers must NOT flag this in-tx network call.** On rollback after `startHlsEgress`, the shared
+`EgressRollbackCompensation` `afterCompletion` hook stops the egress (delicate — the rollback-status check
++ intentional catch-log are load-bearing; don't "fix" them). A process crash still orphans the egress →
+reconciliation batch, not built.
+`EndLiveService` differs: its cleanup calls (`stopHlsEgress`/`deleteIngress`/`closeRoom`) produce nothing
+that must commit with the room, so in-tx is an accepted-risk convenience, not a correctness requirement —
+moving them to `afterCommit` (like `publishRoomEnded`) is a known follow-up, not built.
 
 **Pinned product:** starting requires **exactly one** pinned product (`validatePinnedProduct`), both modes.
 
@@ -118,9 +124,11 @@ viewers an **ephemeral GUEST** token.
 
 ## Errors
 
-Throw domain exceptions (`LiveNotFoundException`, `InvalidLiveStateException`, `LiveMediaException`) → each
-maps to a `LiveErrorCode` (`LIVE-001` media, `-002` not-found, `-003` invalid-state). No raw
-`IllegalState`/`RuntimeException` from services.
+Throw domain exceptions → each maps to a `LiveErrorCode`: `LIVE-001` media (`LiveMediaException`), `-002`
+not-found (`LiveNotFoundException`), `-003` invalid-state (`InvalidLiveStateException`), `-004`
+unsupported-role (`UnsupportedRoleException`), `-005` invalid-webhook (`InvalidWebhookException`), `-006`
+broadcast-start (`BroadcastStartException`, tx-sync guard). No raw `IllegalState`/`RuntimeException` from
+services.
 
 ## Tests
 
