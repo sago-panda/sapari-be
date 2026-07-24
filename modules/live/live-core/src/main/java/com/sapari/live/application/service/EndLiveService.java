@@ -42,8 +42,16 @@ public class EndLiveService implements EndLiveUseCase {
             throw new InvalidLiveStateException(room.id().toString());
         }
 
-        if (room.streamInfo() != null) {
+        // 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제
+        // (ingress 가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — 좀비 방)
+        boolean hasMediaSession = room.streamInfo() != null;
+        if (hasMediaSession) {
             liveMediaManager.stopHlsEgress(command.roomId(), room.egressId());
+        }
+        if (room.isRtmp()) {
+            liveMediaManager.deleteIngress(command.roomId());
+        }
+        if (hasMediaSession) {
             liveMediaManager.closeRoom(room.sfuRoomId());
         }
 

@@ -5,6 +5,8 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
 import java.util.Optional;
@@ -106,6 +108,65 @@ public class EndLiveServiceTest {
 
         assertThat(savedRoom.id()).isEqualTo(command.roomId());
         assertThat(savedRoom.status()).isInstanceOf(LiveStatus.Ended.class);
+    }
+
+    @Test
+    @DisplayName("RTMP 방 종료: egress 중단 → ingress 삭제 → 방 삭제 순으로 정리한다 (ingress 잔존 시 OBS 재접속이 방을 재생성)")
+    void endLive_rtmp_deletesIngressBeforeCloseRoom() {
+        // given
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+
+        LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId)
+                .set("sellerId", sellerId)
+                .set("status", liveStatus)
+                .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.Rtmp("ingress-1"))
+                .sample();
+
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
+                .willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(Instant.now());
+
+        // when
+        endLiveService.end(command);
+
+        // then — 순서 보장: stopHlsEgress → deleteIngress → closeRoom
+        var order = inOrder(liveMediaManager);
+        order.verify(liveMediaManager).stopHlsEgress(roomId, "egress-id");
+        order.verify(liveMediaManager).deleteIngress(roomId);
+        order.verify(liveMediaManager).closeRoom("sfu-room-id");
+    }
+
+    @Test
+    @DisplayName("WebRTC 방 종료: ingress 삭제를 호출하지 않는다")
+    void endLive_webrtc_doesNotDeleteIngress() {
+        // given
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+
+        LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId)
+                .set("sellerId", sellerId)
+                .set("status", liveStatus)
+                .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
+                .sample();
+
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
+                .willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(Instant.now());
+
+        // when
+        endLiveService.end(command);
+
+        // then
+        then(liveMediaManager).should(never()).deleteIngress(any());
     }
 
     @RepeatedTest(value = 10)

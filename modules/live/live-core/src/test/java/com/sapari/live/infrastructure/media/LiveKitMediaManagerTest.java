@@ -520,4 +520,100 @@ public class LiveKitMediaManagerTest {
 
         assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
     }
+
+    @Test
+    @DisplayName("deleteIngress: roomId 조회로 방의 ingress 를 전부 삭제한다 (double-prepare 고아 포함)")
+    void deleteIngress_deletesAllForRoom() throws IOException {
+        IngressInfo first = IngressInfo.newBuilder().setIngressId("ingress-1").build();
+        IngressInfo orphan = IngressInfo.newBuilder().setIngressId("ingress-2").build();
+        Call<List<IngressInfo>> listCall = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(Response.success(List.of(first, orphan)));
+        Call<IngressInfo> deleteCall = mock(Call.class);
+        given(ingressServiceClient.deleteIngress(anyString())).willReturn(deleteCall);
+        given(deleteCall.execute()).willReturn(Response.success(IngressInfo.getDefaultInstance()));
+
+        liveKitMediaManager.deleteIngress(roomId);
+
+        then(ingressServiceClient).should().deleteIngress("ingress-1");
+        then(ingressServiceClient).should().deleteIngress("ingress-2");
+    }
+
+    @Test
+    @DisplayName("deleteIngress: ingress 가 없으면 삭제 호출 없이 종료한다")
+    void deleteIngress_noop_whenEmpty() throws IOException {
+        Call<List<IngressInfo>> listCall = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(Response.success(List.of()));
+
+        liveKitMediaManager.deleteIngress(roomId);
+
+        then(ingressServiceClient).should(never()).deleteIngress(anyString());
+    }
+
+    @Test
+    @DisplayName("deleteIngress: 목록 조회가 비-2xx 응답이면 삭제 시도 없이 종료한다 (Retrofit 은 HTTP 에러에 예외를 안 던짐)")
+    void deleteIngress_noDelete_whenListHttpFailure() throws IOException {
+        Call<List<IngressInfo>> listCall = mock(Call.class);
+        Response failed = mock(Response.class);
+        given(failed.isSuccessful()).willReturn(false);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(failed);
+
+        assertDoesNotThrow(() -> liveKitMediaManager.deleteIngress(roomId));
+
+        then(ingressServiceClient).should(never()).deleteIngress(anyString());
+    }
+
+    @Test
+    @DisplayName("deleteIngress: 단건 삭제가 비-2xx 응답이어도 나머지 ingress 삭제를 계속한다")
+    void deleteIngress_continuesOnHttpFailure() throws IOException {
+        IngressInfo first = IngressInfo.newBuilder().setIngressId("ingress-1").build();
+        IngressInfo second = IngressInfo.newBuilder().setIngressId("ingress-2").build();
+        Call<List<IngressInfo>> listCall = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(Response.success(List.of(first, second)));
+        Call<IngressInfo> failingCall = mock(Call.class);
+        Response failed = mock(Response.class);
+        given(failed.isSuccessful()).willReturn(false);
+        given(failingCall.execute()).willReturn(failed);
+        Call<IngressInfo> okCall = mock(Call.class);
+        given(okCall.execute()).willReturn(Response.success(IngressInfo.getDefaultInstance()));
+        given(ingressServiceClient.deleteIngress("ingress-1")).willReturn(failingCall);
+        given(ingressServiceClient.deleteIngress("ingress-2")).willReturn(okCall);
+
+        assertDoesNotThrow(() -> liveKitMediaManager.deleteIngress(roomId));
+
+        then(ingressServiceClient).should().deleteIngress("ingress-2");
+    }
+
+    @Test
+    @DisplayName("deleteIngress: 조회 실패(IOException)해도 예외를 던지지 않는다 (best-effort — 종료 tx 를 막지 않음)")
+    void deleteIngress_swallowsListFailure() throws IOException {
+        Call<List<IngressInfo>> listCall = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willThrow(new IOException("네트워크 실패"));
+
+        assertDoesNotThrow(() -> liveKitMediaManager.deleteIngress(roomId));
+    }
+
+    @Test
+    @DisplayName("deleteIngress: 단건 삭제 실패(이미 삭제 등)여도 나머지 ingress 삭제를 계속한다")
+    void deleteIngress_continuesOnSingleFailure() throws IOException {
+        IngressInfo first = IngressInfo.newBuilder().setIngressId("ingress-1").build();
+        IngressInfo second = IngressInfo.newBuilder().setIngressId("ingress-2").build();
+        Call<List<IngressInfo>> listCall = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(Response.success(List.of(first, second)));
+        Call<IngressInfo> failingCall = mock(Call.class);
+        given(failingCall.execute()).willThrow(new IOException("이미 삭제됨"));
+        Call<IngressInfo> okCall = mock(Call.class);
+        given(okCall.execute()).willReturn(Response.success(IngressInfo.getDefaultInstance()));
+        given(ingressServiceClient.deleteIngress("ingress-1")).willReturn(failingCall);
+        given(ingressServiceClient.deleteIngress("ingress-2")).willReturn(okCall);
+
+        assertDoesNotThrow(() -> liveKitMediaManager.deleteIngress(roomId));
+
+        then(ingressServiceClient).should().deleteIngress("ingress-2");
+    }
 }

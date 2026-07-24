@@ -370,6 +370,49 @@ public class LiveKitMediaManager implements LiveMediaManager {
     }
 
     /**
+     * 방에 묶인 RTMP ingress 일괄 삭제(종료 정리). ingressId 단건이 아니라 roomName(=roomId) 조회로 전부 지워
+     * double-prepare 로 생긴 고아 ingress 도 함께 정리한다(stopAllRoomEgress 와 동일 패턴).
+     * best-effort — 실패해도 종료 트랜잭션은 막지 않으며, 잔여 고아는 reconciliation 배치의 몫.
+     */
+    @Override
+    public void deleteIngress(UUID roomId){
+        try {
+            // Retrofit execute()는 HTTP 비-2xx에서 예외를 던지지 않는다 — isSuccessful 검사 없이는 실패가 은폐된다.
+            Response<List<IngressInfo>> response = ingressServiceClient.listIngress(roomId.toString()).execute();
+            if (!response.isSuccessful() || response.body() == null) {
+                log.error("RTMP Ingress 목록 조회 실패 — 고아 ingress 가능, 수동/배치 복구 필요: roomId={}, code={}",
+                        roomId, response.code());
+                return;
+            }
+            List<IngressInfo> ingresses = response.body();
+            if (ingresses.isEmpty()) {
+                log.info("삭제할 ingress 없음: roomId={}", roomId);
+                return;
+            }
+            for (IngressInfo ingress : ingresses) {
+                safeDeleteIngress(roomId, ingress.getIngressId());
+            }
+        } catch (Exception e) {
+            // listIngress 자체 실패 → 이 방의 ingress가 정리되지 않아 고아가 됨. 알람이 잡도록 error로 올린다.
+            log.error("RTMP Ingress 일괄 삭제 실패 — 고아 ingress 가능, 수동/배치 복구 필요: roomId={}", roomId, e);
+        }
+    }
+
+    private void safeDeleteIngress(UUID roomId, String ingressId){
+        try {
+            Response<IngressInfo> response = ingressServiceClient.deleteIngress(ingressId).execute();
+            if (!response.isSuccessful()) {
+                log.warn("RTMP Ingress 삭제 실패 (이미 삭제됐을 수 있음): roomId={}, ingressId={}, code={}",
+                        roomId, ingressId, response.code());
+                return;
+            }
+            log.info("RTMP Ingress 삭제: roomId={}, ingressId={}", roomId, ingressId);
+        } catch (Exception e) {
+            log.warn("RTMP Ingress 삭제 실패 (이미 삭제됐을 수 있음): roomId={}, ingressId={}", roomId, ingressId, e);
+        }
+    }
+
+    /**
      * sfu room 삭제
      */
     @Override
