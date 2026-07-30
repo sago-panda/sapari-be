@@ -1,5 +1,6 @@
 package com.sapari.live.application.service;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -20,15 +21,11 @@ import com.sapari.live.port.ProcessLiveWebhookUseCase;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class LiveWebhookService implements ProcessLiveWebhookUseCase {
 
     private final WebhookVerifier webhookVerifier;
     private final List<LiveWebhookHandler> handlers;
-
-    public LiveWebhookService(WebhookVerifier webhookVerifier, List<LiveWebhookHandler> handlers) {
-        this.webhookVerifier = webhookVerifier;
-        this.handlers = handlers;
-    }
 
     @Override
     public void process(LiveWebhookCommand command) {
