@@ -158,6 +158,21 @@ public record LiveRoom(
                 .build();
     }
 
+    /**
+     * OBS가 끝내 연결되지 않아 Ready 상태에 갇힌 방을 종료한다.
+     * Ready 상태에서만 허용되고 만료 시간 판정은 배치 정책이므로 여기서 검사하지 않는다.
+     */
+    public LiveRoom expire(Instant now){
+        if(!canExpire()){
+            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        LiveStatus status = new LiveStatus.Ended(null, now, null);
+        return toBuilder()
+                .status(status)
+                .updatedAt(now)
+                .build();
+    }
+
     public String sfuRoomId(){
         return streamInfo.sfuRoomId();
     }
@@ -189,6 +204,10 @@ public record LiveRoom(
 
     public boolean canPrepareIngress(){
         return status instanceof LiveStatus.Scheduled;
+    }
+
+    public boolean canExpire(){
+        return status instanceof LiveStatus.Ready;
     }
 
     public boolean isRtmp(){
