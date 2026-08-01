@@ -82,7 +82,7 @@ class GoLiveByRtmpServiceTest {
     void goesLive_whenReadyRtmp() {
         LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
                 new LiveStreamType.Rtmp("ing-1"));
-        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(ready));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
         given(liveMediaManager.startHlsEgress(roomId))
                 .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8"));
         given(timeProvider.now()).willReturn(Instant.now());
@@ -101,7 +101,7 @@ class GoLiveByRtmpServiceTest {
     void noop_whenStillScheduled() {
         LiveRoom scheduled = room(new LiveStatus.Scheduled(Instant.parse("2026-06-10T10:00:00Z")),
                 new LiveStreamType.Rtmp("ing-1"));
-        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(scheduled));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(scheduled));
 
         goLiveByRtmpService.goLiveByRtmp(roomId);
 
@@ -114,7 +114,7 @@ class GoLiveByRtmpServiceTest {
     void noop_whenAlreadyLive() {
         LiveRoom live = room(new LiveStatus.Live(Instant.now(), "sfu-1", "egress-1", "http://hls/index.m3u8"),
                 new LiveStreamType.Rtmp("ing-1"));
-        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(live));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(live));
 
         goLiveByRtmpService.goLiveByRtmp(roomId);
 
@@ -125,7 +125,7 @@ class GoLiveByRtmpServiceTest {
     @Test
     @DisplayName("방을 찾을 수 없으면 LiveNotFoundException")
     void throws_whenRoomNotFound() {
-        given(liveRoomRepository.findById(roomId)).willReturn(Optional.empty());
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.empty());
 
         assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId))
                 .isInstanceOf(LiveNotFoundException.class)
@@ -137,7 +137,7 @@ class GoLiveByRtmpServiceTest {
     void throws_before_egress_when_synchronization_inactive() {
         LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
                 new LiveStreamType.Rtmp("ing-1"));
-        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(ready));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
         // tx 없이 호출되는 회귀 상황 재현 (setup 의 initSynchronization 을 되돌림)
         TransactionSynchronizationManager.clearSynchronization();
 

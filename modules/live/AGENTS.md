@@ -68,8 +68,9 @@ reservation (defaults `WebRtc`).
   to `Ready`, **no seller token**. If ingress is already `PUBLISHING` (`isIngressActive`), goes `Live` now.
 - **OBS connect**: `ingress_started` webhook → `IngressStartedWebhookHandler` (parses `roomName`=roomId)
   → `GoLiveByRtmpService`. Idempotent: non-`Ready+RTMP` (still `Scheduled`, already `Live`, WebRTC) is a
-  **no-op**; room found by **roomId alone** (ownership checked earlier). `LiveKitWebhookVerifier` reads
-  `roomName` from `room`, falling back to `ingressInfo.roomName`.
+  **no-op**; room found by **roomId alone** (ownership checked earlier). **Concurrent** arrivals serialize on
+  a row lock (`findByIdForUpdate`) — the later one reads `Live` and no-ops, so no double `startHlsEgress`.
+  `LiveKitWebhookVerifier` reads `roomName` from `room`, falling back to `ingressInfo.roomName`.
 
 **End cleanup** (`EndLiveService`): RTMP rooms delete ingress on end — **room-wide** (`deleteIngress(roomId)`
 lists by roomName and deletes all, sweeping double-`prepare` orphans too), best-effort (failure never blocks
@@ -79,8 +80,7 @@ it's broadcast history).
 
 **Follow-ups (not built):** orphan-ingress/egress reconciliation batch — covers rooms that never reach
 `endLive()`: `Ready` stuck (OBS never connected; `canEndLive` false so no cancel path), `Scheduled` with
-prepared ingress, process crash mid-start. Same bucket: **concurrent** `ingress_started` (both read `Ready`
-→ double `startHlsEgress` → orphan egresses; no `@Version` lock). Sequential re-sends are safe.
+prepared ingress, process crash mid-start.
 
 ## LiveKit Webhooks — receiver + handler contract
 
@@ -100,6 +100,10 @@ NOT trigger re-send) → loss-critical work self-guards via retry/reconciliation
 - Schema `live_schema` (DDL `db/migration/live/`, Flyway-owned).
 - Entity mutable, record immutable. `LiveRoomRepositoryImpl.save()` upserts by `id`: null → insert; else
   load + `LiveRoomMapper.updateEntityFromDomain` + save. Mutation lives in `LiveRoomEntity` (`updateXxx`/`applyXxx`).
+- **State-transition reads take a row lock**: `findByIdForUpdate` (`@Lock(PESSIMISTIC_WRITE)`) — Hibernate 7 +
+  PostgreSQL emits **`for no key update`**, not `for update` (don't grep for the latter and conclude the lock
+  is missing; the two `for no key update` holders conflict, which is what serializes us). Tx-only. Plain
+  `findById` stays lock-free for read paths (`enter`, list).
 - `LiveRoomMapper` (MapStruct, `componentModel=spring`) auto-maps flat fields; sealed `LiveStatus` ↔
   `LiveRoomStatus` enum, variant fields, and mutators go through `default`/`@AfterMapping`. Note:
   `scheduledAt` lives in the status, not top-level — `updateEntityFromDomain` sets `scheduled_at` **from

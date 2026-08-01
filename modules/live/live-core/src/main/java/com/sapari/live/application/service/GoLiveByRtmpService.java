@@ -39,7 +39,7 @@ public class GoLiveByRtmpService {
 
     @Transactional
     public void goLiveByRtmp(UUID roomId) {
-        LiveRoom room = liveRoomRepository.findById(roomId)
+        LiveRoom room = liveRoomRepository.findByIdForUpdate(roomId)
                 .orElseThrow(() -> new LiveNotFoundException(roomId.toString()));
 
         // 멱등 가드: 시작 대기(Ready)이고 RTMP 인 방만 전이 대상. 그 외는 no-op (재전송/리플레이/랑데부 선처리 안전).
