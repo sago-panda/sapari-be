@@ -399,6 +399,15 @@ public class LiveKitMediaManager implements LiveMediaManager {
         }
     }
 
+    /**
+     * ingress 단건 삭제(고아 정리 배치). 방 단위 삭제와 달리 지목한 하나만 지운다 — 배치가 지우려는 고아 옆에
+     * 살아 있어야 할 ingress 가 있을 수 있다. 정리 계열이라 best-effort(실패해도 다음 회차가 다시 시도).
+     */
+    @Override
+    public void deleteIngress(UUID roomId, String ingressId){
+        safeDeleteIngress(roomId, ingressId);
+    }
+
     private void safeDeleteIngress(UUID roomId, String ingressId){
         try {
             Response<IngressInfo> response = ingressServiceClient.deleteIngress(ingressId).execute();

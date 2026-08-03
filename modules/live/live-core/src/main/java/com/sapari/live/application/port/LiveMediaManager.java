@@ -13,6 +13,11 @@ public interface LiveMediaManager {
     void stopHlsEgress(UUID roomId, String egressId);
     /** 방에 묶인 RTMP ingress 를 모두 삭제한다(종료 정리). 방 기준 일괄이라 double-prepare 고아도 함께 정리된다. */
     void deleteIngress(UUID roomId);
+    /**
+     * ingress 하나만 삭제한다(고아 정리 배치). 같은 방에 살아 있어야 할 ingress 가 함께 있을 수 있으므로
+     * 방 단위 일괄 삭제를 쓰면 안 된다. roomId 는 로그 식별용.
+     */
+    void deleteIngress(UUID roomId, String ingressId);
     void closeRoom(String sfuRoomId);
     String getSfuUrl();
     List<IngressSummary> listAllIngress();

@@ -37,7 +37,8 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 
 All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); never call the SDK from a
 service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive`, `startHlsEgress`,
-`stopHlsEgress`, `deleteIngress`, `closeRoom`, `getSfuUrl`, `listAllIngress`, `listAllEgress`.
+`stopHlsEgress`, `deleteIngress` (room-wide / single-id), `closeRoom`, `getSfuUrl`, `listAllIngress`,
+`listAllEgress`.
 
 **Cleanup calls are best-effort, query calls fail-fast.** `deleteIngress`/`stopHlsEgress`/`closeRoom` log
 and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress` **throw** — an empty
