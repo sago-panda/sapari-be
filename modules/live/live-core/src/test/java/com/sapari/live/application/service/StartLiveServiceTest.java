@@ -111,7 +111,7 @@ public class StartLiveServiceTest {
                 .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn(expectedSfuToken);
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
@@ -144,7 +144,7 @@ public class StartLiveServiceTest {
         StartLiveCommand multiCommand = new StartLiveCommand(roomId, sellerId, List.of(p0, p1, p2));
 
         LiveRoom room = scheduledRoom();
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(new HlsEgressResult("egress-123", "http://hls.url/index.m3u8"));
         given(timeProvider.now()).willReturn(now);
@@ -172,7 +172,7 @@ public class StartLiveServiceTest {
     @DisplayName("방송 시작 실패: 해당하는 방을 찾을 수 없어 에러 발생")
     void execute_fail_room_not_found(){
         // given
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.empty());
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.empty());
 
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
@@ -196,7 +196,7 @@ public class StartLiveServiceTest {
                 .set("status", new Live(Instant.now(), streamInfo.sfuRoomId(), streamInfo.egressId(), streamInfo.hlsUrl()))
                 .sample();
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(invalidRoom));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(invalidRoom));
 
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
@@ -211,7 +211,7 @@ public class StartLiveServiceTest {
         TransactionSynchronizationManager.clearSynchronization();
 
         LiveRoom room = scheduledRoom();
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
 
         // when & then
@@ -229,7 +229,7 @@ public class StartLiveServiceTest {
         LiveRoom room = scheduledRoom();
         HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
@@ -254,7 +254,7 @@ public class StartLiveServiceTest {
         LiveRoom room = scheduledRoom();
         HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
@@ -276,7 +276,7 @@ public class StartLiveServiceTest {
         LiveRoom room = scheduledRoom();
         HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
@@ -296,7 +296,7 @@ public class StartLiveServiceTest {
     void rtmp_start_arms_when_ingress_inactive(){
         // given
         LiveRoom room = rtmpScheduledRoom();
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.isIngressActive(roomId)).willReturn(false);
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
@@ -322,7 +322,7 @@ public class StartLiveServiceTest {
         // given
         LiveRoom room = rtmpScheduledRoom();
         HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.isIngressActive(roomId)).willReturn(true);
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());

@@ -34,7 +34,7 @@ public class EndLiveService implements EndLiveUseCase {
     @Override
     @Transactional
     public void end(EndLiveCommand command){
-        LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
+        LiveRoom room = liveRoomRepository.findByIdAndSellerIdForUpdate(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
         // 외부 호출 전 상태 사전 검증

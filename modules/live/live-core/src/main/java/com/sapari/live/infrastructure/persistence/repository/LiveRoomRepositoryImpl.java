@@ -59,4 +59,10 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
         return liveRoomJpaRepository.findWithLockById(id)
                 .map(liveRoomMapper::toDomain);
     }
+
+    @Override
+    public Optional<LiveRoom> findByIdAndSellerIdForUpdate(UUID id, UUID hostId){
+        return liveRoomJpaRepository.findWithLockByIdAndSellerId(id, hostId)
+                .map(liveRoomMapper::toDomain);
+    }
 }

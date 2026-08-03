@@ -46,8 +46,11 @@ list reads as "no orphans" and would let the batch finish green on a failed look
 **Intentional in-`@Transactional` external calls (`StartLiveService`, `GoLiveByRtmpService`,
 `EndLiveService`, `ExpireOrphanLiveService`) — reviewers must NOT flag these.** Start-side media calls run
 in-tx *after* re-validation so we never hit the server in a bad state and `egressId` commits with the room.
-Accepted risk: the DB connection is held across media I/O, unbounded because the LiveKit clients
-(`LiveKitConfig`) run on OkHttp defaults (**no `callTimeout`** — a follow-up). On rollback after
+Accepted risk: the connection **and the row lock** are held across media I/O for as long as OkHttp's
+per-socket defaults allow (`LiveKitConfig` sets no `callTimeout`), so a concurrent transition on the same
+room waits that out. Start-side calls can't leave the lock (`egressId` must commit with the room);
+`callTimeout` + PostgreSQL `lock_timeout` are the follow-up — JPA's `jakarta.persistence.lock.timeout`
+hint is **not** it (PostgreSQL takes only `NOWAIT`/`SKIP LOCKED`; a numeric wait is silently dropped). On rollback after
 `startHlsEgress`, `EgressRollbackCompensation`'s `afterCompletion` hook stops it (delicate — the
 rollback-status check + intentional catch-log are load-bearing; don't "fix" them). A process crash still
 orphans the egress → reconciliation.
@@ -105,10 +108,14 @@ NOT trigger re-send) → loss-critical work self-guards via retry/reconciliation
 - Schema `live_schema` (DDL `db/migration/live/`, Flyway-owned).
 - Entity mutable, record immutable. `LiveRoomRepositoryImpl.save()` upserts by `id`: null → insert; else
   load + `LiveRoomMapper.updateEntityFromDomain` + save. Mutation lives in `LiveRoomEntity` (`updateXxx`/`applyXxx`).
-- **State-transition reads take a row lock**: `findByIdForUpdate` (`@Lock(PESSIMISTIC_WRITE)`) — Hibernate 7 +
-  PostgreSQL emits **`for no key update`**, not `for update` (don't grep for the latter and conclude the lock
-  is missing; the two `for no key update` holders conflict, which is what serializes us). Tx-only. Plain
-  `findById` stays lock-free for read paths (`enter`, list).
+- **Every state-transition read takes a row lock** (`@Lock(PESSIMISTIC_WRITE)`, tx-only) — an unlocked one
+  reintroduces the double-`startHlsEgress` race: `findByIdForUpdate` (webhook go-live, orphan expiry),
+  `findByIdAndSellerIdForUpdate` (seller start/end). Ownership stays **in the query** — a service-side
+  `sellerId` check would split "no such room" from "not yours" and leak room existence. Hibernate 7 +
+  PostgreSQL emits **`for no key update`**, not `for update` (don't grep for the latter and conclude the
+  lock is missing; two `for no key update` holders conflict, which is what serializes us). Lock-free
+  `findById`/`findByIdAndSellerId` remain for read paths (`enter`, list) and `PrepareIngressService`
+  (no tx by design → a lock there would be a no-op).
 - `LiveRoomMapper` (MapStruct, `componentModel=spring`) auto-maps flat fields; sealed `LiveStatus` ↔
   `LiveRoomStatus` enum, variant fields, and mutators go through `default`/`@AfterMapping`. Note:
   `scheduledAt` lives in the status, not top-level — `updateEntityFromDomain` sets `scheduled_at` **from

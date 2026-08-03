@@ -89,7 +89,7 @@ public class EndLiveServiceTest {
                 .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId))
                 .willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(Instant.now());
 
@@ -127,7 +127,7 @@ public class EndLiveServiceTest {
                 .set("streamType", new LiveStreamType.Rtmp("ingress-1"))
                 .sample();
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId))
                 .willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(Instant.now());
 
@@ -158,7 +158,7 @@ public class EndLiveServiceTest {
                 .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId))
                 .willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(Instant.now());
 
@@ -175,7 +175,7 @@ public class EndLiveServiceTest {
         // given
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
 
-        given(liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId()))
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(command.roomId(), command.sellerId()))
                 .willReturn(Optional.empty());
 
         // when & then
@@ -200,7 +200,7 @@ public class EndLiveServiceTest {
                 .title("테스트 방송")
                 .build();
 
-        given(liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId()))
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(command.roomId(), command.sellerId()))
                 .willReturn(Optional.of(notLiveRoom));
 
         // when & then
@@ -224,7 +224,7 @@ public class EndLiveServiceTest {
                 .set("id", roomId).set("sellerId", sellerId)
                 .set("status", liveStatus).set("streamInfo", streamInfo)
                 .set("streamType", new LiveStreamType.WebRtc()).sample();
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(endedAt);
 
         TransactionSynchronizationManager.initSynchronization();
@@ -255,7 +255,7 @@ public class EndLiveServiceTest {
                 .set("id", roomId).set("sellerId", sellerId)
                 .set("status", liveStatus).set("streamInfo", streamInfo)
                 .set("streamType", new LiveStreamType.WebRtc()).sample();
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(endedAt);
 
         TransactionSynchronizationManager.initSynchronization();

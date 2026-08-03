@@ -15,4 +15,7 @@ public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUI
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<LiveRoomEntity> findWithLockById(UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<LiveRoomEntity> findWithLockByIdAndSellerId(UUID id, UUID sellerId);
 }

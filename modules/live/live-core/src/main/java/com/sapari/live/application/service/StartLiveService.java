@@ -40,7 +40,7 @@ public class StartLiveService implements StartLiveUseCase {
     @Override
     @Transactional
     public StartLiveView start(StartLiveCommand command) {
-        LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
+        LiveRoom room = liveRoomRepository.findByIdAndSellerIdForUpdate(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
         // 외부 호출 전 상태 사전 검증 (도메인 모델에서도 검증하나, 미디어 서버 호출을 막기 위해 여기서도 체크)
