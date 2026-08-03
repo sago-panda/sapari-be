@@ -1,5 +1,6 @@
 package com.sapari.live.application.port;
 
+import java.util.List;
 import java.util.UUID;
 
 public interface LiveMediaManager {
@@ -14,4 +15,6 @@ public interface LiveMediaManager {
     void deleteIngress(UUID roomId);
     void closeRoom(String sfuRoomId);
     String getSfuUrl();
+    List<IngressSummary> listAllIngress();
+    List<EgressSummary> listAllEgress();
 }

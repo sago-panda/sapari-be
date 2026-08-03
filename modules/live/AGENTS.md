@@ -22,9 +22,12 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 | `Scheduled` | `startLive()` (WebRTC) | `Live` | `canStartLive()` |
 | `Scheduled` | `arm()` (RTMP) | `Ready` | `Scheduled` only |
 | `Ready` | `goLiveFromReady()` (RTMP) | `Live` | `canGoLiveByRtmp()` |
+| `Ready` | `expire()` (orphan cleanup) | `Ended` | `canExpire()` |
 | `Live` | `enter` (read) | — | `canEnterLive()` → hlsUrl |
 | `Live`/`Suspended` | `endLive()` | `Ended` | `canEndLive()` |
 
+- `expire()` is the batch-only exit for rooms OBS never connected to — the time threshold is batch policy,
+  so the guard checks state only. No `RoomEnded` event (never was `Live` → no chat session to close).
 - `Ready` carries only `scheduledAt` (reuses the `scheduled_at` column; `status` has no CHECK → adding a state needs no migration).
 - `Suspended.startedAt`: `null` if suspended before broadcast, else `Live.startedAt`. **No transition INTO
   `Suspended` is built** (the record + `endLive()` exit exist; admin suspend is future work).
@@ -34,20 +37,22 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 
 All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); never call the SDK from a
 service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive`, `startHlsEgress`,
-`stopHlsEgress`, `deleteIngress`, `closeRoom`, `getSfuUrl`.
+`stopHlsEgress`, `deleteIngress`, `closeRoom`, `getSfuUrl`, `listAllIngress`, `listAllEgress`.
+
+**Cleanup calls are best-effort, query calls fail-fast.** `deleteIngress`/`stopHlsEgress`/`closeRoom` log
+and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress` **throw** — an empty
+list reads as "no orphans" and would let the batch finish green on a failed lookup.
 
 **Intentional in-`@Transactional` external calls (`StartLiveService`, `GoLiveByRtmpService`,
-`EndLiveService`).** The root rule is "minimize external calls in a tx"; here it's deliberate — start-side
-media calls run inside the tx *after* re-validation, so we never hit the server in a bad state and
-`egressId` commits with the room. **Accepted risk:** the DB connection is held across media I/O — sized by the fact that the LiveKit clients
-(`LiveKitConfig`) run on OkHttp defaults (**no `callTimeout`**); explicit client timeouts are a follow-up.
-**Reviewers must NOT flag this in-tx network call.** On rollback after `startHlsEgress`, the shared
-`EgressRollbackCompensation` `afterCompletion` hook stops the egress (delicate — the rollback-status check
-+ intentional catch-log are load-bearing; don't "fix" them). A process crash still orphans the egress →
-reconciliation batch, not built.
-`EndLiveService` differs: its cleanup calls (`stopHlsEgress`/`deleteIngress`/`closeRoom`) produce nothing
-that must commit with the room, so in-tx is an accepted-risk convenience, not a correctness requirement —
-moving them to `afterCommit` (like `publishRoomEnded`) is a known follow-up, not built.
+`EndLiveService`, `ExpireOrphanLiveService`) — reviewers must NOT flag these.** Start-side media calls run
+in-tx *after* re-validation so we never hit the server in a bad state and `egressId` commits with the room.
+Accepted risk: the DB connection is held across media I/O, unbounded because the LiveKit clients
+(`LiveKitConfig`) run on OkHttp defaults (**no `callTimeout`** — a follow-up). On rollback after
+`startHlsEgress`, `EgressRollbackCompensation`'s `afterCompletion` hook stops it (delicate — the
+rollback-status check + intentional catch-log are load-bearing; don't "fix" them). A process crash still
+orphans the egress → reconciliation.
+`EndLiveService`/`ExpireOrphanLiveService` differ: their cleanup calls produce nothing that must commit
+with the room, so in-tx is convenience, not correctness — moving them to `afterCommit` is a known follow-up.
 
 **Pinned product:** starting requires **exactly one** pinned product (`validatePinnedProduct`), both modes.
 
@@ -59,7 +64,7 @@ reservation (defaults `WebRtc`).
 **Prepare** (`POST /rooms/{id}/ingress`, `PrepareIngressService`) — issue `rtmpUrl` + `streamKey`:
 - **streamKey is a credential — never store or log.** Only `ingressId` persists (`LiveStreamType.Rtmp`);
   streamKey returned **once** (re-fetch = LiveKit `listIngress`); `IngressResult`/`IngressCredentialView`
-  mask it in `toString()`.
+  mask it in `toString()`. Same reason `IngressSummary` carries neither `streamKey` nor `url`.
 - Guards: `Scheduled` (`canPrepareIngress`) + ownership (`findByIdAndSellerId`); idempotent — reject if
   already `isRtmp` (DB alone). Ingress binds to the room by roomId (LiveKit auto-creates it on OBS connect).
 
