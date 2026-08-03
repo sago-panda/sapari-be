@@ -38,19 +38,19 @@ public class ExpireOrphanLiveService implements ExpireOrphanLiveUseCase {
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
         LiveRoom expiredRoom = room.expire(timeProvider.now());
 
-        // Ready 방은 sfuRoomId만 있는 게 정상 — 미디어 세션 유무로 가른다.
-        boolean hasMediaSession = room.streamInfo() != null;
+        // createRoom 실패로 SFU 방이 배정되지 않은 방은 stream 접근자가 NPE — 여기서 한 번만 가른다.
+        boolean hasSfuRoom = room.streamInfo() != null;
 
-        // egress 중단까지 부르는 건 시작 중 크래시로 egress만 남은 방 때문이다.
         // 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제
         // (ingress가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — 좀비 방)
-        if (hasMediaSession) {
-            liveMediaManager.stopHlsEgress(command.roomId(), room.egressId());
-        }
+
+        // egress 중단은 DB 에 egressId 가 없어도 부른다 — 시작 중 크래시로 egress 만 남았을 수 있고,
+        // 이 호출은 roomId 로 LiveKit 에 직접 물어 일괄 중단한다(egressId 인자는 쓰이지 않음).
+        liveMediaManager.stopHlsEgress(command.roomId(), hasSfuRoom ? room.egressId() : null);
         if (room.isRtmp()) {
             liveMediaManager.deleteIngress(command.roomId());
         }
-        if (hasMediaSession) {
+        if (hasSfuRoom) {
             liveMediaManager.closeRoom(room.sfuRoomId());
         }
 
