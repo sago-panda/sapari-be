@@ -17,11 +17,44 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 @ConfigurationProperties("live.reconcile")
 public record LiveReconcileProperties(
-        @Valid OrphanMedia orphanMedia
+        @Valid OrphanMedia orphanMedia,
+        @Valid EndStaleLive endStaleLive,
+        Integer batchSize
 ) {
+    private static final int DEFAULT_BATCH_SIZE = 100;
+
     public LiveReconcileProperties {
         if (orphanMedia == null) {
             orphanMedia = new OrphanMedia(null);
+        }
+        if (endStaleLive == null) {
+            endStaleLive = new EndStaleLive(null);
+        }
+        if (batchSize == null) {
+            batchSize = DEFAULT_BATCH_SIZE;
+        }
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("live.reconcile.batch-size 는 양수여야 합니다: " + batchSize);
+        }
+    }
+
+    /**
+     * @param threshold Live 로 전이한 지 이만큼 지난 방만 후보로 본다. 실제 종료 판정은 활성 egress 유무이고,
+     *                  이 값은 일시적 조회 실패를 흡수하는 완충이라 짧게 잡을 이유가 없다.
+     */
+    public record EndStaleLive(
+            Duration threshold
+    ) {
+        private static final Duration DEFAULT_THRESHOLD = Duration.ofMinutes(60);
+
+        public EndStaleLive {
+            if (threshold == null) {
+                threshold = DEFAULT_THRESHOLD;
+            }
+            if (threshold.isZero() || threshold.isNegative()) {
+                throw new IllegalArgumentException(
+                        "live.reconcile.end-stale-live.threshold 는 양수여야 합니다: " + threshold);
+            }
         }
     }
 

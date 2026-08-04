@@ -33,6 +33,14 @@ public interface LiveRoomRepository {
     List<UUID> findExpiredReadyRoomIds(Instant threshold, int limit);
 
     /**
+     * {@code threshold} 이전에 시작된 Live 방 id 를 오래된 순으로 최대 {@code limit} 건.
+     *
+     * <p><b>이것만으로 종료를 판단하면 안 된다.</b> 정상적으로 오래 진행 중인 방송도 전부 걸린다 —
+     * 호출자가 LiveKit 에 활성 egress 가 없음을 확인한 방만 종료해야 한다.
+     */
+    List<UUID> findStaleLiveRoomIds(Instant threshold, int limit);
+
+    /**
      * 고아 미디어 대조용 벌크 조회. 읽기 전용이라 행 잠금을 걸지 않는다 — LiveKit 리소스를 지울 뿐
      * 방 상태는 건드리지 않으므로 직렬화할 전이가 없다.
      */

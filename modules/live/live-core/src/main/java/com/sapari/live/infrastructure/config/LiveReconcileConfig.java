@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
+import com.sapari.live.application.port.StaleLiveReconcilePolicy;
 
 /**
  * 고아 라이브 정리 정책 바인딩. 설정을 application 의 policy record 로 바꿔 주입한다 —
@@ -18,5 +19,10 @@ public class LiveReconcileConfig {
     @Bean
     public OrphanMediaReconcilePolicy orphanMediaReconcilePolicy(LiveReconcileProperties properties) {
         return new OrphanMediaReconcilePolicy(properties.orphanMedia().grace());
+    }
+
+    @Bean
+    public StaleLiveReconcilePolicy staleLiveReconcilePolicy(LiveReconcileProperties properties) {
+        return new StaleLiveReconcilePolicy(properties.endStaleLive().threshold(), properties.batchSize());
     }
 }

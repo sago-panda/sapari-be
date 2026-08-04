@@ -72,6 +72,14 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     }
 
     @Override
+    public List<UUID> findStaleLiveRoomIds(Instant threshold, int limit){
+        return liveRoomJpaRepository.findByLiveStatusAndStartedAtBeforeOrderByStartedAtAsc(
+                        LiveRoomStatus.LIVE, threshold, Limit.of(limit))
+                .stream().map(LiveRoomEntity::getId)
+                .toList();
+    }
+
+    @Override
     public List<LiveRoom> findAllByIds(Set<UUID> ids){
         return liveRoomJpaRepository.findAllById(ids)
                 .stream().map(liveRoomMapper::toDomain)
