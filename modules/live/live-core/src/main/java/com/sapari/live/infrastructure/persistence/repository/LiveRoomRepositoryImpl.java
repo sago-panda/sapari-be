@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import jakarta.persistence.EntityNotFoundException;
@@ -68,6 +69,13 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     public Optional<LiveRoom> findByIdAndSellerIdForUpdate(UUID id, UUID hostId){
         return liveRoomJpaRepository.findWithLockByIdAndSellerId(id, hostId)
                 .map(liveRoomMapper::toDomain);
+    }
+
+    @Override
+    public List<LiveRoom> findAllByIds(Set<UUID> ids){
+        return liveRoomJpaRepository.findAllById(ids)
+                .stream().map(liveRoomMapper::toDomain)
+                .toList();
     }
 
     @Override

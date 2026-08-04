@@ -3,6 +3,7 @@ package com.sapari.live.domain.repository;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import com.sapari.live.domain.model.LiveRoom;
@@ -30,4 +31,10 @@ public interface LiveRoomRepository {
      * {@code InvalidLiveStateException} 을 던진다(no-op 이 아니다). 배치 루프가 건별로 스킵할 것.
      */
     List<UUID> findExpiredReadyRoomIds(Instant threshold, int limit);
+
+    /**
+     * 고아 미디어 대조용 벌크 조회. 읽기 전용이라 행 잠금을 걸지 않는다 — LiveKit 리소스를 지울 뿐
+     * 방 상태는 건드리지 않으므로 직렬화할 전이가 없다.
+     */
+    List<LiveRoom> findAllByIds(Set<UUID> ids);
 }
