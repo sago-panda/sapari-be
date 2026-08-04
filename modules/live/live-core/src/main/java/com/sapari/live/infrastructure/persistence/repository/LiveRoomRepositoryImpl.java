@@ -3,16 +3,20 @@ package com.sapari.live.infrastructure.persistence.repository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import jakarta.persistence.EntityNotFoundException;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Repository;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
+import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 import com.sapari.live.infrastructure.persistence.mapper.LiveRoomMapper;
 
 @Slf4j
@@ -64,5 +68,13 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     public Optional<LiveRoom> findByIdAndSellerIdForUpdate(UUID id, UUID hostId){
         return liveRoomJpaRepository.findWithLockByIdAndSellerId(id, hostId)
                 .map(liveRoomMapper::toDomain);
+    }
+
+    @Override
+    public List<UUID> findExpiredReadyRoomIds(Instant threshold, int limit){
+        return liveRoomJpaRepository.findByLiveStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(
+                LiveRoomStatus.READY, threshold, Limit.of(limit)
+                ).stream().map(LiveRoomEntity::getId)
+                .toList();
     }
 }
