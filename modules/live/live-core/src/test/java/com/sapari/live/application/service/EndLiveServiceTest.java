@@ -97,7 +97,7 @@ public class EndLiveServiceTest {
         endLiveService.end(command);
 
         // then
-        then(liveMediaManager).should(times(1)).stopHlsEgress(roomId, mockRoom.streamInfo().egressId());
+        then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
         then(liveMediaManager).should(times(1)).closeRoom(mockRoom.streamInfo().sfuRoomId());
 
         ArgumentCaptor<LiveRoom> roomCaptor = ArgumentCaptor.forClass(LiveRoom.class);
@@ -136,7 +136,7 @@ public class EndLiveServiceTest {
 
         // then — 순서 보장: stopHlsEgress → deleteIngress → closeRoom
         var order = inOrder(liveMediaManager);
-        order.verify(liveMediaManager).stopHlsEgress(roomId, "egress-id");
+        order.verify(liveMediaManager).stopHlsEgress(roomId);
         order.verify(liveMediaManager).deleteIngress(roomId);
         order.verify(liveMediaManager).closeRoom("sfu-room-id");
     }

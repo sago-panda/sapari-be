@@ -370,7 +370,7 @@ public class LiveKitMediaManagerTest {
         given(egressServiceClient.stopEgress(egressId)).willReturn(stopCall);
 
         // when
-        liveKitMediaManager.stopHlsEgress(roomId, egressId);
+        liveKitMediaManager.stopHlsEgress(roomId);
 
         // then
         then(stopCall).should(times(1)).execute();
@@ -385,7 +385,7 @@ public class LiveKitMediaManagerTest {
         given(listCall.execute()).willThrow(new RuntimeException("네트워크 타임아웃"));
 
         // when & then: 예외를 삼키고 정상 종료
-        assertDoesNotThrow(() -> liveKitMediaManager.stopHlsEgress(roomId, egressId));
+        assertDoesNotThrow(() -> liveKitMediaManager.stopHlsEgress(roomId));
     }
 
     @RepeatedTest(value = 10)

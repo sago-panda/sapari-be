@@ -244,7 +244,7 @@ public class StartLiveServiceTest {
         triggerAfterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
 
         // then
-        verify(liveMediaManager).stopHlsEgress(roomId, "egress-123");
+        verify(liveMediaManager).stopHlsEgress(roomId);
     }
 
     @Test
@@ -260,7 +260,7 @@ public class StartLiveServiceTest {
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willThrow(new RuntimeException("DB down"));
         willThrow(new RuntimeException("media server down"))
-                .given(liveMediaManager).stopHlsEgress(roomId, "egress-123");
+                .given(liveMediaManager).stopHlsEgress(roomId);
 
         assertThatThrownBy(() -> startLiveService.start(command)).hasMessage("DB down");
 
@@ -288,7 +288,7 @@ public class StartLiveServiceTest {
         triggerAfterCompletion(TransactionSynchronization.STATUS_UNKNOWN);
 
         // then
-        verify(liveMediaManager, never()).stopHlsEgress(any(UUID.class), anyString());
+        verify(liveMediaManager, never()).stopHlsEgress(any(UUID.class));
     }
 
     @Test

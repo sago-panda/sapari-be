@@ -213,7 +213,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // 일부 화질만 시작된 상태에서 실패 → 추적한 egressId를 직접 중단(전파 지연 회피) 후, listEgress로 누락분 보강.
             log.error("HLS Egress 다중 화질 시작 실패 → 시작분 {}건 보상 중단: roomId={}", startedEgressIds.size(), roomId, e);
             startedEgressIds.forEach(egressId -> safeStopEgress(roomId, egressId));
-            stopAllRoomEgress(roomId);
+            stopHlsEgress(roomId);
             // 인프라 예외(예: URL 검증 IllegalArgumentException)는 도메인 예외로 번역해 누출 방지(AGENTS Errors 규칙).
             if (e instanceof LiveMediaException) {
                 throw e;
@@ -329,14 +329,9 @@ public class LiveKitMediaManager implements LiveMediaManager {
     /**
      * s3 기록 종료. 한 방송은 1080p/720p/360p egress가 동시에 떠 있으므로,
      * room의 active egress를 모두 조회해 일괄 중단한다(고아 egress 정리 포함).
-     * egressId 파라미터는 포트 호환을 위해 유지하나 단건 중단에는 사용하지 않는다.
      */
     @Override
-    public void stopHlsEgress(UUID roomId, String egressId){
-        stopAllRoomEgress(roomId);
-    }
-
-    private void stopAllRoomEgress(UUID roomId){
+    public void stopHlsEgress(UUID roomId){
         try {
             List<EgressInfo> egresses = egressServiceClient.listEgress(roomId.toString()).execute().body();
             if (egresses == null || egresses.isEmpty()) {
@@ -372,7 +367,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
 
     /**
      * 방에 묶인 RTMP ingress 일괄 삭제(종료 정리). ingressId 단건이 아니라 roomName(=roomId) 조회로 전부 지워
-     * double-prepare 로 생긴 고아 ingress 도 함께 정리한다(stopAllRoomEgress 와 동일 패턴).
+     * double-prepare 로 생긴 고아 ingress 도 함께 정리한다(stopHlsEgress 와 동일 패턴).
      * best-effort — 실패해도 종료 트랜잭션은 막지 않으며, 잔여 고아는 reconciliation 배치의 몫.
      */
     @Override

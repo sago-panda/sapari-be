@@ -44,9 +44,9 @@ public class ExpireOrphanLiveService implements ExpireOrphanLiveUseCase {
         // 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제
         // (ingress가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — 좀비 방)
 
-        // egress 중단은 DB 에 egressId 가 없어도 부른다 — 시작 중 크래시로 egress 만 남았을 수 있고,
-        // 이 호출은 roomId 로 LiveKit 에 직접 물어 일괄 중단한다(egressId 인자는 쓰이지 않음).
-        liveMediaManager.stopHlsEgress(command.roomId(), hasSfuRoom ? room.egressId() : null);
+        // egress 중단은 DB 가 egress 를 모르더라도 부른다 — 시작 중 크래시로 egress 만 남았을 수 있고,
+        // 이 호출은 roomId 로 LiveKit 에 직접 물어 일괄 중단하므로 DB 상태와 무관하게 걷힌다.
+        liveMediaManager.stopHlsEgress(command.roomId());
         if (room.isRtmp()) {
             liveMediaManager.deleteIngress(command.roomId());
         }
