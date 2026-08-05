@@ -137,7 +137,9 @@ mr-review:
     GITLAB_API_TOKEN: "" # claude(인젝션 노출) 단계에서 api PAT 제거
   rules: *mr_rules
   script:
-    - '[ "$DO_REVIEW" = "true" ] || { echo "리뷰 스킵"; exit 0; }'
+    # dotenv 리포트는 파일이 없으면 잡이 실패한다. 스킵 경로 포함 항상 존재시킨다.
+    - printf 'REVIEWED_SHA=%s\n' "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" > review2.env
+    - '[ "$DO_REVIEW" = "true" ] || { echo "리뷰 스킵"; : > review.md; exit 0; }'
     - npm install -g @anthropic-ai/claude-code # TODO: 버전 고정
     - git fetch origin -- "$TARGET_BRANCH"
     - git diff "origin/$TARGET_BRANCH...HEAD" -- > mr.diff
