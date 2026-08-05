@@ -32,12 +32,9 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
     public void reconcile(){
         int expired = 0;
         int skipped = 0;
-        //threshold = now - policy.threshold
         Instant threshold = timeProvider.now().minus(policy.threshold());
-        //findExpiredReadyRoomIds(threshold, batchSize)
         List<UUID> roomIds = liveRoomRepository.findExpiredReadyRoomIds(threshold, policy.batchSize());
-        //for (roomId) {try {expire} catch (e) {skipped++}}
-        for(UUID id : roomIds){
+        for (UUID id : roomIds) {
             try {
                 expireOrphanLiveUseCase.expire(new ExpireOrphanLiveCommand(id));
                 expired++;

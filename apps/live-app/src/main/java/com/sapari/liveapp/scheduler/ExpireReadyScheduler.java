@@ -16,7 +16,8 @@ import com.sapari.live.port.ReconcileExpiredReadyUseCase;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "live.reconcile.expire-ready", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(name = {"live.reconcile.enabled", "live.reconcile.expire-ready.enabled"},
+        havingValue = "true", matchIfMissing = true)
 public class ExpireReadyScheduler {
 
     private final ReconcileExpiredReadyUseCase reconcileExpiredReadyUseCase;

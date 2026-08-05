@@ -19,7 +19,8 @@ import com.sapari.live.port.ReconcileStaleLiveUseCase;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "live.reconcile.end-stale-live", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(name = {"live.reconcile.enabled", "live.reconcile.end-stale-live.enabled"},
+        havingValue = "true", matchIfMissing = true)
 public class EndStaleLiveScheduler {
 
     private final ReconcileStaleLiveUseCase reconcileStaleLiveUseCase;

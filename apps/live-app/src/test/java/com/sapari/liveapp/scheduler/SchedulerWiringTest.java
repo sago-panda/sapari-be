@@ -136,6 +136,23 @@ class SchedulerWiringTest {
             runner.withPropertyValues("live.reconcile.enabled=false")
                     .run(context -> assertThat(context).doesNotHaveBean(SchedulingConfig.class));
         }
+
+        @Test
+        @DisplayName("마스터 스위치를 끄면 잡 빈도 등록되지 않는다 — @EnableScheduling 이 다른 데서 켜져도 돌지 않게")
+        void masterSwitchAlsoRemovesJobs() {
+            new ApplicationContextRunner()
+                    .withBean(ReconcileExpiredReadyUseCase.class, () -> mock(ReconcileExpiredReadyUseCase.class))
+                    .withBean(ReconcileStaleLiveUseCase.class, () -> mock(ReconcileStaleLiveUseCase.class))
+                    .withBean(ReconcileOrphanMediaUseCase.class, () -> mock(ReconcileOrphanMediaUseCase.class))
+                    .withUserConfiguration(ExpireReadyScheduler.class, EndStaleLiveScheduler.class,
+                            OrphanMediaScheduler.class)
+                    .withPropertyValues("live.reconcile.enabled=false")
+                    .run(context -> {
+                        assertThat(context).doesNotHaveBean(ExpireReadyScheduler.class);
+                        assertThat(context).doesNotHaveBean(EndStaleLiveScheduler.class);
+                        assertThat(context).doesNotHaveBean(OrphanMediaScheduler.class);
+                    });
+        }
     }
 
     @Nested

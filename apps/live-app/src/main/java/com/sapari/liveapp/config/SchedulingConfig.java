@@ -30,6 +30,8 @@ public class SchedulingConfig {
         scheduler.setPoolSize(POOL_SIZE);
         scheduler.setThreadNamePrefix("live-reconcile-");
         // 종료 시 진행 중인 회차를 기다린다 — 미디어 정리 도중에 끊기면 고아가 그대로 남는다.
+        // 다만 보장은 아니다: 한 회차가 배치 크기 × LiveKit 왕복이고 callTimeout 이 없어 30초를 넘길 수 있으며,
+        // 파드 종료 유예(기본 30s)도 그쯤이다. 못 끝낸 정리는 다음 회차와 고아 미디어 잡이 줍는다.
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(30);
         return scheduler;

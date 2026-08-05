@@ -16,7 +16,8 @@ import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "live.reconcile.orphan-media", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(name = {"live.reconcile.enabled", "live.reconcile.orphan-media.enabled"},
+        havingValue = "true", matchIfMissing = true)
 public class OrphanMediaScheduler {
 
     private final ReconcileOrphanMediaUseCase reconcileOrphanMediaUseCase;

@@ -73,8 +73,20 @@ triggers `Live`, so both sides are idempotent no-ops when the room isn't `Ready+
 
 Rooms that never reach `endLive()` and LiveKit resources our cleanup missed. Triggers live in
 `liveapp/scheduler` (thin — `reconcile()` only); policy, loops and per-item exception skipping live in
-`live-core` services. Each job has its own `live.reconcile.<job>.enabled`; **`end-stale-live` is the one to
-kill first** — it is the only job that can end a broadcast that is still alive.
+`live-core` services. **`end-stale-live` is the switch to pull first** — the only job that can end a
+broadcast still on air.
+
+Config is split by layer, so no single class lists it all: `enabled`/`cron` are read by the schedulers
+(live-app), `threshold`/`grace`/`batch-size` by `LiveReconcileProperties` (live-core). Everything has a code
+default — `application*.yml` isn't tracked, so "unset" is the normal state.
+
+| Key (under `live.reconcile`) | Default |
+|---|---|
+| `enabled` | on — master switch; off removes both `@EnableScheduling` and the job beans |
+| `<job>.enabled` · `<job>.cron` | on · staggered 10-min cycles (`0/10`, `3/10`, `6/10` — don't align them) |
+| `expire-ready.threshold` · `end-stale-live.threshold` | 60m |
+| `orphan-media.grace` | 15m |
+| `batch-size` | 100, shared by the two room-sweeping jobs |
 
 | Job | Candidate | Decides by | Acts via |
 |---|---|---|---|
