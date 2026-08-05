@@ -53,20 +53,10 @@ public class EndStaleLiveService implements EndStaleLiveUseCase {
         Instant endedAt = timeProvider.now();
         LiveRoom endedRoom = room.endLive(endedAt);
 
-        // createRoom 실패로 SFU 방이 배정되지 않은 방은 stream 접근자가 NPE — 여기서 한 번만 가른다.
-        boolean hasSfuRoom = room.streamInfo() != null;
-
-        // 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제
-        // (ingress 가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — 좀비 방)
-        liveMediaManager.stopHlsEgress(command.roomId());
-        if (room.isRtmp()) {
-            liveMediaManager.deleteIngress(command.roomId());
-        }
-        if (hasSfuRoom) {
-            liveMediaManager.closeRoom(room.sfuRoomId());
-        }
-
         liveRoomRepository.save(endedRoom);
+
+        // 등록 순서 = 실행 순서. 미디어를 먼저 걷고 나서 chat 에 알린다.
+        PostCommitMediaCleanup.register(liveMediaManager, room);
         registerRoomEndedPublish(command.roomId(), endedAt);
         log.info("방치된 Live 방 종료. roomId={}", command.roomId());
     }

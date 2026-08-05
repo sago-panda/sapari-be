@@ -12,6 +12,7 @@ import static org.mockito.Mockito.times;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
@@ -70,6 +71,23 @@ public class EndLiveServiceTest {
 
         roomId = UUID.randomUUID();
         sellerId = UUID.randomUUID();
+
+        // 미디어 정리가 afterCommit 으로 미뤄졌다 — 동기화가 없으면 "트랜잭션 밖" 폴백으로 빠져
+        // 즉시 실행되므로, 실제 경로를 밟으려면 트랜잭션 안을 흉내내야 한다.
+        TransactionSynchronizationManager.initSynchronization();
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    /** 실제 커밋에서만 도는 훅을 테스트가 직접 발화시킨다. */
+    private void triggerAfterCommit() {
+        TransactionSynchronizationManager.getSynchronizations()
+                .forEach(TransactionSynchronization::afterCommit);
     }
 
     @RepeatedTest(value = 10)
@@ -97,6 +115,7 @@ public class EndLiveServiceTest {
         endLiveService.end(command);
 
         // then
+        triggerAfterCommit();
         then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
         then(liveMediaManager).should(times(1)).closeRoom(mockRoom.streamInfo().sfuRoomId());
 
@@ -135,6 +154,7 @@ public class EndLiveServiceTest {
         endLiveService.end(command);
 
         // then — 순서 보장: stopHlsEgress → deleteIngress → closeRoom
+        triggerAfterCommit();
         var order = inOrder(liveMediaManager);
         order.verify(liveMediaManager).stopHlsEgress(roomId);
         order.verify(liveMediaManager).deleteIngress(roomId);
@@ -166,6 +186,7 @@ public class EndLiveServiceTest {
         endLiveService.end(command);
 
         // then
+        triggerAfterCommit();
         then(liveMediaManager).should(never()).deleteIngress(any());
     }
 
@@ -214,6 +235,69 @@ public class EndLiveServiceTest {
     }
 
     @Test
+    @DisplayName("미디어 정리는 커밋 이후에 한다 — 커밋 전엔 LiveKit 을 호출하지 않는다(행 잠금 밖으로 뺀 이유)")
+    void mediaCleanup_deferredUntilAfterCommit() {
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+        LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls/1");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1");
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId).set("sellerId", sellerId)
+                .set("status", liveStatus).set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.Rtmp("ingress-1")).sample();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(Instant.now());
+
+        endLiveService.end(command);
+
+        // 방은 이미 저장됐지만 LiveKit 에는 아무것도 나가지 않았다 — 잠금은 여기서 풀린다.
+        then(liveRoomRepository).should(times(1)).save(any(LiveRoom.class));
+        then(liveMediaManager).shouldHaveNoInteractions();
+
+        triggerAfterCommit();
+        then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
+    }
+
+    @Test
+    @DisplayName("트랜잭션 밖 호출이면 즉시 정리한다 — 생략하면 egress 과금이 계속된다(RoomEnded 와 다른 분기)")
+    void mediaCleanup_runsImmediately_whenNoTransaction() {
+        TransactionSynchronizationManager.clearSynchronization(); // 트랜잭션 없는 호출 재현
+
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+        LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls/1");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1");
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId).set("sellerId", sellerId)
+                .set("status", liveStatus).set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc()).sample();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(Instant.now());
+
+        endLiveService.end(command);
+
+        then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
+    }
+
+    @Test
+    @DisplayName("정리 중 예외는 삼킨다 — 방은 이미 Ended 로 커밋됐고, 판매자가 LiveKit 사정을 알 이유가 없다")
+    void mediaCleanupFailure_isSwallowed() {
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+        LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls/1");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1");
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId).set("sellerId", sellerId)
+                .set("status", liveStatus).set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc()).sample();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(Instant.now());
+        org.mockito.BDDMockito.willThrow(new IllegalStateException("LiveKit 장애"))
+                .given(liveMediaManager).stopHlsEgress(roomId);
+
+        endLiveService.end(command);
+
+        org.assertj.core.api.Assertions.assertThatCode(this::triggerAfterCommit).doesNotThrowAnyException();
+    }
+
+    @Test
     @DisplayName("종료 커밋 후 RoomEnded를 발행한다 (afterCommit)")
     void publishesRoomEnded_afterCommit() {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
@@ -227,21 +311,13 @@ public class EndLiveServiceTest {
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(endedAt);
 
-        TransactionSynchronizationManager.initSynchronization();
-        try {
-            endLiveService.end(command);
+        endLiveService.end(command);
 
-            // 커밋 전에는 미발행
-            then(liveEventPublisher).shouldHaveNoInteractions();
+        // 커밋 전에는 미발행
+        then(liveEventPublisher).shouldHaveNoInteractions();
 
-            // afterCommit 수동 트리거 → 발행
-            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
-                sync.afterCommit();
-            }
-            then(liveEventPublisher).should(times(1)).publishRoomEnded(roomId, endedAt);
-        } finally {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
+        triggerAfterCommit();
+        then(liveEventPublisher).should(times(1)).publishRoomEnded(roomId, endedAt);
     }
 
     @Test
@@ -258,13 +334,10 @@ public class EndLiveServiceTest {
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
         given(timeProvider.now()).willReturn(endedAt);
 
-        TransactionSynchronizationManager.initSynchronization();
-        try {
-            endLiveService.end(command);
-            // 롤백 시나리오: afterCommit을 호출하지 않는다 → 발행 없음
-            then(liveEventPublisher).shouldHaveNoInteractions();
-        } finally {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
+        endLiveService.end(command);
+
+        // 롤백 시나리오: afterCommit 을 호출하지 않는다 → 발행도 미디어 정리도 없음
+        then(liveEventPublisher).shouldHaveNoInteractions();
+        then(liveMediaManager).shouldHaveNoInteractions();
     }
 }
