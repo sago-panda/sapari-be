@@ -43,10 +43,11 @@ list reads as "no orphans" and would let a batch finish green on a failed lookup
 **Intentional in-`@Transactional` external calls (`StartLiveService`, `GoLiveByRtmpService`, `EndLiveService`,
 `ExpireOrphanLiveService`, `EndStaleLiveService`) — reviewers must NOT flag these.** Start-side calls run
 in-tx *after* re-validation so we never hit the server in a bad state and `egressId` commits with the room.
-Accepted risk: the connection **and the row lock** are held across media I/O for as long as OkHttp's
-per-socket defaults allow (`LiveKitConfig` sets no `callTimeout`); `callTimeout` + PostgreSQL `lock_timeout`
-are the follow-up — JPA's `jakarta.persistence.lock.timeout` hint is **not** it (PostgreSQL takes only
-`NOWAIT`/`SKIP LOCKED`; a numeric wait is silently dropped). On rollback after `startHlsEgress`,
+Accepted risk: the connection **and the row lock** are held across media I/O, bounded by `callTimeout`
+(15s **per call** in `LiveKitConfig`, so `startHlsEgress`'s three sequential calls can hold ~45s). Capping
+the *waiting* side with a PostgreSQL `lock_timeout` is still open — JPA's `jakarta.persistence.lock.timeout`
+hint is **not** it (PostgreSQL takes only `NOWAIT`/`SKIP LOCKED`; a numeric wait is silently dropped), and
+`application*.yml` isn't tracked, so it would have to be a `HikariConfig` bean. On rollback after `startHlsEgress`,
 `EgressRollbackCompensation`'s `afterCompletion` hook stops it (delicate — the rollback-status check +
 intentional catch-log are load-bearing; don't "fix" them). The three end-side services produce nothing that
 must commit with the room, so their in-tx calls are convenience — `afterCommit` is a known follow-up.
