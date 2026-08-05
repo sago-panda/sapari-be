@@ -21,6 +21,8 @@
 #
 # 필요 CI 변수 (Settings > CI/CD > Variables, Masked 켜고 Protected 끄기):
 #   CLAUDE_CODE_OAUTH_TOKEN  claude setup-token 으로 발급한 OAuth 토큰
+#     주의: Protected 를 끄면 비보호 브랜치의 잡 환경에도 토큰이 들어간다. MR 작성자가
+#     이 파일을 고쳐 값을 추출할 수 있으므로, 리뷰 전용 저권한 계정 + 주기적 로테이션 전제.
 #   GITLAB_API_TOKEN         MR 노트 조회/작성용 Personal Access Token (api scope)
 
 stages:
@@ -138,7 +140,8 @@ mr-review:
   rules: *mr_rules
   script:
     # dotenv 리포트는 파일이 없으면 잡이 실패한다. 스킵 경로 포함 항상 존재시킨다.
-    - printf 'REVIEWED_SHA=%s\n' "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" > review2.env
+    # 값은 자리표시자다. 리뷰를 수행하면 아래 마지막 단계에서 실제 SHA 로 덮어쓴다.
+    - printf 'REVIEWED_SHA=\n' > review2.env
     - '[ "$DO_REVIEW" = "true" ] || { echo "리뷰 스킵"; : > review.md; exit 0; }'
     # 토큰 미전달(Protected 변수 + 비보호 브랜치)을 무증상 실패 대신 명시적 에러로 드러낸다. 값은 출력하지 않는다.
     - '[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || { echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN 이 비어 있음 (CI 변수의 Protected 설정 확인)"; exit 1; }'
@@ -175,7 +178,7 @@ mr-review:
           and state explicitly when there are no issues. Write the final report in Korean."
       fi
       claude -p "$prompt" --allowedTools "Read,Grep,Glob,Task,Agent" --output-format text > review.md \
-        || { rc=$?; echo "claude 실행 실패 (종료 코드 $rc). stdout:"; cat review.md; exit "$rc"; }
+        || { rc=$?; echo "claude 실행 실패 (종료 코드 $rc)"; exit "$rc"; }
       test -s review.md || { echo "리뷰 결과가 비어 있음"; exit 1; }
     - |
       # 시크릿 유출 검사: 통과해야 artifact 가 남고 comment 단계로 전달된다.
