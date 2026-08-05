@@ -58,6 +58,10 @@ CREATE INDEX ON live_schema.live_rooms (status, scheduled_at);
 CREATE INDEX ON live_schema.live_rooms (started_at);
 CREATE INDEX ON live_schema.live_rooms (concurrent_viewers);
 CREATE INDEX ON live_schema.live_rooms (deactivate_after);
+-- 고아 정리 배치의 후보 조회용. 필터(status) → 정렬(시각) 순서라 WHERE·ORDER BY·LIMIT 이 인덱스 하나로 풀린다.
+-- 두 잡이 기준 컬럼을 달리 쓰는 건 의도다: Ready 는 arm 시각(=updated_at), Live 는 방송 중 갱신되지 않는 started_at.
+CREATE INDEX ON live_schema.live_rooms (status, updated_at);   -- Ready 고착 만료
+CREATE INDEX ON live_schema.live_rooms (status, started_at);   -- Live 고착 종료
 
 -- ============================================================
 -- 라이브 등록 상품 (최대 50개) — DDL 구조 + live_price 캐시
