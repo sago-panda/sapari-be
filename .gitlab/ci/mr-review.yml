@@ -140,6 +140,8 @@ mr-review:
     # dotenv 리포트는 파일이 없으면 잡이 실패한다. 스킵 경로 포함 항상 존재시킨다.
     - printf 'REVIEWED_SHA=%s\n' "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" > review2.env
     - '[ "$DO_REVIEW" = "true" ] || { echo "리뷰 스킵"; : > review.md; exit 0; }'
+    # 토큰 미전달(Protected 변수 + 비보호 브랜치)을 무증상 실패 대신 명시적 에러로 드러낸다. 값은 출력하지 않는다.
+    - '[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || { echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN 이 비어 있음 (CI 변수의 Protected 설정 확인)"; exit 1; }'
     - npm install -g @anthropic-ai/claude-code # TODO: 버전 고정
     - git fetch origin -- "$TARGET_BRANCH"
     - git diff "origin/$TARGET_BRANCH...HEAD" -- > mr.diff
@@ -172,7 +174,8 @@ mr-review:
           Merge their findings into a single report with severity (blocker/major/minor/nit) and file:line references, \
           and state explicitly when there are no issues. Write the final report in Korean."
       fi
-      claude -p "$prompt" --allowedTools "Read,Grep,Glob,Task,Agent" --output-format text > review.md
+      claude -p "$prompt" --allowedTools "Read,Grep,Glob,Task,Agent" --output-format text > review.md \
+        || { rc=$?; echo "claude 실행 실패 (종료 코드 $rc)"; exit "$rc"; }
       test -s review.md || { echo "리뷰 결과가 비어 있음"; exit 1; }
     - |
       # 시크릿 유출 검사: 통과해야 artifact 가 남고 comment 단계로 전달된다.
