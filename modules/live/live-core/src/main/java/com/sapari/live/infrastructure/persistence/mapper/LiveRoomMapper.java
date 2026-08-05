@@ -105,8 +105,11 @@ public interface LiveRoomMapper {
             case READY -> new Ready(entity.getScheduledAt());
             case LIVE -> new Live(
                     entity.getStartedAt(), entity.getSfuRoomId(), entity.getEgressId(), entity.getHlsUrl());
+            // archive 는 hls_archive_url 에서 읽는다 — applyEnded 가 쓰는 컬럼이다.
+            // hls_url(방송 중 재생 URL)을 읽으면 지금은 endLive 가 같은 값을 복사해 우연히 맞지만,
+            // VOD 전용 URL 이 생기는 순간 다시보기가 만료된 실시간 URL 을 가리키게 된다.
             case ENDED -> new Ended(
-                    entity.getStartedAt(), entity.getEndedAt(), entity.getHlsUrl());
+                    entity.getStartedAt(), entity.getEndedAt(), entity.getHlsArchiveUrl());
             case SUSPENDED -> new Suspended(
                     entity.getStartedAt(), entity.getSuspendedAt(), entity.getSuspendedReason());
         };

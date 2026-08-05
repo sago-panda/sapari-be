@@ -72,6 +72,26 @@ class LiveRoomMapperTest {
     }
 
     @Test
+    @DisplayName("toDomain — ENDED: archive 는 hls_archive_url 에서 읽는다 (hls_url 은 방송 중 URL)")
+    void toDomain_ended_readsArchiveColumn() {
+        // 두 컬럼을 일부러 다른 값으로 둔다 — 지금은 endLive 가 같은 값을 복사해 넣어서
+        // 값이 같으면 어느 컬럼을 읽든 테스트가 통과해 버린다.
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.ENDED)
+                .startedAt(Instant.parse("2026-06-10T11:00:00Z"))
+                .endedAt(Instant.parse("2026-06-10T12:00:00Z"))
+                .hlsUrl("https://hls/live-only")
+                .hlsArchiveUrl("https://hls/archive")
+                .build();
+
+        LiveStatus.Ended ended = (LiveStatus.Ended) mapper.toDomain(entity).status();
+
+        assertThat(ended.hlsArchiveUrl()).isEqualTo("https://hls/archive");
+    }
+
+    @Test
     @DisplayName("toDomain — stream 컬럼을 StreamInfo 로 복원한다(sfuRoomId()/egressId() NPE 회귀 방지)")
     void toDomain_restoresStreamInfo() {
         LiveRoomEntity entity = LiveRoomEntity.builder()
