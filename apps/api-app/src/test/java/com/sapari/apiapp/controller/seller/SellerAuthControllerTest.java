@@ -5,11 +5,17 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.lang.reflect.Method;
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
@@ -17,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -26,9 +33,69 @@ import com.sapari.seller.model.SellerApprovalStatus;
 import com.sapari.seller.model.SellerBusinessType;
 import com.sapari.seller.port.SellerAuthUseCase;
 import com.sapari.seller.view.SellerMeView;
+import com.sapari.seller.view.SellerSignupResult;
 
 @DisplayName("판매자 인증 컨트롤러 테스트")
 class SellerAuthControllerTest {
+
+    @Test
+    @DisplayName("판매자 컨트롤러는 201 Location 응답에만 ResponseEntity를 사용한다")
+    void usesResponseEntityOnlyForCreatedLocation() {
+        assertThat(Arrays.stream(SellerAuthController.class.getDeclaredMethods())
+                .filter(method -> method.getReturnType().equals(ResponseEntity.class)))
+                .extracting(Method::getName)
+                .containsExactly("signup");
+    }
+
+    @Test
+    @DisplayName("판매자 상호명 중복 확인은 기존 공통 응답 계약을 유지한다")
+    void checkStoreNameReturnsResponseEnvelope() throws Exception {
+        SellerAuthUseCase sellerAuthUseCase = mock(SellerAuthUseCase.class);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new SellerAuthController(sellerAuthUseCase)).build();
+        when(sellerAuthUseCase.isStoreNameDuplicated("사파리 상점")).thenReturn(false);
+
+        mockMvc.perform(get("/api/v1/sellers/auth/signup/check-store-name")
+                        .param("storeName", "사파리 상점"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.duplicated").value(false))
+                .andExpect(jsonPath("$.error").doesNotExist());
+
+        verify(sellerAuthUseCase).isStoreNameDuplicated("사파리 상점");
+    }
+
+    @Test
+    @DisplayName("판매자 가입은 201 Location과 공통 응답 봉투를 유지한다")
+    void signupReturnsCreatedLocationAndResponseEnvelope() throws Exception {
+        SellerAuthUseCase sellerAuthUseCase = mock(SellerAuthUseCase.class);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new SellerAuthController(sellerAuthUseCase)).build();
+        UUID userId = UUID.fromString("019e6e30-ea61-7392-8123-1047154d4661");
+        when(sellerAuthUseCase.signup(org.mockito.ArgumentMatchers.any())).thenReturn(new SellerSignupResult(userId));
+
+        mockMvc.perform(post("/api/v1/sellers/auth/signup")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "seller@example.com",
+                                  "password": "Password1!",
+                                  "passwordConfirm": "Password1!",
+                                  "nickname": "seller",
+                                  "name": "판매자",
+                                  "phoneNumber": "01087654321",
+                                  "privacyAgreed": true,
+                                  "marketingAgreed": false,
+                                  "storeName": "사파리 상점",
+                                  "businessNumber": "1234567890",
+                                  "businessStartDate": "2020-01-01",
+                                  "businessType": "INDIVIDUAL"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(header().string(HttpHeaders.LOCATION, "/api/v1/sellers/" + userId))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.userId").value(userId.toString()))
+                .andExpect(jsonPath("$.error").doesNotExist());
+    }
 
     @Test
     @DisplayName("판매자 프로필 이미지 변경 성공 응답을 공통 응답으로 감싸고 파일을 command로 전달한다")
@@ -77,6 +144,22 @@ class SellerAuthControllerTest {
                 .andExpect(jsonPath("$.error").doesNotExist());
 
         verify(sellerAuthUseCase).deleteProfileImage("seller-token");
+    }
+
+    @Test
+    @DisplayName("판매자 로그아웃은 204 빈 응답과 refresh token 만료 쿠키를 유지한다")
+    void logoutExpiresRefreshTokenCookieWithoutBody() throws Exception {
+        SellerAuthUseCase sellerAuthUseCase = mock(SellerAuthUseCase.class);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new SellerAuthController(sellerAuthUseCase)).build();
+
+        mockMvc.perform(post("/api/v1/sellers/auth/logout")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer seller-token"))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.startsWith("refresh_token=;"),
+                        org.hamcrest.Matchers.containsString("Max-Age=0")
+                )));
     }
 
     private SellerMeView sellerMeView(String profileImageUrl) {

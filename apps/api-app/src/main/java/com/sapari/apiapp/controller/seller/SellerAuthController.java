@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import java.net.URI;
 import java.util.UUID;
 
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -13,6 +14,7 @@ import jakarta.validation.constraints.Size;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -26,6 +28,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -88,12 +91,12 @@ public class SellerAuthController {
      * 다른 이메일 우회 인증은 허용하지 않고, 회사 메일 정책으로 수신이 불가능하면 관리자 문의로 처리한다.
      */
     @PostMapping("/signup/email-verifications")
-    public ResponseEntity<ResponseEnvelope<EmailVerificationSendResponse>> sendSignupEmailVerification(
+    public ResponseEnvelope<EmailVerificationSendResponse> sendSignupEmailVerification(
             @Valid @RequestBody EmailVerificationSendRequest request
     ) {
         SellerEmailVerificationSendResult result = sellerAuthUseCase.sendSignupEmailVerification(request.toSellerCommand());
 
-        return ResponseEntity.ok(ResponseEnvelope.success(EmailVerificationSendResponse.from(result)));
+        return ResponseEnvelope.success(EmailVerificationSendResponse.from(result));
     }
 
     /**
@@ -102,40 +105,40 @@ public class SellerAuthController {
      * 최종 가입 API가 같은 email의 Redis verified 상태를 다시 소비한다.
      */
     @PostMapping("/signup/email-verifications/confirm")
-    public ResponseEntity<ResponseEnvelope<EmailVerificationConfirmResponse>> confirmSignupEmailVerification(
+    public ResponseEnvelope<EmailVerificationConfirmResponse> confirmSignupEmailVerification(
             @Valid @RequestBody EmailVerificationConfirmRequest request
     ) {
         SellerEmailVerificationConfirmResult result =
                 sellerAuthUseCase.confirmSignupEmailVerification(request.toSellerCommand());
 
-        return ResponseEntity.ok(ResponseEnvelope.success(EmailVerificationConfirmResponse.from(result)));
+        return ResponseEnvelope.success(EmailVerificationConfirmResponse.from(result));
     }
 
     @GetMapping("/signup/check-email")
-    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkEmail(
+    public ResponseEnvelope<DuplicateCheckResponse> checkEmail(
             @RequestParam
             @NotBlank(message = "이메일은 필수입니다.")
             @Email(message = "이메일 형식이 올바르지 않습니다.")
             String email
     ) {
-        return ResponseEntity.ok(ResponseEnvelope.success(
+        return ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isEmailDuplicated(email))
-        ));
+        );
     }
 
     @GetMapping("/signup/check-phone")
-    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkPhoneNumber(
+    public ResponseEnvelope<DuplicateCheckResponse> checkPhoneNumber(
             @RequestParam
             @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
             String phoneNumber
     ) {
-        return ResponseEntity.ok(ResponseEnvelope.success(
+        return ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isPhoneNumberDuplicated(phoneNumber))
-        ));
+        );
     }
 
     @GetMapping("/check-nickname")
-    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkNickname(
+    public ResponseEnvelope<DuplicateCheckResponse> checkNickname(
             @RequestParam
             @NotBlank(message = "닉네임은 필수입니다.")
             @Pattern(
@@ -144,96 +147,92 @@ public class SellerAuthController {
             )
             String nickname
     ) {
-        return ResponseEntity.ok(ResponseEnvelope.success(
+        return ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isNicknameDuplicated(nickname))
-        ));
+        );
     }
 
     @GetMapping("/signup/check-store-name")
-    public ResponseEntity<ResponseEnvelope<DuplicateCheckResponse>> checkStoreName(
+    public ResponseEnvelope<DuplicateCheckResponse> checkStoreName(
             @RequestParam
             @NotBlank(message = "상호명은 필수입니다.")
             @Size(max = 20, message = "상호명은 20자 이하여야 합니다.")
             String storeName
     ) {
-        return ResponseEntity.ok(ResponseEnvelope.success(
+        return ResponseEnvelope.success(
                 new DuplicateCheckResponse(sellerAuthUseCase.isStoreNameDuplicated(storeName))
-        ));
+        );
     }
 
     @PostMapping("/login")
-    public ResponseEntity<ResponseEnvelope<SellerLoginResponse>> login(
-            @Valid @RequestBody SellerLoginRequest request
+    public ResponseEnvelope<SellerLoginResponse> login(
+            @Valid @RequestBody SellerLoginRequest request,
+            HttpServletResponse response
     ) {
         SellerLoginResult result = sellerAuthUseCase.login(request.toCommand());
 
-        return ResponseEntity
-                .ok()
-                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
-                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
-                        result.refreshToken(),
-                        refreshTokenExpirationSeconds
-                ).toString())
-                .body(ResponseEnvelope.success(SellerLoginResponse.from(result)));
+        response.setHeader(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()));
+        response.addHeader(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                result.refreshToken(),
+                refreshTokenExpirationSeconds
+        ).toString());
+        return ResponseEnvelope.success(SellerLoginResponse.from(result));
     }
 
     @PostMapping("/token/reissue")
-    public ResponseEntity<ResponseEnvelope<SellerTokenReissueResponse>> reissueAccessToken(
-            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME) String refreshToken
+    public ResponseEnvelope<SellerTokenReissueResponse> reissueAccessToken(
+            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME) String refreshToken,
+            HttpServletResponse response
     ) {
         SellerTokenReissueResult result = sellerAuthUseCase.reissueAccessToken(refreshToken);
 
-        return ResponseEntity
-                .ok()
-                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
-                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
-                        result.refreshToken(),
-                        result.refreshTokenMaxAgeSeconds()
-                ).toString())
-                .body(ResponseEnvelope.success(SellerTokenReissueResponse.from(result)));
+        response.setHeader(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()));
+        response.addHeader(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                result.refreshToken(),
+                result.refreshTokenMaxAgeSeconds()
+        ).toString());
+        return ResponseEnvelope.success(SellerTokenReissueResponse.from(result));
     }
 
     @GetMapping("/me")
-    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> getMyInfo(
+    public ResponseEnvelope<SellerMeResponse> getMyInfo(
             @CurrentUserId UUID userId
     ) {
         SellerMeView result = sellerAuthUseCase.getMyInfo(userId);
 
-        return ResponseEntity.ok(ResponseEnvelope.success(SellerMeResponse.from(result)));
+        return ResponseEnvelope.success(SellerMeResponse.from(result));
     }
 
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     @DeleteMapping("/me")
-    public ResponseEntity<Void> withdraw(
-            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
+    public void withdraw(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
+            HttpServletResponse response
     ) {
         sellerAuthUseCase.requestWithdrawal(resolveAccessToken(authorizationHeader));
 
-        return ResponseEntity
-                .noContent()
-                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
-                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
-                        .toString())
-                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                .toString());
     }
 
     @PutMapping("/me/nickname")
-    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> updateNickname(
+    public ResponseEnvelope<SellerMeResponse> updateNickname(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
-            @Valid @RequestBody SellerNicknameUpdateRequest request
+            @Valid @RequestBody SellerNicknameUpdateRequest request,
+            HttpServletResponse response
     ) {
         SellerNicknameUpdateResult result = sellerAuthUseCase.updateNickname(
                 request.toCommand(resolveAccessToken(authorizationHeader))
         );
 
-        return ResponseEntity
-                .ok()
-                .header(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()))
-                .body(ResponseEnvelope.success(SellerMeResponse.from(result.seller())));
+        response.setHeader(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()));
+        return ResponseEnvelope.success(SellerMeResponse.from(result.seller()));
     }
 
     /** 인증된 판매자의 이미지 파일을 multipart로 받아 검증·저장하고 갱신된 내 정보를 반환한다. */
     @PutMapping(value = "/me/profile-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> updateProfileImage(
+    public ResponseEnvelope<SellerMeResponse> updateProfileImage(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
             @RequestPart("file") MultipartFile file
     ) {
@@ -246,31 +245,30 @@ public class SellerAuthController {
                 profileImageFile.content()
         ));
 
-        return ResponseEntity.ok(ResponseEnvelope.success(SellerMeResponse.from(result)));
+        return ResponseEnvelope.success(SellerMeResponse.from(result));
     }
 
     /** 인증된 판매자의 DB 이미지 key를 비우고 기존 object 정리를 요청한다. */
     @DeleteMapping("/me/profile-image")
-    public ResponseEntity<ResponseEnvelope<SellerMeResponse>> deleteProfileImage(
+    public ResponseEnvelope<SellerMeResponse> deleteProfileImage(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader
     ) {
         SellerMeView result = sellerAuthUseCase.deleteProfileImage(resolveAccessToken(authorizationHeader));
 
-        return ResponseEntity.ok(ResponseEnvelope.success(SellerMeResponse.from(result)));
+        return ResponseEnvelope.success(SellerMeResponse.from(result));
     }
 
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(
-            @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader
+    public void logout(
+            @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            HttpServletResponse response
     ) {
         sellerAuthUseCase.logout(new SellerLogoutCommand(resolveAccessToken(authorizationHeader)));
 
-        return ResponseEntity
-                .noContent()
-                .header(HttpHeaders.SET_COOKIE, AuthCookieSupport
-                        .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
-                        .toString())
-                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, AuthCookieSupport
+                .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
+                .toString());
     }
 
     private String resolveAccessToken(String authorizationHeader) {

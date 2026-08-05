@@ -6,12 +6,16 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
@@ -19,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
@@ -32,6 +37,31 @@ import com.sapari.customer.view.SocialSignupResult;
 
 @DisplayName("구매자 인증 컨트롤러 테스트")
 class CustomerAuthControllerTest {
+
+    @Test
+    @DisplayName("고객 컨트롤러는 ResponseEntity 없이 공통 응답을 직접 반환한다")
+    void doesNotUseResponseEntity() {
+        assertThat(Arrays.stream(CustomerAuthController.class.getDeclaredMethods())
+                .filter(method -> method.getReturnType().equals(ResponseEntity.class)))
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("고객 닉네임 중복 확인은 기존 공통 응답 계약을 유지한다")
+    void checkNicknameReturnsResponseEnvelope() throws Exception {
+        CustomerAuthUseCase customerAuthUseCase = mock(CustomerAuthUseCase.class);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new CustomerAuthController(customerAuthUseCase)).build();
+        when(customerAuthUseCase.isNicknameDuplicated("customer")).thenReturn(false);
+
+        mockMvc.perform(get("/api/v1/customers/auth/check-nickname")
+                        .param("nickname", "customer"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.duplicated").value(false))
+                .andExpect(jsonPath("$.error").doesNotExist());
+
+        verify(customerAuthUseCase).isNicknameDuplicated("customer");
+    }
 
     @Test
     @DisplayName("소셜 회원가입 multipart 요청에 파일이 있으면 파일 바이트를 command로 전달한다")
@@ -70,7 +100,7 @@ class CustomerAuthControllerTest {
         );
 
         // when
-        mockMvc.perform(multipart("/api/v1/customers/auth/signup/social")
+        var response = mockMvc.perform(multipart("/api/v1/customers/auth/signup/social")
                         .file(request)
                         .file(file)
                         .cookie(new jakarta.servlet.http.Cookie("signup_sid", "signup-sid")))
@@ -78,7 +108,13 @@ class CustomerAuthControllerTest {
                 .andExpect(header().string(HttpHeaders.AUTHORIZATION, "Bearer access-token"))
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.userId").isNotEmpty())
-                .andExpect(jsonPath("$.error").doesNotExist());
+                .andExpect(jsonPath("$.error").doesNotExist())
+                .andReturn()
+                .getResponse();
+
+        assertThat(response.getHeaders(HttpHeaders.SET_COOKIE))
+                .anyMatch(cookie -> cookie.startsWith("refresh_token=refresh-token;"))
+                .anyMatch(cookie -> cookie.startsWith("signup_sid=;"));
 
         // then
         ArgumentCaptor<SocialSignupCommand> commandCaptor = ArgumentCaptor.forClass(SocialSignupCommand.class);
@@ -137,6 +173,22 @@ class CustomerAuthControllerTest {
                 .andExpect(jsonPath("$.error").doesNotExist());
 
         verify(customerAuthUseCase).deleteProfileImage("access-token");
+    }
+
+    @Test
+    @DisplayName("고객 로그아웃은 204 빈 응답과 refresh token 만료 쿠키를 유지한다")
+    void logoutExpiresRefreshTokenCookieWithoutBody() throws Exception {
+        CustomerAuthUseCase customerAuthUseCase = mock(CustomerAuthUseCase.class);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new CustomerAuthController(customerAuthUseCase)).build();
+
+        mockMvc.perform(post("/api/v1/customers/auth/logout")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer access-token"))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""))
+                .andExpect(header().string(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.startsWith("refresh_token=;"),
+                        org.hamcrest.Matchers.containsString("Max-Age=0")
+                )));
     }
 
     private CustomerMeView customerMeView(String profileImageUrl) {
