@@ -476,9 +476,10 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public List<EgressSummary> listAllEgress(){
         try{
-            // activeOnly=true — 소비자(정리 잡 2종)가 활성 egress 만 쓰므로 완료분까지 받아올 이유가 없다.
-            // 인자 없는 오버로드는 프로젝트의 모든 egress 이력을 돌려줘 방송량에 비례해 커진다.
-            Response<List<EgressInfo>> response = egressServiceClient.listEgress(null, null, true).execute();
+            // 서버 측 activeOnly 필터를 쓰지 않는다 — 이 목록이 "활성 egress 없음 → 방송 강제 종료" 판정의
+            // 입력이라, LiveKit 의 active 의미론(EGRESS_STARTING 포함 여부 등)이 우리 isStoppable 과 어긋나면
+            // 정상 방송을 끊는다. 판정은 우리가 아는 상태값으로만 한다. 이력 누적이 문제가 되면 그때 검증 후 도입.
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress().execute();
 
             if(!response.isSuccessful() || response.body() == null){
                 log.error("LiveKit Egress 전체 조회 실패: code={}, message={}", response.code(), response.message());

@@ -73,8 +73,8 @@ triggers `Live`, so both sides are idempotent no-ops when the room isn't `Ready+
 
 Rooms that never reach `endLive()` and LiveKit resources our cleanup missed. Triggers live in
 `liveapp/scheduler` (thin — `reconcile()` only); policy, loops and per-item exception skipping live in
-`live-core` services. **`end-stale-live` is the switch to pull first** — the only job that can end a
-broadcast still on air.
+`live-core` services. Two of them move broadcasts, not just clean up: **`end-stale-live` can end one that is
+still on air (the switch to pull first)** and **`expire-ready` can start one** (see below).
 
 Config is split by layer, so no single class lists it all: `enabled`/`cron` are read by the schedulers
 (live-app), `threshold`/`grace`/`batch-size` by `LiveReconcileProperties` (live-core). Everything has a code
@@ -90,9 +90,16 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
 
 | Job | Candidate | Decides by | Acts via |
 |---|---|---|---|
-| `ReconcileExpiredReadyService` | `READY`, `updated_at` (= arm time) old | time alone — a `Ready` room *is* abnormal once old | `ExpireOrphanLiveUseCase` per room |
+| `ReconcileExpiredReadyService` | `READY`, `updated_at` (= arm time) old | **ingress publishing?** — if yes the room is on air | publishing → `GoLiveByRtmpService`; else `ExpireOrphanLiveUseCase` |
 | `ReconcileStaleLiveService` | `LIVE`, **`started_at`** old | **no active egress in LiveKit** | `EndStaleLiveUseCase` per room (publishes `RoomEnded`) |
 | `ReconcileOrphanMediaService` | every LiveKit ingress/egress | mismatch against DB (read-only) | single-id delete / room-wide stop |
+
+- **Ready-expiry can also *start* a broadcast.** A room whose `ingress_started` rendezvous was lost is still
+  publishing; expiring it would delete the ingress and close the SFU room mid-stream, so the job completes
+  the missed rendezvous instead. Judge with `listAllIngress` (once per round, throws on failure) — **not**
+  `isIngressActive`, which returns `false` on a failed lookup and here that reads as "go ahead and destroy".
+  Residual gap: the publishing snapshot is taken once, so a room that reconnects mid-round can still be
+  expired — only if its webhook is lost *again*, since otherwise the room turns `Live` and the guard catches it.
 
 - **Never judge staleness by viewer count** — HLS viewers are not SFU participants (a popular room reads 0),
   and a 0-viewer broadcast is normal. `started_at`, not `updated_at`: the latter moves on any save, so a

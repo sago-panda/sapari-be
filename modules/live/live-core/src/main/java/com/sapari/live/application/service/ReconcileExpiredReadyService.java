@@ -19,6 +19,7 @@ import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
+import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.ExpireOrphanLiveUseCase;
 import com.sapari.live.port.ReconcileExpiredReadyUseCase;
@@ -63,10 +64,7 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         for (UUID roomId : roomIds) {
             try {
                 if (publishing.contains(roomId)) {
-                    // 놓친 랑데부를 뒤늦게 완성한다. goLiveByRtmp 는 멱등하고 행 잠금을 잡는다.
-                    goLiveByRtmpService.goLiveByRtmp(roomId);
-                    promoted++;
-                    log.warn("Ready 고착 방이 송출 중 — 만료 대신 Live 로 승격. roomId={}", roomId);
+                    promoted += promote(roomId);
                 } else {
                     expireOrphanLiveUseCase.expire(new ExpireOrphanLiveCommand(roomId));
                     expired++;
@@ -78,6 +76,37 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         }
         log.info("고아 Ready 방 정리 완료. 후보={}, 만료={}, 승격={}, 스킵={}",
                 roomIds.size(), expired, promoted, skipped);
+    }
+
+    /**
+     * 놓친 랑데부를 뒤늦게 완성한다. {@code goLiveByRtmp} 는 멱등하고 행 잠금을 잡는다.
+     *
+     * <p>여기서만 예외를 넓게 잡는 이유: 승격은 {@code startHlsEgress} 까지 부르는 유일한 경로라
+     * {@code BroadcastStartException}·{@code LiveMediaException} 을 던질 수 있는데, 후보 조회가
+     * {@code updated_at ASC} 정렬이라 그대로 두면 실패하는 방이 늘 목록 선두에 서서 뒤 후보 전체가
+     * 매 회차 처리되지 못한다(head-of-line blocking). 만료 경로는 넓히지 않는다 — 거기서 DB 장애가
+     * 나면 회차를 멈추는 게 맞다.
+     *
+     * @return 실제로 Live 로 전이했으면 1, 아니면 0
+     */
+    private int promote(UUID roomId) {
+        try {
+            // 전이 여부를 반환하지 않으므로(no-op 이어도 조용히 끝난다) 저장된 상태로 확인한다.
+            goLiveByRtmpService.goLiveByRtmp(roomId);
+        } catch (RuntimeException e) {
+            log.error("Ready 고착 방 승격 실패 — 다음 회차 재시도. roomId={}", roomId, e);
+            return 0;
+        }
+        boolean nowLive = liveRoomRepository.findById(roomId)
+                .map(room -> room.status() instanceof LiveStatus.Live)
+                .orElse(false);
+        if (!nowLive) {
+            // Ready+WebRtc 방에 매핑되는 ingress 가 있으면 승격도 만료도 되지 않고 후보에 계속 남는다.
+            log.warn("Ready 고착 방 승격 no-op — 만료도 승격도 되지 않는 방. roomId={}", roomId);
+            return 0;
+        }
+        log.warn("Ready 고착 방이 송출 중 — 만료 대신 Live 로 승격. roomId={}", roomId);
+        return 1;
     }
 
     /** 지금 송출 중인 방 — 조회가 실패하면 예외가 올라가 회차 전체가 중단된다(빈 집합이면 전부 만료된다). */

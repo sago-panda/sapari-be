@@ -665,8 +665,8 @@ public class LiveKitMediaManagerTest {
     }
 
     @Test
-    @DisplayName("listAllEgress: 활성만 조회하고(activeOnly) startedAt 0 은 null 로 — 0 을 그대로 변환하면 1970 이라 유예가 항상 통과한다")
-    void listAllEgress_activeOnlyAndNullStartedAt() throws IOException {
+    @DisplayName("listAllEgress: startedAt 0 은 null 로 — 0 을 그대로 변환하면 1970 이라 유예가 항상 통과한다")
+    void listAllEgress_nullStartedAt() throws IOException {
         EgressInfo started = EgressInfo.newBuilder()
                 .setEgressId("eg-1").setRoomName(roomId.toString())
                 .setStatus(EgressStatus.EGRESS_ACTIVE)
@@ -677,8 +677,7 @@ public class LiveKitMediaManagerTest {
                 .setStatus(EgressStatus.EGRESS_STARTING)
                 .build(); // startedAt 미설정 → 0
         Call<List<EgressInfo>> call = mock(Call.class);
-        given(egressServiceClient.listEgress(nullable(String.class), nullable(String.class), eq(true)))
-                .willReturn(call);
+        given(egressServiceClient.listEgress())                .willReturn(call);
         given(call.execute()).willReturn(Response.success(List.of(started, notStarted)));
 
         var summaries = liveKitMediaManager.listAllEgress();
@@ -698,8 +697,7 @@ public class LiveKitMediaManagerTest {
                 .setStartedAt(1_760_000_000_000_000_000L)
                 .build();
         Call<List<EgressInfo>> call = mock(Call.class);
-        given(egressServiceClient.listEgress(nullable(String.class), nullable(String.class), eq(true)))
-                .willReturn(call);
+        given(egressServiceClient.listEgress())                .willReturn(call);
         given(call.execute()).willReturn(Response.success(List.of(ending)));
 
         assertThat(liveKitMediaManager.listAllEgress().get(0).active()).isFalse();
