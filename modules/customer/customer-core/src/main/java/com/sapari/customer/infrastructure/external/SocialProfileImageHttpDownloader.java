@@ -12,10 +12,12 @@ import java.util.Optional;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
 import com.sapari.customer.application.dto.SocialProfileImageDownloadResult;
 import com.sapari.customer.application.port.SocialProfileImageDownloader;
 import com.sapari.global.validator.ImageFileValidator;
+import com.sapari.global.validator.ImageFileValidator.ImageFileValidationException;
 import com.sapari.user.model.ProviderType;
 
 /**
@@ -47,10 +49,17 @@ public class SocialProfileImageHttpDownloader implements SocialProfileImageDownl
             return Optional.empty();
         }
 
+        URI uri;
         try {
-            URI uri = URI.create(providerProfileImageUrl);
+            uri = URI.create(providerProfileImageUrl);
+        } catch (IllegalArgumentException e) {
+            log.info("Social profile image download failed. provider={}, reason={}", provider, e.getClass().getSimpleName());
+            return Optional.empty();
+        }
+
+        try {
             return download(provider, uri, 0);
-        } catch (Exception e) {
+        } catch (RestClientException | ImageFileValidationException e) {
             log.info("Social profile image download failed. provider={}, reason={}", provider, e.getClass().getSimpleName());
             return Optional.empty();
         }
@@ -111,35 +120,25 @@ public class SocialProfileImageHttpDownloader implements SocialProfileImageDownl
         return outputStream.toByteArray();
     }
 
-    /** URL에 지원 확장자가 없으면 provider Content-Type으로 validator용 파일명 단서를 보완한다. */
+    /** provider Content-Type을 우선하고, 지원 형식이 아니면 URL 확장자를 파일명 단서로 사용한다. */
     private String filenameFrom(URI uri, String contentType) {
+        String contentTypeFilename = switch (normalizedContentType(contentType)) {
+            case "image/jpeg" -> "social-profile-image.jpg";
+            case "image/png" -> "social-profile-image.png";
+            case "image/webp" -> "social-profile-image.webp";
+            default -> null;
+        };
+        if (contentTypeFilename != null) {
+            return contentTypeFilename;
+        }
+
         String path = uri.getPath();
         String filename = "social-profile-image";
         if (path != null && !path.isBlank() && !path.endsWith("/")) {
             int lastSlashIndex = path.lastIndexOf('/');
             filename = lastSlashIndex < 0 ? path : path.substring(lastSlashIndex + 1);
         }
-        if (hasSupportedExtension(filename)) {
-            return filename;
-        }
-        return switch (normalizedContentType(contentType)) {
-            case "image/jpeg" -> "social-profile-image.jpg";
-            case "image/png" -> "social-profile-image.png";
-            case "image/webp" -> "social-profile-image.webp";
-            default -> filename;
-        };
-    }
-
-    /** URL 확장자가 공통 이미지 validator의 지원 형식인지 확인한다. */
-    private boolean hasSupportedExtension(String filename) {
-        int dotIndex = filename.lastIndexOf('.');
-        if (dotIndex < 0 || dotIndex == filename.length() - 1) {
-            return false;
-        }
-        return switch (filename.substring(dotIndex + 1).toLowerCase(Locale.ROOT)) {
-            case "jpg", "jpeg", "png", "webp" -> true;
-            default -> false;
-        };
+        return filename;
     }
 
     /** Content-Type의 선택 파라미터를 제외하고 비교 가능한 형태로 정규화한다. */

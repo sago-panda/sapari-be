@@ -1,6 +1,7 @@
 package com.sapari.customer.infrastructure.external;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
@@ -49,6 +50,49 @@ class SocialProfileImageHttpDownloaderTest {
     }
 
     @Test
+    @DisplayName("URL 확장자와 응답 Content-Type이 다르면 Content-Type을 우선해 이미지 형식을 판별한다")
+    void prioritizesResponseContentTypeOverUrlExtension() throws IOException {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RestClient restClient = builder.build();
+        SocialProfileImageHttpDownloader downloader = downloader(restClient, 1024);
+        byte[] jpeg = jpegBytes();
+        server.expect(once(), requestTo("https://k.kakaocdn.net/profile.png"))
+                .andRespond(withSuccess(jpeg, MediaType.IMAGE_JPEG));
+
+        Optional<SocialProfileImageDownloadResult> result = downloader.download(
+                ProviderType.KAKAO,
+                "https://k.kakaocdn.net/profile.png"
+        );
+
+        assertThat(result).isPresent();
+        assertThat(result.get().normalizedExtension()).isEqualTo("jpg");
+        assertThat(result.get().contentType()).isEqualTo("image/jpeg");
+        assertThat(ImageIO.read(new java.io.ByteArrayInputStream(result.get().content()))).isNotNull();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("응답 Content-Type과 실제 이미지 바이트가 다르면 거부한다")
+    void rejectsImageWhenContentTypeDiffersFromActualBytes() throws IOException {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RestClient restClient = builder.build();
+        SocialProfileImageHttpDownloader downloader = downloader(restClient, 1024);
+        byte[] png = pngBytes();
+        server.expect(once(), requestTo("https://k.kakaocdn.net/profile.png"))
+                .andRespond(withSuccess(png, MediaType.IMAGE_JPEG));
+
+        Optional<SocialProfileImageDownloadResult> result = downloader.download(
+                ProviderType.KAKAO,
+                "https://k.kakaocdn.net/profile.png"
+        );
+
+        assertThat(result).isEmpty();
+        server.verify();
+    }
+
+    @Test
     @DisplayName("확장자 없는 Kakao 썸네일 URL은 응답 Content-Type으로 이미지 형식을 판별한다")
     void downloadsKakaoThumbnailWithoutFileExtension() throws IOException {
         RestClient.Builder builder = RestClient.builder();
@@ -93,6 +137,23 @@ class SocialProfileImageHttpDownloaderTest {
         assertThat(result.get().contentType()).isEqualTo("image/jpeg");
         assertThat(ImageIO.read(new java.io.ByteArrayInputStream(result.get().content()))).isNotNull();
         server.verify();
+    }
+
+    @Test
+    @DisplayName("예상하지 못한 프로그래밍 오류는 빈 결과로 숨기지 않는다")
+    void propagatesUnexpectedProgrammingError() {
+        RestClient restClient = RestClient.builder()
+                .requestInterceptor((request, body, execution) -> {
+                    throw new IllegalStateException("unexpected programming error");
+                })
+                .build();
+        SocialProfileImageHttpDownloader downloader = downloader(restClient, 1024);
+
+        assertThatThrownBy(() -> downloader.download(
+                ProviderType.KAKAO,
+                "https://k.kakaocdn.net/profile.png"
+        )).isInstanceOf(IllegalStateException.class)
+                .hasMessage("unexpected programming error");
     }
 
     @Test
