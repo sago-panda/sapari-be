@@ -59,7 +59,7 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         // 조회 실패는 예외로 올라온다 — 빈 목록으로 보이면 "모든 방이 죽었다"가 되어 전부 종료시킨다.
         Set<UUID> roomsWithActiveEgress = liveMediaManager.listAllEgress().stream()
                 .filter(EgressSummary::active)
-                .map(egress -> parseRoomId(egress.roomName()))
+                .map(egress -> LiveKitRoomNames.parseRoomId(egress.roomName()))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
 
@@ -81,15 +81,4 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 스킵={}", candidates.size(), ended, skipped);
     }
 
-    /** LiveKit 방 이름은 자유 문자열이라 우리 roomId 가 아닐 수 있다. */
-    private UUID parseRoomId(String roomName) {
-        if (roomName == null || roomName.isBlank()) {
-            return null;
-        }
-        try {
-            return UUID.fromString(roomName);
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
-    }
 }

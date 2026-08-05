@@ -458,9 +458,13 @@ public class LiveKitMediaManager implements LiveMediaManager {
                             isPublishing(info)
                     ))
                     .toList();
-        }catch (IOException e){
-            log.error("LiveKit Ingress 전체 조회 통신 오류", e);
-            throw new LiveMediaException("Ingress 전체 조회 중 통신 오류", e);
+        }catch (LiveMediaException e){
+            throw e;
+        }catch (Exception e){
+            // IOException 만 잡으면 Retrofit·protobuf 가 던지는 RuntimeException 이 raw 로 새어나가
+            // "인프라 예외는 어댑터에서 번역" 계약이 깨진다.
+            log.error("LiveKit Ingress 전체 조회 실패", e);
+            throw new LiveMediaException("Ingress 전체 조회 중 오류", e);
         }
     }
 
@@ -472,7 +476,9 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public List<EgressSummary> listAllEgress(){
         try{
-            Response<List<EgressInfo>> response = egressServiceClient.listEgress().execute();
+            // activeOnly=true — 소비자(정리 잡 2종)가 활성 egress 만 쓰므로 완료분까지 받아올 이유가 없다.
+            // 인자 없는 오버로드는 프로젝트의 모든 egress 이력을 돌려줘 방송량에 비례해 커진다.
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress(null, null, true).execute();
 
             if(!response.isSuccessful() || response.body() == null){
                 log.error("LiveKit Egress 전체 조회 실패: code={}, message={}", response.code(), response.message());
@@ -488,9 +494,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
                     ))
                     .toList();
 
-        }catch (IOException e){
-            log.error("LiveKit Egress 전체 조회 통신 오류", e);
-            throw new LiveMediaException("Egress 전체 조회 중 통신 오류", e);
+        }catch (LiveMediaException e){
+            throw e;
+        }catch (Exception e){
+            // 위와 같은 이유 — IOException 밖의 실패도 도메인 예외로 번역한다.
+            log.error("LiveKit Egress 전체 조회 실패", e);
+            throw new LiveMediaException("Egress 전체 조회 중 오류", e);
         }
     }
 

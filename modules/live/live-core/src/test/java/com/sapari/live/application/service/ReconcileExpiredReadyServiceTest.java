@@ -1,6 +1,7 @@
 package com.sapari.live.application.service;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.BDDMockito.given;
@@ -24,8 +25,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.ExpiredReadyReconcilePolicy;
+import com.sapari.live.application.port.IngressSummary;
+import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.ExpireOrphanLiveUseCase;
@@ -49,6 +53,12 @@ class ReconcileExpiredReadyServiceTest {
     private ExpireOrphanLiveUseCase expireOrphanLiveUseCase;
 
     @Mock
+    private LiveMediaManager liveMediaManager;
+
+    @Mock
+    private GoLiveByRtmpService goLiveByRtmpService;
+
+    @Mock
     private TimeProvider timeProvider;
 
     private ReconcileExpiredReadyService service;
@@ -56,13 +66,17 @@ class ReconcileExpiredReadyServiceTest {
     @BeforeEach
     void setup() {
         service = new ReconcileExpiredReadyService(
-                liveRoomRepository, expireOrphanLiveUseCase,
+                liveRoomRepository, liveMediaManager, expireOrphanLiveUseCase, goLiveByRtmpService,
                 new ExpiredReadyReconcilePolicy(THRESHOLD, 100), timeProvider);
     }
 
+    /** 후보만 있고 송출 중인 방은 없는 기본 상태. */
     private void givenCandidates(UUID... ids) {
         given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(ids));
+        if (ids.length > 0) {
+            given(liveMediaManager.listAllIngress()).willReturn(List.of());
+        }
     }
 
     @Test
@@ -148,12 +162,71 @@ class ReconcileExpiredReadyServiceTest {
     }
 
     @Test
-    @DisplayName("후보가 없으면 만료를 호출하지 않는다")
+    @DisplayName("송출 중인 방은 만료하지 않고 Live 로 승격한다 — 만료하면 판매자 송출이 끊긴다")
+    void publishingRoom_isPromotedNotExpired() {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
+        given(liveMediaManager.listAllIngress())
+                .willReturn(List.of(new IngressSummary("ing-1", roomId.toString(), true)));
+
+        service.reconcile();
+
+        then(goLiveByRtmpService).should(times(1)).goLiveByRtmp(roomId);
+        then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
+    }
+
+    @Test
+    @DisplayName("ingress 는 있지만 송출 중이 아니면 그대로 만료한다")
+    void idleIngress_isStillExpired() {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
+        given(liveMediaManager.listAllIngress())
+                .willReturn(List.of(new IngressSummary("ing-1", roomId.toString(), false)));
+
+        service.reconcile();
+
+        then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("다른 방이 송출 중이어도 이 방의 만료를 막지 않는다")
+    void otherRoomPublishing_doesNotProtect() {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
+        given(liveMediaManager.listAllIngress())
+                .willReturn(List.of(new IngressSummary("ing-1", UUID.randomUUID().toString(), true)));
+
+        service.reconcile();
+
+        then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
+    }
+
+    @Test
+    @DisplayName("ingress 조회가 실패하면 아무 방도 만료하지 않는다 — 빈 목록으로 처리하면 송출 중인 방까지 끊는다")
+    void ingressLookupFailure_expiresNothing() {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
+        given(liveMediaManager.listAllIngress()).willThrow(new LiveMediaException("조회 실패"));
+
+        assertThatThrownBy(() -> service.reconcile()).isInstanceOf(LiveMediaException.class);
+
+        then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("후보가 없으면 LiveKit 을 조회하지도 않는다")
     void noCandidates_doesNothing() {
         givenCandidates();
 
         service.reconcile();
 
+        then(liveMediaManager).should(never()).listAllIngress();
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
     }
 }

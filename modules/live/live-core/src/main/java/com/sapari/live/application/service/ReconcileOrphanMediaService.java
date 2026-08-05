@@ -66,7 +66,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
         Set<UUID> roomIds = Stream.concat(
                         ingresses.stream().map(IngressSummary::roomName),
                         egresses.stream().map(EgressSummary::roomName))
-                .map(this::parseRoomId)
+                .map(LiveKitRoomNames::parseRoomId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
@@ -77,7 +77,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
     private void reconcileIngresses(List<IngressSummary> ingresses, Map<UUID, LiveRoom> rooms, Instant threshold) {
         int deleted = 0;
         for (IngressSummary ingress : ingresses) {
-            UUID roomId = parseRoomId(ingress.roomName());
+            UUID roomId = LiveKitRoomNames.parseRoomId(ingress.roomName());
             if (roomId == null) {
                 continue; // 우리 방 이름 규칙이 아님 — 남의 리소스일 수 있으니 손대지 않는다
             }
@@ -117,7 +117,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
         // stopHlsEgress 는 방 단위 일괄이라 같은 방을 여러 번 부르지 않도록 모아서 한 번씩 호출한다.
         Set<UUID> roomsToStop = new LinkedHashSet<>();
         for (EgressSummary egress : egresses) {
-            UUID roomId = parseRoomId(egress.roomName());
+            UUID roomId = LiveKitRoomNames.parseRoomId(egress.roomName());
             if (roomId == null) {
                 continue;
             }
@@ -144,16 +144,4 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
         log.info("고아 egress 정리 완료. 전체={}, 중단한 방={}", egresses.size(), roomsToStop.size());
     }
 
-    /** LiveKit 방 이름은 자유 문자열이라 우리 roomId 가 아닐 수 있다. 파싱 실패는 대상 제외. */
-    private UUID parseRoomId(String roomName) {
-        if (roomName == null || roomName.isBlank()) {
-            return null;
-        }
-        try {
-            return UUID.fromString(roomName);
-        } catch (IllegalArgumentException e) {
-            log.debug("LiveKit 방 이름이 roomId 형식이 아님 — 대상 제외. roomName={}", roomName);
-            return null;
-        }
-    }
 }
