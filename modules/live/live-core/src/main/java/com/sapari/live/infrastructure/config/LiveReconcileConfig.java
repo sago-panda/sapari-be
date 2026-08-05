@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import com.sapari.live.application.port.ExpiredReadyReconcilePolicy;
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
 import com.sapari.live.application.port.StaleLiveReconcilePolicy;
 
@@ -24,5 +25,10 @@ public class LiveReconcileConfig {
     @Bean
     public StaleLiveReconcilePolicy staleLiveReconcilePolicy(LiveReconcileProperties properties) {
         return new StaleLiveReconcilePolicy(properties.endStaleLive().threshold(), properties.batchSize());
+    }
+
+    @Bean
+    public ExpiredReadyReconcilePolicy expiredReadyReconcilePolicy(LiveReconcileProperties properties){
+        return new ExpiredReadyReconcilePolicy(properties.expireReady().threshold(), properties.batchSize());
     }
 }

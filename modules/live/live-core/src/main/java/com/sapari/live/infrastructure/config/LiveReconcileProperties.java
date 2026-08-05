@@ -19,6 +19,7 @@ import org.springframework.validation.annotation.Validated;
 public record LiveReconcileProperties(
         @Valid OrphanMedia orphanMedia,
         @Valid EndStaleLive endStaleLive,
+        @Valid ExpireReady expireReady,
         Integer batchSize
 ) {
     private static final int DEFAULT_BATCH_SIZE = 100;
@@ -29,6 +30,9 @@ public record LiveReconcileProperties(
         }
         if (endStaleLive == null) {
             endStaleLive = new EndStaleLive(null);
+        }
+        if(expireReady == null){
+            expireReady = new ExpireReady(null);
         }
         if (batchSize == null) {
             batchSize = DEFAULT_BATCH_SIZE;
@@ -73,6 +77,24 @@ public record LiveReconcileProperties(
             }
             if (grace.isZero() || grace.isNegative()) {
                 throw new IllegalArgumentException("live.reconcile.orphan-media.grace 는 양수여야 합니다: " + grace);
+            }
+        }
+    }
+
+    /**
+     * @param threshold 이만큼 Ready 에 머문 방은 만료시킨다. EndStaleLive 와 달리 이 시간이 곧 판정이다
+     */
+    public record ExpireReady(
+        Duration threshold
+    ){
+        private static final Duration DEFAULT_THRESHOLD = Duration.ofMinutes(60);
+
+        public ExpireReady {
+            if(threshold == null){
+                threshold = DEFAULT_THRESHOLD;
+            }
+            if(threshold.isZero() || threshold.isNegative()){
+                throw new IllegalArgumentException("live.reconcile.expire-ready.threshold 는 양수여야 합니다: " + threshold);
             }
         }
     }
