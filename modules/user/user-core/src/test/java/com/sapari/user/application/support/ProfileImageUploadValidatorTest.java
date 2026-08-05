@@ -16,6 +16,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
+import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.domain.exception.UserErrorCode;
 import com.sapari.user.domain.exception.UserException;
 
@@ -25,6 +26,19 @@ class ProfileImageUploadValidatorTest {
     private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     private final ProfileImageUploadValidator validator = new ProfileImageUploadValidator();
+
+    @Test
+    @DisplayName("userId 없이 프로필 이미지를 검증하고 저장 가능한 이미지로 준비한다")
+    void prepareValidatesImageWithoutUserId() throws IOException {
+        byte[] original = imageBytesWithTrailingJunk("png", 20, 20);
+
+        PreparedProfileImage image = validator.prepare("profile.png", "image/png", original);
+
+        assertThat(image.normalizedExtension()).isEqualTo("png");
+        assertThat(image.contentType()).isEqualTo("image/png");
+        assertThat(image.content()).isNotEqualTo(original);
+        assertThat(ImageIO.read(new java.io.ByteArrayInputStream(image.content()))).isNotNull();
+    }
 
     @Test
     @DisplayName("JPEG 이미지를 검증하고 저장용 JPEG 바이트로 재인코딩한다")

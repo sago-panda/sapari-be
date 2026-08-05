@@ -2,6 +2,8 @@ package com.sapari.user.infrastructure.persistence.repository;
 
 import lombok.RequiredArgsConstructor;
 
+import java.util.UUID;
+
 import org.springframework.stereotype.Repository;
 
 import com.sapari.user.domain.model.UserTermsAgreement;
@@ -20,5 +22,11 @@ public class UserTermsAgreementRepositoryImpl implements UserTermsAgreementRepos
     public UserTermsAgreement save(UserTermsAgreement agreement) {
         UserTermsAgreementEntity entity = userTermsAgreementMapper.toEntity(agreement);
         return userTermsAgreementMapper.toDomain(userTermsAgreementJpaRepository.save(entity));
+    }
+
+    /** 가입 보상 트랜잭션에서 해당 사용자의 약관 증적을 일괄 삭제한다. */
+    @Override
+    public void deleteByUserId(UUID userId) {
+        userTermsAgreementJpaRepository.deleteByUserId(userId);
     }
 }

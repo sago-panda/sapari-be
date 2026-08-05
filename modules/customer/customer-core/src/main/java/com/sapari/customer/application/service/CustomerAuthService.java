@@ -12,9 +12,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import tools.jackson.databind.ObjectMapper;
 
+import com.sapari.common.core.exception.BusinessException;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
+import com.sapari.customer.application.port.SocialProfileImageDownloader;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerEmailVerificationConfirmCommand;
 import com.sapari.customer.command.CustomerEmailVerificationSendCommand;
@@ -40,12 +42,15 @@ import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.command.ProfileImagePrepareCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.UserView;
+import com.sapari.user.view.PreparedProfileImage;
 
 @Service
 @RequiredArgsConstructor
@@ -61,29 +66,40 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final ObjectMapper objectMapper;
     private final CustomerViewMapper customerViewMapper;
     private final CustomerSignupContactVerificationAdapter signupContactVerificationAdapter;
+    private final SocialProfileImageDownloader socialProfileImageDownloader;
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입을 완료한다.
      * 가입 직전에는 프론트 요청값이 아니라 서버가 보관한 휴대폰·이메일 verified 상태를 함께 소비한다.
+     * 직접 업로드 파일 검증/저장 실패는 회원가입 실패로 전파해 잘못된 파일을 조용히 무시하지 않는다.
      */
     @Override
-    @Transactional
     public SocialSignupResult completeSocialSignup(String signupSid, SocialSignupCommand command) {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
-        // 회원가입 요청의 phone/email verified 값은 위조 가능하므로 Redis verified 상태만 서버 기준으로 소비한다.
-        // user use case가 phone/email 둘 다 있을 때만 둘 다 삭제해, 하나가 만료되어도 다른 인증은 보존한다.
-        // 단, 둘 다 소비한 뒤 DB 저장 실패가 발생하면 Redis 소비는 롤백되지 않아 재인증이 필요하다.
+        validateProfileImageChoice(command);
+        PreparedSignupProfileImage profileImage = prepareSignupProfileImageChoice(command, socialSignupInfo);
+
+        // 파일 검증과 provider 다운로드가 끝난 뒤에만 one-time 인증 상태를 소비한다.
         signupContactVerificationAdapter.consumePhoneAndEmailVerification(command.phoneNumber(), command.email());
 
+        // userId 기반 object key가 필요하므로 이미지는 검증만 마친 상태에서 회원을 먼저 생성한다.
+        UserView savedUser;
         try {
-            UserView savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
-            socialSignupRepository.delete(signupSid);
-            JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(savedUser);
-
-            return new SocialSignupResult(savedUser.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
+            savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
         } catch (DataIntegrityViolationException e) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
+
+        UserView profileImageAppliedUser = applySignupProfileImageChoice(
+                savedUser,
+                command,
+                socialSignupInfo,
+                profileImage
+        );
+        socialSignupRepository.delete(signupSid);
+        JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(profileImageAppliedUser);
+
+        return new SocialSignupResult(profileImageAppliedUser.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
     }
 
     /**
@@ -230,6 +246,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         }
     }
 
+    /** Access Token의 고객 소유권을 확인한 뒤 user 프로필 이미지 저장 흐름을 호출한다. */
     @Override
     public CustomerMeView updateProfileImage(CustomerProfileImageChangeCommand command) {
         JwtTokenLifecycle.AccessSession accessSession =
@@ -246,6 +263,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         return customerViewMapper.toMeView(savedCustomer);
     }
 
+    /** Access Token의 고객 소유권을 확인한 뒤 DB key 제거와 기존 object 정리를 요청한다. */
     @Override
     public CustomerMeView deleteProfileImage(String accessToken) {
         JwtTokenLifecycle.AccessSession accessSession =
@@ -306,6 +324,113 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         if (userAccountUseCase.existsByNickname(nickname)) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_NICKNAME);
         }
+    }
+
+    /** 직접 업로드와 provider 이미지 사용을 동시에 선택하는 모호한 요청을 거부한다. */
+    private void validateProfileImageChoice(SocialSignupCommand command) {
+        if (command.hasUploadedProfileImage() && command.useSocialProfileImage()) {
+            throw new CustomerException(CustomerErrorCode.INVALID_PROFILE_IMAGE_CHOICE);
+        }
+    }
+
+    /**
+     * DB 가입 전에 직접 업로드 이미지를 검증하거나 서버 보관 provider URL의 이미지를 내려받아 정규화한다.
+     * 선택한 provider 이미지를 준비하지 못하면 가입을 중단한다.
+     */
+    private PreparedSignupProfileImage prepareSignupProfileImageChoice(
+            SocialSignupCommand command,
+            SocialSignupInfo socialSignupInfo
+    ) {
+        if (command.hasUploadedProfileImage()) {
+            // 직접 업로드는 회원 생성 전에 검증·재인코딩해 잘못된 파일로 가입 데이터가 남지 않게 한다.
+            PreparedProfileImage image = userAccountUseCase.prepareProfileImage(new ProfileImagePrepareCommand(
+                    command.profileImageOriginalFilename(),
+                    command.profileImageContentType(),
+                    command.profileImageContent()
+            ));
+            return new PreparedSignupProfileImage(image);
+        }
+
+        if (!command.useSocialProfileImage()
+                || socialSignupInfo.profileImageUrl() == null
+                || socialSignupInfo.profileImageUrl().isBlank()) {
+            // 이미지 미선택 또는 callback에 provider URL이 없으면 프로필 이미지 없는 가입이 정상 경로다.
+            return null;
+        }
+
+        // 클라이언트 입력 URL이 아니라 OAuth callback에서 서버가 보관한 provider URL만 다운로드한다.
+        return socialProfileImageDownloader.download(socialSignupInfo.provider(), socialSignupInfo.profileImageUrl())
+                .map(image -> new PreparedSignupProfileImage(
+                        new PreparedProfileImage(
+                                image.normalizedExtension(),
+                                image.contentType(),
+                                image.content()
+                        )
+                ))
+                .orElseThrow(() -> new CustomerException(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED));
+    }
+
+    /**
+     * 이미지 저장 또는 DB key 반영 실패는 생성한 가입 데이터를 보상하고 전파한다.
+     */
+    private UserView applySignupProfileImageChoice(
+            UserView savedUser,
+            SocialSignupCommand command,
+            SocialSignupInfo socialSignupInfo,
+            PreparedSignupProfileImage profileImage
+    ) {
+        if (profileImage == null) {
+            return savedUser;
+        }
+
+        try {
+            // 회원 생성으로 확보한 userId를 결합해 여기서 object key 생성·업로드·DB key 반영을 완료한다.
+            return userAccountUseCase.changePreparedProfileImage(savedUser.userId(), profileImage.image());
+        } catch (BusinessException e) {
+            if (isProfileImageStorageUnavailable(e)) {
+                // 선택한 프로필 이미지를 저장하지 못하면 가입 데이터를 남기지 않는다.
+                rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
+                throw new CustomerException(CustomerErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE, e);
+            }
+            // 저장소 장애 외 user 오류는 선택 이미지 실패로 완화하지 않고 생성한 가입 데이터를 보상한다.
+            rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
+            throw e;
+        } catch (RuntimeException e) {
+            // DB 반영 오류와 프로그래밍 오류를 provider 이미지 실패로 오인하지 않는다.
+            rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
+            throw e;
+        }
+    }
+
+    private boolean isProfileImageStorageUnavailable(BusinessException exception) {
+        // customer-core는 user-core를 의존하지 않으므로 user 공개 오류 코드로 저장소 실패만 구분한다.
+        return "USER-118".equals(exception.getErrorCode().getCode());
+    }
+
+    /**
+     * 이번 요청이 생성한 사용자만 식별자 대조 후 보상 삭제한다.
+     * 보상 실패는 원래 실패 원인을 보존하기 위해 suppressed exception으로 연결한다.
+     */
+    private void rollbackSocialCustomerRegistration(
+            UserView savedUser,
+            SocialSignupCommand command,
+            SocialSignupInfo socialSignupInfo,
+            RuntimeException originalException
+    ) {
+        try {
+            userAccountUseCase.rollbackSocialCustomerRegistration(new SocialCustomerRegistrationRollbackCommand(
+                    savedUser.userId(),
+                    socialSignupInfo.provider(),
+                    socialSignupInfo.providerId(),
+                    command.email()
+            ));
+        } catch (RuntimeException rollbackException) {
+            originalException.addSuppressed(rollbackException);
+        }
+    }
+
+    /** 가입 전 검증·정규화가 끝난 프로필 이미지다. */
+    private record PreparedSignupProfileImage(PreparedProfileImage image) {
     }
 
     private void validateNicknameChangeAllowed(UserView customer, Instant now) {

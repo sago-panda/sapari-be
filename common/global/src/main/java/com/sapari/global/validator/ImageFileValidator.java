@@ -249,6 +249,7 @@ public final class ImageFileValidator {
         validateResolution(image.getWidth(), image.getHeight());
     }
 
+    /** header 사전 검사와 decode 후 검사가 동일한 해상도 상한을 사용하도록 공통 판정을 수행한다. */
     private static void validateResolution(int width, int height) {
         if (width > MAX_WIDTH || height > MAX_HEIGHT) {
             throw new ImageFileValidationException(FailureReason.INVALID_CONTENT);

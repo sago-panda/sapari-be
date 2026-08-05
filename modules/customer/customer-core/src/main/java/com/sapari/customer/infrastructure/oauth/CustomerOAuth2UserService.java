@@ -18,7 +18,7 @@ public class CustomerOAuth2UserService implements OAuth2UserService<OAuth2UserRe
     private final OAuth2UserService<OAuth2UserRequest, OAuth2User> delegate;
 
     public CustomerOAuth2UserService() {
-        this(new DefaultOAuth2UserService());
+        this.delegate = new DefaultOAuth2UserService();
     }
 
     CustomerOAuth2UserService(OAuth2UserService<OAuth2UserRequest, OAuth2User> delegate) {

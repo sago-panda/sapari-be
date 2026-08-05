@@ -18,6 +18,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import tools.jackson.databind.ObjectMapper;
@@ -31,6 +32,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.customer.application.dto.SocialProfileImageDownloadResult;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
@@ -52,6 +54,8 @@ import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.command.ProfileImagePrepareCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
 import com.sapari.user.command.SignupContactVerificationConsumeCommand;
 import com.sapari.user.command.SignupPhoneVerificationConfirmCommand;
 import com.sapari.user.command.SignupPhoneVerificationSendCommand;
@@ -59,6 +63,7 @@ import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
+import com.sapari.customer.application.port.SocialProfileImageDownloader;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -70,6 +75,7 @@ import com.sapari.user.port.UserSignupEmailVerificationUseCase;
 import com.sapari.user.port.UserSignupPhoneVerificationUseCase;
 import com.sapari.user.view.SignupPhoneVerificationConfirmResult;
 import com.sapari.user.view.SignupPhoneVerificationSendResult;
+import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.view.UserView;
 
 @DisplayName("구매자 인증 서비스 테스트")
@@ -86,6 +92,7 @@ class CustomerAuthServiceTest {
     private final SocialLoginCodeRepository socialLoginCodeRepository =
             mock(SocialLoginCodeRepository.class);
     private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
+    private final SocialProfileImageDownloader socialProfileImageDownloader = mock(SocialProfileImageDownloader.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("customer-test", SECRET, 3600L, 1209600L),
             timeProvider()
@@ -126,7 +133,8 @@ class CustomerAuthServiceTest {
             timeProvider(),
             objectMapper,
             Mappers.getMapper(CustomerViewMapper.class),
-            signupContactVerificationAdapter
+            signupContactVerificationAdapter,
+            socialProfileImageDownloader
     );
 
     @Test
@@ -171,6 +179,8 @@ class CustomerAuthServiceTest {
         );
         verify(userSignupPhoneVerificationUseCase, never()).consumeSignupPhoneVerification(any());
         verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
+        verify(socialProfileImageDownloader, never()).download(any(), any());
+        verify(userAccountUseCase, never()).changeProfileImage(any());
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
                 eq(userId),
@@ -180,6 +190,233 @@ class CustomerAuthServiceTest {
         );
     }
 
+    @Test
+    @DisplayName("소셜 가입 요청에 파일이 있으면 provider 이미지 다운로드 없이 업로드 파일을 프로필 이미지로 저장한다")
+    void completeSocialSignupUsesUploadedProfileImageFileWhenPresent() throws Exception {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        when(userAccountUseCase.prepareProfileImage(any(ProfileImagePrepareCommand.class)))
+                .thenReturn(preparedImage);
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(userId, preparedImage))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/profile.png"));
+
+        // when
+        SocialSignupResult result = customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        );
+
+        // then
+        assertThat(result.userId()).isEqualTo(userId);
+        ArgumentCaptor<ProfileImagePrepareCommand> commandCaptor =
+                ArgumentCaptor.forClass(ProfileImagePrepareCommand.class);
+        verify(userAccountUseCase).prepareProfileImage(commandCaptor.capture());
+        assertThat(commandCaptor.getValue().originalFilename()).isEqualTo("signup-profile.png");
+        assertThat(commandCaptor.getValue().contentType()).isEqualTo("image/png");
+        assertThat(commandCaptor.getValue().content()).containsExactly(1, 2, 3);
+        InOrder order = inOrder(userAccountUseCase, userSignupContactVerificationUseCase);
+        order.verify(userAccountUseCase).prepareProfileImage(any(ProfileImagePrepareCommand.class));
+        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(any());
+        order.verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        order.verify(userAccountUseCase).changePreparedProfileImage(userId, preparedImage);
+        verify(socialProfileImageDownloader, never()).download(any(), any());
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("파일 없이 소셜 이미지 사용을 선택하면 서버가 보관한 provider URL을 다운로드해 저장한다")
+    void completeSocialSignupImportsProviderProfileImageWhenSelected() throws Exception {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {4, 5, 6});
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png",
+                        "image/png",
+                        new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/provider.png"));
+
+        // when
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommandUsingSocialProfileImage());
+
+        // then
+        ArgumentCaptor<PreparedProfileImage> preparedImageCaptor =
+                ArgumentCaptor.forClass(PreparedProfileImage.class);
+        verify(userAccountUseCase).changePreparedProfileImage(eq(userId), preparedImageCaptor.capture());
+        assertThat(preparedImageCaptor.getValue().normalizedExtension()).isEqualTo("png");
+        assertThat(preparedImageCaptor.getValue().contentType()).isEqualTo("image/png");
+        assertThat(preparedImageCaptor.getValue().content()).containsExactly(4, 5, 6);
+        verify(userAccountUseCase, never()).prepareProfileImage(any());
+    }
+
+    @Test
+    @DisplayName("선택한 provider 이미지 다운로드에 실패하면 가입 저장 전에 CUSTOMER 오류를 반환한다")
+    void completeSocialSignupFailsBeforeRegistrationWhenProviderImageDownloadFails() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED)
+        );
+
+        verifyNoInteractions(userSignupContactVerificationUseCase, userAccountUseCase);
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("직접 업로드 저장 실패는 생성한 가입 데이터를 보상 삭제하고 CUSTOMER 오류로 매핑한다")
+    void completeSocialSignupRollsBackRegistrationWhenUploadedImageStorageFails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        TestUserException storageException =
+                new TestUserException(TestUserErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE);
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.prepareProfileImage(any(ProfileImagePrepareCommand.class)))
+                .thenReturn(preparedImage);
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(userId, preparedImage))
+                .thenThrow(storageException);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception -> {
+            assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE);
+            assertThat(exception).hasCause(storageException);
+        });
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(
+                new SocialCustomerRegistrationRollbackCommand(
+                        userId,
+                        ProviderType.NAVER,
+                        "naver-id",
+                        EMAIL
+                )
+        );
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("provider 이미지 object storage 실패는 가입 데이터를 보상 삭제하고 CUSTOMER 오류로 매핑한다")
+    void completeSocialSignupRollsBackRegistrationWhenProviderImageStorageFails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png", "image/png", new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenThrow(new TestUserException(TestUserErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE)
+        );
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(
+                new SocialCustomerRegistrationRollbackCommand(
+                        userId,
+                        ProviderType.NAVER,
+                        "naver-id",
+                        EMAIL
+                )
+        );
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("provider 이미지 DB 반영 오류는 삼키지 않고 가입 데이터를 보상 삭제한다")
+    void completeSocialSignupRollsBackRegistrationWhenProviderImageDatabaseUpdateFails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        IllegalStateException databaseException = new IllegalStateException("database update failed");
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png", "image/png", new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenThrow(databaseException);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isSameAs(databaseException);
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(
+                new SocialCustomerRegistrationRollbackCommand(
+                        userId,
+                        ProviderType.NAVER,
+                        "naver-id",
+                        EMAIL
+                )
+        );
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("파일도 없고 소셜 이미지 사용도 선택하지 않으면 프로필 이미지 없이 가입한다")
+    void completeSocialSignupKeepsProfileImageEmptyWhenNoImageChoice() throws Exception {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+
+        // when
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand());
+
+        // then
+        verify(socialProfileImageDownloader, never()).download(any(), any());
+        verify(userAccountUseCase, never()).changeProfileImage(any());
+    }
+
+    @Test
+    @DisplayName("파일과 소셜 이미지 사용 선택이 동시에 오면 가입을 진행하지 않는다")
+    void completeSocialSignupRejectsAmbiguousProfileImageChoice() throws Exception {
+        // given
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+
+        // when, then
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImageAndSocialImageChoice()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.INVALID_PROFILE_IMAGE_CHOICE)
+        );
+
+        verifyNoInteractions(userSignupContactVerificationUseCase);
+        verifyNoInteractions(userAccountUseCase);
+        verifyNoInteractions(socialProfileImageDownloader);
+    }
 
     @Test
     @DisplayName("휴대폰·이메일 인증 소비 후 가입 저장이 실패하면 재인증이 필요하다")
@@ -501,7 +738,8 @@ class CustomerAuthServiceTest {
                 timeProvider(),
                 objectMapper,
                 Mappers.getMapper(CustomerViewMapper.class),
-                signupContactVerificationAdapter
+                signupContactVerificationAdapter,
+                socialProfileImageDownloader
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,
@@ -843,7 +1081,61 @@ class CustomerAuthServiceTest {
                 "구매자",
                 LocalDate.of(2000, 1, 1),
                 UserGender.FEMALE.name(),
-                "https://image.example/request-profile.png",
+                false,
+                null,
+                null,
+                null,
+                true,
+                true
+        );
+    }
+
+    private SocialSignupCommand signupCommandUsingSocialProfileImage() {
+        return new SocialSignupCommand(
+                "01012345678",
+                EMAIL,
+                "customer",
+                "구매자",
+                LocalDate.of(2000, 1, 1),
+                UserGender.FEMALE.name(),
+                true,
+                null,
+                null,
+                null,
+                true,
+                true
+        );
+    }
+
+    private SocialSignupCommand signupCommandWithUploadedProfileImage() {
+        return new SocialSignupCommand(
+                "01012345678",
+                EMAIL,
+                "customer",
+                "구매자",
+                LocalDate.of(2000, 1, 1),
+                UserGender.FEMALE.name(),
+                false,
+                "signup-profile.png",
+                "image/png",
+                new byte[] {1, 2, 3},
+                true,
+                true
+        );
+    }
+
+    private SocialSignupCommand signupCommandWithUploadedProfileImageAndSocialImageChoice() {
+        return new SocialSignupCommand(
+                "01012345678",
+                EMAIL,
+                "customer",
+                "구매자",
+                LocalDate.of(2000, 1, 1),
+                UserGender.FEMALE.name(),
+                true,
+                "signup-profile.png",
+                "image/png",
+                new byte[] {1, 2, 3},
                 true,
                 true
         );
@@ -956,6 +1248,7 @@ class CustomerAuthServiceTest {
         SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH(400, "USER-103", "인증번호가 올바르지 않습니다."),
         DUPLICATED_PHONE_NUMBER(409, "USER-107", "이미 사용 중인 전화번호입니다."),
         SIGNUP_EMAIL_VERIFICATION_REQUIRED(400, "USER-108", "이메일 인증이 필요합니다."),
+        PROFILE_IMAGE_STORAGE_UNAVAILABLE(503, "USER-118", "프로필 이미지 저장이 지연되고 있습니다."),
         UNKNOWN_USER_ERROR(500, "USER-999", "알 수 없는 user 오류입니다.");
 
         private final int status;

@@ -8,12 +8,34 @@ import com.sapari.global.validator.ImageFileValidator;
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
 import com.sapari.user.domain.exception.UserErrorCode;
 import com.sapari.user.domain.exception.UserException;
+import com.sapari.user.view.PreparedProfileImage;
 
 /**
  * 공통 이미지 검증 결과를 프로필 이미지 저장 command와 회원 도메인 에러 코드로 연결한다.
  */
 @Component
 public class ProfileImageUploadValidator {
+
+    /**
+     * userId와 무관한 파일 검증·재인코딩만 먼저 수행한다.
+     */
+    public PreparedProfileImage prepare(
+            String originalFilename,
+            String contentType,
+            byte[] content
+    ) {
+        try {
+            ImageFileValidator.ValidatedImageFile image =
+                    ImageFileValidator.validate(originalFilename, contentType, content);
+            return new PreparedProfileImage(
+                    image.normalizedExtension(),
+                    image.contentType(),
+                    image.content()
+            );
+        } catch (ImageFileValidator.ImageFileValidationException e) {
+            throw toUserException(e);
+        }
+    }
 
     /**
      * 프로필 이미지 원본을 검증·재인코딩한 뒤 저장 계층에 넘길 command로 변환한다.
@@ -24,19 +46,13 @@ public class ProfileImageUploadValidator {
             String contentType,
             byte[] content
     ) {
-        try {
-            ImageFileValidator.ValidatedImageFile image =
-                    ImageFileValidator.validate(originalFilename, contentType, content);
-
-            return new ProfileImageStoreCommand(
-                    userId,
-                    image.normalizedExtension(),
-                    image.contentType(),
-                    image.content()
-            );
-        } catch (ImageFileValidator.ImageFileValidationException e) {
-            throw toUserException(e);
-        }
+        PreparedProfileImage image = prepare(originalFilename, contentType, content);
+        return new ProfileImageStoreCommand(
+                userId,
+                image.normalizedExtension(),
+                image.contentType(),
+                image.content()
+        );
     }
 
     /**

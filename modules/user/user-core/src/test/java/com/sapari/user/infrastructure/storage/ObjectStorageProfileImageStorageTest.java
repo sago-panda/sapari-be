@@ -1,6 +1,7 @@
 package com.sapari.user.infrastructure.storage;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -17,9 +18,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.storage.object.command.ObjectPutCommand;
 import com.sapari.storage.object.client.ObjectStorageClient;
+import com.sapari.storage.object.exception.ObjectStorageException;
+import com.sapari.storage.object.exception.ObjectStorageOperation;
 import com.sapari.storage.object.result.StoredObject;
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
 import com.sapari.user.application.dto.StoredProfileImage;
+import com.sapari.user.domain.exception.UserErrorCode;
+import com.sapari.user.domain.exception.UserException;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("Object storage 기반 프로필 이미지 storage 테스트")
@@ -51,6 +56,31 @@ class ObjectStorageProfileImageStorageTest {
         assertThat(storedProfileImage.key()).isEqualTo(putCommand.key());
         assertThat(storedProfileImage.contentType()).isEqualTo("image/jpeg");
         assertThat(storedProfileImage.size()).isEqualTo(content.length);
+    }
+
+    @Test
+    @DisplayName("공통 object storage 저장 실패를 user 프로필 이미지 저장 오류로 변환한다")
+    void storeMapsObjectStorageFailureToUserException() {
+        ObjectStorageProfileImageStorage storage = storage();
+        ProfileImageStoreCommand command = new ProfileImageStoreCommand(
+                USER_ID,
+                "jpg",
+                "image/jpeg",
+                "image-bytes".getBytes()
+        );
+        ObjectStorageException cause = new ObjectStorageException(
+                ObjectStorageOperation.PUT,
+                "users/user-id/profile/image.jpg",
+                new IllegalStateException("storage unavailable")
+        );
+        when(objectStorageClient.put(any(ObjectPutCommand.class))).thenThrow(cause);
+
+        assertThatThrownBy(() -> storage.store(command))
+                .isInstanceOfSatisfying(UserException.class, exception -> {
+                    assertThat(exception.getErrorCode())
+                            .isEqualTo(UserErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE);
+                    assertThat(exception).hasCause(cause);
+                });
     }
 
     @Test

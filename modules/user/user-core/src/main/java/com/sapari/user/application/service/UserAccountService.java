@@ -13,8 +13,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.command.ProfileImagePrepareCommand;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
 import com.sapari.user.application.dto.ProfileImageChangeResult;
 import com.sapari.user.application.dto.ProfileImageRemoveResult;
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
@@ -35,6 +37,7 @@ import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.TermsType;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.view.UserView;
 
 /**
@@ -55,6 +58,7 @@ public class UserAccountService implements UserAccountUseCase {
     private final ProfileImageUploadValidator profileImageUploadValidator;
     private final ProfileImageStorage profileImageStorage;
     private final ProfileImageMutationProcessor profileImageMutationProcessor;
+    private final SocialCustomerRegistrationMutationProcessor socialCustomerRegistrationMutationProcessor;
     private final ProfileImageUrlResolver profileImageUrlResolver;
     private final TimeProvider timeProvider;
 
@@ -72,6 +76,12 @@ public class UserAccountService implements UserAccountUseCase {
         User savedUser = userRepository.save(user);
         saveSignupTermsAgreements(savedUser.userId(), privacyTerms, marketingTerms, command.marketingAgreed(), now);
         return toView(savedUser);
+    }
+
+    /** 소셜 가입 후 필수 후속 처리 실패 시 가입 사용자와 약관 증적을 한 트랜잭션으로 보상 삭제한다. */
+    @Override
+    public void rollbackSocialCustomerRegistration(SocialCustomerRegistrationRollbackCommand command) {
+        socialCustomerRegistrationMutationProcessor.rollback(command);
     }
 
     private User createSocialCustomer(RegisterSocialCustomerCommand command, Instant now) {
@@ -234,6 +244,42 @@ public class UserAccountService implements UserAccountUseCase {
             throw e;
         }
 
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+    /** 사용자 생성 전에 원본 이미지의 안전성 검증과 재인코딩을 완료한다. */
+    @Override
+    public PreparedProfileImage prepareProfileImage(ProfileImagePrepareCommand command) {
+        return profileImageUploadValidator.prepare(
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        );
+    }
+
+    /** 준비된 이미지를 저장하고 DB key를 교체하며 실패 지점에 맞춰 신규 또는 기존 object를 정리한다. */
+    @Override
+    public UserView changePreparedProfileImage(UUID userId, PreparedProfileImage image) {
+        ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(
+                userId,
+                image.normalizedExtension(),
+                image.contentType(),
+                image.content()
+        );
+        // object key는 userId를 포함하므로 회원 생성이 끝난 이 단계에서 처음 생성·저장한다.
+        StoredProfileImage storedProfileImage = profileImageStorage.store(storeCommand);
+
+        ProfileImageChangeResult result;
+        try {
+            result = profileImageMutationProcessor.replaceProfileImageKey(userId, storedProfileImage.key());
+        } catch (RuntimeException e) {
+            // object 저장 후 DB key 반영에 실패하면 참조되지 않는 신규 object를 best-effort로 정리한다.
+            profileImageStorage.deleteQuietly(storedProfileImage.key());
+            throw e;
+        }
+
+        // 새 key가 DB에 반영된 뒤에만 이전 object를 삭제해 실패 시 기존 이미지를 보존한다.
         profileImageStorage.deleteQuietly(result.oldProfileImageKey());
         return toView(result.savedUser());
     }

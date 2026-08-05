@@ -116,6 +116,7 @@ public record User(
                 .build();
     }
 
+    /** 검증·저장이 끝난 object key로 프로필 이미지 연결을 교체한 새 aggregate를 반환한다. */
     public User updateProfileImageKey(String profileImageKey) {
         Assert.hasText(profileImageKey, "profileImageKey는 필수입니다.");
 
@@ -124,6 +125,7 @@ public record User(
                 .build();
     }
 
+    /** 외부 object 삭제와 분리해 DB의 프로필 이미지 연결만 제거한 새 aggregate를 반환한다. */
     public User removeProfileImage() {
         return toBuilder()
                 .profileImageKey(null)

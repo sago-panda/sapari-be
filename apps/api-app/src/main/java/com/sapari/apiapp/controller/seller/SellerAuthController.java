@@ -231,6 +231,7 @@ public class SellerAuthController {
                 .body(ResponseEnvelope.success(SellerMeResponse.from(result.seller())));
     }
 
+    /** 인증된 판매자의 이미지 파일을 multipart로 받아 검증·저장하고 갱신된 내 정보를 반환한다. */
     @PutMapping(value = "/me/profile-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ResponseEnvelope<SellerMeResponse>> updateProfileImage(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
@@ -248,6 +249,7 @@ public class SellerAuthController {
         return ResponseEntity.ok(ResponseEnvelope.success(SellerMeResponse.from(result)));
     }
 
+    /** 인증된 판매자의 DB 이미지 key를 비우고 기존 object 정리를 요청한다. */
     @DeleteMapping("/me/profile-image")
     public ResponseEntity<ResponseEnvelope<SellerMeResponse>> deleteProfileImage(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader

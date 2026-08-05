@@ -9,7 +9,9 @@ import com.sapari.storage.object.result.StoredObject;
  */
 public interface ObjectStorageClient {
 
+    /** 객체를 저장하고 실제 저장에 사용된 key와 content metadata를 반환한다. */
     StoredObject put(ObjectPutCommand command);
 
+    /** 지정한 object key를 삭제하며 provider SDK 실패는 공통 저장소 예외로 전달한다. */
     void delete(String key);
 }

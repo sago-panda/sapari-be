@@ -33,7 +33,10 @@ public enum CustomerErrorCode implements ErrorCode {
     EMAIL_VERIFICATION_ATTEMPTS_EXCEEDED(400, "CUSTOMER-022", "인증번호 입력 횟수를 초과했습니다. 다시 요청해 주세요."),
     EMAIL_VERIFICATION_COOLDOWN(429, "CUSTOMER-023", "인증번호 재요청은 잠시 후 가능합니다."),
     EMAIL_SEND_UNAVAILABLE(503, "CUSTOMER-024", "인증번호 발송이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."),
-    SIGNUP_VERIFICATION_UNAVAILABLE(503, "CUSTOMER-025", "회원가입 인증 처리가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.");
+    SIGNUP_VERIFICATION_UNAVAILABLE(503, "CUSTOMER-025", "회원가입 인증 처리가 지연되고 있습니다. 잠시 후 다시 시도해 주세요."),
+    INVALID_PROFILE_IMAGE_CHOICE(400, "CUSTOMER-026", "프로필 이미지 선택이 올바르지 않습니다."),
+    PROFILE_IMAGE_STORAGE_UNAVAILABLE(503, "CUSTOMER-027", "프로필 이미지 저장이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."),
+    SOCIAL_PROFILE_IMAGE_IMPORT_FAILED(502, "CUSTOMER-028", "소셜 프로필 이미지를 가져올 수 없습니다. 잠시 후 다시 시도해 주세요.");
 
     private final int status;
     private final String code;

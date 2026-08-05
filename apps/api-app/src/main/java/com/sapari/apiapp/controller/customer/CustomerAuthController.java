@@ -79,12 +79,20 @@ public class CustomerAuthController {
     @Value("${jwt.refresh-token-expiration-seconds}")
     private long refreshTokenExpirationSeconds;
 
-    @PostMapping("/signup/social")
+    /**
+     * 소셜 가입 정보 JSON과 선택 프로필 이미지 파일을 하나의 multipart 요청으로 받아 가입을 완료한다.
+     * JSON 파트는 DTO 검증을 유지하고, 파일 파트는 HTTP 계층에서 transport-neutral 데이터로 변환한다.
+     */
+    @PostMapping(value = "/signup/social", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ResponseEnvelope<SocialSignupResponse>> completeSocialSignup(
             @CookieValue(name = SIGNUP_SID_COOKIE_NAME) String signupSid,
-            @Valid @RequestBody SocialSignupRequest request
+            @Valid @RequestPart("request") SocialSignupRequest request,
+            @RequestPart(value = "file", required = false) MultipartFile file
     ) {
-        SocialSignupResult result = customerAuthUseCase.completeSocialSignup(signupSid, request.toCommand());
+        // 파일 파트 부재와 빈 파트는 모두 직접 업로드 미선택(null)으로 하위 계층에 전달한다.
+        ProfileImageMultipartFileReader.ProfileImageFile profileImageFile =
+                file == null || file.isEmpty() ? null : ProfileImageMultipartFileReader.read(file);
+        SocialSignupResult result = customerAuthUseCase.completeSocialSignup(signupSid, request.toCommand(profileImageFile));
 
         return ResponseEntity
                 .ok()
@@ -292,6 +300,7 @@ public class CustomerAuthController {
                 .body(ResponseEnvelope.success(CustomerMeResponse.from(result.customer())));
     }
 
+    /** 인증된 고객의 이미지 파일을 multipart로 받아 검증·저장하고 갱신된 내 정보를 반환한다. */
     @PutMapping(value = "/me/profile-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ResponseEnvelope<CustomerMeResponse>> updateProfileImage(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader,
@@ -309,6 +318,7 @@ public class CustomerAuthController {
         return ResponseEntity.ok(ResponseEnvelope.success(CustomerMeResponse.from(result)));
     }
 
+    /** 인증된 고객의 DB 이미지 key를 비우고 기존 object 정리를 요청한다. */
     @DeleteMapping("/me/profile-image")
     public ResponseEntity<ResponseEnvelope<CustomerMeResponse>> deleteProfileImage(
             @RequestHeader(name = HttpHeaders.AUTHORIZATION) String authorizationHeader

@@ -9,4 +9,7 @@ import com.sapari.user.infrastructure.persistence.entity.UserTermsAgreementEntit
 
 @Repository
 public interface UserTermsAgreementJpaRepository extends JpaRepository<UserTermsAgreementEntity, UUID> {
+
+    /** 가입 보상 시 FK 순서를 지키기 위해 사용자 약관 증적을 먼저 삭제한다. */
+    void deleteByUserId(UUID userId);
 }

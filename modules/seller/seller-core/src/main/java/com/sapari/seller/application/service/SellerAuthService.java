@@ -222,6 +222,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         }
     }
 
+    /** Access Token의 판매자 소유권을 확인한 뒤 user 프로필 이미지 저장 흐름을 호출한다. */
     @Override
     public SellerMeView updateProfileImage(SellerProfileImageChangeCommand command) {
         JwtTokenLifecycle.AccessSession accessSession =
@@ -239,6 +240,7 @@ public class SellerAuthService implements SellerAuthUseCase {
         return sellerViewMapper.toMeView(savedSeller, sellerProfile);
     }
 
+    /** Access Token의 판매자 소유권을 확인한 뒤 DB key 제거와 기존 object 정리를 요청한다. */
     @Override
     public SellerMeView deleteProfileImage(String accessToken) {
         JwtTokenLifecycle.AccessSession accessSession =

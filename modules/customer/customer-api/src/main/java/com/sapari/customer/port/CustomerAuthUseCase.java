@@ -24,6 +24,7 @@ import com.sapari.customer.view.SocialSignupResult;
 
 public interface CustomerAuthUseCase {
 
+    /** 서버가 보관한 OAuth 가입 정보와 추가 입력을 결합하고 선택한 프로필 이미지 정책까지 적용해 가입을 완료한다. */
     SocialSignupResult completeSocialSignup(String signupSid, SocialSignupCommand command);
 
     /**
@@ -73,7 +74,9 @@ public interface CustomerAuthUseCase {
 
     CustomerNicknameUpdateResult updateNickname(CustomerNicknameUpdateCommand command);
 
+    /** 인증된 고객의 프로필 이미지를 교체하고 공개 URL이 반영된 내 정보를 반환한다. */
     CustomerMeView updateProfileImage(CustomerProfileImageChangeCommand command);
 
+    /** 인증된 고객의 프로필 이미지 연결을 제거하고 갱신된 내 정보를 반환한다. */
     CustomerMeView deleteProfileImage(String accessToken);
 }

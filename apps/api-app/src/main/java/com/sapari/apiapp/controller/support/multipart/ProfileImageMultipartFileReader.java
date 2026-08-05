@@ -16,6 +16,7 @@ public final class ProfileImageMultipartFileReader {
     private ProfileImageMultipartFileReader() {
     }
 
+    /** MultipartFile을 도메인 비의존 데이터로 읽고 I/O 실패는 프로필 이미지 오류로 변환한다. */
     public static ProfileImageFile read(MultipartFile file) {
         try {
             return new ProfileImageFile(
@@ -28,6 +29,7 @@ public final class ProfileImageMultipartFileReader {
         }
     }
 
+    /** HTTP multipart 경계를 벗어나 전달할 파일명·media type·원본 바이트 묶음이다. */
     public record ProfileImageFile(
             String originalFilename,
             String contentType,

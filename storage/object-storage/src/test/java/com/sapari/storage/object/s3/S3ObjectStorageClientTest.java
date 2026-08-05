@@ -15,6 +15,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.storage.object.command.ObjectPutCommand;
 import com.sapari.storage.object.config.S3ObjectStorageProperties;
+import com.sapari.storage.object.exception.ObjectStorageException;
+import com.sapari.storage.object.exception.ObjectStorageOperation;
 import com.sapari.storage.object.result.StoredObject;
 
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -22,6 +24,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.core.exception.SdkClientException;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("S3 object storage client 테스트")
@@ -65,6 +68,42 @@ class S3ObjectStorageClientTest {
         DeleteObjectRequest request = requestCaptor.getValue();
         assertThat(request.bucket()).isEqualTo("sapari-assets");
         assertThat(request.key()).isEqualTo("users/user-id/profile/image.jpg");
+    }
+
+    @Test
+    @DisplayName("S3 객체 저장 실패를 공통 object storage 예외로 변환한다")
+    void putMapsS3FailureToObjectStorageException() {
+        S3ObjectStorageClient client = new S3ObjectStorageClient(s3Client, properties("sapari-assets"));
+        ObjectPutCommand command = new ObjectPutCommand(
+                "users/user-id/profile/image.jpg",
+                "image/jpeg",
+                "image-bytes".getBytes()
+        );
+        SdkClientException cause = SdkClientException.create("storage unavailable");
+        when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class))).thenThrow(cause);
+
+        assertThatThrownBy(() -> client.put(command))
+                .isInstanceOfSatisfying(ObjectStorageException.class, exception -> {
+                    assertThat(exception.operation()).isEqualTo(ObjectStorageOperation.PUT);
+                    assertThat(exception.key()).isEqualTo(command.key());
+                    assertThat(exception).hasCause(cause);
+                });
+    }
+
+    @Test
+    @DisplayName("S3 객체 삭제 실패를 공통 object storage 예외로 변환한다")
+    void deleteMapsS3FailureToObjectStorageException() {
+        S3ObjectStorageClient client = new S3ObjectStorageClient(s3Client, properties("sapari-assets"));
+        String key = "users/user-id/profile/image.jpg";
+        SdkClientException cause = SdkClientException.create("storage unavailable");
+        when(s3Client.deleteObject(any(DeleteObjectRequest.class))).thenThrow(cause);
+
+        assertThatThrownBy(() -> client.delete(key))
+                .isInstanceOfSatisfying(ObjectStorageException.class, exception -> {
+                    assertThat(exception.operation()).isEqualTo(ObjectStorageOperation.DELETE);
+                    assertThat(exception.key()).isEqualTo(key);
+                    assertThat(exception).hasCause(cause);
+                });
     }
 
     @Test

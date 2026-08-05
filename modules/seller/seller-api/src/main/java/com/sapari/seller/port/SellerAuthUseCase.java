@@ -53,7 +53,9 @@ public interface SellerAuthUseCase {
 
     SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command);
 
+    /** 인증된 판매자의 프로필 이미지를 교체하고 공개 URL이 반영된 내 정보를 반환한다. */
     SellerMeView updateProfileImage(SellerProfileImageChangeCommand command);
 
+    /** 인증된 판매자의 프로필 이미지 연결을 제거하고 갱신된 내 정보를 반환한다. */
     SellerMeView deleteProfileImage(String accessToken);
 }

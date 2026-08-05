@@ -7,9 +7,12 @@ import org.springframework.stereotype.Component;
 
 import com.sapari.storage.object.command.ObjectPutCommand;
 import com.sapari.storage.object.client.ObjectStorageClient;
+import com.sapari.storage.object.exception.ObjectStorageException;
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
 import com.sapari.user.application.dto.StoredProfileImage;
 import com.sapari.user.application.port.ProfileImageStorage;
+import com.sapari.user.domain.exception.UserErrorCode;
+import com.sapari.user.domain.exception.UserException;
 
 /**
  * 호출자가 검증을 완료한 프로필 이미지 바이트를 공통 object storage에 업로드한다.
@@ -30,11 +33,16 @@ public class ObjectStorageProfileImageStorage implements ProfileImageStorage {
     @Override
     public StoredProfileImage store(ProfileImageStoreCommand command) {
         String key = keyGenerator.generate(command.userId(), command.normalizedExtension());
-        objectStorageClient.put(new ObjectPutCommand(
-                key,
-                command.contentType(),
-                command.content()
-        ));
+        try {
+            objectStorageClient.put(new ObjectPutCommand(
+                    key,
+                    command.contentType(),
+                    command.content()
+            ));
+        } catch (ObjectStorageException e) {
+            // 공통 저장소의 기술 실패를 user 도메인의 공개 오류 계약으로 변환한다.
+            throw new UserException(UserErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE, e);
+        }
         return new StoredProfileImage(key, command.contentType(), command.content().length);
     }
 

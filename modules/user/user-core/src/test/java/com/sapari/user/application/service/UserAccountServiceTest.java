@@ -51,6 +51,7 @@ import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
+import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.view.UserView;
 import com.sapari.user.application.support.WithdrawnUserRetentionMasker;
 
@@ -82,6 +83,9 @@ class UserAccountServiceTest {
     @Mock
     private ProfileImageMutationProcessor profileImageMutationProcessor;
 
+    @Mock
+    private SocialCustomerRegistrationMutationProcessor socialCustomerRegistrationMutationProcessor;
+
     private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker = new WithdrawnUserRetentionMasker();
 
     private UserAccountService userAccountService;
@@ -97,6 +101,7 @@ class UserAccountServiceTest {
                 profileImageUploadValidator,
                 profileImageStorage,
                 profileImageMutationProcessor,
+                socialCustomerRegistrationMutationProcessor,
                 key -> key == null ? null : "https://cdn.example/" + key,
                 timeProvider
         );
@@ -220,6 +225,27 @@ class UserAccountServiceTest {
         // then
         assertThat(result.profileImageUrl())
                 .isEqualTo("https://cdn.example/users/%s/profile/image.jpg".formatted(userId));
+    }
+
+    @Test
+    @DisplayName("준비된 프로필 이미지는 재검증 없이 저장하고 새 key를 반영한다")
+    void changePreparedProfileImageStoresWithoutRevalidation() {
+        UUID userId = UUID.randomUUID();
+        User user = activeCustomer(userId);
+        String oldKey = user.profileImageKey();
+        String newKey = "users/%s/profile/prepared.png".formatted(userId);
+        PreparedProfileImage image = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(
+                userId, image.normalizedExtension(), image.contentType(), image.content());
+        when(profileImageStorage.store(storeCommand)).thenReturn(new StoredProfileImage(newKey, "image/png", 3));
+        when(profileImageMutationProcessor.replaceProfileImageKey(userId, newKey))
+                .thenReturn(new ProfileImageChangeResult(user.updateProfileImageKey(newKey), oldKey));
+
+        UserView result = userAccountService.changePreparedProfileImage(userId, image);
+
+        assertThat(result.profileImageUrl()).isEqualTo("https://cdn.example/" + newKey);
+        verifyNoInteractions(profileImageUploadValidator);
+        verify(profileImageStorage).store(storeCommand);
     }
 
     @Test
