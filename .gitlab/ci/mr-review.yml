@@ -175,7 +175,7 @@ mr-review:
           and state explicitly when there are no issues. Write the final report in Korean."
       fi
       claude -p "$prompt" --allowedTools "Read,Grep,Glob,Task,Agent" --output-format text > review.md \
-        || { rc=$?; echo "claude 실행 실패 (종료 코드 $rc)"; exit "$rc"; }
+        || { rc=$?; echo "claude 실행 실패 (종료 코드 $rc). stdout:"; cat review.md; exit "$rc"; }
       test -s review.md || { echo "리뷰 결과가 비어 있음"; exit 1; }
     - |
       # 시크릿 유출 검사: 통과해야 artifact 가 남고 comment 단계로 전달된다.
