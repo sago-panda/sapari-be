@@ -14,17 +14,26 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
-import com.sapari.live.command.EndLiveCommand;
+import com.sapari.live.command.EndStaleLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
-import com.sapari.live.port.EndLiveUseCase;
+import com.sapari.live.port.EndStaleLiveUseCase;
 
+/**
+ * 방치된 Live 방 종료 — 방 1건의 전이·미디어 정리·이벤트 발행.
+ *
+ * <p>{@code ExpireOrphanLiveService} 와 달리 <b>{@code RoomEnded} 를 발행한다</b> — 이 방은 Live 였으므로
+ * chat 세션이 열려 있고, 안 닫으면 시청자가 죽은 방에 남는다. 발행을 빼지 말 것.
+ *
+ * <p>전이가 미디어 정리보다 먼저다 — {@code endLive()} 가 상태 가드를 겸한다. 조회~잠금 사이에 판매자가
+ * 직접 종료했다면 여기서 {@code InvalidLiveStateException} 이 나고, LiveKit 에는 아무것도 나가지 않는다.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class EndLiveService implements EndLiveUseCase {
+public class EndStaleLiveService implements EndStaleLiveUseCase {
 
     private final LiveRoomRepository liveRoomRepository;
     private final LiveMediaManager liveMediaManager;
@@ -33,23 +42,22 @@ public class EndLiveService implements EndLiveUseCase {
 
     @Override
     @Transactional
-    public void end(EndLiveCommand command){
-        LiveRoom room = liveRoomRepository.findByIdAndSellerIdForUpdate(command.roomId(), command.sellerId())
+    public void endStale(EndStaleLiveCommand command) {
+        LiveRoom room = liveRoomRepository.findByIdForUpdate(command.roomId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
-        // 외부 호출 전 상태 사전 검증
         if (!room.canEndLive()) {
-            throw new InvalidLiveStateException(room.id().toString());
+            throw new InvalidLiveStateException(command.roomId().toString());
         }
+
+        Instant endedAt = timeProvider.now();
+        LiveRoom endedRoom = room.endLive(endedAt);
 
         // createRoom 실패로 SFU 방이 배정되지 않은 방은 stream 접근자가 NPE — 여기서 한 번만 가른다.
         boolean hasSfuRoom = room.streamInfo() != null;
 
         // 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제
         // (ingress 가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — 좀비 방)
-
-        // egress 중단은 DB 가 egress 를 모르더라도 부른다 — roomId 로 LiveKit 에 직접 물어 일괄 중단하므로
-        // DB 가 놓친 잔여 egress(화질별 다건·시작 중 크래시분)도 함께 걷힌다.
         liveMediaManager.stopHlsEgress(command.roomId());
         if (room.isRtmp()) {
             liveMediaManager.deleteIngress(command.roomId());
@@ -58,18 +66,14 @@ public class EndLiveService implements EndLiveUseCase {
             liveMediaManager.closeRoom(room.sfuRoomId());
         }
 
-        Instant endedAt = timeProvider.now();
-        LiveRoom endedRoom = room.endLive(endedAt);
-
         liveRoomRepository.save(endedRoom);
-
-        // 종료 커밋 이후에만 RoomEnded 발행 — 롤백 시 오발행(멀쩡한 방 세션을 chat이 닫는 것)을 막는다.
         registerRoomEndedPublish(command.roomId(), endedAt);
+        log.info("방치된 Live 방 종료. roomId={}", command.roomId());
     }
 
+    /** 커밋 이후에만 발행 — 롤백 시 오발행(멀쩡한 방 세션을 chat 이 닫는 것)을 막는다. */
     private void registerRoomEndedPublish(UUID roomId, Instant endedAt) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            // 트랜잭션 밖 호출(회귀 방지) — 커밋 보장이 없으면 발행하지 않는다.
             log.warn("트랜잭션 동기화 비활성 — RoomEnded 발행 생략. roomId={}", roomId);
             return;
         }

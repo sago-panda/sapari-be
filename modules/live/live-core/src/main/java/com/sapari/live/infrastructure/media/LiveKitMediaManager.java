@@ -27,6 +27,7 @@ import retrofit2.Call;
 import retrofit2.Response;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -34,8 +35,10 @@ import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
+import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.IngressResult;
+import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.MasterPlaylistPublisher;
 import com.sapari.live.application.port.SfuRoomResult;
@@ -147,9 +150,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
             if (ingresses == null || ingresses.isEmpty()) {
                 return false;
             }
-            return ingresses.stream().anyMatch(ingress ->
-                    ingress.hasState()
-                            && ingress.getState().getStatus() == IngressState.Status.ENDPOINT_PUBLISHING);
+            return ingresses.stream().anyMatch(this::isPublishing);
         } catch (Exception e) {
             // 조회 실패 시 활성으로 단정하지 않고 false. 보통은 후속 ingress_started webhook 이 전이를 이어받으나,
             // OBS 선연결 + 조회 실패가 겹치면 재전송 이벤트가 없어 Ready 로 남을 수 있음(reconciliation 대상).
@@ -212,7 +213,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // 일부 화질만 시작된 상태에서 실패 → 추적한 egressId를 직접 중단(전파 지연 회피) 후, listEgress로 누락분 보강.
             log.error("HLS Egress 다중 화질 시작 실패 → 시작분 {}건 보상 중단: roomId={}", startedEgressIds.size(), roomId, e);
             startedEgressIds.forEach(egressId -> safeStopEgress(roomId, egressId));
-            stopAllRoomEgress(roomId);
+            stopHlsEgress(roomId);
             // 인프라 예외(예: URL 검증 IllegalArgumentException)는 도메인 예외로 번역해 누출 방지(AGENTS Errors 규칙).
             if (e instanceof LiveMediaException) {
                 throw e;
@@ -328,14 +329,9 @@ public class LiveKitMediaManager implements LiveMediaManager {
     /**
      * s3 기록 종료. 한 방송은 1080p/720p/360p egress가 동시에 떠 있으므로,
      * room의 active egress를 모두 조회해 일괄 중단한다(고아 egress 정리 포함).
-     * egressId 파라미터는 포트 호환을 위해 유지하나 단건 중단에는 사용하지 않는다.
      */
     @Override
-    public void stopHlsEgress(UUID roomId, String egressId){
-        stopAllRoomEgress(roomId);
-    }
-
-    private void stopAllRoomEgress(UUID roomId){
+    public void stopHlsEgress(UUID roomId){
         try {
             List<EgressInfo> egresses = egressServiceClient.listEgress(roomId.toString()).execute().body();
             if (egresses == null || egresses.isEmpty()) {
@@ -371,7 +367,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
 
     /**
      * 방에 묶인 RTMP ingress 일괄 삭제(종료 정리). ingressId 단건이 아니라 roomName(=roomId) 조회로 전부 지워
-     * double-prepare 로 생긴 고아 ingress 도 함께 정리한다(stopAllRoomEgress 와 동일 패턴).
+     * double-prepare 로 생긴 고아 ingress 도 함께 정리한다(stopHlsEgress 와 동일 패턴).
      * best-effort — 실패해도 종료 트랜잭션은 막지 않으며, 잔여 고아는 reconciliation 배치의 몫.
      */
     @Override
@@ -396,6 +392,15 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // listIngress 자체 실패 → 이 방의 ingress가 정리되지 않아 고아가 됨. 알람이 잡도록 error로 올린다.
             log.error("RTMP Ingress 일괄 삭제 실패 — 고아 ingress 가능, 수동/배치 복구 필요: roomId={}", roomId, e);
         }
+    }
+
+    /**
+     * ingress 단건 삭제(고아 정리 배치). 방 단위 삭제와 달리 지목한 하나만 지운다 — 배치가 지우려는 고아 옆에
+     * 살아 있어야 할 ingress 가 있을 수 있다. 정리 계열이라 best-effort(실패해도 다음 회차가 다시 시도).
+     */
+    @Override
+    public void deleteIngress(UUID roomId, String ingressId){
+        safeDeleteIngress(roomId, ingressId);
     }
 
     private void safeDeleteIngress(UUID roomId, String ingressId){
@@ -428,5 +433,90 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public String getSfuUrl(){
         return liveKitProperties.host();
+    }
+
+    /**
+     * LiveKit 전체 ingress 목록 조회 — orphan live 정리 전용
+     *
+     * <p>정리 계열(deleteIngress 등)과 달리 실패를 삼키지 않고 던진다 — 빈 목록은 "고아 없음"으로
+     * 읽혀 배치가 조용히 성공 종료하는 것을 막기 위함
+     */
+    @Override
+    public List<IngressSummary> listAllIngress(){
+        try{
+            Response<List<IngressInfo>> response = ingressServiceClient.listIngress().execute();
+            //실패판정
+            if(!response.isSuccessful() || response.body() == null){
+                log.error("LiveKit Ingress 전체 조회 실패: code={}, message={}", response.code(), response.message());
+                throw new LiveMediaException("Ingress 전체 조회에 실패했습니다.");
+            }
+            //매핑해서 반환
+            return response.body().stream()
+                    .map(info -> new IngressSummary(
+                            info.getIngressId(),
+                            info.getRoomName(),
+                            isPublishing(info)
+                    ))
+                    .toList();
+        }catch (LiveMediaException e){
+            throw e;
+        }catch (Exception e){
+            // IOException 만 잡으면 Retrofit·protobuf 가 던지는 RuntimeException 이 raw 로 새어나가
+            // "인프라 예외는 어댑터에서 번역" 계약이 깨진다.
+            log.error("LiveKit Ingress 전체 조회 실패", e);
+            throw new LiveMediaException("Ingress 전체 조회 중 오류", e);
+        }
+    }
+
+    /**
+     * LiveKit 전체 egress 목록 조회 — orphan live 정리 전용
+     *
+     *  <p>{@link #listAllIngress()}와 같은 이유로 실패를 삼키지 않는다.
+     */
+    @Override
+    public List<EgressSummary> listAllEgress(){
+        try{
+            // 서버 측 activeOnly 필터를 쓰지 않는다 — 이 목록이 "활성 egress 없음 → 방송 강제 종료" 판정의
+            // 입력이라, LiveKit 의 active 의미론(EGRESS_STARTING 포함 여부 등)이 우리 isStoppable 과 어긋나면
+            // 정상 방송을 끊는다. 판정은 우리가 아는 상태값으로만 한다. 이력 누적이 문제가 되면 그때 검증 후 도입.
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress().execute();
+
+            if(!response.isSuccessful() || response.body() == null){
+                log.error("LiveKit Egress 전체 조회 실패: code={}, message={}", response.code(), response.message());
+                throw new LiveMediaException("Egress 전체 조회에 실패했습니다.");
+            }
+
+            return response.body().stream()
+                    .map(info -> new EgressSummary(
+                            info.getEgressId(),
+                            info.getRoomName(),
+                            isStoppable(info.getStatus()),
+                            toInstant(info.getStartedAt())
+                    ))
+                    .toList();
+
+        }catch (LiveMediaException e){
+            throw e;
+        }catch (Exception e){
+            // 위와 같은 이유 — IOException 밖의 실패도 도메인 예외로 번역한다.
+            log.error("LiveKit Egress 전체 조회 실패", e);
+            throw new LiveMediaException("Egress 전체 조회 중 오류", e);
+        }
+    }
+
+    private boolean isPublishing(IngressInfo info){
+        return info.hasState()
+                && info.getState().getStatus() == IngressState.Status.ENDPOINT_PUBLISHING;
+    }
+
+    /**
+     * LiveKit 의 unix 나노초를 Instant 로. 0(아직 시작 전)은 null 로 둔다 —
+     * 그대로 변환하면 1970 이 되어 고아 판정 유예 시간을 항상 지난 것으로 만든다.
+     */
+    private Instant toInstant(long nanos){
+        if(nanos == 0){
+            return null;
+        }
+        return Instant.ofEpochSecond(0, nanos);
     }
 }

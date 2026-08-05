@@ -41,7 +41,7 @@ final class EgressRollbackCompensation {
 
     private static void safeStopEgress(LiveMediaManager mediaManager, UUID roomId, String egressId) {
         try {
-            mediaManager.stopHlsEgress(roomId, egressId);
+            mediaManager.stopHlsEgress(roomId);
             log.warn("방송 시작 롤백 → egress 보상 중단 완료. roomId={}, egressId={}", roomId, egressId);
         } catch (RuntimeException e) {
             // [의도된 swallow] afterCompletion은 트랜잭션 종료 후 실행되므로 여기서 재던져도

@@ -47,6 +47,7 @@ import org.springframework.beans.factory.ObjectProvider;
 
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
+import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.MasterPlaylistPublisher;
@@ -370,7 +371,7 @@ public class LiveKitMediaManagerTest {
         given(egressServiceClient.stopEgress(egressId)).willReturn(stopCall);
 
         // when
-        liveKitMediaManager.stopHlsEgress(roomId, egressId);
+        liveKitMediaManager.stopHlsEgress(roomId);
 
         // then
         then(stopCall).should(times(1)).execute();
@@ -385,7 +386,7 @@ public class LiveKitMediaManagerTest {
         given(listCall.execute()).willThrow(new RuntimeException("네트워크 타임아웃"));
 
         // when & then: 예외를 삼키고 정상 종료
-        assertDoesNotThrow(() -> liveKitMediaManager.stopHlsEgress(roomId, egressId));
+        assertDoesNotThrow(() -> liveKitMediaManager.stopHlsEgress(roomId));
     }
 
     @RepeatedTest(value = 10)
@@ -615,5 +616,90 @@ public class LiveKitMediaManagerTest {
         assertDoesNotThrow(() -> liveKitMediaManager.deleteIngress(roomId));
 
         then(ingressServiceClient).should().deleteIngress("ingress-2");
+    }
+
+    @Test
+    @DisplayName("deleteIngress(roomId, ingressId): 지목한 하나만 지운다 — 방 단위로 지우면 정상 ingress 까지 날아간다")
+    void deleteIngress_singleTarget() throws IOException {
+        Call<IngressInfo> call = mock(Call.class);
+        given(call.execute()).willReturn(Response.success(IngressInfo.getDefaultInstance()));
+        given(ingressServiceClient.deleteIngress("ingress-1")).willReturn(call);
+
+        liveKitMediaManager.deleteIngress(roomId, "ingress-1");
+
+        then(ingressServiceClient).should().deleteIngress("ingress-1");
+        then(ingressServiceClient).should(never()).listIngress(anyString());
+    }
+
+    @Test
+    @DisplayName("listAllIngress: publishing 여부를 IngressState 로 판정하고 streamKey·url 은 담지 않는다")
+    void listAllIngress_mapsPublishing() throws IOException {
+        IngressInfo publishing = IngressInfo.newBuilder()
+                .setIngressId("ing-1").setRoomName(roomId.toString()).setStreamKey("secret").setUrl("rtmp://x")
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_PUBLISHING))
+                .build();
+        IngressInfo idle = IngressInfo.newBuilder()
+                .setIngressId("ing-2").setRoomName(roomId.toString())
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_INACTIVE))
+                .build();
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress()).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(publishing, idle)));
+
+        var summaries = liveKitMediaManager.listAllIngress();
+
+        assertThat(summaries).extracting(s -> s.ingressId() + ":" + s.publishing())
+                .containsExactly("ing-1:true", "ing-2:false");
+        // streamKey 는 자격증명 — 요약에 실리면 로그·덤프로 샌다
+        assertThat(summaries.toString()).doesNotContain("secret").doesNotContain("rtmp://x");
+    }
+
+    @Test
+    @DisplayName("listAllIngress: 조회 실패는 예외 — 빈 목록이면 배치가 '고아 없음'으로 조용히 끝난다")
+    void listAllIngress_throwsOnFailure() throws IOException {
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress()).willReturn(call);
+        given(call.execute()).willThrow(new IOException("연결 실패"));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listAllIngress());
+    }
+
+    @Test
+    @DisplayName("listAllEgress: startedAt 0 은 null 로 — 0 을 그대로 변환하면 1970 이라 유예가 항상 통과한다")
+    void listAllEgress_nullStartedAt() throws IOException {
+        EgressInfo started = EgressInfo.newBuilder()
+                .setEgressId("eg-1").setRoomName(roomId.toString())
+                .setStatus(EgressStatus.EGRESS_ACTIVE)
+                .setStartedAt(1_760_000_000_000_000_000L)
+                .build();
+        EgressInfo notStarted = EgressInfo.newBuilder()
+                .setEgressId("eg-2").setRoomName(roomId.toString())
+                .setStatus(EgressStatus.EGRESS_STARTING)
+                .build(); // startedAt 미설정 → 0
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress())                .willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(started, notStarted)));
+
+        var summaries = liveKitMediaManager.listAllEgress();
+
+        assertThat(summaries.get(0).startedAt()).isNotNull();
+        assertThat(summaries.get(1).startedAt()).isNull();
+        // STARTING·ACTIVE 만 active — 그 외 상태를 active 로 보면 이미 끝난 egress 를 계속 중단하려 든다
+        assertThat(summaries).allMatch(EgressSummary::active);
+    }
+
+    @Test
+    @DisplayName("listAllEgress: ENDING 은 active 가 아니다 — 스스로 멈추는 중이라 우리가 손댈 대상이 아님")
+    void listAllEgress_endingIsNotActive() throws IOException {
+        EgressInfo ending = EgressInfo.newBuilder()
+                .setEgressId("eg-1").setRoomName(roomId.toString())
+                .setStatus(EgressStatus.EGRESS_ENDING)
+                .setStartedAt(1_760_000_000_000_000_000L)
+                .build();
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress())                .willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(ending)));
+
+        assertThat(liveKitMediaManager.listAllEgress().get(0).active()).isFalse();
     }
 }

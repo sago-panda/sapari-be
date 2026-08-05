@@ -12,6 +12,7 @@ import com.sapari.live.domain.model.LiveStatus.Live;
 import com.sapari.live.domain.model.LiveStatus.Ready;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
 import com.sapari.live.domain.model.LiveStatus.Suspended;
+import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 
@@ -27,13 +28,14 @@ import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
  * 갱신한다(컴파일러가 강제 — {@code default} 분기 금지).
  *
  * <p>엔티티는 도메인에 대응이 없는 영속 전용 필드(VOD·시청자 집계 등)가 많아 {@code unmappedTargetPolicy=IGNORE}.
- * 상태 관련 컬럼(liveStatus/scheduledAt/sfuRoomId/…)은 mutator로 명시 세팅하므로 자동 매핑 대상이 아니다.
+ * 상태 관련 컬럼(liveStatus/scheduledAt/sfuRoomId/…)은 쓰기 방향에서 mutator로 명시 세팅하므로 자동 매핑
+ * 대상이 아니다. 읽기 방향은 {@code toStatus}/{@code toStreamInfo}가 같은 컬럼을 도메인으로 되돌린다.
  */
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface LiveRoomMapper {
 
-    // streamInfo·top-level scheduledAt 은 비워 둔다(상태가 보유) — 기존 동작 보존
-    @Mapping(target = "streamInfo", ignore = true)
+    // top-level scheduledAt 은 비워 둔다(상태가 보유). streamInfo 는 컬럼에서 복원한다.
+    @Mapping(target = "streamInfo", expression = "java(toStreamInfo(entity))")
     @Mapping(target = "scheduledAt", ignore = true)
     @Mapping(target = "streamType", expression = "java(toStreamType(entity))")
     @Mapping(target = "status", expression = "java(toStatus(entity))")
@@ -45,6 +47,20 @@ public interface LiveRoomMapper {
         applyStatusOnInsert(room, entity);
         applyStreamType(entity, room);
         return entity;
+    }
+
+    /**
+     * stream 컬럼 → {@link StreamInfo}. sfuRoomId 가 비면 <b>null</b> 이다 —
+     * {@code StreamInfo} 는 sfuRoomId 를 필수로 검증하는데, 예약 저장과 {@code createRoom} 사이엔
+     * sfu_room_id 가 비어 있는 행이 정상적으로 존재한다. 여기서 던지면 그 방을 읽을 수조차 없다.
+     * egressId·hlsUrl 은 Ready 방에서 비는 게 정상이라 그대로 넘긴다.
+     */
+    default StreamInfo toStreamInfo(LiveRoomEntity entity) {
+        String sfuRoomId = entity.getSfuRoomId();
+        if (sfuRoomId == null || sfuRoomId.isBlank()) {
+            return null;
+        }
+        return StreamInfo.of(sfuRoomId, entity.getEgressId(), entity.getHlsUrl());
     }
 
     /** MapStruct가 평면 필드만 채운다. scheduledAt 은 상태에서 세팅하므로 무시. */

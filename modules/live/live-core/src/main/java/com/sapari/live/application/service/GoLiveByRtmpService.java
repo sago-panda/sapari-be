@@ -27,6 +27,10 @@ import com.sapari.live.domain.repository.LiveRoomRepository;
  * <p><b>멱등</b>: {@code Ready + RTMP} 가 아니면(아직 상품 미등록 Scheduled, 이미 Live 로 전이됨, WebRTC 방 등)
  * no-op 이다. LiveKit 은 실패 시 webhook 을 재전송하고 TTL 내 리플레이도 가능하므로 같은 이벤트가 여러 번 와도
  * 안전하다. 시작 시점 랑데부({@code StartLiveService})가 이미 Live 로 올렸다면 여기서는 조용히 스킵된다.
+ *
+ * <p><b>동시 도착</b>도 안전하다 — 방 조회가 {@code findByIdForUpdate}(행 잠금)라 같은 방에 대한 전이는
+ * 직렬화된다. 뒤늦게 락을 얻은 쪽은 이미 {@code Live} 인 방을 읽어 위 멱등 가드에서 no-op 이 되므로,
+ * {@code startHlsEgress} 가 두 번 호출돼 고아 egress 가 생기지 않는다.
  */
 @Slf4j
 @Service
@@ -39,7 +43,7 @@ public class GoLiveByRtmpService {
 
     @Transactional
     public void goLiveByRtmp(UUID roomId) {
-        LiveRoom room = liveRoomRepository.findById(roomId)
+        LiveRoom room = liveRoomRepository.findByIdForUpdate(roomId)
                 .orElseThrow(() -> new LiveNotFoundException(roomId.toString()));
 
         // 멱등 가드: 시작 대기(Ready)이고 RTMP 인 방만 전이 대상. 그 외는 no-op (재전송/리플레이/랑데부 선처리 안전).

@@ -12,6 +12,7 @@ import org.mapstruct.factory.Mappers;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStreamType;
+import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 import com.sapari.live.infrastructure.persistence.entity.StreamType;
@@ -25,7 +26,7 @@ class LiveRoomMapperTest {
     private final LiveRoomMapper mapper = Mappers.getMapper(LiveRoomMapper.class);
 
     @Test
-    @DisplayName("toDomain — SCHEDULED: 상태는 Scheduled, streamInfo·top-level scheduledAt 은 비운다")
+    @DisplayName("toDomain — SCHEDULED: 상태는 Scheduled, top-level scheduledAt 은 비운다")
     void toDomain_scheduled() {
         Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
         UUID sellerId = UUID.randomUUID();
@@ -40,7 +41,7 @@ class LiveRoomMapperTest {
 
         assertThat(room.sellerId()).isEqualTo(sellerId);
         assertThat(room.title()).isEqualTo("제목");
-        assertThat(room.streamInfo()).isNull();
+        assertThat(room.streamInfo()).isNull(); // sfu_room_id 미배정 → StreamInfo 없음
         assertThat(room.scheduledAt()).isNull(); // 기존 동작 보존: top-level 은 비우고 상태에만 담는다
         assertThat(room.status()).isInstanceOf(LiveStatus.Scheduled.class);
         assertThat(((LiveStatus.Scheduled) room.status()).scheduledAt()).isEqualTo(scheduledAt);
@@ -68,6 +69,77 @@ class LiveRoomMapperTest {
         assertThat(live.sfuRoomId()).isEqualTo("sfu-1");
         assertThat(live.egressId()).isEqualTo("eg-1");
         assertThat(live.hlsUrl()).isEqualTo("https://hls/1");
+    }
+
+    @Test
+    @DisplayName("toDomain — stream 컬럼을 StreamInfo 로 복원한다(sfuRoomId()/egressId() NPE 회귀 방지)")
+    void toDomain_restoresStreamInfo() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.LIVE)
+                .startedAt(Instant.parse("2026-06-10T11:00:00Z"))
+                .sfuRoomId("sfu-1")
+                .egressId("eg-1")
+                .hlsUrl("https://hls/1")
+                .build();
+
+        LiveRoom room = mapper.toDomain(entity);
+
+        assertThat(room.streamInfo()).isNotNull();
+        assertThat(room.sfuRoomId()).isEqualTo("sfu-1");
+        assertThat(room.egressId()).isEqualTo("eg-1");
+        assertThat(room.hlsUrl()).isEqualTo("https://hls/1");
+    }
+
+    @Test
+    @DisplayName("toDomain — Ready 방(sfuRoomId 만 배정): egress/hls 가 비어도 예외 없이 StreamInfo 복원")
+    void toDomain_restoresStreamInfo_sfuOnly() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.READY)
+                .scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .sfuRoomId("sfu-1")
+                .build();
+
+        LiveRoom room = mapper.toDomain(entity);
+
+        assertThat(room.sfuRoomId()).isEqualTo("sfu-1");
+        assertThat(room.egressId()).isNull();
+        assertThat(room.hlsUrl()).isNull();
+    }
+
+    @Test
+    @DisplayName("toDomain — sfu_room_id 미배정(createRoom 전/실패) 행도 예외 없이 읽힌다")
+    void toDomain_nullSfuRoomId_isReadable() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .build();
+
+        // StreamInfo 는 sfuRoomId 를 필수 검증한다 — 여기서 던지면 해당 행을 조회조차 못 한다.
+        LiveRoom room = mapper.toDomain(entity);
+
+        assertThat(room.streamInfo()).isNull();
+    }
+
+    @Test
+    @DisplayName("왕복 — Live 방을 toEntity→toDomain 해도 stream 정보가 보존된다")
+    void roundTrip_preservesStreamInfo() {
+        Instant startedAt = Instant.parse("2026-06-10T11:00:00Z");
+        LiveRoom room = LiveRoom.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .sellerNickname("닉네임")
+                .status(new LiveStatus.Live(startedAt, "sfu-1", "eg-1", "https://hls/1"))
+                .build();
+
+        LiveRoom restored = mapper.toDomain(mapper.toEntity(room));
+
+        assertThat(restored.streamInfo()).isEqualTo(StreamInfo.of("sfu-1", "eg-1", "https://hls/1"));
     }
 
     @Test
