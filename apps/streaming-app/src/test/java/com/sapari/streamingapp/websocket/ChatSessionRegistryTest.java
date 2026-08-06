@@ -132,6 +132,56 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("방 인덱스 — 마지막 세션이 나가면 방 항목까지 제거된다(인덱스 누수 방지)")
+    void room_index_drops_room_when_last_session_leaves() {
+        // given: 같은 방에 세션 2개
+        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s2", session(roomId, UUID.randomUUID())).block();
+        assertThat(registry.trackedRoomCount()).isEqualTo(1);
+
+        // when: 하나만 퇴장
+        registry.unregister(roomId, "s1").block();
+
+        // then: 아직 s2가 있으므로 방은 유지
+        assertThat(registry.trackedRoomCount()).isEqualTo(1);
+
+        // when: 마지막 세션도 퇴장
+        registry.unregister(roomId, "s2").block();
+
+        // then: 방 항목이 남지 않는다 — 남기면 방송할 때마다 죽은 방이 쌓인다
+        assertThat(registry.trackedRoomCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("sendToRoomGated — 같은 방 세션마다 resolver 결과를 받고, 다른 방은 받지 않는다")
+    void gated_fanout_is_per_session_and_room_scoped() {
+        UUID otherRoom = UUID.randomUUID();
+        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s2", session(roomId, UUID.randomUUID())).block();
+        registry.register("other", session(otherRoom, UUID.randomUUID())).block();
+
+        // when: resolver가 세션마다 다른 메시지를 낸다(방주인 PII 게이팅이 쓰는 방식)
+        registry.sendToRoomGated(roomId, s -> out(s.userId().equals(userId) ? "OWNER" : "PLAIN")).block();
+
+        // then: 같은 방 세션은 각자 몫을 받고
+        StepVerifier.create(registry.outbound("s1"))
+                .expectNextMatches(m -> "OWNER".equals(m.type()))
+                .thenCancel()
+                .verify();
+        StepVerifier.create(registry.outbound("s2"))
+                .expectNextMatches(m -> "PLAIN".equals(m.type()))
+                .thenCancel()
+                .verify();
+
+        // 다른 방 세션은 아무것도 못 받는다
+        StepVerifier.create(registry.outbound("other"))
+                .expectSubscription()
+                .expectNoEvent(Duration.ofMillis(50))
+                .thenCancel()
+                .verify();
+    }
+
+    @Test
     @DisplayName("동시 emit — 여러 스레드가 같은 세션에 보내도 유실되지 않는다")
     void concurrent_emit_does_not_drop_messages() throws Exception {
         // given: 구독 중인 세션 하나. 실제로도 ack(WS 이벤트루프)와 브로드캐스트(Redis pubsub 스레드)가

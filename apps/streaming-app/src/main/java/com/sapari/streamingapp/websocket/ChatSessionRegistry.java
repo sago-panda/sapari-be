@@ -2,8 +2,10 @@ package com.sapari.streamingapp.websocket;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -48,6 +50,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
     private final Map<String, LocalSession> local = new ConcurrentHashMap<>();
 
+    /**
+     * roomId → 그 방의 sessionId 집합. {@link #local}의 보조 인덱스다.
+     *
+     * <p>방 fan-out이 Pod 전체 세션을 훑지 않게 한다 — 메시지 1건마다 전체 스캔이면 다른 방 세션 수에
+     * 비례해 비용이 붙고, 그걸 이벤트루프에서 한다. 갱신은 {@code compute} 계열로만 해서 등록/해제가
+     * 서로 끼어들지 않게 하고, 방이 비면 항목 자체를 지운다(죽은 방 누적 방지).
+     */
+    private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
+
     private record LocalSession(ChatSession session, Sinks.Many<OutboundMessage> sink) {
     }
 
@@ -57,6 +68,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
         local.put(sessionId, new LocalSession(session,
                 Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get())));
+        // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
+        // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
+        roomSessions.compute(session.roomId(), (room, sessionIds) -> {
+            Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
+            ids.add(sessionId);
+            return ids;
+        });
         return sessionRepository.add(session.roomId(), sessionId, session.userId());
     }
 
@@ -69,6 +87,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
     @Override
     public Mono<Void> unregister(UUID roomId, String sessionId) {
         local.remove(sessionId);
+        // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
+        roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
+            sessionIds.remove(sessionId);
+            return sessionIds.isEmpty() ? null : sessionIds;
+        });
         return sessionRepository.remove(roomId, sessionId);
     }
 
@@ -84,38 +107,57 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> sendToRoomLocal(UUID roomId, OutboundMessage message) {
-        // 이 Pod의 해당 방 세션 전체에 emit. (로컬 맵 스캔 — 시스템 메시지는 드물어 허용, 규모 확대 시 room 인덱스)
-        return Mono.fromRunnable(() -> local.values().stream()
-                .filter(ls -> ls.session().roomId().equals(roomId))
-                .forEach(ls -> emit(ls, message)));
+        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> emit(ls, message)));
     }
 
     @Override
     public Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver) {
         // 세션별 차등 fan-out — resolver가 세션마다 메시지 생성(방주인 PII 게이팅·kick 분기). null이면 그 세션 skip.
-        return Mono.fromRunnable(() -> local.values().stream()
-                .filter(ls -> ls.session().roomId().equals(roomId))
-                .forEach(ls -> {
-                    OutboundMessage message = resolver.apply(ls.session());
-                    if (message != null) {
-                        emit(ls, message);
-                    }
-                }));
+        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> {
+            OutboundMessage message = resolver.apply(ls.session());
+            if (message != null) {
+                emit(ls, message);
+            }
+        }));
     }
 
     @Override
     public Mono<Void> closeUser(UUID roomId, UUID userId) {
         // Sink complete → 아웃바운드 종료. C4 핸들러가 이를 실제 WS close로 잇고, disconnect 콜백이 unregister(Redis 정리).
-        return Mono.fromRunnable(() -> local.values().stream()
-                .filter(ls -> ls.session().roomId().equals(roomId) && ls.session().userId().equals(userId))
-                .forEach(this::complete));
+        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> {
+            if (ls.session().userId().equals(userId)) {
+                complete(ls);
+            }
+        }));
     }
 
     @Override
     public Mono<Void> closeAll(UUID roomId) {
-        return Mono.fromRunnable(() -> local.values().stream()
-                .filter(ls -> ls.session().roomId().equals(roomId))
-                .forEach(this::complete));
+        return Mono.fromRunnable(() -> forEachInRoom(roomId, this::complete));
+    }
+
+    /**
+     * 방 인덱스를 타고 해당 방 세션만 순회한다. Pod 전체 스캔을 피하는 자리라 방 fan-out은 모두 여기를 통한다.
+     *
+     * <p>인덱스에는 있지만 {@link #local}에서 이미 빠진 세션은 건너뛴다 — 퇴장 중인 세션과 겹칠 수 있고,
+     * 그 세션은 어차피 곧 닫힌다.
+     */
+    private void forEachInRoom(UUID roomId, Consumer<LocalSession> action) {
+        Set<String> sessionIds = roomSessions.get(roomId);
+        if (sessionIds == null) {
+            return;
+        }
+        for (String sessionId : sessionIds) {
+            LocalSession ls = local.get(sessionId);
+            if (ls != null) {
+                action.accept(ls);
+            }
+        }
+    }
+
+    /** 인덱스가 추적 중인 방 수. (테스트 진입점 — 방이 비면 항목이 사라지는지 확인용) */
+    int trackedRoomCount() {
+        return roomSessions.size();
     }
 
     /**
