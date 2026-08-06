@@ -1,11 +1,14 @@
 package com.sapari.chat.infrastructure.redis;
 
 import java.time.Duration;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.port.ChatBroadcaster;
@@ -95,8 +98,23 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         try {
             return Mono.just(objectMapper.readValue(json, ChatEnvelope.class));
         } catch (Exception e) {
-            log.error("chat:pubsub 봉투 역직렬화 실패 — 해당 메시지 skip(구독 스트림 유지)", e);
+            // 예외 객체·메시지를 그대로 찍지 않는다 — InvalidFormatException 등은 실패한 "값"을 메시지에 인용하므로
+            // 봉투의 senderEmail 같은 PII가 로그로 샌다. 진단에 필요한 건 실패 종류와 위치지 값이 아니다.
+            log.error("chat:pubsub 봉투 역직렬화 실패 — 해당 메시지 skip(구독 스트림 유지) cause={} path={}",
+                    e.getClass().getSimpleName(), failedFieldPath(e));
             return Mono.empty();
         }
+    }
+
+    /** 역직렬화가 걸린 필드 경로만 뽑는다(값 제외) — 예: message.senderId. 경로를 못 얻으면 "-". */
+    private String failedFieldPath(Exception e) {
+        if (!(e instanceof JsonMappingException mappingException)) {
+            return "-";
+        }
+        String path = mappingException.getPath().stream()
+                .map(JsonMappingException.Reference::getFieldName)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("."));
+        return path.isEmpty() ? "-" : path;
     }
 }
