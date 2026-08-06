@@ -89,6 +89,7 @@ public class LiveKitMediaManagerTest {
                 .set("segmentDuration", 2)
                 .sample();
         liveKitProperties = fixtureMonkey.giveMeBuilder(LiveKitProperties.class)
+                .set("host", "https://livekit.example.com")   // 루프백이 아니면 https 여야 한다(자격증명 전송 경로)
                 .set("s3", s3)
                 .set("hls", hls)
                 .sample();
