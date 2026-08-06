@@ -116,16 +116,14 @@ class ArchitectureTest {
         return parts.length >= 3 ? parts[2] : "";
     }
 
-    // <layer>가 application/domain/infrastructure 면 -core 내부로 본다 (common.core·common.web 등은 제외).
-    // com.sapari 한정 — 서드파티(org.springframework.data.domain.Sort 등)가 parts[3]=domain 휴리스틱에
-    // 걸리는 오탐을 차단한다.
+    // <layer>가 application/domain/infrastructure 면 -core 내부로 본다 (common.core·common.web 등은 제외)
+    // com.sapari 접두사를 반드시 확인한다 — 없으면 org.springframework.data.domain.* (Limit/Pageable/Sort)
+    // 같은 서드파티가 parts[3]="domain"으로 걸려 "data 도메인의 core"라는 오탐이 난다.
     private static boolean isCoreLayer(JavaClass clazz) {
-        String packageName = clazz.getPackageName();
-        if (!packageName.startsWith("com.sapari.")) {
-            return false;
-        }
-        String[] parts = packageName.split("\\.");
-        return parts.length >= 4 && CORE_LAYERS.contains(parts[3]);
+        String[] parts = clazz.getPackageName().split("\\.");
+        return parts.length >= 4
+                && "com".equals(parts[0]) && "sapari".equals(parts[1])
+                && CORE_LAYERS.contains(parts[3]);
     }
 
     // 6) 공유 토대(common/global/storage)는 도메인 모듈(customer/seller/user/live...)을 의존하면 안 된다.

@@ -83,6 +83,8 @@ public class LiveSecurityConfig {
                                 "/swagger-ui.html",
                                 "/v3/api-docs/**"
                         ).permitAll()
+                        // LiveKit webhook — Spring Security가 아니라 본문 서명(LiveKit JWT)으로 인증하므로 열어둔다.
+                        .requestMatchers(HttpMethod.POST, "/webhooks/livekit").permitAll()
                         // 시청(조회)은 공개
                         .requestMatchers(HttpMethod.GET, "/api/v1/lives/**").permitAll()
                         // 생성/시작/종료 등 변경은 판매자 전용
