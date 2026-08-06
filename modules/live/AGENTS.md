@@ -69,9 +69,13 @@ triggers `Live`, so both sides are idempotent no-ops when the room isn't `Ready+
 - **streamKey is a credential — never store or log.** Only `ingressId` persists; streamKey is returned
   **once** (re-fetch = LiveKit `listIngress`) and masked in `toString()`. Same reason `IngressSummary`
   carries neither `streamKey` nor `url`.
-- `PrepareIngressService` has **no tx and no lock by design** (external call outside a tx), so its
-  "already `isRtmp`" guard is TOCTOU — concurrent prepares each issue an ingress. Reconciliation sweeps the
-  loser; a conditional UPDATE is the real fix (follow-up).
+- `PrepareIngressService` keeps `createIngress` **outside any transaction**, so its `canPrepareIngress`/
+  `isRtmp` checks are snapshot reads and can't be exclusive. Assignment is therefore a **conditional UPDATE**
+  (`RtmpIngressAssigner` → `assignRtmpIngressIfAbsent`): `WHERE … live_status = SCHEDULED AND ingress_id IS
+  NULL` makes the DB pick a winner, and the loser deletes **its own** ingress (single-id — a room-wide delete
+  would take the winner's too). **This is the one path where the WHERE clause *is* the domain guard**; add a
+  `LiveStatus` variant and the compiler won't remind you about this query. Don't spread the pattern —
+  everywhere else, transitions serialize on a row lock.
 - **End cleanup deletes ingress room-wide, before `closeRoom`** — a surviving ingress lets OBS auto-reconnect
   re-create the closed SFU room. Stale `ingress_id` stays on the Ended row by design (broadcast history).
 

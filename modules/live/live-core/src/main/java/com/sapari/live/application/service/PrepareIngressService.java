@@ -23,12 +23,13 @@ public class PrepareIngressService implements PrepareIngressUseCase {
 
     private final LiveRoomRepository liveRoomRepository;
     private final LiveMediaManager liveMediaManager;
+    private final RtmpIngressAssigner rtmpIngressAssigner;
     private final TimeProvider timeProvider;
 
     // @Transactional 없음(의도): createIngress(외부 I/O)를 트랜잭션 밖에서 호출해 네트워크 왕복 동안
-    // DB 커넥션을 점유하지 않는다(루트 AGENTS "Minimize external calls inside a transaction").
-    // egressId를 room 저장과 원자적으로 커밋해야 하는 StartLiveService와 달리, 여기선 단건 save 뿐이라
-    // 원자성 요구가 없고(고아 ingress는 reconciliation에 위임), save 자체는 Spring Data가 트랜잭션을 관리한다.
+    // DB 커넥션·행 잠금을 점유하지 않는다(루트 AGENTS "Minimize external calls inside a transaction").
+    // 그 대가로 아래 가드가 스냅샷 검사라 배타적이지 않으므로, 배정은 조건부 UPDATE 한 문장
+    // (RtmpIngressAssigner)으로 하고 진 쪽이 자기 ingress 를 회수한다.
     @Override
     public IngressCredentialView prepare(PrepareIngressCommand command){
         // 소유권: 판매자 본인의 방만 조회됨(남의 방에 ingress 발급 차단)
@@ -47,10 +48,16 @@ public class PrepareIngressService implements PrepareIngressUseCase {
 
         IngressResult result = liveMediaManager.createIngress(command.roomId(), command.sellerId());
 
-        // createIngress 성공 후 save 가 실패하면 ingress 가 고아가 된다(streamKey 미전달이라 유휴·무해).
-        // 복구는 고아 ingress 정리(reconciliation) 배치의 몫 — 이 경로에 보상 훅은 두지 않는다.
-        LiveRoom updated = room.assignRtmpIngress(result.ingressId(), timeProvider.now());
-        liveRoomRepository.save(updated);
+        // 배정은 조건부 UPDATE 한 문장 — 위 가드는 스냅샷이라 동시 요청이 둘 다 통과할 수 있고,
+        // 그러면 각자 ingress 를 만들어 판매자에게 유효한 streamKey 가 여러 개 나간다.
+        boolean assigned = rtmpIngressAssigner.assignIfAbsent(
+                command.roomId(), command.sellerId(), result.ingressId(), timeProvider.now());
+        if (!assigned) {
+            // 진 쪽은 자기가 만든 ingress 를 즉시 회수한다(단건 삭제 — 방 단위로 지우면 이긴 쪽 것까지 날아간다).
+            // 이 삭제가 실패해도 고아 미디어 정리 잡이 회수하므로 여기서 더 다루지 않는다.
+            liveMediaManager.deleteIngress(command.roomId(), result.ingressId());
+            throw new InvalidLiveStateException("이미 RTMP ingress 가 발급된 방입니다: " + command.roomId());
+        }
         log.info("RTMP ingress 발급 완료. roomId={}, ingressId={}", room.id(), result.ingressId());
 
         return new IngressCredentialView(result.ingressId(), result.rtmpUrl(), result.streamKey());

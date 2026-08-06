@@ -45,6 +45,9 @@ class PrepareIngressServiceTest {
     private LiveMediaManager liveMediaManager;
 
     @Mock
+    private RtmpIngressAssigner rtmpIngressAssigner;
+
+    @Mock
     private TimeProvider timeProvider;
 
     @InjectMocks
@@ -85,7 +88,7 @@ class PrepareIngressServiceTest {
         given(liveMediaManager.createIngress(roomId, sellerId))
                 .willReturn(new IngressResult("ingress-1", "rtmp://livekit/live", "secret-key"));
         given(timeProvider.now()).willReturn(now);
-        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
+        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-1", now)).willReturn(true);
 
         IngressCredentialView view = prepareIngressService.prepare(command);
 
@@ -94,12 +97,30 @@ class PrepareIngressServiceTest {
         assertThat(view.rtmpUrl()).isEqualTo("rtmp://livekit/live");
         assertThat(view.streamKey()).isEqualTo("secret-key");
 
-        // 저장된 방이 RTMP(ingressId 배정)로 전환됐는지
-        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
-        then(liveRoomRepository).should().save(captor.capture());
-        LiveRoom saved = captor.getValue();
-        assertThat(saved.isRtmp()).isTrue();
-        assertThat(((LiveStreamType.Rtmp) saved.streamType()).ingressId()).isEqualTo("ingress-1");
+        // 배정은 조건부 UPDATE 로 한다 — save() 는 무조건 덮어써서 경합을 못 막는다.
+        then(rtmpIngressAssigner).should().assignIfAbsent(roomId, sellerId, "ingress-1", now);
+        then(liveRoomRepository).should(never()).save(any(LiveRoom.class));
+        then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), any(String.class));
+    }
+
+    @Test
+    @DisplayName("경합에서 지면 자기 ingress 를 회수하고 거부한다 — 방당 ingress 하나를 SQL 이 보장한다")
+    void prepare_losesRace_deletesOwnIngressAndRejects() {
+        Instant now = Instant.parse("2026-06-09T02:00:00Z");
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
+                .willReturn(Optional.of(scheduledWebRtcRoom()));
+        given(liveMediaManager.createIngress(roomId, sellerId))
+                .willReturn(new IngressResult("ingress-LOSER", "rtmp://livekit/live", "secret-key"));
+        given(timeProvider.now()).willReturn(now);
+        // 다른 요청이 먼저 배정 → 조건부 UPDATE 0건
+        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-LOSER", now)).willReturn(false);
+
+        assertThatThrownBy(() -> prepareIngressService.prepare(command))
+                .isInstanceOf(InvalidLiveStateException.class);
+
+        // 단건 삭제여야 한다 — 방 단위로 지우면 이긴 쪽 ingress 까지 날아간다
+        then(liveMediaManager).should().deleteIngress(roomId, "ingress-LOSER");
+        then(liveMediaManager).should(never()).deleteIngress(any(UUID.class));
     }
 
     @Test
