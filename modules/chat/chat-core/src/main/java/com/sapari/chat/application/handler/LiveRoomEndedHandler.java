@@ -8,6 +8,7 @@ import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.LiveRoomEndedSource;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.application.service.SystemMessageService;
+import com.sapari.chat.domain.repository.ChatSessionRepository;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -23,6 +24,11 @@ import reactor.core.publisher.Mono;
  * <p>ROOM_ENDED는 방주인 구분 없이 전원 동일 신호라 {@link SystemMessageService#renderToRoom}(단일 메시지)로
  * 렌더하고, 그 다음 {@link ChatSessionManager#closeAll}로 로컬 세션을 닫는다(SYSTEM 도착 후 close 순서 보장).
  * 구독은 시작 시 1회(단일 채널) 걸고, 봉투 1건 처리 실패가 스트림을 죽이지 않게 흡수한다.
+ *
+ * <p><b>마지막에 방 세션 키를 지운다</b>: 평시엔 세션마다 unregister가 필드를 하나씩 빼 키가 저절로 사라지지만,
+ * Pod가 죽으면 그 Pod의 항목이 남아 activeCount를 부풀린 채 방치된다. 닫기 <i>이후</i>에 지우는 순서가 중요하다 —
+ * 먼저 지우면 아직 살아있는 세션의 unregister가 뒤늦게 끼어든다. 삭제는 멱등이라 모든 Pod가 불러도 안전하다.
+ * (강퇴 SET {@code kicked:{roomId}}는 SADD하는 api-app이 수명도 소유한다 — 여기서 건드리지 않는다.)
  */
 @Slf4j
 @Component
@@ -32,6 +38,7 @@ public class LiveRoomEndedHandler {
     private final LiveRoomEndedSource source;
     private final SystemMessageService systemMessageService;
     private final ChatSessionManager sessionManager;
+    private final ChatSessionRepository sessionRepository;
 
     private Disposable subscription;
 
@@ -53,9 +60,10 @@ public class LiveRoomEndedHandler {
         }
     }
 
-    /** 로컬 세션에 SYSTEM(ROOM_ENDED) 렌더 후 close. (테스트 진입점) */
+    /** 로컬 세션에 SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리. (테스트 진입점) */
     Mono<Void> onRoomEnded(UUID roomId) {
         return systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)
-                .then(sessionManager.closeAll(roomId));
+                .then(sessionManager.closeAll(roomId))
+                .then(sessionRepository.clearRoom(roomId));
     }
 }
