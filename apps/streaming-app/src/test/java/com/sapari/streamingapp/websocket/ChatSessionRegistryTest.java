@@ -7,7 +7,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -125,5 +129,60 @@ class ChatSessionRegistryTest {
                 .then(() -> registry.closeUser(roomId, userId).block())
                 .verifyComplete();
         assertThat(registry.outbound("unknown")).isNotNull();
+    }
+
+    @Test
+    @DisplayName("동시 emit — 여러 스레드가 같은 세션에 보내도 유실되지 않는다")
+    void concurrent_emit_does_not_drop_messages() throws Exception {
+        // given: 구독 중인 세션 하나. 실제로도 ack(WS 이벤트루프)와 브로드캐스트(Redis pubsub 스레드)가
+        // 같은 세션 Sink에 동시 emit한다 — unicast Sink는 경합 시 FAIL_NON_SERIALIZED로 값을 버린다.
+        registry.register("s1", session(roomId, userId)).block();
+        List<OutboundMessage> received = new CopyOnWriteArrayList<>();
+        registry.outbound("s1").subscribe(received::add);
+
+        int threads = 4;
+        int perThread = 500;
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+
+        // when
+        for (int t = 0; t < threads; t++) {
+            new Thread(() -> {
+                try {
+                    start.await();
+                    for (int i = 0; i < perThread; i++) {
+                        registry.sendToSession("s1", out("NORMAL")).block();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            }).start();
+        }
+        start.countDown();
+        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+
+        // then
+        assertThat(received).hasSize(threads * perThread);
+    }
+
+    @Test
+    @DisplayName("아웃바운드 버퍼 초과 — 느린 클라 세션을 끊는다(Pod 힙 보호)")
+    void outbound_overflow_closes_session() {
+        // given: 구독하되 소비하지 않는(request 0) 느린 클라
+        registry.register("s1", session(roomId, userId)).block();
+
+        // when: 버퍼 용량의 2배를 밀어넣는다
+        // then: 버퍼 크기만큼만 담기고, 무제한 적체 대신 스트림이 종료된다(= 세션 끊김)
+        StepVerifier.create(registry.outbound("s1"), 0)
+                .then(() -> {
+                    for (int i = 0; i < ChatSessionRegistry.OUTBOUND_BUFFER_SIZE * 2; i++) {
+                        registry.sendToSession("s1", out("NORMAL")).block();
+                    }
+                })
+                .thenRequest(Long.MAX_VALUE)   // 실제로는 session.send()가 request한다
+                .expectNextCount(ChatSessionRegistry.OUTBOUND_BUFFER_SIZE)
+                .verifyComplete();
     }
 }
