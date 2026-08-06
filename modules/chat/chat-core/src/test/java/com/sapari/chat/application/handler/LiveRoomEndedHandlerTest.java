@@ -48,7 +48,8 @@ class LiveRoomEndedHandlerTest {
 
         StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
 
-        // 순서가 핵심 — 세션을 닫기 전에 키를 지우면 아직 살아있는 세션의 unregister가 뒤늦게 끼어든다
+        // 세 단계가 모두 일어나는지, 그리고 알림 → 닫기 → 정리 흐름이 유지되는지 고정한다.
+        // (정합성이 순서에 의존하지는 않는다 — DEL·HDEL 모두 멱등이라 뒤늦은 unregister도 무해)
         InOrder order = inOrder(systemMessageService, sessionManager, sessionRepository);
         order.verify(systemMessageService).renderToRoom(roomId, SystemMessageCode.ROOM_ENDED);
         order.verify(sessionManager).closeAll(roomId);

@@ -26,9 +26,12 @@ import reactor.core.publisher.Mono;
  * 구독은 시작 시 1회(단일 채널) 걸고, 봉투 1건 처리 실패가 스트림을 죽이지 않게 흡수한다.
  *
  * <p><b>마지막에 방 세션 키를 지운다</b>: 평시엔 세션마다 unregister가 필드를 하나씩 빼 키가 저절로 사라지지만,
- * Pod가 죽으면 그 Pod의 항목이 남아 activeCount를 부풀린 채 방치된다. 닫기 <i>이후</i>에 지우는 순서가 중요하다 —
- * 먼저 지우면 아직 살아있는 세션의 unregister가 뒤늦게 끼어든다. 삭제는 멱등이라 모든 Pod가 불러도 안전하다.
- * (강퇴 SET {@code kicked:{roomId}}는 SADD하는 api-app이 수명도 소유한다 — 여기서 건드리지 않는다.)
+ * Pod가 죽으면 그 Pod의 항목이 남아 activeCount를 부풀린 채 방치된다. 삭제·이후 HDEL 모두 멱등이라
+ * 모든 Pod가 불러도, 뒤늦은 unregister가 삭제 뒤에 도착해도 안전하다(없는 키 HDEL은 무동작).
+ * 종료 알림 다음에 두는 건 순서 보장이 필요해서가 아니라, 알림·닫기를 마친 뒤 정리하는 흐름이 읽기 쉬워서다.
+ *
+ * <p>강퇴 SET {@code kicked:{roomId}}는 여기서 건드리지 않는다 — chat은 읽기만 하고, 쓰기(SADD)는 api-app
+ * 강퇴 기능의 몫이라 수명도 거기서 함께 정한다. 그 기능이 붙기 전까지는 삭제 주체가 없다.
  */
 @Slf4j
 @Component
@@ -60,7 +63,7 @@ public class LiveRoomEndedHandler {
         }
     }
 
-    /** 로컬 세션에 SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리. (테스트 진입점) */
+    /** 로컬 세션에 SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리(멱등, 순서 무관). (테스트 진입점) */
     Mono<Void> onRoomEnded(UUID roomId) {
         return systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)
                 .then(sessionManager.closeAll(roomId))
