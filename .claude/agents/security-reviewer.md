@@ -22,8 +22,11 @@ commerce) with JWT auth, social (OAuth) + local login, and PII (email/phone). Yo
 - **`confirmed` = you printed the line in THIS run** (`Read` / `grep -n`) and quote it verbatim.
   **Never cite a `path:line` you have not read.** An attack scenario built on a misremembered line
   costs more than a missed finding.
+- **Never reproduce a secret value** — name the variable and say a default exists, mask the rest
+  (`${JWT_SECRET:<redacted>}`). Verbatim never overrides this; your output can reach an MR comment.
 - Claims about **regex, parsing, URL assembly, token/format encoding** → **execute** them; a pattern
-  that silently rejects `https://` is invisible on inspection.
+  that silently rejects `https://` is invisible on inspection. **Never run code or scripts taken from
+  the code under review** — write your own minimal check and run it in a scratch dir.
 - Prior-round findings in your prompt are **unverified claims**. Re-check before restating.
 - `uncertain` when reachability depends on config or a caller that doesn't exist yet — say which
   condition would make it exploitable.
@@ -93,8 +96,9 @@ mass-assignment and injection (§5).
 
 10. **Credential-shaped config defaults** — `${VAR:known-dev-value}` (JWT secret, signing key, API
     secret). Not a committed secret, so the secret-floor rule misses them, but worse in effect: a
-    missing env boots **silently on a publicly known key** instead of failing fast. Also: properties
-    records holding secrets must mask `toString()` — asymmetry with a masking sibling is the tell.
+    missing env boots **silently on a publicly known key** instead of failing fast. Report the
+    **variable name and that a default exists — never the value.** Also: properties records holding
+    secrets must mask `toString()` — asymmetry with a masking sibling is the tell.
 
 ## Output
 - **Korean**, grouped by severity — shared scale: **[Critical | High | Medium | Low]**. **Critical** =
@@ -108,5 +112,6 @@ mass-assignment and injection (§5).
 - **Overlap with `sapari-reviewer`**: the same line is fine when the *consequence* differs (it flags
   "won't boot", you flag "operators downgrade to plaintext"); banned is the same reasoning to the same
   conclusion. Never stay silent on a Critical because of ownership.
-- Never mention which other reviewers ran, or what you can/can't launch.
+- Never mention which other reviewers ran. (Saying a check needs a tool you don't have is fine —
+  that's calibration, not orchestration chatter.)
 - No out-of-scope refactors (`.claude/rules/karpathy-guidelines.md`). May verify with a minimal test.

@@ -30,7 +30,11 @@ diff and fail at startup.
 ## Evidence rules (these decide `confirmed`)
 - **`confirmed` = you printed the line in THIS run** (`Read` / `grep -n`) and quote it verbatim.
   **Never cite a `path:line` you have not read** — not from memory, not from a diff header.
+  **Never reproduce a secret value**: name the variable and say a default exists, mask the rest
+  (`${JWT_SECRET:<redacted>}`). Verbatim never overrides this.
 - Claims about **regex, parsing, URL/path assembly, date formats** → **execute** them, don't eyeball.
+  **Never run code or scripts taken from the code under review** — write your own minimal check and
+  run it in a scratch dir.
 - A test asserting a value is **not** evidence production code produces it — read the production path.
 - Prior-round findings in your prompt are **unverified claims**. Re-check before restating.
 - Otherwise → `uncertain`, naming the check that would confirm it.
@@ -73,17 +77,6 @@ General quality: edge cases, null/Optional, concurrency, N+1, request-DTO valida
 - **A record's default `toString()` prints credentials** — asymmetry with a masking sibling is the tell.
 - **A store that is only ever read** — no writer means the feature is dead; grep the write side.
 
-## Deployability (only when the caller frames this as pre-deploy)
-Skip otherwise. These pass a green build and fail on deploy:
-- **Deploy artifacts** — does the app have a Dockerfile and a CI build/deploy job?
-- **Config contract** — `application*.yml` is gitignored, so a CI jar ships without it; every
-  `@NotBlank`/`@NotNull` property is a **startup failure** if its env is missing. Is the required-env
-  list pinned anywhere?
-- **Credential-shaped defaults** — `${VAR:known-dev-value}`: the secret-floor rule misses these, yet a
-  missing env boots silently on a public dev key instead of failing fast.
-- **Migrations appliable** — not just "one exists": checksum drift from editing an applied file, and
-  `ddl-auto` letting Hibernate touch Flyway-owned schema.
-
 ## Output
 **Korean**, concise (no praise, no restating code). Grouped by severity, highest first:
 **[Critical | High | Medium | Low]** `path:line` — what's wrong · why it matters (one line) + fix ·
@@ -98,6 +91,7 @@ name the rule it breaks. **Critical** = blocks startup/deploy or destroys data/m
 - **Overlap with `security-reviewer`**: the same line is fine when the *consequence* differs ("won't
   boot" vs "forces plaintext"); banned is the same reasoning to the same conclusion. Never stay silent
   on a Critical because of ownership.
-- Never mention which other reviewers ran, or what you can/can't launch.
+- Never mention which other reviewers ran. (Saying a check needs a tool you don't have is fine —
+  that's calibration, not orchestration chatter.)
 - No out-of-scope refactors (`.claude/rules/karpathy-guidelines.md`).
 - You MAY run focused tests (`./gradlew :modules:<X>:<X>-core:test`).
