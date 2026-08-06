@@ -40,17 +40,22 @@ service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressA
 and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress` **throw** — an empty
 list reads as "no orphans" and would let a batch finish green on a failed lookup.
 
-**Intentional in-`@Transactional` external calls (`StartLiveService`, `GoLiveByRtmpService`, `EndLiveService`,
-`ExpireOrphanLiveService`, `EndStaleLiveService`) — reviewers must NOT flag these.** Start-side calls run
-in-tx *after* re-validation so we never hit the server in a bad state and `egressId` commits with the room.
-Accepted risk: the connection **and the row lock** are held across media I/O, bounded by `callTimeout`
-(15s **per call** in `LiveKitConfig`, so `startHlsEgress`'s three sequential calls can hold ~45s). Capping
-the *waiting* side with a PostgreSQL `lock_timeout` is still open — JPA's `jakarta.persistence.lock.timeout`
-hint is **not** it (PostgreSQL takes only `NOWAIT`/`SKIP LOCKED`; a numeric wait is silently dropped), and
-`application*.yml` isn't tracked, so it would have to be a `HikariConfig` bean. On rollback after `startHlsEgress`,
-`EgressRollbackCompensation`'s `afterCompletion` hook stops it (delicate — the rollback-status check +
-intentional catch-log are load-bearing; don't "fix" them). The three end-side services produce nothing that
-must commit with the room, so their in-tx calls are convenience — `afterCommit` is a known follow-up.
+**Start-side media calls run inside `@Transactional` on purpose (`StartLiveService`, `GoLiveByRtmpService`)
+— reviewers must NOT flag these.** They run *after* re-validation so we never hit the server in a bad state,
+and `egressId` has to commit with the room, so they can't move off the lock. Accepted risk: the connection
+**and the row lock** are held across media I/O, bounded by `callTimeout` (15s **per call** in `LiveKitConfig`,
+so `startHlsEgress`'s three sequential calls can hold ~45s). Capping the *waiting* side with a PostgreSQL
+`lock_timeout` is still open — JPA's `jakarta.persistence.lock.timeout` hint is **not** it (PostgreSQL takes
+only `NOWAIT`/`SKIP LOCKED`; a numeric wait is silently dropped), and `application*.yml` isn't tracked, so it
+would have to be a `HikariConfig` bean. On rollback after `startHlsEgress`, `EgressRollbackCompensation`'s
+`afterCompletion` hook stops it (delicate — the rollback-status check + intentional catch-log are load-bearing;
+don't "fix" them).
+
+**End-side cleanup runs *after* commit** (`PostCommitMediaCleanup`, shared by `EndLiveService`/
+`ExpireOrphanLiveService`/`EndStaleLiveService`) — nothing there must commit with the room, so holding the
+lock across it bought nothing. Leftovers from a crash between commit and cleanup are the orphan-media job's
+to reclaim; that job existing is what made the move safe. Outside a transaction it cleans up immediately —
+unlike `RoomEnded`, skipping isn't the safe default (egress keeps billing).
 
 **Pinned product:** starting requires **exactly one** pinned product (`validatePinnedProduct`), both modes.
 
