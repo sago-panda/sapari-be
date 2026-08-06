@@ -42,8 +42,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 세션당 아웃바운드 버퍼 상한. 방 하나가 초당 수십 건 × 몇 초 적체를 견디는 크기. */
     static final int OUTBOUND_BUFFER_SIZE = 256;
 
-    /** 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다). */
-    private static final long CONTENTION_SPIN_NANOS = Duration.ofMillis(100).toNanos();
+    /**
+     * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
+     * 실측 경합은 마이크로초대(p99 8µs, 최악 0.5ms)라 정상 트래픽엔 여유가 크고, 이 상한에 닿는 건
+     * 이미 비정상이므로 오래 버티기보다 포기하고 그 세션을 끊는다(emitSerially 주석 참고).
+     */
+    private static final long CONTENTION_SPIN_NANOS = Duration.ofMillis(5).toNanos();
 
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
 
@@ -59,14 +63,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
 
-    private record LocalSession(ChatSession session, Sinks.Many<OutboundMessage> sink) {
+    /** sessionId를 함께 들고 다닌다 — 전달 실패 로그에서 어느 커넥션인지 짚으려면 필요하다. */
+    private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink) {
     }
 
     @Override
     public Mono<Void> register(String sessionId, ChatSession session) {
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
-        local.put(sessionId, new LocalSession(session,
+        local.put(sessionId, new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get())));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
@@ -163,31 +168,54 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /**
      * 세션 Sink로 1건 밀어넣기. null 세션은 무시.
      *
-     * <p>버퍼 초과({@code FAIL_OVERFLOW})면 유실 대신 <b>세션을 끊는다</b> — 조용히 빠뜨리면 클라 화면이
-     * 어긋난 채 유지되지만, 끊으면 프론트가 재접속·이력 재조회로 복구할 수 있다. 이미 끝난 세션
-     * ({@code FAIL_TERMINATED}/{@code FAIL_CANCELLED})은 정상 흐름이라 무시한다.
+     * <p>전달하지 못한 메시지는 조용히 버리지 않고 그 세션의 아웃바운드를 끝낸다 — 빠뜨린 채 두면 클라 화면이
+     * 어긋난 줄도 모르고 유지되지만, 끊으면 프론트가 재접속·이력 재조회로 복구할 여지가 생긴다.
+     *
+     * <p><b>한계</b>: 아웃바운드 종료는 버퍼에 쌓인 메시지 뒤에 줄을 서므로, 소켓을 전혀 읽지 않는 클라에겐
+     * 종료 신호가 닿지 않고 연결이 남는다. 버퍼가 유계라 힙은 보호되지만 연결·세션 항목은 회수되지 않는다.
+     * 전송 계층 강제 종료는 별도 과제.
      */
     private void emit(LocalSession ls, OutboundMessage message) {
         if (ls == null) {
             return;
         }
         Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message));
-        if (result == Sinks.EmitResult.FAIL_OVERFLOW || result == Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER) {
-            log.warn("아웃바운드 버퍼 초과 — 느린 클라 세션 종료 roomId={} result={}", ls.session().roomId(), result);
+        if (losesMessage(result)) {
+            log.warn("아웃바운드 전달 실패 — 세션 종료 시도 sessionId={} roomId={} userId={} result={}",
+                    ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
             complete(ls);
         }
     }
 
-    /** 종료 신호도 emit과 같은 경합을 겪는다 — 놓치면 세션이 안 닫히므로 같은 재시도를 태운다. */
+    /**
+     * 이 결과면 메시지가 실제로 유실됐다는 뜻이라 세션을 끊는다 — 초과(FAIL_OVERFLOW)·구독 전 초과
+     * (FAIL_ZERO_SUBSCRIBER)·경합 재시도 소진(FAIL_NON_SERIALIZED). 이미 끝난 세션
+     * ({@code FAIL_TERMINATED}/{@code FAIL_CANCELLED})은 정상 흐름이라 아무것도 하지 않는다.
+     * (정책을 한 곳에 모아 테스트로 고정하기 위한 진입점)
+     */
+    boolean losesMessage(Sinks.EmitResult result) {
+        return result == Sinks.EmitResult.FAIL_OVERFLOW
+                || result == Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER
+                || result == Sinks.EmitResult.FAIL_NON_SERIALIZED;
+    }
+
+    /** 종료 신호도 emit과 같은 경합을 겪는다 — 놓치면 세션이 안 닫히므로 같은 재시도를 태우고, 실패는 남긴다. */
     private void complete(LocalSession ls) {
-        emitSerially(() -> ls.sink().tryEmitComplete());
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitComplete());
+        if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
+            log.error("세션 종료 신호 전달 실패(경합 재시도 소진) — 세션이 남는다 sessionId={} roomId={}",
+                    ls.sessionId(), ls.session().roomId());
+        }
     }
 
     /**
      * Sink는 동시 emit을 직렬화하지 않는다 — 경합하면 {@code FAIL_NON_SERIALIZED}를 돌려주고 값을 버린다.
      * 한 세션에 ack(WS 이벤트루프)와 방 브로드캐스트(Redis 구독 스레드)가 동시에 들어오므로, Reactor 권장대로
-     * 경합 구간만 짧게 busy-loop 재시도한다. 경합은 마이크로초 단위라 상한에 닿는 일은 사실상 없고,
-     * 상한은 이벤트루프가 무한정 묶이지 않게 하는 안전장치다.
+     * 경합 구간만 짧게 busy-loop 재시도한다.
+     *
+     * <p>상한을 짧게 잡는 이유: 락을 쥔 쪽은 버퍼를 비우는 동안(최대 버퍼 크기만큼의 직렬화까지) 쥐고 있고,
+     * 기다리는 쪽은 <b>Netty 이벤트루프에서 spin</b>할 수 있다 — 그 루프에 붙은 다른 커넥션까지 함께 멈춘다.
+     * 길게 버티는 것보다 빨리 포기하고 그 세션 하나만 끊는 편이 피해 범위가 작다.
      */
     private Sinks.EmitResult emitSerially(Supplier<Sinks.EmitResult> emitter) {
         long deadline = System.nanoTime() + CONTENTION_SPIN_NANOS;

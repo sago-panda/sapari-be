@@ -16,6 +16,8 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.domain.model.ChatRole;
@@ -23,6 +25,7 @@ import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
 class ChatSessionRegistryTest {
@@ -129,6 +132,22 @@ class ChatSessionRegistryTest {
                 .then(() -> registry.closeUser(roomId, userId).block())
                 .verifyComplete();
         assertThat(registry.outbound("unknown")).isNotNull();
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Sinks.EmitResult.class,
+            names = { "FAIL_OVERFLOW", "FAIL_ZERO_SUBSCRIBER", "FAIL_NON_SERIALIZED" })
+    @DisplayName("전달 실패 판정 — 메시지가 실제로 유실된 결과는 모두 세션 종료 대상")
+    void emit_results_that_lose_the_message(Sinks.EmitResult result) {
+        // FAIL_NON_SERIALIZED(경합 재시도 소진)를 빼면 그 경로만 무성 유실로 남는다
+        assertThat(registry.losesMessage(result)).isTrue();
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Sinks.EmitResult.class, names = { "OK", "FAIL_TERMINATED", "FAIL_CANCELLED" })
+    @DisplayName("전달 실패 판정 — 성공이거나 이미 끝난 세션은 종료 대상이 아니다")
+    void emit_results_that_need_no_action(Sinks.EmitResult result) {
+        assertThat(registry.losesMessage(result)).isFalse();
     }
 
     @Test
