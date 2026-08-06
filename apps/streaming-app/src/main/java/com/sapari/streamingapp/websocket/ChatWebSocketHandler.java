@@ -147,14 +147,17 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 
-    private Mono<Void> onInbound(String sid, ChatSession chatSession, String payload) {
+    /** 인바운드 1건 처리 — 어떤 입력이 와도 ERROR 응답으로 끝내고 연결은 유지한다. (단위 테스트 진입점) */
+    Mono<Void> onInbound(String sid, ChatSession chatSession, String payload) {
         InboundMessage in;
         try {
             in = objectMapper.readValue(payload, InboundMessage.class);
         } catch (Exception e) {
             return registry.sendToSession(sid, error("VALIDATION", null));   // 파싱 실패 — clientMsgId 알 수 없음
         }
-        return sendUseCase.send(buildCommand(chatSession, in))
+        // defer로 감싸 커맨드 생성(신뢰경계 검증)의 throw까지 onError 신호로 만든다 — 감싸지 않으면
+        // 인자 평가 위치에서 터져 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결이 끊긴다.
+        return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
                 .flatMap(view -> registry.sendToSession(sid, toAck(view, in.clientMsgId())))
                 .onErrorResume(e -> registry.sendToSession(sid, toError(e, in.clientMsgId())));
     }

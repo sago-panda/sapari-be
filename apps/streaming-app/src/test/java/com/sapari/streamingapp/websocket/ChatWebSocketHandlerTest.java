@@ -1,6 +1,9 @@
 package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -13,6 +16,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -28,10 +32,15 @@ import com.sapari.chat.view.ChatMessageView;
 import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
 
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 class ChatWebSocketHandlerTest {
 
     private ChatBroadcastSubscriber subscriber;
+    private ChatSessionRegistry registry;
+    private SendChatUseCase sendUseCase;
     private ChatWebSocketHandler handler;
 
     private final UUID roomId = UUID.fromString("33333333-3333-3333-3333-333333333333");
@@ -40,9 +49,11 @@ class ChatWebSocketHandlerTest {
     @BeforeEach
     void setUp() {
         subscriber = mock(ChatBroadcastSubscriber.class);
+        registry = mock(ChatSessionRegistry.class);
+        sendUseCase = mock(SendChatUseCase.class);
         handler = new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), mock(EntryGate.class),
-                mock(ChatSessionRegistry.class), mock(SendChatUseCase.class), subscriber);
+                registry, sendUseCase, subscriber);
     }
 
     @Test
@@ -127,5 +138,26 @@ class ChatWebSocketHandlerTest {
         handler.releaseRoom(roomId);
         verify(disposable).dispose();                         // 마지막 퇴장 → 해제
         assertThat(handler.isSubscribed(roomId)).isFalse();
+    }
+
+    @Test
+    @DisplayName("onInbound — type 누락이면 연결을 끊지 않고 ERROR(VALIDATION)만 응답한다")
+    void inbound_without_type_keeps_stream_alive() {
+        // given
+        when(registry.sendToSession(anyString(), any())).thenReturn(Mono.empty());
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when: 실제 수신 배선과 같은 flatMap 모양으로 태운다
+        // (커맨드 생성이 인자평가 위치에서 throw하면 여기서 스트림이 죽는다)
+        StepVerifier.create(Flux.just("{\"content\":\"안녕\"}")
+                        .flatMap(payload -> handler.onInbound("s1", session, payload))
+                        .then())
+                .verifyComplete();
+
+        // then: 스트림은 살아있고 ERROR/VALIDATION만 나간다
+        ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
+        verify(registry).sendToSession(eq("s1"), sent.capture());
+        assertThat(sent.getValue().type()).isEqualTo("ERROR");
+        assertThat(sent.getValue().code()).isEqualTo("VALIDATION");
     }
 }
