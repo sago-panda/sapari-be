@@ -155,11 +155,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         } catch (Exception e) {
             return registry.sendToSession(sid, error("VALIDATION", null));   // 파싱 실패 — clientMsgId 알 수 없음
         }
+        // JSON 리터럴 null은 예외 없이 null로 파싱돼 위 catch를 그냥 통과한다.
+        if (in == null) {
+            return registry.sendToSession(sid, error("VALIDATION", null));
+        }
+        // 에러 응답이 in을 다시 건드리지 않게 미리 뽑아둔다 — 폴백이 예외를 던지면 그 예외가 곧장
+        // downstream onError가 되어 인바운드 스트림이 죽는다(에러 핸들러는 절대 실패하면 안 되는 자리).
+        String clientMsgId = in.clientMsgId();
         // defer로 감싸 커맨드 생성(신뢰경계 검증)의 throw까지 onError 신호로 만든다 — 감싸지 않으면
         // 인자 평가 위치에서 터져 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결이 끊긴다.
         return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
-                .flatMap(view -> registry.sendToSession(sid, toAck(view, in.clientMsgId())))
-                .onErrorResume(e -> registry.sendToSession(sid, toError(e, in.clientMsgId())));
+                .flatMap(view -> registry.sendToSession(sid, toAck(view, clientMsgId)))
+                .onErrorResume(e -> registry.sendToSession(sid, toError(e, clientMsgId)));
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──

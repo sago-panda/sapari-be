@@ -16,6 +16,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
@@ -138,6 +140,23 @@ class ChatWebSocketHandlerTest {
         handler.releaseRoom(roomId);
         verify(disposable).dispose();                         // 마지막 퇴장 → 해제
         assertThat(handler.isSubscribed(roomId)).isFalse();
+    }
+
+    @ParameterizedTest(name = "payload={0}")
+    @ValueSource(strings = { "null", "[]", "\"문자열\"", "123", "{}", "{\"content\":\"안녕\"}", "깨진json" })
+    @DisplayName("onInbound — 어떤 페이로드가 와도 인바운드 스트림이 죽지 않는다(연결 유지)")
+    void inbound_never_kills_stream(String payload) {
+        // given: JSON 리터럴 null은 Jackson이 예외 없이 null을 반환해 catch를 그냥 통과한다
+        when(registry.sendToSession(anyString(), any())).thenReturn(Mono.empty());
+        when(sendUseCase.send(any())).thenReturn(Mono.empty());
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when: 실제 수신 배선과 같은 flatMap 모양으로 태운다
+        // then: 스트림이 정상 완료된다(에러로 끝나면 firstWithSignal이 종료되어 WS가 끊긴다)
+        StepVerifier.create(Flux.just(payload)
+                        .flatMap(p -> handler.onInbound("s1", session, p))
+                        .then())
+                .verifyComplete();
     }
 
     @Test
