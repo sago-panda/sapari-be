@@ -134,15 +134,29 @@ class ReconcileOrphanMediaServiceTest {
     }
 
     @Test
-    @DisplayName("ingress — 송출 중이면 DB 가 고아라 해도 지우지 않는다 (진행 중인 방송이 끊긴다)")
-    void ingress_publishing_isNeverDeleted() {
+    @DisplayName("ingress — 아직 끝나지 않은 방이 송출 중이면 DB 가 고아라 해도 지우지 않는다")
+    void ingress_publishingOnOpenRoom_isNeverDeleted() {
         givenLiveKit(List.of(new IngressSummary("ing-DUP", roomId.toString(), true)), List.of());
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(new LiveStatus.Ready(NOW), new LiveStreamType.Rtmp("ing-1"), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), anyString());
+    }
+
+    @Test
+    @DisplayName("ingress — 종료된 방의 송출은 잔재다: 종료 정리가 실패했을 때 회수할 주체가 여기뿐이다")
+    void ingress_publishingOnEndedRoom_isDeleted() {
+        // 종료 시 deleteIngress 가 실패하면 판매자는 이미 받은 streamKey 로 계속 송출할 수 있다.
+        // publishing 이라고 여기서도 건너뛰면 egress 과금이 이어지고 좀비 방이 남는다.
+        givenLiveKit(List.of(new IngressSummary("ing-1", roomId.toString(), true)), List.of());
         given(liveRoomRepository.findAllByIds(Set.of(roomId)))
                 .willReturn(List.of(room(ended(), new LiveStreamType.Rtmp("ing-1"), OLD)));
 
         service.reconcile();
 
-        then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), anyString());
+        then(liveMediaManager).should(times(1)).deleteIngress(roomId, "ing-1");
     }
 
     @Test

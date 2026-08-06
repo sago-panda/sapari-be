@@ -9,6 +9,14 @@ public interface LiveMediaManager {
     IngressResult createIngress(UUID roomId, UUID sellerId);
     /** 해당 방의 RTMP ingress 가 실제로 송출 중인지(OBS 연결·publish 중). 시작 시점 랑데부 판정에 쓴다. */
     boolean isIngressActive(UUID roomId);
+    /**
+     * {@link #isIngressActive(UUID)} 와 같은 판정이지만 <b>조회 실패 시 예외</b>다.
+     *
+     * <p>둘을 나눈 건 실패의 안전 방향이 반대라서다 — 시작 랑데부는 모르면 승격하지 않는 게 안전하지만(false),
+     * 만료 배치는 모르면 <b>만료해 버리는</b> 게 되어 송출 중인 방의 ingress 를 지운다. 파괴적 판단의 입력으로는
+     * 반드시 이쪽을 쓸 것.
+     */
+    boolean isPublishingOrThrow(UUID roomId);
     HlsEgressResult startHlsEgress(UUID roomId);
     /** 방의 HLS egress 를 <b>모두</b> 중단한다. 한 방송이 화질별로 여러 egress 를 띄우므로 단건 중단은 없다. */
     void stopHlsEgress(UUID roomId);

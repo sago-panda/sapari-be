@@ -665,6 +665,67 @@ public class LiveKitMediaManagerTest {
     }
 
     @Test
+    @DisplayName("createIngress: 빈 ingressId 는 LiveMediaException 으로 번역한다 — raw IAE 는 500 UNEXPECTED 로 샌다")
+    void createIngress_blankIngressId_translatesToDomainException() throws IOException {
+        IngressInfo blank = IngressInfo.newBuilder()
+                .setRoomName(roomId.toString()).setUrl("rtmp://x").setStreamKey("k")
+                .build(); // ingressId 미설정 → ""
+        Call<IngressInfo> call = mock(Call.class);
+        given(ingressServiceClient.createIngress(anyString(), anyString(), anyString(), anyString(),
+                any(IngressInput.class))).willReturn(call);
+        given(call.execute()).willReturn(Response.success(blank));
+
+        assertThrows(LiveMediaException.class,
+                () -> liveKitMediaManager.createIngress(roomId, UUID.randomUUID()));
+    }
+
+    @Test
+    @DisplayName("isPublishingOrThrow: 송출 중인 ingress 가 있으면 true")
+    void isPublishingOrThrow_true() throws IOException {
+        IngressInfo publishing = IngressInfo.newBuilder()
+                .setIngressId("ing-1").setRoomName(roomId.toString())
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_PUBLISHING))
+                .build();
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(publishing)));
+
+        assertThat(liveKitMediaManager.isPublishingOrThrow(roomId)).isTrue();
+    }
+
+    @Test
+    @DisplayName("isPublishingOrThrow: ingress 가 없는 방은 false — 만료 대상의 전형이라 예외로 올리면 회차가 죽는다")
+    void isPublishingOrThrow_noIngress_isFalseNotThrow() throws IOException {
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of()));
+
+        assertThat(liveKitMediaManager.isPublishingOrThrow(roomId)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isPublishingOrThrow: 성공 응답의 null body 는 '없음'이지 실패가 아니다")
+    void isPublishingOrThrow_nullBodyOnSuccess_isFalseNotThrow() throws IOException {
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success((List<IngressInfo>) null));
+
+        // !isSuccessful 이 이미 실패를 걸렀으므로 여기서 예외로 올리면
+        // ingress 가 없는 방(만료 대상의 전형)마다 회차가 죽는다.
+        assertThat(liveKitMediaManager.isPublishingOrThrow(roomId)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isPublishingOrThrow: 조회 실패는 예외 — false 로 삼키면 송출 중인 방을 만료시킨다")
+    void isPublishingOrThrow_throwsOnFailure() throws IOException {
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willThrow(new IOException("연결 실패"));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.isPublishingOrThrow(roomId));
+    }
+
+    @Test
     @DisplayName("listAllEgress: startedAt 0 은 null 로 — 0 을 그대로 변환하면 1970 이라 유예가 항상 통과한다")
     void listAllEgress_nullStartedAt() throws IOException {
         EgressInfo started = EgressInfo.newBuilder()

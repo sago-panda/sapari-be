@@ -32,13 +32,18 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 ## Media (SFU / HLS) — port-isolated
 
 All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); never call the SDK from a
-service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive`, `startHlsEgress`,
+service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive` /
+`isPublishingOrThrow` (**same check, opposite failure direction — see below**), `startHlsEgress`,
 `stopHlsEgress` (room-wide; a broadcast runs one egress per rendition, so there is no single-egress stop),
 `deleteIngress` (room-wide / single-id), `closeRoom`, `getSfuUrl`, `listAllIngress`, `listAllEgress`.
 
 **Cleanup calls are best-effort, query calls fail-fast.** `deleteIngress`/`stopHlsEgress`/`closeRoom` log
-and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress` **throw** — an empty
-list reads as "no orphans" and would let a batch finish green on a failed lookup.
+and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress`/`isPublishingOrThrow`
+**throw** — an empty answer reads as "no orphans" / "not publishing" and would let a batch finish green, or
+destroy a live room, on a failed lookup. `isIngressActive` is the fail-*open* twin (`false` on failure): safe
+for the go-live rendezvous, wrong anywhere a `false` triggers deletion. Pick by which direction is destructive.
+A successful response with a null body is **empty, not a failure** — conflating them kills the round on every
+room that legitimately has no ingress.
 
 **Start-side media calls run inside `@Transactional` on purpose (`StartLiveService`, `GoLiveByRtmpService`)
 — reviewers must NOT flag these.** They run *after* re-validation so we never hit the server in a bad state,
@@ -75,7 +80,9 @@ triggers `Live`, so both sides are idempotent no-ops when the room isn't `Ready+
   NULL` makes the DB pick a winner, and the loser deletes **its own** ingress (single-id — a room-wide delete
   would take the winner's too). **This is the one path where the WHERE clause *is* the domain guard**; add a
   `LiveStatus` variant and the compiler won't remind you about this query. Don't spread the pattern —
-  everywhere else, transitions serialize on a row lock.
+  everywhere else, transitions serialize on a row lock. Same reason `IngressResult` validates `ingressId`
+  itself: the UPDATE writes the column directly, so `LiveStreamType.Rtmp`'s constructor never sees it and a
+  blank value would leave `stream_type=RTMP, ingress_id=NULL` — a row the mapper can no longer read.
 - **End cleanup deletes ingress room-wide, before `closeRoom`** — a surviving ingress lets OBS auto-reconnect
   re-create the closed SFU room. Stale `ingress_id` stays on the Ended row by design (broadcast history).
 
@@ -106,16 +113,17 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
 
 - **Ready-expiry can also *start* a broadcast.** A room whose `ingress_started` rendezvous was lost is still
   publishing; expiring it would delete the ingress and close the SFU room mid-stream, so the job completes
-  the missed rendezvous instead. Judge with `listAllIngress` (once per round, throws on failure) — **not**
-  `isIngressActive`, which returns `false` on a failed lookup and here that reads as "go ahead and destroy".
-  Residual gap: the publishing snapshot is taken once, so a room that reconnects mid-round can still be
-  expired — only if its webhook is lost *again*, since otherwise the room turns `Live` and the guard catches it.
+  the missed rendezvous instead. Judge **per room, right before touching it** (`isPublishingOrThrow`) — a
+  once-per-round snapshot lets a room that reconnects mid-round get expired anyway.
 
 - **Never judge staleness by viewer count** — HLS viewers are not SFU participants (a popular room reads 0),
   and a 0-viewer broadcast is normal. `started_at`, not `updated_at`: the latter moves on any save, so a
   broadcast that gets edited would never be swept.
 - **When in doubt, don't delete.** A LiveKit resource with no DB row is logged only (`createIngress` done,
-  `save` pending looks exactly like that); a publishing ingress is never removed; a grace period covers both.
+  `save` pending looks exactly like that), and a grace period covers the same window. A publishing ingress is
+  spared too — **except when the room is already `Ended`**: that stream is a leftover of a failed end-cleanup,
+  and this job is the only thing that would ever reclaim it (the seller can keep pushing with a streamKey
+  they already hold, so egress keeps billing and the surviving ingress re-creates the closed SFU room).
 - Per-room work is a separate bean so `@Transactional` + row lock actually apply (self-invocation would not).
   Orchestrators skip `InvalidLiveStateException`/`LiveNotFoundException` per item and let anything else abort
   the round.

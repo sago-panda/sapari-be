@@ -104,6 +104,17 @@ class PrepareIngressServiceTest {
     }
 
     @Test
+    @DisplayName("LiveKit 이 빈 ingressId 를 주면 어댑터 경계에서 막는다 — 조건부 UPDATE 는 Rtmp 생성자를 거치지 않는다")
+    void ingressResult_rejectsBlankIngressId() {
+        // 빈 값이 통과하면 stream_type=RTMP + ingress_id=NULL 행이 남아
+        // 다음 prepare 가 또 통과하고, 매퍼가 Rtmp(null) 을 만들려다 터져 방 조회 자체가 실패한다.
+        assertThatThrownBy(() -> new IngressResult(" ", "rtmp://livekit/live", "secret-key"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new IngressResult(null, "rtmp://livekit/live", "secret-key"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("경합에서 지면 자기 ingress 를 회수하고 거부한다 — 방당 ingress 하나를 SQL 이 보장한다")
     void prepare_losesRace_deletesOwnIngressAndRejects() {
         Instant now = Instant.parse("2026-06-09T02:00:00Z");

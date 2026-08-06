@@ -87,8 +87,11 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                         ingress.roomName(), ingress.ingressId());
                 continue;
             }
-            // 송출 중이면 DB 가 뭐라 하든 건드리지 않는다. 지우는 순간 진행 중인 방송이 끊긴다.
-            if (ingress.publishing()) {
+            // 송출 중이면 원칙적으로 건드리지 않는다 — 지우는 순간 진행 중인 방송이 끊긴다.
+            // 단 방이 이미 Ended 면 그 송출은 정상이 아니라 잔재다: 종료 시 deleteIngress 가 실패하면
+            // 판매자는 이미 받은 streamKey 로 계속 송출할 수 있고, 여기서까지 건너뛰면 아무도 회수하지
+            // 않아 egress 과금이 이어지고 살아남은 ingress 가 닫힌 SFU 방을 재생성한다(좀비 방).
+            if (ingress.publishing() && !(room.status() instanceof LiveStatus.Ended)) {
                 continue;
             }
             // ingress 는 LiveKit 이 생성 시각을 주지 않아 방의 updated_at 으로 나이를 잰다.

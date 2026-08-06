@@ -124,6 +124,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
             }
 
             IngressInfo info = response.body();
+            // IngressResult 도 같은 검증을 하지만 그건 raw IllegalArgumentException 이라 여기서 도메인
+            // 예외로 번역한다(어댑터가 인프라 예외를 번역한다는 계약). record 쪽은 마지막 그물로 남긴다.
+            if (info.getIngressId() == null || info.getIngressId().isBlank()) {
+                log.error("LiveKit 이 빈 ingressId 를 반환: roomId={}", roomId);
+                throw new LiveMediaException("발급된 ingressId 가 비어 있습니다: " + roomId);
+            }
             // streamKey 는 자격증명 — 로그에 남기지 않는다(ingressId/url 만 기록).
             log.info("RTMP Ingress 생성: roomId={}, ingressId={}", roomId, info.getIngressId());
             return new IngressResult(info.getIngressId(), info.getUrl(), info.getStreamKey());
@@ -156,6 +162,32 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // OBS 선연결 + 조회 실패가 겹치면 재전송 이벤트가 없어 Ready 로 남을 수 있음(reconciliation 대상).
             log.warn("RTMP ingress 활성 조회 실패 — 비활성으로 간주: roomId={}", roomId, e);
             return false;
+        }
+    }
+
+    /**
+     * {@link #isIngressActive(UUID)} 와 같은 판정, 조회 실패는 예외로 올린다.
+     * 만료 배치가 "송출 중이 아니면 지운다"에 쓰므로 실패를 false 로 삼키면 살아 있는 방송을 끊는다.
+     */
+    @Override
+    public boolean isPublishingOrThrow(UUID roomId){
+        try {
+            Response<List<IngressInfo>> response = ingressServiceClient.listIngress(roomId.toString()).execute();
+            if (!response.isSuccessful()) {
+                log.error("RTMP ingress 송출 조회 실패: roomId={}, code={}", roomId, response.code());
+                throw new LiveMediaException("ingress 송출 여부 조회에 실패했습니다: " + roomId);
+            }
+            // 성공 응답의 null body 는 "내용 없음"이지 실패가 아니다 — 실패는 위에서 걸렀다.
+            // 합쳐서 예외로 올리면 ingress 가 아예 없는 방(= 만료 대상의 전형)마다 회차가 죽는다.
+            if (response.body() == null) {
+                return false;
+            }
+            return response.body().stream().anyMatch(this::isPublishing);
+        } catch (LiveMediaException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("RTMP ingress 송출 조회 오류: roomId={}", roomId, e);
+            throw new LiveMediaException("ingress 송출 여부 조회 중 오류: " + roomId, e);
         }
     }
 

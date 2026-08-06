@@ -25,7 +25,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.ExpiredReadyReconcilePolicy;
-import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
@@ -75,7 +74,7 @@ class ReconcileExpiredReadyServiceTest {
         given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(ids));
         if (ids.length > 0) {
-            given(liveMediaManager.listAllIngress()).willReturn(List.of());
+            given(liveMediaManager.isPublishingOrThrow(org.mockito.ArgumentMatchers.any(UUID.class))).willReturn(false);
         }
     }
 
@@ -167,8 +166,7 @@ class ReconcileExpiredReadyServiceTest {
         UUID roomId = UUID.randomUUID();
         given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
-        given(liveMediaManager.listAllIngress())
-                .willReturn(List.of(new IngressSummary("ing-1", roomId.toString(), true)));
+        given(liveMediaManager.isPublishingOrThrow(roomId)).willReturn(true);
 
         service.reconcile();
 
@@ -182,8 +180,7 @@ class ReconcileExpiredReadyServiceTest {
         UUID roomId = UUID.randomUUID();
         given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
-        given(liveMediaManager.listAllIngress())
-                .willReturn(List.of(new IngressSummary("ing-1", roomId.toString(), false)));
+        given(liveMediaManager.isPublishingOrThrow(roomId)).willReturn(false);
 
         service.reconcile();
 
@@ -192,13 +189,12 @@ class ReconcileExpiredReadyServiceTest {
     }
 
     @Test
-    @DisplayName("다른 방이 송출 중이어도 이 방의 만료를 막지 않는다")
+    @DisplayName("다른 방의 송출 여부는 이 방 판정에 영향을 주지 않는다")
     void otherRoomPublishing_doesNotProtect() {
         UUID roomId = UUID.randomUUID();
         given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
-        given(liveMediaManager.listAllIngress())
-                .willReturn(List.of(new IngressSummary("ing-1", UUID.randomUUID().toString(), true)));
+        given(liveMediaManager.isPublishingOrThrow(roomId)).willReturn(false);
 
         service.reconcile();
 
@@ -206,17 +202,54 @@ class ReconcileExpiredReadyServiceTest {
     }
 
     @Test
-    @DisplayName("ingress 조회가 실패하면 아무 방도 만료하지 않는다 — 빈 목록으로 처리하면 송출 중인 방까지 끊는다")
+    @DisplayName("송출 조회가 실패한 방은 만료하지 않는다 — false 로 처리하면 송출 중인 방까지 끊는다")
     void ingressLookupFailure_expiresNothing() {
         UUID roomId = UUID.randomUUID();
         given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
-        given(liveMediaManager.listAllIngress()).willThrow(new LiveMediaException("조회 실패"));
+        given(liveMediaManager.isPublishingOrThrow(roomId)).willThrow(new LiveMediaException("조회 실패"));
 
-        assertThatThrownBy(() -> service.reconcile()).isInstanceOf(LiveMediaException.class);
+        service.reconcile();
 
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
         then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("한 방의 송출 조회가 실패해도 나머지 후보는 처리한다 — 후보가 오래된 순이라 선두가 막으면 뒤가 영영 안 돈다")
+    void lookupFailureOnOneRoom_doesNotBlockTheRest() {
+        UUID broken = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt()))
+                .willReturn(List.of(broken, other));
+        given(liveMediaManager.isPublishingOrThrow(broken)).willThrow(new LiveMediaException("조회 실패"));
+        given(liveMediaManager.isPublishingOrThrow(other)).willReturn(false);
+
+        service.reconcile();
+
+        then(expireOrphanLiveUseCase).should(never()).expire(new ExpireOrphanLiveCommand(broken));
+        then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(other));
+    }
+
+    @Test
+    @DisplayName("송출 여부는 방을 처리하기 직전에 방마다 확인한다 — 회차 시작 스냅샷이면 그 뒤 재연결한 방이 만료된다")
+    void publishingIsCheckedPerRoom_notOncePerRound() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt()))
+                .willReturn(List.of(first, second));
+        // 첫 방 처리 중에 둘째 방이 재연결한 상황
+        given(liveMediaManager.isPublishingOrThrow(first)).willReturn(false);
+        given(liveMediaManager.isPublishingOrThrow(second)).willReturn(true);
+
+        service.reconcile();
+
+        then(liveMediaManager).should(times(1)).isPublishingOrThrow(first);
+        then(liveMediaManager).should(times(1)).isPublishingOrThrow(second);
+        then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(first));
+        then(expireOrphanLiveUseCase).should(never()).expire(new ExpireOrphanLiveCommand(second));
     }
 
     @Test
@@ -226,7 +259,7 @@ class ReconcileExpiredReadyServiceTest {
 
         service.reconcile();
 
-        then(liveMediaManager).should(never()).listAllIngress();
+        then(liveMediaManager).should(never()).isPublishingOrThrow(any(UUID.class));
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
     }
 }

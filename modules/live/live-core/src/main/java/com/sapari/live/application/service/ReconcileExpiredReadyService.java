@@ -5,19 +5,16 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.ExpiredReadyReconcilePolicy;
-import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
@@ -32,9 +29,12 @@ import com.sapari.live.port.ReconcileExpiredReadyUseCase;
  * {@code ingress_started} 랑데부를 놓친 방인데(재전송될 이벤트가 없다), 그 방은 <b>지금도 publish 중</b>이다.
  * 만료시키면 ingress 를 지우고 SFU 방을 닫아 판매자 송출을 끊는다. 실패한 랑데부를 여기서 완성하는 게 맞다.
  *
- * <p>판정을 {@code isIngressActive}(방마다 1회)로 하지 않는 것도 의도다 — 그 메서드는 조회 실패 시
- * {@code false} 를 주는데, go-live 기준으로는 안전한 방향이지만 여기서는 "만료해라"로 읽혀 정반대가 된다.
- * {@code listAllIngress}(실패 시 예외)를 회차당 1회 부르면 LiveKit 장애 때 아무 방도 건드리지 않는다.
+ * <p>판정은 <b>방을 처리하기 직전에 방마다</b> 한다. 회차 시작에 목록을 한 번 떠 두면, 그 뒤 순차 처리
+ * 도중에 재연결한 방이 스냅샷에 없어 그대로 만료된다. 호출이 후보 수만큼 늘지만 후보는 보통 0건이고,
+ * 후보가 있으면 어차피 방마다 정리 3종을 부른다.
+ *
+ * <p>{@code isIngressActive} 가 아니라 {@code isPublishingOrThrow} 를 쓰는 것도 의도다 — 전자는 조회 실패 시
+ * {@code false} 라 go-live 기준으로는 안전하지만, 여기서는 "만료해라"로 읽혀 정반대가 된다.
  */
 @Slf4j
 @Service
@@ -56,19 +56,24 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
             return;
         }
 
-        Set<UUID> publishing = publishingRoomIds();
-
         int expired = 0;
         int promoted = 0;
         int skipped = 0;
         for (UUID roomId : roomIds) {
             try {
-                if (publishing.contains(roomId)) {
+                // 처리 직전에 확인한다 — 조회가 실패하면 그 방은 만료하지 않고 다음 회차로 미룬다.
+                if (liveMediaManager.isPublishingOrThrow(roomId)) {
                     promoted += promote(roomId);
                 } else {
                     expireOrphanLiveUseCase.expire(new ExpireOrphanLiveCommand(roomId));
                     expired++;
                 }
+            } catch (LiveMediaException e) {
+                // 이 방만 다음 회차로 미룬다 — 던지고 끝내면 후보가 updated_at ASC 정렬이라 조회가
+                // 재현성 있게 실패하는 방이 늘 선두에 서서 뒤 후보 전체가 영영 처리되지 않는다.
+                // 전역 LiveKit 장애면 어차피 전 방이 여기로 빠져 아무것도 만료되지 않는다(fail-closed 유지).
+                skipped++;
+                log.warn("Ready 정리 스킵 — 송출 여부 조회 실패. roomId={}", roomId, e);
             } catch (InvalidLiveStateException | LiveNotFoundException e) {
                 skipped++;
                 log.info("Ready 정리 스킵 — 이미 처리된 방. roomId={}, 사유={}", roomId, e.getClass().getSimpleName());
@@ -109,12 +114,4 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         return 1;
     }
 
-    /** 지금 송출 중인 방 — 조회가 실패하면 예외가 올라가 회차 전체가 중단된다(빈 집합이면 전부 만료된다). */
-    private Set<UUID> publishingRoomIds() {
-        return liveMediaManager.listAllIngress().stream()
-                .filter(IngressSummary::publishing)
-                .map(ingress -> LiveKitRoomNames.parseRoomId(ingress.roomName()))
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-    }
 }
