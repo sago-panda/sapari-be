@@ -311,7 +311,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
             long dropped = droppedOnContention.incrementAndGet();
             if (shouldLogDrop()) {
-                log.warn("경합 재시도 소진 — 메시지 드롭(세션 유지) sessionId={} roomId={} 누적드롭={}",
+                // id는 이 창을 연 한 건의 것이고 누적은 Pod 전역이다 — "이 세션이 N건"으로 읽히지 않게 표기한다
+                log.warn("경합 재시도 소진 — 메시지 드롭(세션 유지) 표본 sessionId={} 표본 roomId={} 누적드롭={}",
                         ls.sessionId(), ls.session().roomId(), dropped);
             }
         }

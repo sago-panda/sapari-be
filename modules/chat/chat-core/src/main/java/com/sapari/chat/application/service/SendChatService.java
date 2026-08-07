@@ -68,19 +68,18 @@ public class SendChatService implements SendChatUseCase {
     private final AtomicReference<Instant> lastPublishFailureLog = new AtomicReference<>(Instant.EPOCH);
 
     /**
-     * 강퇴 조회 실패를 기록한다. <b>절대 던지지 않는다</b> — 이 자리는 fail-open 분기 안이라,
-     * 여기서 예외가 나가면 Reactor가 하류로 전파해 전송이 거부된다(가용성 우선 정책이 정반대로 뒤집힘).
-     * 관측이 깨지는 것보다 정책이 뒤집히는 게 훨씬 나쁘므로 관측 실패는 삼킨다.
+     * 강퇴 조회 실패를 기록한다.
+     *
+     * <p><b>여기서는 던질 수 있는 호출을 하지 마라.</b> 이 메서드는 fail-open 분기(onErrorResume 람다) 안에서
+     * 불리는데, 예외가 나가면 Reactor가 하류로 전파해 전송이 <i>거부</i>된다 — 가용성 우선 정책이 정반대로
+     * 뒤집힌다. 지금 호출하는 것들(원자적 증가·주입된 Clock·로거)은 모두 던지지 않는다. 메트릭·감사 같은
+     * 걸 추가할 때 이 불변식을 깨지 않도록 확인할 것.
      */
     private void recordKickedFailOpen(UUID roomId, Throwable err) {
-        try {
-            long count = kickedFailOpenCount.incrementAndGet();
-            if (shouldLog(lastKickedFailOpenLog)) {
-                log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
-                        count, roomId, err);
-            }
-        } catch (RuntimeException ignored) {
-            // 로거·시계가 깨진 상황. 전송은 그대로 진행시킨다.
+        long count = kickedFailOpenCount.incrementAndGet();
+        if (shouldLog(lastKickedFailOpenLog)) {
+            log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
+                    count, roomId, err);
         }
     }
 
@@ -125,8 +124,8 @@ public class SendChatService implements SendChatUseCase {
         }
 
         // 4) kicked — Redis 1회 SISMEMBER. 에러는 fail-open(전송 허용, L13) — 어댑터는 error 전파, 매핑은 여기.
-        // 통과시키되 흔적은 남긴다: 이 경로가 열렸다는 건 강퇴가 무력화된 구간이라는 뜻인데, 지금까지
-        // 로그도 카운터도 없어 "언제 몇 건이 우회했는가"를 사후에 복원할 수 없었다.
+        // 통과시키되 흔적은 남긴다 — 이 경로가 열린 구간은 강퇴가 무력화된 구간이라, 시작 시점과 규모를
+        // 남겨야 사후에 "언제 몇 건이 우회했는가"를 짚을 수 있다.
         return kickRepository.isKicked(command.roomId(), command.senderId())
                 .onErrorResume(err -> {
                     recordKickedFailOpen(command.roomId(), err);
