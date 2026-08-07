@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -44,10 +45,19 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /**
      * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
-     * 실측 경합은 마이크로초대(p99 8µs, 최악 0.5ms)라 정상 트래픽엔 여유가 크고, 이 상한에 닿는 건
-     * 이미 비정상이므로 오래 버티기보다 포기하고 그 세션을 끊는다(emitSerially 주석 참고).
+     *
+     * <p>락 보유 구간은 큐 적재 + 드레인(직렬화)이라 정상 상태엔 수십 µs 수준이고 5ms는 두 자릿수 여유다.
+     * 여기 닿는 건 경합이 길어서가 아니라 <b>보유 스레드가 느려지거나 선점될 때</b>다 — 기동 직후 첫 드레인,
+     * STW GC, CPU 스로틀링. 셋 다 JVM 전역이라 여러 세션이 동시에 걸린다. 그래서 상한을 짧게 두어
+     * 이벤트루프 점유를 줄이되, 소진했다고 세션을 끊지는 않는다(emit 주석 참고).
      */
     private static final long CONTENTION_SPIN_NANOS = Duration.ofMillis(5).toNanos();
+
+    /**
+     * 종료 신호 재시도 상한. emit보다 넉넉히 준다 — 핫패스가 아니라 방당·강퇴당 한 번뿐이고,
+     * 실패하면 메시지 1건이 아니라 <b>세션이 안 닫히는</b> 결과라 정확성 쪽에 무게를 둔다.
+     */
+    private static final long COMPLETE_SPIN_NANOS = Duration.ofMillis(50).toNanos();
 
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
 
@@ -62,6 +72,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 서로 끼어들지 않게 하고, 방이 비면 항목 자체를 지운다(죽은 방 누적 방지).
      */
     private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
+
+    /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
+    private final AtomicLong droppedOnContention = new AtomicLong();
 
     /** sessionId를 함께 들고 다닌다 — 전달 실패 로그에서 어느 커넥션인지 짚으려면 필요하다. */
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink) {
@@ -168,8 +181,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /**
      * 세션 Sink로 1건 밀어넣기. null 세션은 무시.
      *
-     * <p>전달하지 못한 메시지는 조용히 버리지 않고 그 세션의 아웃바운드를 끝낸다 — 빠뜨린 채 두면 클라 화면이
-     * 어긋난 줄도 모르고 유지되지만, 끊으면 프론트가 재접속·이력 재조회로 복구할 여지가 생긴다.
+     * <p>실패 종류에 따라 처분이 다르다. 버퍼가 찼다는 건 <b>그 클라가 못 따라온다</b>는 뜻이라 세션을 끊고,
+     * 경합 소진은 <b>다른 스레드가 그 순간 락을 쥐고 있었다</b>는 뜻일 뿐 세션은 멀쩡하므로 그 메시지만 버린다.
+     * 둘을 같이 묶으면 부하가 오를수록(=소진이 잦아질수록) 멀쩡한 시청자를 끊게 되고, 끊긴 클라의 재접속이
+     * 부하를 더 올려 스스로 번진다.
      *
      * <p><b>한계</b>: 아웃바운드 종료는 버퍼에 쌓인 메시지 뒤에 줄을 서므로, 소켓을 전혀 읽지 않는 클라에겐
      * 종료 신호가 닿지 않고 연결이 남는다. 버퍼가 유계라 힙은 보호되지만 연결·세션 항목은 회수되지 않는다.
@@ -179,29 +194,37 @@ public class ChatSessionRegistry implements ChatSessionManager {
         if (ls == null) {
             return;
         }
-        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message));
-        if (losesMessage(result)) {
-            log.warn("아웃바운드 전달 실패 — 세션 종료 시도 sessionId={} roomId={} userId={} result={}",
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), CONTENTION_SPIN_NANOS);
+        if (consumerCannotKeepUp(result)) {
+            log.warn("아웃바운드 버퍼 초과 — 세션 종료 시도 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
             complete(ls);
+        } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
+            // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
+            log.warn("경합 재시도 소진 — 메시지 1건 드롭(세션 유지) sessionId={} roomId={} 누적드롭={}",
+                    ls.sessionId(), ls.session().roomId(), droppedOnContention.incrementAndGet());
         }
     }
 
     /**
-     * 이 결과면 메시지가 실제로 유실됐다는 뜻이라 세션을 끊는다 — 초과(FAIL_OVERFLOW)·구독 전 초과
-     * (FAIL_ZERO_SUBSCRIBER)·경합 재시도 소진(FAIL_NON_SERIALIZED). 이미 끝난 세션
-     * ({@code FAIL_TERMINATED}/{@code FAIL_CANCELLED})은 정상 흐름이라 아무것도 하지 않는다.
-     * (정책을 한 곳에 모아 테스트로 고정하기 위한 진입점)
+     * 버퍼에 자리가 없어 밀어넣지 못한 경우 — 그 클라가 소비를 못 따라온다는 신호라 세션을 끊는다.
+     * {@code FAIL_ZERO_SUBSCRIBER}도 "구독 전"이 아니라 "구독 전에 버퍼가 찼다"는 뜻이라 같이 묶는다.
+     * 이미 끝난 세션({@code FAIL_TERMINATED}/{@code FAIL_CANCELLED})과 일시 경합
+     * ({@code FAIL_NON_SERIALIZED})은 해당하지 않는다. (정책을 한 곳에 모아 테스트로 고정하기 위한 진입점)
      */
-    boolean losesMessage(Sinks.EmitResult result) {
+    boolean consumerCannotKeepUp(Sinks.EmitResult result) {
         return result == Sinks.EmitResult.FAIL_OVERFLOW
-                || result == Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER
-                || result == Sinks.EmitResult.FAIL_NON_SERIALIZED;
+                || result == Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER;
     }
 
-    /** 종료 신호도 emit과 같은 경합을 겪는다 — 놓치면 세션이 안 닫히므로 같은 재시도를 태우고, 실패는 남긴다. */
+    /** 경합으로 버린 메시지 누적 수. (관측용 — 0이 아니면 그만큼 화면이 어긋났다는 뜻) */
+    long droppedOnContention() {
+        return droppedOnContention.get();
+    }
+
+    /** 종료 신호도 emit과 같은 경합을 겪는다 — 놓치면 세션이 안 닫히므로 더 긴 예산으로 재시도하고, 실패는 남긴다. */
     private void complete(LocalSession ls) {
-        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitComplete());
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitComplete(), COMPLETE_SPIN_NANOS);
         if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             log.error("세션 종료 신호 전달 실패(경합 재시도 소진) — 세션이 남는다 sessionId={} roomId={}",
                     ls.sessionId(), ls.session().roomId());
@@ -213,12 +236,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 한 세션에 ack(WS 이벤트루프)와 방 브로드캐스트(Redis 구독 스레드)가 동시에 들어오므로, Reactor 권장대로
      * 경합 구간만 짧게 busy-loop 재시도한다.
      *
-     * <p>상한을 짧게 잡는 이유: 락을 쥔 쪽은 버퍼를 비우는 동안(최대 버퍼 크기만큼의 직렬화까지) 쥐고 있고,
-     * 기다리는 쪽은 <b>Netty 이벤트루프에서 spin</b>할 수 있다 — 그 루프에 붙은 다른 커넥션까지 함께 멈춘다.
-     * 길게 버티는 것보다 빨리 포기하고 그 세션 하나만 끊는 편이 피해 범위가 작다.
+     * <p>상한을 짧게 잡는 이유: 락을 쥔 쪽은 버퍼를 비우는 동안(직렬화까지) 쥐고 있고, 기다리는 쪽은
+     * <b>Netty 이벤트루프에서 spin</b>할 수 있다 — 그 루프에 붙은 다른 커넥션까지 함께 멈춘다.
+     * 소진 시 처분은 호출자가 정한다.
      */
-    private Sinks.EmitResult emitSerially(Supplier<Sinks.EmitResult> emitter) {
-        long deadline = System.nanoTime() + CONTENTION_SPIN_NANOS;
+    private Sinks.EmitResult emitSerially(Supplier<Sinks.EmitResult> emitter, long spinNanos) {
+        long deadline = System.nanoTime() + spinNanos;
         while (true) {
             Sinks.EmitResult result = emitter.get();
             if (result != Sinks.EmitResult.FAIL_NON_SERIALIZED || System.nanoTime() >= deadline) {

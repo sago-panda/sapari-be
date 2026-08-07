@@ -135,19 +135,19 @@ class ChatSessionRegistryTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = Sinks.EmitResult.class,
-            names = { "FAIL_OVERFLOW", "FAIL_ZERO_SUBSCRIBER", "FAIL_NON_SERIALIZED" })
-    @DisplayName("전달 실패 판정 — 메시지가 실제로 유실된 결과는 모두 세션 종료 대상")
-    void emit_results_that_lose_the_message(Sinks.EmitResult result) {
-        // FAIL_NON_SERIALIZED(경합 재시도 소진)를 빼면 그 경로만 무성 유실로 남는다
-        assertThat(registry.losesMessage(result)).isTrue();
+    @EnumSource(value = Sinks.EmitResult.class, names = { "FAIL_OVERFLOW", "FAIL_ZERO_SUBSCRIBER" })
+    @DisplayName("종료 판정 — 버퍼가 차서 못 담은 경우만 세션 종료 대상")
+    void emit_results_that_mean_slow_consumer(Sinks.EmitResult result) {
+        assertThat(registry.consumerCannotKeepUp(result)).isTrue();
     }
 
     @ParameterizedTest
-    @EnumSource(value = Sinks.EmitResult.class, names = { "OK", "FAIL_TERMINATED", "FAIL_CANCELLED" })
-    @DisplayName("전달 실패 판정 — 성공이거나 이미 끝난 세션은 종료 대상이 아니다")
-    void emit_results_that_need_no_action(Sinks.EmitResult result) {
-        assertThat(registry.losesMessage(result)).isFalse();
+    @EnumSource(value = Sinks.EmitResult.class,
+            names = { "OK", "FAIL_TERMINATED", "FAIL_CANCELLED", "FAIL_NON_SERIALIZED" })
+    @DisplayName("종료 판정 — 일시 경합은 세션이 멀쩡하므로 종료 대상이 아니다")
+    void emit_results_that_must_not_close_session(Sinks.EmitResult result) {
+        // FAIL_NON_SERIALIZED로 끊으면 부하가 오를수록 멀쩡한 시청자를 끊고, 재접속이 부하를 더 올린다
+        assertThat(registry.consumerCannotKeepUp(result)).isFalse();
     }
 
     @Test
@@ -232,8 +232,11 @@ class ChatSessionRegistryTest {
         start.countDown();
         assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
 
-        // then
-        assertThat(received).hasSize(threads * perThread);
+        // then: 조용히 사라진 메시지가 없다 — 도착했거나, 드롭으로 세어졌거나 둘 중 하나.
+        // (CPU가 모자란 러너에선 재시도가 소진돼 일부가 드롭될 수 있고, 그건 계수되므로 정상이다.
+        //  수정 전에는 이 경합 실패가 아무 데도 안 잡혀 그대로 사라졌다.)
+        assertThat(received.size() + registry.droppedOnContention())
+                .isEqualTo((long) threads * perThread);
     }
 
     @Test
