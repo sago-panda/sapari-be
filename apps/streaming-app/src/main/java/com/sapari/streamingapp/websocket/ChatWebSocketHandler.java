@@ -134,6 +134,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 Flux.defer(() -> registry.outbound(sid)).map(message -> session.textMessage(serialize(message))));
 
         Mono<Void> inbound = session.receive()
+                // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
+                // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(Ping은 Netty가 자동 응답하고 올려주지 않음).
+                .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
                 .map(WebSocketMessage::getPayloadAsText)
                 .flatMap(payload -> onInbound(sid, chatSession, payload))
                 .then();
