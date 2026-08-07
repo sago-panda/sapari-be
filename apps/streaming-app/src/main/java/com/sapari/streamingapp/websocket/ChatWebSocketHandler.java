@@ -150,14 +150,22 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .delayElement(FORCED_CLOSE_GRACE)
                 .then();
 
+        // 종료 사유를 코드로 실어 닫는다 — complete 신호엔 코드를 못 싣기 때문에 따로 붙인다.
+        //
+        // firstWithSignal 바깥이 아니라 서버발 종료 브랜치 "안"에 둔다: 승자가 신호를 내보내기 전에
+        // 패자가 먼저 취소되는데, 그때 취소되는 session.receive()가 Reactor Netty에서 상태코드 없는
+        // close 프레임을 먼저 내보내고 "이미 닫음" 래치를 걸어버린다. 바깥에 두면 그 뒤에 실행돼
+        // 아무 효과가 없다(클라가 받는 코드는 1005).
+        Mono<Void> closeWithReason = Mono.defer(() -> session.close(registry.closeStatusOf(sid)));
+
         return registry.register(sid, chatSession)
                 .then(registry.getActiveCount(roomId))
                 .flatMap(count -> registry.sendToSession(sid, roomInfo(count, chatSession.isRoomOwner())))
                 // firstWithSignal: 셋 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
                 // (sink complete → outbound), 그리고 그 둘이 다 막혔을 때의 강제 종료.
-                .then(Mono.firstWithSignal(outbound, inbound, forcedClose))
-                // 종료 사유를 코드로 실어 닫는다 — complete 신호엔 코드를 못 싣기 때문에 따로 붙인다.
-                .then(Mono.defer(() -> session.close(registry.closeStatusOf(sid))))
+                // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
+                .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
+                        forcedClose.then(closeWithReason)))
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 
