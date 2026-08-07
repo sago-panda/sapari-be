@@ -10,10 +10,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.time.Instant;
-import org.springframework.web.reactive.socket.WebSocketSession;
-import org.springframework.web.reactive.socket.CloseStatus;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -22,6 +20,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.web.reactive.socket.CloseStatus;
+import org.springframework.web.reactive.socket.WebSocketSession;
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -226,8 +226,11 @@ class ChatWebSocketHandlerTest {
 
         // when·then: 상한을 넘기면 스스로 끝나야 한다. 안 그러면 firstWithSignal이 안 끝나
         // doFinally(cleanup)까지 막혀 세션 명부·방 구독·Redis 항목이 통째로 남는다.
+        // verify()에 상한을 준다 — 기본값은 무한 대기라, 누가 .timeout(...)을 지우면 이 테스트가
+        // 실패하는 대신 CI를 멈춰 세운다(지키려던 회귀 신호가 사라진다).
         StepVerifier.withVirtualTime(() -> handler.closeWithReason(session, "s1"))
                 .thenAwait(Duration.ofSeconds(10))
-                .verifyComplete();
+                .expectComplete()
+                .verify(Duration.ofSeconds(5));
     }
 }

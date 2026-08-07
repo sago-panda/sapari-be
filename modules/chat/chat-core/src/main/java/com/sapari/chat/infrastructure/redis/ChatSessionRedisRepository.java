@@ -29,7 +29,8 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
      * 그러면 이 키는 지울 주체가 사라진다. 방송 최대 길이보다 넉넉히 잡아 정상 방송을 건드리지 않는다.
      *
      * <p><b>줄이지 말 것</b>: 갱신은 입장(add) 때만 일어나고 기존 세션을 다시 등록하는 경로가 없다.
-     * 값이 방송 길이보다 짧아지면 진행 중인 방의 키가 만료돼 그 방송 내내 시청자 수가 어긋난다.
+     * 그래서 만료 조건은 "방송이 길다"가 아니라 <b>마지막 입장 이후 이 값만큼 신규 입장이 없다</b>이다 —
+     * 한산한 방일수록 먼저 걸리고, 걸리면 그 방송 내내 시청자 수가 어긋난다.
      * (주기적 재등록이 생기기 전까지는 이 여유가 유일한 방어다.)
      */
     private static final Duration SESSIONS_TTL = Duration.ofHours(24);

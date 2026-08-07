@@ -59,8 +59,9 @@ public class RedisLiveRoomEndedSource implements LiveRoomEndedSource {
             JsonNode roomId = objectMapper.readTree(json).get("roomId");
             if (roomId == null) {
                 // NPE에 기대지 않고 명시적으로 구분한다 — "필드가 없음"과 "값이 이상함"은 원인이 다르다.
+                // 여기 오면 readTree가 이미 성공했으므로 json은 null이 아니다.
                 log.error("live:room:ended payload에 roomId 필드 없음 — 해당 메시지 skip payloadLength={}",
-                        json == null ? -1 : json.length());
+                        json.length());
                 return Mono.empty();
             }
             return Mono.just(UUID.fromString(roomId.asText()));

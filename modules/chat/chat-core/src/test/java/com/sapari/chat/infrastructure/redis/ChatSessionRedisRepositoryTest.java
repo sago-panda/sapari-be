@@ -10,12 +10,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
-import java.time.Duration;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-
 
 /**
  * Redis 세션 HASH 어댑터 단위 통합 테스트 — 컨테이너 + 수동 조립.

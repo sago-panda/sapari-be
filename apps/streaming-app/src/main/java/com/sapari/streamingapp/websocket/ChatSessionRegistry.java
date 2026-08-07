@@ -139,7 +139,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
             sessionIds.remove(sessionId);
             return sessionIds.isEmpty() ? null : sessionIds;
         });
-        // 여기까지 오면 로컬 정리는 끝났고 남는 건 Redis 필드 하나다(TTL이 결국 회수한다). 다만 호출부가
+        // 여기까지 오면 로컬 정리는 끝났고 남는 건 Redis 필드 하나다(정상 회수는 방 종료의 clearRoom,
+        // TTL은 그것마저 실패했을 때의 백스톱이다). 다만 호출부가
         // subscribe()라 에러를 그냥 두면 Reactor가 스택트레이스째 ERROR로 찍는다 — Redis가 흔들리면
         // 세션 수만큼 쏟아져 정작 원인 로그를 묻는다. 짚을 수 있는 형태로 한 줄만 남긴다.
         return sessionRepository.remove(roomId, sessionId)
