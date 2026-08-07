@@ -160,22 +160,6 @@ class GoLiveByRtmpServiceTest {
     }
 
     @Test
-    @DisplayName("배치 승격 경로는 대조 없이 전이한다 — 이벤트가 아니라 방 단위 송출 확인으로 들어온다")
-    void batchPathSkipsIngressMatch() {
-        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
-                new LiveStreamType.Rtmp("ing-1"));
-        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
-        given(liveMediaManager.startHlsEgress(roomId))
-                .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8"));
-        given(timeProvider.now()).willReturn(Instant.now());
-        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
-
-        goLiveByRtmpService.goLiveByRtmpAfterPublishCheck(roomId);
-
-        verify(liveRoomRepository).save(any(LiveRoom.class));
-    }
-
-    @Test
     @DisplayName("트랜잭션 동기화가 비활성이면 egress 시작 전에 BroadcastStartException — 고아 egress 방지 사전 가드")
     void throws_before_egress_when_synchronization_inactive() {
         LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),

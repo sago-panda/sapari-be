@@ -33,12 +33,12 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 
 All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); never call the SDK from a
 service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive` /
-`isPublishingOrThrow` (**same check, opposite failure direction — see below**), `startHlsEgress`,
+`listRoomIngress` (**same lookup, opposite failure direction — see below**), `startHlsEgress`,
 `stopHlsEgress` (room-wide; a broadcast runs one egress per rendition, so there is no single-egress stop),
 `deleteIngress` (room-wide / single-id), `closeRoom`, `getSfuUrl`, `listAllIngress`, `listAllEgress`.
 
 **Cleanup calls are best-effort, query calls fail-fast.** `deleteIngress`/`stopHlsEgress`/`closeRoom` log
-and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress`/`isPublishingOrThrow`
+and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress`/`listRoomIngress`
 **throw** — an empty answer reads as "no orphans" / "not publishing" and would let a batch finish green, or
 destroy a live room, on a failed lookup. `isIngressActive` is the fail-*open* twin (`false` on failure): safe
 for the go-live rendezvous, wrong anywhere a `false` triggers deletion. Pick by which direction is destructive.
@@ -114,8 +114,27 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
 
 - **Ready-expiry can also *start* a broadcast.** A room whose `ingress_started` rendezvous was lost is still
   publishing; expiring it would delete the ingress and close the SFU room mid-stream, so the job completes
-  the missed rendezvous instead. Judge **per room, right before touching it** (`isPublishingOrThrow`) — a
+  the missed rendezvous instead. Judge **per room, right before touching it** (`listRoomIngress`) — a
   once-per-round snapshot lets a room that reconnects mid-round get expired anyway.
+
+- **Ask the room, don't pick from the list.** `listRoomIngress` returns every ingress with a publishing
+  flag, not a boolean, because a room can have two live ingresses (a race loser whose cleanup failed).
+  Promotion requires the room to *acknowledge* one of them (`LiveRoom.hasIngress`), and that same id goes
+  to `goLiveByRtmp` — the webhook entry point, not a second one. A batch-only "already checked, skip the
+  match" entry is exactly how the guard goes missing on one side. Publishing-but-not-ours is a **third
+  outcome**: neither promote (an unacknowledged ingress would start the broadcast) nor expire (it would cut
+  a live stream) — skip, and the orphan-media job reclaims it (see the protection rule below; waiting for
+  the room to reach `Ended` first would deadlock, since only this job could get it there).
+
+- **Registered-but-idle ≠ unknown to LiveKit.** That's why the port hands back *all* ingresses instead of
+  just the publishing ones. An RTMP room whose OBS never connected still has its ingress registered
+  (`INACTIVE`) — the normal expiry target. An RTMP room whose DB row names an `ingress_id` that LiveKit
+  reports **nothing** for means we're talking to the wrong cluster (a 200 + `[]` misconfig), and expiring
+  that batch would cut live broadcasts. Filtering to publishing-only collapses both into an empty list and
+  the distinction is gone. WebRtc rooms legitimately have none, so the guard is RTMP-only.
+
+- **`BUFFERING` counts as publishing.** It's what a reconnecting OBS looks like; treating only
+  `PUBLISHING` as live lets one unlucky snapshot drive a destructive decision.
 
 - **A bulk lookup that returns 200 + `[]` is not evidence.** `listAllEgress` only throws on transport
   failure — a wrong host/apiKey answers empty, which reads as "every broadcast is dead" and would end the

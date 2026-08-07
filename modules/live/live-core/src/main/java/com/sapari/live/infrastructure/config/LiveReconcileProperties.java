@@ -84,7 +84,7 @@ public record LiveReconcileProperties(
     /**
      * @param threshold 이만큼 Ready 에 머문 방은 만료시킨다. EndStaleLive 와 달리 이 시간이 곧 판정이다
      * @param batchSize 공용 {@code batch-size} 를 쓰지 않고 따로 두는 이유는 <b>이 잡만 후보마다 LiveKit 을
-     *                  왕복</b>하기 때문이다(방마다 {@code isPublishingOrThrow}). 공용값 100 이면 최악
+     *                  왕복</b>하기 때문이다(방마다 {@code listRoomIngress}). 공용값 100 이면 최악
      *                  100 × {@code callTimeout} 15s = 25분으로 10분 cron 주기와 파드 종료 유예(30s)를 모두
      *                  넘긴다. 20 이면 최악 5분이라 주기 안에 들어온다. 잘린 회차가 파괴적이진 않지만
      *                  (fail-closed 라 다음 회차가 회수) 회차가 겹쳐 도는 건 낭비다.

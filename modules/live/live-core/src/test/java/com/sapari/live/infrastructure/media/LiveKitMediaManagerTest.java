@@ -16,6 +16,7 @@ import retrofit2.Call;
 import retrofit2.Response;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.groups.Tuple.tuple;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -50,6 +51,7 @@ import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitra
 import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.IngressResult;
+import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.MasterPlaylistPublisher;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.infrastructure.config.LiveKitProperties;
@@ -491,14 +493,14 @@ public class LiveKitMediaManagerTest {
     }
 
     @Test
-    @DisplayName("isIngressActive: INACTIVE/BUFFERING 뿐이면 false")
+    @DisplayName("isIngressActive: INACTIVE 뿐이면 false — BUFFERING 은 접속 중이라 송출로 본다")
     void isIngressActive_false_whenNotPublishing() throws IOException {
-        IngressInfo buffering = IngressInfo.newBuilder()
-                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_BUFFERING).build())
+        IngressInfo inactive = IngressInfo.newBuilder()
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_INACTIVE).build())
                 .build();
         Call<List<IngressInfo>> call = mock(Call.class);
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
-        given(call.execute()).willReturn(Response.success(List.of(buffering)));
+        given(call.execute()).willReturn(Response.success(List.of(inactive)));
 
         assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
     }
@@ -681,49 +683,70 @@ public class LiveKitMediaManagerTest {
     }
 
     @Test
-    @DisplayName("isPublishingOrThrow: 송출 중인 ingress 가 있으면 true")
-    void isPublishingOrThrow_true() throws IOException {
+    @DisplayName("listRoomIngress: 등록된 ingress 를 전부 주되 송출 여부를 각각 표시한다 — 둘을 구분해야 오설정을 가른다")
+    void listRoomIngress_marksPublishingPerIngress() throws IOException {
         IngressInfo publishing = IngressInfo.newBuilder()
                 .setIngressId("ing-1").setRoomName(roomId.toString())
                 .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_PUBLISHING))
                 .build();
+        IngressInfo idle = IngressInfo.newBuilder()
+                .setIngressId("ing-2").setRoomName(roomId.toString())
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_INACTIVE))
+                .build();
         Call<List<IngressInfo>> call = mock(Call.class);
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
-        given(call.execute()).willReturn(Response.success(List.of(publishing)));
+        given(call.execute()).willReturn(Response.success(List.of(publishing, idle)));
 
-        assertThat(liveKitMediaManager.isPublishingOrThrow(roomId)).isTrue();
+        assertThat(liveKitMediaManager.listRoomIngress(roomId))
+                .extracting(IngressSummary::ingressId, IngressSummary::publishing)
+                .containsExactly(tuple("ing-1", true), tuple("ing-2", false));
     }
 
     @Test
-    @DisplayName("isPublishingOrThrow: ingress 가 없는 방은 false — 만료 대상의 전형이라 예외로 올리면 회차가 죽는다")
-    void isPublishingOrThrow_noIngress_isFalseNotThrow() throws IOException {
+    @DisplayName("listRoomIngress: BUFFERING 도 송출로 본다 — OBS 재접속 찰나가 만료 판단에 들어가면 안 된다")
+    void listRoomIngress_bufferingCountsAsPublishing() throws IOException {
+        IngressInfo buffering = IngressInfo.newBuilder()
+                .setIngressId("ing-1").setRoomName(roomId.toString())
+                .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_BUFFERING))
+                .build();
+        Call<List<IngressInfo>> call = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(buffering)));
+
+        assertThat(liveKitMediaManager.listRoomIngress(roomId))
+                .singleElement().extracting(IngressSummary::publishing).isEqualTo(true);
+    }
+
+    @Test
+    @DisplayName("listRoomIngress: ingress 가 없는 방은 빈 목록 — 예외로 올리면 회차가 죽는다(오설정 판정은 호출자 몫)")
+    void listRoomIngress_noIngress_isEmptyNotThrow() throws IOException {
         Call<List<IngressInfo>> call = mock(Call.class);
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
         given(call.execute()).willReturn(Response.success(List.of()));
 
-        assertThat(liveKitMediaManager.isPublishingOrThrow(roomId)).isFalse();
+        assertThat(liveKitMediaManager.listRoomIngress(roomId)).isEmpty();
     }
 
     @Test
-    @DisplayName("isPublishingOrThrow: 성공 응답의 null body 는 '없음'이지 실패가 아니다")
-    void isPublishingOrThrow_nullBodyOnSuccess_isFalseNotThrow() throws IOException {
+    @DisplayName("listRoomIngress: 성공 응답의 null body 는 '없음'이지 실패가 아니다")
+    void listRoomIngress_nullBodyOnSuccess_isEmptyNotThrow() throws IOException {
         Call<List<IngressInfo>> call = mock(Call.class);
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
         given(call.execute()).willReturn(Response.success((List<IngressInfo>) null));
 
         // !isSuccessful 이 이미 실패를 걸렀으므로 여기서 예외로 올리면
         // ingress 가 없는 방(만료 대상의 전형)마다 회차가 죽는다.
-        assertThat(liveKitMediaManager.isPublishingOrThrow(roomId)).isFalse();
+        assertThat(liveKitMediaManager.listRoomIngress(roomId)).isEmpty();
     }
 
     @Test
-    @DisplayName("isPublishingOrThrow: 조회 실패는 예외 — false 로 삼키면 송출 중인 방을 만료시킨다")
-    void isPublishingOrThrow_throwsOnFailure() throws IOException {
+    @DisplayName("listRoomIngress: 조회 실패는 예외 — 빈 목록으로 삼키면 송출 중인 방을 만료시킨다")
+    void listRoomIngress_throwsOnFailure() throws IOException {
         Call<List<IngressInfo>> call = mock(Call.class);
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
         given(call.execute()).willThrow(new IOException("연결 실패"));
 
-        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.isPublishingOrThrow(roomId));
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomIngress(roomId));
     }
 
     @Test

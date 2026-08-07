@@ -166,11 +166,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
     }
 
     /**
-     * {@link #isIngressActive(UUID)} 와 같은 판정, 조회 실패는 예외로 올린다.
-     * 만료 배치가 "송출 중이 아니면 지운다"에 쓰므로 실패를 false 로 삼키면 살아 있는 방송을 끊는다.
+     * {@link #isIngressActive(UUID)} 와 같은 조회지만 실패를 예외로 올리고, 불리언이 아니라 이 방의 ingress 를
+     * 전부(송출 여부와 함께) 돌려준다 — 호출자가 방의 ingress_id 와 대조하고, "등록은 됐지만 송출 안 함"과
+     * "LiveKit 이 이 방의 ingress 를 아예 모름"을 구분할 수 있도록. 포트 javadoc 참고.
      */
     @Override
-    public boolean isPublishingOrThrow(UUID roomId){
+    public List<IngressSummary> listRoomIngress(UUID roomId){
         try {
             Response<List<IngressInfo>> response = ingressServiceClient.listIngress(roomId.toString()).execute();
             if (!response.isSuccessful()) {
@@ -180,9 +181,11 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // 성공 응답의 null body 는 "내용 없음"이지 실패가 아니다 — 실패는 위에서 걸렀다.
             // 합쳐서 예외로 올리면 ingress 가 아예 없는 방(= 만료 대상의 전형)마다 회차가 죽는다.
             if (response.body() == null) {
-                return false;
+                return List.of();
             }
-            return response.body().stream().anyMatch(this::isPublishing);
+            return response.body().stream()
+                    .map(info -> new IngressSummary(info.getIngressId(), info.getRoomName(), isPublishing(info)))
+                    .toList();
         } catch (LiveMediaException e) {
             throw e;
         } catch (Exception e) {
@@ -536,9 +539,18 @@ public class LiveKitMediaManager implements LiveMediaManager {
         }
     }
 
+    /**
+     * BUFFERING 도 송출로 본다 — OBS 가 순간 재접속하는 동안의 상태다. PUBLISHING 만 보면 그 찰나의 스냅샷
+     * 하나가 "송출 안 함"이 되어 만료 배치의 파괴적 판단(ingress 삭제·SFU 방 닫기)에 그대로 들어간다.
+     * 판정을 넓히는 방향은 fail-closed 다(살아 있다고 보고 손대지 않음).
+     */
     private boolean isPublishing(IngressInfo info){
-        return info.hasState()
-                && info.getState().getStatus() == IngressState.Status.ENDPOINT_PUBLISHING;
+        if (!info.hasState()) {
+            return false;
+        }
+        IngressState.Status status = info.getState().getStatus();
+        return status == IngressState.Status.ENDPOINT_PUBLISHING
+                || status == IngressState.Status.ENDPOINT_BUFFERING;
     }
 
     /**

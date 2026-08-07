@@ -134,15 +134,29 @@ class ReconcileOrphanMediaServiceTest {
     }
 
     @Test
-    @DisplayName("ingress — 아직 끝나지 않은 방이 송출 중이면 DB 가 고아라 해도 지우지 않는다")
-    void ingress_publishingOnOpenRoom_isNeverDeleted() {
-        givenLiveKit(List.of(new IngressSummary("ing-DUP", roomId.toString(), true)), List.of());
+    @DisplayName("ingress — 방이 인정하는 ingress 는 송출 중이면 지우지 않는다")
+    void ingress_publishingAndAcknowledged_isNeverDeleted() {
+        givenLiveKit(List.of(new IngressSummary("ing-1", roomId.toString(), true)), List.of());
         given(liveRoomRepository.findAllByIds(Set.of(roomId)))
                 .willReturn(List.of(room(new LiveStatus.Ready(NOW), new LiveStreamType.Rtmp("ing-1"), OLD)));
 
         service.reconcile();
 
         then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), anyString());
+    }
+
+    @Test
+    @DisplayName("ingress — 방이 인정하지 않는 ingress 는 송출 중이어도 지운다: 안 지우면 Ready 방이 영구 고착한다")
+    void ingress_publishingButNotAcknowledged_isDeleted() {
+        // 만료 배치는 이런 방을 승격도 만료도 하지 않는다(방이 인정 안 한 ingress 라 승격 불가, 송출
+        // 중이라 만료 불가). 여기서도 publishing 이라고 건너뛰면 방이 Ended 가 될 경로가 없어 교착이다.
+        givenLiveKit(List.of(new IngressSummary("ing-LOSER", roomId.toString(), true)), List.of());
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(new LiveStatus.Ready(NOW), new LiveStreamType.Rtmp("ing-WINNER"), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(times(1)).deleteIngress(roomId, "ing-LOSER");
     }
 
     @Test

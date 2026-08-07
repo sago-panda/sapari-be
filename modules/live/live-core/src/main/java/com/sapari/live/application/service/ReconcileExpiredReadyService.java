@@ -11,11 +11,13 @@ import org.springframework.stereotype.Service;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.ExpiredReadyReconcilePolicy;
+import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
+import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.ExpireOrphanLiveUseCase;
@@ -33,8 +35,11 @@ import com.sapari.live.port.ReconcileExpiredReadyUseCase;
  * 도중에 재연결한 방이 스냅샷에 없어 그대로 만료된다. 호출이 후보 수만큼 늘지만 후보는 보통 0건이고,
  * 후보가 있으면 어차피 방마다 정리 3종을 부른다.
  *
- * <p>{@code isIngressActive} 가 아니라 {@code isPublishingOrThrow} 를 쓰는 것도 의도다 — 전자는 조회 실패 시
+ * <p>{@code isIngressActive} 가 아니라 {@code listRoomIngress} 를 쓰는 것도 의도다 — 전자는 조회 실패 시
  * {@code false} 라 go-live 기준으로는 안전하지만, 여기서는 "만료해라"로 읽혀 정반대가 된다.
+ *
+ * <p>판정은 <b>세 갈래</b>다. 방이 인정하는 ingress 가 송출 중이면 승격, 송출이 아예 없으면 만료,
+ * <b>송출은 있는데 이 방 것이 아니면 아무것도 하지 않는다</b>(경합 패자 잔존 — 승격도 만료도 둘 다 틀리다).
  */
 @Slf4j
 @Service
@@ -62,11 +67,46 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         for (UUID roomId : roomIds) {
             try {
                 // 처리 직전에 확인한다 — 조회가 실패하면 그 방은 만료하지 않고 다음 회차로 미룬다.
-                if (liveMediaManager.isPublishingOrThrow(roomId)) {
-                    promoted += promote(roomId);
-                } else {
+                List<IngressSummary> ingresses = liveMediaManager.listRoomIngress(roomId);
+                LiveRoom room = liveRoomRepository.findById(roomId).orElse(null);
+                if (room == null) {
+                    skipped++;
+                    log.info("Ready 정리 스킵 — 조회 사이에 사라진 방. roomId={}", roomId);
+                    continue;
+                }
+                // LiveKit 이 이 방의 ingress 를 하나도 모르는데 DB 는 배정돼 있다고 한다 = 다른 클러스터를
+                // 보고 있거나 오설정. 여기서 만료로 넘기면 살아 있는 방송이 회차당 batch-size 만큼 끊긴다.
+                // "OBS 가 끝내 안 붙은 방"은 ingress 가 등록은 돼 있어(INACTIVE) 이 분기에 걸리지 않는다.
+                if (ingresses.isEmpty() && room.isRtmp()) {
+                    skipped++;
+                    log.error("Ready 정리 스킵 — DB 는 ingress 배정을 아는데 LiveKit 목록이 빔. 오설정 의심. roomId={}",
+                            roomId);
+                    continue;
+                }
+
+                // 이 방이 인정하는 ingress 가 송출 중인지 본다. 목록에서 고르는 게 아니라 방에게 물어야 한다 —
+                // 경합 패자의 회수가 실패하면 한 방에 송출 중인 ingress 가 둘일 수 있고, 그중 아무거나 집으면
+                // 방이 인정하지 않은 ingress 로 방송을 시작시키거나(승격) 살아 있는 송출을 놓친다(만료).
+                List<String> publishing = ingresses.stream()
+                        .filter(IngressSummary::publishing)
+                        .map(IngressSummary::ingressId)
+                        .toList();
+                String ownIngressId = publishing.stream().filter(room::hasIngress).findFirst().orElse(null);
+
+                if (ownIngressId != null) {
+                    promoted += promote(roomId, ownIngressId);
+                } else if (publishing.isEmpty()) {
+                    // 송출이 없다 = 만료 대상(WebRtc 방이거나 OBS 가 끝내 안 붙은 방).
                     expireOrphanLiveUseCase.expire(new ExpireOrphanLiveCommand(roomId));
                     expired++;
+                } else {
+                    // 송출은 있는데 이 방 것이 아니다 — 경합 패자 잔존이 전형. 승격하면 방이 인정 안 한
+                    // ingress 가 방송을 시작하고, 만료하면 그 송출을 끊는다. 둘 다 틀리므로 손대지 않는다.
+                    // 회수는 고아 미디어 잡의 몫 — 그 잡은 "방이 인정하지 않는 ingress"를 송출 중이어도
+                    // 지우므로, 방이 Ended 가 되기를 기다리지 않는다(기다리면 서로를 기다리는 교착이 된다).
+                    skipped++;
+                    log.warn("Ready 정리 스킵 — 방이 인정하지 않는 ingress 가 송출 중. roomId={}, 송출중={}",
+                            roomId, publishing);
                 }
             } catch (LiveMediaException e) {
                 // 이 방만 다음 회차로 미룬다 — 던지고 끝내면 후보가 updated_at ASC 정렬이라 조회가
@@ -94,10 +134,11 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
      *
      * @return 실제로 Live 로 전이했으면 1, 아니면 0
      */
-    private int promote(UUID roomId) {
+    private int promote(UUID roomId, String ingressId) {
         try {
             // 전이 여부를 반환하지 않으므로(no-op 이어도 조용히 끝난다) 저장된 상태로 확인한다.
-            goLiveByRtmpService.goLiveByRtmpAfterPublishCheck(roomId);
+            // webhook 과 같은 진입점을 쓴다 — 대조를 건너뛰는 별도 경로를 두면 그쪽만 가드가 빠진다.
+            goLiveByRtmpService.goLiveByRtmp(roomId, ingressId);
         } catch (RuntimeException e) {
             log.error("Ready 고착 방 승격 실패 — 다음 회차 재시도. roomId={}", roomId, e);
             return 0;
