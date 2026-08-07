@@ -169,8 +169,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 그 상태로 두면 아래 firstWithSignal이 안 끝나 doFinally(cleanup)까지 막힌다 — 세션 명부·방 구독·
         // Redis 항목이 통째로 남는다. 상한을 둬서 그 셋은 반드시 회수하되, 채널 자체는 남을 수 있다
         // (CLOSE_FLUSH_TIMEOUT 주석 참고).
-        Mono<Void> closeWithReason = Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
-                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.empty());
+        Mono<Void> closeWithReason = closeWithReason(session, sid);
 
         return registry.register(sid, chatSession)
                 .then(roomInfoFor(roomId, chatSession))
@@ -181,6 +180,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
                         forcedClose.then(closeWithReason)))
                 .doFinally(signal -> cleanup(roomId, sid));
+    }
+
+    /**
+     * 종료 사유를 코드로 실어 닫는다. flush가 막혀 close가 끝나지 않아도 상한 뒤 완료해
+     * 뒤따르는 정리(doFinally)를 진행시킨다. (테스트 진입점)
+     */
+    Mono<Void> closeWithReason(WebSocketSession session, String sid) {
+        return Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
+                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.empty());
     }
 
     /** 인바운드 1건 처리 — 어떤 입력이 와도 ERROR 응답으로 끝내고 연결은 유지한다. (단위 테스트 진입점) */

@@ -11,6 +11,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
+import org.springframework.web.reactive.socket.WebSocketSession;
+import org.springframework.web.reactive.socket.CloseStatus;
+import java.time.Duration;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -211,5 +214,20 @@ class ChatWebSocketHandlerTest {
         verify(registry).sendToSession(eq("s1"), sent.capture());
         assertThat(sent.getValue().type()).isEqualTo("ERROR");
         assertThat(sent.getValue().code()).isEqualTo("VALIDATION");
+    }
+
+    @Test
+    @DisplayName("종료 — close가 끝나지 않아도 상한 뒤 완료해 정리를 막지 않는다")
+    void close_does_not_block_cleanup_forever() {
+        // given: 소켓을 읽지 않는 클라 — close 프레임이 잔량 뒤에 줄 서서 write future가 완료되지 않는다
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.close(any())).thenReturn(Mono.never());
+        when(registry.closeStatusOf("s1")).thenReturn(CloseStatus.POLICY_VIOLATION);
+
+        // when·then: 상한을 넘기면 스스로 끝나야 한다. 안 그러면 firstWithSignal이 안 끝나
+        // doFinally(cleanup)까지 막혀 세션 명부·방 구독·Redis 항목이 통째로 남는다.
+        StepVerifier.withVirtualTime(() -> handler.closeWithReason(session, "s1"))
+                .thenAwait(Duration.ofSeconds(10))
+                .verifyComplete();
     }
 }
