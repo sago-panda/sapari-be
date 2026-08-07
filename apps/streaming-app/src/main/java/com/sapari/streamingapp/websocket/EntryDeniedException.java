@@ -9,7 +9,8 @@ public class EntryDeniedException extends RuntimeException {
 
     public enum Reason {
         KICKED,
-        BANNED
+        BANNED,
+        ROOM_ENDED
     }
 
     private final Reason reason;

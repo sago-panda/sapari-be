@@ -8,6 +8,7 @@ import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.LiveRoomEndedSource;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.application.service.SystemMessageService;
+import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 
 import jakarta.annotation.PostConstruct;
@@ -42,6 +43,7 @@ public class LiveRoomEndedHandler {
     private final SystemMessageService systemMessageService;
     private final ChatSessionManager sessionManager;
     private final ChatSessionRepository sessionRepository;
+    private final ChatRoomEndedRepository roomEndedRepository;
 
     private Disposable subscription;
 
@@ -63,10 +65,28 @@ public class LiveRoomEndedHandler {
         }
     }
 
-    /** 로컬 세션에 SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리(멱등, 순서 무관). (테스트 진입점) */
+    /** 종료 마커 → SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리. (테스트 진입점) */
     Mono<Void> onRoomEnded(UUID roomId) {
-        return systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)
+        return markEnded(roomId)
+                .then(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED))
                 .then(sessionManager.closeAll(roomId))
                 .then(sessionRepository.clearRoom(roomId));
+    }
+
+    /**
+     * 종료 마커를 <b>가장 먼저</b> 남긴다 — 세션을 닫은 뒤에 쓰면 그 사이에 재접속이 게이트를 통과한다.
+     * 방금 끊긴 사용자의 토큰은 아직 유효하므로 그 창이 곧 구멍이다.
+     *
+     * <p>실패해도 뒤를 진행한다. 마커는 재입장을 막는 보강일 뿐이고, 이 체인의 본 일은 세션을 닫는 것이다.
+     * 여기서 error를 전파하면 상위 구독이 그 방을 통째로 skip해 <b>세션이 아예 안 닫힌다</b> —
+     * 막으려던 것보다 큰 피해다.
+     */
+    private Mono<Void> markEnded(UUID roomId) {
+        return roomEndedRepository.markEnded(roomId)
+                .onErrorResume(e -> {
+                    log.warn("방 종료 마커 기록 실패 — 세션 종료는 진행(재입장은 토큰 만료까지 열림) roomId={} cause={}",
+                            roomId, e.getClass().getSimpleName());
+                    return Mono.empty();
+                });
     }
 }

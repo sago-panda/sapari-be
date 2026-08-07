@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatKickRepository;
+import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
@@ -25,8 +26,29 @@ import reactor.core.publisher.Mono;
 public class EntryGate {
 
     private final ChatKickRepository kickRepository;
+    private final ChatRoomEndedRepository roomEndedRepository;
 
     public Mono<Void> verify(ChatSession session) {
+        // 방 종료는 게스트에게도 적용된다 — 끝난 방은 볼 것도 없다. 강퇴/밴만 게스트 대상이 아니다.
+        return verifyRoomAlive(session)
+                .then(Mono.defer(() -> verifyNotKicked(session)));
+    }
+
+    /**
+     * 종료된 방에는 들어갈 수 없다.
+     *
+     * <p>룸 토큰은 발급 시점에 라이브였다는 사실만 담는다. 종료 직전에 토큰을 받은 사람은 세션이 닫힌 뒤에도
+     * 만료 전까지 다시 붙을 수 있어서, 종료 이벤트로 남긴 마커를 여기서 읽는다.
+     */
+    private Mono<Void> verifyRoomAlive(ChatSession session) {
+        return roomEndedRepository.isEnded(session.roomId())
+                .onErrorReturn(false)   // 강퇴 조회와 같은 fail-open — 조회 불가로 채팅을 막지 않는다
+                .flatMap(ended -> ended
+                        ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.ROOM_ENDED))
+                        : Mono.empty());
+    }
+
+    private Mono<Void> verifyNotKicked(ChatSession session) {
         if (session.role() == ChatRole.GUEST) {
             return Mono.empty();
         }

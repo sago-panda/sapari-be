@@ -238,7 +238,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     SendChatCommand buildCommand(ChatSession s, InboundMessage in) {
         return new SendChatCommand(
                 s.roomId(), s.userId(), s.role().name(), s.isRoomOwner(),
-                true,                       // isRoomAlive — 세션 플래그(ROOM_ENDED 수신 시 off). 현재 종료=세션 close로 처리, flip은 #54
+                // isRoomAlive — 이 세션이 살아있다는 것 자체가 근거다. 입장에서 종료 마커를 검사해 끝난 방은
+                // 아예 들이지 않고, 접속 중에 방이 끝나면 종료 처리가 세션을 닫아 위 isTerminating에서 걸린다.
+                // 전송마다 방 상태를 다시 읽지 않는 건 그래서다 — 매 메시지 Redis 왕복을 더해도 새로 막히는 게 없다.
+                true,
                 s.nickname(), s.email(),
                 in.type(), in.content(), in.clientMsgId());
     }
@@ -337,10 +340,13 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .then(session.close(CloseStatus.POLICY_VIOLATION));
     }
 
+    /** 거부 사유를 클라가 렌더할 code로. switch 식이라 Reason이 늘면 컴파일이 막는다(조용한 오매핑 방지). */
     private String systemCode(EntryDeniedException.Reason reason) {
-        return reason == EntryDeniedException.Reason.BANNED
-                ? SystemMessageCode.BANNED.name()
-                : SystemMessageCode.KICKED.name();
+        return switch (reason) {
+            case KICKED -> SystemMessageCode.KICKED.name();
+            case BANNED -> SystemMessageCode.BANNED.name();
+            case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED.name();
+        };
     }
 
     private String serialize(OutboundMessage message) {

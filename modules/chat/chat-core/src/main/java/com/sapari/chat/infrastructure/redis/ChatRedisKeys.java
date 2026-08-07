@@ -27,6 +27,11 @@ final class ChatRedisKeys {
         return "kicked:" + roomId;
     }
 
+    /** 방 종료 마커 (종료 후 남은 토큰으로 재입장하는 것을 막는다) */
+    static String roomEnded(UUID roomId) {
+        return "room:" + roomId + ":ended";
+    }
+
     /** 전송 레이트리밋 키 (3초 TTL, BUYER 전용) */
     static String rateLimit(UUID userId) {
         return "ratelimit:chat:" + userId;
