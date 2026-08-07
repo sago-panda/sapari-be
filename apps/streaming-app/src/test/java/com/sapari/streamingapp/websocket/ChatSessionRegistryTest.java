@@ -367,6 +367,33 @@ class ChatSessionRegistryTest {
                 .thenRequest(Long.MAX_VALUE)   // 실제로는 session.send()가 request한다
                 .expectNextCount(ChatSessionRegistry.OUTBOUND_BUFFER_SIZE)
                 .verifyComplete();
+
+        // then: 사유는 1013 — 정상 종료(1000)면 프론트가 곧장 다시 붙어 같은 상황을 반복한다
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.SERVICE_OVERLOAD);
+    }
+
+    @Test
+    @DisplayName("버퍼 초과와 강퇴는 서로 다른 코드로 닫힌다 — 프론트가 재접속 여부를 구분할 수 있어야 한다")
+    void overflow_and_kick_use_distinct_close_codes() {
+        // given: 두 세션을 같은 방에 둔다. 하나는 버퍼를 넘기고, 하나는 강퇴한다.
+        UUID otherUserId = UUID.randomUUID();
+        registry.register("overflowing", session(roomId, userId)).block();
+        registry.register("kicked", session(roomId, otherUserId)).block();
+
+        // when
+        StepVerifier.create(registry.outbound("overflowing"), 0)
+                .then(() -> {
+                    for (int i = 0; i < ChatSessionRegistry.OUTBOUND_BUFFER_SIZE * 2; i++) {
+                        registry.sendToSession("overflowing", out("NORMAL")).block();
+                    }
+                })
+                .thenCancel()
+                .verify();
+        registry.closeUser(roomId, otherUserId).block();
+
+        // then
+        assertThat(registry.closeStatusOf("overflowing")).isEqualTo(CloseStatus.SERVICE_OVERLOAD);
+        assertThat(registry.closeStatusOf("kicked")).isEqualTo(CloseStatus.POLICY_VIOLATION);
     }
 
     @Test

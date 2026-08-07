@@ -285,6 +285,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private void terminate(LocalSession ls, CloseStatus status, long deadline) {
         // 이미 종료 중이면 그때 정해진 사유를 유지한다 — 제어 채널(Sinks.One)도 첫 값만 받으므로,
         // 저장된 사유와 실제로 흘러간 사유가 어긋나지 않게 여기서 한 번만 확정한다.
+        //
+        // 뒤늦은 강퇴가 앞선 종료 사유를 덮지 못한다는 뜻이기도 하다(버퍼 초과 직후 강퇴가 오면 1013으로 닫힌다).
+        // 덮게 만들려면 제어 채널을 다시 발화해야 하는데 Sinks.One은 못 하고, 억지로 하면 위 불변식이 깨진다.
+        // 실질 피해도 없다 — 어느 코드로 닫히든 재접속은 입장 게이트의 강퇴 조회에서 다시 막힌다.
         if (!ls.closeStatus().compareAndSet(null, status)) {
             return;
         }
@@ -338,10 +342,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
         Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), budget.emitDeadline());
         if (consumerCannotKeepUp(result)) {
-            // 코드는 1000 유지 — overflow 종료는 아직 프론트 계약에 없는 신규 케이스라 코드를 선점하지 않는다.
+            // 1013(SERVICE_OVERLOAD) — 정상 종료(1000)로 닫으면 프론트가 곧장 다시 붙는다. 버퍼가 넘친 건
+            // 그 클라가 못 따라온다는 뜻이라, 즉시 재접속은 같은 결과를 부르고 부하 상황일수록 스스로 번진다.
+            // 재시도 자체는 의미가 있으므로 금지(1008)가 아니라 "나중에"로 알린다 — 간격은 프론트 backoff가 정한다.
             log.warn("아웃바운드 버퍼 초과 — 세션 종료 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
-            terminate(ls, CloseStatus.NORMAL, budget.completeDeadline());
+            terminate(ls, CloseStatus.SERVICE_OVERLOAD, budget.completeDeadline());
         } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
