@@ -32,7 +32,7 @@ final class ChatRedisKeys {
         return "room:" + roomId + ":ended";
     }
 
-    /** 전송 레이트리밋 키 (3초 TTL, BUYER 전용) */
+    /** 전송 레이트리밋 키 (3초 TTL). 면제는 운영자와 이 방을 진행하는 판매자뿐 — 남의 방 판매자도 대상이다. */
     static String rateLimit(UUID userId) {
         return "ratelimit:chat:" + userId;
     }

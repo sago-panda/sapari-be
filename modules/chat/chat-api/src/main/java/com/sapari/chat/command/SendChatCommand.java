@@ -19,7 +19,7 @@ public record SendChatCommand(
         String senderEmail,     // 서버 신뢰 (nullable, 발신 스냅샷)
         String messageType,     // 클라 — NORMAL | NOTICE
         String content,         // 클라 — 원문(서버에서 욕설 필터링)
-        String clientMsgId      // 클라 — nullable, 재전송 멱등 키
+        String clientMsgId      // 클라 — 필수(빈 값·길이 초과는 거부), 재전송 멱등 겸 낙관적 렌더 짝짓기 키
 ) {
     public SendChatCommand {
         // 서버가 채우는 신뢰 필드 + 클라가 보내는 타입은 누락되면 안 된다.

@@ -8,6 +8,7 @@ import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
@@ -21,6 +22,7 @@ import reactor.core.publisher.Mono;
  *
  * <p>banned 검사는 ban 모델(#27) 구현 후 추가. 게스트(에페메랄 id)는 강퇴/밴 대상이 아니므로 건너뛴다.
  */
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class EntryGate {
@@ -42,7 +44,13 @@ public class EntryGate {
      */
     private Mono<Void> verifyRoomAlive(ChatSession session) {
         return roomEndedRepository.isEnded(session.roomId())
-                .onErrorReturn(false)   // 강퇴 조회와 같은 fail-open — 조회 불가로 채팅을 막지 않는다
+                .onErrorResume(e -> {
+                    // 통과시키되 흔적은 남긴다 — 이 구간은 입장 모더레이션이 열린 구간이라,
+                    // 사후에 "언제 누가 게이트를 그냥 지나갔는가"를 짚을 수 있어야 한다.
+                    log.warn("방 종료 조회 실패 — 입장 허용(게이트 열림) roomId={} cause={}",
+                            session.roomId(), e.getClass().getSimpleName());
+                    return Mono.just(false);
+                })
                 .flatMap(ended -> ended
                         ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.ROOM_ENDED))
                         : Mono.empty());
@@ -53,7 +61,11 @@ public class EntryGate {
             return Mono.empty();
         }
         return kickRepository.isKicked(session.roomId(), session.userId())
-                .onErrorReturn(false)   // fail-open(#50): 조회 불가 → 입장 허용
+                .onErrorResume(e -> {
+                    log.warn("강퇴 조회 실패 — 입장 허용(게이트 열림) roomId={} cause={}",
+                            session.roomId(), e.getClass().getSimpleName());
+                    return Mono.just(false);
+                })
                 .flatMap(kicked -> kicked
                         ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.KICKED))
                         : Mono.empty());

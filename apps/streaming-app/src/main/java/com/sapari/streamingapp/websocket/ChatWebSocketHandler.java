@@ -238,19 +238,31 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 인자 평가 위치에서 터져 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결이 끊긴다.
         return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
                 .flatMap(view -> registry.sendToSession(sid, toAck(view, clientMsgId)))
-                .onErrorResume(e -> registry.sendToSession(sid, toError(e, clientMsgId)));
+                .onErrorResume(e -> respondRejected(sid, toError(e, clientMsgId)));
     }
 
     /**
      * 파싱 불가 프레임에 ERROR로 답한다. clientMsgId는 알 수 없어 싣지 못한다.
-     *
-     * <p>다만 무한정 답해주지는 않는다 — 이 경로엔 전송 레이트리밋이 걸리지 않아서, 답해주는 만큼
-     * 그대로 되돌아온다. 누적 상한을 넘으면 registry가 세션을 끊고, 그때는 응답도 보내지 않는다.
      */
     private Mono<Void> rejectMalformed(String sid) {
-        return registry.recordMalformedFrame(sid)
+        return respondRejected(sid, error("VALIDATION", null));
+    }
+
+    /**
+     * 거부 응답을 보내되, 무한정 답해주지는 않는다.
+     *
+     * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작하므로, 그 앞에서 떨어지는 프레임(파싱 실패·검증 실패·
+     * 권한 거부)은 답해주는 만큼 그대로 되돌아온다. 누적 상한을 넘으면 registry가 세션을 끊고 응답도 멈춘다.
+     *
+     * <p>RATE_LIMIT은 세지 않는다 — 그건 제한이 이미 걸렸다는 증거라, 여기서 또 세면 같은 사실로 두 번 벌한다.
+     */
+    private Mono<Void> respondRejected(String sid, OutboundMessage response) {
+        if ("RATE_LIMIT".equals(response.type())) {
+            return registry.sendToSession(sid, response);
+        }
+        return registry.recordRejectedFrame(sid)
                 ? Mono.empty()
-                : registry.sendToSession(sid, error("VALIDATION", null));
+                : registry.sendToSession(sid, response);
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──
@@ -258,9 +270,14 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     SendChatCommand buildCommand(ChatSession s, InboundMessage in) {
         return new SendChatCommand(
                 s.roomId(), s.userId(), s.role().name(), s.isRoomOwner(),
-                // isRoomAlive — 이 세션이 살아있다는 것 자체가 근거다. 입장에서 종료 마커를 검사해 끝난 방은
-                // 아예 들이지 않고, 접속 중에 방이 끝나면 종료 처리가 세션을 닫아 위 isTerminating에서 걸린다.
-                // 전송마다 방 상태를 다시 읽지 않는 건 그래서다 — 매 메시지 Redis 왕복을 더해도 새로 막히는 게 없다.
+                // isRoomAlive — 평상시엔 세션이 살아있다는 것 자체가 근거다. 입장에서 종료 마커를 검사하고,
+                // 접속 중에 방이 끝나면 종료 처리가 세션을 닫아 위 isTerminating에서 걸린다.
+                //
+                // 다만 그 둘이 다 열리는 구간이 남는다: 입장 게이트는 Redis 장애에 fail-open이고, 종료 처리는
+                // 무영속 Pub/Sub이라 그 순간 구독이 끊긴 Pod는 신호를 통째로 놓친다(마커도 같은 핸들러가 쓴다).
+                // 그때는 종료된 방에 전송이 통과해 이력에 남는다. 창은 룸 토큰 수명으로 유계다 — 방이 끝나면
+                // 새 토큰이 발급되지 않아서다. 매 메시지 Redis 왕복을 더해도 이 구간은 못 막는다(마커가 없으니
+                // 읽어도 없다). 유실 자체를 닫는 건 종료 이벤트를 영속 전달로 바꾸는 쪽(live 소유)이다.
                 true,
                 s.nickname(), s.email(),
                 in.type(), in.content(), in.clientMsgId());

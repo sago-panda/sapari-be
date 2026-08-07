@@ -64,10 +64,15 @@ public class ChatBroadcastSubscriber {
      * 방 전체에 채팅 1건을 뿌린다. 세션 축이 둘이라 조합을 미리 만들어 두고 세션마다 고르기만 한다
      * (세션 수에 비례해 객체를 새로 만들지 않는다).
      *
-     * <p><b>발신자 축</b>: 보낸 사람의 세션에는 {@code clientMsgId}를 함께 실어 보낸다. 발신자는 같은 메시지를
+     * <p><b>발신자 축</b>: 보낸 사람에게는 {@code clientMsgId}를 함께 실어 보낸다. 발신자는 같은 메시지를
      * 낙관적 렌더·ACK·브로드캐스트로 세 번 마주치는데, 브로드캐스트에 이 값이 없으면 ACK가 도착해 서버 id를
      * 알기 전까지는 자기 버블과 짝지을 수단이 없다. ACK가 먼저 온다는 보장이 없어(ACK는 직접 응답, 브로드캐스트는
      * Redis 왕복) 순서가 뒤집히면 중복으로 그려진다. 남에게는 싣지 않는다 — 남의 클라 생성 id다.
+     *
+     * <p><b>판정 축은 세션이 아니라 유저다</b>: resolver가 받는 건 도메인 세션이라 어느 탭이 보냈는지 알 수 없다.
+     * 그래서 같은 계정의 <b>다른 탭</b>도 이 값을 받는다 — 그 탭엔 짝지을 버블이 없다. 받는 쪽 규칙은
+     * "값이 있으면 내 것"이 아니라 <b>"내 대기 목록에 있을 때만 매칭"</b>이어야 한다. 세션 단위로 좁히려면
+     * 세션 식별자를 영속 메시지까지 관통시켜야 해서 얻는 것보다 잃는 게 크다.
      */
     private Mono<Void> fanOutChat(UUID roomId, ChatMessage message) {
         OutboundMessage ownerView = toOutbound(message, true, false);

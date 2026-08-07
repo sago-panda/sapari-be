@@ -140,4 +140,14 @@ class ChatSessionRedisRepositoryTest {
         assertThat(redisTemplate.hasKey("room:" + roomId + ":sessions").block()).isFalse();
         assertThat(repository.count(roomId).block()).isZero();
     }
+
+    @Test
+    @DisplayName("add — 등재와 함께 TTL이 실제로 걸린다(백스톱이 사라지는 걸 목이 아니라 Redis로 확인)")
+    void add_setsTtlOnRealRedis() {
+        // when
+        repository.add(roomId, "s1", userId).block();
+
+        // then: -1(무기한)이면 정상 회수가 다 실패했을 때 키를 받아줄 폴백이 사라진다
+        assertThat(redisTemplate.getExpire("room:" + roomId + ":sessions").block().toSeconds()).isPositive();
+    }
 }

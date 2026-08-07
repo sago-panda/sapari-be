@@ -47,6 +47,9 @@ public class SendChatService implements SendChatUseCase {
 
     private static final int MAX_CONTENT_LENGTH = 200;
 
+    /** 클라 생성 상관관계 id 상한. UUID(36자)를 쓰는 계약이라 여유를 두고도 한참 남는다. */
+    private static final int MAX_CLIENT_MSG_ID_LENGTH = 64;
+
     /**
      * 열화 로그 간격. <b>건수가 아니라 경과시간</b>으로 솎아낸다 — 건수 기준은 카운터가 프로세스 생애
      * 누적이라 두 번째 이후의 짧은 장애가 통째로 침묵한다(규모가 작을수록 안 남는 역방향).
@@ -117,8 +120,16 @@ public class SendChatService implements SendChatUseCase {
         }
         // clientMsgId를 필수로 받는다 — 재전송 멱등이 이 값에만 걸려 있다(unique 인덱스가 부분 인덱스라
         // 값이 없으면 적용되지 않는다). 없어도 받아주면 그 메시지만 조용히 멱등이 꺼져, 재전송이 곧 중복 저장이 된다.
-        if (command.clientMsgId() == null || command.clientMsgId().isBlank()) {
+        String clientMsgId = command.clientMsgId();
+        if (clientMsgId == null || clientMsgId.isBlank()) {
             return Mono.error(new IllegalArgumentException("clientMsgId는 필수입니다."));
+        }
+        // 필수로 만든 이상 상한도 같이 정한다. 이 값은 본문과 달리 Mongo 문서 + unique 인덱스 키로 들어가고
+        // 봉투에 실려 전 Pod로 중계되는데, 상한이 없으면 프레임 한도(수십 KB)까지 채워 보낼 수 있다.
+        // 그러면 본문 200자 제한이 우회된다 — 레이트리밋이 면제되는 진행자·운영자는 그 속도 제한도 없다.
+        if (clientMsgId.length() > MAX_CLIENT_MSG_ID_LENGTH) {
+            return Mono.error(new IllegalArgumentException(
+                    "clientMsgId는 " + MAX_CLIENT_MSG_ID_LENGTH + "자를 초과할 수 없습니다."));
         }
         ChatRole role = ChatRole.valueOf(command.senderRole());   // 잘못된 role 문자열이면 throw → defer가 onError로
         ChatMessageType type = toType(command.messageType());     // NORMAL/NOTICE만 허용(SYSTEM·미지 타입 거부)

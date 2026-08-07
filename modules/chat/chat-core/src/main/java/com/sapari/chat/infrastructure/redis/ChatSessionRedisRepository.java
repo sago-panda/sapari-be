@@ -11,14 +11,12 @@ import org.springframework.stereotype.Repository;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
  * room:{roomId}:sessions HASH 어댑터 — 크로스 Pod 세션 집계.
  * count는 HLEN(탭 수)이 아니라 HVALS distinct(고유 유저 수)다 — 같은 유저 멀티탭은 1로 센다(§6.1 activeCount).
  */
-@Slf4j
 @Repository
 @RequiredArgsConstructor
 public class ChatSessionRedisRepository implements ChatSessionRepository {

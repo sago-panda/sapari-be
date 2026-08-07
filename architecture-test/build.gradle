@@ -19,7 +19,8 @@ dependencies {
 
     // apps는 위 자동 포함 필터(common/storage/modules)에서 빠지므로, 검사 대상인 앱만 여기에 명시한다.
     // 두 앱은 스택이 갈린다(streaming=WebFlux, api=MVC). 스택 오용 규칙은 "누가 무엇을 호출하는가"를 보므로
-    // 호출하는 쪽 클래스가 분석 대상에 없으면 규칙이 0건을 검사하고 조용히 통과한다 — 양쪽 다 넣어야 한다.
+    // 호출하는 쪽 클래스가 여기 없으면 규칙이 검사할 대상을 못 찾는다. ArchUnit은 그때 조용히 넘어가지 않고
+    // 실패시키므로(failOnEmptyShould 기본값) 앱을 빼면 빌드가 깨진다 — 규칙을 지우거나 앱을 넣거나 둘 중 하나다.
     testImplementation project(':apps:streaming-app')
     testImplementation project(':apps:api-app')
 }

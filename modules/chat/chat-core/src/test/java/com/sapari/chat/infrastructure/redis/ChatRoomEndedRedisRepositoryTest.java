@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 /**
  * 종료 마커 어댑터 — 실제 Redis로 기록·조회·TTL을 확인한다.
@@ -21,9 +21,8 @@ import org.testcontainers.utility.DockerImageName;
 @Testcontainers
 class ChatRoomEndedRedisRepositoryTest {
 
-    @SuppressWarnings("resource")
-    private static final GenericContainer<?> REDIS =
-            new GenericContainer<>(DockerImageName.parse("redis:7-alpine")).withExposedPorts(6379);
+    @Container
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
     private static LettuceConnectionFactory connectionFactory;
     private static ReactiveStringRedisTemplate redisTemplate;
@@ -33,8 +32,7 @@ class ChatRoomEndedRedisRepositoryTest {
 
     @BeforeAll
     static void startRedis() {
-        REDIS.start();
-        connectionFactory = new LettuceConnectionFactory(REDIS.getHost(), REDIS.getMappedPort(6379));
+        connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
         connectionFactory.afterPropertiesSet();
         redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
         repository = new ChatRoomEndedRedisRepository(redisTemplate);
@@ -43,7 +41,6 @@ class ChatRoomEndedRedisRepositoryTest {
     @AfterAll
     static void stopRedis() {
         connectionFactory.destroy();
-        REDIS.stop();
     }
 
     @Test

@@ -47,16 +47,20 @@ public class ChatSessionRegistry implements ChatSessionManager {
     static final int OUTBOUND_BUFFER_SIZE = 256;
 
     /**
-     * 한 연결이 낼 수 있는 파싱 불가 프레임 누적 상한. 넘으면 그 연결을 끊는다.
+     * 한 연결이 낼 수 있는 <b>거부된 프레임</b> 누적 상한. 넘으면 그 연결을 끊는다.
      *
-     * <p>파싱 실패에는 전송 레이트리밋이 걸리지 않는다 — 그건 커맨드가 만들어진 뒤에야 동작한다.
-     * 그래서 깨진 프레임은 얼마든지 밀어넣을 수 있고, 서버는 건건이 ERROR를 만들어 되돌려준다.
+     * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작한다. 그 앞에서 떨어지는 프레임 — 파싱 실패,
+     * 입력 검증 실패, 권한 거부 — 은 아무 제한 없이 반복할 수 있고 서버는 건건이 ERROR를 되돌려준다.
      * 잘못된 입력에 연결을 끊지 않는 건 의도지만, 무한히 받아주는 것까지 의도는 아니다.
      *
+     * <p><b>파싱 실패만 세면 안 된다</b>: {@code {}} 두 글자는 파싱에 성공한 뒤 커맨드 생성에서
+     * 떨어진다. 파싱만 세는 상한은 그 한 글자 차이로 그냥 비켜간다 — 통제처럼 보이면서 통제가 아니다.
+     * 레이트리밋을 통과하지 못한 응답(RATE_LIMIT)은 세지 않는다. 그건 이미 제한이 걸린 증거다.
+     *
      * <p>연속이 아니라 누적으로 센다: 연속으로 세면 성공 프레임마다 리셋해야 하는데, 정상 클라는
-     * 애초에 깨진 JSON을 보내지 않으므로 누적 상한이 오탐을 만들지 않는다. 여유를 크게 둘 이유도 없다.
+     * 애초에 거부될 프레임을 반복해 보내지 않으므로 누적 상한이 오탐을 만들지 않는다.
      */
-    static final int MALFORMED_FRAME_LIMIT = 20;
+    static final int REJECTED_FRAME_LIMIT = 20;
 
     /**
      * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
@@ -115,7 +119,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
-            AtomicInteger malformedFrames) {
+            AtomicInteger rejectedFrames) {
     }
 
     @Override
@@ -248,22 +252,22 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
-     * transport 전용: 파싱 불가 프레임 1건을 이 세션 앞으로 기록한다.
+     * transport 전용: 커맨드에 닿기 전에 거부된 프레임 1건을 이 세션 앞으로 기록한다.
      *
      * @return 상한을 넘겨 세션을 끊었으면 true. 호출자는 그때 ERROR 응답을 보내지 않아야 한다 —
      *         그 응답이 곧 상대가 노린 되돌림이고, 끊기로 한 세션에 더 실어 보낼 이유도 없다.
      */
-    public boolean recordMalformedFrame(String sessionId) {
+    public boolean recordRejectedFrame(String sessionId) {
         LocalSession ls = local.get(sessionId);
         if (ls == null) {
             return true;   // 이미 사라진 세션 — 되돌려 보낼 곳이 없다
         }
-        if (ls.malformedFrames().incrementAndGet() < MALFORMED_FRAME_LIMIT) {
+        if (ls.rejectedFrames().incrementAndGet() < REJECTED_FRAME_LIMIT) {
             return false;
         }
         // 정책성 종료다 — 프론트가 "재접속해도 같은 결과"로 읽어야 한다.
-        log.warn("파싱 불가 프레임 상한 초과 — 세션 종료 sessionId={} roomId={} userId={} 상한={}",
-                sessionId, ls.session().roomId(), ls.session().userId(), MALFORMED_FRAME_LIMIT);
+        log.warn("거부된 프레임 상한 초과 — 세션 종료 sessionId={} roomId={} userId={} 상한={}",
+                sessionId, ls.session().roomId(), ls.session().userId(), REJECTED_FRAME_LIMIT);
         terminate(ls, CloseStatus.POLICY_VIOLATION, newBudget().completeDeadline());
         return true;
     }

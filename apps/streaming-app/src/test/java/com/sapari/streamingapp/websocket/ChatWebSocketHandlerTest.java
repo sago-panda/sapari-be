@@ -311,4 +311,36 @@ class ChatWebSocketHandlerTest {
         // then
         then(connections).should(never()).dispose(any());
     }
+
+    @Test
+    @DisplayName("모르는 필드가 실려 와도 파싱은 성공한다 — 여기서 실패하면 메시지가 아니라 연결이 끊긴다")
+    void inbound_ignores_unknown_fields() {
+        // given: 계약 3필드 + 클라가 얹은 자기 필드
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(sendUseCase.send(any())).willReturn(Mono.empty());
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\",\"myField\":1}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: 커맨드까지 도달했다 = 파싱이 통과했다. 거부 카운터도 오르지 않는다.
+        then(sendUseCase).should(times(1)).send(any());
+        then(registry).should(never()).recordRejectedFrame(anyString());
+    }
+
+    @Test
+    @DisplayName("파싱은 됐지만 커맨드에서 거부된 프레임도 상한에 세어진다 — 파싱만 세면 두 글자로 비켜간다")
+    void inbound_counts_validation_failures_toward_limit() {
+        // given: {}는 파싱에 성공하고 커맨드 생성에서 떨어진다
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.recordRejectedFrame("s1")).willReturn(false);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, "{}")).verifyComplete();
+
+        // then
+        then(registry).should(times(1)).recordRejectedFrame("s1");
+    }
 }

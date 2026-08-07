@@ -6,7 +6,7 @@ package com.sapari.streamingapp.websocket;
  *
  * @param type        NORMAL | NOTICE
  * @param content     원문(서버가 욕설 필터링)
- * @param clientMsgId 클라 생성 UUID — 낙관적 렌더 reconcile·재전송 멱등 키(nullable이지만 권장 필수)
+ * @param clientMsgId 클라 생성 UUID — 낙관적 렌더 reconcile·재전송 멱등 키. <b>필수</b>(없거나 길이 초과면 VALIDATION)
  */
 public record InboundMessage(
         String type,
