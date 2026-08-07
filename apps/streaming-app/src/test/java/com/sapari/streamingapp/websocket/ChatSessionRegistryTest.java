@@ -163,10 +163,15 @@ class ChatSessionRegistryTest {
     @DisplayName("방 종료 — 정상 종료(1000)로 닫는다. 사유는 앞서 보낸 SYSTEM이 전달")
     void room_end_closes_normally() {
         registry.register("s1", session(roomId, userId)).block();
+        // 종료 전에는 사유가 미정이다 — closeStatusOf의 기본값(NORMAL)만 보면 closeAll을 지워도 통과한다
+        assertThat(registry.isTerminating("s1")).isFalse();
 
         registry.closeAll(roomId).block();
 
-        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
+        assertThat(registry.isTerminating("s1")).isTrue();
+        StepVerifier.create(registry.terminationSignal("s1"))
+                .expectNext(CloseStatus.NORMAL)
+                .verifyComplete();
     }
 
     @Test

@@ -61,6 +61,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private static final long COMPLETE_SPIN_NANOS = Duration.ofMillis(50).toNanos();
 
+    /** 드롭 로그 솎아내기 간격 — 드롭이 몰리는 상황이 곧 CPU 포화라 건당 로그가 상황을 악화시킨다. */
+    private static final long DROP_LOG_INTERVAL = 100;
+
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
 
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
@@ -138,34 +141,46 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> sendToRoomLocal(UUID roomId, OutboundMessage message) {
-        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> emit(ls, message)));
+        return Mono.fromRunnable(() -> {
+            long deadline = spinDeadline(CONTENTION_SPIN_NANOS);
+            forEachInRoom(roomId, ls -> emit(ls, message, deadline));
+        });
     }
 
     @Override
     public Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver) {
         // 세션별 차등 fan-out — resolver가 세션마다 메시지 생성(방주인 PII 게이팅·kick 분기). null이면 그 세션 skip.
-        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> {
-            OutboundMessage message = resolver.apply(ls.session());
-            if (message != null) {
-                emit(ls, message);
-            }
-        }));
+        return Mono.fromRunnable(() -> {
+            long deadline = spinDeadline(CONTENTION_SPIN_NANOS);
+            forEachInRoom(roomId, ls -> {
+                OutboundMessage message = resolver.apply(ls.session());
+                if (message != null) {
+                    emit(ls, message, deadline);
+                }
+            });
+        });
     }
 
     @Override
     public Mono<Void> closeUser(UUID roomId, UUID userId) {
         // 강퇴는 정책상 종료라 1008 — 프론트가 "재접속하지 말 것"으로 읽는 코드다.
-        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> {
-            if (ls.session().userId().equals(userId)) {
-                terminate(ls, CloseStatus.POLICY_VIOLATION);
-            }
-        }));
+        return Mono.fromRunnable(() -> {
+            long deadline = spinDeadline(COMPLETE_SPIN_NANOS);
+            forEachInRoom(roomId, ls -> {
+                if (ls.session().userId().equals(userId)) {
+                    terminate(ls, CloseStatus.POLICY_VIOLATION, deadline);
+                }
+            });
+        });
     }
 
     @Override
     public Mono<Void> closeAll(UUID roomId) {
         // 방 종료는 정상 종료(1000). 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다.
-        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> terminate(ls, CloseStatus.NORMAL)));
+        return Mono.fromRunnable(() -> {
+            long deadline = spinDeadline(COMPLETE_SPIN_NANOS);
+            forEachInRoom(roomId, ls -> terminate(ls, CloseStatus.NORMAL, deadline));
+        });
     }
 
     /** transport 전용: 핸들러가 강제 종료 경로에 연결할 제어 신호. 모르는 세션이면 영영 발화하지 않는다. */
@@ -173,6 +188,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
         LocalSession ls = local.get(sessionId);
         // 빈 Mono를 주면 즉시 완료돼 멀쩡한 세션이 곧장 닫힌다 — never여야 한다.
         return ls == null ? Mono.never() : ls.terminate().asMono();
+    }
+
+    /**
+     * transport 전용: 서버가 이미 이 세션의 종료를 확정했는지.
+     *
+     * <p>종료 확정 후에도 소켓이 닫히기 전까지 짧은 창이 남는다(정상 클라는 ms, 소켓을 읽지 않는 클라는
+     * 유예 시간만큼). 그 창에 들어오는 전송을 막지 않으면 강퇴된 사용자가 계속 보낼 수 있다.
+     */
+    public boolean isTerminating(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        return ls != null && ls.closeStatus().get() != null;
     }
 
     /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */
@@ -189,14 +215,19 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * (강퇴 직전에 보낸 SYSTEM(KICKED)이 이 덕에 전달된다). 제어 채널은 그게 막혔을 때 —
      * 클라가 소켓을 읽지 않아 버퍼가 비지 않을 때 — 자원을 회수하는 확실한 경로다.
      */
-    private void terminate(LocalSession ls, CloseStatus status) {
+    private void terminate(LocalSession ls, CloseStatus status, long deadline) {
         // 이미 종료 중이면 그때 정해진 사유를 유지한다 — 제어 채널(Sinks.One)도 첫 값만 받으므로,
         // 저장된 사유와 실제로 흘러간 사유가 어긋나지 않게 여기서 한 번만 확정한다.
         if (!ls.closeStatus().compareAndSet(null, status)) {
             return;
         }
-        complete(ls);
-        ls.terminate().tryEmitValue(status);
+        complete(ls, deadline);
+        // 제어 채널은 데이터 채널이 막혔을 때의 최후 경로다 — 실패하면 그 세션은 강제 종료 수단을 잃으므로 남긴다.
+        Sinks.EmitResult signalled = ls.terminate().tryEmitValue(status);
+        if (signalled.isFailure()) {
+            log.error("세션 종료 제어 신호 발화 실패 — 강제 종료 경로 상실 sessionId={} roomId={} result={}",
+                    ls.sessionId(), ls.session().roomId(), signalled);
+        }
     }
 
     /**
@@ -231,25 +262,33 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 둘을 같이 묶으면 부하가 오를수록(=소진이 잦아질수록) 멀쩡한 시청자를 끊게 되고, 끊긴 클라의 재접속이
      * 부하를 더 올려 스스로 번진다.
      *
-     * <p><b>한계</b>: 아웃바운드 종료는 버퍼에 쌓인 메시지 뒤에 줄을 서므로, 소켓을 전혀 읽지 않는 클라에겐
-     * 종료 신호가 닿지 않고 연결이 남는다. 버퍼가 유계라 힙은 보호되지만 연결·세션 항목은 회수되지 않는다.
-     * 전송 계층 강제 종료는 별도 과제.
+     * <p>아웃바운드 종료 신호는 버퍼에 쌓인 메시지 뒤에 줄을 서므로 소켓을 읽지 않는 클라에겐 닿지 않는다.
+     * 그 경우를 위해 {@code terminate}가 별도 제어 채널을 함께 발화한다(핸들러가 그걸로 연결을 끊는다).
      */
-    private void emit(LocalSession ls, OutboundMessage message) {
+    private void emit(LocalSession ls, OutboundMessage message, long deadline) {
         if (ls == null) {
             return;
         }
-        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), CONTENTION_SPIN_NANOS);
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), deadline);
         if (consumerCannotKeepUp(result)) {
             // 코드는 1000 유지 — overflow 종료는 아직 프론트 계약에 없는 신규 케이스라 코드를 선점하지 않는다.
             log.warn("아웃바운드 버퍼 초과 — 세션 종료 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
-            terminate(ls, CloseStatus.NORMAL);
+            terminate(ls, CloseStatus.NORMAL, spinDeadline(COMPLETE_SPIN_NANOS));
         } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
-            log.warn("경합 재시도 소진 — 메시지 1건 드롭(세션 유지) sessionId={} roomId={} 누적드롭={}",
-                    ls.sessionId(), ls.session().roomId(), droppedOnContention.incrementAndGet());
+            // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
+            long dropped = droppedOnContention.incrementAndGet();
+            if (dropped % DROP_LOG_INTERVAL == 1) {
+                log.warn("경합 재시도 소진 — 메시지 드롭(세션 유지) sessionId={} roomId={} 누적드롭={}",
+                        ls.sessionId(), ls.session().roomId(), dropped);
+            }
         }
+    }
+
+    /** 단건 전송용 — 이 emit 하나에만 예산을 준다. */
+    private void emit(LocalSession ls, OutboundMessage message) {
+        emit(ls, message, spinDeadline(CONTENTION_SPIN_NANOS));
     }
 
     /**
@@ -268,11 +307,19 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return droppedOnContention.get();
     }
 
-    /** 종료 신호도 emit과 같은 경합을 겪는다 — 놓치면 세션이 안 닫히므로 더 긴 예산으로 재시도하고, 실패는 남긴다. */
-    private void complete(LocalSession ls) {
-        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitComplete(), COMPLETE_SPIN_NANOS);
+    /** 지금부터 주어진 예산만큼의 만료 시각. 한 연산(fan-out 1회)이 이 값을 공유한다. */
+    private long spinDeadline(long budgetNanos) {
+        return System.nanoTime() + budgetNanos;
+    }
+
+    /**
+     * 데이터 채널 쪽 종료 — 버퍼에 남은 걸 흘려보낸 뒤 곱게 닫는 정상 경로다.
+     * 경합으로 놓쳐도 {@code terminate}의 제어 채널이 종료를 보장하므로, 여기 실패는 치명적이지 않다.
+     */
+    private void complete(LocalSession ls, long deadline) {
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitComplete(), deadline);
         if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
-            log.error("세션 종료 신호 전달 실패(경합 재시도 소진) — 세션이 남는다 sessionId={} roomId={}",
+            log.warn("데이터 채널 종료 실패(경합 소진) — 제어 채널로 종료한다 sessionId={} roomId={}",
                     ls.sessionId(), ls.session().roomId());
         }
     }
@@ -285,9 +332,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>상한을 짧게 잡는 이유: 락을 쥔 쪽은 버퍼를 비우는 동안(직렬화까지) 쥐고 있고, 기다리는 쪽은
      * <b>Netty 이벤트루프에서 spin</b>할 수 있다 — 그 루프에 붙은 다른 커넥션까지 함께 멈춘다.
      * 소진 시 처분은 호출자가 정한다.
+     *
+     * <p>예산은 <b>절대 시각(deadline)</b>으로 받는다. 방 fan-out은 세션 수만큼 이 메서드를 부르는데,
+     * 호출마다 새 예산을 주면 상한이 세션 수에 비례해 곱해진다 — 그것도 방 전체 중계를 담당하는
+     * Redis 구독 스레드 위에서. 그래서 한 번의 fan-out이 예산 하나를 나눠 쓴다.
      */
-    private Sinks.EmitResult emitSerially(Supplier<Sinks.EmitResult> emitter, long spinNanos) {
-        long deadline = System.nanoTime() + spinNanos;
+    private Sinks.EmitResult emitSerially(Supplier<Sinks.EmitResult> emitter, long deadline) {
         while (true) {
             Sinks.EmitResult result = emitter.get();
             if (result != Sinks.EmitResult.FAIL_NON_SERIALIZED || System.nanoTime() >= deadline) {

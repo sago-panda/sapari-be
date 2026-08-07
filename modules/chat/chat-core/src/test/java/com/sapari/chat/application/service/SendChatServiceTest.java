@@ -131,6 +131,31 @@ class SendChatServiceTest {
     }
 
     @Test
+    @DisplayName("방송을 진행하는 SELLER는 rate limit 면제 — 상품설명 연속전송")
+    void broadcasting_seller_is_exempt_from_rate_limit() {
+        stubAllowedAndSaved();
+
+        StepVerifier.create(service.send(command("SELLER", true, true, "NORMAL", "이 상품은", "c1")))
+                .expectNextCount(1)
+                .verifyComplete();
+        verify(rateLimiter, never()).tryAcquire(any());
+    }
+
+    @Test
+    @DisplayName("남의 방에 들어온 SELLER는 시청자이므로 rate limit 적용")
+    void visiting_seller_is_rate_limited() {
+        // 면제 근거는 "상품설명 연속전송"이라 이 방을 진행하는 사람에게만 해당한다.
+        // role만 보면 판매자 계정이 남의 방에서 무제한 도배할 수 있다(권한 정책의 두 축 원칙과 어긋남).
+        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
+        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(false, 3)));
+
+        StepVerifier.create(service.send(command("SELLER", false, true, "NORMAL", "도배", "c1")))
+                .expectError(ChatRateLimitException.class)
+                .verify();
+        verify(rateLimiter).tryAcquire(any());
+    }
+
+    @Test
     @DisplayName("BUYER가 NOTICE 시도 → 권한 거부")
     void buyer_notice_denied() {
         StepVerifier.create(service.send(command("BUYER", false, true, "NOTICE", "공지", "c1")))

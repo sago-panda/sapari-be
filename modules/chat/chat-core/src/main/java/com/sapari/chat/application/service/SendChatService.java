@@ -83,13 +83,18 @@ public class SendChatService implements SendChatUseCase {
                 .onErrorReturn(false)
                 .flatMap(kicked -> kicked
                         ? Mono.<Void>error(new UserKickedException("강퇴되어 메시지를 보낼 수 없습니다."))
-                        : enforceRateLimit(role, command.senderId()))                 // 5) rate limit
+                        : enforceRateLimit(role, command.isRoomOwner(), command.senderId()))   // 5) rate limit
                 .then(Mono.defer(() -> persistAndPublish(command, role, type, content)));  // 6) 욕설필터·저장·발행
     }
 
-    /** 5) Rate limit — BUYER만 적용(SELLER·ADMIN은 상품설명 연속전송 허용). 어댑터가 Redis 장애 시 fail-open. */
-    private Mono<Void> enforceRateLimit(ChatRole role, UUID senderId) {
-        if (role != ChatRole.BUYER) {
+    /**
+     * 5) Rate limit — 면제는 <b>이 방송을 진행하는 판매자</b>와 운영자만. 어댑터가 Redis 장애 시 fail-open.
+     *
+     * <p>면제 근거가 "상품설명 연속전송"이라 방주인에게만 해당한다. role만 보면 판매자 계정이 남의 방에
+     * 시청자로 들어가 무제한 도배할 수 있는데, 권한 정책이 세운 <b>role + 방 소유 두 축</b> 원칙과 어긋난다.
+     */
+    private Mono<Void> enforceRateLimit(ChatRole role, boolean isRoomOwner, UUID senderId) {
+        if (role == ChatRole.ADMIN || (role == ChatRole.SELLER && isRoomOwner)) {
             return Mono.empty();
         }
         return rateLimiter.tryAcquire(senderId)

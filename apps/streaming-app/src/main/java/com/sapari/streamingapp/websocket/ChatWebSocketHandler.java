@@ -171,6 +171,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     /** 인바운드 1건 처리 — 어떤 입력이 와도 ERROR 응답으로 끝내고 연결은 유지한다. (단위 테스트 진입점) */
     Mono<Void> onInbound(String sid, ChatSession chatSession, String payload) {
+        // 종료가 확정된 세션은 소켓이 닫히기 전이라도 더 받지 않는다 — 그 창에 강퇴된 사용자가 계속
+        // 보낼 수 있고, 그걸 막는 건 전송 경로의 Redis 조회뿐인데 그건 장애 시 통과(fail-open)한다.
+        if (registry.isTerminating(sid)) {
+            return Mono.empty();
+        }
         InboundMessage in;
         try {
             in = objectMapper.readValue(payload, InboundMessage.class);
