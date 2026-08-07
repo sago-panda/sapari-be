@@ -18,6 +18,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.web.reactive.socket.CloseStatus;
 
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.domain.model.ChatRole;
@@ -132,6 +133,50 @@ class ChatSessionRegistryTest {
                 .then(() -> registry.closeUser(roomId, userId).block())
                 .verifyComplete();
         assertThat(registry.outbound("unknown")).isNotNull();
+    }
+
+    @Test
+    @DisplayName("강퇴 — 버퍼가 막혀 데이터 채널로 못 닫아도 제어 채널로 종료되고 사유는 1008")
+    void kick_terminates_through_control_channel_when_buffer_is_blocked() {
+        // given: 소켓을 읽지 않는 클라(request 0). 버퍼는 넘치지 않게 채워 overflow 종료와 섞이지 않게 한다.
+        registry.register("s1", session(roomId, userId)).block();
+        StepVerifier.create(registry.outbound("s1"), 0)
+                .then(() -> {
+                    for (int i = 0; i < 5; i++) {
+                        registry.sendToSession("s1", out("NORMAL")).block();
+                    }
+                    registry.closeUser(roomId, userId).block();   // when
+                })
+                // 데이터 채널로는 아무것도 못 간다 — complete도 쌓인 5건 뒤에 막혀 전달되지 않는다
+                .expectNoEvent(Duration.ofMillis(50))
+                .thenCancel()
+                .verify();
+
+        // then: 그럼에도 제어 신호는 발화하고, 종료 사유가 1008로 남는다
+        StepVerifier.create(registry.terminationSignal("s1"))
+                .expectNext(CloseStatus.POLICY_VIOLATION)
+                .verifyComplete();
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    @DisplayName("방 종료 — 정상 종료(1000)로 닫는다. 사유는 앞서 보낸 SYSTEM이 전달")
+    void room_end_closes_normally() {
+        registry.register("s1", session(roomId, userId)).block();
+
+        registry.closeAll(roomId).block();
+
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
+    }
+
+    @Test
+    @DisplayName("제어 신호 — 모르는 세션은 영영 발화하지 않는다(빈 Mono면 멀쩡한 세션이 즉시 닫힌다)")
+    void termination_signal_never_fires_for_unknown_session() {
+        StepVerifier.create(registry.terminationSignal("없는세션"))
+                .expectSubscription()
+                .expectNoEvent(Duration.ofMillis(50))
+                .thenCancel()
+                .verify();
     }
 
     @ParameterizedTest

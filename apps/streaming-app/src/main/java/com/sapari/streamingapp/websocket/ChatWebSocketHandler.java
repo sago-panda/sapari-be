@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     /** 룸 토큰을 실어 나르는 서브프로토콜 이름. 클라는 ["bearer", <token>] 두 개를 제시한다. */
     private static final String TOKEN_SUBPROTOCOL = "bearer";
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
+    /** 종료 결정 후 정상 클라가 버퍼에 남은 메시지를 받아갈 시간. 이 시간이 지나면 강제로 끊는다. */
+    private static final Duration FORCED_CLOSE_GRACE = Duration.ofSeconds(3);
 
     private final RoomTokenVerifier verifier;
     private final EntryGate entryGate;
@@ -141,12 +144,20 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .flatMap(payload -> onInbound(sid, chatSession, payload))
                 .then();
 
+        // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
+        // 위한 것이라, 정상 클라가 남은 메시지를 다 받고 스스로 끝낼 시간을 준 뒤에야 발화한다.
+        Mono<Void> forcedClose = Mono.defer(() -> registry.terminationSignal(sid))
+                .delayElement(FORCED_CLOSE_GRACE)
+                .then();
+
         return registry.register(sid, chatSession)
                 .then(registry.getActiveCount(roomId))
                 .flatMap(count -> registry.sendToSession(sid, roomInfo(count, chatSession.isRoomOwner())))
-                // firstWithSignal: 둘 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound 완료)뿐 아니라
-                // 강제 close(KICK/ROOM_ENDED → sink complete → outbound 완료) 시에도 WS를 즉시 닫는다.
-                .then(Mono.firstWithSignal(outbound, inbound))
+                // firstWithSignal: 셋 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
+                // (sink complete → outbound), 그리고 그 둘이 다 막혔을 때의 강제 종료.
+                .then(Mono.firstWithSignal(outbound, inbound, forcedClose))
+                // 종료 사유를 코드로 실어 닫는다 — complete 신호엔 코드를 못 싣기 때문에 따로 붙인다.
+                .then(Mono.defer(() -> session.close(registry.closeStatusOf(sid))))
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 

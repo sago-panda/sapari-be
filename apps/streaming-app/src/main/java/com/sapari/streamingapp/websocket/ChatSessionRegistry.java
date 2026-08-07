@@ -6,11 +6,13 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.socket.CloseStatus;
 
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -76,8 +78,18 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
 
-    /** sessionId를 함께 들고 다닌다 — 전달 실패 로그에서 어느 커넥션인지 짚으려면 필요하다. */
-    private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink) {
+    /**
+     * 한 커넥션의 채널 묶음.
+     *
+     * <p><b>{@code sink}(데이터) 와 {@code terminate}(제어)를 나눈 이유</b>: 종료를 sink complete로만 알리면
+     * 그 신호가 버퍼에 쌓인 메시지 <i>뒤에</i> 줄을 선다. 소켓을 읽지 않는 클라에겐 영영 닿지 않아 연결·세션
+     * 항목·방 구독이 회수되지 않는다. 제어 신호는 데이터 큐를 타지 않아야 한다.
+     *
+     * <p>{@code closeStatus}는 종료 사유 — complete로 곱게 닫히든 제어 채널로 끊기든 같은 코드로 닫기 위해
+     * 따로 보관한다(complete 신호엔 코드를 실을 수 없다).
+     */
+    private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
+            Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus) {
     }
 
     @Override
@@ -85,7 +97,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
         local.put(sessionId, new LocalSession(sessionId, session,
-                Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get())));
+                Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get()),
+                Sinks.one(), new AtomicReference<>()));   // closeStatus는 종료가 정해질 때 채워진다(null=미정)
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
         roomSessions.compute(session.roomId(), (room, sessionIds) -> {
@@ -141,17 +154,49 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> closeUser(UUID roomId, UUID userId) {
-        // Sink complete → 아웃바운드 종료. C4 핸들러가 이를 실제 WS close로 잇고, disconnect 콜백이 unregister(Redis 정리).
+        // 강퇴는 정책상 종료라 1008 — 프론트가 "재접속하지 말 것"으로 읽는 코드다.
         return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> {
             if (ls.session().userId().equals(userId)) {
-                complete(ls);
+                terminate(ls, CloseStatus.POLICY_VIOLATION);
             }
         }));
     }
 
     @Override
     public Mono<Void> closeAll(UUID roomId) {
-        return Mono.fromRunnable(() -> forEachInRoom(roomId, this::complete));
+        // 방 종료는 정상 종료(1000). 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다.
+        return Mono.fromRunnable(() -> forEachInRoom(roomId, ls -> terminate(ls, CloseStatus.NORMAL)));
+    }
+
+    /** transport 전용: 핸들러가 강제 종료 경로에 연결할 제어 신호. 모르는 세션이면 영영 발화하지 않는다. */
+    public Mono<CloseStatus> terminationSignal(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        // 빈 Mono를 주면 즉시 완료돼 멀쩡한 세션이 곧장 닫힌다 — never여야 한다.
+        return ls == null ? Mono.never() : ls.terminate().asMono();
+    }
+
+    /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */
+    public CloseStatus closeStatusOf(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        CloseStatus status = ls == null ? null : ls.closeStatus().get();
+        return status == null ? CloseStatus.NORMAL : status;
+    }
+
+    /**
+     * 세션 종료 — 사유를 기록하고, 데이터 채널(complete)과 제어 채널 양쪽에 알린다.
+     *
+     * <p>둘 다 거는 이유: complete는 버퍼에 남은 메시지를 먼저 흘려보낸 뒤 곱게 닫는 정상 경로다
+     * (강퇴 직전에 보낸 SYSTEM(KICKED)이 이 덕에 전달된다). 제어 채널은 그게 막혔을 때 —
+     * 클라가 소켓을 읽지 않아 버퍼가 비지 않을 때 — 자원을 회수하는 확실한 경로다.
+     */
+    private void terminate(LocalSession ls, CloseStatus status) {
+        // 이미 종료 중이면 그때 정해진 사유를 유지한다 — 제어 채널(Sinks.One)도 첫 값만 받으므로,
+        // 저장된 사유와 실제로 흘러간 사유가 어긋나지 않게 여기서 한 번만 확정한다.
+        if (!ls.closeStatus().compareAndSet(null, status)) {
+            return;
+        }
+        complete(ls);
+        ls.terminate().tryEmitValue(status);
     }
 
     /**
@@ -196,9 +241,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
         Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), CONTENTION_SPIN_NANOS);
         if (consumerCannotKeepUp(result)) {
-            log.warn("아웃바운드 버퍼 초과 — 세션 종료 시도 sessionId={} roomId={} userId={} result={}",
+            // 코드는 1000 유지 — overflow 종료는 아직 프론트 계약에 없는 신규 케이스라 코드를 선점하지 않는다.
+            log.warn("아웃바운드 버퍼 초과 — 세션 종료 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
-            complete(ls);
+            terminate(ls, CloseStatus.NORMAL);
         } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
             log.warn("경합 재시도 소진 — 메시지 1건 드롭(세션 유지) sessionId={} roomId={} 누적드롭={}",
