@@ -2,6 +2,7 @@ package com.sapari.chat.infrastructure.redis;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -26,7 +27,13 @@ public class RedisRateLimiter implements RateLimiter {
 
     private static final Duration WINDOW = Duration.ofSeconds(3);
 
+    /** fail-open 로그 솎아내기 간격 — 장애 중엔 전 전송이 이 경로라 건당 로그가 상황을 악화시킨다. */
+    private static final long FAIL_OPEN_LOG_INTERVAL = 100;
+
     private final ReactiveStringRedisTemplate redisTemplate;
+
+    /** fail-open 누적 횟수. 로그를 솎아내도 규모는 남기기 위한 카운터. */
+    private final AtomicLong failOpenCount = new AtomicLong();
 
     @Override
     public Mono<RateLimitResult> tryAcquire(UUID userId) {
@@ -37,7 +44,14 @@ public class RedisRateLimiter implements RateLimiter {
                         ? Mono.just(new RateLimitResult(true, 0))
                         : remainingSeconds(key).map(remaining -> new RateLimitResult(false, remaining)))
                 .onErrorResume(err -> {
-                    log.error("rate limit Redis 장애 — fail-open으로 허용 userId={}", userId, err);
+                    // Redis가 죽으면 전 사용자의 모든 전송이 이 경로를 탄다. 건당 스택트레이스를 남기면
+                    // 초당 수백 줄이 쌓여 정작 원인(Redis 장애) 로그를 묻는다. 그래서 솎아내고 예외 종류만 남긴다.
+                    // userId도 빼는 이유: 특정 사용자 문제가 아니라 전역 상태라, 표본 하나에 찍힌 id는 오독을 부른다.
+                    long count = failOpenCount.incrementAndGet();
+                    if (count % FAIL_OPEN_LOG_INTERVAL == 1) {
+                        log.error("rate limit Redis 장애 — fail-open으로 허용(누적 {}건) cause={}",
+                                count, err.getClass().getSimpleName());
+                    }
                     return Mono.just(new RateLimitResult(true, 0));
                 });
     }
