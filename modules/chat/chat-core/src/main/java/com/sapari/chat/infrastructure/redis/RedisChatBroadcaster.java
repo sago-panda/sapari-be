@@ -104,8 +104,10 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         } catch (Exception e) {
             // 예외 객체·메시지를 그대로 찍지 않는다 — InvalidFormatException 등은 실패한 "값"을 메시지에 인용하므로
             // 봉투의 senderEmail 같은 PII가 로그로 샌다. 진단에 필요한 건 실패 종류와 위치지 값이 아니다.
-            log.error("chat:pubsub 봉투 역직렬화 실패 — 해당 메시지 skip(구독 스트림 유지) cause={} path={}",
-                    e.getClass().getSimpleName(), failedFieldPath(e));
+            // 길이를 함께 남긴다 — JSON 자체가 깨진 경우엔 필드 경로가 안 나와(-) 사유만으론 좁혀지지 않는다.
+            // 발행 측이 계약을 바꿔 전 방 메시지가 통째로 버려지는 상황에서 규모를 가늠할 단서가 필요하다.
+            log.error("chat:pubsub 봉투 역직렬화 실패 — 해당 메시지 skip(구독 스트림 유지) cause={} path={} payloadLength={}",
+                    e.getClass().getSimpleName(), failedFieldPath(e), json == null ? -1 : json.length());
             return Mono.empty();
         }
     }

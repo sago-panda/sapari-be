@@ -169,7 +169,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 그 상태로 두면 아래 firstWithSignal이 안 끝나 doFinally(cleanup)까지 막힌다 — 세션 명부·방 구독·
         // Redis 항목이 통째로 남는다. 상한을 둬서 그 셋은 반드시 회수하되, 채널 자체는 남을 수 있다
         // (CLOSE_FLUSH_TIMEOUT 주석 참고).
-        Mono<Void> closeWithReason = closeWithReason(session, sid);
+        // cache(): 아래 firstWithSignal의 두 브랜치가 같은 Mono를 참조한다. 둘이 근소한 차로 진행하면
+        // 구독이 두 번 일어나 close도 두 번 시도된다. 실제로는 두 번째가 no-op이지만, 그건 netty가
+        // "이미 닫음" 래치를 거는 덕이라 우리 코드의 보장이 아니다. 여기서 한 번만 돌게 못 박는다.
+        Mono<Void> closeWithReason = closeWithReason(session, sid).cache();
 
         return registry.register(sid, chatSession)
                 .then(roomInfoFor(roomId, chatSession))
