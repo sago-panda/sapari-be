@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -44,6 +45,18 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** 세션당 아웃바운드 버퍼 상한. 방 하나가 초당 수십 건 × 몇 초 적체를 견디는 크기. */
     static final int OUTBOUND_BUFFER_SIZE = 256;
+
+    /**
+     * 한 연결이 낼 수 있는 파싱 불가 프레임 누적 상한. 넘으면 그 연결을 끊는다.
+     *
+     * <p>파싱 실패에는 전송 레이트리밋이 걸리지 않는다 — 그건 커맨드가 만들어진 뒤에야 동작한다.
+     * 그래서 깨진 프레임은 얼마든지 밀어넣을 수 있고, 서버는 건건이 ERROR를 만들어 되돌려준다.
+     * 잘못된 입력에 연결을 끊지 않는 건 의도지만, 무한히 받아주는 것까지 의도는 아니다.
+     *
+     * <p>연속이 아니라 누적으로 센다: 연속으로 세면 성공 프레임마다 리셋해야 하는데, 정상 클라는
+     * 애초에 깨진 JSON을 보내지 않으므로 누적 상한이 오탐을 만들지 않는다. 여유를 크게 둘 이유도 없다.
+     */
+    static final int MALFORMED_FRAME_LIMIT = 20;
 
     /**
      * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
@@ -101,7 +114,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 따로 보관한다(complete 신호엔 코드를 실을 수 없다).
      */
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
-            Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus) {
+            Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
+            AtomicInteger malformedFrames) {
     }
 
     @Override
@@ -110,7 +124,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
         local.put(sessionId, new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get()),
-                Sinks.one(), new AtomicReference<>()));   // closeStatus는 종료가 정해질 때 채워진다(null=미정)
+                Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
+                new AtomicInteger()));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
         roomSessions.compute(session.roomId(), (room, sessionIds) -> {
@@ -230,6 +245,27 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public boolean isTerminating(String sessionId) {
         LocalSession ls = local.get(sessionId);
         return ls != null && ls.closeStatus().get() != null;
+    }
+
+    /**
+     * transport 전용: 파싱 불가 프레임 1건을 이 세션 앞으로 기록한다.
+     *
+     * @return 상한을 넘겨 세션을 끊었으면 true. 호출자는 그때 ERROR 응답을 보내지 않아야 한다 —
+     *         그 응답이 곧 상대가 노린 되돌림이고, 끊기로 한 세션에 더 실어 보낼 이유도 없다.
+     */
+    public boolean recordMalformedFrame(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return true;   // 이미 사라진 세션 — 되돌려 보낼 곳이 없다
+        }
+        if (ls.malformedFrames().incrementAndGet() < MALFORMED_FRAME_LIMIT) {
+            return false;
+        }
+        // 정책성 종료다 — 프론트가 "재접속해도 같은 결과"로 읽어야 한다.
+        log.warn("파싱 불가 프레임 상한 초과 — 세션 종료 sessionId={} roomId={} userId={} 상한={}",
+                sessionId, ls.session().roomId(), ls.session().userId(), MALFORMED_FRAME_LIMIT);
+        terminate(ls, CloseStatus.POLICY_VIOLATION, newBudget().completeDeadline());
+        return true;
     }
 
     /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */

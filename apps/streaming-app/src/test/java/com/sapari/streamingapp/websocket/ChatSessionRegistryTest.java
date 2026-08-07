@@ -335,4 +335,27 @@ class ChatSessionRegistryTest {
                 .expectNextCount(ChatSessionRegistry.OUTBOUND_BUFFER_SIZE)
                 .verifyComplete();
     }
+
+    @Test
+    @DisplayName("파싱 불가 프레임 — 상한 전까지는 세션을 살려두고, 넘으면 1008로 끊는다")
+    void malformed_frames_close_session_only_after_limit() {
+        registry.register("s1", session(roomId, userId)).block();
+
+        // 상한 직전까지: 계속 응답하라(false)고 답하고 세션도 살아 있다
+        for (int i = 1; i < ChatSessionRegistry.MALFORMED_FRAME_LIMIT; i++) {
+            assertThat(registry.recordMalformedFrame("s1")).isFalse();
+        }
+        assertThat(registry.isTerminating("s1")).isFalse();
+
+        // 상한에 닿는 순간: 응답하지 말라(true) + 정책성 종료로 확정
+        assertThat(registry.recordMalformedFrame("s1")).isTrue();
+        assertThat(registry.isTerminating("s1")).isTrue();
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    @DisplayName("파싱 불가 프레임 — 이미 사라진 세션이면 응답하지 않는다")
+    void malformed_frame_on_unknown_session_is_not_answered() {
+        assertThat(registry.recordMalformedFrame("없는세션")).isTrue();
+    }
 }

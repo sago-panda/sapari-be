@@ -202,11 +202,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         try {
             in = objectMapper.readValue(payload, InboundMessage.class);
         } catch (Exception e) {
-            return registry.sendToSession(sid, error("VALIDATION", null));   // 파싱 실패 — clientMsgId 알 수 없음
+            return rejectMalformed(sid);
         }
         // JSON 리터럴 null은 예외 없이 null로 파싱돼 위 catch를 그냥 통과한다.
         if (in == null) {
-            return registry.sendToSession(sid, error("VALIDATION", null));
+            return rejectMalformed(sid);
         }
         // 에러 응답이 in을 다시 건드리지 않게 미리 뽑아둔다 — 폴백이 예외를 던지면 그 예외가 곧장
         // downstream onError가 되어 인바운드 스트림이 죽는다(에러 핸들러는 절대 실패하면 안 되는 자리).
@@ -216,6 +216,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
                 .flatMap(view -> registry.sendToSession(sid, toAck(view, clientMsgId)))
                 .onErrorResume(e -> registry.sendToSession(sid, toError(e, clientMsgId)));
+    }
+
+    /**
+     * 파싱 불가 프레임에 ERROR로 답한다. clientMsgId는 알 수 없어 싣지 못한다.
+     *
+     * <p>다만 무한정 답해주지는 않는다 — 이 경로엔 전송 레이트리밋이 걸리지 않아서, 답해주는 만큼
+     * 그대로 되돌아온다. 누적 상한을 넘으면 registry가 세션을 끊고, 그때는 응답도 보내지 않는다.
+     */
+    private Mono<Void> rejectMalformed(String sid) {
+        return registry.recordMalformedFrame(sid)
+                ? Mono.empty()
+                : registry.sendToSession(sid, error("VALIDATION", null));
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──
