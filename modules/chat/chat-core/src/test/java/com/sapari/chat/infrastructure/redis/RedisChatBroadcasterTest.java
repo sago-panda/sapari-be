@@ -25,6 +25,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.core.read.ListAppender;
 
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.protocol.ChatEnvelope;
@@ -155,6 +156,46 @@ class RedisChatBroadcasterTest {
             text.append(' ').append(t.getClassName()).append(' ').append(t.getMessage());
         }
         return text.toString();
+    }
+
+    @Test
+    @DisplayName("실패 필드 경로 — 봉투에 없는 필드명이 와도 로그를 위조할 문자는 남지 않는다")
+    void failed_field_path_strips_injection_from_unknown_property() throws Exception {
+        // 나머지가 전부 유효해야 record가 생성되고, 그제서야 "모르는 필드"가 실패 사유가 된다.
+        // (하나라도 어긋나면 생성 단계에서 먼저 터져 그 이름이 경로에 닿지 않는다.)
+        String valid = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
+        String injected = valid.replace("\"message\":{", "\"message\":{\"ev\\nil주입\":1,");
+
+        Exception raw = catchDeserialize(injected);
+
+        // 전제 검증 — 발행한 쪽이 지은 이름이 실제로 예외 경로에 담긴다. 그래서 걸러야 한다.
+        assertThat(raw).isInstanceOf(JsonMappingException.class);
+        assertThat(((JsonMappingException) raw).getPath())
+                .anyMatch(ref -> ref.getFieldName() != null && ref.getFieldName().contains("\n"));
+
+        assertThat(broadcaster.failedFieldPath(raw))
+                .doesNotContain("\n")
+                .doesNotContain("\r");
+    }
+
+    @Test
+    @DisplayName("실패 필드 경로 — 정상 필드명은 그대로 남아 진단이 가능하다")
+    void failed_field_path_keeps_real_field_names() {
+        // senderId 자리에 UUID가 아닌 값 → 그 필드에서 매핑 실패
+        Exception raw = catchDeserialize(
+                "{\"kind\":\"CHAT\",\"message\":{\"senderId\":\"uuid아님\"}}");
+
+        assertThat(broadcaster.failedFieldPath(raw)).isEqualTo("message.senderId");
+    }
+
+    /** 봉투 역직렬화를 실제로 시도해 터진 예외를 돌려준다(계약 그대로 — mixin/모듈 동일). */
+    private Exception catchDeserialize(String json) {
+        try {
+            mapper.readValue(json, ChatEnvelope.class);
+            throw new AssertionError("역직렬화가 실패해야 하는 입력인데 성공했다");
+        } catch (Exception e) {
+            return e;
+        }
     }
 
     @SuppressWarnings("unchecked")

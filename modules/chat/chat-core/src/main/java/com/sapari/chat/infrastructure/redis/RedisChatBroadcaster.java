@@ -89,7 +89,11 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
             UUID roomId = UUID.fromString(channel.substring(ChatRedisKeys.PUBSUB_PREFIX.length()));
             return new RawMessage(roomId, body);
         } catch (IllegalArgumentException e) {
-            log.error("chat:pubsub 채널명 roomId 파싱 실패 — skip channel={}", channel);
+            // 채널명도 payload와 같은 신뢰경계 밖 문자열이라 원문을 싣지 않는다 — 개행을 섞어 로그 줄을
+            // 위조할 수 있다. 여기 오는 건 우리 발행이 아니다(우리는 UUID로 키를 만든다). 남의 발행이
+            // 잘못됐다는 사실과 규모만 알면 되므로 접미사 길이로 갈음한다.
+            log.error("chat:pubsub 채널명 roomId 파싱 실패 — skip suffixLength={}",
+                    channel.length() - ChatRedisKeys.PUBSUB_PREFIX.length());
             return null;
         }
     }
@@ -106,15 +110,32 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         }
     }
 
-    /** 역직렬화가 걸린 필드 경로만 뽑는다(값 제외) — 예: message.senderId. 경로를 못 얻으면 "-". */
-    private String failedFieldPath(Exception e) {
+    /** 역직렬화가 걸린 필드 경로만 뽑는다(값 제외) — 예: message.senderId. 경로를 못 얻으면 "-". (테스트 진입점) */
+    String failedFieldPath(Exception e) {
         if (!(e instanceof JsonMappingException mappingException)) {
             return "-";
         }
         String path = mappingException.getPath().stream()
                 .map(JsonMappingException.Reference::getFieldName)
                 .filter(Objects::nonNull)
+                .map(RedisChatBroadcaster::safeFieldName)
                 .collect(Collectors.joining("."));
         return path.isEmpty() ? "-" : path;
     }
+
+    /**
+     * 필드명을 로그에 넣기 전에 거른다.
+     *
+     * <p>우리 타입의 필드명은 전부 그대로 통과한다. 문제는 <b>봉투에 없는 필드</b>가 왔을 때다 —
+     * 그때 예외 경로에 담기는 이름은 우리가 지은 게 아니라 발행한 쪽이 지은 것이라, 개행을 섞으면
+     * 로그에 없는 줄을 만들어낼 수 있다. 값이 아니라 이름이라 방심하기 쉬운 자리다.
+     */
+    private static String safeFieldName(String name) {
+        String filtered = name.replaceAll("[^A-Za-z0-9_$]", "");
+        return filtered.length() <= MAX_FIELD_NAME_LENGTH ? filtered
+                : filtered.substring(0, MAX_FIELD_NAME_LENGTH);
+    }
+
+    /** 필드명 로그 길이 상한 — 우리 필드명은 한참 아래라 정상 진단은 손실 없다. */
+    private static final int MAX_FIELD_NAME_LENGTH = 64;
 }
