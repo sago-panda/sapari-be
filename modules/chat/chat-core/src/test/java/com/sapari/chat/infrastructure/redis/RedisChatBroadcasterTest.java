@@ -12,6 +12,7 @@ import static org.mockito.Mockito.times;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -35,6 +36,7 @@ import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
@@ -201,6 +203,33 @@ class RedisChatBroadcasterTest {
 
         // when & then
         assertThat(broadcaster.failedFieldPath(raw)).isEqualTo("message.senderId");
+    }
+
+    @Test
+    @DisplayName("패턴 구독이 끊겨도 재구독으로 되살아나 이후 메시지가 다시 흐른다")
+    void subscribe_recovers_after_upstream_failure() throws Exception {
+        // given: 첫 구독은 즉시 끊기고, 재구독부터 정상 스트림을 준다.
+        // replay 싱크라 재구독이 언제 일어나든 그 전에 넣어둔 메시지가 전달된다(타이밍 의존 제거).
+        Sinks.Many<ReactiveSubscription.Message<String, String>> afterReconnect =
+                Sinks.many().replay().all();
+        AtomicInteger subscribeCount = new AtomicInteger();
+        ReactiveStringRedisTemplate flaky = mock(ReactiveStringRedisTemplate.class);
+        doReturn(Flux.defer(() -> subscribeCount.getAndIncrement() == 0
+                ? Flux.<ReactiveSubscription.Message<String, String>>error(new RuntimeException("연결 끊김"))
+                : afterReconnect.asFlux()))
+                .when(flaky).listenToPattern("chat:pubsub:*");
+
+        RedisChatBroadcaster recovering = new RedisChatBroadcaster(flaky);
+        String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
+        afterReconnect.tryEmitNext(message(channel, wire));
+
+        // when & then: backoff(최소 1초) 뒤 재구독이 일어나 메시지가 도착한다
+        StepVerifier.create(recovering.subscribe(roomId))
+                .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg)
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+
+        assertThat(subscribeCount.get()).isGreaterThan(1);   // 실제로 다시 붙었다
     }
 
     /** 봉투 역직렬화를 실제로 시도해 터진 예외를 돌려준다(계약 그대로 — mixin/모듈 동일). */

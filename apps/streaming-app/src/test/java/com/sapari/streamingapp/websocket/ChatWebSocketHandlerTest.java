@@ -245,4 +245,28 @@ class ChatWebSocketHandlerTest {
                 .expectComplete()
                 .verify(Duration.ofSeconds(5));
     }
+
+    @Test
+    @DisplayName("PII는 채팅 메시지 경로로만 나간다 — 핸들러가 만드는 응답엔 이메일·원문이 실리지 않는다")
+    void handler_built_messages_carry_no_pii() {
+        // given: 발신자 정보를 다 갖춘 저장 결과(= PII가 흘러들 여지가 가장 큰 입력)
+        ChatMessageView saved = new ChatMessageView(
+                "65a1f2c3d4e5f60718293a4b", roomId, UUID.randomUUID(), "닉네임",
+                "sender@example.com", ChatRole.BUYER.name(), "NORMAL",
+                "원본", "원본", "c1", Instant.parse("2026-06-11T00:00:00Z"));
+
+        // when & then: ACK·ROOM_INFO는 발신자 식별정보를 싣지 않는다.
+        // (이메일·원문은 방주인 게이팅을 통과한 NORMAL/NOTICE에만 붙는다 — 다른 경로로 새면 게이트가 무의미해진다)
+        assertThat(handler.toAck(saved, "c1"))
+                .satisfies(m -> {
+                    assertThat(m.senderEmail()).isNull();
+                    assertThat(m.originalMessage()).isNull();
+                    assertThat(m.displayMessage()).isNull();
+                });
+        assertThat(handler.roomInfo(3L, true))
+                .satisfies(m -> {
+                    assertThat(m.senderEmail()).isNull();
+                    assertThat(m.originalMessage()).isNull();
+                });
+    }
 }
