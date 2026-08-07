@@ -224,6 +224,39 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    // chat-core 한 모듈에 reactive 유스케이스(WS 전송)와 blocking 유스케이스(강퇴·이력 조회)가 함께 산다.
+    // 두 앱이 chat-core를 의존하므로 양쪽 스택이 전이로 클래스패스에 올라오는데, 그 전이를 막으면 모듈 구조가
+    // 깨지므로 허용하고 '호출'만 막는다 — 블로킹 Redis 금지와 같은 계열이다.
+    //
+    // 아래 두 규칙은 지금 검사 대상 클래스가 없어도(강퇴·이력은 미구현) 그대로 둔다. 잘못 배선하는 순간
+    // 실패하는 게 목적이지, 지금 뭔가를 잡는 게 목적이 아니다.
+
+    // WebFlux 앱이 blocking 유스케이스를 호출하면 Netty 이벤트루프가 그 시간만큼 멈춘다.
+    @Test
+    void streaming_app_must_not_call_blocking_chat_use_cases() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.streamingapp..")
+                .should().dependOnClassesThat()
+                        .haveNameMatching(".*\\.(KickUserUseCase|KickUserService|GetChatHistoryUseCase|GetChatHistoryService)")
+                .orShould().dependOnClassesThat()
+                        .haveFullyQualifiedName("org.springframework.data.mongodb.core.MongoTemplate")
+                .as("streaming-app(WebFlux)은 블로킹 chat 유스케이스·블로킹 MongoTemplate을 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // MVC 앱이 Mono/Flux를 반환하는 유스케이스를 호출하면 결국 .block()을 강요당한다.
+    @Test
+    void api_app_must_not_call_reactive_chat_use_cases() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.apiapp..")
+                .should().dependOnClassesThat()
+                        .haveNameMatching(".*\\.(SendChatUseCase|SendChatService)")
+                .as("api-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
     // 10) @Transactional은 application 레이어에만 둔다.
     //     트랜잭션 경계는 유스케이스 오케스트레이션(application/service)의 책임 — 인프라/도메인/표현 계층에
     //     트랜잭션이 새면 경계가 흐려진다. (Spring Data 레포의 자체 트랜잭션은 여기 대상 아님)

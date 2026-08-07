@@ -17,8 +17,11 @@ dependencies {
             }
             .each { add('testImplementation', it) }
 
-    // streaming-app은 블로킹 Redis 호출 금지 규칙의 검사 대상이라 명시 포함 (apps는 자동 포함에서 제외돼 있음)
+    // apps는 위 자동 포함 필터(common/storage/modules)에서 빠지므로, 검사 대상인 앱만 여기에 명시한다.
+    // 두 앱은 스택이 갈린다(streaming=WebFlux, api=MVC). 스택 오용 규칙은 "누가 무엇을 호출하는가"를 보므로
+    // 호출하는 쪽 클래스가 분석 대상에 없으면 규칙이 0건을 검사하고 조용히 통과한다 — 양쪽 다 넣어야 한다.
     testImplementation project(':apps:streaming-app')
+    testImplementation project(':apps:api-app')
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
