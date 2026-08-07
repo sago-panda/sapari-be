@@ -34,7 +34,7 @@ public class EndLiveService implements EndLiveUseCase {
     @Override
     @Transactional
     public void end(EndLiveCommand command){
-        LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
+        LiveRoom room = liveRoomRepository.findByIdAndSellerIdForUpdate(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
         // 외부 호출 전 상태 사전 검증
@@ -42,8 +42,19 @@ public class EndLiveService implements EndLiveUseCase {
             throw new InvalidLiveStateException(room.id().toString());
         }
 
-        if (room.streamInfo() != null) {
-            liveMediaManager.stopHlsEgress(command.roomId(), room.egressId());
+        // createRoom 실패로 SFU 방이 배정되지 않은 방은 stream 접근자가 NPE — 여기서 한 번만 가른다.
+        boolean hasSfuRoom = room.streamInfo() != null;
+
+        // 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제
+        // (ingress 가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — 좀비 방)
+
+        // egress 중단은 DB 가 egress 를 모르더라도 부른다 — roomId 로 LiveKit 에 직접 물어 일괄 중단하므로
+        // DB 가 놓친 잔여 egress(화질별 다건·시작 중 크래시분)도 함께 걷힌다.
+        liveMediaManager.stopHlsEgress(command.roomId());
+        if (room.isRtmp()) {
+            liveMediaManager.deleteIngress(command.roomId());
+        }
+        if (hasSfuRoom) {
             liveMediaManager.closeRoom(room.sfuRoomId());
         }
 

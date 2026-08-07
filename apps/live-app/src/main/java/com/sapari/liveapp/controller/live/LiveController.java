@@ -24,15 +24,18 @@ import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.command.GetLiveCommand;
+import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.port.CreateLiveUseCase;
 import com.sapari.live.port.EndLiveUseCase;
 import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.port.GetLiveUseCase;
+import com.sapari.live.port.PrepareIngressUseCase;
 import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.EnterLiveView;
 import com.sapari.live.view.GetLiveView;
+import com.sapari.live.view.IngressCredentialView;
 import com.sapari.live.view.StartLiveView;
 
 @RestController
@@ -45,6 +48,7 @@ public class LiveController {
     private final EnterLiveUseCase enterLiveUseCase;
     private final EndLiveUseCase endLiveUseCase;
     private final GetLiveUseCase getLiveUseCase;
+    private final PrepareIngressUseCase prepareIngressUseCase;
 
     @PostMapping("/rooms")
     public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @CurrentUserId UUID sellerId) {
@@ -63,6 +67,21 @@ public class LiveController {
                 new StartLiveCommand(roomId, sellerId, request.toProductEntries())
         );
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * RTMP 송출 준비 — OBS 등 인코더에 입력할 rtmpUrl·streamKey 를 발급한다(방송 전 Scheduled 방).
+     * streamKey 는 자격증명이라 이 응답으로 1회만 전달된다(저장/재조회 없음).
+     */
+    @PostMapping("/rooms/{roomId}/ingress")
+    public ResponseEntity<IngressCredentialView> prepareIngress(
+            @CurrentUserId UUID sellerId,
+            @PathVariable UUID roomId
+    ) {
+        IngressCredentialView view = prepareIngressUseCase.prepare(
+                new PrepareIngressCommand(roomId, sellerId)
+        );
+        return ResponseEntity.status(HttpStatus.CREATED).body(view);
     }
 
     @GetMapping("/rooms/{roomId}")
