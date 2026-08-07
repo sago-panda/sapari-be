@@ -5,7 +5,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -47,21 +46,18 @@ public class ChatSessionRegistry implements ChatSessionManager {
     static final int OUTBOUND_BUFFER_SIZE = 256;
 
     /**
-     * 한 연결이 낼 수 있는 <b>거부된 프레임</b> 누적 상한. 넘으면 그 연결을 끊는다.
+     * 거부 응답을 되돌려주는 최소 간격.
      *
-     * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작한다. 그 앞에서 떨어지는 프레임 — 파싱 실패와
-     * 입력 검증 실패 — 은 아무 제한 없이 반복할 수 있고 서버는 건건이 ERROR를 되돌려준다.
-     * 잘못된 입력에 연결을 끊지 않는 건 의도지만, 무한히 받아주는 것까지 의도는 아니다.
+     * <p><b>세지 않고 솎아낸다.</b> 거부 프레임을 누적해 세다 상한에서 끊는 방식을 먼저 시도했는데,
+     * 무엇을 셀지 정하는 순간 <b>세지 않는 사유가 곧 우회로</b>가 됐다(파싱 실패만 세면 {@code {}}가,
+     * 검증 실패만 세면 레이트리밋 창이 비켜갔다). 게다가 누적이라 200자 초과처럼 <b>정상 사용자가
+     * 반복하는 실수</b>도 결국 상한에 닿아 연결을 잃게 만들었다.
      *
-     * <p><b>파싱 실패만 세면 안 된다</b>: {@code {}} 두 글자는 파싱에 성공한 뒤 커맨드 생성에서
-     * 떨어진다. 파싱만 세는 상한은 그 한 글자 차이로 그냥 비켜간다 — 통제처럼 보이면서 통제가 아니다.
-     * 레이트리밋에 걸린 프레임은 여기서 세지 않는다 — 대신 {@code recordRateLimited}가 해제 시각을 적어둬
-     * 그 창 안의 반복은 Redis에 닿지도 않는다. 세어서 끊는 대신 <b>비용 자체를 0으로</b> 만드는 쪽이다.
-     *
-     * <p>연속이 아니라 누적으로 센다: 연속으로 세면 성공 프레임마다 리셋해야 하는데, 정상 클라는
-     * 애초에 거부될 프레임을 반복해 보내지 않으므로 누적 상한이 오탐을 만들지 않는다.
+     * <p>솎아내면 그 둘이 같이 사라진다 — 사유를 가리지 않으므로 우회할 문이 없고, 연결을 끊지 않으므로
+     * 오탐도 없다. 막으려던 것은 애초에 되돌림 비용이었고, 답을 안 보내면 그 비용이 0이다.
+     * 첫 거부는 반드시 답한다 — 클라가 무엇이 틀렸는지 알아야 고친다.
      */
-    static final int REJECTED_FRAME_LIMIT = 20;
+    private static final long REJECTION_REPLY_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos();
 
     /**
      * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
@@ -120,7 +116,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
-            AtomicInteger rejectedFrames, AtomicLong rateLimitedUntilNanos) {
+            AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos) {
     }
 
     /**
@@ -132,10 +128,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     public void recordRateLimited(String sessionId, long retryAfterSeconds) {
         LocalSession ls = local.get(sessionId);
-        if (ls != null) {
-            ls.rateLimitedUntilNanos().set(System.nanoTime() + Duration.ofSeconds(retryAfterSeconds).toNanos());
+        if (ls == null) {
+            return;
         }
+        // 상한을 둔다 — 값 출처가 바뀌어 큰 수가 들어오면 Duration 환산이 ArithmeticException을 던져
+        // 인바운드 스트림을 죽인다. 레이트리밋 창은 분 단위를 넘길 이유가 없다.
+        long clamped = Math.max(0, Math.min(retryAfterSeconds, MAX_RATE_LIMIT_WINDOW_SECONDS));
+        ls.rateLimitedUntilNanos().set(System.nanoTime() + Duration.ofSeconds(clamped).toNanos());
     }
+
+    /** 로컬 레이트리밋 창 상한 — 어댑터가 주는 값이 커져도 여기서 잘린다. */
+    private static final long MAX_RATE_LIMIT_WINDOW_SECONDS = 60;
 
     /**
      * transport 전용: 아직 레이트리밋 창 안이면 남은 초, 아니면 0.
@@ -149,8 +152,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
             return 0;
         }
         long remaining = ls.rateLimitedUntilNanos().get() - System.nanoTime();
-        // 남은 시간을 올림한다 — 0으로 내려가면 "제한 없음"과 구분되지 않는다.
-        return remaining <= 0 ? 0 : Math.max(1, Duration.ofNanos(remaining).toSeconds());
+        if (remaining <= 0) {
+            return 0;
+        }
+        // 올림한다 — 절삭하면 1초 미만이 0이 되어 "제한 없음"과 구분되지 않고, 클라 카운트다운도 짧아진다.
+        return (remaining + 999_999_999L) / 1_000_000_000L;
     }
 
     @Override
@@ -160,7 +166,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
         local.put(sessionId, new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get()),
                 Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
-                new AtomicInteger(), new AtomicLong()));
+                // 둘 다 nanoTime 기준이라 0을 센티널로 쓰면 안 된다 — nanoTime 원점은 임의고 음수일 수 있어,
+                // 0과 비교하면 등록 직후부터 "창 안"으로 오판해 전송이 통째로 막힌다.
+                new AtomicLong(System.nanoTime() - REJECTION_REPLY_INTERVAL_NANOS),
+                new AtomicLong(System.nanoTime())));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
         roomSessions.compute(session.roomId(), (room, sessionIds) -> {
@@ -283,24 +292,40 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
-     * transport 전용: 커맨드에 닿기 전에 거부된 프레임 1건을 이 세션 앞으로 기록한다.
+     * transport 전용: 지금 이 세션에 거부 응답을 되돌려줘도 되는가.
      *
-     * @return 상한을 넘겨 세션을 끊었으면 true. 호출자는 그때 ERROR 응답을 보내지 않아야 한다 —
-     *         그 응답이 곧 상대가 노린 되돌림이고, 끊기로 한 세션에 더 실어 보낼 이유도 없다.
+     * <p>사유를 가리지 않는다 — 무엇을 예외로 두든 그게 곧 우회로가 되기 때문이다. 간격 안의 거부는
+     * 조용히 버린다(연결은 유지). 되돌림 비용이 0이 되므로 반복해 밀어넣을 이유가 사라진다.
+     *
+     * @return 답해도 되면 true. false면 호출자는 아무것도 보내지 않는다.
      */
-    public boolean recordRejectedFrame(String sessionId) {
+    public boolean shouldReplyToRejection(String sessionId) {
         LocalSession ls = local.get(sessionId);
         if (ls == null) {
-            return true;   // 이미 사라진 세션 — 되돌려 보낼 곳이 없다
+            return false;   // 이미 사라진 세션 — 되돌려 보낼 곳이 없다
         }
-        if (ls.rejectedFrames().incrementAndGet() < REJECTED_FRAME_LIMIT) {
-            return false;
+        long now = System.nanoTime();
+        long last = ls.lastRejectionReplyNanos().get();
+        return now - last >= REJECTION_REPLY_INTERVAL_NANOS
+                && ls.lastRejectionReplyNanos().compareAndSet(last, now);
+    }
+
+    /**
+     * transport 전용: 강퇴가 확인된 세션을 끊는다.
+     *
+     * <p>전송 경로에서 강퇴가 확인됐다는 건 <b>이 Pod가 강퇴 신호를 못 받았다</b>는 뜻이다 — 받았다면
+     * 이미 닫혀서 여기까지 오지 않는다. 강퇴 전달도 무영속 Pub/Sub이라 놓친 Pod가 생길 수 있고, 그때
+     * 그 세션은 방 메시지를 계속 읽으면서 프레임마다 강퇴 조회를 태운다(그 조회는 레이트리밋보다 앞이라
+     * 유계가 아니다). 방금 권위 있게 확인했으니 여기서 닫는다.
+     */
+    public void terminateKicked(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
         }
-        // 정책성 종료다 — 프론트가 "재접속해도 같은 결과"로 읽어야 한다.
-        log.warn("거부된 프레임 상한 초과 — 세션 종료 sessionId={} roomId={} userId={} 상한={}",
-                sessionId, ls.session().roomId(), ls.session().userId(), REJECTED_FRAME_LIMIT);
+        log.warn("전송 경로에서 강퇴 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={} userId={}",
+                sessionId, ls.session().roomId(), ls.session().userId());
         terminate(ls, CloseStatus.POLICY_VIOLATION, newBudget().completeDeadline());
-        return true;
     }
 
     /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */

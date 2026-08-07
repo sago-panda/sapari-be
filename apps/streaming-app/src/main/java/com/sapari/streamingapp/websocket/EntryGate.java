@@ -8,6 +8,8 @@ import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
 import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import lombok.RequiredArgsConstructor;
@@ -20,8 +22,10 @@ import reactor.core.publisher.Mono;
  * <p>토큰은 "라이브 여부 + 신원 + owner"까지 담지만 enter <i>이후</i>의 강퇴/밴은 못 담는다. 그건 chat 소유
  * 상태(Redis)라 핸드셰이크에서 여기서 검사한다.
  *
- * <p><b>fail-open</b>: kicked 조회 실패(Redis 장애) 시 입장을 <i>허용</i>한다(가용성 우선 — 채팅 전면 불능이
- * 강퇴자 일시 통과보다 나쁜 결과). 정책 정본 L11/L13/TC#25·#26.
+ * <p>검사는 둘이다 — <b>방 종료 마커</b>(게스트 포함 전원)와 <b>강퇴</b>(회원만).
+ *
+ * <p><b>둘 다 fail-open</b>: 조회 실패(Redis 장애) 시 입장을 <i>허용</i>한다(가용성 우선 — 채팅 전면 불능이
+ * 강퇴자·종료방 일시 통과보다 나쁜 결과). 열린 구간은 사유별로 스로틀 로그 + 누적 통과 건수를 남긴다.
  *
  * <p>banned 검사는 ban 모델(#27) 구현 후 추가. 게스트(에페메랄 id)는 강퇴/밴 대상이 아니므로 건너뛴다.
  */
@@ -37,7 +41,11 @@ public class EntryGate {
      */
     private static final long GATE_OPEN_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
 
-    private final AtomicLong lastGateOpenLogNanos = new AtomicLong(System.nanoTime() - GATE_OPEN_LOG_INTERVAL_NANOS);
+    /** 사유별로 따로 센다 — 하나를 공유하면 먼저 찍은 쪽이 다른 사유의 첫 발생을 통째로 덮는다. */
+    private final Map<String, GateOpenLog> gateOpenLogs = new ConcurrentHashMap<>();
+
+    private record GateOpenLog(AtomicLong lastNanos, AtomicLong suppressed) {
+    }
 
     private final ChatKickRepository kickRepository;
     private final ChatRoomEndedRepository roomEndedRepository;
@@ -83,11 +91,16 @@ public class EntryGate {
 
     /** 게이트가 열린 사실을 간격을 두고 남긴다. 첫 발생은 반드시 남는다. */
     private void logGateOpen(String what, ChatSession session, Throwable cause) {
+        GateOpenLog entry = gateOpenLogs.computeIfAbsent(what,
+                key -> new GateOpenLog(new AtomicLong(System.nanoTime() - GATE_OPEN_LOG_INTERVAL_NANOS),
+                        new AtomicLong()));
+        long total = entry.suppressed().incrementAndGet();
         long now = System.nanoTime();
-        long last = lastGateOpenLogNanos.get();
-        if (now - last >= GATE_OPEN_LOG_INTERVAL_NANOS && lastGateOpenLogNanos.compareAndSet(last, now)) {
-            log.warn("{} 조회 실패 — 입장 허용(게이트 열림) roomId={} userId={} cause={}",
-                    what, session.roomId(), session.userId(), cause.getClass().getSimpleName());
+        long last = entry.lastNanos().get();
+        if (now - last >= GATE_OPEN_LOG_INTERVAL_NANOS && entry.lastNanos().compareAndSet(last, now)) {
+            // 누적 건수를 함께 남긴다 — 게이트가 열린 동안 몇 명이 그냥 통과했는지가 이 자리의 핵심 수치다.
+            log.warn("{} 조회 실패 — 입장 허용(게이트 열림) roomId={} userId={} cause={} 누적통과={}",
+                    what, session.roomId(), session.userId(), cause.getClass().getSimpleName(), total);
         }
     }
 }

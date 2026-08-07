@@ -57,8 +57,6 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     private static final String SYSTEM_NICKNAME = "SYSTEM";
 
-    /** 거부 상한에 세는 유일한 사유. 왜 이것만인지는 respondRejected 참고. */
-    private static final String COUNTED_REJECTION_CODE = "VALIDATION";
     /** 룸 토큰을 실어 나르는 서브프로토콜 이름. 클라는 ["bearer", <token>] 두 개를 제시한다. */
     private static final String TOKEN_SUBPROTOCOL = "bearer";
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
@@ -245,13 +243,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // SET NX·잔여 TTL)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
         long retryAfter = registry.rateLimitRetryAfterSeconds(sid);
         if (retryAfter > 0) {
-            return registry.sendToSession(sid, rateLimited(retryAfter, clientMsgId));
+            return respondRejected(sid, rateLimited(retryAfter, clientMsgId));
         }
         return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
                 .flatMap(view -> registry.sendToSession(sid, toAck(view, clientMsgId)))
                 .onErrorResume(e -> {
                     if (e instanceof ChatRateLimitException rle) {
                         registry.recordRateLimited(sid, rle.getRetryAfterSeconds());
+                    }
+                    if (e instanceof UserKickedException) {
+                        // 여기까지 왔다 = 이 Pod가 강퇴 신호를 못 받았다(받았으면 이미 닫혀 위에서 걸린다).
+                        // 방금 권위 있게 확인했으니 닫는다 — 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다.
+                        registry.terminateKicked(sid);
                     }
                     return respondRejected(sid, toError(e, clientMsgId));
                 });
@@ -268,27 +271,13 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * 거부 응답을 보내되, <b>클라이언트가 자초한 거부</b>만 누적 상한에 센다.
      *
      * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작하므로, 그 앞에서 떨어지는 프레임은 답해주는 만큼
-     * 그대로 되돌아온다. 그래서 상한이 필요하다. 다만 <b>무엇을 셀지</b>가 중요하다:
-     *
-     * <ul>
-     *   <li>{@code VALIDATION} — <b>이것만 센다</b>. 클라가 계약을 어긴 것이고, 고치지 않는 한 반복된다.
-     *   <li>{@code INTERNAL} — <b>서버가 실패했다</b>. 이걸 세면 Mongo·Redis가 흔들릴 때 멀쩡한 사용자가
-     *       전송할수록 상한에 가까워져 결국 끊긴다. 장애가 강제 퇴장으로 증폭되는 셈이라 절대 세면 안 된다.
-     *   <li>{@code RATE_LIMIT} — 이미 제한이 걸렸다는 증거다. 또 세면 같은 사실로 두 번 벌한다.
-     *   <li>{@code KICKED}·{@code NOT_ACTIVE} — 상태다. 재시도해도 결과가 같고, 어차피 곧 세션이 닫힌다.
-     *   <li>{@code PERMISSION} — 세지 않는다. 서버가 입장 응답에 역할을 실어주지 않아서, 게스트 클라는
-     *       "보낼 수 없다"를 건별 응답 말고는 배울 방법이 없다. 그걸 세면 <b>읽기까지 잃는다</b>.
-     *       세도 얻는 게 없다 — 게스트 토큰은 발급 수에 제한이 없어 결정적 공격자를 막지 못하고,
-     *       버그 있는 클라만 끊긴다. 되돌림 비용은 1:1이고 안 읽는 클라는 아웃바운드 버퍼가 받는다.
-     * </ul>
+     * 그대로 되돌아온다. 그 되돌림을 <b>사유를 가리지 않고</b> 솎아낸다 — 예외를 두는 순간 그게 우회로가
+     * 되기 때문이다. 첫 거부는 반드시 답하므로 정상 클라는 무엇이 틀렸는지 그대로 알 수 있다.
      */
     private Mono<Void> respondRejected(String sid, OutboundMessage response) {
-        if (!COUNTED_REJECTION_CODE.equals(response.code())) {
-            return registry.sendToSession(sid, response);
-        }
-        return registry.recordRejectedFrame(sid)
-                ? Mono.empty()
-                : registry.sendToSession(sid, response);
+        return registry.shouldReplyToRejection(sid)
+                ? registry.sendToSession(sid, response)
+                : Mono.empty();
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──

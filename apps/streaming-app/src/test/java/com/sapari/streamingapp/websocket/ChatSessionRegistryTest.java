@@ -397,33 +397,6 @@ class ChatSessionRegistryTest {
     }
 
     @Test
-    @DisplayName("거부된 프레임 — 상한 전까지는 세션을 살려두고, 넘으면 1008로 끊는다")
-    void rejected_frames_close_session_only_after_limit() {
-        // given
-        registry.register("s1", session(roomId, userId)).block();
-
-        // 상한 직전까지: 계속 응답하라(false)고 답하고 세션도 살아 있다
-        for (int i = 1; i < ChatSessionRegistry.REJECTED_FRAME_LIMIT; i++) {
-
-        // when & then
-            assertThat(registry.recordRejectedFrame("s1")).isFalse();
-        }
-        assertThat(registry.isTerminating("s1")).isFalse();
-
-        // 상한에 닿는 순간: 응답하지 말라(true) + 정책성 종료로 확정
-        assertThat(registry.recordRejectedFrame("s1")).isTrue();
-        assertThat(registry.isTerminating("s1")).isTrue();
-        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.POLICY_VIOLATION);
-    }
-
-    @Test
-    @DisplayName("거부된 프레임 — 이미 사라진 세션이면 응답하지 않는다")
-    void rejected_frame_on_unknown_session_is_not_answered() {
-        // when & then
-        assertThat(registry.recordRejectedFrame("없는세션")).isTrue();
-    }
-
-    @Test
     @DisplayName("레이트리밋 창 — 걸린 뒤에는 남은 시간이 나오고, 지나면 다시 0이 된다")
     void rate_limit_window_reports_remaining_then_clears() {
         // given
@@ -446,5 +419,64 @@ class ChatSessionRegistryTest {
     void rate_limit_window_unknown_session_is_not_limited() {
         // when & then
         assertThat(registry.rateLimitRetryAfterSeconds("없는세션")).isZero();
+    }
+
+    @Test
+    @DisplayName("거부 응답 솎기 — 첫 건은 답하고, 간격 안의 반복은 조용히 버린다(연결은 유지)")
+    void rejection_reply_is_throttled_but_first_always_answers() {
+        // given
+        registry.register("s1", session(roomId, userId)).block();
+
+        // when & then: 첫 거부는 반드시 답한다 — 클라가 무엇이 틀렸는지 알아야 고친다
+        assertThat(registry.shouldReplyToRejection("s1")).isTrue();
+        // 곧바로 이어지는 거부는 답하지 않는다 — 되돌림 비용이 곧 공격 표면이다
+        assertThat(registry.shouldReplyToRejection("s1")).isFalse();
+        assertThat(registry.shouldReplyToRejection("s1")).isFalse();
+        // 솎아낼 뿐 끊지는 않는다 — 200자 초과를 반복하는 정상 사용자를 잃으면 안 된다
+        assertThat(registry.isTerminating("s1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("거부 응답 솎기 — 모르는 세션엔 답하지 않는다")
+    void rejection_reply_unknown_session_is_not_answered() {
+        // when & then
+        assertThat(registry.shouldReplyToRejection("없는세션")).isFalse();
+    }
+
+    @Test
+    @DisplayName("전송 경로 강퇴 확인 — 그 세션을 1008로 끊는다(종료 신호를 놓친 Pod의 자가 복구)")
+    void terminateKicked_closes_session() {
+        // given
+        registry.register("s1", session(roomId, userId)).block();
+
+        // when
+        registry.terminateKicked("s1");
+
+        // then
+        assertThat(registry.isTerminating("s1")).isTrue();
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    @DisplayName("레이트리밋 창 — 남은 시간을 올림한다(절삭하면 제한 없음과 구분이 안 된다)")
+    void rate_limit_window_rounds_up() {
+        // given
+        registry.register("s1", session(roomId, userId)).block();
+
+        // when
+        registry.recordRateLimited("s1", 3);
+
+        // then: 즉시 읽어도 3이 나와야 한다 — 절삭이면 2로 떨어진다
+        assertThat(registry.rateLimitRetryAfterSeconds("s1")).isEqualTo(3L);
+    }
+
+    @Test
+    @DisplayName("레이트리밋 창 — 등록 직후에는 제한이 없다(nanoTime 원점이 음수여도)")
+    void rate_limit_window_is_clear_right_after_register() {
+        // given & when
+        registry.register("s1", session(roomId, userId)).block();
+
+        // then: 0을 센티널로 쓰면 nanoTime이 음수인 JVM에서 전 세션이 막힌다
+        assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
     }
 }

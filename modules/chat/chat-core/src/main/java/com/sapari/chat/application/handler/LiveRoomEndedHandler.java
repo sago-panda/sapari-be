@@ -50,7 +50,10 @@ public class LiveRoomEndedHandler {
     @PostConstruct
     void start() {
         subscription = source.ended()
-                .flatMap(roomId -> onRoomEnded(roomId)
+                // defer로 감싼다 — onRoomEnded의 네 인자는 조립 시점에 즉시 평가되므로, 그중 하나가
+                // 동기 throw하면 Mono를 돌려주기 전에 터져 아래 onErrorResume이 못 잡는다. 그러면 이 Pod의
+                // 구독이 죽어 이후 모든 방 종료를 영구히 놓친다(재시작 전까지 세션도 안 닫힌다).
+                .flatMap(roomId -> Mono.defer(() -> onRoomEnded(roomId))
                         .onErrorResume(e -> {
                             log.error("ROOM_ENDED 처리 실패 — skip(구독 유지) roomId={}", roomId, e);
                             return Mono.empty();
@@ -77,19 +80,28 @@ public class LiveRoomEndedHandler {
      */
     Mono<Void> onRoomEnded(UUID roomId) {
         return keepGoing(roomEndedRepository.markEnded(roomId), roomId,
-                        "종료 마커 기록 실패 — 재입장이 토큰 만료까지 열린다")
+                        "종료 마커 기록 실패 — 재입장이 토큰 만료까지 열린다", false)
                 .then(keepGoing(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED), roomId,
-                        "종료 알림 전송 실패 — 클라는 사유 없이 끊긴다"))
+                        "종료 알림 전송 실패 — 클라는 사유 없이 끊긴다", true))
                 .then(keepGoing(sessionManager.closeAll(roomId), roomId,
-                        "세션 종료 실패 — 그 방 세션이 남는다"))
+                        "세션 종료 실패 — 그 방 세션이 남는다", true))
                 .then(keepGoing(sessionRepository.clearRoom(roomId), roomId,
-                        "세션 키 정리 실패 — 키 TTL이 받는다"));
+                        "세션 키 정리 실패 — 키 TTL이 받는다", false));
     }
 
-    /** 실패를 삼키지 않고 무엇을 잃었는지 남긴 뒤, 남은 단계를 계속 진행시킨다. */
-    private Mono<Void> keepGoing(Mono<Void> step, UUID roomId, String whatIsLost) {
+    /**
+     * 실패를 삼키지 않고 무엇을 잃었는지 남긴 뒤, 남은 단계를 계속 진행시킨다.
+     *
+     * <p>Redis 어댑터 실패는 원인이 자명해 종류만 남기지만, 프로세스 안 fan-out(세션 종료)에서 나는
+     * 예외는 우리 코드의 버그라 위치를 알아야 한다 — 그쪽만 예외를 통째로 싣는다.
+     */
+    private Mono<Void> keepGoing(Mono<Void> step, UUID roomId, String whatIsLost, boolean ourBug) {
         return step.onErrorResume(e -> {
-            log.warn("{} roomId={} cause={}", whatIsLost, roomId, e.getClass().getSimpleName());
+            if (ourBug) {
+                log.error("{} roomId={}", whatIsLost, roomId, e);
+            } else {
+                log.warn("{} roomId={} cause={}", whatIsLost, roomId, e.getClass().getSimpleName());
+            }
             return Mono.empty();
         });
     }

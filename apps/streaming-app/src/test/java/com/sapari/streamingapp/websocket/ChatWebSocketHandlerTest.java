@@ -217,6 +217,8 @@ class ChatWebSocketHandlerTest {
     @Test
     @DisplayName("onInbound — type 누락이면 연결을 끊지 않고 ERROR(VALIDATION)만 응답한다")
     void inbound_without_type_keeps_stream_alive() {
+        given(registry.shouldReplyToRejection(anyString())).willReturn(true);
+        given(registry.rateLimitRetryAfterSeconds(anyString())).willReturn(0L);
         // given
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
@@ -317,6 +319,7 @@ class ChatWebSocketHandlerTest {
     void inbound_ignores_unknown_fields() {
         // given: 계약 3필드 + 클라가 얹은 자기 필드
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
         given(sendUseCase.send(any())).willReturn(Mono.empty());
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\",\"myField\":1}";
@@ -326,7 +329,7 @@ class ChatWebSocketHandlerTest {
 
         // then: 커맨드까지 도달했다 = 파싱이 통과했다. 거부 카운터도 오르지 않는다.
         then(sendUseCase).should(times(1)).send(any());
-        then(registry).should(never()).recordRejectedFrame(anyString());
+        then(registry).should(never()).terminateKicked(anyString());
     }
 
     @Test
@@ -334,21 +337,23 @@ class ChatWebSocketHandlerTest {
     void inbound_counts_validation_failures_toward_limit() {
         // given: {}는 파싱에 성공하고 커맨드 생성에서 떨어진다
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.recordRejectedFrame("s1")).willReturn(false);
+        given(registry.shouldReplyToRejection("s1")).willReturn(true);
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when
         StepVerifier.create(handler.onInbound("s1", session, "{}")).verifyComplete();
 
         // then
-        then(registry).should(times(1)).recordRejectedFrame("s1");
+        then(registry).should(times(1)).shouldReplyToRejection("s1");
     }
 
     @Test
-    @DisplayName("서버 실패(INTERNAL)는 거부 상한에 세지 않는다 — 세면 인프라 장애가 사용자 강제 퇴장으로 번진다")
-    void internal_error_does_not_count_toward_limit() {
+    @DisplayName("서버 실패(INTERNAL)도 사유 그대로 돌려준다 — 첫 거부는 반드시 답한다")
+    void internal_error_is_answered_with_its_code() {
         // given: 저장이 터지는 상황(Mongo·Redis 장애)
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.shouldReplyToRejection("s1")).willReturn(true);
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
         given(sendUseCase.send(any())).willReturn(Mono.error(new RuntimeException("mongo down")));
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
@@ -356,11 +361,46 @@ class ChatWebSocketHandlerTest {
         // when
         StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
 
-        // then: 클라 잘못이 아니므로 카운트되지 않고, 사유는 그대로 돌려준다
-        then(registry).should(never()).recordRejectedFrame(anyString());
+        // then: 서버 잘못이라고 세거나 끊지 않는다 — 사유만 돌려준다
+        then(registry).should(never()).terminateKicked(anyString());
         ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
         then(registry).should(times(1)).sendToSession(eq("s1"), sent.capture());
         assertThat(sent.getValue().code()).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    @DisplayName("거부 응답이 솎일 차례면 아무것도 보내지 않는다 — 되돌림 비용이 곧 공격 표면이다")
+    void rejection_is_dropped_when_throttled() {
+        // given
+        given(registry.shouldReplyToRejection("s1")).willReturn(false);
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(sendUseCase.send(any())).willReturn(Mono.error(new IllegalArgumentException("bad")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then
+        then(registry).should(never()).sendToSession(anyString(), any());
+    }
+
+    @Test
+    @DisplayName("전송 경로에서 강퇴가 확인되면 세션을 끊는다 — 그 Pod가 강퇴 신호를 놓쳤다는 뜻이다")
+    void kicked_on_send_terminates_session() {
+        // given
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.shouldReplyToRejection("s1")).willReturn(true);
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(sendUseCase.send(any())).willReturn(Mono.error(new UserKickedException("kicked")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다
+        then(registry).should(times(1)).terminateKicked("s1");
     }
 
     @Test
@@ -377,7 +417,7 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
 
         // then: 세지 않고, 대신 다음 프레임이 Redis에 닿지 않도록 창을 기억한다
-        then(registry).should(never()).recordRejectedFrame(anyString());
+        then(registry).should(never()).terminateKicked(anyString());
         then(registry).should(times(1)).recordRateLimited("s1", 3L);
     }
 
@@ -386,6 +426,7 @@ class ChatWebSocketHandlerTest {
     void inbound_short_circuits_within_rate_limit_window() {
         // given: 이미 제한이 걸려 있고 2초 남았다
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.shouldReplyToRejection("s1")).willReturn(true);
         given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(2L);
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";

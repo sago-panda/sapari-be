@@ -25,7 +25,7 @@ public record OutboundMessage(
         UUID userId,             // KICK: 강퇴 대상 userId (그 외 null)
         Long activeCount,        // ROOM_INFO (그 외 null)
         Long retryAfterSeconds,  // RATE_LIMIT (그 외 null)
-        String clientMsgId,      // ACK·ERROR·RATE_LIMIT(=send 결과): 발신자 낙관적 버블 reconcile/rollback 키 (브로드캐스트·SYSTEM은 null)
+        String clientMsgId,      // ACK·ERROR·RATE_LIMIT + NORMAL/NOTICE의 발신자 수신분. 남의 메시지·SYSTEM은 null
         Boolean isRoomOwner      // ROOM_INFO: 접속자가 방 주인인지 — 프론트 방주인 토글 UI용 (#44, 그 외 null)
 ) {
 }
