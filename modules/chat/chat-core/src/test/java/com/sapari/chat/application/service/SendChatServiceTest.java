@@ -3,10 +3,11 @@ package com.sapari.chat.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
+import static org.mockito.BDDMockito.willAnswer;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -17,7 +18,10 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
@@ -40,12 +44,23 @@ import com.sapari.global.time.TimeProvider;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+@ExtendWith(MockitoExtension.class)
 class SendChatServiceTest {
 
+    @Mock
     private ChatKickRepository kickRepository;
+
+    @Mock
     private RateLimiter rateLimiter;
+
+    @Mock
     private ChatMessageRepository chatMessageRepository;
+
+    @Mock
     private ChatBroadcaster broadcaster;
+
+    // @InjectMocks를 쓰지 않는다 — 정책·필터는 가짜로 바꾸면 검증 대상이 사라지는 순수 로직이라
+    // 실제 인스턴스로 조립한다. 포트만 @Mock이다.
     private SendChatService service;
 
     private final UUID roomId = UUID.randomUUID();
@@ -53,11 +68,6 @@ class SendChatServiceTest {
 
     @BeforeEach
     void setUp() {
-        kickRepository = mock(ChatKickRepository.class);
-        rateLimiter = mock(RateLimiter.class);
-        chatMessageRepository = mock(ChatMessageRepository.class);
-        broadcaster = mock(ChatBroadcaster.class);
-        // 순수 로직(정책·필터)·TimeProvider는 실제 인스턴스 — 가짜로 대체할 이유 없음
         service = new SendChatService(
                 new ChatPermissionPolicy(),
                 new ProfanityFilter(Set.of("욕설"), Set.of()),
@@ -71,13 +81,18 @@ class SendChatServiceTest {
                 "닉네임", "buyer@example.com", type, content, clientMsgId);
     }
 
-    /** 신규 저장: 저장 시 id(ObjectId) 부여, publish 성공을 흉내낸다. */
+    /** 강퇴 아님 + 신규 저장(id 부여) + publish 성공. 레이트리밋을 거치지 않는 역할(면제)에 쓴다. */
+    private void stubSaved() {
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
+                .given(chatMessageRepository).save(any());
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
+    }
+
+    /** stubSaved에 레이트리밋 통과를 더한 것 — 면제 대상이 아닌 역할에 쓴다. */
     private void stubAllowedAndSaved() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
-        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
-        when(chatMessageRepository.save(any())).thenAnswer(inv ->
-                Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()));
-        when(broadcaster.publish(any(), any())).thenReturn(Mono.empty());
+        stubSaved();
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
     }
 
     @Test
@@ -90,8 +105,8 @@ class SendChatServiceTest {
                     assertThat(view.displayMessage()).isEqualTo("안녕하세요");
                 })
                 .verifyComplete();
-        verify(chatMessageRepository).save(any());
-        verify(broadcaster).publish(eq(roomId), any());
+        then(chatMessageRepository).should(times(1)).save(any());
+        then(broadcaster).should(times(1)).publish(eq(roomId), any());
     }
 
     @Test
@@ -100,8 +115,8 @@ class SendChatServiceTest {
         StepVerifier.create(service.send(command("BUYER", false, false, "NORMAL", "안녕", "c1")))
                 .expectError(LiveNotActiveException.class)
                 .verify();
-        verify(kickRepository, never()).isKicked(any(), any());
-        verify(chatMessageRepository, never()).save(any());
+        then(kickRepository).should(never()).isKicked(any(), any());
+        then(chatMessageRepository).should(never()).save(any());
     }
 
     @Test
@@ -126,19 +141,19 @@ class SendChatServiceTest {
         StepVerifier.create(service.send(command("GUEST", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(ChatPermissionDeniedException.class)
                 .verify();
-        verify(kickRepository, never()).isKicked(any(), any());
-        verify(rateLimiter, never()).tryAcquire(any());
+        then(kickRepository).should(never()).isKicked(any(), any());
+        then(rateLimiter).should(never()).tryAcquire(any());
     }
 
     @Test
     @DisplayName("ADMIN은 방 소유와 무관하게 rate limit 면제 — 운영자는 role 기준")
     void admin_is_exempt_regardless_of_room() {
-        stubAllowedAndSaved();
+        stubSaved();
 
         StepVerifier.create(service.send(command("ADMIN", false, true, "NORMAL", "운영 안내", "c1")))
                 .expectNextCount(1)
                 .verifyComplete();
-        verify(rateLimiter, never()).tryAcquire(any());
+        then(rateLimiter).should(never()).tryAcquire(any());
     }
 
     @Test
@@ -146,13 +161,13 @@ class SendChatServiceTest {
     void visiting_seller_is_rate_limited() {
         // 면제 근거는 "상품설명 연속전송"이라 이 방을 진행하는 사람에게만 해당한다.
         // role만 보면 판매자 계정이 남의 방에서 무제한 도배할 수 있다(권한 정책의 두 축 원칙과 어긋남).
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
-        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(false, 3)));
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(false, 3)));
 
         StepVerifier.create(service.send(command("SELLER", false, true, "NORMAL", "도배", "c1")))
                 .expectError(ChatRateLimitException.class)
                 .verify();
-        verify(rateLimiter).tryAcquire(any());
+        then(rateLimiter).should(times(1)).tryAcquire(any());
     }
 
     @Test
@@ -166,34 +181,34 @@ class SendChatServiceTest {
     @Test
     @DisplayName("강퇴 유저 → UserKickedException, rate limit 미소모 (kicked가 ratelimit보다 먼저)")
     void kicked_user_rejected_before_ratelimit() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(true));
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(true));
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(UserKickedException.class)
                 .verify();
-        verify(rateLimiter, never()).tryAcquire(any());
-        verify(chatMessageRepository, never()).save(any());
+        then(rateLimiter).should(never()).tryAcquire(any());
+        then(chatMessageRepository).should(never()).save(any());
     }
 
     @Test
     @DisplayName("kicked 조회 Redis 에러 → fail-open(전송 허용, L13)")
     void kicked_redis_error_fails_open() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.error(new RuntimeException("redis down")));
-        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
-        when(chatMessageRepository.save(any())).thenAnswer(inv ->
-                Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()));
-        when(broadcaster.publish(any(), any())).thenReturn(Mono.empty());
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
+                .given(chatMessageRepository).save(any());
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
 
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
                 .verifyComplete();
-        verify(chatMessageRepository).save(any());
+        then(chatMessageRepository).should(times(1)).save(any());
     }
 
     @Test
     @DisplayName("BUYER rate limit 초과 → ChatRateLimitException, 저장 미호출")
     void buyer_rate_limited() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
-        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(false, 3)));
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(false, 3)));
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectErrorSatisfies(e -> {
                     assertThat(e).isInstanceOf(ChatRateLimitException.class);
@@ -201,21 +216,21 @@ class SendChatServiceTest {
                     assertThat(((ChatRateLimitException) e).getRetryAfterSeconds()).isEqualTo(3);
                 })
                 .verify();
-        verify(chatMessageRepository, never()).save(any());
+        then(chatMessageRepository).should(never()).save(any());
     }
 
     @Test
     @DisplayName("방송을 진행하는 SELLER는 rate limit 면제 — tryAcquire 미호출, 전송 진행")
     void broadcasting_seller_bypasses_rate_limit() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
-        when(chatMessageRepository.save(any())).thenAnswer(inv ->
-                Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()));
-        when(broadcaster.publish(any(), any())).thenReturn(Mono.empty());
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
+                .given(chatMessageRepository).save(any());
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
 
         StepVerifier.create(service.send(command("SELLER", true, true, "NORMAL", "상품 설명입니다", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
                 .verifyComplete();
-        verify(rateLimiter, never()).tryAcquire(any());
+        then(rateLimiter).should(never()).tryAcquire(any());
     }
 
     @Test
@@ -226,7 +241,7 @@ class SendChatServiceTest {
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "이건 욕설 이다", "c1")))
                 .expectNextCount(1)
                 .verifyComplete();
-        verify(chatMessageRepository).save(captor.capture());
+        then(chatMessageRepository).should(times(1)).save(captor.capture());
         ChatMessage saved = captor.getValue();
         assertThat(saved.originalMessage()).isEqualTo("이건 욕설 이다");
         assertThat(saved.displayMessage()).contains("***");
@@ -236,9 +251,9 @@ class SendChatServiceTest {
     @Test
     @DisplayName("dedup — 저장 시 DuplicateKey면 기존 메시지 재조회, 재발행 안 함")
     void duplicate_key_recovers_existing_without_republish() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
-        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
-        when(chatMessageRepository.save(any())).thenReturn(Mono.error(new DuplicateKeyException("dup")));
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        given(chatMessageRepository.save(any())).willReturn(Mono.error(new DuplicateKeyException("dup")));
         ChatMessage existing = ChatMessage.builder()
                 .id("existingId").roomId(roomId).senderId(senderId)
                 .senderNickname("닉네임").senderRole(ChatRole.BUYER)
@@ -246,23 +261,23 @@ class SendChatServiceTest {
                 .originalMessage("안녕").displayMessage("안녕")
                 .clientMsgId("c1").createdAt(Instant.parse("2026-06-18T00:00:00Z"))
                 .build();
-        when(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
-                .thenReturn(Mono.just(existing));
+        given(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
+                .willReturn(Mono.just(existing));
 
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("existingId"))
                 .verifyComplete();
-        verify(broadcaster, never()).publish(any(), any());
+        then(broadcaster).should(never()).publish(any(), any());
     }
 
     @Test
     @DisplayName("publish 실패(비-Duplicate) → 에러 흡수, 저장 메시지 view 반환 (TC#22 — 발신자에겐 성공)")
     void publish_failure_absorbed_returns_saved_view() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
-        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
-        when(chatMessageRepository.save(any())).thenAnswer(inv ->
-                Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()));
-        when(broadcaster.publish(any(), any())).thenReturn(Mono.error(new RuntimeException("redis publish down")));
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
+                .given(chatMessageRepository).save(any());
+        given(broadcaster.publish(any(), any())).willReturn(Mono.error(new RuntimeException("redis publish down")));
 
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
@@ -272,11 +287,11 @@ class SendChatServiceTest {
     @Test
     @DisplayName("dedup miss — DuplicateKey인데 재조회도 empty면 IllegalStateException (무응답 complete·재시도 루프 방지)")
     void duplicate_key_but_recovery_empty_errors() {
-        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
-        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
-        when(chatMessageRepository.save(any())).thenReturn(Mono.error(new DuplicateKeyException("dup")));
-        when(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
-                .thenReturn(Mono.empty());
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        given(chatMessageRepository.save(any())).willReturn(Mono.error(new DuplicateKeyException("dup")));
+        given(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
+                .willReturn(Mono.empty());
 
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(IllegalStateException.class)

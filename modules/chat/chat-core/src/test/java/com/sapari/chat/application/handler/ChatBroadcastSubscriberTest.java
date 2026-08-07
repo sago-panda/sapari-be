@@ -3,18 +3,21 @@ package com.sapari.chat.application.handler;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.times;
 
 import java.time.Instant;
 import java.util.UUID;
 import java.util.function.Function;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
@@ -28,20 +31,21 @@ import com.sapari.chat.domain.model.ChatSession;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+@ExtendWith(MockitoExtension.class)
 class ChatBroadcastSubscriberTest {
 
+    @Mock
+    private ChatBroadcaster broadcaster;
+
+    @Mock
     private ChatSessionManager sessionManager;
+
+    @InjectMocks
     private ChatBroadcastSubscriber subscriber;
 
     private final UUID roomId = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private final UUID sellerId = UUID.fromString("55555555-5555-5555-5555-555555555555");
     private final UUID buyerId = UUID.fromString("44444444-4444-4444-4444-444444444444");
-
-    @BeforeEach
-    void setUp() {
-        sessionManager = mock(ChatSessionManager.class);
-        subscriber = new ChatBroadcastSubscriber(mock(ChatBroadcaster.class), sessionManager);
-    }
 
     @SuppressWarnings("unchecked")
     private ArgumentCaptor<Function<ChatSession, OutboundMessage>> resolverCaptor() {
@@ -57,9 +61,10 @@ class ChatBroadcastSubscriberTest {
     }
 
     @Test
-    @DisplayName("CHAT — 방주인 세션엔 email·원문 포함(toOwnerView), 일반 세션엔 마스킹만(toView)")
-    void chat_fanout_pii_gated_per_session() {
-        when(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).thenReturn(Mono.empty());
+    @DisplayName("CHAT 팬아웃 성공: 방주인 세션이면 email·원문을 싣고, 일반 세션이면 마스킹 본문만 싣는다")
+    void routeChat_Success() {
+        // given
+        given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).willReturn(Mono.empty());
         ChatMessage message = new ChatMessage(
                 "65a1f2c3d4e5f60718293a4b", roomId, buyerId, "구매자", "buyer@example.com",
                 ChatRole.BUYER, new ChatMessageType.Normal(),
@@ -67,10 +72,13 @@ class ChatBroadcastSubscriberTest {
                 "원본**",           // displayMessage (마스킹)
                 null, Instant.parse("2026-06-11T00:00:00Z"));
 
+        // when
         StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).verifyComplete();
 
+        // then
+
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
-        verify(sessionManager).sendToRoomGated(eq(roomId), cap.capture());
+        then(sessionManager).should(times(1)).sendToRoomGated(eq(roomId), cap.capture());
         Function<ChatSession, OutboundMessage> resolver = cap.getValue();
 
         OutboundMessage ownerMsg = resolver.apply(owner());
@@ -86,19 +94,23 @@ class ChatBroadcastSubscriberTest {
     }
 
     @Test
-    @DisplayName("KICK_EVENT — 당사자엔 SYSTEM(KICKED), 그 외엔 KICK(userId) + 당사자 세션 close")
-    void kick_fanout_and_close() {
+    @DisplayName("KICK_EVENT 팬아웃 성공: 당사자에겐 SYSTEM(KICKED)을, 나머지에겐 KICK(userId)을 보내고 당사자 세션을 닫는다")
+    void routeKickEvent_Success() {
+        // given
         UUID kickedId = buyerId;
         UUID otherId = UUID.fromString("66666666-6666-6666-6666-666666666666");
-        when(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).thenReturn(Mono.empty());
-        when(sessionManager.closeUser(roomId, kickedId)).thenReturn(Mono.empty());
+        given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).willReturn(Mono.empty());
+        given(sessionManager.closeUser(roomId, kickedId)).willReturn(Mono.empty());
 
+        // when
         StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.KickEvent(kickedId))).verifyComplete();
 
-        verify(sessionManager).closeUser(roomId, kickedId);     // 당사자 세션 close
+        // then
+
+        then(sessionManager).should(times(1)).closeUser(roomId, kickedId);     // 당사자 세션 close
 
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
-        verify(sessionManager).sendToRoomGated(eq(roomId), cap.capture());
+        then(sessionManager).should(times(1)).sendToRoomGated(eq(roomId), cap.capture());
         Function<ChatSession, OutboundMessage> resolver = cap.getValue();
 
         OutboundMessage selfMsg = resolver.apply(viewer(kickedId));
