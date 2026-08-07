@@ -27,6 +27,10 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
      * 정상 회수는 세션별 HDEL과 방 종료 시 {@code clearRoom}이 담당한다. TTL은 그 둘이 다 실패했을 때의
      * 백스톱이다 — 방 종료 신호는 Pub/Sub(무영속)이라 그 순간 구독 중인 Pod가 없으면 통째로 유실되고,
      * 그러면 이 키는 지울 주체가 사라진다. 방송 최대 길이보다 넉넉히 잡아 정상 방송을 건드리지 않는다.
+     *
+     * <p><b>줄이지 말 것</b>: 갱신은 입장(add) 때만 일어나고 기존 세션을 다시 등록하는 경로가 없다.
+     * 값이 방송 길이보다 짧아지면 진행 중인 방의 키가 만료돼 그 방송 내내 시청자 수가 어긋난다.
+     * (주기적 재등록이 생기기 전까지는 이 여유가 유일한 방어다.)
      */
     private static final Duration SESSIONS_TTL = Duration.ofHours(24);
 

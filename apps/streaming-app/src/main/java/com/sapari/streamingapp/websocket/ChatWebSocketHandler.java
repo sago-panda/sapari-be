@@ -59,7 +59,14 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
     /** 종료 결정 후 정상 클라가 버퍼에 남은 메시지를 받아갈 시간. 이 시간이 지나면 강제로 끊는다. */
     private static final Duration FORCED_CLOSE_GRACE = Duration.ofSeconds(3);
-    /** close 프레임 flush를 기다리는 상한. 넘기면 정리만 진행한다(소켓은 OS가 회수). */
+    /**
+     * close 프레임 flush를 기다리는 상한. 넘기면 앱 자원 정리는 진행한다.
+     *
+     * <p><b>채널까지 회수되지는 않는다</b>: close는 write future에 채널 닫기를 걸어두는 구조라, 그 write가
+     * flush되지 않으면 채널도 남는다. 이후 다시 닫으려 해도 "이미 close 보냄" 표시 때문에 무동작이다.
+     * 즉 소켓을 계속 열어둔 채 수신만 멈춘 클라는 커넥션이 유지된다 — 지금 이걸 걷어낼 리퍼가 없다.
+     * (프로세스가 죽은 클라는 TCP가 정리해 준다.)
+     */
     private static final Duration CLOSE_FLUSH_TIMEOUT = Duration.ofSeconds(5);
 
     private final RoomTokenVerifier verifier;
@@ -160,8 +167,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 아무 효과가 없다(클라가 받는 코드는 1005).
         // close 프레임도 결국 소켓 write라, 읽지 않는 클라에선 앞선 잔량 뒤에 줄 서서 완료되지 않을 수 있다.
         // 그 상태로 두면 아래 firstWithSignal이 안 끝나 doFinally(cleanup)까지 막힌다 — 세션 명부·방 구독·
-        // Redis 항목이 통째로 남는다. 현재 버퍼 크기에선 잔량이 소켓 용량 아래라 실제로 막히지 않지만,
-        // 그건 프레임 크기에 딸린 여유일 뿐이라 기대지 않는다. 닫히든 말든 정리는 진행시킨다.
+        // Redis 항목이 통째로 남는다. 상한을 둬서 그 셋은 반드시 회수하되, 채널 자체는 남을 수 있다
+        // (CLOSE_FLUSH_TIMEOUT 주석 참고).
         Mono<Void> closeWithReason = Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
                 .timeout(CLOSE_FLUSH_TIMEOUT, Mono.empty());
 

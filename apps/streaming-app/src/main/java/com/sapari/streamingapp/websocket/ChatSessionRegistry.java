@@ -112,6 +112,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         });
         // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·
         // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
+        //
+        // 다만 이 관용이 실제로 값을 내는 건 <b>일시적·부분적</b> 실패일 때다. Redis가 통째로 죽으면 전달
+        // 자체가 Pub/Sub이라 아무도 못 받고, 그때 남는 건 "저장은 되고 발신자만 ack 받는" 상태다 —
+        // 강퇴·레이트리밋도 같이 열려 있어 그 창의 전송이 이력에 그대로 쌓인다. 그 구간을 막을지는
+        // 전송 경로(publish 실패 처리)의 정책 문제라 여기서 결정하지 않는다.
         return sessionRepository.add(session.roomId(), sessionId, session.userId())
                 .onErrorResume(e -> {
                     log.warn("세션 명부 등재 실패 — 접속은 진행(시청자 수만 부정확) roomId={} cause={}",
@@ -139,7 +144,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 세션 수만큼 쏟아져 정작 원인 로그를 묻는다. 짚을 수 있는 형태로 한 줄만 남긴다.
         return sessionRepository.remove(roomId, sessionId)
                 .onErrorResume(e -> {
-                    log.warn("세션 명부 제거 실패 — 시청자 수 일시 과다, TTL로 회수됨 roomId={} sessionId={} cause={}",
+                    log.warn("세션 명부 제거 실패 — 시청자 수 일시 과다 roomId={} sessionId={} cause={}",
                             roomId, sessionId, e.getClass().getSimpleName());
                     return Mono.empty();
                 });

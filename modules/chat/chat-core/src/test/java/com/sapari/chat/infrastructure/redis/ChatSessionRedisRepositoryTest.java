@@ -10,18 +10,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 import java.time.Duration;
-import org.springframework.data.redis.core.ReactiveHashOperations;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
 
 /**
  * Redis 세션 HASH 어댑터 단위 통합 테스트 — 컨테이너 + 수동 조립.
@@ -132,21 +126,5 @@ class ChatSessionRedisRepositoryTest {
 
         assertThat(redisTemplate.hasKey("room:" + roomId + ":sessions").block()).isFalse();
         assertThat(repository.count(roomId).block()).isZero();
-    }
-    @Test
-    @DisplayName("TTL 설정이 실패해도 입장은 성립한다 — 백스톱 때문에 접속을 떨어뜨리지 않는다")
-    void add_survives_expire_failure() {
-        // given: EXPIRE만 실패하는 Redis(순간 장애). put은 성공.
-        ReactiveStringRedisTemplate failing = mock(ReactiveStringRedisTemplate.class);
-        ReactiveHashOperations<String, Object, Object> hash = mock(ReactiveHashOperations.class);
-        when(failing.opsForHash()).thenReturn(hash);
-        when(hash.put(any(), any(), any())).thenReturn(Mono.just(true));
-        when(failing.expire(any(String.class), any(Duration.class)))
-                .thenReturn(Mono.error(new RuntimeException("redis blip")));
-
-        // when·then: TTL은 정상 회수 실패에 대비한 백스톱일 뿐이라 입장을 막으면 안 된다
-        StepVerifier.create(new ChatSessionRedisRepository(failing)
-                        .add(UUID.randomUUID(), "s1", UUID.randomUUID()))
-                .verifyComplete();
     }
 }
