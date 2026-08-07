@@ -350,4 +350,15 @@ class SendChatServiceTest {
                 .expectError(IllegalStateException.class)
                 .verify();
     }
+
+    @Test
+    @DisplayName("clientMsgId 없으면 거부 — 없으면 재전송 멱등이 조용히 꺼진다(부분 unique 인덱스)")
+    void missing_clientMsgId_rejected() {
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", null)))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+
+        then(chatMessageRepository).should(never()).save(any());
+    }
 }

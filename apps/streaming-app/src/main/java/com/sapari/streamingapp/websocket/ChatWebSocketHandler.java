@@ -16,6 +16,7 @@ import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSess
 import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
@@ -94,7 +95,12 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // createdAt(Instant)을 epoch 숫자가 아니라 ISO-8601 문자열로 직렬화(프론트 계약)
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                // 모르는 필드는 흘려보낸다. 계약에 있는 필드는 그대로 엄격히 검증하되, 클라가 자기 필드를
+                // 하나 얹었다고 파싱이 통째로 실패해서는 안 된다 — 그건 메시지 하나가 아니라 연결이 끊기는
+                // 문제가 된다(파싱 실패가 누적 상한에 걸린다). 오타 필드도 조용히 넘어가지 않는다:
+                // content가 비면 내용 검증에, clientMsgId가 비면 필수 검증에 걸려 ERROR로 돌아간다.
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 
     // getSubProtocols()는 의도적으로 비운다(응답에 subprotocol echo 안 함). 서버가 offered subprotocol을

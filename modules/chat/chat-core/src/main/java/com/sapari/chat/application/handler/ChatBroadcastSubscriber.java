@@ -60,11 +60,26 @@ public class ChatBroadcastSubscriber {
         };
     }
 
+    /**
+     * 방 전체에 채팅 1건을 뿌린다. 세션 축이 둘이라 조합을 미리 만들어 두고 세션마다 고르기만 한다
+     * (세션 수에 비례해 객체를 새로 만들지 않는다).
+     *
+     * <p><b>발신자 축</b>: 보낸 사람의 세션에는 {@code clientMsgId}를 함께 실어 보낸다. 발신자는 같은 메시지를
+     * 낙관적 렌더·ACK·브로드캐스트로 세 번 마주치는데, 브로드캐스트에 이 값이 없으면 ACK가 도착해 서버 id를
+     * 알기 전까지는 자기 버블과 짝지을 수단이 없다. ACK가 먼저 온다는 보장이 없어(ACK는 직접 응답, 브로드캐스트는
+     * Redis 왕복) 순서가 뒤집히면 중복으로 그려진다. 남에게는 싣지 않는다 — 남의 클라 생성 id다.
+     */
     private Mono<Void> fanOutChat(UUID roomId, ChatMessage message) {
-        OutboundMessage ownerView = toOutbound(message, true);
-        OutboundMessage normalView = toOutbound(message, false);
-        return sessionManager.sendToRoomGated(roomId,
-                session -> session.isRoomOwner() ? ownerView : normalView);
+        OutboundMessage ownerView = toOutbound(message, true, false);
+        OutboundMessage normalView = toOutbound(message, false, false);
+        OutboundMessage ownerSenderView = toOutbound(message, true, true);
+        OutboundMessage senderView = toOutbound(message, false, true);
+        return sessionManager.sendToRoomGated(roomId, session -> {
+            boolean sender = session.userId().equals(message.senderId());
+            return session.isRoomOwner()
+                    ? (sender ? ownerSenderView : ownerView)
+                    : (sender ? senderView : normalView);
+        });
     }
 
     private Mono<Void> fanOutKick(UUID roomId, UUID kickedUserId) {
@@ -76,8 +91,11 @@ public class ChatBroadcastSubscriber {
                 .then(sessionManager.closeUser(roomId, kickedUserId));
     }
 
-    /** ChatMessage → 렌더용 OutboundMessage. ownerView일 때만 senderEmail·원문 포함(secure-by-default). */
-    private OutboundMessage toOutbound(ChatMessage m, boolean ownerView) {
+    /**
+     * ChatMessage → 렌더용 OutboundMessage.
+     * ownerView일 때만 senderEmail·원문 포함, senderView일 때만 clientMsgId 포함(secure-by-default).
+     */
+    private OutboundMessage toOutbound(ChatMessage m, boolean ownerView, boolean senderView) {
         return new OutboundMessage(
                 typeName(m.type()),                       // NORMAL | NOTICE
                 null,                                     // code
@@ -92,7 +110,7 @@ public class ChatBroadcastSubscriber {
                 null,                                     // userId — KICK 전용
                 null,                                     // activeCount — ROOM_INFO 전용
                 null,                                     // retryAfterSeconds — RATE_LIMIT 전용
-                null,                                     // clientMsgId — 브로드캐스트라 없음(send 결과만 운반)
+                senderView ? m.clientMsgId() : null,       // 보낸 사람에게만 — 자기 낙관적 버블과 짝짓는 키
                 null                                      // isRoomOwner — ROOM_INFO 전용
         );
     }

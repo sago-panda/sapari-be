@@ -115,6 +115,11 @@ public class SendChatService implements SendChatUseCase {
         if (content.length() > MAX_CONTENT_LENGTH) {
             return Mono.error(new IllegalArgumentException("메시지는 " + MAX_CONTENT_LENGTH + "자를 초과할 수 없습니다."));
         }
+        // clientMsgId를 필수로 받는다 — 재전송 멱등이 이 값에만 걸려 있다(unique 인덱스가 부분 인덱스라
+        // 값이 없으면 적용되지 않는다). 없어도 받아주면 그 메시지만 조용히 멱등이 꺼져, 재전송이 곧 중복 저장이 된다.
+        if (command.clientMsgId() == null || command.clientMsgId().isBlank()) {
+            return Mono.error(new IllegalArgumentException("clientMsgId는 필수입니다."));
+        }
         ChatRole role = ChatRole.valueOf(command.senderRole());   // 잘못된 role 문자열이면 throw → defer가 onError로
         ChatMessageType type = toType(command.messageType());     // NORMAL/NOTICE만 허용(SYSTEM·미지 타입 거부)
 

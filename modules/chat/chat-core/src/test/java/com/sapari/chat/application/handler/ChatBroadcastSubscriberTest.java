@@ -119,4 +119,54 @@ class ChatBroadcastSubscriberTest {
         assertThat(otherMsg.type()).isEqualTo("KICK");
         assertThat(otherMsg.userId()).isEqualTo(kickedId);
     }
+
+    @Test
+    @DisplayName("CHAT 팬아웃 — 보낸 사람 세션에만 clientMsgId를 싣는다(자기 버블 짝짓기 키)")
+    void routeChat_carriesClientMsgIdOnlyToSender() {
+        // given
+        given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).willReturn(Mono.empty());
+        ChatMessage message = new ChatMessage(
+                "65a1f2c3d4e5f60718293a4b", roomId, buyerId, "구매자", "buyer@example.com",
+                ChatRole.BUYER, new ChatMessageType.Normal(),
+                "안녕", "안녕", "c-1", Instant.parse("2026-06-11T00:00:00Z"));
+
+        // when
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).verifyComplete();
+
+        // then
+        ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
+        then(sessionManager).should(times(1)).sendToRoomGated(eq(roomId), cap.capture());
+        Function<ChatSession, OutboundMessage> resolver = cap.getValue();
+
+        // 보낸 사람 — ACK보다 브로드캐스트가 먼저 와도 이 키로 자기 버블을 찾는다
+        assertThat(resolver.apply(viewer(buyerId)).clientMsgId()).isEqualTo("c-1");
+        // 남 — 남의 클라 생성 id를 받을 이유가 없다
+        assertThat(resolver.apply(viewer(sellerId)).clientMsgId()).isNull();
+        // 방주인은 남의 메시지에도 PII를 받지만 clientMsgId는 자기 것만 받는다(두 축이 독립)
+        OutboundMessage ownerOnOthers = resolver.apply(owner());
+        assertThat(ownerOnOthers.senderEmail()).isEqualTo("buyer@example.com");
+        assertThat(ownerOnOthers.clientMsgId()).isNull();
+    }
+
+    @Test
+    @DisplayName("CHAT 팬아웃 — 방주인이 직접 보낸 경우 PII와 clientMsgId가 함께 실린다(두 축 동시 적용)")
+    void routeChat_ownerSendingOwnMessage() {
+        // given
+        given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).willReturn(Mono.empty());
+        ChatMessage fromOwner = new ChatMessage(
+                "65a1f2c3d4e5f60718293a4c", roomId, sellerId, "셀러", "seller@example.com",
+                ChatRole.SELLER, new ChatMessageType.Normal(),
+                "상품 설명", "상품 설명", "c-2", Instant.parse("2026-06-11T00:00:00Z"));
+
+        // when
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(fromOwner))).verifyComplete();
+
+        // then
+        ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
+        then(sessionManager).should(times(1)).sendToRoomGated(eq(roomId), cap.capture());
+
+        OutboundMessage self = cap.getValue().apply(owner());
+        assertThat(self.clientMsgId()).isEqualTo("c-2");
+        assertThat(self.senderEmail()).isEqualTo("seller@example.com");
+    }
 }
