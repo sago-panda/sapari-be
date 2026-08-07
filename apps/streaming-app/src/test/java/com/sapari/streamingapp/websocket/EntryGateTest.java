@@ -1,10 +1,10 @@
 package com.sapari.streamingapp.websocket;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import java.util.UUID;
 
@@ -40,7 +40,7 @@ class EntryGateTest {
     @Test
     @DisplayName("강퇴 아님 → 통과(빈 완료)")
     void not_kicked_passes() {
-        when(kickRepository.isKicked(roomId, userId)).thenReturn(Mono.just(false));
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
 
         StepVerifier.create(gate.verify(member())).verifyComplete();
     }
@@ -48,7 +48,7 @@ class EntryGateTest {
     @Test
     @DisplayName("강퇴됨 → EntryDeniedException(KICKED)")
     void kicked_denied() {
-        when(kickRepository.isKicked(roomId, userId)).thenReturn(Mono.just(true));
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(true));
 
         StepVerifier.create(gate.verify(member()))
                 .expectErrorMatches(e -> e instanceof EntryDeniedException ed
@@ -59,8 +59,8 @@ class EntryGateTest {
     @Test
     @DisplayName("kicked 조회 Redis 에러 → fail-open(입장 허용)")
     void redis_error_fails_open() {
-        when(kickRepository.isKicked(roomId, userId))
-                .thenReturn(Mono.error(new RuntimeException("redis down")));
+        given(kickRepository.isKicked(roomId, userId))
+                .willReturn(Mono.error(new RuntimeException("redis down")));
 
         StepVerifier.create(gate.verify(member())).verifyComplete();
     }
@@ -71,6 +71,6 @@ class EntryGateTest {
         ChatSession guest = new ChatSession(roomId, userId, ChatRole.GUEST, null, null, false);
 
         StepVerifier.create(gate.verify(guest)).verifyComplete();
-        verify(kickRepository, never()).isKicked(any(), any());
+        then(kickRepository).should(never()).isKicked(any(), any());
     }
 }

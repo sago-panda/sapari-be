@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.BDDMockito;
 import org.mockito.Mockito;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveSetOperations;
@@ -75,10 +76,10 @@ class ChatKickRedisRepositoryTest {
         // isMember는 (K,Object)/(K,Object...) 오버로드라 deep-stub은 매칭이 모호 → 명시적 mock으로 단일 오버로드 스텁
         ReactiveStringRedisTemplate broken = Mockito.mock(ReactiveStringRedisTemplate.class);
         ReactiveSetOperations<String, String> setOps = Mockito.mock(ReactiveSetOperations.class);
-        Mockito.when(broken.opsForSet()).thenReturn(setOps);
+        BDDMockito.given(broken.opsForSet()).willReturn(setOps);
         // 실제 인자값 그대로 스텁 — isMember(K,Object)/(K,Object...) 오버로드 모호성 회피
-        Mockito.when(setOps.isMember("kicked:" + roomId, userId.toString()))
-                .thenReturn(Mono.error(new RuntimeException("connection refused")));
+        BDDMockito.given(setOps.isMember("kicked:" + roomId, userId.toString()))
+                .willReturn(Mono.error(new RuntimeException("connection refused")));
 
         // 타임아웃 있는 verify — 계약 위반(error 미전파) 시 무한 hang 대신 빠르게 실패
         StepVerifier.create(new ChatKickRedisRepository(broken).isKicked(roomId, userId))

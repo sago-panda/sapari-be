@@ -3,10 +3,11 @@ package com.sapari.chat.infrastructure.redis;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -63,13 +64,13 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("publish — chat:pubsub:{roomId} 채널에 CHAT 봉투 JSON을 발행한다(round-trip 일치)")
     void publish_sends_chat_envelope_to_channel() throws Exception {
-        when(redis.convertAndSend(anyString(), anyString())).thenReturn(Mono.just(1L));
+        given(redis.convertAndSend(anyString(), anyString())).willReturn(Mono.just(1L));
         ChatMessage message = sampleMessage();
 
         StepVerifier.create(broadcaster.publish(roomId, message)).verifyComplete();
 
         ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
-        verify(redis).convertAndSend(eq(channel), json.capture());
+        then(redis).should(times(1)).convertAndSend(eq(channel), json.capture());
         ChatEnvelope sent = mapper.readValue(json.getValue(), ChatEnvelope.class);
         assertThat(sent).isInstanceOf(ChatEnvelope.ChatMsg.class);
         assertThat(((ChatEnvelope.ChatMsg) sent).message()).isEqualTo(message);
@@ -201,8 +202,8 @@ class RedisChatBroadcasterTest {
     @SuppressWarnings("unchecked")
     private ReactiveSubscription.Message<String, String> message(String channel, String body) {
         ReactiveSubscription.Message<String, String> m = mock(ReactiveSubscription.Message.class);
-        when(m.getChannel()).thenReturn(channel);
-        when(m.getMessage()).thenReturn(body);
+        given(m.getChannel()).willReturn(channel);
+        given(m.getMessage()).willReturn(body);
         return m;
     }
 

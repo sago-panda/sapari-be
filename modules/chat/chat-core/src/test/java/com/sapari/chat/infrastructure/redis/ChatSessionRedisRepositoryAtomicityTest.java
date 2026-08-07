@@ -3,9 +3,10 @@ package com.sapari.chat.infrastructure.redis;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 import java.util.List;
 import java.util.UUID;
@@ -33,14 +34,14 @@ class ChatSessionRedisRepositoryAtomicityTest {
     @SuppressWarnings("unchecked")
     void add_sets_ttl_in_the_same_call() {
         ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
-        when(redis.execute(any(RedisScript.class), anyList(), anyList())).thenReturn(Flux.just(1L));
+        given(redis.execute(any(RedisScript.class), anyList(), anyList())).willReturn(Flux.just(1L));
 
         StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
                 .verifyComplete();
 
         ArgumentCaptor<List<String>> keys = ArgumentCaptor.forClass(List.class);
         ArgumentCaptor<List<Object>> args = ArgumentCaptor.forClass(List.class);
-        verify(redis).execute(any(RedisScript.class), keys.capture(), args.capture());
+        then(redis).should(times(1)).execute(any(RedisScript.class), keys.capture(), args.capture());
 
         assertThat(keys.getValue()).containsExactly("room:" + roomId + ":sessions");
         // TTL이 인자에 실려 같은 호출로 나가는지 — 두 번의 왕복으로 나뉘면 그 사이가 빈다
@@ -52,8 +53,8 @@ class ChatSessionRedisRepositoryAtomicityTest {
     @SuppressWarnings("unchecked")
     void add_propagates_failure() {
         ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
-        when(redis.execute(any(RedisScript.class), anyList(), anyList()))
-                .thenReturn(Flux.error(new RuntimeException("redis blip")));
+        given(redis.execute(any(RedisScript.class), anyList(), anyList()))
+                .willReturn(Flux.error(new RuntimeException("redis blip")));
 
         StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
                 .verifyErrorMessage("redis blip");

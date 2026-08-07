@@ -4,11 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -129,19 +129,19 @@ class ChatWebSocketHandlerTest {
     @DisplayName("구독 ref-count — 같은 방 다중 입장은 구독 1개 공유, 마지막 퇴장에만 dispose")
     void room_subscription_ref_counted() {
         Disposable disposable = mock(Disposable.class);
-        when(subscriber.subscribeRoom(roomId)).thenReturn(disposable);
+        given(subscriber.subscribeRoom(roomId)).willReturn(disposable);
 
         handler.acquireRoom(roomId);
         handler.acquireRoom(roomId);
-        verify(subscriber, times(1)).subscribeRoom(roomId);   // 공유 — 구독은 1회만
+        then(subscriber).should(times(1)).subscribeRoom(roomId);   // 공유 — 구독은 1회만
         assertThat(handler.isSubscribed(roomId)).isTrue();
 
         handler.releaseRoom(roomId);
-        verify(disposable, never()).dispose();                // 아직 1명 남음
+        then(disposable).should(never()).dispose();                // 아직 1명 남음
         assertThat(handler.isSubscribed(roomId)).isTrue();
 
         handler.releaseRoom(roomId);
-        verify(disposable).dispose();                         // 마지막 퇴장 → 해제
+        then(disposable).should(times(1)).dispose();                         // 마지막 퇴장 → 해제
         assertThat(handler.isSubscribed(roomId)).isFalse();
     }
 
@@ -150,8 +150,8 @@ class ChatWebSocketHandlerTest {
     @DisplayName("onInbound — 어떤 페이로드가 와도 인바운드 스트림이 죽지 않는다(연결 유지)")
     void inbound_never_kills_stream(String payload) {
         // given: JSON 리터럴 null은 Jackson이 예외 없이 null을 반환해 catch를 그냥 통과한다
-        when(registry.sendToSession(anyString(), any())).thenReturn(Mono.empty());
-        when(sendUseCase.send(any())).thenReturn(Mono.empty());
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(sendUseCase.send(any())).willReturn(Mono.empty());
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when: 실제 수신 배선과 같은 flatMap 모양으로 태운다
@@ -167,7 +167,7 @@ class ChatWebSocketHandlerTest {
     void room_info_survives_active_count_failure() {
         // given: 시청자 수는 표시용이고 이 값의 출처(Redis HASH)에 메시지 전달·강퇴가 의존하지 않는다.
         // 강퇴 조회조차 실패 시 입장을 허용하는 정책(EntryGate)과 맞추려면 여기서 접속을 막으면 안 된다.
-        when(registry.getActiveCount(roomId)).thenReturn(Mono.error(new RuntimeException("redis blip")));
+        given(registry.getActiveCount(roomId)).willReturn(Mono.error(new RuntimeException("redis blip")));
         ChatSession session = new ChatSession(roomId, userId, ChatRole.SELLER, "판매자", "s@example.com", true);
 
         // when
@@ -184,7 +184,7 @@ class ChatWebSocketHandlerTest {
     @DisplayName("onInbound — 종료가 확정된 세션의 전송은 받지 않는다(유예 창 도배 차단)")
     void inbound_rejected_after_termination_decided() {
         // given: 강퇴/방종료로 종료가 확정된 세션. 소켓이 닫히기 전까지 짧은 창이 남는다.
-        when(registry.isTerminating("s1")).thenReturn(true);
+        given(registry.isTerminating("s1")).willReturn(true);
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when
@@ -192,14 +192,14 @@ class ChatWebSocketHandlerTest {
                 .verifyComplete();
 
         // then: 전송 파이프라인에 아예 들어가지 않는다 — Redis 강퇴 조회는 장애 시 통과(fail-open)라 믿을 수 없다
-        verify(sendUseCase, never()).send(any());
+        then(sendUseCase).should(never()).send(any());
     }
 
     @Test
     @DisplayName("onInbound — type 누락이면 연결을 끊지 않고 ERROR(VALIDATION)만 응답한다")
     void inbound_without_type_keeps_stream_alive() {
         // given
-        when(registry.sendToSession(anyString(), any())).thenReturn(Mono.empty());
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when: 실제 수신 배선과 같은 flatMap 모양으로 태운다
@@ -211,7 +211,7 @@ class ChatWebSocketHandlerTest {
 
         // then: 스트림은 살아있고 ERROR/VALIDATION만 나간다
         ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
-        verify(registry).sendToSession(eq("s1"), sent.capture());
+        then(registry).should(times(1)).sendToSession(eq("s1"), sent.capture());
         assertThat(sent.getValue().type()).isEqualTo("ERROR");
         assertThat(sent.getValue().code()).isEqualTo("VALIDATION");
     }
@@ -221,8 +221,8 @@ class ChatWebSocketHandlerTest {
     void close_does_not_block_cleanup_forever() {
         // given: 소켓을 읽지 않는 클라 — close 프레임이 잔량 뒤에 줄 서서 write future가 완료되지 않는다
         WebSocketSession session = mock(WebSocketSession.class);
-        when(session.close(any())).thenReturn(Mono.never());
-        when(registry.closeStatusOf("s1")).thenReturn(CloseStatus.POLICY_VIOLATION);
+        given(session.close(any())).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.POLICY_VIOLATION);
 
         // when·then: 상한을 넘기면 스스로 끝나야 한다. 안 그러면 firstWithSignal이 안 끝나
         // doFinally(cleanup)까지 막혀 세션 명부·방 구독·Redis 항목이 통째로 남는다.

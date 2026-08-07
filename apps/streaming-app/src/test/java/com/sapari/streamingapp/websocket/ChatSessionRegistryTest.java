@@ -2,9 +2,10 @@ package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 import java.time.Duration;
 import java.util.List;
@@ -40,8 +41,8 @@ class ChatSessionRegistryTest {
     @BeforeEach
     void setUp() {
         sessionRepository = mock(ChatSessionRepository.class);
-        when(sessionRepository.add(any(), any(), any())).thenReturn(Mono.empty());
-        when(sessionRepository.remove(any(), any())).thenReturn(Mono.empty());
+        given(sessionRepository.add(any(), any(), any())).willReturn(Mono.empty());
+        given(sessionRepository.remove(any(), any())).willReturn(Mono.empty());
         registry = new ChatSessionRegistry(sessionRepository);
     }
 
@@ -57,7 +58,7 @@ class ChatSessionRegistryTest {
     @DisplayName("register — Redis HSET 위임 + outbound로 받은 메시지가 흘러나온다")
     void register_then_sendToSession_flows_out() {
         registry.register("s1", session(roomId, userId)).block();
-        verify(sessionRepository).add(roomId, "s1", userId);
+        then(sessionRepository).should(times(1)).add(roomId, "s1", userId);
 
         OutboundMessage msg = out("NORMAL");
         StepVerifier.create(registry.outbound("s1"))
@@ -95,7 +96,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("getActiveCount — Redis count(고유 유저 수)로 위임")
     void active_count_delegates() {
-        when(sessionRepository.count(roomId)).thenReturn(Mono.just(5L));
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(5L));
 
         StepVerifier.create(registry.getActiveCount(roomId))
                 .expectNext(5L)
@@ -108,7 +109,7 @@ class ChatSessionRegistryTest {
         registry.register("s1", session(roomId, userId)).block();
 
         registry.unregister(roomId, "s1").block();
-        verify(sessionRepository).remove(roomId, "s1");
+        then(sessionRepository).should(times(1)).remove(roomId, "s1");
 
         // 제거 후 outbound("s1")은 빈 Flux(즉시 완료)
         StepVerifier.create(registry.outbound("s1")).verifyComplete();
@@ -138,7 +139,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("등록 — Redis 명부 등재가 실패해도 접속은 성립한다(전달은 로컬 자료구조로 돈다)")
     void register_survives_redis_failure() {
-        when(sessionRepository.add(any(), any(), any())).thenReturn(Mono.error(new RuntimeException("redis down")));
+        given(sessionRepository.add(any(), any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
 
         StepVerifier.create(registry.register("s1", session(roomId, userId))).verifyComplete();
 
@@ -154,7 +155,7 @@ class ChatSessionRegistryTest {
     @DisplayName("퇴장 — Redis 명부 제거가 실패해도 정리는 완료된다(호출부가 subscribe라 에러가 새면 안 됨)")
     void unregister_survives_redis_failure() {
         registry.register("s1", session(roomId, userId)).block();
-        when(sessionRepository.remove(any(), any())).thenReturn(Mono.error(new RuntimeException("redis down")));
+        given(sessionRepository.remove(any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
 
         StepVerifier.create(registry.unregister(roomId, "s1")).verifyComplete();
 

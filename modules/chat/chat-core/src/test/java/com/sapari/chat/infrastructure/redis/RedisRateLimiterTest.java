@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.BDDMockito;
 import org.mockito.Mockito;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -117,8 +118,8 @@ class RedisRateLimiterTest {
     void redis_failure_fails_open() {
         ReactiveStringRedisTemplate broken = Mockito.mock(ReactiveStringRedisTemplate.class,
                 Mockito.RETURNS_DEEP_STUBS);
-        Mockito.when(broken.opsForValue().setIfAbsent(Mockito.anyString(), Mockito.anyString(), Mockito.any()))
-                .thenReturn(Mono.error(new RuntimeException("connection refused")));
+        BDDMockito.given(broken.opsForValue().setIfAbsent(Mockito.anyString(), Mockito.anyString(), Mockito.any()))
+                .willReturn(Mono.error(new RuntimeException("connection refused")));
         RedisRateLimiter failing = new RedisRateLimiter(broken);
 
         RateLimitResult result = failing.tryAcquire(UUID.randomUUID()).block();
