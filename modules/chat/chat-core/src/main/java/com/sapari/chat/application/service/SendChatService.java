@@ -1,5 +1,9 @@
 package com.sapari.chat.application.service;
 
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
+import java.time.Instant;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 
 import org.springframework.dao.DuplicateKeyException;
@@ -43,6 +47,12 @@ public class SendChatService implements SendChatUseCase {
 
     private static final int MAX_CONTENT_LENGTH = 200;
 
+    /**
+     * 열화 로그 간격. <b>건수가 아니라 경과시간</b>으로 솎아낸다 — 건수 기준은 카운터가 프로세스 생애
+     * 누적이라 두 번째 이후의 짧은 장애가 통째로 침묵한다(규모가 작을수록 안 남는 역방향).
+     */
+    private static final Duration DEGRADED_LOG_INTERVAL = Duration.ofSeconds(10);
+
     private final ChatPermissionPolicy permissionPolicy;
     private final ProfanityFilter profanityFilter;
     private final ChatKickRepository kickRepository;
@@ -50,6 +60,23 @@ public class SendChatService implements SendChatUseCase {
     private final ChatMessageRepository chatMessageRepository;
     private final ChatBroadcaster broadcaster;
     private final TimeProvider timeProvider;
+
+    // 열화 경로 관측 — 통과시키되 규모와 시작 시점은 남긴다.
+    private final AtomicLong kickedFailOpenCount = new AtomicLong();
+    private final AtomicLong publishFailureCount = new AtomicLong();
+    private final AtomicReference<Instant> lastKickedFailOpenLog = new AtomicReference<>(Instant.EPOCH);
+    private final AtomicReference<Instant> lastPublishFailureLog = new AtomicReference<>(Instant.EPOCH);
+
+    /**
+     * 마지막 로그로부터 간격이 지났으면 true — 첫 발생은 반드시 남고(EPOCH 시작) 이후는 간격당 1건.
+     * 시각은 {@code TimeProvider}에서 받는다 — application 레이어는 시스템 시계를 직접 읽지 않는다.
+     */
+    private boolean shouldLog(AtomicReference<Instant> lastLog) {
+        Instant now = timeProvider.now();
+        Instant last = lastLog.get();
+        return !Duration.between(last, now).minus(DEGRADED_LOG_INTERVAL).isNegative()
+                && lastLog.compareAndSet(last, now);
+    }
 
     @Override
     public Mono<ChatMessageView> send(SendChatCommand command) {
@@ -78,9 +105,18 @@ public class SendChatService implements SendChatUseCase {
             return Mono.error(new ChatPermissionDeniedException("해당 메시지를 보낼 권한이 없습니다."));
         }
 
-        // 4) kicked — Redis 1회 SISMEMBER. 에러는 fail-open(전송 허용, L13) — 어댑터는 error 전파, 매핑은 여기
+        // 4) kicked — Redis 1회 SISMEMBER. 에러는 fail-open(전송 허용, L13) — 어댑터는 error 전파, 매핑은 여기.
+        // 통과시키되 흔적은 남긴다: 이 경로가 열렸다는 건 강퇴가 무력화된 구간이라는 뜻인데, 지금까지
+        // 로그도 카운터도 없어 "언제 몇 건이 우회했는가"를 사후에 복원할 수 없었다.
         return kickRepository.isKicked(command.roomId(), command.senderId())
-                .onErrorReturn(false)
+                .onErrorResume(err -> {
+                    long count = kickedFailOpenCount.incrementAndGet();
+                    if (shouldLog(lastKickedFailOpenLog)) {
+                        log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) roomId={}",
+                                count, command.roomId(), err);
+                    }
+                    return Mono.just(false);
+                })
                 .flatMap(kicked -> kicked
                         ? Mono.<Void>error(new UserKickedException("강퇴되어 메시지를 보낼 수 없습니다."))
                         : enforceRateLimit(role, command.isRoomOwner(), command.senderId()))   // 5) rate limit
@@ -129,8 +165,12 @@ public class SendChatService implements SendChatUseCase {
                         // 낙관적 렌더 모델: 발신자는 send 시점에 자기 메시지를 이미 로컬 렌더했고 이 ack로 확정한다
                         // → 서버 에코 불필요. 크로스 Pod·동일 Pod 타 세션은 실시간 미전달(허용, 메시지는 영속됨).
                         .onErrorResume(err -> {
-                            log.error("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시 roomId={}",
-                                    command.roomId(), err);
+                            // 장애 중엔 전 전송이 이 경로다 — 건당 스택트레이스는 원인 로그를 묻는다(레이트리밋과 동일)
+                            long count = publishFailureCount.incrementAndGet();
+                            if (shouldLog(lastPublishFailureLog)) {
+                                log.error("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시"
+                                        + "(누적 {}건) roomId={}", count, command.roomId(), err);
+                            }
                             return Mono.empty();
                         })
                         .thenReturn(saved.toView()))
