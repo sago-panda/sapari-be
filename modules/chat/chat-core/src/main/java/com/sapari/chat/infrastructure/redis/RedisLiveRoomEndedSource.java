@@ -6,6 +6,7 @@ import java.util.UUID;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sapari.chat.application.port.LiveRoomEndedSource;
 
@@ -45,12 +46,28 @@ public class RedisLiveRoomEndedSource implements LiveRoomEndedSource {
         return shared;
     }
 
-    /** payload {@code {"roomId":"<uuid>",...}} 에서 roomId 추출. 깨진 payload는 skip(스트림 유지). */
+    /**
+     * payload {@code {"roomId":"<uuid>",...}} 에서 roomId 추출. 깨진 payload는 skip(스트림 유지).
+     *
+     * <p>실패 로그에 <b>원문을 싣지 않는다</b> — 지금 계약({roomId, endedAt})엔 PII가 없지만 live가 필드를
+     * 늘리면 조용히 새는 자리이고, 신뢰경계 밖 문자열이라 개행 삽입으로 로그를 위조할 수도 있다.
+     * 대신 진단에 필요한 만큼은 남긴다: 실패 사유와 payload 길이. live가 계약을 바꿔 전 방 종료가
+     * 통째로 유실되는 상황에서 "무엇이 어떻게 어긋났는지"를 이 둘로 좁힐 수 있어야 한다.
+     */
     Mono<UUID> parse(String json) {
         try {
-            return Mono.just(UUID.fromString(objectMapper.readTree(json).get("roomId").asText()));
+            JsonNode roomId = objectMapper.readTree(json).get("roomId");
+            if (roomId == null) {
+                // NPE에 기대지 않고 명시적으로 구분한다 — "필드가 없음"과 "값이 이상함"은 원인이 다르다.
+                // 여기 오면 readTree가 이미 성공했으므로 json은 null이 아니다.
+                log.error("live:room:ended payload에 roomId 필드 없음 — 해당 메시지 skip payloadLength={}",
+                        json.length());
+                return Mono.empty();
+            }
+            return Mono.just(UUID.fromString(roomId.asText()));
         } catch (Exception e) {
-            log.error("live:room:ended payload 파싱 실패 — 해당 메시지 skip payload={}", json);
+            log.error("live:room:ended payload 파싱 실패 — 해당 메시지 skip cause={} payloadLength={}",
+                    e.getClass().getSimpleName(), json == null ? -1 : json.length());
             return Mono.empty();
         }
     }

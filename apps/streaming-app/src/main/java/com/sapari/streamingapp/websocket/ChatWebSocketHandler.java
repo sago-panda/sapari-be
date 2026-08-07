@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,17 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     /** 룸 토큰을 실어 나르는 서브프로토콜 이름. 클라는 ["bearer", <token>] 두 개를 제시한다. */
     private static final String TOKEN_SUBPROTOCOL = "bearer";
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
+    /** 종료 결정 후 정상 클라가 버퍼에 남은 메시지를 받아갈 시간. 이 시간이 지나면 강제로 끊는다. */
+    private static final Duration FORCED_CLOSE_GRACE = Duration.ofSeconds(3);
+    /**
+     * close 프레임 flush를 기다리는 상한. 넘기면 앱 자원 정리는 진행한다.
+     *
+     * <p><b>채널까지 회수되지는 않는다</b>: close는 write future에 채널 닫기를 걸어두는 구조라, 그 write가
+     * flush되지 않으면 채널도 남는다. 이후 다시 닫으려 해도 "이미 close 보냄" 표시 때문에 무동작이다.
+     * 즉 소켓을 계속 열어둔 채 수신만 멈춘 클라는 커넥션이 유지된다 — 지금 이걸 걷어낼 리퍼가 없다.
+     * (프로세스가 죽은 클라는 TCP가 정리해 준다.)
+     */
+    private static final Duration CLOSE_FLUSH_TIMEOUT = Duration.ofSeconds(5);
 
     private final RoomTokenVerifier verifier;
     private final EntryGate entryGate;
@@ -134,29 +146,76 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 Flux.defer(() -> registry.outbound(sid)).map(message -> session.textMessage(serialize(message))));
 
         Mono<Void> inbound = session.receive()
+                // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
+                // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(Ping은 Netty가 자동 응답하고 올려주지 않음).
+                .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
                 .map(WebSocketMessage::getPayloadAsText)
                 .flatMap(payload -> onInbound(sid, chatSession, payload))
                 .then();
 
+        // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
+        // 위한 것이라, 정상 클라가 남은 메시지를 다 받고 스스로 끝낼 시간을 준 뒤에야 발화한다.
+        Mono<Void> forcedClose = Mono.defer(() -> registry.terminationSignal(sid))
+                .delayElement(FORCED_CLOSE_GRACE)
+                .then();
+
+        // 종료 사유를 코드로 실어 닫는다 — complete 신호엔 코드를 못 싣기 때문에 따로 붙인다.
+        //
+        // firstWithSignal 바깥이 아니라 서버발 종료 브랜치 "안"에 둔다: 승자가 신호를 내보내기 전에
+        // 패자가 먼저 취소되는데, 그때 취소되는 session.receive()가 Reactor Netty에서 상태코드 없는
+        // close 프레임을 먼저 내보내고 "이미 닫음" 래치를 걸어버린다. 바깥에 두면 그 뒤에 실행돼
+        // 아무 효과가 없다(클라가 받는 코드는 1005).
+        // close 프레임도 결국 소켓 write라, 읽지 않는 클라에선 앞선 잔량 뒤에 줄 서서 완료되지 않을 수 있다.
+        // 그 상태로 두면 아래 firstWithSignal이 안 끝나 doFinally(cleanup)까지 막힌다 — 세션 명부·방 구독·
+        // Redis 항목이 통째로 남는다. 상한을 둬서 그 셋은 반드시 회수하되, 채널 자체는 남을 수 있다
+        // (CLOSE_FLUSH_TIMEOUT 주석 참고).
+        Mono<Void> closeWithReason = closeWithReason(session, sid);
+
         return registry.register(sid, chatSession)
-                .then(registry.getActiveCount(roomId))
-                .flatMap(count -> registry.sendToSession(sid, roomInfo(count, chatSession.isRoomOwner())))
-                // firstWithSignal: 둘 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound 완료)뿐 아니라
-                // 강제 close(KICK/ROOM_ENDED → sink complete → outbound 완료) 시에도 WS를 즉시 닫는다.
-                .then(Mono.firstWithSignal(outbound, inbound))
+                .then(roomInfoFor(roomId, chatSession))
+                .flatMap(info -> registry.sendToSession(sid, info))
+                // firstWithSignal: 셋 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
+                // (sink complete → outbound), 그리고 그 둘이 다 막혔을 때의 강제 종료.
+                // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
+                .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
+                        forcedClose.then(closeWithReason)))
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 
-    private Mono<Void> onInbound(String sid, ChatSession chatSession, String payload) {
+    /**
+     * 종료 사유를 코드로 실어 닫는다. flush가 막혀 close가 끝나지 않아도 상한 뒤 완료해
+     * 뒤따르는 정리(doFinally)를 진행시킨다. (테스트 진입점)
+     */
+    Mono<Void> closeWithReason(WebSocketSession session, String sid) {
+        return Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
+                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.empty());
+    }
+
+    /** 인바운드 1건 처리 — 어떤 입력이 와도 ERROR 응답으로 끝내고 연결은 유지한다. (단위 테스트 진입점) */
+    Mono<Void> onInbound(String sid, ChatSession chatSession, String payload) {
+        // 종료가 확정된 세션은 소켓이 닫히기 전이라도 더 받지 않는다 — 그 창에 강퇴된 사용자가 계속
+        // 보낼 수 있고, 그걸 막는 건 전송 경로의 Redis 조회뿐인데 그건 장애 시 통과(fail-open)한다.
+        if (registry.isTerminating(sid)) {
+            return Mono.empty();
+        }
         InboundMessage in;
         try {
             in = objectMapper.readValue(payload, InboundMessage.class);
         } catch (Exception e) {
             return registry.sendToSession(sid, error("VALIDATION", null));   // 파싱 실패 — clientMsgId 알 수 없음
         }
-        return sendUseCase.send(buildCommand(chatSession, in))
-                .flatMap(view -> registry.sendToSession(sid, toAck(view, in.clientMsgId())))
-                .onErrorResume(e -> registry.sendToSession(sid, toError(e, in.clientMsgId())));
+        // JSON 리터럴 null은 예외 없이 null로 파싱돼 위 catch를 그냥 통과한다.
+        if (in == null) {
+            return registry.sendToSession(sid, error("VALIDATION", null));
+        }
+        // 에러 응답이 in을 다시 건드리지 않게 미리 뽑아둔다 — 폴백이 예외를 던지면 그 예외가 곧장
+        // downstream onError가 되어 인바운드 스트림이 죽는다(에러 핸들러는 절대 실패하면 안 되는 자리).
+        String clientMsgId = in.clientMsgId();
+        // defer로 감싸 커맨드 생성(신뢰경계 검증)의 throw까지 onError 신호로 만든다 — 감싸지 않으면
+        // 인자 평가 위치에서 터져 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결이 끊긴다.
+        return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
+                .flatMap(view -> registry.sendToSession(sid, toAck(view, clientMsgId)))
+                .onErrorResume(e -> registry.sendToSession(sid, toError(e, clientMsgId)));
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──
@@ -203,7 +262,23 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return "INTERNAL";
     }
 
-    OutboundMessage roomInfo(long activeCount, boolean isRoomOwner) {
+    /**
+     * 입장 시 보낼 ROOM_INFO. 시청자 수 조회가 실패해도 <b>접속은 성립시킨다</b> — 그 수는 표시용이고,
+     * 출처인 Redis HASH에 메시지 전달·강퇴·종료 어느 것도 의존하지 않는다. 강퇴 조회조차 실패 시
+     * 입장을 허용하는 정책(EntryGate)과 같은 방향이다. (테스트 진입점)
+     */
+    Mono<OutboundMessage> roomInfoFor(UUID roomId, ChatSession chatSession) {
+        return registry.getActiveCount(roomId)
+                .map(count -> roomInfo(count, chatSession.isRoomOwner()))
+                .onErrorResume(e -> {
+                    log.warn("활성 시청자 수 조회 실패 — 수 없이 입장 진행 roomId={} cause={}",
+                            roomId, e.getClass().getSimpleName());
+                    return Mono.just(roomInfo(null, chatSession.isRoomOwner()));
+                });
+    }
+
+    /** activeCount가 null이면 "알 수 없음" — 조회 실패 시 0 같은 거짓값 대신 비워 보낸다. */
+    OutboundMessage roomInfo(Long activeCount, boolean isRoomOwner) {
         return new OutboundMessage("ROOM_INFO", null, null, null, null, null, null, null, null,
                 null, null, activeCount, null, null, isRoomOwner);
     }

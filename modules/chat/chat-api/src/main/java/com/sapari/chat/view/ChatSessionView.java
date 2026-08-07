@@ -8,7 +8,7 @@ package com.sapari.chat.view;
  * (role은 클라이언트가 자기 JWT claim으로 이미 알 수 있어 중복이라 싣지 않는다.)
  */
 public record ChatSessionView(
-        long activeCount,
+        Long activeCount,   // 조회 실패 시 null(=알 수 없음)
         boolean isRoomOwner
 ) {
 }

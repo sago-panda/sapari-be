@@ -131,6 +131,31 @@ class SendChatServiceTest {
     }
 
     @Test
+    @DisplayName("ADMIN은 방 소유와 무관하게 rate limit 면제 — 운영자는 role 기준")
+    void admin_is_exempt_regardless_of_room() {
+        stubAllowedAndSaved();
+
+        StepVerifier.create(service.send(command("ADMIN", false, true, "NORMAL", "운영 안내", "c1")))
+                .expectNextCount(1)
+                .verifyComplete();
+        verify(rateLimiter, never()).tryAcquire(any());
+    }
+
+    @Test
+    @DisplayName("남의 방에 들어온 SELLER는 시청자이므로 rate limit 적용")
+    void visiting_seller_is_rate_limited() {
+        // 면제 근거는 "상품설명 연속전송"이라 이 방을 진행하는 사람에게만 해당한다.
+        // role만 보면 판매자 계정이 남의 방에서 무제한 도배할 수 있다(권한 정책의 두 축 원칙과 어긋남).
+        when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
+        when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(false, 3)));
+
+        StepVerifier.create(service.send(command("SELLER", false, true, "NORMAL", "도배", "c1")))
+                .expectError(ChatRateLimitException.class)
+                .verify();
+        verify(rateLimiter).tryAcquire(any());
+    }
+
+    @Test
     @DisplayName("BUYER가 NOTICE 시도 → 권한 거부")
     void buyer_notice_denied() {
         StepVerifier.create(service.send(command("BUYER", false, true, "NOTICE", "공지", "c1")))
@@ -180,8 +205,8 @@ class SendChatServiceTest {
     }
 
     @Test
-    @DisplayName("SELLER는 rate limit 면제 — tryAcquire 미호출, 전송 진행")
-    void seller_bypasses_rate_limit() {
+    @DisplayName("방송을 진행하는 SELLER는 rate limit 면제 — tryAcquire 미호출, 전송 진행")
+    void broadcasting_seller_bypasses_rate_limit() {
         when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
         when(chatMessageRepository.save(any())).thenAnswer(inv ->
                 Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()));

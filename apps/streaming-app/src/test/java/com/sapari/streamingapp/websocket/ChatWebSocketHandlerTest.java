@@ -1,18 +1,27 @@
 package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
+import org.springframework.web.reactive.socket.CloseStatus;
+import org.springframework.web.reactive.socket.WebSocketSession;
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -28,10 +37,15 @@ import com.sapari.chat.view.ChatMessageView;
 import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
 
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 class ChatWebSocketHandlerTest {
 
     private ChatBroadcastSubscriber subscriber;
+    private ChatSessionRegistry registry;
+    private SendChatUseCase sendUseCase;
     private ChatWebSocketHandler handler;
 
     private final UUID roomId = UUID.fromString("33333333-3333-3333-3333-333333333333");
@@ -40,9 +54,11 @@ class ChatWebSocketHandlerTest {
     @BeforeEach
     void setUp() {
         subscriber = mock(ChatBroadcastSubscriber.class);
+        registry = mock(ChatSessionRegistry.class);
+        sendUseCase = mock(SendChatUseCase.class);
         handler = new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), mock(EntryGate.class),
-                mock(ChatSessionRegistry.class), mock(SendChatUseCase.class), subscriber);
+                registry, sendUseCase, subscriber);
     }
 
     @Test
@@ -127,5 +143,94 @@ class ChatWebSocketHandlerTest {
         handler.releaseRoom(roomId);
         verify(disposable).dispose();                         // 마지막 퇴장 → 해제
         assertThat(handler.isSubscribed(roomId)).isFalse();
+    }
+
+    @ParameterizedTest(name = "payload={0}")
+    @ValueSource(strings = { "null", "[]", "\"문자열\"", "123", "{}", "{\"content\":\"안녕\"}", "깨진json" })
+    @DisplayName("onInbound — 어떤 페이로드가 와도 인바운드 스트림이 죽지 않는다(연결 유지)")
+    void inbound_never_kills_stream(String payload) {
+        // given: JSON 리터럴 null은 Jackson이 예외 없이 null을 반환해 catch를 그냥 통과한다
+        when(registry.sendToSession(anyString(), any())).thenReturn(Mono.empty());
+        when(sendUseCase.send(any())).thenReturn(Mono.empty());
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when: 실제 수신 배선과 같은 flatMap 모양으로 태운다
+        // then: 스트림이 정상 완료된다(에러로 끝나면 firstWithSignal이 종료되어 WS가 끊긴다)
+        StepVerifier.create(Flux.just(payload)
+                        .flatMap(p -> handler.onInbound("s1", session, p))
+                        .then())
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("입장 — 시청자 수를 못 읽어도 접속은 성립하고, 수만 비워 보낸다")
+    void room_info_survives_active_count_failure() {
+        // given: 시청자 수는 표시용이고 이 값의 출처(Redis HASH)에 메시지 전달·강퇴가 의존하지 않는다.
+        // 강퇴 조회조차 실패 시 입장을 허용하는 정책(EntryGate)과 맞추려면 여기서 접속을 막으면 안 된다.
+        when(registry.getActiveCount(roomId)).thenReturn(Mono.error(new RuntimeException("redis blip")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.SELLER, "판매자", "s@example.com", true);
+
+        // when
+        OutboundMessage info = handler.roomInfoFor(roomId, session).block();
+
+        // then: 방주인 여부는 그대로 실리고(방주인 토글 UI), 수만 알 수 없음으로 비운다
+        assertThat(info).isNotNull();
+        assertThat(info.type()).isEqualTo("ROOM_INFO");
+        assertThat(info.isRoomOwner()).isTrue();
+        assertThat(info.activeCount()).isNull();
+    }
+
+    @Test
+    @DisplayName("onInbound — 종료가 확정된 세션의 전송은 받지 않는다(유예 창 도배 차단)")
+    void inbound_rejected_after_termination_decided() {
+        // given: 강퇴/방종료로 종료가 확정된 세션. 소켓이 닫히기 전까지 짧은 창이 남는다.
+        when(registry.isTerminating("s1")).thenReturn(true);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, "{\"type\":\"NORMAL\",\"content\":\"도배\"}"))
+                .verifyComplete();
+
+        // then: 전송 파이프라인에 아예 들어가지 않는다 — Redis 강퇴 조회는 장애 시 통과(fail-open)라 믿을 수 없다
+        verify(sendUseCase, never()).send(any());
+    }
+
+    @Test
+    @DisplayName("onInbound — type 누락이면 연결을 끊지 않고 ERROR(VALIDATION)만 응답한다")
+    void inbound_without_type_keeps_stream_alive() {
+        // given
+        when(registry.sendToSession(anyString(), any())).thenReturn(Mono.empty());
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when: 실제 수신 배선과 같은 flatMap 모양으로 태운다
+        // (커맨드 생성이 인자평가 위치에서 throw하면 여기서 스트림이 죽는다)
+        StepVerifier.create(Flux.just("{\"content\":\"안녕\"}")
+                        .flatMap(payload -> handler.onInbound("s1", session, payload))
+                        .then())
+                .verifyComplete();
+
+        // then: 스트림은 살아있고 ERROR/VALIDATION만 나간다
+        ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
+        verify(registry).sendToSession(eq("s1"), sent.capture());
+        assertThat(sent.getValue().type()).isEqualTo("ERROR");
+        assertThat(sent.getValue().code()).isEqualTo("VALIDATION");
+    }
+
+    @Test
+    @DisplayName("종료 — close가 끝나지 않아도 상한 뒤 완료해 정리를 막지 않는다")
+    void close_does_not_block_cleanup_forever() {
+        // given: 소켓을 읽지 않는 클라 — close 프레임이 잔량 뒤에 줄 서서 write future가 완료되지 않는다
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.close(any())).thenReturn(Mono.never());
+        when(registry.closeStatusOf("s1")).thenReturn(CloseStatus.POLICY_VIOLATION);
+
+        // when·then: 상한을 넘기면 스스로 끝나야 한다. 안 그러면 firstWithSignal이 안 끝나
+        // doFinally(cleanup)까지 막혀 세션 명부·방 구독·Redis 항목이 통째로 남는다.
+        // verify()에 상한을 준다 — 기본값은 무한 대기라, 누가 .timeout(...)을 지우면 이 테스트가
+        // 실패하는 대신 CI를 멈춰 세운다(지키려던 회귀 신호가 사라진다).
+        StepVerifier.withVirtualTime(() -> handler.closeWithReason(session, "s1"))
+                .thenAwait(Duration.ofSeconds(10))
+                .expectComplete()
+                .verify(Duration.ofSeconds(5));
     }
 }

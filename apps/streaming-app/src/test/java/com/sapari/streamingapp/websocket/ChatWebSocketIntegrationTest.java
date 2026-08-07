@@ -12,6 +12,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -23,6 +24,7 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 
@@ -229,6 +231,34 @@ class ChatWebSocketIntegrationTest {
         }
 
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
+    }
+
+    @Test
+    @DisplayName("강퇴 — 접속 중 KICK_EVENT를 받으면 SYSTEM(KICKED) 후 1008로 닫힌다")
+    void kicked_mid_session_closes_with_policy_violation() {
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String kickEnvelope = "{\"kind\":\"KICK_EVENT\",\"userId\":\"" + userId + "\"}";
+
+        List<String> frames = new CopyOnWriteArrayList<>();
+        AtomicReference<CloseStatus> observed = new AtomicReference<>();
+
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
+            session.closeStatus().doOnNext(observed::set).subscribe();
+            Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
+                    .doOnNext(frames::add).then();
+            // 접속이 자리잡은 뒤 다른 Pod가 강퇴를 발행한 것처럼 봉투를 밀어넣는다
+            Mono<Void> kick = Mono.delay(Duration.ofMillis(700))
+                    .then(redisTemplate.convertAndSend("chat:pubsub:" + roomId, kickEnvelope))
+                    .then();
+            return receive.and(kick);
+        }).block(Duration.ofSeconds(20));
+
+        assertThat(frames).anyMatch(f -> f.contains("\"code\":\"KICKED\""));
+        // 프론트가 "재접속하지 말 것"으로 읽는 신호는 close code다 — 와이어에 실제로 실려야 한다
+        assertThat(observed.get()).isNotNull();
+        assertThat(observed.get().getCode()).isEqualTo(CloseStatus.POLICY_VIOLATION.getCode());
     }
 
     /** WS 접속(토큰=서브프로토콜) → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */

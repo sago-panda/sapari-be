@@ -16,8 +16,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.IThrowableProxy;
+import ch.qos.logback.core.read.ListAppender;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -107,6 +113,48 @@ class RedisChatBroadcasterTest {
                 .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg)   // 깨진 건 skip, 정상 1건만
                 .thenCancel()
                 .verify(Duration.ofSeconds(2));
+    }
+
+    @Test
+    @DisplayName("subscribe — 역직렬화 실패 로그에 봉투 원문(PII)을 남기지 않는다")
+    void subscribe_failure_log_does_not_leak_pii() {
+        // given: 로그 캡처. senderId 자리에 이메일을 넣으면 Jackson이 실패한 값을 예외 메시지에 인용한다
+        // (InvalidFormatException: Cannot deserialize value of type UUID from String "...").
+        Logger logger = (Logger) LoggerFactory.getLogger(RedisChatBroadcaster.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        String pii = "victim@example.com";
+        String poison = "{\"kind\":\"CHAT\",\"message\":{\"senderId\":\"" + pii + "\"}}";
+
+        // when
+        try {
+            StepVerifier.create(broadcaster.subscribe(roomId))
+                    .then(() -> pattern.tryEmitNext(message(channel, poison)))
+                    .expectNoEvent(Duration.ofMillis(150))
+                    .thenCancel()
+                    .verify();
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        // then: 어디에도 원문이 남지 않는다
+        assertThat(appender.list).isNotEmpty();
+        assertThat(appender.list).allSatisfy(event -> assertThat(render(event)).doesNotContain(pii));
+        // 그러면서 진단은 가능해야 한다 — 실패 종류와 걸린 필드 경로는 남는다(로그를 통째로 지우는 "수정" 방지)
+        assertThat(render(appender.list.getFirst()))
+                .contains("InvalidFormatException")
+                .contains("senderId");
+    }
+
+    /** 로그 이벤트가 실제로 남기는 텍스트 전부 — 포맷된 메시지 + 예외 체인. */
+    private String render(ILoggingEvent event) {
+        StringBuilder text = new StringBuilder(event.getFormattedMessage());
+        for (IThrowableProxy t = event.getThrowableProxy(); t != null; t = t.getCause()) {
+            text.append(' ').append(t.getClassName()).append(' ').append(t.getMessage());
+        }
+        return text.toString();
     }
 
     @SuppressWarnings("unchecked")
