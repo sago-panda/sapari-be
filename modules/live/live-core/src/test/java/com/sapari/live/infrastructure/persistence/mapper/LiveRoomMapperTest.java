@@ -340,7 +340,7 @@ class LiveRoomMapperTest {
         LiveRoom room = LiveRoom.create(
                         entity.getSellerId(), "제목", "설명", "닉네임", "https://thumb",
                         Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"))
-                .assignRtmpIngress("ing-9", Instant.parse("2026-06-09T01:00:00Z"));
+                .toBuilder().streamType(new LiveStreamType.Rtmp("ing-9")).build();
 
         mapper.updateEntityFromDomain(entity, room);
 

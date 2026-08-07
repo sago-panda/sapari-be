@@ -170,7 +170,7 @@ class ReconcileExpiredReadyServiceTest {
 
         service.reconcile();
 
-        then(goLiveByRtmpService).should(times(1)).goLiveByRtmp(roomId);
+        then(goLiveByRtmpService).should(times(1)).goLiveByRtmpAfterPublishCheck(roomId);
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
     }
 
@@ -185,7 +185,7 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class));
+        then(goLiveByRtmpService).should(never()).goLiveByRtmpAfterPublishCheck(any(UUID.class));
     }
 
     @Test
@@ -212,7 +212,7 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class));
+        then(goLiveByRtmpService).should(never()).goLiveByRtmpAfterPublishCheck(any(UUID.class));
     }
 
     @Test

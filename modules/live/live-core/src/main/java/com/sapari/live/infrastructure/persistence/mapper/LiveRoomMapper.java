@@ -98,7 +98,7 @@ public interface LiveRoomMapper {
         entity.updateLiveStatus(toStatusEnum(room.status()));
     }
 
-    /** enum + variant별 컬럼 → sealed LiveStatus 복원. Ended.hlsArchiveUrl 은 기존대로 hlsUrl 컬럼을 쓴다. */
+    /** enum + variant별 컬럼 → sealed LiveStatus 복원. variant 마다 읽는 컬럼이 다르다(아래 주석 참고). */
     default LiveStatus toStatus(LiveRoomEntity entity) {
         return switch (entity.getLiveStatus()) {
             case SCHEDULED -> new Scheduled(entity.getScheduledAt());

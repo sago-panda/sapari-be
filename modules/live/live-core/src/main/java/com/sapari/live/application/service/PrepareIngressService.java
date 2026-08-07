@@ -56,6 +56,10 @@ public class PrepareIngressService implements PrepareIngressUseCase {
             // 진 쪽은 자기가 만든 ingress 를 즉시 회수한다(단건 삭제 — 방 단위로 지우면 이긴 쪽 것까지 날아간다).
             // 이 삭제가 실패해도 고아 미디어 정리 잡이 회수하므로 여기서 더 다루지 않는다.
             liveMediaManager.deleteIngress(command.roomId(), result.ingressId());
+            // UPDATE 0건은 "경합에서 짐"과 "그새 상태가 바뀜"을 구분하지 못한다 — 둘 다 정상 거부지만
+            // 빈도가 다르므로(전자는 판매자 더블클릭, 후자는 드묾) 로그에 남겨 구분 가능하게 둔다.
+            log.info("RTMP ingress 배정 실패(경합 패배 또는 상태 변경) — 생성한 ingress 회수. roomId={}, ingressId={}",
+                    command.roomId(), result.ingressId());
             throw new InvalidLiveStateException("이미 RTMP ingress 가 발급된 방입니다: " + command.roomId());
         }
         log.info("RTMP ingress 발급 완료. roomId={}, ingressId={}", room.id(), result.ingressId());

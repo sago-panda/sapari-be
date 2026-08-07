@@ -41,8 +41,27 @@ public class GoLiveByRtmpService {
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
 
+    /**
+     * webhook({@code ingress_started}) 경로. 이벤트가 실어 온 ingressId 를 <b>반드시</b> 대조한다 —
+     * 이 입력은 우리가 만든 게 아니다.
+     */
     @Transactional
-    public void goLiveByRtmp(UUID roomId) {
+    public void goLiveByRtmp(UUID roomId, String eventIngressId) {
+        doGoLive(roomId, eventIngressId, true);
+    }
+
+    /**
+     * Ready 고착 정리 배치의 승격 경로. 대조할 외부 id 가 없다 — 이 경로는 이벤트를 받은 게 아니라
+     * 우리가 그 방을 지목해 {@code isPublishingOrThrow(roomId)} 로 송출을 직접 확인하고 들어온다.
+     * 즉 "이 방의 ingress 가 맞는지"는 이미 방 단위 조회로 답이 나와 있어 재대조할 대상이 없다.
+     * <b>webhook 처럼 외부 입력이 있는 경로에서 이 메서드를 쓰지 말 것</b> — 대조가 통째로 빠진다.
+     */
+    @Transactional
+    public void goLiveByRtmpAfterPublishCheck(UUID roomId) {
+        doGoLive(roomId, null, false);
+    }
+
+    private void doGoLive(UUID roomId, String eventIngressId, boolean verifyIngress) {
         LiveRoom room = liveRoomRepository.findByIdForUpdate(roomId)
                 .orElseThrow(() -> new LiveNotFoundException(roomId.toString()));
 
@@ -50,6 +69,17 @@ public class GoLiveByRtmpService {
         if (!room.canGoLiveByRtmp()) {
             log.info("RTMP go-live 스킵 — 전이 대상 아님(Ready+RTMP 아님). roomId={}, status={}",
                     roomId, room.status().getClass().getSimpleName());
+            return;
+        }
+
+        // 이벤트의 ingress 가 이 방의 것인지 대조한다. 경합에서 진 ingress 의 회수가 실패해 살아남으면
+        // 그 streamKey 를 쥔 쪽이 방을 Live 로 올릴 수 있다 — roomName 만으로 전이하면 그게 통과한다.
+        // 대조 여부는 호출 경로가 정한다(플래그) — id 가 null 인지로 정하면, ingressInfo 없는 이벤트가
+        // 그대로 대조 스킵이 되어 막으려던 "roomName 만으로 전이"로 되돌아간다. hasIngress 는 null/blank 를
+        // 거짓으로 보므로 webhook 경로에서는 id 가 없으면 거부된다.
+        if (verifyIngress && !room.hasIngress(eventIngressId)) {
+            log.warn("RTMP go-live 스킵 — 이 방의 ingress 가 아님. roomId={}, eventIngressId={}",
+                    roomId, eventIngressId);
             return;
         }
 

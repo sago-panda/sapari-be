@@ -97,7 +97,7 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
     private int promote(UUID roomId) {
         try {
             // 전이 여부를 반환하지 않으므로(no-op 이어도 조용히 끝난다) 저장된 상태로 확인한다.
-            goLiveByRtmpService.goLiveByRtmp(roomId);
+            goLiveByRtmpService.goLiveByRtmpAfterPublishCheck(roomId);
         } catch (RuntimeException e) {
             log.error("Ready 고착 방 승격 실패 — 다음 회차 재시도. roomId={}", roomId, e);
             return 0;

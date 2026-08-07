@@ -63,10 +63,23 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
 
+        // 공집합 sanity 가드. listAllEgress 는 전송 실패만 예외로 올린다 — host/apiKey 오설정은 200 + [] 로
+        // 온다. 그러면 "전 방이 죽었다"로 읽혀 후보 전량이 Ended 가 되고, 15분 뒤 고아 미디어 잡이 그
+        // Ended 방들의 실제 송출 ingress 를 지운다(그 잡은 Ended 면 publishing 이어도 지우는 게 옳다).
+        // 후보가 있는데 활성 egress 가 하나도 없는 건 정상 운영에서 나올 수 있는 조합이 아니므로 회차를 접는다.
+        // 오설정이면 다음 회차에도 같은 답이 오니 미루는 비용이 없고, 진짜로 전부 죽었어도 다음 회차가 줍는다.
+        if (roomsWithActiveEgress.isEmpty()) {
+            log.error("방치 Live 정리 중단 — 후보 {}건인데 활성 egress 가 0건. LiveKit 오설정(200+빈 목록) 의심.",
+                    candidates.size());
+            return;
+        }
+
         int ended = 0;
         int skipped = 0;
+        int spared = 0;
         for (UUID roomId : candidates) {
             if (roomsWithActiveEgress.contains(roomId)) {
+                spared++;
                 continue; // 송출이 살아 있다 — 오래됐을 뿐 정상 방송
             }
             try {
@@ -78,7 +91,11 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
                 log.info("방치 Live 종료 스킵 — 이미 처리된 방. roomId={}, 사유={}", roomId, e.getClass().getSimpleName());
             }
         }
-        log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 스킵={}", candidates.size(), ended, skipped);
+        // 활성 egress 총계를 함께 남긴다 — 이 잡의 오판(멀쩡한 방송을 Ended 로)은 15분 뒤 고아 미디어 잡이
+        // 실제 송출을 끊는 체인으로 이어지므로, 사후에 "그 회차의 egress 목록이 비정상적으로 비었는가"를
+        // 되짚을 수단이 필요하다. roomId 만으로는 판정 근거가 남지 않는다.
+        log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 송출중스킵={}, 이미처리={}, 활성egress총계={}",
+                candidates.size(), ended, spared, skipped, roomsWithActiveEgress.size());
     }
 
 }

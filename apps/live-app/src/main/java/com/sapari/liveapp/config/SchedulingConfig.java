@@ -21,7 +21,7 @@ public class SchedulingConfig {
 
     /**
      * 기본 스케줄러는 스레드가 1개라 한 잡이 LiveKit 응답을 기다리는 동안 나머지가 밀린다
-     * (LiveKit 클라이언트에 {@code callTimeout} 이 없어 한 회차가 길어질 수 있다).
+     * (호출마다 {@code callTimeout} 15s 가 걸려 있어도, 회차는 후보 수만큼 그게 반복된다).
      * yml 이 아니라 코드로 박는 건 {@code application*.yml} 이 추적되지 않아 환경마다 누락되기 때문이다.
      */
     @Bean
@@ -30,8 +30,8 @@ public class SchedulingConfig {
         scheduler.setPoolSize(POOL_SIZE);
         scheduler.setThreadNamePrefix("live-reconcile-");
         // 종료 시 진행 중인 회차를 기다린다 — 미디어 정리 도중에 끊기면 고아가 그대로 남는다.
-        // 다만 보장은 아니다: 한 회차가 배치 크기 × LiveKit 왕복이고 callTimeout 이 없어 30초를 넘길 수 있으며,
-        // 파드 종료 유예(기본 30s)도 그쯤이다. 못 끝낸 정리는 다음 회차와 고아 미디어 잡이 줍는다.
+        // 다만 보장은 아니다: 한 회차가 배치 크기 × LiveKit 왕복(각 최대 callTimeout 15s)이라 30초를 쉽게
+        // 넘고, 파드 종료 유예(기본 30s)도 그쯤이다. 못 끝낸 정리는 다음 회차와 고아 미디어 잡이 줍는다.
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(30);
         return scheduler;

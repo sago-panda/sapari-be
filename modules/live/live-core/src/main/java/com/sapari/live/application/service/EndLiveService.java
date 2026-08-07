@@ -42,12 +42,14 @@ public class EndLiveService implements EndLiveUseCase {
             throw new InvalidLiveStateException(room.id().toString());
         }
 
-        PostCommitMediaCleanup.register(liveMediaManager, room);
-
         Instant endedAt = timeProvider.now();
         LiveRoom endedRoom = room.endLive(endedAt);
 
         liveRoomRepository.save(endedRoom);
+
+        // save 뒤에 등록한다 — 트랜잭션 밖 호출이면 register 가 즉시 정리해 버리므로, 앞에 두면
+        // save 가 실패했을 때 멀쩡한 방의 미디어만 파괴된다(다른 두 호출자와 순서도 맞춘다).
+        PostCommitMediaCleanup.register(liveMediaManager, room);
 
         // 종료 커밋 이후에만 RoomEnded 발행 — 롤백 시 오발행(멀쩡한 방 세션을 chat이 닫는 것)을 막는다.
         registerRoomEndedPublish(command.roomId(), endedAt);

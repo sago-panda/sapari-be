@@ -103,7 +103,8 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
 | `<job>.enabled` · `<job>.cron` | on · staggered 10-min cycles (`0/10`, `3/10`, `6/10` — don't align them) |
 | `expire-ready.threshold` · `end-stale-live.threshold` | 60m |
 | `orphan-media.grace` | 15m |
-| `batch-size` | 100, shared by the two room-sweeping jobs |
+| `expire-ready.batch-size` | 20 — this job alone round-trips LiveKit **per candidate** |
+| `batch-size` | 100, used by `end-stale-live` (one bulk `listAllEgress` per round) |
 
 | Job | Candidate | Decides by | Acts via |
 |---|---|---|---|
@@ -115,6 +116,15 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
   publishing; expiring it would delete the ingress and close the SFU room mid-stream, so the job completes
   the missed rendezvous instead. Judge **per room, right before touching it** (`isPublishingOrThrow`) — a
   once-per-round snapshot lets a room that reconnects mid-round get expired anyway.
+
+- **A bulk lookup that returns 200 + `[]` is not evidence.** `listAllEgress` only throws on transport
+  failure — a wrong host/apiKey answers empty, which reads as "every broadcast is dead" and would end the
+  whole candidate batch, after which the orphan-media job deletes their still-live ingress 15 min later.
+  So `end-stale-live` **aborts the round when no candidate-independent active egress exists at all**.
+  Known cost: on a genuinely idle cluster (every broadcast's egress already stopped) stale rows are never
+  swept — they keep accumulating until something else is live. Accepted because the failure is a stale DB
+  row (the egress is already gone, so nothing is billing), while the other direction cuts live broadcasts.
+  Don't "fix" it by dropping the guard; if the accumulation matters, verify per room instead.
 
 - **Never judge staleness by viewer count** — HLS viewers are not SFU participants (a popular room reads 0),
   and a 0-viewer broadcast is normal. `started_at`, not `updated_at`: the latter moves on any save, so a
@@ -138,8 +148,19 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
 Security: the path is `permitAll` and `LiveKitWebhookVerifier` verifies the `Authorization` JWT over the raw
 bytes, read via a **bounded stream** (not `@RequestBody byte[]`) so chunked bodies can't buffer unbounded.
 
+**Signature alone does not stop replay** — the SDK's JWT check passes when `exp` is absent, so a captured
+request stays valid forever. `createdAt` gates it: past 15m / future 60s, asymmetric on purpose (retries keep
+the *original* `createdAt`, so the past side must survive a rolling deploy; the future side buys no defence
+and only widens the attack window). Missing `createdAt` is **rejected** — verify one real staging event
+before deploying, since a server that never sets it would block every webhook and strand rooms in `Ready`.
+
 **Handlers are owned by each feature, not the webhook package** — a thin `@Component` trigger calling a
-domain use-case; logic stays in the service. **MUST be idempotent** (LiveKit re-sends/replays). The service
+domain use-case; logic stays in the service. **MUST be idempotent** (LiveKit re-sends/replays).
+
+**Adding a handler with a destructive effect (`egress_ended`, `room_finished`, …) requires event-id dedup
+in the same change.** The 15m window narrows replay, it doesn't remove it — today's only handler
+(`ingress_started`) is a no-op unless the room is `Ready+RTMP`, so a replay at worst does what OBS
+connecting does. A handler that *ends* a broadcast has no such ceiling. The service
 isolates + logs handler exceptions and still returns 200 (a throw does NOT trigger re-send) → loss-critical
 work self-guards via retry/reconciliation.
 

@@ -24,7 +24,13 @@ public interface LiveMediaManager {
     void deleteIngress(UUID roomId);
     /**
      * ingress 하나만 삭제한다(고아 정리 배치). 같은 방에 살아 있어야 할 ingress 가 함께 있을 수 있으므로
-     * 방 단위 일괄 삭제를 쓰면 안 된다. roomId 는 로그 식별용.
+     * 방 단위 일괄 삭제를 쓰면 안 된다.
+     *
+     * <p><b>roomId 는 로그 상관용일 뿐 삭제 범위가 아니다</b> — LiveKit 의 삭제 API 는 ingressId 만 받고
+     * 소속 검증을 하지 않으므로, 실제로는 전역 단건 삭제다. 시그니처가 "이 방의 ingress"처럼 읽히는 게
+     * 위험한 지점: <b>ingressId 는 우리가 방금 만든 값이거나 LiveKit 목록에서 온 값이어야 한다.</b>
+     * DB 컬럼이나 요청 파라미터에서 온 id 를 그대로 넘기면 남의 방 송출을 끊을 수 있다
+     * (그 경우 여기서 검증할 게 아니라, 호출 전에 소속을 확인해야 한다).
      */
     void deleteIngress(UUID roomId, String ingressId);
     void closeRoom(String sfuRoomId);

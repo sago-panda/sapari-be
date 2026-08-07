@@ -48,7 +48,14 @@ public record LiveKitProperties(
         requireSecureUrl(host, "livekit.host");
     }
 
-    /** 루프백이 아니면 https 를 강제한다. 대소문자는 무시한다 — {@code http://LOCALHOST} 도 로컬이다. */
+    /**
+     * 루프백이 아니면 https 를 강제한다. <b>호스트명만</b> 대소문자를 무시한다 — {@code http://LOCALHOST} 는 로컬로 본다.
+     *
+     * <p>스킴은 소문자여야 한다: {@link UrlValidator#validateHttpUrl} 의 패턴이 {@code ^https?://} 로
+     * 대소문자를 구분해 {@code HTTPS://…} 는 여기까지 오지 못하고 부팅에서 실패한다. 설정값은 우리가 쓰는
+     * 값이라 그대로 둔다(느슨하게 푸는 쪽이 fail-open) — 대신 <b>배포 전 실제 {@code livekit.host} 가
+     * 소문자 {@code https://} 인지 확인할 것.</b> {@code application*.yml} 이 미추적이라 저장소에서는 볼 수 없다.
+     */
     static void requireSecureUrl(String url, String key) {
         if (url == null || url.isBlank()) {
             return; // @NotBlank 가 보고하도록 둔다 — 여기서 던지면 바인딩 오류 메시지가 묻힌다

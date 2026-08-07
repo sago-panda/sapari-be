@@ -88,7 +88,7 @@ class GoLiveByRtmpServiceTest {
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId);
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1");
 
         verify(liveMediaManager).startHlsEgress(roomId);
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
@@ -103,7 +103,7 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(scheduled));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId);
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1");
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
@@ -116,7 +116,7 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(live));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId);
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1");
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
@@ -127,9 +127,52 @@ class GoLiveByRtmpServiceTest {
     void throws_whenRoomNotFound() {
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.empty());
 
-        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId))
+        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1"))
                 .isInstanceOf(LiveNotFoundException.class)
                 .hasMessageContaining(roomId.toString());
+    }
+
+    @Test
+    @DisplayName("이벤트의 ingressId 가 이 방의 것이 아니면 no-op — 회수 실패로 살아남은 ingress 가 방을 올리지 못하게")
+    void noop_whenIngressIdDoesNotMatch() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-LOSER");
+
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+        verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+    }
+
+    @Test
+    @DisplayName("webhook 이 ingressId 를 안 실어 오면(null/blank) 거부한다 — 여기서 통과시키면 대조가 통째로 빠진다")
+    void rejects_whenWebhookEventCarriesNoIngressId() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, null);
+        goLiveByRtmpService.goLiveByRtmp(roomId, "  ");
+
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+        verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+    }
+
+    @Test
+    @DisplayName("배치 승격 경로는 대조 없이 전이한다 — 이벤트가 아니라 방 단위 송출 확인으로 들어온다")
+    void batchPathSkipsIngressMatch() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
+        given(liveMediaManager.startHlsEgress(roomId))
+                .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8"));
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
+
+        goLiveByRtmpService.goLiveByRtmpAfterPublishCheck(roomId);
+
+        verify(liveRoomRepository).save(any(LiveRoom.class));
     }
 
     @Test
@@ -141,7 +184,7 @@ class GoLiveByRtmpServiceTest {
         // tx 없이 호출되는 회귀 상황 재현 (setup 의 initSynchronization 을 되돌림)
         TransactionSynchronizationManager.clearSynchronization();
 
-        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId))
+        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1"))
                 .isInstanceOf(BroadcastStartException.class)
                 .hasMessageContaining("트랜잭션 동기화 비활성");
 
