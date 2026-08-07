@@ -14,6 +14,7 @@ import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 import com.sapari.streamingapp.websocket.ChatWebSocketHandler;
 import com.sapari.streamingapp.websocket.EntryGate;
+import com.sapari.streamingapp.websocket.NettyConnectionRegistry;
 import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
 
 /**
@@ -27,8 +28,9 @@ public class WebSocketConfig {
 
     @Bean
     public ChatWebSocketHandler chatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate,
-            ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber) {
-        return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber);
+            ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber,
+            NettyConnectionRegistry connections) {
+        return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber, connections);
     }
 
     @Bean

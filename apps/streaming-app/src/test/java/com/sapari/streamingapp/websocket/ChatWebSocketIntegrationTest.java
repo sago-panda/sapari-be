@@ -62,6 +62,9 @@ class ChatWebSocketIntegrationTest {
     @Autowired
     ReactiveStringRedisTemplate redisTemplate;
 
+    @Autowired
+    NettyConnectionRegistry connections;
+
     @BeforeAll
     static void genKeys() throws Exception {
         KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
@@ -290,5 +293,30 @@ class ChatWebSocketIntegrationTest {
                     .and(receive);
         }).block(window.plusSeconds(15));
         return frames;
+    }
+
+    @Test
+    @DisplayName("커넥션 추적 — 접속하면 등록되고, 끊기면 스스로 빠진다(강제 회수의 전제)")
+    void connections_are_tracked_and_released() {
+        // given
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        AtomicReference<Integer> whileConnected = new AtomicReference<>();
+
+        // when: 접속이 살아있는 동안의 추적 수를 본다
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
+                session.receive().map(WebSocketMessage::getPayloadAsText).take(1)
+                        .doOnNext(f -> whileConnected.set(connections.trackedCount())).then())
+                .block(Duration.ofSeconds(15));
+
+        // then: 접속 중엔 추적되고, 끊긴 뒤에는 남지 않는다(맵 자체가 누수원이 되면 안 된다)
+        assertThat(whileConnected.get()).isPositive();
+        // 해제는 서버 이벤트루프에서 일어나므로 잠깐 기다린다
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (connections.trackedCount() > 0 && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(connections.trackedCount()).isZero();
     }
 }

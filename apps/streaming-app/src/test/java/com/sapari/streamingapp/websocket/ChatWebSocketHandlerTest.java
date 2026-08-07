@@ -22,6 +22,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketSession;
+import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSession;
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -38,6 +39,9 @@ import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
 
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
+import io.netty.channel.ChannelId;
+import io.netty.channel.DefaultChannelId;
+
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -48,6 +52,8 @@ class ChatWebSocketHandlerTest {
     private SendChatUseCase sendUseCase;
     private ChatWebSocketHandler handler;
 
+    private NettyConnectionRegistry connections;
+
     private final UUID roomId = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private final UUID userId = UUID.fromString("44444444-4444-4444-4444-444444444444");
 
@@ -56,9 +62,10 @@ class ChatWebSocketHandlerTest {
         subscriber = mock(ChatBroadcastSubscriber.class);
         registry = mock(ChatSessionRegistry.class);
         sendUseCase = mock(SendChatUseCase.class);
+        connections = mock(NettyConnectionRegistry.class);
         handler = new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), mock(EntryGate.class),
-                registry, sendUseCase, subscriber);
+                registry, sendUseCase, subscriber, connections);
     }
 
     @Test
@@ -268,5 +275,40 @@ class ChatWebSocketHandlerTest {
                     assertThat(m.senderEmail()).isNull();
                     assertThat(m.originalMessage()).isNull();
                 });
+    }
+
+    @Test
+    @DisplayName("종료 — close가 끝내 나가지 못하면 소켓을 직접 내린다(커넥션 누수 차단)")
+    void close_timeout_disposes_connection() {
+        // given: 소켓을 읽지 않는 클라. close write future가 완료되지 않는다.
+        ReactorNettyWebSocketSession session = mock(ReactorNettyWebSocketSession.class);
+        ChannelId channelId = DefaultChannelId.newInstance();
+        given(session.close(any())).willReturn(Mono.never());
+        given(session.getChannelId()).willReturn(channelId);
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.POLICY_VIOLATION);
+
+        // when
+        StepVerifier.withVirtualTime(() -> handler.closeWithReason(session, "s1"))
+                .thenAwait(Duration.ofSeconds(10))
+                .expectComplete()
+                .verify(Duration.ofSeconds(5));
+
+        // then: 앱 자원만 정리하고 채널을 남기면 파일 디스크립터가 쌓인다
+        then(connections).should(times(1)).dispose(channelId);
+    }
+
+    @Test
+    @DisplayName("종료 — close가 정상적으로 나가면 강제 회수까지 가지 않는다")
+    void close_success_does_not_dispose() {
+        // given
+        ReactorNettyWebSocketSession session = mock(ReactorNettyWebSocketSession.class);
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+
+        // when
+        StepVerifier.create(handler.closeWithReason(session, "s1")).verifyComplete();
+
+        // then
+        then(connections).should(never()).dispose(any());
     }
 }

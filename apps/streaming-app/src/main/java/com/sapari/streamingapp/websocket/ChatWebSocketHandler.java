@@ -12,6 +12,7 @@ import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
+import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSession;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -60,16 +61,16 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     /** 종료 결정 후 정상 클라가 버퍼에 남은 메시지를 받아갈 시간. 이 시간이 지나면 강제로 끊는다. */
     private static final Duration FORCED_CLOSE_GRACE = Duration.ofSeconds(3);
     /**
-     * close 프레임 flush를 기다리는 상한. 넘기면 앱 자원 정리는 진행한다.
+     * close 프레임 flush를 기다리는 상한. 넘기면 앱 자원을 정리하고 <b>소켓도 직접 내린다</b>.
      *
-     * <p><b>채널까지 회수되지는 않는다</b>: close는 write future에 채널 닫기를 걸어두는 구조라, 그 write가
-     * flush되지 않으면 채널도 남는다. 이후 다시 닫으려 해도 "이미 close 보냄" 표시 때문에 무동작이다.
-     * 즉 소켓을 계속 열어둔 채 수신만 멈춘 클라는 커넥션이 유지된다 — 지금 이걸 걷어낼 리퍼가 없다.
-     * (프로세스가 죽은 클라는 TCP가 정리해 준다.)
+     * <p>close는 write future에 채널 닫기를 걸어두는 구조라, 그 write가 flush되지 않으면 채널이 남는다.
+     * 이후 다시 닫으려 해도 "이미 close 보냄" 표시 때문에 무동작이라, 소켓을 열어둔 채 수신만 멈춘 클라는
+     * 커넥션이 계속 유지됐다. 그래서 이 상한을 넘기면 커넥션을 되찾아 끊는다({@code forceDispose}).
      */
     private static final Duration CLOSE_FLUSH_TIMEOUT = Duration.ofSeconds(5);
 
     private final RoomTokenVerifier verifier;
+    private final NettyConnectionRegistry connections;
     private final EntryGate entryGate;
     private final ChatSessionRegistry registry;
     private final SendChatUseCase sendUseCase;
@@ -83,8 +84,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     public ChatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate, ChatSessionRegistry registry,
-            SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber) {
+            SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber, NettyConnectionRegistry connections) {
         this.verifier = verifier;
+        this.connections = connections;
         this.entryGate = entryGate;
         this.registry = registry;
         this.sendUseCase = sendUseCase;
@@ -191,7 +193,19 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      */
     Mono<Void> closeWithReason(WebSocketSession session, String sid) {
         return Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
-                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.empty());
+                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
+    }
+
+    /**
+     * close 프레임이 상한 안에 나가지 못하면 소켓을 직접 내린다.
+     *
+     * <p>여기까지 왔다는 건 그 프레임이 나갈 수 없다는 뜻이다 — 더 기다려도 달라지지 않고, 그대로 두면
+     * 앱 자원은 정리됐는데 커넥션만 남는다. 반복하면 파일 디스크립터가 바닥난다.
+     */
+    private void forceDispose(WebSocketSession session) {
+        if (session instanceof ReactorNettyWebSocketSession netty) {
+            connections.dispose(netty.getChannelId());
+        }
     }
 
     /** 인바운드 1건 처리 — 어떤 입력이 와도 ERROR 응답으로 끝내고 연결은 유지한다. (단위 테스트 진입점) */
