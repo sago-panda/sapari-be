@@ -53,10 +53,10 @@ public class RedisRateLimiter implements RateLimiter {
                 .onErrorResume(err -> {
                     // Redis가 죽으면 전 사용자의 모든 전송이 이 경로를 탄다. 건당 스택트레이스를 남기면
                     // 초당 수백 줄이 쌓여 정작 원인(Redis 장애) 로그를 묻는다. 그래서 간격으로 솎아낸다.
-                    // userId는 빼는 이유: SET NX는 키별 오류 경로가 없어 여기 오는 건 사실상 전역 장애다.
-                    // 표본 하나에 찍힌 id는 "이 사용자 문제"로 오독을 부른다.
-                    // 다만 남기는 줄엔 예외를 그대로 싣는다 — 이 catch는 전 예외를 받아서, 체인 내부 결함이
-                    // 흘러들면 위치 정보 없이 레이트리밋이 영구히 꺼진 상태가 된다.
+                    // userId는 뺀다: SET NX는 키별 오류 경로가 없어 여기 오는 건 사실상 전역 장애이고,
+                    // 표본 하나에 찍힌 id는 "이 사용자 문제"로 오독을 부른다. 대신 예외를 그대로 실어
+                    // 위치를 남긴다 — 이 catch는 전 예외를 받으므로 체인 내부 결함이 흘러들 수도 있는데,
+                    // 그때는 스택트레이스가 id보다 훨씬 쓸모 있다.
                     long count = failOpenCount.incrementAndGet();
                     if (shouldLogFailOpen()) {
                         log.error("rate limit Redis 장애 — fail-open으로 허용(누적 {}건)", count, err);
@@ -70,11 +70,6 @@ public class RedisRateLimiter implements RateLimiter {
         long now = System.nanoTime();
         long last = lastFailOpenLogNanos.get();
         return now - last >= FAIL_OPEN_LOG_INTERVAL_NANOS && lastFailOpenLogNanos.compareAndSet(last, now);
-    }
-
-    /** fail-open 누적 횟수(관측용). */
-    long failOpenCount() {
-        return failOpenCount.get();
     }
 
     private Mono<Long> remainingSeconds(String key) {

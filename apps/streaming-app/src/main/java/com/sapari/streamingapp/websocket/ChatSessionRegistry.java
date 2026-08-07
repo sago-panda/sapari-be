@@ -62,8 +62,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private static final long COMPLETE_SPIN_NANOS = Duration.ofMillis(50).toNanos();
 
-    /** 드롭 로그 솎아내기 간격 — 드롭이 몰리는 상황이 곧 CPU 포화라 건당 로그가 상황을 악화시킨다. */
-    private static final long DROP_LOG_INTERVAL = 100;
+    /**
+     * 드롭 로그 솎아내기 간격 — 드롭이 몰리는 상황이 곧 CPU 포화라 건당 로그가 상황을 악화시킨다.
+     * <b>건수가 아니라 경과시간</b>으로 센다: 건수 기준은 카운터가 프로세스 생애 누적이라 두 번째 이후의
+     * 짧은 버스트가 통째로 침묵한다 — 드롭은 실제 메시지 유실이라 "조용한 유실이 되지 않게"라는
+     * 이 클래스의 목표와 정면으로 어긋난다.
+     */
+    private static final long DROP_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
 
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
 
@@ -81,6 +86,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
+
+    /** 마지막 드롭 로그 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
+    private final AtomicLong lastDropLogNanos = new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
 
     /**
      * 한 커넥션의 채널 묶음.
@@ -302,7 +310,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
             long dropped = droppedOnContention.incrementAndGet();
-            if (dropped % DROP_LOG_INTERVAL == 1) {
+            if (shouldLogDrop()) {
                 log.warn("경합 재시도 소진 — 메시지 드롭(세션 유지) sessionId={} roomId={} 누적드롭={}",
                         ls.sessionId(), ls.session().roomId(), dropped);
             }
@@ -322,6 +330,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 곱해지지 않는다 — 방 fan-out은 방 전체 중계를 담당하는 Redis 구독 스레드 위에서 돈다.
      */
     private record FanOutBudget(long emitDeadline, long completeDeadline) {
+    }
+
+    /** 마지막 드롭 로그로부터 간격이 지났으면 true. 경쟁 시 CAS로 한 스레드만 통과한다. */
+    private boolean shouldLogDrop() {
+        long now = System.nanoTime();
+        long last = lastDropLogNanos.get();
+        return now - last >= DROP_LOG_INTERVAL_NANOS && lastDropLogNanos.compareAndSet(last, now);
     }
 
     private FanOutBudget newBudget() {

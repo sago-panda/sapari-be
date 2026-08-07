@@ -1,10 +1,10 @@
 package com.sapari.chat.application.service;
 
 import java.time.Duration;
-import java.util.concurrent.atomic.AtomicLong;
 import java.time.Instant;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -68,8 +68,27 @@ public class SendChatService implements SendChatUseCase {
     private final AtomicReference<Instant> lastPublishFailureLog = new AtomicReference<>(Instant.EPOCH);
 
     /**
+     * 강퇴 조회 실패를 기록한다. <b>절대 던지지 않는다</b> — 이 자리는 fail-open 분기 안이라,
+     * 여기서 예외가 나가면 Reactor가 하류로 전파해 전송이 거부된다(가용성 우선 정책이 정반대로 뒤집힘).
+     * 관측이 깨지는 것보다 정책이 뒤집히는 게 훨씬 나쁘므로 관측 실패는 삼킨다.
+     */
+    private void recordKickedFailOpen(UUID roomId, Throwable err) {
+        try {
+            long count = kickedFailOpenCount.incrementAndGet();
+            if (shouldLog(lastKickedFailOpenLog)) {
+                log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
+                        count, roomId, err);
+            }
+        } catch (RuntimeException ignored) {
+            // 로거·시계가 깨진 상황. 전송은 그대로 진행시킨다.
+        }
+    }
+
+    /**
      * 마지막 로그로부터 간격이 지났으면 true — 첫 발생은 반드시 남고(EPOCH 시작) 이후는 간격당 1건.
-     * 시각은 {@code TimeProvider}에서 받는다 — application 레이어는 시스템 시계를 직접 읽지 않는다.
+     * 시각은 {@code TimeProvider}에서 받는다 — application 레이어는 시스템 시계를 직접 읽지 못한다
+     * (ArchUnit 규칙). 그래서 <b>벽시계</b>다: NTP가 뒤로 뛰면 그 폭만큼 이 로그가 침묵한다.
+     * 단조시계를 쓰는 {@code RedisRateLimiter} 쪽과 안전성 등급이 다르며, 영향은 관측 신호에 한정된다.
      */
     private boolean shouldLog(AtomicReference<Instant> lastLog) {
         Instant now = timeProvider.now();
@@ -110,11 +129,7 @@ public class SendChatService implements SendChatUseCase {
         // 로그도 카운터도 없어 "언제 몇 건이 우회했는가"를 사후에 복원할 수 없었다.
         return kickRepository.isKicked(command.roomId(), command.senderId())
                 .onErrorResume(err -> {
-                    long count = kickedFailOpenCount.incrementAndGet();
-                    if (shouldLog(lastKickedFailOpenLog)) {
-                        log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) roomId={}",
-                                count, command.roomId(), err);
-                    }
+                    recordKickedFailOpen(command.roomId(), err);
                     return Mono.just(false);
                 })
                 .flatMap(kicked -> kicked
@@ -169,7 +184,7 @@ public class SendChatService implements SendChatUseCase {
                             long count = publishFailureCount.incrementAndGet();
                             if (shouldLog(lastPublishFailureLog)) {
                                 log.error("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시"
-                                        + "(누적 {}건) roomId={}", count, command.roomId(), err);
+                                        + "(누적 {}건) 표본 roomId={}", count, command.roomId(), err);
                             }
                             return Mono.empty();
                         })
