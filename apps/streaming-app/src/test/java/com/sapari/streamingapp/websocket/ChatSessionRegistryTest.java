@@ -151,6 +151,19 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("퇴장 — Redis 명부 제거가 실패해도 정리는 완료된다(호출부가 subscribe라 에러가 새면 안 됨)")
+    void unregister_survives_redis_failure() {
+        registry.register("s1", session(roomId, userId)).block();
+        when(sessionRepository.remove(any(), any())).thenReturn(Mono.error(new RuntimeException("redis down")));
+
+        StepVerifier.create(registry.unregister(roomId, "s1")).verifyComplete();
+
+        // 로컬 정리는 Redis와 무관하게 끝나 있어야 한다
+        StepVerifier.create(registry.outbound("s1")).verifyComplete();
+        assertThat(registry.trackedRoomCount()).isZero();
+    }
+
+    @Test
     @DisplayName("강퇴 — 버퍼가 막혀 데이터 채널로 못 닫아도 제어 채널로 종료되고 사유는 1008")
     void kick_terminates_through_control_channel_when_buffer_is_blocked() {
         // given: 소켓을 읽지 않는 클라(request 0). 버퍼는 넘치지 않게 채워 overflow 종료와 섞이지 않게 한다.
