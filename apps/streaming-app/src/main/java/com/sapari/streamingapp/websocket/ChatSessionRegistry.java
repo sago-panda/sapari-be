@@ -49,13 +49,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /**
      * 한 연결이 낼 수 있는 <b>거부된 프레임</b> 누적 상한. 넘으면 그 연결을 끊는다.
      *
-     * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작한다. 그 앞에서 떨어지는 프레임 — 파싱 실패,
-     * 입력 검증 실패, 권한 거부 — 은 아무 제한 없이 반복할 수 있고 서버는 건건이 ERROR를 되돌려준다.
+     * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작한다. 그 앞에서 떨어지는 프레임 — 파싱 실패와
+     * 입력 검증 실패 — 은 아무 제한 없이 반복할 수 있고 서버는 건건이 ERROR를 되돌려준다.
      * 잘못된 입력에 연결을 끊지 않는 건 의도지만, 무한히 받아주는 것까지 의도는 아니다.
      *
      * <p><b>파싱 실패만 세면 안 된다</b>: {@code {}} 두 글자는 파싱에 성공한 뒤 커맨드 생성에서
      * 떨어진다. 파싱만 세는 상한은 그 한 글자 차이로 그냥 비켜간다 — 통제처럼 보이면서 통제가 아니다.
-     * 레이트리밋을 통과하지 못한 응답(RATE_LIMIT)은 세지 않는다. 그건 이미 제한이 걸린 증거다.
+     * 레이트리밋에 걸린 프레임은 여기서 세지 않는다 — 대신 {@code recordRateLimited}가 해제 시각을 적어둬
+     * 그 창 안의 반복은 Redis에 닿지도 않는다. 세어서 끊는 대신 <b>비용 자체를 0으로</b> 만드는 쪽이다.
      *
      * <p>연속이 아니라 누적으로 센다: 연속으로 세면 성공 프레임마다 리셋해야 하는데, 정상 클라는
      * 애초에 거부될 프레임을 반복해 보내지 않으므로 누적 상한이 오탐을 만들지 않는다.
@@ -119,7 +120,37 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
-            AtomicInteger rejectedFrames) {
+            AtomicInteger rejectedFrames, AtomicLong rateLimitedUntilNanos) {
+    }
+
+    /**
+     * transport 전용: 레이트리밋에 걸렸다는 사실과 해제 시각을 이 세션에 적어둔다.
+     *
+     * <p>거부 자체는 레이트리밋이 하지만, <b>거부하는 비용</b>은 제한하지 못한다 — 거부 한 번에 Redis 왕복이
+     * 세 번(강퇴 조회·SET NX·잔여 TTL 조회) 든다. 회선 속도로 밀면 그 비용이 그대로 반복된다.
+     * 해제 시각을 알고 있는 동안은 같은 답을 다시 물을 이유가 없으므로 여기에 적어두고 로컬에서 끊는다.
+     */
+    public void recordRateLimited(String sessionId, long retryAfterSeconds) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.rateLimitedUntilNanos().set(System.nanoTime() + Duration.ofSeconds(retryAfterSeconds).toNanos());
+        }
+    }
+
+    /**
+     * transport 전용: 아직 레이트리밋 창 안이면 남은 초, 아니면 0.
+     *
+     * <p><b>거부에만 쓴다.</b> 0이 나와도 통과시키지 않고 평소대로 레이트리밋을 묻는다 — 이 값은 세션 로컬이라
+     * 같은 유저의 다른 탭이나 다른 Pod가 소모한 몫을 모른다. "확실히 막혀 있다"만 여기서 답할 수 있다.
+     */
+    public long rateLimitRetryAfterSeconds(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return 0;
+        }
+        long remaining = ls.rateLimitedUntilNanos().get() - System.nanoTime();
+        // 남은 시간을 올림한다 — 0으로 내려가면 "제한 없음"과 구분되지 않는다.
+        return remaining <= 0 ? 0 : Math.max(1, Duration.ofNanos(remaining).toSeconds());
     }
 
     @Override
@@ -129,7 +160,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         local.put(sessionId, new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get()),
                 Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
-                new AtomicInteger()));
+                new AtomicInteger(), new AtomicLong()));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
         roomSessions.compute(session.roomId(), (room, sessionIds) -> {

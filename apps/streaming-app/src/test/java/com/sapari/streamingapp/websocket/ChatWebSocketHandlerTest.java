@@ -343,4 +343,61 @@ class ChatWebSocketHandlerTest {
         // then
         then(registry).should(times(1)).recordRejectedFrame("s1");
     }
+
+    @Test
+    @DisplayName("서버 실패(INTERNAL)는 거부 상한에 세지 않는다 — 세면 인프라 장애가 사용자 강제 퇴장으로 번진다")
+    void internal_error_does_not_count_toward_limit() {
+        // given: 저장이 터지는 상황(Mongo·Redis 장애)
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(sendUseCase.send(any())).willReturn(Mono.error(new RuntimeException("mongo down")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: 클라 잘못이 아니므로 카운트되지 않고, 사유는 그대로 돌려준다
+        then(registry).should(never()).recordRejectedFrame(anyString());
+        ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
+        then(registry).should(times(1)).sendToSession(eq("s1"), sent.capture());
+        assertThat(sent.getValue().code()).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    @DisplayName("레이트리밋은 거부 상한에 세지 않는다 — 빠르게 치는 정상 사용자를 끊으면 안 된다")
+    void rate_limit_does_not_count_toward_limit() {
+        // given
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(sendUseCase.send(any())).willReturn(Mono.error(new ChatRateLimitException("x", 3)));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: 세지 않고, 대신 다음 프레임이 Redis에 닿지 않도록 창을 기억한다
+        then(registry).should(never()).recordRejectedFrame(anyString());
+        then(registry).should(times(1)).recordRateLimited("s1", 3L);
+    }
+
+    @Test
+    @DisplayName("레이트리밋 창 안이면 커맨드까지 가지 않는다 — 거부 비용이 Redis 왕복 3회다")
+    void inbound_short_circuits_within_rate_limit_window() {
+        // given: 이미 제한이 걸려 있고 2초 남았다
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(2L);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: 서비스를 아예 부르지 않고, 남은 시간을 그대로 돌려준다
+        then(sendUseCase).should(never()).send(any());
+        ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
+        then(registry).should(times(1)).sendToSession(eq("s1"), sent.capture());
+        assertThat(sent.getValue().type()).isEqualTo("RATE_LIMIT");
+        assertThat(sent.getValue().retryAfterSeconds()).isEqualTo(2L);
+    }
 }

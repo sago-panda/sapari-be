@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -56,6 +57,9 @@ import reactor.core.publisher.Mono;
 public class ChatWebSocketHandler implements WebSocketHandler {
 
     private static final String SYSTEM_NICKNAME = "SYSTEM";
+
+    /** 거부 상한에 세는 유일한 사유. 왜 이것만인지는 respondRejected 참고. */
+    private static final String COUNTED_REJECTION_CODE = "VALIDATION";
     /** 룸 토큰을 실어 나르는 서브프로토콜 이름. 클라는 ["bearer", <token>] 두 개를 제시한다. */
     private static final String TOKEN_SUBPROTOCOL = "bearer";
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
@@ -231,14 +235,27 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         if (in == null) {
             return rejectMalformed(sid);
         }
+        // 상관관계 id는 되돌려주되 길이는 잘라서 싣는다 — 검증 전 값이라 프레임 한도까지 클 수 있고,
+        // 그대로 실으면 거부 응답이 그 크기를 그대로 되돌려준다(1:1 증폭). 짝짓기엔 계약 길이면 충분하다.
         // 에러 응답이 in을 다시 건드리지 않게 미리 뽑아둔다 — 폴백이 예외를 던지면 그 예외가 곧장
         // downstream onError가 되어 인바운드 스트림이 죽는다(에러 핸들러는 절대 실패하면 안 되는 자리).
-        String clientMsgId = in.clientMsgId();
+        String clientMsgId = truncateForEcho(in.clientMsgId());
         // defer로 감싸 커맨드 생성(신뢰경계 검증)의 throw까지 onError 신호로 만든다 — 감싸지 않으면
         // 인자 평가 위치에서 터져 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결이 끊긴다.
+        // 레이트리밋 창 안이면 Redis에 다시 묻지 않는다 — 답을 이미 안다. 묻는 비용이 왕복 3회(강퇴 조회·
+        // SET NX·잔여 TTL)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
+        long retryAfter = registry.rateLimitRetryAfterSeconds(sid);
+        if (retryAfter > 0) {
+            return registry.sendToSession(sid, rateLimited(retryAfter, clientMsgId));
+        }
         return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
                 .flatMap(view -> registry.sendToSession(sid, toAck(view, clientMsgId)))
-                .onErrorResume(e -> respondRejected(sid, toError(e, clientMsgId)));
+                .onErrorResume(e -> {
+                    if (e instanceof ChatRateLimitException rle) {
+                        registry.recordRateLimited(sid, rle.getRetryAfterSeconds());
+                    }
+                    return respondRejected(sid, toError(e, clientMsgId));
+                });
     }
 
     /**
@@ -249,15 +266,25 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     /**
-     * 거부 응답을 보내되, 무한정 답해주지는 않는다.
+     * 거부 응답을 보내되, <b>클라이언트가 자초한 거부</b>만 누적 상한에 센다.
      *
-     * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작하므로, 그 앞에서 떨어지는 프레임(파싱 실패·검증 실패·
-     * 권한 거부)은 답해주는 만큼 그대로 되돌아온다. 누적 상한을 넘으면 registry가 세션을 끊고 응답도 멈춘다.
+     * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작하므로, 그 앞에서 떨어지는 프레임은 답해주는 만큼
+     * 그대로 되돌아온다. 그래서 상한이 필요하다. 다만 <b>무엇을 셀지</b>가 중요하다:
      *
-     * <p>RATE_LIMIT은 세지 않는다 — 그건 제한이 이미 걸렸다는 증거라, 여기서 또 세면 같은 사실로 두 번 벌한다.
+     * <ul>
+     *   <li>{@code VALIDATION} — <b>이것만 센다</b>. 클라가 계약을 어긴 것이고, 고치지 않는 한 반복된다.
+     *   <li>{@code INTERNAL} — <b>서버가 실패했다</b>. 이걸 세면 Mongo·Redis가 흔들릴 때 멀쩡한 사용자가
+     *       전송할수록 상한에 가까워져 결국 끊긴다. 장애가 강제 퇴장으로 증폭되는 셈이라 절대 세면 안 된다.
+     *   <li>{@code RATE_LIMIT} — 이미 제한이 걸렸다는 증거다. 또 세면 같은 사실로 두 번 벌한다.
+     *   <li>{@code KICKED}·{@code NOT_ACTIVE} — 상태다. 재시도해도 결과가 같고, 어차피 곧 세션이 닫힌다.
+     *   <li>{@code PERMISSION} — 세지 않는다. 서버가 입장 응답에 역할을 실어주지 않아서, 게스트 클라는
+     *       "보낼 수 없다"를 건별 응답 말고는 배울 방법이 없다. 그걸 세면 <b>읽기까지 잃는다</b>.
+     *       세도 얻는 게 없다 — 게스트 토큰은 발급 수에 제한이 없어 결정적 공격자를 막지 못하고,
+     *       버그 있는 클라만 끊긴다. 되돌림 비용은 1:1이고 안 읽는 클라는 아웃바운드 버퍼가 받는다.
+     * </ul>
      */
     private Mono<Void> respondRejected(String sid, OutboundMessage response) {
-        if ("RATE_LIMIT".equals(response.type())) {
+        if (!COUNTED_REJECTION_CODE.equals(response.code())) {
             return registry.sendToSession(sid, response);
         }
         return registry.recordRejectedFrame(sid)
@@ -273,11 +300,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 // isRoomAlive — 평상시엔 세션이 살아있다는 것 자체가 근거다. 입장에서 종료 마커를 검사하고,
                 // 접속 중에 방이 끝나면 종료 처리가 세션을 닫아 위 isTerminating에서 걸린다.
                 //
-                // 다만 그 둘이 다 열리는 구간이 남는다: 입장 게이트는 Redis 장애에 fail-open이고, 종료 처리는
-                // 무영속 Pub/Sub이라 그 순간 구독이 끊긴 Pod는 신호를 통째로 놓친다(마커도 같은 핸들러가 쓴다).
-                // 그때는 종료된 방에 전송이 통과해 이력에 남는다. 창은 룸 토큰 수명으로 유계다 — 방이 끝나면
-                // 새 토큰이 발급되지 않아서다. 매 메시지 Redis 왕복을 더해도 이 구간은 못 막는다(마커가 없으니
-                // 읽어도 없다). 유실 자체를 닫는 건 종료 이벤트를 영속 전달로 바꾸는 쪽(live 소유)이다.
+                // 남는 구간이 있고, 그 크기를 정확히 적어둔다. 종료 신호는 무영속 Pub/Sub이라 그 순간 구독이
+                // 끊긴 Pod는 통째로 놓친다. 그 Pod의 세션은 닫히지 않고 이 값이 상수 true라, 종료된 방에
+                // <b>소켓이 살아있는 내내</b> 전송이 통과해 이력에 남는다 — 신규 입장과 달리 토큰 수명으로
+                // 유계가 아니다.
+                //
+                // 매 전송마다 마커를 읽으면 이 구간은 실제로 막힌다. 마커는 이벤트를 받은 아무 Pod나 쓰므로,
+                // 한 Pod만 신호를 놓친 부분 장애에서는 마커가 실재하기 때문이다. 그래도 안 읽는 건 못 막아서가
+                // 아니라 <b>메시지마다 Redis 왕복 1회가 비싸서</b>다. 주기적 재검사로 창을 유계화하는 건
+                // 별도 과제로 남긴다. 유실 자체를 닫는 건 종료 이벤트를 영속 전달로 바꾸는 쪽(live 소유)이다.
                 true,
                 s.nickname(), s.email(),
                 in.type(), in.content(), in.clientMsgId());
@@ -288,10 +319,21 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 view.createdAt(), null, null, null, clientMsgId, null);
     }
 
+    /** 거부 응답에 되돌려 실을 만큼만 남긴다. 계약 상한(64자)을 넘는 값은 어차피 거부된다. */
+    private String truncateForEcho(String clientMsgId) {
+        int max = 64;
+        return clientMsgId == null || clientMsgId.length() <= max ? clientMsgId : clientMsgId.substring(0, max);
+    }
+
+    /** 레이트리밋 응답 — 서비스가 준 것이든 로컬 창에서 만든 것이든 같은 모양이어야 한다. */
+    private OutboundMessage rateLimited(long retryAfterSeconds, String clientMsgId) {
+        return new OutboundMessage("RATE_LIMIT", null, null, null, null, null, null, null, null,
+                null, null, null, retryAfterSeconds, clientMsgId, null);
+    }
+
     OutboundMessage toError(Throwable e, String clientMsgId) {
         if (e instanceof ChatRateLimitException rle) {
-            return new OutboundMessage("RATE_LIMIT", null, null, null, null, null, null, null, null,
-                    null, null, null, rle.getRetryAfterSeconds(), clientMsgId, null);
+            return rateLimited(rle.getRetryAfterSeconds(), clientMsgId);
         }
         return error(errorCode(e), clientMsgId);
     }

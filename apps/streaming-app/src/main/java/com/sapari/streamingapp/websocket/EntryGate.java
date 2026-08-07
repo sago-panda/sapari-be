@@ -7,6 +7,9 @@ import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
@@ -27,6 +30,15 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class EntryGate {
 
+    /**
+     * 게이트가 열린 사실을 남기는 간격. 이 코드베이스의 다른 fail-open 로그와 같은 규율이다 —
+     * Redis가 죽는 순간이 곧 재접속 폭주 구간이라, 입장마다 찍으면 원인 로그를 제 로그로 묻는다.
+     * 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다.
+     */
+    private static final long GATE_OPEN_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
+
+    private final AtomicLong lastGateOpenLogNanos = new AtomicLong(System.nanoTime() - GATE_OPEN_LOG_INTERVAL_NANOS);
+
     private final ChatKickRepository kickRepository;
     private final ChatRoomEndedRepository roomEndedRepository;
 
@@ -46,9 +58,8 @@ public class EntryGate {
         return roomEndedRepository.isEnded(session.roomId())
                 .onErrorResume(e -> {
                     // 통과시키되 흔적은 남긴다 — 이 구간은 입장 모더레이션이 열린 구간이라,
-                    // 사후에 "언제 누가 게이트를 그냥 지나갔는가"를 짚을 수 있어야 한다.
-                    log.warn("방 종료 조회 실패 — 입장 허용(게이트 열림) roomId={} cause={}",
-                            session.roomId(), e.getClass().getSimpleName());
+                    // 사후에 "언제부터 게이트가 열려 있었는가"를 짚을 수 있어야 한다.
+                    logGateOpen("방 종료", session, e);
                     return Mono.just(false);
                 })
                 .flatMap(ended -> ended
@@ -62,12 +73,21 @@ public class EntryGate {
         }
         return kickRepository.isKicked(session.roomId(), session.userId())
                 .onErrorResume(e -> {
-                    log.warn("강퇴 조회 실패 — 입장 허용(게이트 열림) roomId={} cause={}",
-                            session.roomId(), e.getClass().getSimpleName());
+                    logGateOpen("강퇴", session, e);
                     return Mono.just(false);
                 })
                 .flatMap(kicked -> kicked
                         ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.KICKED))
                         : Mono.empty());
+    }
+
+    /** 게이트가 열린 사실을 간격을 두고 남긴다. 첫 발생은 반드시 남는다. */
+    private void logGateOpen(String what, ChatSession session, Throwable cause) {
+        long now = System.nanoTime();
+        long last = lastGateOpenLogNanos.get();
+        if (now - last >= GATE_OPEN_LOG_INTERVAL_NANOS && lastGateOpenLogNanos.compareAndSet(last, now)) {
+            log.warn("{} 조회 실패 — 입장 허용(게이트 열림) roomId={} userId={} cause={}",
+                    what, session.roomId(), session.userId(), cause.getClass().getSimpleName());
+        }
     }
 }

@@ -398,7 +398,7 @@ class ChatSessionRegistryTest {
 
     @Test
     @DisplayName("거부된 프레임 — 상한 전까지는 세션을 살려두고, 넘으면 1008로 끊는다")
-    void malformed_frames_close_session_only_after_limit() {
+    void rejected_frames_close_session_only_after_limit() {
         // given
         registry.register("s1", session(roomId, userId)).block();
 
@@ -418,8 +418,33 @@ class ChatSessionRegistryTest {
 
     @Test
     @DisplayName("거부된 프레임 — 이미 사라진 세션이면 응답하지 않는다")
-    void malformed_frame_on_unknown_session_is_not_answered() {
+    void rejected_frame_on_unknown_session_is_not_answered() {
         // when & then
         assertThat(registry.recordRejectedFrame("없는세션")).isTrue();
+    }
+
+    @Test
+    @DisplayName("레이트리밋 창 — 걸린 뒤에는 남은 시간이 나오고, 지나면 다시 0이 된다")
+    void rate_limit_window_reports_remaining_then_clears() {
+        // given
+        registry.register("s1", session(roomId, userId)).block();
+        assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
+
+        // when: 3초 제한이 걸렸다고 기록
+        registry.recordRateLimited("s1", 3);
+
+        // then: 남은 시간이 나온다(0이면 "제한 없음"과 구분되지 않는다)
+        assertThat(registry.rateLimitRetryAfterSeconds("s1")).isBetween(1L, 3L);
+
+        // 창이 지나면 다시 물어봐야 한다
+        registry.recordRateLimited("s1", 0);
+        assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
+    }
+
+    @Test
+    @DisplayName("레이트리밋 창 — 모르는 세션은 제한 없음으로 답한다(막는 데만 쓰는 값)")
+    void rate_limit_window_unknown_session_is_not_limited() {
+        // when & then
+        assertThat(registry.rateLimitRetryAfterSeconds("없는세션")).isZero();
     }
 }

@@ -87,4 +87,38 @@ class LiveRoomEndedHandlerTest {
         then(sessionManager).should(times(1)).closeAll(roomId);
         then(sessionRepository).should(times(1)).clearRoom(roomId);
     }
+
+    @Test
+    @DisplayName("앞 단계가 실패해도 세션 종료까지 간다 — 알림 하나 때문에 세션이 남으면 안 된다")
+    void onRoomEnded_ContinuesWhenEarlierStepFails() {
+        // given: 마커와 알림이 둘 다 실패하는 상황
+        given(roomEndedRepository.markEnded(roomId)).willReturn(Mono.error(new RuntimeException("redis down")));
+        given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED))
+                .willReturn(Mono.error(new RuntimeException("render failed")));
+        given(sessionManager.closeAll(roomId)).willReturn(Mono.empty());
+        given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
+
+        // when
+        StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
+
+        // then: 이 체인의 본 일(세션 종료)과 정리는 그대로 수행된다
+        then(sessionManager).should(times(1)).closeAll(roomId);
+        then(sessionRepository).should(times(1)).clearRoom(roomId);
+    }
+
+    @Test
+    @DisplayName("세션 종료가 실패해도 키 정리는 시도한다 — 각 단계는 자기 몫만 잃는다")
+    void onRoomEnded_ClearsRoomEvenWhenCloseFails() {
+        // given
+        given(roomEndedRepository.markEnded(roomId)).willReturn(Mono.empty());
+        given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
+        given(sessionManager.closeAll(roomId)).willReturn(Mono.error(new RuntimeException("close failed")));
+        given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
+
+        // when
+        StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
+
+        // then
+        then(sessionRepository).should(times(1)).clearRoom(roomId);
+    }
 }
