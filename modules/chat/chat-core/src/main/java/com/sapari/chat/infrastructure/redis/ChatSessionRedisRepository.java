@@ -1,9 +1,11 @@
 package com.sapari.chat.infrastructure.redis;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Repository;
 
 import com.sapari.chat.domain.repository.ChatSessionRepository;
@@ -35,19 +37,22 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
      */
     private static final Duration SESSIONS_TTL = Duration.ofHours(24);
 
+    /**
+     * 등재와 TTL 설정을 한 번에 — 둘로 나누면 그 사이에 Pod가 죽거나 EXPIRE만 실패했을 때
+     * <b>TTL 없는 키</b>가 남는다. 그 키를 받아줄 백스톱이 바로 TTL이라, 빠지면 폴백 자체가 사라진다.
+     */
+    private static final RedisScript<Long> ADD_SESSION = RedisScript.of("""
+            redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+            redis.call('EXPIRE', KEYS[1], ARGV[3])
+            return 1
+            """, Long.class);
+
     @Override
     public Mono<Void> add(UUID roomId, String sessionId, UUID userId) {
-        String key = ChatRedisKeys.sessions(roomId);
-        return redisTemplate.opsForHash()
-                .put(key, sessionId, userId.toString())
-                // TTL은 정상 회수가 다 실패했을 때만 쓰이는 백스톱이라, 이것 때문에 입장을 막지 않는다.
-                // 여기서 error를 전파하면 Redis가 잠깐 흔들릴 때 사용자가 접속 자체를 못 한다.
-                .then(redisTemplate.expire(key, SESSIONS_TTL)
-                        .onErrorResume(e -> {
-                            log.warn("세션 키 TTL 설정 실패 — 입장은 진행 roomId={} cause={}",
-                                    roomId, e.getClass().getSimpleName());
-                            return Mono.empty();
-                        }))
+        // 실패는 전파한다 — 호출자(register)가 "명부 등재 실패로 접속을 막지 않는다"를 이미 책임진다.
+        return redisTemplate.execute(ADD_SESSION,
+                        List.of(ChatRedisKeys.sessions(roomId)),
+                        List.of(sessionId, userId.toString(), String.valueOf(SESSIONS_TTL.toSeconds())))
                 .then();
     }
 
