@@ -173,6 +173,14 @@ the *original* `createdAt`, so the past side must survive a rolling deploy; the 
 and only widens the attack window). Missing `createdAt` is **rejected** — verify one real staging event
 before deploying, since a server that never sets it would block every webhook and strand rooms in `Ready`.
 
+The path is rate limited (`WebhookRateLimitFilter`, `live.webhook.rate-limit.*`, kill switch included), but
+**that limit is a CPU ceiling, not availability protection** — nothing can tell a forged request from a real
+one before verifying the signature, so any pre-verification gate throttles both. It is therefore set two
+orders of magnitude above real traffic; lowering it toward real traffic hands an unauthenticated attacker a
+cheap way to starve `ingress_started`. rps limiting belongs upstream. The counter is per-instance, so the
+single-replica assumption above applies here too — extra replicas multiply the ceiling without dividing an
+attacker's cost.
+
 **Handlers are owned by each feature, not the webhook package** — a thin `@Component` trigger calling a
 domain use-case; logic stays in the service. **MUST be idempotent** (LiveKit re-sends/replays).
 
