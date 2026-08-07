@@ -110,7 +110,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
             ids.add(sessionId);
             return ids;
         });
-        return sessionRepository.add(session.roomId(), sessionId, session.userId());
+        // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·
+        // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
+        return sessionRepository.add(session.roomId(), sessionId, session.userId())
+                .onErrorResume(e -> {
+                    log.warn("세션 명부 등재 실패 — 접속은 진행(시청자 수만 부정확) roomId={} cause={}",
+                            session.roomId(), e.getClass().getSimpleName());
+                    return Mono.empty();
+                });
     }
 
     /** transport 전용: 핸들러가 session.send()에 연결할 아웃바운드 스트림. (포트 아님 — chat-core는 안 씀) */

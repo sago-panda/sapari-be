@@ -166,8 +166,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .timeout(CLOSE_FLUSH_TIMEOUT, Mono.empty());
 
         return registry.register(sid, chatSession)
-                .then(registry.getActiveCount(roomId))
-                .flatMap(count -> registry.sendToSession(sid, roomInfo(count, chatSession.isRoomOwner())))
+                .then(roomInfoFor(roomId, chatSession))
+                .flatMap(info -> registry.sendToSession(sid, info))
                 // firstWithSignal: 셋 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
                 // (sink complete → outbound), 그리고 그 둘이 다 막혔을 때의 강제 종료.
                 // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
@@ -247,7 +247,23 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return "INTERNAL";
     }
 
-    OutboundMessage roomInfo(long activeCount, boolean isRoomOwner) {
+    /**
+     * 입장 시 보낼 ROOM_INFO. 시청자 수 조회가 실패해도 <b>접속은 성립시킨다</b> — 그 수는 표시용이고,
+     * 출처인 Redis HASH에 메시지 전달·강퇴·종료 어느 것도 의존하지 않는다. 강퇴 조회조차 실패 시
+     * 입장을 허용하는 정책(EntryGate)과 같은 방향이다. (테스트 진입점)
+     */
+    Mono<OutboundMessage> roomInfoFor(UUID roomId, ChatSession chatSession) {
+        return registry.getActiveCount(roomId)
+                .map(count -> roomInfo(count, chatSession.isRoomOwner()))
+                .onErrorResume(e -> {
+                    log.warn("활성 시청자 수 조회 실패 — 수 없이 입장 진행 roomId={} cause={}",
+                            roomId, e.getClass().getSimpleName());
+                    return Mono.just(roomInfo(null, chatSession.isRoomOwner()));
+                });
+    }
+
+    /** activeCount가 null이면 "알 수 없음" — 조회 실패 시 0 같은 거짓값 대신 비워 보낸다. */
+    OutboundMessage roomInfo(Long activeCount, boolean isRoomOwner) {
         return new OutboundMessage("ROOM_INFO", null, null, null, null, null, null, null, null,
                 null, null, activeCount, null, null, isRoomOwner);
     }

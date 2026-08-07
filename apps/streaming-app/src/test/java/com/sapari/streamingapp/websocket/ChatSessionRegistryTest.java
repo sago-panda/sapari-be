@@ -136,6 +136,21 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("등록 — Redis 명부 등재가 실패해도 접속은 성립한다(전달은 로컬 자료구조로 돈다)")
+    void register_survives_redis_failure() {
+        when(sessionRepository.add(any(), any(), any())).thenReturn(Mono.error(new RuntimeException("redis down")));
+
+        StepVerifier.create(registry.register("s1", session(roomId, userId))).verifyComplete();
+
+        // 명부 등재와 무관하게 방 fan-out은 로컬 인덱스로 도달한다
+        StepVerifier.create(registry.outbound("s1"))
+                .then(() -> registry.sendToRoomLocal(roomId, out("SYSTEM")).block())
+                .expectNextCount(1)
+                .thenCancel()
+                .verify();
+    }
+
+    @Test
     @DisplayName("강퇴 — 버퍼가 막혀 데이터 채널로 못 닫아도 제어 채널로 종료되고 사유는 1008")
     void kick_terminates_through_control_channel_when_buffer_is_blocked() {
         // given: 소켓을 읽지 않는 클라(request 0). 버퍼는 넘치지 않게 채워 overflow 종료와 섞이지 않게 한다.

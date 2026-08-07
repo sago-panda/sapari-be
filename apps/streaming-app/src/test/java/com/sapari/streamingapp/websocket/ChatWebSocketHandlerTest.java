@@ -160,6 +160,24 @@ class ChatWebSocketHandlerTest {
     }
 
     @Test
+    @DisplayName("입장 — 시청자 수를 못 읽어도 접속은 성립하고, 수만 비워 보낸다")
+    void room_info_survives_active_count_failure() {
+        // given: 시청자 수는 표시용이고 이 값의 출처(Redis HASH)에 메시지 전달·강퇴가 의존하지 않는다.
+        // 강퇴 조회조차 실패 시 입장을 허용하는 정책(EntryGate)과 맞추려면 여기서 접속을 막으면 안 된다.
+        when(registry.getActiveCount(roomId)).thenReturn(Mono.error(new RuntimeException("redis blip")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.SELLER, "판매자", "s@example.com", true);
+
+        // when
+        OutboundMessage info = handler.roomInfoFor(roomId, session).block();
+
+        // then: 방주인 여부는 그대로 실리고(방주인 토글 UI), 수만 알 수 없음으로 비운다
+        assertThat(info).isNotNull();
+        assertThat(info.type()).isEqualTo("ROOM_INFO");
+        assertThat(info.isRoomOwner()).isTrue();
+        assertThat(info.activeCount()).isNull();
+    }
+
+    @Test
     @DisplayName("onInbound — 종료가 확정된 세션의 전송은 받지 않는다(유예 창 도배 차단)")
     void inbound_rejected_after_termination_decided() {
         // given: 강퇴/방종료로 종료가 확정된 세션. 소켓이 닫히기 전까지 짧은 창이 남는다.

@@ -9,12 +9,14 @@ import org.springframework.stereotype.Repository;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
  * room:{roomId}:sessions HASH 어댑터 — 크로스 Pod 세션 집계.
  * count는 HLEN(탭 수)이 아니라 HVALS distinct(고유 유저 수)다 — 같은 유저 멀티탭은 1로 센다(§6.1 activeCount).
  */
+@Slf4j
 @Repository
 @RequiredArgsConstructor
 public class ChatSessionRedisRepository implements ChatSessionRepository {
@@ -33,7 +35,14 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
         String key = ChatRedisKeys.sessions(roomId);
         return redisTemplate.opsForHash()
                 .put(key, sessionId, userId.toString())
-                .then(redisTemplate.expire(key, SESSIONS_TTL))   // 입장마다 갱신 — 방송이 길어도 안전
+                // TTL은 정상 회수가 다 실패했을 때만 쓰이는 백스톱이라, 이것 때문에 입장을 막지 않는다.
+                // 여기서 error를 전파하면 Redis가 잠깐 흔들릴 때 사용자가 접속 자체를 못 한다.
+                .then(redisTemplate.expire(key, SESSIONS_TTL)
+                        .onErrorResume(e -> {
+                            log.warn("세션 키 TTL 설정 실패 — 입장은 진행 roomId={} cause={}",
+                                    roomId, e.getClass().getSimpleName());
+                            return Mono.empty();
+                        }))
                 .then();
     }
 
