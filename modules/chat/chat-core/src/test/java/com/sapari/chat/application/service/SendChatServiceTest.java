@@ -131,11 +131,11 @@ class SendChatServiceTest {
     }
 
     @Test
-    @DisplayName("방송을 진행하는 SELLER는 rate limit 면제 — 상품설명 연속전송")
-    void broadcasting_seller_is_exempt_from_rate_limit() {
+    @DisplayName("ADMIN은 방 소유와 무관하게 rate limit 면제 — 운영자는 role 기준")
+    void admin_is_exempt_regardless_of_room() {
         stubAllowedAndSaved();
 
-        StepVerifier.create(service.send(command("SELLER", true, true, "NORMAL", "이 상품은", "c1")))
+        StepVerifier.create(service.send(command("ADMIN", false, true, "NORMAL", "운영 안내", "c1")))
                 .expectNextCount(1)
                 .verifyComplete();
         verify(rateLimiter, never()).tryAcquire(any());
@@ -205,8 +205,8 @@ class SendChatServiceTest {
     }
 
     @Test
-    @DisplayName("SELLER는 rate limit 면제 — tryAcquire 미호출, 전송 진행")
-    void seller_bypasses_rate_limit() {
+    @DisplayName("방송을 진행하는 SELLER는 rate limit 면제 — tryAcquire 미호출, 전송 진행")
+    void broadcasting_seller_bypasses_rate_limit() {
         when(kickRepository.isKicked(any(), any())).thenReturn(Mono.just(false));
         when(chatMessageRepository.save(any())).thenAnswer(inv ->
                 Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()));

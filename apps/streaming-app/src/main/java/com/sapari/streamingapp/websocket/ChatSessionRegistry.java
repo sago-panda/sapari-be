@@ -56,8 +56,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private static final long CONTENTION_SPIN_NANOS = Duration.ofMillis(5).toNanos();
 
     /**
-     * 종료 신호 재시도 상한. emit보다 넉넉히 준다 — 핫패스가 아니라 방당·강퇴당 한 번뿐이고,
-     * 실패하면 메시지 1건이 아니라 <b>세션이 안 닫히는</b> 결과라 정확성 쪽에 무게를 둔다.
+     * 종료 신호 재시도 상한. emit보다 넉넉히 주는 이유는 종료 보장이 아니라 <b>전달 확률</b>이다 —
+     * 이 신호가 걸려야 버퍼 잔여분이 흘러나가고, 강퇴 직전에 보낸 SYSTEM(KICKED)이 클라에 닿는다.
+     * 놓쳐도 제어 채널이 종료 자체는 책임진다({@code terminate} 참고).
      */
     private static final long COMPLETE_SPIN_NANOS = Duration.ofMillis(50).toNanos();
 
@@ -142,8 +143,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     @Override
     public Mono<Void> sendToRoomLocal(UUID roomId, OutboundMessage message) {
         return Mono.fromRunnable(() -> {
-            long deadline = spinDeadline(CONTENTION_SPIN_NANOS);
-            forEachInRoom(roomId, ls -> emit(ls, message, deadline));
+            FanOutBudget budget = newBudget();
+            forEachInRoom(roomId, ls -> emit(ls, message, budget));
         });
     }
 
@@ -151,11 +152,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver) {
         // 세션별 차등 fan-out — resolver가 세션마다 메시지 생성(방주인 PII 게이팅·kick 분기). null이면 그 세션 skip.
         return Mono.fromRunnable(() -> {
-            long deadline = spinDeadline(CONTENTION_SPIN_NANOS);
+            FanOutBudget budget = newBudget();
             forEachInRoom(roomId, ls -> {
                 OutboundMessage message = resolver.apply(ls.session());
                 if (message != null) {
-                    emit(ls, message, deadline);
+                    emit(ls, message, budget);
                 }
             });
         });
@@ -165,10 +166,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> closeUser(UUID roomId, UUID userId) {
         // 강퇴는 정책상 종료라 1008 — 프론트가 "재접속하지 말 것"으로 읽는 코드다.
         return Mono.fromRunnable(() -> {
-            long deadline = spinDeadline(COMPLETE_SPIN_NANOS);
+            FanOutBudget budget = newBudget();
             forEachInRoom(roomId, ls -> {
                 if (ls.session().userId().equals(userId)) {
-                    terminate(ls, CloseStatus.POLICY_VIOLATION, deadline);
+                    terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
                 }
             });
         });
@@ -178,8 +179,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> closeAll(UUID roomId) {
         // 방 종료는 정상 종료(1000). 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다.
         return Mono.fromRunnable(() -> {
-            long deadline = spinDeadline(COMPLETE_SPIN_NANOS);
-            forEachInRoom(roomId, ls -> terminate(ls, CloseStatus.NORMAL, deadline));
+            FanOutBudget budget = newBudget();
+            forEachInRoom(roomId, ls -> terminate(ls, CloseStatus.NORMAL, budget.completeDeadline()));
         });
     }
 
@@ -265,16 +266,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>아웃바운드 종료 신호는 버퍼에 쌓인 메시지 뒤에 줄을 서므로 소켓을 읽지 않는 클라에겐 닿지 않는다.
      * 그 경우를 위해 {@code terminate}가 별도 제어 채널을 함께 발화한다(핸들러가 그걸로 연결을 끊는다).
      */
-    private void emit(LocalSession ls, OutboundMessage message, long deadline) {
+    private void emit(LocalSession ls, OutboundMessage message, FanOutBudget budget) {
         if (ls == null) {
             return;
         }
-        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), deadline);
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), budget.emitDeadline());
         if (consumerCannotKeepUp(result)) {
             // 코드는 1000 유지 — overflow 종료는 아직 프론트 계약에 없는 신규 케이스라 코드를 선점하지 않는다.
             log.warn("아웃바운드 버퍼 초과 — 세션 종료 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
-            terminate(ls, CloseStatus.NORMAL, spinDeadline(COMPLETE_SPIN_NANOS));
+            terminate(ls, CloseStatus.NORMAL, budget.completeDeadline());
         } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
@@ -286,9 +287,24 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
     }
 
-    /** 단건 전송용 — 이 emit 하나에만 예산을 준다. */
+    /** 단건 전송용 — 이 emit 하나가 예산을 독차지한다. */
     private void emit(LocalSession ls, OutboundMessage message) {
-        emit(ls, message, spinDeadline(CONTENTION_SPIN_NANOS));
+        emit(ls, message, newBudget());
+    }
+
+    /**
+     * 한 연산(fan-out 1회 또는 단건 전송)이 나눠 쓰는 예산.
+     *
+     * <p>emit과 종료를 따로 잡는 이유: 종료 신호는 버퍼 잔여분을 최대한 흘려보내야 강퇴 직전에 보낸
+     * SYSTEM(KICKED)이 전달되므로 더 넉넉히 준다. 둘 다 <b>연산 시작 시각 기준</b>이라 세션 수만큼
+     * 곱해지지 않는다 — 방 fan-out은 방 전체 중계를 담당하는 Redis 구독 스레드 위에서 돈다.
+     */
+    private record FanOutBudget(long emitDeadline, long completeDeadline) {
+    }
+
+    private FanOutBudget newBudget() {
+        long now = System.nanoTime();
+        return new FanOutBudget(now + CONTENTION_SPIN_NANOS, now + COMPLETE_SPIN_NANOS);
     }
 
     /**
@@ -307,10 +323,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return droppedOnContention.get();
     }
 
-    /** 지금부터 주어진 예산만큼의 만료 시각. 한 연산(fan-out 1회)이 이 값을 공유한다. */
-    private long spinDeadline(long budgetNanos) {
-        return System.nanoTime() + budgetNanos;
-    }
 
     /**
      * 데이터 채널 쪽 종료 — 버퍼에 남은 걸 흘려보낸 뒤 곱게 닫는 정상 경로다.
@@ -340,7 +352,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private Sinks.EmitResult emitSerially(Supplier<Sinks.EmitResult> emitter, long deadline) {
         while (true) {
             Sinks.EmitResult result = emitter.get();
-            if (result != Sinks.EmitResult.FAIL_NON_SERIALIZED || System.nanoTime() >= deadline) {
+            if (result != Sinks.EmitResult.FAIL_NON_SERIALIZED || System.nanoTime() - deadline >= 0) {
                 return result;
             }
             Thread.onSpinWait();

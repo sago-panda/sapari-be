@@ -50,7 +50,10 @@ public class RedisLiveRoomEndedSource implements LiveRoomEndedSource {
         try {
             return Mono.just(UUID.fromString(objectMapper.readTree(json).get("roomId").asText()));
         } catch (Exception e) {
-            log.error("live:room:ended payload 파싱 실패 — 해당 메시지 skip payload={}", json);
+            // 원문을 찍지 않는다 — 지금 계약({roomId, endedAt})엔 PII가 없지만 live가 필드를 늘리면
+            // 조용히 새는 자리이고, 신뢰경계 밖 문자열이라 개행 삽입으로 로그를 위조할 수도 있다.
+            log.error("live:room:ended payload 파싱 실패 — 해당 메시지 skip cause={}",
+                    e.getClass().getSimpleName());
             return Mono.empty();
         }
     }

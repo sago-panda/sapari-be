@@ -59,6 +59,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
     /** 종료 결정 후 정상 클라가 버퍼에 남은 메시지를 받아갈 시간. 이 시간이 지나면 강제로 끊는다. */
     private static final Duration FORCED_CLOSE_GRACE = Duration.ofSeconds(3);
+    /** close 프레임 flush를 기다리는 상한. 넘기면 정리만 진행한다(소켓은 OS가 회수). */
+    private static final Duration CLOSE_FLUSH_TIMEOUT = Duration.ofSeconds(5);
 
     private final RoomTokenVerifier verifier;
     private final EntryGate entryGate;
@@ -156,7 +158,12 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 패자가 먼저 취소되는데, 그때 취소되는 session.receive()가 Reactor Netty에서 상태코드 없는
         // close 프레임을 먼저 내보내고 "이미 닫음" 래치를 걸어버린다. 바깥에 두면 그 뒤에 실행돼
         // 아무 효과가 없다(클라가 받는 코드는 1005).
-        Mono<Void> closeWithReason = Mono.defer(() -> session.close(registry.closeStatusOf(sid)));
+        // close 프레임도 결국 소켓 write라, 읽지 않는 클라에선 앞선 잔량 뒤에 줄 서서 완료되지 않을 수 있다.
+        // 그 상태로 두면 아래 firstWithSignal이 안 끝나 doFinally(cleanup)까지 막힌다 — 세션 명부·방 구독·
+        // Redis 항목이 통째로 남는다. 현재 버퍼 크기에선 잔량이 소켓 용량 아래라 실제로 막히지 않지만,
+        // 그건 프레임 크기에 딸린 여유일 뿐이라 기대지 않는다. 닫히든 말든 정리는 진행시킨다.
+        Mono<Void> closeWithReason = Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
+                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.empty());
 
         return registry.register(sid, chatSession)
                 .then(registry.getActiveCount(roomId))

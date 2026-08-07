@@ -160,6 +160,21 @@ class ChatWebSocketHandlerTest {
     }
 
     @Test
+    @DisplayName("onInbound — 종료가 확정된 세션의 전송은 받지 않는다(유예 창 도배 차단)")
+    void inbound_rejected_after_termination_decided() {
+        // given: 강퇴/방종료로 종료가 확정된 세션. 소켓이 닫히기 전까지 짧은 창이 남는다.
+        when(registry.isTerminating("s1")).thenReturn(true);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, "{\"type\":\"NORMAL\",\"content\":\"도배\"}"))
+                .verifyComplete();
+
+        // then: 전송 파이프라인에 아예 들어가지 않는다 — Redis 강퇴 조회는 장애 시 통과(fail-open)라 믿을 수 없다
+        verify(sendUseCase, never()).send(any());
+    }
+
+    @Test
     @DisplayName("onInbound — type 누락이면 연결을 끊지 않고 ERROR(VALIDATION)만 응답한다")
     void inbound_without_type_keeps_stream_alive() {
         // given
