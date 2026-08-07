@@ -33,12 +33,15 @@ class ChatSessionRedisRepositoryAtomicityTest {
     @DisplayName("add — 등재와 TTL이 한 번의 호출로 나간다(TTL 없는 키가 남을 틈이 없다)")
     @SuppressWarnings("unchecked")
     void add_sets_ttl_in_the_same_call() {
+        // given
         ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
         given(redis.execute(any(RedisScript.class), anyList(), anyList())).willReturn(Flux.just(1L));
 
+        // when
         StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
                 .verifyComplete();
 
+        // then
         ArgumentCaptor<List<String>> keys = ArgumentCaptor.forClass(List.class);
         ArgumentCaptor<List<Object>> args = ArgumentCaptor.forClass(List.class);
         then(redis).should(times(1)).execute(any(RedisScript.class), keys.capture(), args.capture());
@@ -52,10 +55,12 @@ class ChatSessionRedisRepositoryAtomicityTest {
     @DisplayName("add — Redis 실패는 삼키지 않고 전파한다(입장 허용 판단은 호출자 몫)")
     @SuppressWarnings("unchecked")
     void add_propagates_failure() {
+        // given
         ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
         given(redis.execute(any(RedisScript.class), anyList(), anyList()))
                 .willReturn(Flux.error(new RuntimeException("redis blip")));
 
+        // when & then
         StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
                 .verifyErrorMessage("redis blip");
     }

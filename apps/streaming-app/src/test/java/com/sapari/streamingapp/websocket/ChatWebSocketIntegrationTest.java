@@ -109,6 +109,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("연결 — 유효 룸 토큰이면 ROOM_INFO를 받는다")
     void valid_token_receives_room_info() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -119,6 +120,7 @@ class ChatWebSocketIntegrationTest {
                         .doOnNext(frames::add).take(1).then())
                 .block(Duration.ofSeconds(15));
 
+        // when & then
         assertThat(frames).hasSize(1);
         assertThat(frames.get(0)).contains("\"type\":\"ROOM_INFO\"");
     }
@@ -126,6 +128,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("송신 — NORMAL 전송 시 clientMsgId가 실린 ACK를 받는다")
     void send_receives_ack() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -138,6 +141,7 @@ class ChatWebSocketIntegrationTest {
                                 .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
                 .block(Duration.ofSeconds(20));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ROOM_INFO\""));
         // ACK에 clientMsgId + createdAt이 ISO-8601 문자열(따옴표)로 — epoch 숫자가 아님(프론트 계약, F2 회귀)
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ACK\"")
@@ -147,6 +151,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("거부 — 위조 서명(다른 키) 토큰이면 ROOM_INFO 없이 닫힌다")
     void forged_token_rejected() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String forged = roomToken(otherKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -161,12 +166,14 @@ class ChatWebSocketIntegrationTest {
             // 서버 1008 close가 클라에 에러로 surface될 수 있음 — 핵심은 ROOM_INFO 미수신
         }
 
+        // when & then
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
     }
 
     @Test
     @DisplayName("강퇴 — kicked SET에 있으면 SYSTEM(KICKED) 후 ROOM_INFO 없이 닫힌다")
     void kicked_member_rejected() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         redisTemplate.opsForSet().add("kicked:" + roomId, userId.toString()).block();
@@ -174,6 +181,7 @@ class ChatWebSocketIntegrationTest {
 
         List<String> frames = collect(roomId, token, null, Duration.ofSeconds(3));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"SYSTEM\"") && f.contains("KICKED"));
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
     }
@@ -181,6 +189,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("권한 — BUYER가 NOTICE 시도하면 ERROR(PERMISSION)")
     void buyer_notice_denied() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -188,6 +197,7 @@ class ChatWebSocketIntegrationTest {
 
         List<String> frames = collect(roomId, token, notice, Duration.ofSeconds(3));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ERROR\"")
                 && f.contains("PERMISSION") && f.contains("\"clientMsgId\":\"n1\""));
     }
@@ -195,6 +205,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("레이트리밋 — BUYER 연속 전송 시 2번째는 RATE_LIMIT")
     void rapid_send_rate_limited() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -210,12 +221,14 @@ class ChatWebSocketIntegrationTest {
                                 .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
                 .block(Duration.ofSeconds(20));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"") && f.contains("\"clientMsgId\":\"r2\""));
     }
 
     @Test
     @DisplayName("거부 — 토큰 서브프로토콜 누락(bearer만)이면 ROOM_INFO 없이 닫힌다")
     void missing_token_rejected() {
+        // given
         UUID roomId = UUID.randomUUID();
         HttpHeaders onlyBearer = new HttpHeaders();
         onlyBearer.add("Sec-WebSocket-Protocol", "bearer");   // 토큰 값 없음 → extractToken null
@@ -230,12 +243,14 @@ class ChatWebSocketIntegrationTest {
             // 서버 1008 close가 에러로 surface될 수 있음
         }
 
+        // when & then
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
     }
 
     @Test
     @DisplayName("강퇴 — 접속 중 KICK_EVENT를 받으면 SYSTEM(KICKED) 후 1008로 닫힌다")
     void kicked_mid_session_closes_with_policy_violation() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -255,6 +270,7 @@ class ChatWebSocketIntegrationTest {
             return receive.and(kick);
         }).block(Duration.ofSeconds(20));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"code\":\"KICKED\""));
         // 프론트가 "재접속하지 말 것"으로 읽는 신호는 close code다 — 와이어에 실제로 실려야 한다
         assertThat(observed.get()).isNotNull();

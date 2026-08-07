@@ -28,21 +28,25 @@ class RedisLiveRoomEndedSourceTest {
     @Test
     @DisplayName("parse — payload에서 roomId 추출")
     void parse_extracts_roomId() {
+        // given
         UUID roomId = UUID.fromString("11111111-1111-1111-1111-111111111111");
         String payload = "{\"roomId\":\"" + roomId + "\",\"endedAt\":\"2026-07-03T00:00:00Z\"}";
 
+        // when & then
         StepVerifier.create(source.parse(payload)).expectNext(roomId).verifyComplete();
     }
 
     @Test
     @DisplayName("parse — 깨진 payload는 skip(빈 Mono)")
     void parse_skips_broken() {
+        // when & then
         StepVerifier.create(source.parse("{깨진 json")).verifyComplete();
     }
 
     @Test
     @DisplayName("parse — roomId 필드 없으면 skip")
     void parse_skips_missing_roomId() {
+        // when & then
         StepVerifier.create(source.parse("{\"endedAt\":\"2026-07-03T00:00:00Z\"}")).verifyComplete();
     }
 }

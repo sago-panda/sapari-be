@@ -76,7 +76,6 @@ class ChatBroadcastSubscriberTest {
         StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).verifyComplete();
 
         // then
-
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
         then(sessionManager).should(times(1)).sendToRoomGated(eq(roomId), cap.capture());
         Function<ChatSession, OutboundMessage> resolver = cap.getValue();
@@ -106,7 +105,6 @@ class ChatBroadcastSubscriberTest {
         StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.KickEvent(kickedId))).verifyComplete();
 
         // then
-
         then(sessionManager).should(times(1)).closeUser(roomId, kickedId);     // 당사자 세션 close
 
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();

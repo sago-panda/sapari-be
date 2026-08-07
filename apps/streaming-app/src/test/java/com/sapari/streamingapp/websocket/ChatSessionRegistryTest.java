@@ -57,10 +57,13 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("register — Redis HSET 위임 + outbound로 받은 메시지가 흘러나온다")
     void register_then_sendToSession_flows_out() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
         then(sessionRepository).should(times(1)).add(roomId, "s1", userId);
 
         OutboundMessage msg = out("NORMAL");
+
+        // when & then
         StepVerifier.create(registry.outbound("s1"))
                 .then(() -> registry.sendToSession("s1", msg).block())
                 .expectNext(msg)
@@ -71,9 +74,12 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("sendToRoomLocal — 같은 방 세션은 받는다")
     void room_local_delivers_to_same_room() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
 
         OutboundMessage msg = out("SYSTEM");
+
+        // when & then
         StepVerifier.create(registry.outbound("s1"))
                 .then(() -> registry.sendToRoomLocal(roomId, msg).block())
                 .expectNext(msg)
@@ -84,8 +90,10 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("sendToRoomLocal — 다른 방 세션은 안 받는다")
     void room_local_skips_other_room() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
 
+        // when & then
         StepVerifier.create(registry.outbound("s1"))
                 .then(() -> registry.sendToRoomLocal(UUID.randomUUID(), out("SYSTEM")).block())
                 .expectNoEvent(Duration.ofMillis(50))
@@ -96,8 +104,10 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("getActiveCount — Redis count(고유 유저 수)로 위임")
     void active_count_delegates() {
+        // given
         given(sessionRepository.count(roomId)).willReturn(Mono.just(5L));
 
+        // when & then
         StepVerifier.create(registry.getActiveCount(roomId))
                 .expectNext(5L)
                 .verifyComplete();
@@ -106,20 +116,25 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("unregister — Redis remove 위임 + 로컬에서 사라져 outbound가 빈 스트림")
     void unregister_removes_local_and_redis() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
 
         registry.unregister(roomId, "s1").block();
         then(sessionRepository).should(times(1)).remove(roomId, "s1");
 
         // 제거 후 outbound("s1")은 빈 Flux(즉시 완료)
+
+        // when & then
         StepVerifier.create(registry.outbound("s1")).verifyComplete();
     }
 
     @Test
     @DisplayName("closeAll — 방 세션의 아웃바운드가 완료(complete)된다")
     void close_all_completes_outbound() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
 
+        // when & then
         StepVerifier.create(registry.outbound("s1"))
                 .then(() -> registry.closeAll(roomId).block())
                 .verifyComplete();
@@ -128,19 +143,25 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("closeUser — 해당 유저 세션의 아웃바운드만 완료")
     void close_user_completes_target_outbound() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
 
+        // when
         StepVerifier.create(registry.outbound("s1"))
                 .then(() -> registry.closeUser(roomId, userId).block())
                 .verifyComplete();
+
+        // then
         assertThat(registry.outbound("unknown")).isNotNull();
     }
 
     @Test
     @DisplayName("등록 — Redis 명부 등재가 실패해도 접속은 성립한다(전달은 로컬 자료구조로 돈다)")
     void register_survives_redis_failure() {
+        // given
         given(sessionRepository.add(any(), any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
 
+        // when & then
         StepVerifier.create(registry.register("s1", session(roomId, userId))).verifyComplete();
 
         // 명부 등재와 무관하게 방 fan-out은 로컬 인덱스로 도달한다
@@ -154,11 +175,14 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("퇴장 — Redis 명부 제거가 실패해도 정리는 완료된다(호출부가 subscribe라 에러가 새면 안 됨)")
     void unregister_survives_redis_failure() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
         given(sessionRepository.remove(any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
 
+        // when
         StepVerifier.create(registry.unregister(roomId, "s1")).verifyComplete();
 
+        // then
         // 로컬 정리는 Redis와 무관하게 끝나 있어야 한다
         StepVerifier.create(registry.outbound("s1")).verifyComplete();
         assertThat(registry.trackedRoomCount()).isZero();
@@ -191,6 +215,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("방 종료 — 정상 종료(1000)로 닫는다. 사유는 앞서 보낸 SYSTEM이 전달")
     void room_end_closes_normally() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
         // 종료 전에는 사유가 미정이다 — closeStatusOf의 기본값(NORMAL)만 보면 closeAll을 지워도 통과한다
         assertThat(registry.isTerminating("s1")).isFalse();
@@ -198,6 +223,8 @@ class ChatSessionRegistryTest {
         registry.closeAll(roomId).block();
 
         assertThat(registry.isTerminating("s1")).isTrue();
+
+        // when & then
         StepVerifier.create(registry.terminationSignal("s1"))
                 .expectNext(CloseStatus.NORMAL)
                 .verifyComplete();
@@ -206,6 +233,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("제어 신호 — 모르는 세션은 영영 발화하지 않는다(빈 Mono면 멀쩡한 세션이 즉시 닫힌다)")
     void termination_signal_never_fires_for_unknown_session() {
+        // when & then
         StepVerifier.create(registry.terminationSignal("없는세션"))
                 .expectSubscription()
                 .expectNoEvent(Duration.ofMillis(50))
@@ -217,6 +245,7 @@ class ChatSessionRegistryTest {
     @EnumSource(value = Sinks.EmitResult.class, names = { "FAIL_OVERFLOW", "FAIL_ZERO_SUBSCRIBER" })
     @DisplayName("종료 판정 — 버퍼가 차서 못 담은 경우만 세션 종료 대상")
     void emit_results_that_mean_slow_consumer(Sinks.EmitResult result) {
+        // when & then
         assertThat(registry.consumerCannotKeepUp(result)).isTrue();
     }
 
@@ -225,7 +254,10 @@ class ChatSessionRegistryTest {
             names = { "OK", "FAIL_TERMINATED", "FAIL_CANCELLED", "FAIL_NON_SERIALIZED" })
     @DisplayName("종료 판정 — 일시 경합은 세션이 멀쩡하므로 종료 대상이 아니다")
     void emit_results_that_must_not_close_session(Sinks.EmitResult result) {
+        // given
         // FAIL_NON_SERIALIZED로 끊으면 부하가 오를수록 멀쩡한 시청자를 끊고, 재접속이 부하를 더 올린다
+
+        // when & then
         assertThat(registry.consumerCannotKeepUp(result)).isFalse();
     }
 
@@ -340,10 +372,13 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("파싱 불가 프레임 — 상한 전까지는 세션을 살려두고, 넘으면 1008로 끊는다")
     void malformed_frames_close_session_only_after_limit() {
+        // given
         registry.register("s1", session(roomId, userId)).block();
 
         // 상한 직전까지: 계속 응답하라(false)고 답하고 세션도 살아 있다
         for (int i = 1; i < ChatSessionRegistry.MALFORMED_FRAME_LIMIT; i++) {
+
+        // when & then
             assertThat(registry.recordMalformedFrame("s1")).isFalse();
         }
         assertThat(registry.isTerminating("s1")).isFalse();
@@ -357,6 +392,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("파싱 불가 프레임 — 이미 사라진 세션이면 응답하지 않는다")
     void malformed_frame_on_unknown_session_is_not_answered() {
+        // when & then
         assertThat(registry.recordMalformedFrame("없는세션")).isTrue();
     }
 }

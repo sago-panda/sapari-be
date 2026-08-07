@@ -61,8 +61,10 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("save — id가 채번되고 전 필드가 보존된다")
     void save_assigns_id_and_preserves_fields() {
+        // given
         ChatMessage saved = repository.save(message("안녕하세요", "client-1")).block();
 
+        // when & then
         assertThat(saved.id()).isNotNull();
         assertThat(saved.displayMessage()).isEqualTo("안녕하세요");
         assertThat(saved.senderEmail()).isEqualTo("buyer@example.com");
@@ -72,12 +74,14 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("TC#1 — beforeId 없이 size=5 조회 시 최신 5개를 ObjectId 역순으로 반환한다")
     void returns_latest_messages_in_reverse_order() {
+        // given
         for (int i = 0; i < 10; i++) {
             repository.save(message("m" + i, null)).block();
         }
 
         List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block();
 
+        // when & then
         assertThat(page).hasSize(5);
         assertThat(page.get(0).displayMessage()).isEqualTo("m9"); // 최신부터
         assertThat(page.get(4).displayMessage()).isEqualTo("m5");
@@ -86,6 +90,7 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("TC#2·#3 — 1페이지 마지막 _id를 beforeId로 2페이지 조회 시 중복 없이 연속된다")
     void cursor_paging_is_continuous_without_duplicates() {
+        // given
         for (int i = 0; i < 10; i++) {
             repository.save(message("m" + i, null)).block();
         }
@@ -94,6 +99,7 @@ class ChatMessageRepositoryImplTest {
         List<ChatMessage> page2 = repository
                 .findByRoomIdBefore(roomId, page1.get(4).id(), 5).collectList().block();
 
+        // when & then
         assertThat(page2).hasSize(5);
         assertThat(page2.get(0).displayMessage()).isEqualTo("m4"); // page1 마지막(m5) 직전부터
         assertThat(page2).extracting(ChatMessage::id).doesNotContainAnyElementsOf(
@@ -103,25 +109,30 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("TC#8·#19 — 메시지 없는 방 조회 시 빈 목록, 예외 없음")
     void empty_room_returns_empty_list() {
+        // given
         List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block();
 
+        // when & then
         assertThat(page).isEmpty();
     }
 
     @Test
     @DisplayName("TC#25 — 형식은 유효하나 모든 메시지보다 오래된 beforeId면 빈 목록")
     void beforeId_older_than_all_returns_empty() {
+        // given
         repository.save(message("m0", null)).block();
         String epochId = new ObjectId(new Date(0)).toHexString();
 
         List<ChatMessage> page = repository.findByRoomIdBefore(roomId, epochId, 5).collectList().block();
 
+        // when & then
         assertThat(page).isEmpty();
     }
 
     @Test
     @DisplayName("TC#14 — 잘못된 ObjectId 형식의 beforeId는 IllegalArgumentException")
     void invalid_beforeId_format_fails() {
+        // when & then
         StepVerifier.create(repository.findByRoomIdBefore(roomId, "not-an-objectid", 5))
                 .expectError(IllegalArgumentException.class)
                 .verify();
@@ -130,6 +141,7 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("size<=0은 IllegalArgumentException — Mongo limit(0) 무제한 전량조회 차단")
     void non_positive_size_fails() {
+        // when & then
         StepVerifier.create(repository.findByRoomIdBefore(roomId, null, 0))
                 .expectError(IllegalArgumentException.class)
                 .verify();
@@ -138,6 +150,7 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("TC#15 — 다른 방 메시지는 섞이지 않는다 (roomId 격리)")
     void other_room_messages_are_isolated() {
+        // given
         repository.save(message("mine", null)).block();
         ChatMessage other = new ChatMessage(null, UUID.randomUUID(), senderId, "닉", "e@x.com",
                 ChatRole.BUYER, new ChatMessageType.Normal(), "남의방", "남의방", null, Instant.now());
@@ -145,6 +158,7 @@ class ChatMessageRepositoryImplTest {
 
         List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 10).collectList().block();
 
+        // when & then
         assertThat(page).hasSize(1);
         assertThat(page.get(0).displayMessage()).isEqualTo("mine");
     }
@@ -152,11 +166,14 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("dedup — 같은 (roomId, senderId, clientMsgId) 재삽입은 DuplicateKey, 재조회로 기존 메시지 복구")
     void duplicate_clientMsgId_is_rejected_and_recoverable() {
+        // given
         ChatMessage first = repository.save(message("원본", "dup-key")).block();
 
+        // when
         assertThatThrownBy(() -> repository.save(message("중복", "dup-key")).block())
                 .isInstanceOf(DuplicateKeyException.class);
 
+        // then
         ChatMessage recovered = repository
                 .findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "dup-key").block();
         assertThat(recovered.id()).isEqualTo(first.id());
@@ -166,17 +183,21 @@ class ChatMessageRepositoryImplTest {
     @Test
     @DisplayName("dedup — clientMsgId=null은 partial 인덱스 미적용이라 2건 이상 저장 가능")
     void null_clientMsgId_is_not_deduplicated() {
+        // given
         repository.save(message("첫번째", null)).block();
         repository.save(message("두번째", null)).block();
 
+        // when & then
         assertThat(repository.findByRoomIdBefore(roomId, null, 10).collectList().block()).hasSize(2);
     }
 
     @Test
     @DisplayName("인덱스 3종(페이징·dedup unique partial·TTL 2년)이 생성된다")
     void creates_three_indexes() {
+        // given
         var indexes = mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo().collectList().block();
 
+        // when & then
         assertThat(indexes).extracting(i -> i.getName())
                 .contains("roomId_1__id_1", "roomId_1_senderId_1_clientMsgId_1", "createdAt_1");
         var ttl = indexes.stream().filter(i -> i.getName().equals("createdAt_1")).findFirst().orElseThrow();

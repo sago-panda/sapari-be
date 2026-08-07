@@ -40,16 +40,20 @@ class EntryGateTest {
     @Test
     @DisplayName("강퇴 아님 → 통과(빈 완료)")
     void not_kicked_passes() {
+        // given
         given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
 
+        // when & then
         StepVerifier.create(gate.verify(member())).verifyComplete();
     }
 
     @Test
     @DisplayName("강퇴됨 → EntryDeniedException(KICKED)")
     void kicked_denied() {
+        // given
         given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(true));
 
+        // when & then
         StepVerifier.create(gate.verify(member()))
                 .expectErrorMatches(e -> e instanceof EntryDeniedException ed
                         && ed.reason() == EntryDeniedException.Reason.KICKED)
@@ -59,18 +63,24 @@ class EntryGateTest {
     @Test
     @DisplayName("kicked 조회 Redis 에러 → fail-open(입장 허용)")
     void redis_error_fails_open() {
+        // given
         given(kickRepository.isKicked(roomId, userId))
                 .willReturn(Mono.error(new RuntimeException("redis down")));
 
+        // when & then
         StepVerifier.create(gate.verify(member())).verifyComplete();
     }
 
     @Test
     @DisplayName("게스트 → 강퇴 검사 건너뛰고 통과")
     void guest_skips_kick_check() {
+        // given
         ChatSession guest = new ChatSession(roomId, userId, ChatRole.GUEST, null, null, false);
 
+        // when
         StepVerifier.create(gate.verify(guest)).verifyComplete();
+
+        // then
         then(kickRepository).should(never()).isKicked(any(), any());
     }
 }

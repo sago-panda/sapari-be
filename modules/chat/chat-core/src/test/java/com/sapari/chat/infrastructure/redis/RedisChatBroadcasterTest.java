@@ -64,11 +64,14 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("publish — chat:pubsub:{roomId} 채널에 CHAT 봉투 JSON을 발행한다(round-trip 일치)")
     void publish_sends_chat_envelope_to_channel() throws Exception {
+        // given
         given(redis.convertAndSend(anyString(), anyString())).willReturn(Mono.just(1L));
         ChatMessage message = sampleMessage();
 
+        // when
         StepVerifier.create(broadcaster.publish(roomId, message)).verifyComplete();
 
+        // then
         ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
         then(redis).should(times(1)).convertAndSend(eq(channel), json.capture());
         ChatEnvelope sent = mapper.readValue(json.getValue(), ChatEnvelope.class);
@@ -79,8 +82,10 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("subscribe — 패턴 스트림의 해당 방 메시지를 ChatEnvelope로 역직렬화한다")
     void subscribe_deserializes_envelope() throws Exception {
+        // given
         String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
 
+        // when & then
         StepVerifier.create(broadcaster.subscribe(roomId))
                 .then(() -> pattern.tryEmitNext(message(channel, wire)))
                 .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg cm
@@ -92,9 +97,11 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("subscribe — 다른 방 채널 메시지는 받지 않는다(roomId 필터)")
     void subscribe_filters_other_room() throws Exception {
+        // given
         String otherWire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
         String otherChannel = "chat:pubsub:" + UUID.randomUUID();
 
+        // when & then
         StepVerifier.create(broadcaster.subscribe(roomId))
                 .then(() -> pattern.tryEmitNext(message(otherChannel, otherWire)))
                 .expectNoEvent(Duration.ofMillis(150))
@@ -105,8 +112,10 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("subscribe — 깨진 봉투 1건은 skip하고 스트림은 살아남는다(poison 생존)")
     void subscribe_skips_poison_message() throws Exception {
+        // given
         String good = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
 
+        // when & then
         StepVerifier.create(broadcaster.subscribe(roomId))
                 .then(() -> {
                     pattern.tryEmitNext(message(channel, "{깨진 json"));
@@ -162,6 +171,7 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("실패 필드 경로 — 봉투에 없는 필드명이 와도 로그를 위조할 문자는 남지 않는다")
     void failed_field_path_strips_injection_from_unknown_property() throws Exception {
+        // given
         // 나머지가 전부 유효해야 record가 생성되고, 그제서야 "모르는 필드"가 실패 사유가 된다.
         // (하나라도 어긋나면 생성 단계에서 먼저 터져 그 이름이 경로에 닿지 않는다.)
         String valid = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
@@ -170,6 +180,8 @@ class RedisChatBroadcasterTest {
         Exception raw = catchDeserialize(injected);
 
         // 전제 검증 — 발행한 쪽이 지은 이름이 실제로 예외 경로에 담긴다. 그래서 걸러야 한다.
+
+        // when & then
         assertThat(raw).isInstanceOf(JsonMappingException.class);
         assertThat(((JsonMappingException) raw).getPath())
                 .anyMatch(ref -> ref.getFieldName() != null && ref.getFieldName().contains("\n"));
@@ -182,10 +194,12 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("실패 필드 경로 — 정상 필드명은 그대로 남아 진단이 가능하다")
     void failed_field_path_keeps_real_field_names() {
+        // given
         // senderId 자리에 UUID가 아닌 값 → 그 필드에서 매핑 실패
         Exception raw = catchDeserialize(
                 "{\"kind\":\"CHAT\",\"message\":{\"senderId\":\"uuid아님\"}}");
 
+        // when & then
         assertThat(broadcaster.failedFieldPath(raw)).isEqualTo("message.senderId");
     }
 

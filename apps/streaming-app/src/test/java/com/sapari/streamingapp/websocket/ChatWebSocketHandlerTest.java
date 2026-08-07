@@ -64,11 +64,13 @@ class ChatWebSocketHandlerTest {
     @Test
     @DisplayName("buildCommand — 서버신뢰값은 세션에서, 클라값은 InboundMessage에서")
     void build_command_trusts_session_for_server_fields() {
+        // given
         ChatSession session = new ChatSession(roomId, userId, ChatRole.SELLER, "셀러", "s@example.com", true);
         InboundMessage in = new InboundMessage("NOTICE", "공지입니다", "cmid-1");
 
         SendChatCommand c = handler.buildCommand(session, in);
 
+        // when & then
         assertThat(c.roomId()).isEqualTo(roomId);
         assertThat(c.senderId()).isEqualTo(userId);
         assertThat(c.senderRole()).isEqualTo("SELLER");
@@ -84,12 +86,14 @@ class ChatWebSocketHandlerTest {
     @Test
     @DisplayName("toAck — type=ACK + serverId + clientMsgId + createdAt")
     void to_ack() {
+        // given
         ChatMessageView view = new ChatMessageView(
                 "65a1f2c3d4e5f60718293a4b", roomId, userId, "닉", null, "BUYER", "NORMAL",
                 "hi", null, "cmid-9", Instant.parse("2026-06-11T00:00:00Z"));
 
         OutboundMessage ack = handler.toAck(view, "cmid-9");
 
+        // when & then
         assertThat(ack.type()).isEqualTo("ACK");
         assertThat(ack.id()).isEqualTo("65a1f2c3d4e5f60718293a4b");
         assertThat(ack.clientMsgId()).isEqualTo("cmid-9");
@@ -99,7 +103,10 @@ class ChatWebSocketHandlerTest {
     @Test
     @DisplayName("toError — 레이트리밋은 RATE_LIMIT+retryAfter, 그 외는 ERROR+code, 모두 clientMsgId 운반")
     void to_error_maps_exceptions() {
+        // given
         OutboundMessage rl = handler.toError(new ChatRateLimitException("x", 3), "c");
+
+        // when & then
         assertThat(rl.type()).isEqualTo("RATE_LIMIT");
         assertThat(rl.retryAfterSeconds()).isEqualTo(3L);
         assertThat(rl.clientMsgId()).isEqualTo("c");
@@ -118,8 +125,10 @@ class ChatWebSocketHandlerTest {
     @Test
     @DisplayName("roomInfo — activeCount + isRoomOwner 운반(#44)")
     void room_info_carries_owner() {
+        // given
         OutboundMessage ri = handler.roomInfo(5L, true);
 
+        // when & then
         assertThat(ri.type()).isEqualTo("ROOM_INFO");
         assertThat(ri.activeCount()).isEqualTo(5L);
         assertThat(ri.isRoomOwner()).isTrue();
@@ -128,11 +137,14 @@ class ChatWebSocketHandlerTest {
     @Test
     @DisplayName("구독 ref-count — 같은 방 다중 입장은 구독 1개 공유, 마지막 퇴장에만 dispose")
     void room_subscription_ref_counted() {
+        // given
         Disposable disposable = mock(Disposable.class);
         given(subscriber.subscribeRoom(roomId)).willReturn(disposable);
 
         handler.acquireRoom(roomId);
         handler.acquireRoom(roomId);
+
+        // when & then
         then(subscriber).should(times(1)).subscribeRoom(roomId);   // 공유 — 구독은 1회만
         assertThat(handler.isSubscribed(roomId)).isTrue();
 
