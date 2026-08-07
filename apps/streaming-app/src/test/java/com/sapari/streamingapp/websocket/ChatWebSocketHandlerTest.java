@@ -333,8 +333,8 @@ class ChatWebSocketHandlerTest {
     }
 
     @Test
-    @DisplayName("파싱은 됐지만 커맨드에서 거부된 프레임도 상한에 세어진다 — 파싱만 세면 두 글자로 비켜간다")
-    void inbound_counts_validation_failures_toward_limit() {
+    @DisplayName("파싱은 됐지만 커맨드에서 거부된 프레임도 솎기 경로를 탄다 — 응답 비용은 거부 사유를 가리지 않는다")
+    void inbound_routes_command_rejection_through_throttle() {
         // given: {}는 파싱에 성공하고 커맨드 생성에서 떨어진다
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
         given(registry.shouldReplyToRejection("s1")).willReturn(true);
@@ -404,8 +404,8 @@ class ChatWebSocketHandlerTest {
     }
 
     @Test
-    @DisplayName("레이트리밋은 거부 상한에 세지 않는다 — 빠르게 치는 정상 사용자를 끊으면 안 된다")
-    void rate_limit_does_not_count_toward_limit() {
+    @DisplayName("레이트리밋은 세션을 끊지 않고 로컬 창만 기억한다 — 빠르게 치는 정상 사용자를 끊으면 안 된다")
+    void rate_limit_records_window_without_terminating() {
         // given
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
         given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
@@ -416,7 +416,7 @@ class ChatWebSocketHandlerTest {
         // when
         StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
 
-        // then: 세지 않고, 대신 다음 프레임이 Redis에 닿지 않도록 창을 기억한다
+        // then: 끊지 않고, 대신 다음 프레임이 Redis에 닿지 않도록 창을 기억한다
         then(registry).should(never()).terminateKicked(anyString());
         then(registry).should(times(1)).recordRateLimited("s1", 3L);
     }
