@@ -44,7 +44,7 @@ public class EntryGate {
     /** 사유별로 따로 센다 — 하나를 공유하면 먼저 찍은 쪽이 다른 사유의 첫 발생을 통째로 덮는다. */
     private final Map<String, GateOpenLog> gateOpenLogs = new ConcurrentHashMap<>();
 
-    private record GateOpenLog(AtomicLong lastNanos, AtomicLong suppressed) {
+    private record GateOpenLog(AtomicLong lastNanos, AtomicLong passedThrough) {
     }
 
     private final ChatKickRepository kickRepository;
@@ -94,7 +94,7 @@ public class EntryGate {
         GateOpenLog entry = gateOpenLogs.computeIfAbsent(what,
                 key -> new GateOpenLog(new AtomicLong(System.nanoTime() - GATE_OPEN_LOG_INTERVAL_NANOS),
                         new AtomicLong()));
-        long total = entry.suppressed().incrementAndGet();
+        long total = entry.passedThrough().incrementAndGet();
         long now = System.nanoTime();
         long last = entry.lastNanos().get();
         if (now - last >= GATE_OPEN_LOG_INTERVAL_NANOS && entry.lastNanos().compareAndSet(last, now)) {

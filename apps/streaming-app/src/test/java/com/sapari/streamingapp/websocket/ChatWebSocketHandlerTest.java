@@ -3,9 +3,11 @@ package com.sapari.streamingapp.websocket;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -36,6 +38,8 @@ import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.chat.view.ChatMessageView;
 import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
+
+import org.mockito.InOrder;
 
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -400,6 +404,45 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
 
         // then: 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다
+        then(registry).should(times(1)).terminateKicked("s1");
+    }
+
+    @Test
+    @DisplayName("강퇴 — 사유를 먼저 보내고 그 다음에 끊는다(뒤집으면 sink가 닫혀 사유가 조용히 사라진다)")
+    void kicked_on_send_answers_before_terminating() {
+        // given
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(sendUseCase.send(any())).willReturn(Mono.error(new UserKickedException("kicked")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: terminate가 먼저 나가면 tryEmitNext가 FAIL_TERMINATED가 되어 클라는 1008만 받고 사유를 모른다
+        InOrder order = inOrder(registry);
+        order.verify(registry).sendToSession(eq("s1"), argThat(m ->
+                "ERROR".equals(m.type()) && "KICKED".equals(m.code()) && "c1".equals(m.clientMsgId())));
+        order.verify(registry).terminateKicked("s1");
+    }
+
+    @Test
+    @DisplayName("강퇴 사유는 솎기를 거치지 않는다 — 세션이 그 자리에서 끝나 반복될 수 없으니 증폭이 없다")
+    void kicked_reply_bypasses_rejection_throttle() {
+        // given: 직전에 다른 거부가 있어 솎기 창이 닫혀 있는 상황
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(registry.shouldReplyToRejection("s1")).willReturn(false);
+        given(sendUseCase.send(any())).willReturn(Mono.error(new UserKickedException("kicked")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: 창이 닫혀 있어도 사유는 나가고, 세션도 끊긴다
+        then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "KICKED".equals(m.code())));
         then(registry).should(times(1)).terminateKicked("s1");
     }
 

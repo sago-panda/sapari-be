@@ -16,6 +16,7 @@ import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserKickedException;
+import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
@@ -46,9 +47,6 @@ import reactor.core.publisher.Mono;
 public class SendChatService implements SendChatUseCase {
 
     private static final int MAX_CONTENT_LENGTH = 200;
-
-    /** 클라 생성 상관관계 id 상한. UUID(36자)를 쓰는 계약이라 여유를 두고도 한참 남는다. */
-    private static final int MAX_CLIENT_MSG_ID_LENGTH = 64;
 
     /**
      * 열화 로그 간격. <b>건수가 아니라 경과시간</b>으로 솎아낸다 — 건수 기준은 카운터가 프로세스 생애
@@ -127,9 +125,9 @@ public class SendChatService implements SendChatUseCase {
         // 필수로 만든 이상 상한도 같이 정한다. 이 값은 본문과 달리 Mongo 문서 + unique 인덱스 키로 들어가고
         // 봉투에 실려 전 Pod로 중계되는데, 상한이 없으면 프레임 한도(수십 KB)까지 채워 보낼 수 있다.
         // 그러면 본문 200자 제한이 우회된다 — 레이트리밋이 면제되는 진행자·운영자는 그 속도 제한도 없다.
-        if (clientMsgId.length() > MAX_CLIENT_MSG_ID_LENGTH) {
+        if (clientMsgId.length() > ChatConstants.MAX_CLIENT_MSG_ID_LENGTH) {
             return Mono.error(new IllegalArgumentException(
-                    "clientMsgId는 " + MAX_CLIENT_MSG_ID_LENGTH + "자를 초과할 수 없습니다."));
+                    "clientMsgId는 " + ChatConstants.MAX_CLIENT_MSG_ID_LENGTH + "자를 초과할 수 없습니다."));
         }
         ChatRole role = ChatRole.valueOf(command.senderRole());   // 잘못된 role 문자열이면 throw → defer가 onError로
         ChatMessageType type = toType(command.messageType());     // NORMAL/NOTICE만 허용(SYSTEM·미지 타입 거부)

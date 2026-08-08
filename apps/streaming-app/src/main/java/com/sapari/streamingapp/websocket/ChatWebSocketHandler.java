@@ -98,8 +98,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
                 // 모르는 필드는 흘려보낸다. 계약에 있는 필드는 그대로 엄격히 검증하되, 클라가 자기 필드를
-                // 하나 얹었다고 파싱이 통째로 실패해서는 안 된다 — 그건 메시지 하나가 아니라 연결이 끊기는
-                // 문제가 된다(파싱 실패가 누적 상한에 걸린다). 오타 필드도 조용히 넘어가지 않는다:
+                // 하나 얹었다고 파싱이 통째로 실패해서는 안 된다 — 그 실패는 거부 응답 솎기 대상이 되어
+                // 뒤따르는 정상 프레임의 응답까지 함께 삼킨다. 오타 필드도 조용히 넘어가지 않는다:
                 // content가 비면 내용 검증에, clientMsgId가 비면 필수 검증에 걸려 ERROR로 돌아간다.
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
@@ -159,7 +159,12 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(Ping은 Netty가 자동 응답하고 올려주지 않음).
                 .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
                 .map(WebSocketMessage::getPayloadAsText)
-                .flatMap(payload -> onInbound(sid, chatSession, payload))
+                // concatMap이다 — flatMap의 기본 동시성은 256이라, 한 세션이 프레임을 파이프라이닝하면
+                // 최대 256건이 응답을 기다리지 않고 한꺼번에 안으로 들어간다. 그러면 아래 레이트리밋 로컬 창이
+                // 무력해진다: 창은 첫 거부가 돌아온 뒤에야 무장되는데 그 시점엔 이미 다 통과한 뒤다.
+                // 한 세션의 인바운드를 병렬로 처리해서 얻는 것도 없다 — 오히려 저장·중계 순서가 전송 순서와
+                // 어긋난다(레이트리밋이 면제되는 방 주인에게서 실제로 드러난다).
+                .concatMap(payload -> onInbound(sid, chatSession, payload))
                 .then();
 
         // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
@@ -254,7 +259,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     if (e instanceof UserKickedException) {
                         // 여기까지 왔다 = 이 Pod가 강퇴 신호를 못 받았다(받았으면 이미 닫혀 위에서 걸린다).
                         // 방금 권위 있게 확인했으니 닫는다 — 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다.
-                        registry.terminateKicked(sid);
+                        //
+                        // 순서가 중요하다. 종료를 먼저 걸면 sink가 닫혀 뒤이은 사유 프레임이 FAIL_TERMINATED로
+                        // 조용히 사라진다 — 클라는 1008만 받고 무엇 때문인지, 어느 메시지가 실패했는지 모른다.
+                        // 그래서 사유를 먼저 실어 보내고, 성공하든 실패하든 반드시 닫는다(doFinally).
+                        //
+                        // 솎기도 거치지 않는다. 솎기는 되돌림이 반복될 때 비용이 되기 때문인데, 강퇴는 그 자리에서
+                        // 세션을 끝내므로 연결당 한 번뿐이다. 반복이 없으니 증폭도 없고, 우회로가 되지도 않는다.
+                        return registry.sendToSession(sid, toError(e, clientMsgId))
+                                .doFinally(signal -> registry.terminateKicked(sid));
                     }
                     return respondRejected(sid, toError(e, clientMsgId));
                 });
@@ -268,11 +281,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     /**
-     * 거부 응답을 보내되, <b>클라이언트가 자초한 거부</b>만 누적 상한에 센다.
+     * 거부 응답을 솎아가며 보낸다.
      *
      * <p>레이트리밋은 커맨드가 만들어진 뒤에야 동작하므로, 그 앞에서 떨어지는 프레임은 답해주는 만큼
      * 그대로 되돌아온다. 그 되돌림을 <b>사유를 가리지 않고</b> 솎아낸다 — 예외를 두는 순간 그게 우회로가
      * 되기 때문이다. 첫 거부는 반드시 답하므로 정상 클라는 무엇이 틀렸는지 그대로 알 수 있다.
+     *
+     * <p>솎인 프레임은 <b>아무 응답도 받지 못한다.</b> 클라가 낙관적으로 그린 말풍선을 되돌릴 신호가
+     * 없다는 뜻이라, 프론트는 응답 없음을 성공으로 읽지 말고 자체 타임아웃으로도 정리해야 한다.
+     * 유일한 예외는 강퇴다 — 연결당 한 번뿐이라 반복 비용이 없어 그대로 답한다.
      */
     private Mono<Void> respondRejected(String sid, OutboundMessage response) {
         return registry.shouldReplyToRejection(sid)
@@ -309,7 +326,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     /** 거부 응답에 되돌려 실을 만큼만 남긴다. 계약 상한(64자)을 넘는 값은 어차피 거부된다. */
     private String truncateForEcho(String clientMsgId) {
-        int max = 64;
+        int max = ChatConstants.MAX_CLIENT_MSG_ID_LENGTH;
         return clientMsgId == null || clientMsgId.length() <= max ? clientMsgId : clientMsgId.substring(0, max);
     }
 

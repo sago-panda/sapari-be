@@ -407,7 +407,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 재시도 자체는 의미가 있으므로 금지(1008)가 아니라 "나중에"로 알린다 — 간격은 프론트 backoff가 정한다.
             log.warn("아웃바운드 버퍼 초과 — 세션 종료 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
-            terminate(ls, CloseStatus.SERVICE_OVERLOAD, budget.completeDeadline());
+            // complete 예산을 주지 않는다(이미 지난 emitDeadline을 넘긴다). complete는 "버퍼에 남은 걸
+            // 흘려보낸 뒤 곱게 닫는" 경로인데, 여기 온 이유가 바로 그 버퍼가 꽉 차서 클라가 안 읽는다는
+            // 것이라 흘려보낼 곳이 없다. 그 무의미한 일에 최대 45ms를 쓰면 — 그것도 이 Pod의 모든 방을
+            // 중계하는 Redis 구독 스레드 위에서 — fan-out 예산이 그만큼 지나가 뒤쪽 세션들이 재시도
+            // 없이 한 번만 시도하게 된다. 종료 자체는 제어 채널이 보장하므로 잃는 것도 없다.
+            terminate(ls, CloseStatus.SERVICE_OVERLOAD, budget.emitDeadline());
         } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.

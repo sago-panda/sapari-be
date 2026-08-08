@@ -8,6 +8,7 @@ import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.LiveRoomEndedSource;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.application.service.SystemMessageService;
+import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 
@@ -31,8 +32,9 @@ import reactor.core.publisher.Mono;
  * 모든 Pod가 불러도, 뒤늦은 unregister가 삭제 뒤에 도착해도 안전하다(없는 키 HDEL은 무동작).
  * 종료 알림 다음에 두는 건 순서 보장이 필요해서가 아니라, 알림·닫기를 마친 뒤 정리하는 흐름이 읽기 쉬워서다.
  *
- * <p>강퇴 SET {@code kicked:{roomId}}는 여기서 건드리지 않는다 — chat은 읽기만 하고, 쓰기(SADD)는 api-app
- * 강퇴 기능의 몫이라 수명도 거기서 함께 정한다. 그 기능이 붙기 전까지는 삭제 주체가 없다.
+ * <p><b>강퇴 SET {@code kicked:{roomId}}도 같이 지운다</b>: 등록(SADD)은 api-app 강퇴 기능의 몫이지만
+ * 키 자체는 chat 소유고, 그 키에는 TTL이 없다(방송 도중 만료되면 강퇴자가 되돌아온다). 방이 끝날 때
+ * 지우지 않으면 방 하나당 SET 하나가 영구히 남는다.
  */
 @Slf4j
 @Component
@@ -44,6 +46,7 @@ public class LiveRoomEndedHandler {
     private final ChatSessionManager sessionManager;
     private final ChatSessionRepository sessionRepository;
     private final ChatRoomEndedRepository roomEndedRepository;
+    private final ChatKickRepository kickRepository;
 
     private Disposable subscription;
 
@@ -69,9 +72,9 @@ public class LiveRoomEndedHandler {
     }
 
     /**
-     * 종료 마커 → SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리. (테스트 진입점)
+     * 종료 마커 → SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리 → 강퇴 명단 정리. (테스트 진입점)
      *
-     * <p><b>네 단계가 서로의 실패에 묶이지 않는다.</b> 그냥 이어 붙이면 앞이 터졌을 때 뒤가 통째로 안 돈다 —
+     * <p><b>각 단계가 서로의 실패에 묶이지 않는다.</b> 그냥 이어 붙이면 앞이 터졌을 때 뒤가 통째로 안 돈다 —
      * 알림 전송 하나가 실패했다고 <b>세션이 안 닫히는</b> 것이 이 체인에서 가장 나쁜 결과다. 각 단계는
      * 실패해도 자기 몫만 잃고, 나머지는 그대로 진행한다.
      *
@@ -86,7 +89,10 @@ public class LiveRoomEndedHandler {
                 .then(keepGoing(sessionManager.closeAll(roomId), roomId,
                         "세션 종료 실패 — 그 방 세션이 남는다", true))
                 .then(keepGoing(sessionRepository.clearRoom(roomId), roomId,
-                        "세션 키 정리 실패 — 키 TTL이 받는다", false));
+                        "세션 키 정리 실패 — 키 TTL이 받는다", false))
+                // 세션 키와 달리 이쪽은 TTL 백스톱이 없다 — 실패하면 그 방의 SET이 그대로 남는다.
+                .then(keepGoing(kickRepository.clearRoom(roomId), roomId,
+                        "강퇴 명단 정리 실패 — 그 방 SET이 영구히 남는다", false));
     }
 
     /**

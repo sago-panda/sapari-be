@@ -11,8 +11,8 @@ import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 /**
- * kicked:{roomId} SET 멤버십 조회(SISMEMBER) — 읽기 전용.
- * 강퇴 등록(SADD)·방 정리(DEL)는 api-app(KickUserService·EndLive 리스너) 책임이라 여기 두지 않는다.
+ * kicked:{roomId} SET 어댑터 — 멤버십 조회(SISMEMBER)와 방 종료 시 정리(DEL).
+ * 강퇴 등록(SADD)은 api-app(KickUserService) 책임이라 여기 두지 않는다.
  */
 @Repository
 @RequiredArgsConstructor
@@ -24,5 +24,10 @@ public class ChatKickRedisRepository implements ChatKickRepository {
     public Mono<Boolean> isKicked(UUID roomId, UUID userId) {
         return redisTemplate.opsForSet()
                 .isMember(ChatRedisKeys.kicked(roomId), userId.toString());
+    }
+
+    @Override
+    public Mono<Void> clearRoom(UUID roomId) {
+        return redisTemplate.delete(ChatRedisKeys.kicked(roomId)).then();
     }
 }
