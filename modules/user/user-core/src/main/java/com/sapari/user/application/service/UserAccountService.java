@@ -78,10 +78,13 @@ public class UserAccountService implements UserAccountUseCase {
         return toView(savedUser);
     }
 
-    /** 소셜 가입 후 필수 후속 처리 실패 시 가입 사용자와 약관 증적을 한 트랜잭션으로 보상 삭제한다. */
+    /** 소셜 가입 후 필수 후속 처리 실패 시 가입 데이터를 삭제하고 커밋된 프로필 이미지도 정리한다. */
     @Override
     public void rollbackSocialCustomerRegistration(SocialCustomerRegistrationRollbackCommand command) {
-        socialCustomerRegistrationMutationProcessor.rollback(command);
+        String profileImageKey = socialCustomerRegistrationMutationProcessor.rollback(command);
+        if (profileImageKey != null) {
+            profileImageStorage.deleteQuietly(profileImageKey);
+        }
     }
 
     private User createSocialCustomer(RegisterSocialCustomerCommand command, Instant now) {

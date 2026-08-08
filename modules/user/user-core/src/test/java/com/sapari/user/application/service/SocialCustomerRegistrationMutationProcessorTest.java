@@ -1,5 +1,6 @@
 package com.sapari.user.application.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
@@ -39,19 +40,38 @@ class SocialCustomerRegistrationMutationProcessorTest {
     private UserTermsAgreementRepository userTermsAgreementRepository;
 
     @Test
-    @DisplayName("방금 가입한 소셜 고객 식별자가 모두 일치하면 약관 증적 뒤 user를 삭제한다")
+    @DisplayName("방금 가입한 소셜 고객 식별자가 모두 일치하면 약관 증적 뒤 user를 삭제하고 이미지 key를 반환한다")
     void rollbackDeletesRegistrationDataWhenIdentityMatches() {
+        UUID userId = UUID.randomUUID();
+        String profileImageKey = "users/%s/profile/signup.png".formatted(userId);
+        SocialCustomerRegistrationRollbackCommand command = command(userId);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(
+                customer(userId).updateProfileImageKey(profileImageKey)));
+        SocialCustomerRegistrationMutationProcessor processor =
+                new SocialCustomerRegistrationMutationProcessor(userRepository, userTermsAgreementRepository);
+
+        String result = processor.rollback(command);
+
+        assertThat(result).isEqualTo(profileImageKey);
+        InOrder inOrder = inOrder(userTermsAgreementRepository, userRepository);
+        inOrder.verify(userTermsAgreementRepository).deleteByUserId(userId);
+        inOrder.verify(userRepository).deleteById(userId);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지가 없는 소셜 고객 가입 보상은 null key를 반환한다")
+    void rollbackReturnsNullWhenRegistrationHasNoProfileImage() {
         UUID userId = UUID.randomUUID();
         SocialCustomerRegistrationRollbackCommand command = command(userId);
         when(userRepository.findById(userId)).thenReturn(Optional.of(customer(userId)));
         SocialCustomerRegistrationMutationProcessor processor =
                 new SocialCustomerRegistrationMutationProcessor(userRepository, userTermsAgreementRepository);
 
-        processor.rollback(command);
+        String result = processor.rollback(command);
 
-        InOrder inOrder = inOrder(userTermsAgreementRepository, userRepository);
-        inOrder.verify(userTermsAgreementRepository).deleteByUserId(userId);
-        inOrder.verify(userRepository).deleteById(userId);
+        assertThat(result).isNull();
+        verify(userTermsAgreementRepository).deleteByUserId(userId);
+        verify(userRepository).deleteById(userId);
     }
 
     @Test

@@ -29,6 +29,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
 import com.sapari.user.application.dto.ProfileImageChangeResult;
 import com.sapari.user.application.dto.ProfileImageRemoveResult;
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
@@ -105,6 +106,47 @@ class UserAccountServiceTest {
                 key -> key == null ? null : "https://cdn.example/" + key,
                 timeProvider
         );
+    }
+
+    @Test
+    @DisplayName("소셜 고객 가입 보상 성공 후 등록된 프로필 이미지 object를 삭제한다")
+    void rollbackSocialCustomerRegistrationDeletesProfileImageAfterDbCompensation() {
+        UUID userId = UUID.randomUUID();
+        String profileImageKey = "users/%s/profile/signup.png".formatted(userId);
+        SocialCustomerRegistrationRollbackCommand command = rollbackCommand(userId);
+        when(socialCustomerRegistrationMutationProcessor.rollback(command)).thenReturn(profileImageKey);
+
+        userAccountService.rollbackSocialCustomerRegistration(command);
+
+        verify(socialCustomerRegistrationMutationProcessor).rollback(command);
+        verify(profileImageStorage).deleteQuietly(profileImageKey);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지가 없는 소셜 고객 가입 보상은 object 삭제를 호출하지 않는다")
+    void rollbackSocialCustomerRegistrationSkipsProfileImageDeleteWhenKeyIsNull() {
+        UUID userId = UUID.randomUUID();
+        SocialCustomerRegistrationRollbackCommand command = rollbackCommand(userId);
+        when(socialCustomerRegistrationMutationProcessor.rollback(command)).thenReturn(null);
+
+        userAccountService.rollbackSocialCustomerRegistration(command);
+
+        verify(socialCustomerRegistrationMutationProcessor).rollback(command);
+        verifyNoInteractions(profileImageStorage);
+    }
+
+    @Test
+    @DisplayName("소셜 고객 가입 DB 보상이 실패하면 프로필 이미지 object를 먼저 삭제하지 않는다")
+    void rollbackSocialCustomerRegistrationDoesNotDeleteProfileImageWhenDbCompensationFails() {
+        UUID userId = UUID.randomUUID();
+        SocialCustomerRegistrationRollbackCommand command = rollbackCommand(userId);
+        IllegalStateException dbException = new IllegalStateException("db down");
+        when(socialCustomerRegistrationMutationProcessor.rollback(command)).thenThrow(dbException);
+
+        assertThatThrownBy(() -> userAccountService.rollbackSocialCustomerRegistration(command))
+                .isSameAs(dbException);
+
+        verifyNoInteractions(profileImageStorage);
     }
 
     @Test
@@ -439,6 +481,15 @@ class UserAccountServiceTest {
 
         // then
         verify(withdrawnUserRetentionRepository, never()).save(any());
+    }
+
+    private SocialCustomerRegistrationRollbackCommand rollbackCommand(UUID userId) {
+        return new SocialCustomerRegistrationRollbackCommand(
+                userId,
+                ProviderType.KAKAO,
+                "provider-id",
+                "customer@example.com"
+        );
     }
 
     private RegisterSocialCustomerCommand socialCustomerCommand(boolean privacyAgreed, boolean marketingAgreed) {

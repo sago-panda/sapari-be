@@ -174,9 +174,10 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
         assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
-        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
-                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
-        );
+        InOrder order = inOrder(userAccountUseCase, userSignupContactVerificationUseCase);
+        order.verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
+                new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
         verify(userSignupPhoneVerificationUseCase, never()).consumeSignupPhoneVerification(any());
         verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
         verify(socialProfileImageDownloader, never()).download(any(), any());
@@ -221,9 +222,9 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().content()).containsExactly(1, 2, 3);
         InOrder order = inOrder(userAccountUseCase, userSignupContactVerificationUseCase);
         order.verify(userAccountUseCase).prepareProfileImage(any(ProfileImagePrepareCommand.class));
-        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(any());
         order.verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
         order.verify(userAccountUseCase).changePreparedProfileImage(userId, preparedImage);
+        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(any());
         verify(socialProfileImageDownloader, never()).download(any(), any());
         verify(socialSignupRepository).delete(SIGNUP_SID);
     }
@@ -312,6 +313,7 @@ class CustomerAuthServiceTest {
                         EMAIL
                 )
         );
+        verifyNoInteractions(userSignupContactVerificationUseCase);
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
     }
 
@@ -345,6 +347,7 @@ class CustomerAuthServiceTest {
                         EMAIL
                 )
         );
+        verifyNoInteractions(userSignupContactVerificationUseCase);
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
     }
 
@@ -377,6 +380,7 @@ class CustomerAuthServiceTest {
                         EMAIL
                 )
         );
+        verifyNoInteractions(userSignupContactVerificationUseCase);
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
     }
 
@@ -419,8 +423,8 @@ class CustomerAuthServiceTest {
     }
 
     @Test
-    @DisplayName("휴대폰·이메일 인증 소비 후 가입 저장이 실패하면 재인증이 필요하다")
-    void completeSocialSignupConsumesVerificationBeforeRegisterFailure() throws Exception {
+    @DisplayName("가입 저장이 실패하면 휴대폰·이메일 인증 상태를 소비하지 않는다")
+    void completeSocialSignupDoesNotConsumeVerificationWhenRegisterFails() throws Exception {
         when(socialSignupRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
         when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
@@ -432,17 +436,19 @@ class CustomerAuthServiceTest {
                                 .isEqualTo(CustomerErrorCode.DUPLICATED_SIGNUP_INFO)
                 );
 
-        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
-                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
-        );
+        verifyNoInteractions(userSignupContactVerificationUseCase);
+        verify(userAccountUseCase, never()).rollbackSocialCustomerRegistration(any());
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
     }
 
     @Test
-    @DisplayName("휴대폰 인증이 완료되지 않으면 CUSTOMER 인증 필요 예외로 매핑하고 소셜 고객 가입을 저장하지 않는다")
+    @DisplayName("휴대폰 인증 소비 실패 시 생성한 소셜 고객 가입을 보상하고 CUSTOMER 오류로 매핑한다")
     void completeSocialSignupRequiresPhoneVerification() throws Exception {
+        UUID userId = UUID.randomUUID();
         when(socialSignupRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
         TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_PHONE_VERIFICATION_REQUIRED);
         doThrow(verificationRequired)
                 .when(userSignupContactVerificationUseCase)
@@ -454,17 +460,19 @@ class CustomerAuthServiceTest {
                     assertThat(exception).hasCause(verificationRequired);
                 });
 
-        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
-                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
-        );
-        verifyNoInteractions(userAccountUseCase);
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
     }
 
     @Test
-    @DisplayName("이메일 인증이 완료되지 않으면 CUSTOMER 이메일 인증 필요 예외로 매핑하고 휴대폰 인증 상태는 보존한다")
+    @DisplayName("이메일 인증 소비 실패 시 생성한 소셜 고객 가입을 보상하고 휴대폰 인증 상태는 보존한다")
     void completeSocialSignupRequiresEmailVerification() throws Exception {
+        UUID userId = UUID.randomUUID();
         when(socialSignupRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
         TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_EMAIL_VERIFICATION_REQUIRED);
         doThrow(verificationRequired)
                 .when(userSignupContactVerificationUseCase)
@@ -476,19 +484,55 @@ class CustomerAuthServiceTest {
                     assertThat(exception).hasCause(verificationRequired);
                 });
 
-        verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
-                new SignupContactVerificationConsumeCommand("01012345678", EMAIL)
-        );
         verify(userSignupPhoneVerificationUseCase, never()).consumeSignupPhoneVerification(any());
         verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
-        verifyNoInteractions(userAccountUseCase);
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 반영 후 인증 소비 실패 시 생성한 가입 데이터를 보상한다")
+    void completeSocialSignupRollsBackRegistrationWhenVerificationFailsAfterProfileImageApplied() throws Exception {
+        UUID userId = UUID.randomUUID();
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.prepareProfileImage(any(ProfileImagePrepareCommand.class)))
+                .thenReturn(preparedImage);
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(userId, preparedImage))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/profile.png"));
+        TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_EMAIL_VERIFICATION_REQUIRED);
+        doThrow(verificationRequired)
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.EMAIL_VERIFICATION_REQUIRED)
+        );
+
+        InOrder order = inOrder(userAccountUseCase, userSignupContactVerificationUseCase);
+        order.verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        order.verify(userAccountUseCase).changePreparedProfileImage(userId, preparedImage);
+        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(any());
+        order.verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
     }
 
     @Test
     @DisplayName("회원가입 연락처 인증 소비 중 알 수 없는 USER 오류는 CUSTOMER 일반 인증 오류로 매핑한다")
     void completeSocialSignupWhenUnknownUserVerificationErrorMapsGenericCustomerException() throws Exception {
+        UUID userId = UUID.randomUUID();
         when(socialSignupRepository.findBySid(SIGNUP_SID))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
         TestUserException unknownUserError = new TestUserException(TestUserErrorCode.UNKNOWN_USER_ERROR);
         doThrow(unknownUserError)
                 .when(userSignupContactVerificationUseCase)
@@ -500,7 +544,9 @@ class CustomerAuthServiceTest {
                     assertThat(exception).hasCause(unknownUserError);
                 });
 
-        verifyNoInteractions(userAccountUseCase);
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
     }
 
     @Test
@@ -1152,6 +1198,15 @@ class CustomerAuthServiceTest {
                 "https://image.example/profile.png",
                 UserGender.MALE,
                 LocalDate.of(2000, 1, 1)
+        );
+    }
+
+    private SocialCustomerRegistrationRollbackCommand rollbackCommand(UUID userId) {
+        return new SocialCustomerRegistrationRollbackCommand(
+                userId,
+                ProviderType.NAVER,
+                "naver-id",
+                EMAIL
         );
     }
 

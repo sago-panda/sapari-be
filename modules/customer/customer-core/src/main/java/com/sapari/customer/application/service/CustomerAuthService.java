@@ -70,7 +70,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입을 완료한다.
-     * 가입 직전에는 프론트 요청값이 아니라 서버가 보관한 휴대폰·이메일 verified 상태를 함께 소비한다.
+     * 이미지 반영까지 끝난 뒤 서버가 보관한 휴대폰·이메일 verified 상태를 함께 소비해 가입을 확정한다.
      * 직접 업로드 파일 검증/저장 실패는 회원가입 실패로 전파해 잘못된 파일을 조용히 무시하지 않는다.
      */
     @Override
@@ -78,9 +78,6 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
         validateProfileImageChoice(command);
         PreparedSignupProfileImage profileImage = prepareSignupProfileImageChoice(command, socialSignupInfo);
-
-        // 파일 검증과 provider 다운로드가 끝난 뒤에만 one-time 인증 상태를 소비한다.
-        signupContactVerificationAdapter.consumePhoneAndEmailVerification(command.phoneNumber(), command.email());
 
         // userId 기반 object key가 필요하므로 이미지는 검증만 마친 상태에서 회원을 먼저 생성한다.
         UserView savedUser;
@@ -90,12 +87,17 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
 
-        UserView profileImageAppliedUser = applySignupProfileImageChoice(
-                savedUser,
-                command,
-                socialSignupInfo,
-                profileImage
-        );
+        UserView profileImageAppliedUser;
+        try {
+            profileImageAppliedUser = applySignupProfileImageChoice(savedUser, profileImage);
+            // 저장소와 DB 후속 처리가 끝난 뒤 one-time 인증 상태를 소비해 가입을 확정한다.
+            signupContactVerificationAdapter.consumePhoneAndEmailVerification(command.phoneNumber(), command.email());
+        } catch (RuntimeException e) {
+            // 사용자 생성 이후 인증 소비 전까지의 실패는 이번 요청이 만든 가입 데이터만 보상한다.
+            rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
+            throw e;
+        }
+
         socialSignupRepository.delete(signupSid);
         JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(profileImageAppliedUser);
 
@@ -370,13 +372,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
                 .orElseThrow(() -> new CustomerException(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED));
     }
 
-    /**
-     * 이미지 저장 또는 DB key 반영 실패는 생성한 가입 데이터를 보상하고 전파한다.
-     */
+    /** 이미지 저장 오류만 customer 계약으로 변환하고, 가입 보상은 상위 orchestration에 맡긴다. */
     private UserView applySignupProfileImageChoice(
             UserView savedUser,
-            SocialSignupCommand command,
-            SocialSignupInfo socialSignupInfo,
             PreparedSignupProfileImage profileImage
     ) {
         if (profileImage == null) {
@@ -388,16 +386,8 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             return userAccountUseCase.changePreparedProfileImage(savedUser.userId(), profileImage.image());
         } catch (BusinessException e) {
             if (isProfileImageStorageUnavailable(e)) {
-                // 선택한 프로필 이미지를 저장하지 못하면 가입 데이터를 남기지 않는다.
-                rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
                 throw new CustomerException(CustomerErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE, e);
             }
-            // 저장소 장애 외 user 오류는 선택 이미지 실패로 완화하지 않고 생성한 가입 데이터를 보상한다.
-            rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
-            throw e;
-        } catch (RuntimeException e) {
-            // DB 반영 오류와 프로그래밍 오류를 provider 이미지 실패로 오인하지 않는다.
-            rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
             throw e;
         }
     }
