@@ -58,7 +58,9 @@ class LiveAppApplicationTests {
         registry.add("livekit.s3.key-prefix", () -> "test/");
         registry.add("livekit.s3.access-key", () -> "test-access");
         registry.add("livekit.s3.secret-key", () -> "test-secret");
-        registry.add("livekit.hls.cdn-base-url", () -> "https://cdn.example.com/hls");
+        // 루프백 주소를 쓴다 — live가 이 값에 https를 강제하더라도(SPR-129의 requireSecureUrl)
+        // 로컬 개발 예외로 통과한다. 이 테스트는 검증 규칙이 아니라 컨텍스트 기동만 본다.
+        registry.add("livekit.hls.cdn-base-url", () -> "http://localhost/hls");
         registry.add("livekit.hls.segment-duration", () -> 4);
     }
 

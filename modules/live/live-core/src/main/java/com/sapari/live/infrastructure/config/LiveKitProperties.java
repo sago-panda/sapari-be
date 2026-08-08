@@ -25,7 +25,7 @@ public record LiveKitProperties(
             @NotNull String secretKey
     ) {}
 
-    public record Hls(@NotNull @Pattern(regexp = "^https?://.*") String cdnBaseUrl,
+    public record Hls(@NotNull @Pattern(regexp = "^http?://.*") String cdnBaseUrl,
                       @NotNull int segmentDuration
     ) {}
 }
