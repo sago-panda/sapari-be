@@ -14,6 +14,7 @@ import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatConstants;
@@ -64,8 +65,10 @@ public class SendChatService implements SendChatUseCase {
 
     // 열화 경로 관측 — 통과시키되 규모와 시작 시점은 남긴다.
     private final AtomicLong kickedFailOpenCount = new AtomicLong();
+    private final AtomicLong kickStoreCorruptedCount = new AtomicLong();
     private final AtomicLong publishFailureCount = new AtomicLong();
     private final AtomicReference<Instant> lastKickedFailOpenLog = new AtomicReference<>(Instant.EPOCH);
+    private final AtomicReference<Instant> lastKickStoreCorruptedLog = new AtomicReference<>(Instant.EPOCH);
     private final AtomicReference<Instant> lastPublishFailureLog = new AtomicReference<>(Instant.EPOCH);
 
     /**
@@ -73,10 +76,24 @@ public class SendChatService implements SendChatUseCase {
      *
      * <p><b>여기서는 던질 수 있는 호출을 하지 마라.</b> 이 메서드는 fail-open 분기(onErrorResume 람다) 안에서
      * 불리는데, 예외가 나가면 Reactor가 하류로 전파해 전송이 <i>거부</i>된다 — 가용성 우선 정책이 정반대로
-     * 뒤집힌다. 지금 호출하는 것들(원자적 증가·주입된 Clock·로거)은 모두 던지지 않는다. 메트릭·감사 같은
-     * 걸 추가할 때 이 불변식을 깨지 않도록 확인할 것.
+     * 뒤집힌다. 지금 호출하는 것들(원자적 증가·주입된 Clock·로거·instanceof)은 모두 던지지 않는다.
+     * 메트릭·감사 같은 걸 추가할 때 이 불변식을 깨지 않도록 확인할 것.
+     *
+     * <p>낫지 않는 실패는 <b>따로 센다</b>. 카운터와 스로틀을 공유하면 먼저 찍은 쪽이 다른 쪽의 첫 발생을
+     * 덮어, 영영 안 낫는 상태가 곧 복구될 장애의 로그에 묻힌다.
      */
     private void recordKickedFailOpen(UUID roomId, Throwable err) {
+        if (err instanceof KickStoreCorruptedException corrupted) {
+            long count = kickStoreCorruptedCount.incrementAndGet();
+            if (shouldLog(lastKickStoreCorruptedLog)) {
+                // 예외 객체는 싣지 않는다 — 진단은 이 문장과 key로 끝나고, 스택은 Reactor 내부를 가리켜
+                // 손댈 곳을 알려주지 못한다. 대신 재시도로 낫지 않는다는 사실을 문장에 박는다.
+                log.error("강퇴 명단 키의 타입이 어긋났다 — 이 방의 강퇴는 사람이 그 키를 치울 때까지 계속 "
+                                + "무력화된다(재시도로 낫지 않음). fail-open으로 전송 허용(누적 {}건) key={} roomId={}",
+                        count, corrupted.getKey(), roomId);
+            }
+            return;
+        }
         long count = kickedFailOpenCount.incrementAndGet();
         if (shouldLog(lastKickedFailOpenLog)) {
             log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",

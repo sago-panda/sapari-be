@@ -2,6 +2,7 @@ package com.sapari.streamingapp.websocket;
 
 import org.springframework.stereotype.Component;
 
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatKickRepository;
@@ -135,16 +136,43 @@ public class EntryGate {
 
     /** 게이트가 열린 사실을 간격을 두고 남긴다. 첫 발생은 반드시 남는다. */
     private void logGateOpen(String what, ChatSession session, Throwable cause) {
-        GateOpenLog entry = gateOpenLogs.computeIfAbsent(what,
-                key -> new GateOpenLog(new AtomicLong(System.nanoTime() - GATE_OPEN_LOG_INTERVAL_NANOS),
-                        new AtomicLong()));
+        if (cause instanceof KickStoreCorruptedException corrupted) {
+            logStoreCorrupted(what, session, corrupted);
+            return;
+        }
+        GateOpenLog entry = counterFor(what);
         long total = entry.passedThrough().incrementAndGet();
-        long now = System.nanoTime();
-        long last = entry.lastNanos().get();
-        if (now - last >= GATE_OPEN_LOG_INTERVAL_NANOS && entry.lastNanos().compareAndSet(last, now)) {
+        if (dueToLog(entry)) {
             // 누적 건수를 함께 남긴다 — 게이트가 열린 동안 몇 명이 그냥 통과했는지가 이 자리의 핵심 수치다.
             log.warn("{} 조회 실패 — 입장 허용(게이트 열림) roomId={} userId={} cause={} 누적통과={}",
                     what, session.roomId(), session.userId(), cause.getClass().getSimpleName(), total);
         }
+    }
+
+    /**
+     * 키 타입이 어긋난 건 일시 장애와 등급이 다르다 — 재시도해도, Redis가 되살아나도 낫지 않는다.
+     * 그래서 사유를 따로 세고 WARN이 아니라 ERROR로 남긴다. 같은 통에 담으면 곧 복구될 장애의 로그에
+     * 묻혀, 이 방의 게이트가 사람이 올 때까지 계속 열려 있다는 사실이 드러나지 않는다.
+     */
+    private void logStoreCorrupted(String what, ChatSession session, KickStoreCorruptedException cause) {
+        GateOpenLog entry = counterFor(what + "/키 타입 충돌");
+        long total = entry.passedThrough().incrementAndGet();
+        if (dueToLog(entry)) {
+            log.error("{} 조회 불가(키 타입 어긋남) — 입장 허용(게이트 열림). 재시도로 낫지 않으니 사람이 그 키를 "
+                            + "치워야 한다. key={} roomId={} 누적통과={}",
+                    what, cause.getKey(), session.roomId(), total);
+        }
+    }
+
+    private GateOpenLog counterFor(String what) {
+        return gateOpenLogs.computeIfAbsent(what,
+                key -> new GateOpenLog(new AtomicLong(System.nanoTime() - GATE_OPEN_LOG_INTERVAL_NANOS),
+                        new AtomicLong()));
+    }
+
+    private boolean dueToLog(GateOpenLog entry) {
+        long now = System.nanoTime();
+        long last = entry.lastNanos().get();
+        return now - last >= GATE_OPEN_LOG_INTERVAL_NANOS && entry.lastNanos().compareAndSet(last, now);
     }
 }

@@ -22,7 +22,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.RateLimitResult;
@@ -30,6 +36,7 @@ import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatMessage;
@@ -233,6 +240,42 @@ class SendChatServiceTest {
 
         // then
         then(chatMessageRepository).should(times(1)).save(any());
+    }
+
+    @Test
+    @DisplayName("키 타입 충돌도 fail-open이지만 로그는 갈라진다 — 재시도로 낫지 않는다는 사실이 남아야 한다")
+    void kickStoreCorrupted_failsOpenButLogsSeparately() {
+        // given: 조회가 Redis 복구와 무관하게 계속 실패하는 상태
+        String key = "chat:kicked:" + roomId;
+        given(kickRepository.isKicked(any(), any()))
+                .willReturn(Mono.error(new KickStoreCorruptedException(key, new RuntimeException("WRONGTYPE"))));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
+                .given(chatMessageRepository).save(any());
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
+
+        Logger logger = (Logger) LoggerFactory.getLogger(SendChatService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        // when: 가용성 우선 정책은 그대로 — 전송은 통과해야 한다
+        try {
+            StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                    .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
+                    .verifyComplete();
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        // then: 일시 장애 문구가 아니라 "낫지 않는다 + 치울 키"가 남는다. 분기를 지우면 이 단언이 깨진다
+        assertThat(appender.list)
+                .anySatisfy(event -> {
+                    assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+                    assertThat(event.getFormattedMessage())
+                            .contains("재시도로 낫지 않음")
+                            .contains(key);
+                });
     }
 
     @Test

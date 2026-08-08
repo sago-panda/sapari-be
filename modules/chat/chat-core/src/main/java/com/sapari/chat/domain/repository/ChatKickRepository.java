@@ -12,6 +12,12 @@ import reactor.core.publisher.Mono;
  * {@code false}(=비강퇴)로 삼키면 소비처가 "확실히 비강퇴"와 "조회 불가"를 구분할 수 없다.
  * <p><b>소비처(send 경로) 정책은 fail-open</b>: error는 전송 허용({@code onErrorReturn(false)})으로 매핑한다.
  * 가용성 우선(채팅 전면 불능이 강퇴자 일시 도배보다 더 나쁜 결과)이며, Redis 복구 후 다음 전송부터 정상 체크가 재개된다.
+ *
+ * <p><b>"복구 후 재개"가 성립하지 않는 실패가 하나 있다.</b> 키가 SET이 아닌 타입으로 존재하면 조회는
+ * Redis가 멀쩡해도 계속 실패한다 — 재시도는 멱등이지만 영원히 성공하지 않는다. 그 경우만
+ * {@link com.sapari.chat.domain.exception.KickStoreCorruptedException}으로 갈라서 던지니, 소비처는
+ * fail-open을 유지하되 <b>일시 장애와 같은 통에 담아 로그하지 말 것</b>. 같이 담으면 "그 방의 강퇴가
+ * 사람이 오기 전까지 계속 꺼져 있다"는 사실이 곧 복구될 장애의 로그에 묻힌다.
  */
 public interface ChatKickRepository {
 

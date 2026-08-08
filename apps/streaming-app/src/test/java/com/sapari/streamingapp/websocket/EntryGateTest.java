@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
@@ -12,7 +13,14 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatKickRepository;
@@ -83,6 +91,37 @@ class EntryGateTest {
 
         // when & then
         StepVerifier.create(gate.verify(member())).verifyComplete();
+    }
+
+    @Test
+    @DisplayName("키 타입 충돌도 fail-open이지만 WARN이 아니라 ERROR — 이 게이트는 사람이 올 때까지 계속 열려 있다")
+    void kickStoreCorrupted_failsOpenWithErrorLevel() {
+        // given: Redis가 되살아나도 낫지 않는 실패
+        givenRoomAlive();
+        String key = "chat:kicked:" + roomId;
+        given(kickRepository.isKicked(roomId, userId))
+                .willReturn(Mono.error(new KickStoreCorruptedException(key, new RuntimeException("WRONGTYPE"))));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(EntryGate.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        // when: 가용성 우선 — 입장은 그대로 허용한다
+        try {
+            StepVerifier.create(gate.verify(member())).verifyComplete();
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        // then: 곧 복구될 장애(WARN)와 등급이 갈린다. 분기를 지우면 WARN 한 줄만 남아 이 단언이 깨진다
+        assertThat(appender.list)
+                .anySatisfy(event -> {
+                    assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+                    assertThat(event.getFormattedMessage())
+                            .contains("재시도로 낫지 않으니")
+                            .contains(key);
+                });
     }
 
     @Test
