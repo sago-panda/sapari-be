@@ -101,6 +101,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
 
+    /**
+     * 방 종료를 다시 확인하는 간격. 종료 신호를 놓친 Pod가 끝난 방에 글을 받아주는 구간의 상한이 된다.
+     * 짧게 잡을수록 그 구간은 줄지만 정상 전송에 붙는 Redis 왕복 빈도가 오른다.
+     */
+    private static final long ROOM_ALIVE_RECHECK_INTERVAL_NANOS = Duration.ofSeconds(30).toNanos();
+
     /** 마지막 드롭 로그 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
     private final AtomicLong lastDropLogNanos = new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
 
@@ -116,7 +122,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
-            AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos) {
+            AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
+            AtomicLong lastRoomAliveCheckNanos) {
     }
 
     /**
@@ -169,6 +176,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 // 둘 다 nanoTime 기준이라 0을 센티널로 쓰면 안 된다 — nanoTime 원점은 임의고 음수일 수 있어,
                 // 0과 비교하면 등록 직후부터 "창 안"으로 오판해 전송이 통째로 막힌다.
                 new AtomicLong(System.nanoTime() - REJECTION_REPLY_INTERVAL_NANOS),
+                new AtomicLong(System.nanoTime()),
+                // 입장 게이트가 방금 확인했으므로 창을 지금부터 연다 — 첫 프레임에서 또 묻지 않는다.
                 new AtomicLong(System.nanoTime())));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
@@ -289,6 +298,30 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public boolean isTerminating(String sessionId) {
         LocalSession ls = local.get(sessionId);
         return ls != null && ls.closeStatus().get() != null;
+    }
+
+    /**
+     * transport 전용: 이 세션이 쓰는 방이 아직 살아있는지 <b>다시 물어봐야 하는지</b>.
+     *
+     * <p>종료 신호는 Pub/Sub이라 그 순간 구독이 끊겨 있던 Pod는 통째로 놓친다. 놓치면 그 Pod의 세션은
+     * 닫히지 않고, 끝난 방에 계속 글이 쌓인다 — 그리고 그 글은 Mongo에 남는다. 입장 때 한 번 본 것으로는
+     * 이 구간이 유계가 아니라서, 전송 경로에서 간격을 두고 다시 확인한다.
+     *
+     * <p>간격을 두는 이유는 비용이다. 매 프레임 물으면 정상 전송마다 Redis 왕복이 하나씩 더 붙는데,
+     * 여기서 얻으려는 건 실시간성이 아니라 <b>구간의 상한</b>이다. 창 길이가 곧 그 상한이 된다.
+     *
+     * @return 지금 확인해야 하면 true. false면 호출자는 묻지 않고 살아있는 것으로 본다.
+     */
+    public boolean shouldRecheckRoomAlive(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return false;
+        }
+        long now = System.nanoTime();
+        long last = ls.lastRoomAliveCheckNanos().get();
+        // CAS로 한 번만 통과시킨다 — 통과한 쪽만 실제로 조회하고, 나머지는 그 결과를 기다리지 않고 지나간다.
+        return now - last >= ROOM_ALIVE_RECHECK_INTERVAL_NANOS
+                && ls.lastRoomAliveCheckNanos().compareAndSet(last, now);
     }
 
     /**

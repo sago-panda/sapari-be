@@ -57,6 +57,7 @@ class ChatWebSocketHandlerTest {
     private ChatWebSocketHandler handler;
 
     private NettyConnectionRegistry connections;
+    private EntryGate entryGate;
 
     private final UUID roomId = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private final UUID userId = UUID.fromString("44444444-4444-4444-4444-444444444444");
@@ -67,8 +68,11 @@ class ChatWebSocketHandlerTest {
         registry = mock(ChatSessionRegistry.class);
         sendUseCase = mock(SendChatUseCase.class);
         connections = mock(NettyConnectionRegistry.class);
+        entryGate = mock(EntryGate.class);
+        // 기본은 "방 살아있음" — 재확인 창이 닫혀 있을 때(대다수 프레임)의 동작이다.
+        given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(true));
         handler = new ChatWebSocketHandler(
-                mock(RoomTokenVerifier.class), mock(EntryGate.class),
+                mock(RoomTokenVerifier.class), entryGate,
                 registry, sendUseCase, subscriber, connections);
     }
 
@@ -79,7 +83,7 @@ class ChatWebSocketHandlerTest {
         ChatSession session = new ChatSession(roomId, userId, ChatRole.SELLER, "셀러", "s@example.com", true);
         InboundMessage in = new InboundMessage("NOTICE", "공지입니다", "cmid-1");
 
-        SendChatCommand c = handler.buildCommand(session, in);
+        SendChatCommand c = handler.buildCommand(session, in, true);
 
         // when & then
         assertThat(c.roomId()).isEqualTo(roomId);
@@ -405,6 +409,26 @@ class ChatWebSocketHandlerTest {
 
         // then: 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다
         then(registry).should(times(1)).terminateKicked("s1");
+    }
+
+    @Test
+    @DisplayName("종료된 방으로 확인되면 전송이 NOT_ACTIVE로 거부된다 — 신호를 놓친 Pod가 이력을 쌓지 않게")
+    void inbound_rejects_when_room_recheck_says_ended() {
+        // given: 재확인 창이 열려 마커를 읽었고, 그 방은 이미 끝났다
+        given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(false));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.shouldReplyToRejection("s1")).willReturn(true);
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(sendUseCase.send(any())).willReturn(Mono.error(new LiveNotActiveException("ended")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: 커맨드에 실려 나간 값이 false여야 서비스 1단계가 거부한다
+        then(sendUseCase).should(times(1)).send(argThat(c -> !c.isRoomAlive()));
+        then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "NOT_ACTIVE".equals(m.code())));
     }
 
     @Test

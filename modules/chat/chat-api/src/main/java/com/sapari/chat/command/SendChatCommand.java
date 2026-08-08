@@ -14,7 +14,7 @@ public record SendChatCommand(
         UUID senderId,          // 서버 신뢰 (세션)
         String senderRole,      // 서버 신뢰 — ChatRole 이름(NORMAL/NOTICE 권한 판정)
         boolean isRoomOwner,    // 서버 신뢰 — NOTICE 권한(방 주인만)
-        boolean isRoomAlive,    // 서버 신뢰 — 세션 메모리 플래그(ROOM_ENDED 수신 시 off). send() 1단계 거부 근거
+        boolean isRoomAlive,    // 서버 신뢰 — 입장 게이트가 방 종료 마커를 보고 채운다. send() 1단계 거부 근거
         String senderNickname,  // 서버 신뢰 (발신 스냅샷)
         String senderEmail,     // 서버 신뢰 (nullable, 발신 스냅샷)
         String messageType,     // 클라 — NORMAL | NOTICE

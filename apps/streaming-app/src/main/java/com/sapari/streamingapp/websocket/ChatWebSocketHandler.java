@@ -242,15 +242,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 에러 응답이 in을 다시 건드리지 않게 미리 뽑아둔다 — 폴백이 예외를 던지면 그 예외가 곧장
         // downstream onError가 되어 인바운드 스트림이 죽는다(에러 핸들러는 절대 실패하면 안 되는 자리).
         String clientMsgId = truncateForEcho(in.clientMsgId());
-        // defer로 감싸 커맨드 생성(신뢰경계 검증)의 throw까지 onError 신호로 만든다 — 감싸지 않으면
-        // 인자 평가 위치에서 터져 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결이 끊긴다.
+        // 커맨드 생성(신뢰경계 검증)은 반드시 flatMap 안에서 한다 — 밖에서 만들면 인자 평가 위치에서 터져
+        // 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결째 끊긴다. flatMap 안의 throw는
+        // onError 신호가 되므로 그 프레임만 ERROR로 돌아간다.
         // 레이트리밋 창 안이면 Redis에 다시 묻지 않는다 — 답을 이미 안다. 묻는 비용이 왕복 3회(강퇴 조회·
         // SET NX·잔여 TTL)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
         long retryAfter = registry.rateLimitRetryAfterSeconds(sid);
         if (retryAfter > 0) {
             return respondRejected(sid, rateLimited(retryAfter, clientMsgId));
         }
-        return Mono.defer(() -> sendUseCase.send(buildCommand(chatSession, in)))
+        // 방이 아직 살아있는지 게이트에 맡긴다 — 간격 안이면 Redis에 가지 않고 곧장 true다.
+        return entryGate.isRoomAlive(sid, chatSession)
+                .flatMap(alive -> sendUseCase.send(buildCommand(chatSession, in, alive)))
                 .flatMap(view -> registry.sendToSession(sid, toAck(view, clientMsgId)))
                 .onErrorResume(e -> {
                     if (e instanceof ChatRateLimitException rle) {
@@ -299,22 +302,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     // ── 순수 변환 (단위 테스트 진입점) ──
 
-    SendChatCommand buildCommand(ChatSession s, InboundMessage in) {
+    /**
+     * 인바운드 프레임을 전송 커맨드로 옮긴다.
+     *
+     * <p>{@code isRoomAlive}는 게이트가 준 값을 그대로 싣는다. 평상시엔 세션이 살아있다는 것 자체가 근거지만
+     * (입장에서 마커를 보고, 접속 중 종료는 세션을 닫는다) 종료 신호가 무영속 Pub/Sub이라 그 순간 구독이
+     * 끊겼던 Pod는 통째로 놓친다. 그 Pod의 세션은 닫히지 않으므로 게이트가 간격을 두고 다시 확인한다.
+     * 유실 자체를 없애는 건 종료 이벤트를 영속 전달로 바꾸는 쪽(live 소유)이다.
+     */
+    SendChatCommand buildCommand(ChatSession s, InboundMessage in, boolean isRoomAlive) {
         return new SendChatCommand(
                 s.roomId(), s.userId(), s.role().name(), s.isRoomOwner(),
-                // isRoomAlive — 평상시엔 세션이 살아있다는 것 자체가 근거다. 입장에서 종료 마커를 검사하고,
-                // 접속 중에 방이 끝나면 종료 처리가 세션을 닫아 위 isTerminating에서 걸린다.
-                //
-                // 남는 구간이 있고, 그 크기를 정확히 적어둔다. 종료 신호는 무영속 Pub/Sub이라 그 순간 구독이
-                // 끊긴 Pod는 통째로 놓친다. 그 Pod의 세션은 닫히지 않고 이 값이 상수 true라, 종료된 방에
-                // <b>소켓이 살아있는 내내</b> 전송이 통과해 이력에 남는다 — 신규 입장과 달리 토큰 수명으로
-                // 유계가 아니다.
-                //
-                // 매 전송마다 마커를 읽으면 이 구간은 실제로 막힌다. 마커는 이벤트를 받은 아무 Pod나 쓰므로,
-                // 한 Pod만 신호를 놓친 부분 장애에서는 마커가 실재하기 때문이다. 그래도 안 읽는 건 못 막아서가
-                // 아니라 <b>메시지마다 Redis 왕복 1회가 비싸서</b>다. 주기적 재검사로 창을 유계화하는 건
-                // 별도 과제로 남긴다. 유실 자체를 닫는 건 종료 이벤트를 영속 전달로 바꾸는 쪽(live 소유)이다.
-                true,
+                isRoomAlive,
                 s.nickname(), s.email(),
                 in.type(), in.content(), in.clientMsgId());
     }

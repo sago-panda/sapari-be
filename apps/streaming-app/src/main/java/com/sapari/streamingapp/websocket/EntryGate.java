@@ -28,6 +28,10 @@ import reactor.core.publisher.Mono;
  * 강퇴자·종료방 일시 통과보다 나쁜 결과). 열린 구간은 사유별로 스로틀 로그 + 누적 통과 건수를 남긴다.
  *
  * <p>banned 검사는 ban 모델(#27) 구현 후 추가. 게스트(에페메랄 id)는 강퇴/밴 대상이 아니므로 건너뛴다.
+ *
+ * <p><b>입장 이후에도 한 번 더 본다</b>({@link #isRoomAlive}): 종료 신호는 Pub/Sub(무영속)이라 그 순간
+ * 구독이 끊겨 있던 Pod는 통째로 놓친다. 그 Pod의 세션은 닫히지 않고, 끝난 방에 계속 글을 쓴다.
+ * 입장 때 한 번 본 것으로는 유계가 되지 않으므로 전송 경로에서 주기적으로 다시 확인한다.
  */
 @Slf4j
 @Component
@@ -49,6 +53,33 @@ public class EntryGate {
 
     private final ChatKickRepository kickRepository;
     private final ChatRoomEndedRepository roomEndedRepository;
+
+    /**
+     * 전송 경로에서 방 종료를 다시 확인할지 판단해 알려주는 창. 세션별 상태라 레지스트리가 갖는다
+     * (퇴장할 때 같이 회수되어야 하므로 여기서 들고 있으면 샌다).
+     */
+    private final ChatSessionRegistry registry;
+
+    /**
+     * 이 세션이 지금 살아있는 방에 쓰고 있는지 — 전송 경로용.
+     *
+     * <p>매 프레임 묻지 않는다. 창 안이면 Redis에 가지 않고 곧장 통과시킨다. 놓친 신호로 열리는 구간을
+     * 창 길이만큼으로 줄이는 것이 목적이지, 실시간으로 아는 것이 목적이 아니기 때문이다.
+     *
+     * <p>조회 실패는 입장 게이트와 <b>같은 fail-open</b>이다 — Redis가 죽었다고 채팅이 통째로 멈추는 쪽이
+     * 끝난 방에 몇 줄 더 쌓이는 것보다 나쁘다.
+     */
+    public Mono<Boolean> isRoomAlive(String sessionId, ChatSession session) {
+        if (!registry.shouldRecheckRoomAlive(sessionId)) {
+            return Mono.just(true);
+        }
+        return roomEndedRepository.isEnded(session.roomId())
+                .map(ended -> !ended)
+                .onErrorResume(e -> {
+                    logGateOpen("방 종료 재확인", session, e);
+                    return Mono.just(true);
+                });
+    }
 
     public Mono<Void> verify(ChatSession session) {
         // 방 종료는 게스트에게도 적용된다 — 끝난 방은 볼 것도 없다. 강퇴/밴만 게스트 대상이 아니다.
