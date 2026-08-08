@@ -32,18 +32,28 @@ the record; transitions return a new `LiveRoom`; guards gate every one (never se
 ## Media (SFU / HLS) — port-isolated
 
 All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); never call the SDK from a
-service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `isIngressActive` /
+service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `publishingIngressIdsOrEmpty` /
 `listRoomIngress` (**same lookup, opposite failure direction — see below**), `startHlsEgress`,
 `stopHlsEgress` (room-wide; a broadcast runs one egress per rendition, so there is no single-egress stop),
 `deleteIngress` (room-wide / single-id), `closeRoom`, `getSfuUrl`, `listAllIngress`, `listAllEgress`.
 
 **Cleanup calls are best-effort, query calls fail-fast.** `deleteIngress`/`stopHlsEgress`/`closeRoom` log
-and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress`/`listRoomIngress`
-**throw** — an empty answer reads as "no orphans" / "not publishing" and would let a batch finish green, or
-destroy a live room, on a failed lookup. `isIngressActive` is the fail-*open* twin (`false` on failure): safe
-for the go-live rendezvous, wrong anywhere a `false` triggers deletion. Pick by which direction is destructive.
-A successful response with a null body is **empty, not a failure** — conflating them kills the round on every
-room that legitimately has no ingress.
+and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress`/`listAllRooms`/
+`listRoomIngress` **throw** — an empty answer reads as "no orphans" / "not publishing" and would let a batch
+finish green, or destroy a live room, on a failed lookup. `publishingIngressIdsOrEmpty` is the fail-*open*
+twin (empty on failure): safe for the go-live rendezvous, wrong anywhere an empty answer triggers deletion.
+Pick by which direction is destructive.
+
+**Null body on a 200 is read differently by the two kinds of lookup, on purpose.** Per-*room* lookups
+(`listRoomIngress`, `publishingIngressIdsOrEmpty`) treat it as **empty** — rooms legitimately have no
+ingress, and throwing there kills the round on every expiry candidate. The three global sweeps treat it as
+**failure**: nothing distinguishes "the whole cluster is empty" from "the client is pointed at another one",
+and the decision it feeds deletes things.
+
+**Staging gate for `listAllRooms`**: run one round against a cluster **with at least one live room** and
+confirm `closed=0` is because nothing qualified, not because `createdAt` came back null — LiveKit exposes
+creation time as both seconds and millis, the millis field is newer, and reading the one the server does not
+populate turns this sweep into a silent no-op. A skipped room now logs a warning; that log must be absent.
 
 **Start-side media calls run inside `@Transactional` on purpose (`StartLiveService`, `GoLiveByRtmpService`)
 — reviewers must NOT flag these.** They run *after* re-validation so we never hit the server in a bad state,
@@ -110,7 +120,7 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
 |---|---|---|---|
 | `ReconcileExpiredReadyService` | `READY`, `updated_at` (= arm time) old | **ingress publishing?** — if yes the room is on air | publishing → `GoLiveByRtmpService`; else `ExpireOrphanLiveUseCase` |
 | `ReconcileStaleLiveService` | `LIVE`, **`started_at`** old | **no active egress in LiveKit** | `EndStaleLiveUseCase` per room (publishes `RoomEnded`) |
-| `ReconcileOrphanMediaService` | every LiveKit ingress/egress | mismatch against DB (read-only) | single-id delete / room-wide stop |
+| `ReconcileOrphanMediaService` | every LiveKit ingress/egress/**room** | mismatch against DB (read-only) | single-id delete / room-wide stop / `closeRoom` |
 
 - **Ready-expiry can also *start* a broadcast.** A room whose `ingress_started` rendezvous was lost is still
   publishing; expiring it would delete the ingress and close the SFU room mid-stream, so the job completes
@@ -121,7 +131,12 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
   flag, not a boolean, because a room can have two live ingresses (a race loser whose cleanup failed).
   Promotion requires the room to *acknowledge* one of them (`LiveRoom.hasIngress`), and that same id goes
   to `goLiveByRtmp` — the webhook entry point, not a second one. A batch-only "already checked, skip the
-  match" entry is exactly how the guard goes missing on one side. Publishing-but-not-ours is a **third
+  match" entry is exactly how the guard goes missing on one side. **The seller-start rendezvous
+  (`StartLiveService`) matches too**, via the fail-open twin — otherwise the room's fate would depend on
+  which side arrived second, the one thing the two-independently-ordered-steps contract forbids. Promoting
+  on an unacknowledged ingress is not a security hole (only that seller can create ingresses for their room)
+  but a **self-contradiction**: the orphan-media job reclaims that ingress, so we would be starting a
+  broadcast we are about to cut. Publishing-but-not-ours is a **third
   outcome**: neither promote (an unacknowledged ingress would start the broadcast) nor expire (it would cut
   a live stream) — skip, and the orphan-media job reclaims it (see the protection rule below; waiting for
   the room to reach `Ended` first would deadlock, since only this job could get it there).
@@ -139,11 +154,20 @@ default — `application*.yml` isn't tracked, so "unset" is the normal state.
 - **A bulk lookup that returns 200 + `[]` is not evidence.** `listAllEgress` only throws on transport
   failure — a wrong host/apiKey answers empty, which reads as "every broadcast is dead" and would end the
   whole candidate batch, after which the orphan-media job deletes their still-live ingress 15 min later.
-  So `end-stale-live` **aborts the round when no candidate-independent active egress exists at all**.
+  So `end-stale-live` **aborts the round when the whole cluster reports zero active egress** (the check is
+  global, candidates included — it is a liveness probe for the lookup itself, not a per-candidate rule).
   Known cost: on a genuinely idle cluster (every broadcast's egress already stopped) stale rows are never
   swept — they keep accumulating until something else is live. Accepted because the failure is a stale DB
   row (the egress is already gone, so nothing is billing), while the other direction cuts live broadcasts.
   Don't "fix" it by dropping the guard; if the accumulation matters, verify per room instead.
+
+- **The seller's LiveKit token outlives the broadcast and cannot be revoked.** `issueSellerToken` takes the
+  SDK default TTL (6h) and grants `RoomJoin`+`CanPublish` on that room name, so re-joining after `closeRoom`
+  makes LiveKit recreate the room. That room has **no ingress and no egress**, so the two resource sweeps
+  above never see it — `listAllRooms` exists solely to give it a reclaimer. Judge on **DB status only**
+  (`Ended` ⇒ close): gating on participant count would spare exactly the case this targets, a seller who
+  came back. Shortening the TTL is not a substitute — it needs a token-refresh endpoint first, or a
+  mid-broadcast reconnect can no longer get a token.
 
 - **Never judge staleness by viewer count** — HLS viewers are not SFU participants (a popular room reads 0),
   and a 0-viewer broadcast is normal. `started_at`, not `updated_at`: the latter moves on any save, so a

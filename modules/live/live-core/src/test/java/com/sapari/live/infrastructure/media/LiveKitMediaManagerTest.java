@@ -12,6 +12,7 @@ import livekit.LivekitEgress.SegmentedFileOutput;
 import livekit.LivekitIngress.IngressInfo;
 import livekit.LivekitIngress.IngressInput;
 import livekit.LivekitIngress.IngressState;
+import livekit.LivekitModels.Room;
 import retrofit2.Call;
 import retrofit2.Response;
 
@@ -33,6 +34,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -479,8 +481,8 @@ public class LiveKitMediaManagerTest {
     }
 
     @Test
-    @DisplayName("isIngressActive: PUBLISHING 상태의 ingress 가 있으면 true (roomId 로 필터 조회)")
-    void isIngressActive_true_whenPublishing() throws IOException {
+    @DisplayName("publishingIngressIdsOrEmpty: 송출 중인 ingress 의 id 를 준다 (roomId 로 필터 조회)")
+    void publishingIngressIdsOrEmpty_returnsIds() throws IOException {
         IngressInfo info = IngressInfo.newBuilder()
                 .setIngressId("ingress-1")
                 .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_PUBLISHING).build())
@@ -489,12 +491,12 @@ public class LiveKitMediaManagerTest {
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
         given(call.execute()).willReturn(Response.success(List.of(info)));
 
-        assertThat(liveKitMediaManager.isIngressActive(roomId)).isTrue();
+        assertThat(liveKitMediaManager.publishingIngressIdsOrEmpty(roomId)).containsExactly("ingress-1");
     }
 
     @Test
-    @DisplayName("isIngressActive: INACTIVE 뿐이면 false — BUFFERING 은 접속 중이라 송출로 본다")
-    void isIngressActive_false_whenNotPublishing() throws IOException {
+    @DisplayName("publishingIngressIdsOrEmpty: INACTIVE 뿐이면 빈 목록 — BUFFERING 은 접속 중이라 송출로 본다")
+    void publishingIngressIdsOrEmpty_empty_whenNotPublishing() throws IOException {
         IngressInfo inactive = IngressInfo.newBuilder()
                 .setState(IngressState.newBuilder().setStatus(IngressState.Status.ENDPOINT_INACTIVE).build())
                 .build();
@@ -502,27 +504,27 @@ public class LiveKitMediaManagerTest {
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
         given(call.execute()).willReturn(Response.success(List.of(inactive)));
 
-        assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
+        assertThat(liveKitMediaManager.publishingIngressIdsOrEmpty(roomId)).isEmpty();
     }
 
     @Test
-    @DisplayName("isIngressActive: ingress 가 없으면 false")
-    void isIngressActive_false_whenEmpty() throws IOException {
+    @DisplayName("publishingIngressIdsOrEmpty: ingress 가 없으면 빈 목록")
+    void publishingIngressIdsOrEmpty_empty_whenNoIngress() throws IOException {
         Call<List<IngressInfo>> call = mock(Call.class);
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
         given(call.execute()).willReturn(Response.success(List.of()));
 
-        assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
+        assertThat(liveKitMediaManager.publishingIngressIdsOrEmpty(roomId)).isEmpty();
     }
 
     @Test
-    @DisplayName("isIngressActive: 조회 실패(IOException)면 활성으로 단정하지 않고 false (webhook 전이에 위임)")
-    void isIngressActive_false_whenListFails() throws IOException {
+    @DisplayName("publishingIngressIdsOrEmpty: 조회 실패는 빈 목록 — 여기서 예외를 올리면 판매자 시작이 깨진다")
+    void publishingIngressIdsOrEmpty_empty_whenListFails() throws IOException {
         Call<List<IngressInfo>> call = mock(Call.class);
         given(ingressServiceClient.listIngress(roomId.toString())).willReturn(call);
         given(call.execute()).willThrow(new IOException("네트워크 실패"));
 
-        assertThat(liveKitMediaManager.isIngressActive(roomId)).isFalse();
+        assertThat(liveKitMediaManager.publishingIngressIdsOrEmpty(roomId)).isEmpty();
     }
 
     @Test
@@ -747,6 +749,55 @@ public class LiveKitMediaManagerTest {
         given(call.execute()).willThrow(new IOException("연결 실패"));
 
         assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomIngress(roomId));
+    }
+
+    @Test
+    @DisplayName("listAllRooms: 생성 시각은 초 필드에서 읽는다 — 밀리초 필드는 서버가 안 채울 수 있다")
+    void listAllRooms_mapsFields() throws IOException {
+        // creationTimeMs 는 나중에 추가된 필드라 구버전 서버는 안 채운다. 그쪽만 읽으면 전건이 "나이 모름"
+        // 으로 skip 돼 이 잡이 조용히 무동작이 된다 — 좀비 방의 유일한 회수 주체라 치명적이다.
+        Room alive = Room.newBuilder()
+                .setName(roomId.toString())
+                .setNumParticipants(3)
+                .setCreationTime(1_760_000_000L)   // 초 필드만 채워진 서버
+                .build();
+        Room unknownTime = Room.newBuilder()
+                .setName(UUID.randomUUID().toString())
+                .setCreationTimeMs(1_760_000_000_000L)  // 밀리초만 있고 초는 0 → 나이 모름으로 본다
+                .build();
+        Call<List<Room>> call = mock(Call.class);
+        given(roomServiceClient.listRooms(null)).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(alive, unknownTime)));
+
+        var summaries = liveKitMediaManager.listAllRooms();
+
+        assertThat(summaries.get(0).roomName()).isEqualTo(roomId.toString());
+        assertThat(summaries.get(0).participants()).isEqualTo(3);
+        // 초 단위다 — ingress/egress 의 나노초용 변환을 재사용하면 1970 이 되어 유예가 항상 통과한다
+        assertThat(summaries.get(0).createdAt()).isEqualTo(Instant.ofEpochSecond(1_760_000_000L));
+        assertThat(summaries.get(1).createdAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("listAllRooms: 조회 실패는 예외 — 빈 목록으로 삼키면 '정리할 방 없음'으로 읽힌다")
+    void listAllRooms_throwsOnFailure() throws IOException {
+        Call<List<Room>> call = mock(Call.class);
+        given(roomServiceClient.listRooms(null)).willReturn(call);
+        Response failed = mock(Response.class);
+        given(failed.isSuccessful()).willReturn(false);
+        given(call.execute()).willReturn(failed);
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listAllRooms());
+    }
+
+    @Test
+    @DisplayName("listAllRooms: 성공 응답의 null body 도 예외 — 파괴적 판정의 입력이라 '없음'으로 보면 안 된다")
+    void listAllRooms_throwsOnNullBody() throws IOException {
+        Call<List<Room>> call = mock(Call.class);
+        given(roomServiceClient.listRooms(null)).willReturn(call);
+        given(call.execute()).willReturn(Response.success((List<Room>) null));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listAllRooms());
     }
 
     @Test

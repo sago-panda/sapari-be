@@ -27,7 +27,7 @@ import com.sapari.live.port.ReconcileExpiredReadyUseCase;
  * Ready 고착 방 정리 — 오래된 Ready 방을 만료시키되, <b>OBS 가 실제로 송출 중인 방은 만료가 아니라
  * 뒤늦게 Live 로 승격</b>시킨다.
  *
- * <p>승격 분기가 필요한 이유: 이 잡의 주 표적 중 하나가 "OBS 선연결 + {@code isIngressActive} 조회 실패"로
+ * <p>승격 분기가 필요한 이유: 이 잡의 주 표적 중 하나가 "OBS 선연결 + {@code publishingIngressIdsOrEmpty} 조회 실패"로
  * {@code ingress_started} 랑데부를 놓친 방인데(재전송될 이벤트가 없다), 그 방은 <b>지금도 publish 중</b>이다.
  * 만료시키면 ingress 를 지우고 SFU 방을 닫아 판매자 송출을 끊는다. 실패한 랑데부를 여기서 완성하는 게 맞다.
  *
@@ -35,7 +35,7 @@ import com.sapari.live.port.ReconcileExpiredReadyUseCase;
  * 도중에 재연결한 방이 스냅샷에 없어 그대로 만료된다. 호출이 후보 수만큼 늘지만 후보는 보통 0건이고,
  * 후보가 있으면 어차피 방마다 정리 3종을 부른다.
  *
- * <p>{@code isIngressActive} 가 아니라 {@code listRoomIngress} 를 쓰는 것도 의도다 — 전자는 조회 실패 시
+ * <p>{@code publishingIngressIdsOrEmpty} 가 아니라 {@code listRoomIngress} 를 쓰는 것도 의도다 — 전자는 조회 실패 시
  * {@code false} 라 go-live 기준으로는 안전하지만, 여기서는 "만료해라"로 읽혀 정반대가 된다.
  *
  * <p>판정은 <b>세 갈래</b>다. 방이 인정하는 ingress 가 송출 중이면 승격, 송출이 아예 없으면 만료,

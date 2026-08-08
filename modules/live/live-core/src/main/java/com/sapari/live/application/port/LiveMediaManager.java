@@ -7,12 +7,25 @@ public interface LiveMediaManager {
     SfuRoomResult createRoom(UUID roomId);
     String issueSellerToken(UUID roomId, UUID sellerId);
     IngressResult createIngress(UUID roomId, UUID sellerId);
-    /** 해당 방의 RTMP ingress 가 실제로 송출 중인지(OBS 연결·publish 중). 시작 시점 랑데부 판정에 쓴다. */
-    boolean isIngressActive(UUID roomId);
+    /**
+     * 이 방에서 <b>실제 송출 중인 ingress 의 id</b>. 시작 시점 랑데부(판매자가 시작을 누른 순간 OBS 가 이미
+     * 붙어 있는 경우) 판정에 쓴다. <b>조회 실패는 빈 목록</b>이다(fail-open).
+     *
+     * <p>{@link #listRoomIngress(UUID)} 와 조회 대상은 같고 <b>실패 방향만 반대</b>다 — 여기서 예외를 올리면
+     * LiveKit 이 잠깐 흔들릴 때 판매자의 방송 시작 자체가 깨진다. 빈 목록이면 승격하지 않고 {@code Ready} 로
+     * 저장되며, 곧 도착할 {@code ingress_started} webhook 이 전이를 이어받는다. 파괴적 판단(만료·삭제)의
+     * 입력으로는 절대 쓰지 말 것 — 그쪽은 "모름"이 "지워라"로 읽힌다.
+     *
+     * <p><b>불리언이 아닌 이유</b>: 승격은 <b>방이 인정하는 ingress</b>가 송출 중일 때만 해야 한다. "누가
+     * 송출 중인가"를 모르면 경합 패자 ingress 로도 승격되는데, 그 ingress 는 고아 미디어 잡이 회수하므로
+     * <b>우리가 곧 끊을 방송을 시작시키는 꼴</b>이 된다. webhook·배치 경로와 같은 대조를 여기서도 하려면
+     * id 가 필요하다.
+     */
+    List<String> publishingIngressIdsOrEmpty(UUID roomId);
     /**
      * 이 방 이름으로 등록된 ingress <b>전부</b>(각각 송출 중인지 포함). 조회 실패는 <b>예외</b>다.
      *
-     * <p>{@link #isIngressActive(UUID)} 와 실패 방향이 반대라 따로 둔다 — 시작 랑데부는 모르면 승격하지 않는 게
+     * <p>{@link #publishingIngressIdsOrEmpty(UUID)} 와 실패 방향이 반대라 따로 둔다 — 시작 랑데부는 모르면 승격하지 않는 게
      * 안전하지만(false), 만료 배치는 모르면 <b>만료해 버리는</b> 게 되어 송출 중인 방의 ingress 를 지운다.
      * 파괴적 판단의 입력으로는 반드시 이쪽을 쓸 것.
      *
@@ -47,4 +60,13 @@ public interface LiveMediaManager {
     String getSfuUrl();
     List<IngressSummary> listAllIngress();
     List<EgressSummary> listAllEgress();
+    /**
+     * LiveKit 에 살아 있는 SFU 방 <b>전부</b>. 실패는 <b>예외</b>다({@link #listAllIngress()} 와 같은 이유 —
+     * 빈 목록이 "정리할 방 없음"으로 읽혀 배치가 조용히 성공 종료한다).
+     *
+     * <p>이게 필요한 이유: 판매자 토큰은 TTL 이 6시간이고 <b>폐기 수단이 없다</b>. 종료 시 방을 지워도
+     * 그 토큰으로 다시 join 하면 LiveKit 이 방을 되살린다. 그 방은 ingress 도 egress 도 만들지 않으므로
+     * 위 두 목록에는 <b>잡히지 않는다</b> — 이 조회가 없으면 회수 주체가 아예 없다.
+     */
+    List<RoomSummary> listAllRooms();
 }

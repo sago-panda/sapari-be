@@ -26,6 +26,7 @@ import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
+import com.sapari.live.application.port.RoomSummary;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -88,12 +89,178 @@ class ReconcileOrphanMediaServiceTest {
         return new LiveStatus.Live(Instant.parse("2026-06-10T09:00:00Z"), "sfu-1", "eg-1", "https://hls/1");
     }
 
-    /** 목록 스텁 — 두 조회는 매 회차 반드시 불린다. */
+    /** 목록 스텁 — 세 조회는 매 회차 반드시 불린다. */
     private void givenLiveKit(List<IngressSummary> ingresses, List<EgressSummary> egresses) {
+        givenLiveKit(ingresses, egresses, List.of());
+    }
+
+    private void givenLiveKit(
+            List<IngressSummary> ingresses, List<EgressSummary> egresses, List<RoomSummary> sfuRooms) {
         given(timeProvider.now()).willReturn(NOW);
         given(liveMediaManager.listAllIngress()).willReturn(ingresses);
         given(liveMediaManager.listAllEgress()).willReturn(egresses);
+        given(liveMediaManager.listAllRooms()).willReturn(sfuRooms);
     }
+
+    private RoomSummary sfuRoom(int participants, Instant createdAt) {
+        return new RoomSummary(roomId.toString(), participants, createdAt);
+    }
+
+    // ---------- SFU 방 ----------
+
+    @Test
+    @DisplayName("방 — 종료된 방이 LiveKit 에 살아 있으면 닫는다 (판매자 토큰 재입장으로 되살아난 방)")
+    void room_endedRoomAliveInLiveKit_isClosed() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(1, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(ended(), new LiveStreamType.WebRtc(), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(times(1)).closeRoom(roomId.toString());
+    }
+
+    @Test
+    @DisplayName("방 — 참가자가 있어도 닫는다: 참가자 0 만 지우면 이 잡의 표적(되돌아온 판매자)을 놓친다")
+    void room_closedEvenWithParticipants() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(3, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(ended(), new LiveStreamType.WebRtc(), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(times(1)).closeRoom(roomId.toString());
+    }
+
+    @Test
+    @DisplayName("방 — 종료되지 않은 방은 닫지 않는다: 닫으면 진행 중인 방송이 끊긴다")
+    void room_openRoom_isNeverClosed() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(2, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(live(), new LiveStreamType.WebRtc(), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+    }
+
+    @Test
+    @DisplayName("방 — 예약 상태에서 createRoom 만 끝난 방은 닫지 않는다: 시작하려는 방송을 끊는다")
+    void room_scheduledRoom_isNeverClosed() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(0, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(new LiveStatus.Scheduled(NOW), new LiveStreamType.WebRtc(), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+    }
+
+    @Test
+    @DisplayName("방 — 유예 시간 안에 만들어진 방은 닫지 않는다")
+    void room_withinGrace_isNeverClosed() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(0, RECENT)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(ended(), new LiveStreamType.WebRtc(), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+    }
+
+    @Test
+    @DisplayName("방 — 생성 시각을 모르면 닫지 않는다: 나이를 못 재면 유예를 지켰는지도 모른다")
+    void room_unknownCreatedAt_isNeverClosed() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(0, null)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(ended(), new LiveStreamType.WebRtc(), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+    }
+
+    @Test
+    @DisplayName("방 — DB 에 없는 방은 닫지 않는다 (예약 저장 전이거나 남의 리소스)")
+    void room_unknownToDb_isNeverClosed() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(0, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId))).willReturn(List.of());
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+    }
+
+    @Test
+    @DisplayName("방 — 우리 이름 규칙이 아니면 DB 조회도 하지 않고 건너뛴다")
+    void room_nonUuidName_isIgnored() {
+        givenLiveKit(List.of(), List.of(), List.of(new RoomSummary("not-a-uuid", 5, OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+        then(liveRoomRepository).should(never()).findAllByIds(any());
+    }
+
+    @Test
+    @DisplayName("방 — 대문자 표기는 우리 방이 아니다: UUID 파싱은 통과해도 남의 방을 지우게 된다")
+    void room_nonCanonicalName_isIgnored() {
+        // UUID.fromString 은 대문자·축약형도 받아 다른 문자열로 정규화한다. 걸러내지 않으면 남의 방 이름이
+        // 우리 roomId 의 변형일 때 DB 는 우리 Ended 방으로 매칭되고 삭제는 그 이름으로 나간다.
+        String upperCased = roomId.toString().toUpperCase();
+        givenLiveKit(List.of(), List.of(), List.of(new RoomSummary(upperCased, 2, OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+        then(liveRoomRepository).should(never()).findAllByIds(any());
+    }
+
+    @Test
+    @DisplayName("방 — 닫을 때는 LiveKit 이 준 원문이 아니라 DB 유래 값을 넘긴다")
+    void room_closedWithDbDerivedName() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(1, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(ended(), new LiveStreamType.WebRtc(), OLD)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(times(1)).closeRoom(roomId.toString());
+    }
+
+    @Test
+    @DisplayName("방 — 조회 실패는 회차를 중단시킨다: 빈 목록으로 삼키면 정리할 방이 없다고 읽힌다")
+    void room_lookupFailure_abortsRound() {
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveMediaManager.listAllIngress()).willReturn(List.of());
+        given(liveMediaManager.listAllEgress()).willReturn(List.of());
+        given(liveMediaManager.listAllRooms()).willThrow(new LiveMediaException("조회 실패"));
+
+        assertThatThrownBy(() -> service.reconcile()).isInstanceOf(LiveMediaException.class);
+
+        then(liveMediaManager).should(never()).closeRoom(anyString());
+    }
+
+    @Test
+    @DisplayName("방 조회가 실패해도 ingress·egress 회수는 끝나 있다 — 그쪽이 과금이 이어지는 방향이다")
+    void room_lookupFailure_doesNotBlockMediaCleanup() {
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveMediaManager.listAllIngress())
+                .willReturn(List.of(new IngressSummary("ing-1", roomId.toString(), false)));
+        given(liveMediaManager.listAllEgress())
+                .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), true, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(ended(), new LiveStreamType.Rtmp("ing-1"), OLD)));
+        given(liveMediaManager.listAllRooms()).willThrow(new LiveMediaException("조회 실패"));
+
+        assertThatThrownBy(() -> service.reconcile()).isInstanceOf(LiveMediaException.class);
+
+        // 세 조회를 한꺼번에 받고 시작하면 여기가 통째로 건너뛰어진다
+        then(liveMediaManager).should(times(1)).deleteIngress(roomId, "ing-1");
+        then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
+    }
+
+
 
     // ---------- ingress ----------
 
@@ -201,7 +368,6 @@ class ReconcileOrphanMediaServiceTest {
     void nonUuidRoomName_isSkipped() {
         givenLiveKit(List.of(new IngressSummary("ing-1", "not-a-uuid", false)),
                 List.of(new EgressSummary("eg-1", "not-a-uuid", true, OLD)));
-        given(liveRoomRepository.findAllByIds(Set.of())).willReturn(List.of());
 
         service.reconcile();
 
