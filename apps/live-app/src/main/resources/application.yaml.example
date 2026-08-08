@@ -1,0 +1,148 @@
+# live-app 설정 템플릿.
+#
+# application*.yaml 은 .gitignore 대상이라 저장소에 없다 — 그래서 "어떤 키가 필요한지"를 아는 방법이
+# 이 파일뿐이다. 키를 추가·삭제하면 여기도 같이 고칠 것.
+#
+# 사용법: cp application.yaml.example application.yaml 후 아래 값을 채운다.
+#
+# ⚠️ 표기 규칙
+#   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다.
+#   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
+#
+# ⚠️ 이 파일에 실제 자격증명을 넣지 말 것. 전부 자리표시자다.
+
+spring:
+  application:
+    name: live-app
+
+  datasource:
+    url: ${LIVE_DB_URL:jdbc:postgresql://localhost:5432/sapari_db}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:}          # REQUIRED (운영)
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      # 스키마는 마이그레이션 Job(infra/migration)이 만든다. 앱은 검증만 — update 로 두면
+      # Flyway 가 만든 스키마를 Hibernate 가 임의로 고친다.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: true
+
+  task:
+    scheduling:
+      pool:
+        # 정리 잡 3종이 서로를 막지 않게. 1이면 LiveKit 이 느린 회차에 뒤 잡이 밀린다.
+        size: 3
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+server:
+  port: ${SERVER_PORT:8081}                  # api-app(8080)과 동시 실행되도록 분리
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+  packages-to-scan: com.sapari
+
+# ---------------------------------------------------------------------------
+# 인증 토큰(HMAC) — live-app 은 발급하지 않고 검증만 한다.
+# secret 은 api-app 과 같은 값이어야 서명 검증이 통과한다.
+# refresh-token-expiration-seconds 는 JwtProperties 의 @NotNull 충족용(여기서는 미사용).
+# ---------------------------------------------------------------------------
+jwt:
+  issuer: ${JWT_ISSUER:sapari-api}
+  secret: ${JWT_SECRET:}                     # REQUIRED — 이 키로 임의의 access 토큰을 만들 수 있다
+  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:3600}
+  refresh-token-expiration-seconds: ${JWT_REFRESH_TOKEN_EXPIRATION_SECONDS:1209600}
+
+live:
+  # -------------------------------------------------------------------------
+  # 채팅 입장용 룸 토큰(RS256) — live 가 개인키로 서명, chat 이 공개키로 검증.
+  # 위 jwt(HMAC)와 키·알고리즘·aud 가 모두 다르며 서로 대체 불가.
+  # -------------------------------------------------------------------------
+  room-token:
+    issuer: ${LIVE_ROOM_TOKEN_ISSUER:live}
+    audience: ${LIVE_ROOM_TOKEN_AUDIENCE:chat}
+    # 짧게 유지(60~120s). jti 가 없어 창 안에서는 재사용이 가능하므로 창 자체가 방어다.
+    expiration-seconds: ${LIVE_ROOM_TOKEN_EXPIRATION_SECONDS:90}
+    # REQUIRED — Base64(PKCS#8 DER), PEM 헤더·개행 제외.
+    # 기본값을 두지 말 것: resources 에 들어간 값은 jar 에 실려 배포된다(운영에서 env 로 덮어써도 남는다).
+    private-key: ${LIVE_ROOM_TOKEN_PRIVATE_KEY:}
+
+  # -------------------------------------------------------------------------
+  # 고아 라이브 정리 스케줄러 (전부 optional — 코드 기본값 있음)
+  #
+  # 잡마다 enabled 를 나눈 건 end-stale-live 만 따로 끄기 위해서다 — 셋 중 유일하게 살아 있을지도
+  # 모르는 방송을 강제 종료하므로, 오작동이 의심되면 그것만 내린다.
+  # cron 은 세 잡이 동시에 LiveKit 을 때리지 않게 3분씩 어긋내 둔다(정렬하지 말 것).
+  #
+  # ※ live-app 단일 레플리카 전제 — 늘리면 잡이 중복 실행된다(멱등이라 오류는 아니나 낭비).
+  #    확장 전에 ShedLock 을 붙일 것.
+  # -------------------------------------------------------------------------
+  reconcile:
+    enabled: ${LIVE_RECONCILE_ENABLED:true}  # 마스터 스위치 — off 면 @EnableScheduling 과 잡 빈이 전부 내려간다
+    batch-size: ${LIVE_RECONCILE_BATCH_SIZE:100}
+    # OBS 가 끝내 연결되지 않아 Ready 에 갇힌 방 → Ended (송출 중이면 대신 Live 로 승격)
+    expire-ready:
+      enabled: ${LIVE_RECONCILE_EXPIRE_READY_ENABLED:true}
+      threshold: ${LIVE_RECONCILE_READY_THRESHOLD:60m}
+      cron: ${LIVE_RECONCILE_EXPIRE_READY_CRON:0 0/10 * * * *}
+      # 이 잡만 후보마다 LiveKit 을 왕복한다 — 공용 batch-size(100)면 최악 25분으로 cron 주기를 넘긴다.
+      batch-size: ${LIVE_RECONCILE_EXPIRE_READY_BATCH_SIZE:20}
+    # 방송은 끝났는데 room_finished 유실로 Live 에 갇힌 방 → Ended
+    end-stale-live:
+      enabled: ${LIVE_RECONCILE_END_STALE_LIVE_ENABLED:true}
+      threshold: ${LIVE_RECONCILE_STALE_LIVE_THRESHOLD:60m}
+      cron: ${LIVE_RECONCILE_END_STALE_LIVE_CRON:0 3/10 * * * *}
+    # DB 정본과 어긋난 LiveKit ingress/egress/room 회수.
+    # grace 는 생성 직후 정상 리소스를 지우지 않기 위한 유예라 0 이 될 수 없다.
+    orphan-media:
+      enabled: ${LIVE_RECONCILE_ORPHAN_MEDIA_ENABLED:true}
+      grace: ${LIVE_RECONCILE_MEDIA_GRACE:15m}
+      cron: ${LIVE_RECONCILE_ORPHAN_MEDIA_CRON:0 6/10 * * * *}
+
+  # -------------------------------------------------------------------------
+  # webhook 수신 경로 레이트리밋 (전부 optional — 코드 기본값 있음)
+  #
+  # 이건 트래픽 셰이퍼가 아니라 최악의 CPU 소모에 거는 상한이다. 정상 트래픽 부근으로 내리지 말 것 —
+  # /webhooks/livekit 은 permitAll 이라 한도가 곧 미인증 공격자의 비용이고, 낮추면 공격자가 그 rps
+  # 만으로 정상 ingress_started 를 429 로 굶길 수 있다. rps 제한은 앞단(Ingress/WAF)의 몫이다.
+  # 앞단에 이미 걸려 있으면 enabled: false 로 내려도 된다.
+  # -------------------------------------------------------------------------
+  webhook:
+    rate-limit:
+      enabled: ${LIVE_WEBHOOK_RATE_LIMIT_ENABLED:true}
+      permits-per-second: ${LIVE_WEBHOOK_RATE_LIMIT_PERMITS:500}
+      burst: ${LIVE_WEBHOOK_RATE_LIMIT_BURST:1000}   # permits-per-second 이상이어야 부팅된다
+
+# ---------------------------------------------------------------------------
+# LiveKit
+#
+# host / hls.cdn-base-url 은 루프백이 아니면 https 여야 부팅된다(소문자 스킴). 평문이면 매 호출마다
+# S3 자격증명과 API JWT 가 그대로 노출되고, cdn-base-url 은 시청자에게 나가는 재생 URL 이다.
+# api-key / api-secret 은 기본값을 두지 말 것 — host 와 달리 코드가 막아주지 않아 조용히 뜬다.
+# ---------------------------------------------------------------------------
+livekit:
+  host: ${LIVEKIT_HOST:http://127.0.0.1:7880}
+  api-key: ${LIVEKIT_API_KEY:}               # REQUIRED
+  api-secret: ${LIVEKIT_API_SECRET:}         # REQUIRED — 임의 방 publish 토큰 발급 + webhook 서명 위조가 가능
+  s3:
+    bucket: ${S3_BUCKET:}                    # REQUIRED
+    region: ${S3_REGION:ap-northeast-2}
+    key-prefix: ${S3_KEY_PREFIX:live/}
+    access-key: ${S3_ACCESS_KEY:}            # REQUIRED
+    secret-key: ${S3_SECRET_KEY:}            # REQUIRED
+  hls:
+    cdn-base-url: ${HLS_CDN_URL:http://localhost:8081/live}
+    segment-duration: 2                      # 세그먼트 길이(초)
