@@ -1,258 +1,131 @@
 # live — broadcast domain
 
-Live broadcast (seller streaming + viewer entry). **Reference implementation** — copy this structure for
-a new domain. Root `AGENTS.md` owns the cross-cutting rules (hexagonal, immutable record + sealed status,
-`TimeProvider`, validation); this file is **live-specific** only.
+Reference implementation for a new domain. Root `AGENTS.md` owns the cross-cutting rules; this file is
+live-specific only. ✅ create / start (WebRTC·RTMP) / enter / end / list / reconciliation. 🚧 chat.
 
-✅ broadcast: create / start (WebRTC·RTMP) / enter / end / get-list / orphan reconciliation — done & tested.
-🚧 chat — not started. `infrastructure/` adapters: `media/` (LiveKit) · `persistence/` · `redis/` · `config/`.
+## State machine — `LiveStatus` (sealed)
 
-## State Machine — `LiveStatus` (sealed)
-
-`Scheduled → Live → Ended`; `Ready` is an RTMP-only waypoint, `Suspended` a side branch. State lives in
-the record; transitions return a new `LiveRoom`; guards gate every one (never set status directly).
+State lives in the record; transitions return a new `LiveRoom`; a guard gates every one.
 
 | From | Method | To | Guard |
 |---|---|---|---|
 | `create()` | — | `Scheduled` | — |
 | `Scheduled` | `startLive()` (WebRTC) | `Live` | `canStartLive()` |
 | `Scheduled` | `arm()` (RTMP) | `Ready` | `Scheduled` only |
-| `Ready` | `goLiveFromReady()` (RTMP) | `Live` | `canGoLiveByRtmp()` |
+| `Ready` | `goLiveFromReady()` | `Live` | `canGoLiveByRtmp()` |
 | `Ready` | `expire()` (batch) | `Ended` | `canExpire()` |
-| `Live` | `enter` (read) | — | `canEnterLive()` → hlsUrl |
+| `Live` | `enter` (read) | — | `canEnterLive()` |
 | `Live`/`Suspended` | `endLive()` | `Ended` | `canEndLive()` |
 
-- `expire()` is the batch-only exit for rooms OBS never connected to — the time threshold is batch policy,
-  so the guard checks state only. No `RoomEnded` event (never was `Live` → no chat session to close).
-- `Ready` carries only `scheduledAt` (reuses the `scheduled_at` column; `status` has no CHECK → adding a state needs no migration).
-- `Suspended.startedAt`: `null` if suspended before broadcast, else `Live.startedAt`. **No transition INTO
-  `Suspended` is built** (the record + `endLive()` exit exist; admin suspend is future work).
-- Adding a state = update `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum together (the compiler forces the switches; no `default` branches).
+- `Ended` is terminal. `expire()` publishes no `RoomEnded` — the room was never `Live`, so chat has no session.
+- No transition INTO `Suspended` exists yet (record + exit only).
+- Adding a state = `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum, together.
 
-## Media (SFU / HLS) — port-isolated
+## Media ports — pick the failure direction
 
-All LiveKit via `LiveMediaManager` (port) ← `LiveKitMediaManager` (adapter); never call the SDK from a
-service. Surface: `createRoom`, `issueSellerToken`, `createIngress`, `publishingIngressIdsOrEmpty` /
-`listRoomIngress` (**same lookup, opposite failure direction — see below**), `startHlsEgress`,
-`stopHlsEgress` (room-wide; a broadcast runs one egress per rendition, so there is no single-egress stop),
-`deleteIngress` (room-wide / single-id), `closeRoom`, `getSfuUrl`, `listAllIngress`, `listAllEgress`.
+All LiveKit through `LiveMediaManager`. Never touch the SDK from a service.
 
-**Cleanup calls are best-effort, query calls fail-fast.** `deleteIngress`/`stopHlsEgress`/`closeRoom` log
-and move on (leftovers are reconciliation's job), but `listAllIngress`/`listAllEgress`/`listAllRooms`/
-`listRoomIngress` **throw** — an empty answer reads as "no orphans" / "not publishing" and would let a batch
-finish green, or destroy a live room, on a failed lookup. `publishingIngressIdsOrEmpty` is the fail-*open*
-twin (empty on failure): safe for the go-live rendezvous, wrong anywhere an empty answer triggers deletion.
-Pick by which direction is destructive.
+**An answer that can destroy a broadcast fails loud; one that only withholds a promotion fails quiet.**
 
-**Null body on a 200 is read differently by the two kinds of lookup, on purpose.** Per-*room* lookups
-(`listRoomIngress`, `publishingIngressIdsOrEmpty`) treat it as **empty** — rooms legitimately have no
-ingress, and throwing there kills the round on every expiry candidate. The three global sweeps treat it as
-**failure**: nothing distinguishes "the whole cluster is empty" from "the client is pointed at another one",
-and the decision it feeds deletes things.
+- Cleanup swallows (`deleteIngress`, `stopHlsEgress`, `closeRoom`) — leftovers are reconciliation's job.
+- Global sweeps throw (`listAllIngress`, `listAllEgress`, `listAllRooms`); a misconfigured client answers
+  `200 + []`, so **null body = failure** here.
+- Per-room: `listRoomIngress` throws (feeds deletion), `publishingIngressIdsOrEmpty` returns empty on failure
+  (feeds go-live only). **Null body = empty** — rooms legitimately have no ingress.
 
-**Staging gate for `listAllRooms`**: run one round against a cluster **with at least one live room** and
-confirm `closed=0` is because nothing qualified, not because `createdAt` came back null — LiveKit exposes
-creation time as both seconds and millis, the millis field is newer, and reading the one the server does not
-populate turns this sweep into a silent no-op. A skipped room now logs a warning; that log must be absent.
+**Start-side media calls sit inside `@Transactional` on purpose** — reviewers must not flag them; `egressId`
+has to commit with the room. The row lock is held across media I/O, bounded by `callTimeout` 15s per call.
+**End-side cleanup runs after commit** (`PostCommitMediaCleanup`), safe only because the orphan-media job
+reclaims crash leftovers.
 
-**Start-side media calls run inside `@Transactional` on purpose (`StartLiveService`, `GoLiveByRtmpService`)
-— reviewers must NOT flag these.** They run *after* re-validation so we never hit the server in a bad state,
-and `egressId` has to commit with the room, so they can't move off the lock. Accepted risk: the connection
-**and the row lock** are held across media I/O, bounded by `callTimeout` (15s **per call** in `LiveKitConfig`,
-so `startHlsEgress`'s three sequential calls can hold ~45s). Capping the *waiting* side with a PostgreSQL
-`lock_timeout` is still open — JPA's `jakarta.persistence.lock.timeout` hint is **not** it (PostgreSQL takes
-only `NOWAIT`/`SKIP LOCKED`; a numeric wait is silently dropped), and `application*.yml` isn't tracked, so it
-would have to be a `HikariConfig` bean. On rollback after `startHlsEgress`, `EgressRollbackCompensation`'s
-`afterCompletion` hook stops it (delicate — the rollback-status check + intentional catch-log are load-bearing;
-don't "fix" them).
+Starting requires **exactly one** pinned product, both modes.
 
-**End-side cleanup runs *after* commit** (`PostCommitMediaCleanup`, shared by `EndLiveService`/
-`ExpireOrphanLiveService`/`EndStaleLiveService`) — nothing there must commit with the room, so holding the
-lock across it bought nothing. Leftovers from a crash between commit and cleanup are the orphan-media job's
-to reclaim; that job existing is what made the move safe. Outside a transaction it cleans up immediately —
-unlike `RoomEnded`, skipping isn't the safe default (egress keeps billing).
+## RTMP (OBS input)
 
-**Pinned product:** starting requires **exactly one** pinned product (`validatePinnedProduct`), both modes.
+Stream type is not fixed at reservation (defaults `WebRtc`). **Go-live has two independently-ordered steps**:
+seller `arm` → `Ready`, and OBS connect → `ingress_started` webhook. Whichever lands second triggers `Live`,
+so both sides must reach the same outcome — if they diverge, the room's fate depends on arrival order.
 
-## RTMP (OBS / pro-encoder input)
-
-WebRTC = browser token publish; RTMP = OBS pushes via LiveKit Ingress. Stream type is **not** fixed at
-reservation (defaults `WebRtc`). **Go-live has two independently-ordered steps** — seller start (`arm` →
-`Ready`) and OBS connect (`ingress_started` webhook → `GoLiveByRtmpService`); whichever lands **second**
-triggers `Live`, so both sides are idempotent no-ops when the room isn't `Ready+RTMP`.
-
-- **streamKey is a credential — never store or log.** Only `ingressId` persists; streamKey is returned
-  **once** (re-fetch = LiveKit `listIngress`) and masked in `toString()`. Same reason `IngressSummary`
-  carries neither `streamKey` nor `url`.
-- `PrepareIngressService` keeps `createIngress` **outside any transaction**, so its `canPrepareIngress`/
-  `isRtmp` checks are snapshot reads and can't be exclusive. Assignment is therefore a **conditional UPDATE**
-  (`RtmpIngressAssigner` → `assignRtmpIngressIfAbsent`): `WHERE … live_status = SCHEDULED AND ingress_id IS
-  NULL` makes the DB pick a winner, and the loser deletes **its own** ingress (single-id — a room-wide delete
-  would take the winner's too). **This is the one path where the WHERE clause *is* the domain guard**; add a
-  `LiveStatus` variant and the compiler won't remind you about this query. Don't spread the pattern —
-  everywhere else, transitions serialize on a row lock. Same reason `IngressResult` validates `ingressId`
-  itself: the UPDATE writes the column directly, so `LiveStreamType.Rtmp`'s constructor never sees it and a
-  blank value would leave `stream_type=RTMP, ingress_id=NULL` — a row the mapper can no longer read.
-- **End cleanup deletes ingress room-wide, before `closeRoom`** — a surviving ingress lets OBS auto-reconnect
-  re-create the closed SFU room. Stale `ingress_id` stays on the Ended row by design (broadcast history).
+- **streamKey is a credential.** Never stored, never logged, returned once.
+- **Promotion requires the room to acknowledge the ingress** (`LiveRoom.hasIngress`) — webhook, batch and
+  seller-start all match. A room can hold two live ingresses (a race loser whose delete failed); promoting on
+  an unacknowledged one starts a broadcast the orphan-media job then cuts.
+- `createIngress` runs outside any transaction, so `PrepareIngressService`'s guards are snapshot reads and
+  assignment is a conditional UPDATE (`assignRtmpIngressIfAbsent`). **The one place where a WHERE clause is
+  the domain guard** — add a `LiveStatus` variant and the compiler won't remind you. Don't spread it.
+- End cleanup deletes ingress room-wide **before** `closeRoom`; a survivor lets OBS re-create the room.
 
 ## Orphan reconciliation — three `@Scheduled` jobs (live-app)
 
-Rooms that never reach `endLive()` and LiveKit resources our cleanup missed. Triggers live in
-`liveapp/scheduler` (thin — `reconcile()` only); policy, loops and per-item exception skipping live in
-`live-core` services. Two of them move broadcasts, not just clean up: **`end-stale-live` can end one that is
-still on air (the switch to pull first)** and **`expire-ready` can start one** (see below).
+Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. Two of them move broadcasts:
+`expire-ready` can **start** one, `end-stale-live` can **end** one that is still on air.
 
-Config is split by layer, so no single class lists it all: `enabled`/`cron` are read by the schedulers
-(live-app), `threshold`/`grace`/`batch-size` by `LiveReconcileProperties` (live-core). Everything has a code
-default — `application*.yml` isn't tracked, so "unset" is the normal state.
-
-| Key (under `live.reconcile`) | Default |
+| Key (`live.reconcile`) | Default |
 |---|---|
-| `enabled` | on — master switch; off removes both `@EnableScheduling` and the job beans |
-| `<job>.enabled` · `<job>.cron` | on · staggered 10-min cycles (`0/10`, `3/10`, `6/10` — don't align them) |
-| `expire-ready.threshold` · `end-stale-live.threshold` | 60m |
-| `orphan-media.grace` | 15m |
-| `expire-ready.batch-size` | 20 — this job alone round-trips LiveKit **per candidate** |
-| `batch-size` | 100, used by `end-stale-live` (one bulk `listAllEgress` per round) |
+| `enabled` | on — master switch; drops `@EnableScheduling` and the job beans |
+| `<job>.enabled` · `<job>.cron` | on · staggered 10-min (`0/10`, `3/10`, `6/10` — keep them apart) |
+| `expire-ready.threshold` · `end-stale-live.threshold` · `orphan-media.grace` | 60m · 60m · 15m |
+| `expire-ready.batch-size` · `batch-size` | 20 (round-trips LiveKit per candidate) · 100 |
 
 | Job | Candidate | Decides by | Acts via |
 |---|---|---|---|
-| `ReconcileExpiredReadyService` | `READY`, `updated_at` (= arm time) old | **ingress publishing?** — if yes the room is on air | publishing → `GoLiveByRtmpService`; else `ExpireOrphanLiveUseCase` |
-| `ReconcileStaleLiveService` | `LIVE`, **`started_at`** old | **no active egress in LiveKit** | `EndStaleLiveUseCase` per room (publishes `RoomEnded`) |
-| `ReconcileOrphanMediaService` | every LiveKit ingress/egress/**room** | mismatch against DB (read-only) | single-id delete / room-wide stop / `closeRoom` |
+| `ReconcileExpiredReadyService` | `READY`, old `updated_at` | is **this room's** ingress publishing? | `goLiveByRtmp`, else `ExpireOrphanLiveUseCase` |
+| `ReconcileStaleLiveService` | `LIVE`, old **`started_at`** | no active egress in LiveKit | `EndStaleLiveUseCase` (publishes `RoomEnded`) |
+| `ReconcileOrphanMediaService` | every LiveKit ingress/egress/room | mismatch against DB | delete by id / stop / `closeRoom` |
 
-- **Ready-expiry can also *start* a broadcast.** A room whose `ingress_started` rendezvous was lost is still
-  publishing; expiring it would delete the ingress and close the SFU room mid-stream, so the job completes
-  the missed rendezvous instead. Judge **per room, right before touching it** (`listRoomIngress`) — a
-  once-per-round snapshot lets a room that reconnects mid-round get expired anyway.
+- Judge **per room, right before touching it** — a once-per-round snapshot expires rooms that reconnected.
+- Expire-ready has **three** outcomes: promote / expire / **leave alone** (publishing, but not this room's).
+- **A global sweep returning zero is not evidence.** `end-stale-live` aborts the round when the whole cluster
+  reports no active egress. Cost: an idle cluster never gets swept — accepted, the other direction cuts live
+  broadcasts. Don't drop the guard; verify per room instead.
+- **`BUFFERING` counts as publishing** — that is a reconnecting OBS.
+- **A publishing ingress is spared only while the room acknowledges it** — unacknowledged ones are reclaimed
+  mid-publish. Waiting for `Ended` instead would deadlock: only this job can get the room there.
+- **The seller's LiveKit token (6h, unrevocable) can recreate a closed room.** It has no ingress and no egress,
+  so only `listAllRooms` sees it. Judge on **DB status only** — gating on participant count spares exactly the
+  case this targets. A shorter TTL is not a substitute; it needs a refresh endpoint first.
+- **Never judge staleness by viewer count** — HLS viewers are not SFU participants. `started_at`, not `updated_at`.
+- **When in doubt, don't delete.** No DB row → log only; grace covers the create-then-save window.
+- Per-room work is a separate bean so `@Transactional` + row lock apply. **Single replica assumed** — add
+  ShedLock before scaling out.
+- Deploy gate: one round against a cluster **with a live room**, and no "생성 시각을 알 수 없어" warning —
+  LiveKit exposes creation time in two fields, and reading the unpopulated one makes this a silent no-op.
 
-- **Ask the room, don't pick from the list.** `listRoomIngress` returns every ingress with a publishing
-  flag, not a boolean, because a room can have two live ingresses (a race loser whose cleanup failed).
-  Promotion requires the room to *acknowledge* one of them (`LiveRoom.hasIngress`), and that same id goes
-  to `goLiveByRtmp` — the webhook entry point, not a second one. A batch-only "already checked, skip the
-  match" entry is exactly how the guard goes missing on one side. **The seller-start rendezvous
-  (`StartLiveService`) matches too**, via the fail-open twin — otherwise the room's fate would depend on
-  which side arrived second, the one thing the two-independently-ordered-steps contract forbids. Promoting
-  on an unacknowledged ingress is not a security hole (only that seller can create ingresses for their room)
-  but a **self-contradiction**: the orphan-media job reclaims that ingress, so we would be starting a
-  broadcast we are about to cut. Publishing-but-not-ours is a **third
-  outcome**: neither promote (an unacknowledged ingress would start the broadcast) nor expire (it would cut
-  a live stream) — skip, and the orphan-media job reclaims it (see the protection rule below; waiting for
-  the room to reach `Ended` first would deadlock, since only this job could get it there).
+## LiveKit webhooks
 
-- **Registered-but-idle ≠ unknown to LiveKit.** That's why the port hands back *all* ingresses instead of
-  just the publishing ones. An RTMP room whose OBS never connected still has its ingress registered
-  (`INACTIVE`) — the normal expiry target. An RTMP room whose DB row names an `ingress_id` that LiveKit
-  reports **nothing** for means we're talking to the wrong cluster (a 200 + `[]` misconfig), and expiring
-  that batch would cut live broadcasts. Filtering to publishing-only collapses both into an empty list and
-  the distinction is gone. WebRtc rooms legitimately have none, so the guard is RTMP-only.
+`POST /webhooks/livekit`, `permitAll` — auth is the **body signature**, not Spring Security. Body is read
+through a bounded stream, not `@RequestBody byte[]`.
 
-- **`BUFFERING` counts as publishing.** It's what a reconnecting OBS looks like; treating only
-  `PUBLISHING` as live lets one unlucky snapshot drive a destructive decision.
+- **Signature alone does not stop replay** (the SDK accepts a missing `exp`). `createdAt` gates it: past 15m,
+  future 60s — asymmetric because retries keep the original `createdAt` and must survive a rolling deploy.
+- **A destructive handler (`egress_ended`, `room_finished`, …) requires event-id dedup in the same change.**
+  Today's only handler is a no-op unless the room is `Ready+RTMP`, and that is what caps replay damage.
+- Handlers belong to each feature, not the webhook package. **Must be idempotent.** Exceptions are logged and
+  still return 200 — a throw does not trigger re-send.
+- The rate limit is a **CPU ceiling, not availability protection** — nothing tells a forged request from a
+  real one before verifying it. Keep it far above real traffic; lowering it lets an attacker starve
+  `ingress_started` cheaply. rps limiting belongs upstream. Counter is per-instance.
 
-- **A bulk lookup that returns 200 + `[]` is not evidence.** `listAllEgress` only throws on transport
-  failure — a wrong host/apiKey answers empty, which reads as "every broadcast is dead" and would end the
-  whole candidate batch, after which the orphan-media job deletes their still-live ingress 15 min later.
-  So `end-stale-live` **aborts the round when the whole cluster reports zero active egress** (the check is
-  global, candidates included — it is a liveness probe for the lookup itself, not a per-candidate rule).
-  Known cost: on a genuinely idle cluster (every broadcast's egress already stopped) stale rows are never
-  swept — they keep accumulating until something else is live. Accepted because the failure is a stale DB
-  row (the egress is already gone, so nothing is billing), while the other direction cuts live broadcasts.
-  Don't "fix" it by dropping the guard; if the accumulation matters, verify per room instead.
+## Persistence & cache
 
-- **The seller's LiveKit token outlives the broadcast and cannot be revoked.** `issueSellerToken` takes the
-  SDK default TTL (6h) and grants `RoomJoin`+`CanPublish` on that room name, so re-joining after `closeRoom`
-  makes LiveKit recreate the room. That room has **no ingress and no egress**, so the two resource sweeps
-  above never see it — `listAllRooms` exists solely to give it a reclaimer. Judge on **DB status only**
-  (`Ended` ⇒ close): gating on participant count would spare exactly the case this targets, a seller who
-  came back. Shortening the TTL is not a substitute — it needs a token-refresh endpoint first, or a
-  mid-broadcast reconnect can no longer get a token.
+- Schema `live_schema`, Flyway-owned (`db/migration/live/`). Entity mutable, record immutable.
+- **Every state-transition read takes a row lock** (`findByIdForUpdate`, `findByIdAndSellerIdForUpdate`);
+  unlocked reintroduces the double-`startHlsEgress` race. Ownership stays **in the query** — a service-side
+  check would leak room existence. Hibernate emits **`for no key update`**, not `for update`; don't grep for
+  the latter and conclude the lock is missing.
+- `LiveRoomMapper`: `status`/`streamInfo` come from columns, not auto-mapping; `scheduledAt` lives inside the
+  status, so `updateEntityFromDomain` must write it from there or a re-save wipes it.
+- Ranking reads Redis only (`LiveRoomCache`), no DB.
 
-- **Never judge staleness by viewer count** — HLS viewers are not SFU participants (a popular room reads 0),
-  and a 0-viewer broadcast is normal. `started_at`, not `updated_at`: the latter moves on any save, so a
-  broadcast that gets edited would never be swept.
-- **When in doubt, don't delete.** A LiveKit resource with no DB row is logged only (`createIngress` done,
-  `save` pending looks exactly like that), and a grace period covers the same window. A publishing ingress is
-  spared too — **except when the room is already `Ended`**: that stream is a leftover of a failed end-cleanup,
-  and this job is the only thing that would ever reclaim it (the seller can keep pushing with a streamKey
-  they already hold, so egress keeps billing and the surviving ingress re-creates the closed SFU room).
-- Per-room work is a separate bean so `@Transactional` + row lock actually apply (self-invocation would not).
-  Orchestrators skip `InvalidLiveStateException`/`LiveNotFoundException` per item and let anything else abort
-  the round.
-- **Assumes a single live-app replica.** More replicas run every job N times — idempotent, so not incorrect,
-  but wasteful; add ShedLock before scaling out.
-- Ready-expiry's media cleanup overlaps `ReconcileOrphanMediaService` (it would sweep an `Ended` room's
-  leftovers anyway). Kept for immediacy; drop it if this ever needs a bulk `UPDATE … RETURNING`.
+## Room token — chat entry auth
 
-## LiveKit Webhooks — receiver + handler contract
+`enter` issues an RS256 token; distinct key/alg/`aud` from the api-app HMAC token, never interchangeable.
+Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp`.
+**email is PII** — never log the raw token. **Not single-use** — replayable within the TTL.
 
-`POST /webhooks/livekit` (live-app) for events our API can't observe. Auth = **body signature**, not Spring
-Security: the path is `permitAll` and `LiveKitWebhookVerifier` verifies the `Authorization` JWT over the raw
-bytes, read via a **bounded stream** (not `@RequestBody byte[]`) so chunked bodies can't buffer unbounded.
+## Errors & tests
 
-**Signature alone does not stop replay** — the SDK's JWT check passes when `exp` is absent, so a captured
-request stays valid forever. `createdAt` gates it: past 15m / future 60s, asymmetric on purpose (retries keep
-the *original* `createdAt`, so the past side must survive a rolling deploy; the future side buys no defence
-and only widens the attack window). Missing `createdAt` is **rejected** — verify one real staging event
-before deploying, since a server that never sets it would block every webhook and strand rooms in `Ready`.
-
-The path is rate limited (`WebhookRateLimitFilter`, `live.webhook.rate-limit.*`, kill switch included), but
-**that limit is a CPU ceiling, not availability protection** — nothing can tell a forged request from a real
-one before verifying the signature, so any pre-verification gate throttles both. It is therefore set two
-orders of magnitude above real traffic; lowering it toward real traffic hands an unauthenticated attacker a
-cheap way to starve `ingress_started`. rps limiting belongs upstream. The counter is per-instance, so the
-single-replica assumption above applies here too — extra replicas multiply the ceiling without dividing an
-attacker's cost.
-
-**Handlers are owned by each feature, not the webhook package** — a thin `@Component` trigger calling a
-domain use-case; logic stays in the service. **MUST be idempotent** (LiveKit re-sends/replays).
-
-**Adding a handler with a destructive effect (`egress_ended`, `room_finished`, …) requires event-id dedup
-in the same change.** The 15m window narrows replay, it doesn't remove it — today's only handler
-(`ingress_started`) is a no-op unless the room is `Ready+RTMP`, so a replay at worst does what OBS
-connecting does. A handler that *ends* a broadcast has no such ceiling. The service
-isolates + logs handler exceptions and still returns 200 (a throw does NOT trigger re-send) → loss-critical
-work self-guards via retry/reconciliation.
-
-## Persistence & Cache
-
-- Schema `live_schema` (DDL `db/migration/live/`, Flyway-owned). Entity mutable, record immutable;
-  `save()` upserts by `id` and mutation lives in `LiveRoomEntity` (`updateXxx`/`applyXxx`).
-- **Every state-transition read takes a row lock** (`@Lock(PESSIMISTIC_WRITE)`, tx-only) — an unlocked one
-  reintroduces the double-`startHlsEgress` race: `findByIdForUpdate` (webhook go-live, batch),
-  `findByIdAndSellerIdForUpdate` (seller start/end). Ownership stays **in the query** — a service-side
-  `sellerId` check would split "no such room" from "not yours" and leak room existence. Hibernate 7 +
-  PostgreSQL emits **`for no key update`**, not `for update` (don't grep for the latter and conclude the
-  lock is missing; two `for no key update` holders conflict, which is what serializes us). Lock-free
-  `findById`/`findByIdAndSellerId` remain for read paths and `PrepareIngressService` (no tx → lock is a no-op).
-- `LiveRoomMapper` (MapStruct) auto-maps flat fields; sealed `LiveStatus` ↔ `LiveRoomStatus` enum, variant
-  fields and mutators go through `default`/`@AfterMapping`. Two fields are **restored from columns, not
-  auto-mapped**: `status` and `streamInfo` (`toStreamInfo` → null when `sfu_room_id` is unset, since rows
-  legitimately exist between the reservation save and `createRoom`). `scheduledAt` lives in the status, not
-  top-level — `updateEntityFromDomain` sets `scheduled_at` **from the status** so a re-save doesn't wipe it.
-- Ranking reads cache only: `GetLiveService` → `findTopByViewers` over Redis (`LiveRoomCache`), no DB; keys
-  in `LiveRedisKeys` (package-private).
-
-## Room Token — chat (streaming-app) entry auth
-
-`enter` issues an **RS256 room token** (`live.room-token.private-key`, env-injected) — distinct key/alg/`aud`
-from the api-app HMAC auth token, never interchangeable. Unauth viewers get an **ephemeral GUEST** token;
-claims carry `role`, `owner` (`userId==sellerId`, chat's PII/notice gate) and a ~90s `exp`.
-
-- **email is PII** (JWT signed, not encrypted): never log the raw token; chat must not pass it as a query
-  param (access-log leak) — use a subprotocol / first frame.
-- **Not single-use**: short TTL, no jti → replayable in-window; true one-time needs jti + SETNX on chat (out of scope).
-- Undecided: `ADMIN` role source (api-app has only USER/SELLER); public key single static (v1) → `kid`+JWKS if rotation needed.
-
-## Errors
-
-Every domain exception maps to a `LiveErrorCode` (`LIVE-00x`; see the enum). No raw
-`IllegalState`/`RuntimeException` escapes a service — infrastructure exceptions get translated at the adapter.
-
-## Tests
-
-`live-core/src/test` — service (Mockito on ports), media adapter, redis repo; fixtures via **FixtureMonkey**
-(but plain builders where the test asserts on specific field values — FixtureMonkey's random strings trip
-VO validation intermittently). Scheduler wiring is tested in `live-app` with `ApplicationContextRunner`.
+Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`RuntimeException` escapes a service.
+Tests in `live-core/src/test` (Mockito on ports); scheduler wiring in `live-app` via `ApplicationContextRunner`.
+FixtureMonkey for fixtures, plain builders when asserting specific values (random strings trip VO validation).
 Run `./gradlew :modules:live:live-core:test`.

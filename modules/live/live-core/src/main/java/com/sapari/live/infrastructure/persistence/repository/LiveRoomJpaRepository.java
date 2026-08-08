@@ -19,6 +19,16 @@ import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 import com.sapari.live.infrastructure.persistence.entity.StreamType;
 
 public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUID> {
+
+    /*
+     * 잠금 대기 상한(lock_timeout)은 아직 없다. 시작 계열이 미디어 I/O 를 트랜잭션 안에서 부르므로
+     * (AGENTS "Media ports" 참고) 같은 방을 노리는 다른 전이가 그만큼 기다린다.
+     *
+     * 여기에 JPA 힌트를 붙이는 것으로는 안 된다 — PostgreSQL 은 NOWAIT / SKIP LOCKED 만 받고
+     * jakarta.persistence.lock.timeout 의 숫자 대기값은 <b>조용히 무시</b>된다(붙여도 아무 일이 없는데
+     * 붙였다는 사실만 남는다). 세션 파라미터를 HikariConfig 로 거는 게 유일한 경로이고,
+     * application*.yml 이 미추적이라 코드 쪽 빈이어야 한다.
+     */
     Optional<LiveRoomEntity> findByIdAndSellerId(UUID id, UUID sellerId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
