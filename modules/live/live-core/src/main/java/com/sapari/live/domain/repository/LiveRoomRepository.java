@@ -33,6 +33,15 @@ public interface LiveRoomRepository {
     List<UUID> findExpiredReadyRoomIds(Instant threshold, int limit);
 
     /**
+     * 아직 ingress 가 없는 Scheduled 방에만 RTMP ingress 를 배정한다. 검사와 쓰기가 한 문장이라
+     * 동시 요청 중 하나만 성공한다 — {@code prepare} 는 외부 호출을 트랜잭션 밖에 두려고 행 잠금을
+     * 쓰지 않아서, 배타성을 여기서 얻는다.
+     *
+     * @return 획득했으면 true. false 면 이미 다른 요청이 배정했거나 방이 Scheduled 가 아니다.
+     */
+    boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now);
+
+    /**
      * {@code threshold} 이전에 시작된 Live 방 id 를 오래된 순으로 최대 {@code limit} 건.
      *
      * <p><b>이것만으로 종료를 판단하면 안 된다.</b> 정상적으로 오래 진행 중인 방송도 전부 걸린다 —

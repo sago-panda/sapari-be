@@ -15,7 +15,8 @@ import com.sapari.live.application.port.LiveWebhookHandler;
  * 보내고, roomName(=roomId)으로 방을 찾아 {@link GoLiveByRtmpService}에 전이를 위임한다.
  *
  * <p>얇은 트리거 어댑터 — 비즈니스 로직·멱등성은 서비스가 책임진다. roomName 이 없거나 UUID 형식이 아니면
- * 스킵한다(잘못된 이벤트로 전이를 시도하지 않음).
+ * 스킵한다(잘못된 이벤트로 전이를 시도하지 않음). {@code ingressId} 는 그대로 넘겨 서비스가 방의
+ * {@code ingress_id} 와 대조한다 — 방 이름만으로 전이하면 그 방의 것이 아닌 ingress 도 방을 Live 로 올린다.
  */
 @Slf4j
 @Component
@@ -37,7 +38,7 @@ public class IngressStartedWebhookHandler implements LiveWebhookHandler {
         if (roomId == null) {
             return;
         }
-        goLiveByRtmpService.goLiveByRtmp(roomId);
+        goLiveByRtmpService.goLiveByRtmp(roomId, event.ingressId());
     }
 
     private UUID parseRoomId(String roomName) {

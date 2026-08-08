@@ -25,42 +25,31 @@ class LiveRoomTest {
         assertThat(scheduledRoom().streamType()).isInstanceOf(LiveStreamType.WebRtc.class);
     }
 
-    @Test
-    @DisplayName("assignRtmpIngress — Scheduled 방을 Rtmp(ingressId)로 전환하고 updatedAt 갱신")
-    void assignRtmpIngress_onScheduled() {
-        Instant now = Instant.parse("2026-06-09T02:00:00Z");
-
-        LiveRoom room = scheduledRoom().assignRtmpIngress("ing-1", now);
-
-        assertThat(room.streamType()).isInstanceOf(LiveStreamType.Rtmp.class);
-        assertThat(((LiveStreamType.Rtmp) room.streamType()).ingressId()).isEqualTo("ing-1");
-        assertThat(room.updatedAt()).isEqualTo(now);
-    }
-
-    @Test
-    @DisplayName("assignRtmpIngress — ingressId 가 blank 면 IllegalArgumentException")
-    void assignRtmpIngress_rejectsBlankIngressId() {
-        Instant now = Instant.parse("2026-06-09T02:00:00Z");
-
-        assertThatThrownBy(() -> scheduledRoom().assignRtmpIngress(" ", now))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    @DisplayName("assignRtmpIngress — Scheduled 아니면 InvalidLiveStateException")
-    void assignRtmpIngress_rejectsNonScheduled() {
-        LiveRoom live = scheduledRoom().startLive(
-                StreamInfo.of("sfu-1", "eg-1", "https://hls/1"),
-                Instant.parse("2026-06-10T10:00:00Z"));
-
-        assertThatThrownBy(() -> live.assignRtmpIngress("ing-1", Instant.parse("2026-06-10T10:01:00Z")))
-                .isInstanceOf(InvalidLiveStateException.class);
+    /**
+     * RTMP 배정은 도메인 전이가 아니라 조건부 UPDATE 라(RtmpIngressAssigner) 도메인 메서드가 없다.
+     * 그 결과 상태를 여기서는 빌더로 직접 만든다.
+     */
+    private LiveRoom scheduledRtmpRoom(String ingressId) {
+        return scheduledRoom().toBuilder()
+                .streamType(new LiveStreamType.Rtmp(ingressId))
+                .build();
     }
 
     private LiveRoom readyRtmpRoom() {
-        return scheduledRoom()
-                .assignRtmpIngress("ing-1", Instant.parse("2026-06-09T02:00:00Z"))
-                .arm(Instant.parse("2026-06-09T03:00:00Z"));
+        return scheduledRtmpRoom("ing-1").arm(Instant.parse("2026-06-09T03:00:00Z"));
+    }
+
+    @Test
+    @DisplayName("hasIngress — 방에 배정된 id 만 true, 다른 방 id·null·blank 는 false(모르면 전이 안 함)")
+    void hasIngress_matchesOnlyOwnIngress() {
+        LiveRoom rtmp = scheduledRtmpRoom("ing-1");
+
+        assertThat(rtmp.hasIngress("ing-1")).isTrue();
+        assertThat(rtmp.hasIngress("ing-OTHER")).isFalse();
+        assertThat(rtmp.hasIngress(null)).isFalse();
+        assertThat(rtmp.hasIngress(" ")).isFalse();
+        // WebRtc 방은 배정된 ingress 자체가 없다
+        assertThat(scheduledRoom().hasIngress("ing-1")).isFalse();
     }
 
     @Test
@@ -105,7 +94,7 @@ class LiveRoomTest {
     @Test
     @DisplayName("goLiveFromReady — Ready가 아니면 InvalidLiveStateException")
     void goLiveFromReady_rejectsNonReady() {
-        LiveRoom scheduledRtmp = scheduledRoom().assignRtmpIngress("ing-1", Instant.parse("2026-06-09T02:00:00Z"));
+        LiveRoom scheduledRtmp = scheduledRtmpRoom("ing-1");
 
         assertThatThrownBy(() -> scheduledRtmp.goLiveFromReady(
                 StreamInfo.of("sfu-1", "eg-1", "https://hls/1"), Instant.parse("2026-06-10T10:00:00Z")))
@@ -119,8 +108,7 @@ class LiveRoomTest {
         // Ready지만 WebRtc: RTMP 아님
         assertThat(scheduledRoom().arm(Instant.parse("2026-06-09T03:00:00Z")).canGoLiveByRtmp()).isFalse();
         // RTMP지만 아직 Scheduled(시작 대기 아님)
-        assertThat(scheduledRoom().assignRtmpIngress("ing-1", Instant.parse("2026-06-09T02:00:00Z"))
-                .canGoLiveByRtmp()).isFalse();
+        assertThat(scheduledRtmpRoom("ing-1").canGoLiveByRtmp()).isFalse();
     }
 
     private LiveRoom liveRoom() {

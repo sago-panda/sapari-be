@@ -9,6 +9,16 @@ package com.sapari.live.application.port;
  */
 public record IngressResult(String ingressId, String rtmpUrl, String streamKey) {
 
+    public IngressResult {
+        // 어댑터 경계에서 막는다 — 배정이 조건부 UPDATE(컬럼 직접 쓰기)라 LiveStreamType.Rtmp 의
+        // 컴팩트 생성자를 거치지 않는다. 빈 값이 통과하면 stream_type=RTMP + ingress_id=NULL 행이 남아
+        // (a) 다음 prepare 가 ingress_id IS NULL 을 또 통과하고
+        // (b) LiveRoomMapper 가 Rtmp(null) 을 만들려다 터져 그 방을 조회조차 못 하게 된다.
+        if (ingressId == null || ingressId.isBlank()) {
+            throw new IllegalArgumentException("ingressId는 필수입니다.");
+        }
+    }
+
     @Override
     public String toString() {
         return "IngressResult[ingressId=" + ingressId + ", rtmpUrl=" + rtmpUrl + ", streamKey=***]";

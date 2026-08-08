@@ -86,7 +86,15 @@ public class StartLiveService implements StartLiveUseCase {
     private StartLiveView startRtmp(StartLiveCommand command, LiveRoom room) {
         LiveRoom armed = room.arm(timeProvider.now());
 
-        if (liveMediaManager.isIngressActive(command.roomId())) {
+        // 방이 인정하는 ingress 가 송출 중일 때만 승격한다. "아무 ingress 나 송출 중"으로 판정하면 경합 패자
+        // ingress 로도 Live 가 되는데, 그 ingress 는 고아 미디어 잡이 회수하므로 우리가 곧 끊을 방송을
+        // 시작시키는 꼴이 된다. webhook(GoLiveByRtmpService)·Ready 고착 배치와 같은 대조다 — 세 경로가
+        // 달라지면 도착 순서만으로 같은 상황의 결과가 갈린다(RTMP 랑데부 계약 위반).
+        boolean ownIngressPublishing = liveMediaManager.publishingIngressIdsOrEmpty(command.roomId())
+                .stream()
+                .anyMatch(armed::hasIngress);
+
+        if (ownIngressPublishing) {
             HlsEgressResult egressResult = startEgressWithCompensation(command.roomId());
             StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl());
             LiveRoom liveRoom = armed.goLiveFromReady(streamInfo, timeProvider.now());

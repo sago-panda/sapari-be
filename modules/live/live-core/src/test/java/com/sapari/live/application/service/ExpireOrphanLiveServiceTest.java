@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
@@ -66,6 +69,23 @@ class ExpireOrphanLiveServiceTest {
                 .build();
         roomId = UUID.randomUUID();
         now = Instant.parse("2026-06-10T11:00:00Z");
+
+        // 미디어 정리가 afterCommit 으로 미뤄졌다 — 동기화가 없으면 "트랜잭션 밖" 폴백으로 빠져
+        // 즉시 실행되므로, 실제 경로를 밟으려면 트랜잭션 안을 흉내내야 한다.
+        TransactionSynchronizationManager.initSynchronization();
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    /** 실제 커밋에서만 도는 훅을 테스트가 직접 발화시킨다. */
+    private void triggerAfterCommit() {
+        TransactionSynchronizationManager.getSynchronizations()
+                .forEach(TransactionSynchronization::afterCommit);
     }
 
     /** Ready 방: 예약 시 createRoom 으로 sfuRoomId 만 배정되고 egress 는 아직 없다. */
@@ -87,6 +107,7 @@ class ExpireOrphanLiveServiceTest {
 
         expireOrphanLiveService.expire(new ExpireOrphanLiveCommand(roomId));
 
+        triggerAfterCommit();
         // ingress 가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — closeRoom 이 반드시 마지막
         var order = inOrder(liveMediaManager);
         order.verify(liveMediaManager).stopHlsEgress(roomId);
@@ -108,6 +129,7 @@ class ExpireOrphanLiveServiceTest {
 
         expireOrphanLiveService.expire(new ExpireOrphanLiveCommand(roomId));
 
+        triggerAfterCommit();
         then(liveMediaManager).should(never()).deleteIngress(roomId);
         then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
         then(liveMediaManager).should(times(1)).closeRoom("sfu-1");
@@ -123,6 +145,7 @@ class ExpireOrphanLiveServiceTest {
 
         expireOrphanLiveService.expire(new ExpireOrphanLiveCommand(roomId));
 
+        triggerAfterCommit();
         then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
     }
 
@@ -144,10 +167,27 @@ class ExpireOrphanLiveServiceTest {
 
         expireOrphanLiveService.expire(new ExpireOrphanLiveCommand(roomId));
 
+        triggerAfterCommit();
         then(liveMediaManager).should(never()).closeRoom(org.mockito.ArgumentMatchers.anyString());
         then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
         then(liveMediaManager).should(times(1)).deleteIngress(roomId);
         then(liveRoomRepository).should(times(1)).save(org.mockito.ArgumentMatchers.any(LiveRoom.class));
+    }
+
+    @Test
+    @DisplayName("미디어 정리는 커밋 이후에 한다 — 커밋 전엔 LiveKit 을 호출하지 않는다(행 잠금 밖으로 뺀 이유)")
+    void expire_mediaCleanupDeferredUntilAfterCommit() {
+        given(liveRoomRepository.findByIdForUpdate(roomId))
+                .willReturn(Optional.of(readyRoom(new LiveStreamType.Rtmp("ing-1"))));
+        given(timeProvider.now()).willReturn(now);
+
+        expireOrphanLiveService.expire(new ExpireOrphanLiveCommand(roomId));
+
+        then(liveRoomRepository).should(times(1)).save(org.mockito.ArgumentMatchers.any(LiveRoom.class));
+        then(liveMediaManager).shouldHaveNoInteractions();
+
+        triggerAfterCommit();
+        then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
     }
 
     @Test

@@ -297,7 +297,7 @@ public class StartLiveServiceTest {
         // given
         LiveRoom room = rtmpScheduledRoom();
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
-        given(liveMediaManager.isIngressActive(roomId)).willReturn(false);
+        given(liveMediaManager.publishingIngressIdsOrEmpty(roomId)).willReturn(List.of());
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -323,7 +323,8 @@ public class StartLiveServiceTest {
         LiveRoom room = rtmpScheduledRoom();
         HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
-        given(liveMediaManager.isIngressActive(roomId)).willReturn(true);
+        // 방이 배정받은 ingress("ingress-1")가 송출 중 → 승격 대상
+        given(liveMediaManager.publishingIngressIdsOrEmpty(roomId)).willReturn(List.of("ingress-1"));
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
@@ -340,6 +341,29 @@ public class StartLiveServiceTest {
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
         verify(liveRoomRepository).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Live.class);
+    }
+
+    @Test
+    @DisplayName("RTMP 방 시작: 방이 인정하지 않는 ingress 가 송출 중이면 승격하지 않고 Ready 로 둔다")
+    void rtmp_start_arms_when_publishing_ingress_is_not_the_rooms(){
+        // given — 경합 패자 ingress 가 회수되지 못하고 살아남아 송출 중인 상황.
+        // 승격시키면 고아 미디어 잡이 그 ingress 를 회수하면서 방송이 끊긴다(우리가 곧 끊을 방송을 시작하는 꼴).
+        LiveRoom room = rtmpScheduledRoom();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveMediaManager.publishingIngressIdsOrEmpty(roomId)).willReturn(List.of("ingress-LOSER"));
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        var result = startLiveService.start(command);
+
+        // then
+        assertThat(result.hlsUrl()).isNull();
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+
+        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveRoomRepository).save(captor.capture());
+        assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ready.class);
     }
 
     private LiveRoom rtmpScheduledRoom(){

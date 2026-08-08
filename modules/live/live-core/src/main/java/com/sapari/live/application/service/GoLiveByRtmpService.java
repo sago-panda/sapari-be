@@ -41,8 +41,13 @@ public class GoLiveByRtmpService {
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
 
+    /**
+     * ingressId 대조는 <b>모든 경로에서</b> 한다 — webhook 은 이벤트가 실어 온 값을, Ready 고착 정리 배치는
+     * {@code listRoomIngress} 로 확인한 값을 넘긴다. 대조를 건너뛰는 진입점을 따로 두면 그쪽만 가드가
+     * 빠지고, 방이 인정하지 않은 ingress(경합 패자 잔존)가 방송을 시작시킨다.
+     */
     @Transactional
-    public void goLiveByRtmp(UUID roomId) {
+    public void goLiveByRtmp(UUID roomId, String eventIngressId) {
         LiveRoom room = liveRoomRepository.findByIdForUpdate(roomId)
                 .orElseThrow(() -> new LiveNotFoundException(roomId.toString()));
 
@@ -50,6 +55,15 @@ public class GoLiveByRtmpService {
         if (!room.canGoLiveByRtmp()) {
             log.info("RTMP go-live 스킵 — 전이 대상 아님(Ready+RTMP 아님). roomId={}, status={}",
                     roomId, room.status().getClass().getSimpleName());
+            return;
+        }
+
+        // 이벤트의 ingress 가 이 방의 것인지 대조한다. 경합에서 진 ingress 의 회수가 실패해 살아남으면
+        // 그 streamKey 를 쥔 쪽이 방을 Live 로 올릴 수 있다 — roomName 만으로 전이하면 그게 통과한다.
+        // hasIngress 는 null/blank 를 거짓으로 본다 — ingressInfo 없는 이벤트는 여기서 거부된다.
+        if (!room.hasIngress(eventIngressId)) {
+            log.warn("RTMP go-live 스킵 — 이 방의 ingress 가 아님. roomId={}, eventIngressId={}",
+                    roomId, eventIngressId);
             return;
         }
 

@@ -42,26 +42,14 @@ public class EndLiveService implements EndLiveUseCase {
             throw new InvalidLiveStateException(room.id().toString());
         }
 
-        // createRoom 실패로 SFU 방이 배정되지 않은 방은 stream 접근자가 NPE — 여기서 한 번만 가른다.
-        boolean hasSfuRoom = room.streamInfo() != null;
-
-        // 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제
-        // (ingress 가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다 — 좀비 방)
-
-        // egress 중단은 DB 가 egress 를 모르더라도 부른다 — roomId 로 LiveKit 에 직접 물어 일괄 중단하므로
-        // DB 가 놓친 잔여 egress(화질별 다건·시작 중 크래시분)도 함께 걷힌다.
-        liveMediaManager.stopHlsEgress(command.roomId());
-        if (room.isRtmp()) {
-            liveMediaManager.deleteIngress(command.roomId());
-        }
-        if (hasSfuRoom) {
-            liveMediaManager.closeRoom(room.sfuRoomId());
-        }
-
         Instant endedAt = timeProvider.now();
         LiveRoom endedRoom = room.endLive(endedAt);
 
         liveRoomRepository.save(endedRoom);
+
+        // save 뒤에 등록한다 — 트랜잭션 밖 호출이면 register 가 즉시 정리해 버리므로, 앞에 두면
+        // save 가 실패했을 때 멀쩡한 방의 미디어만 파괴된다(다른 두 호출자와 순서도 맞춘다).
+        PostCommitMediaCleanup.register(liveMediaManager, room);
 
         // 종료 커밋 이후에만 RoomEnded 발행 — 롤백 시 오발행(멀쩡한 방 세션을 chat이 닫는 것)을 막는다.
         registerRoomEndedPublish(command.roomId(), endedAt);

@@ -18,6 +18,7 @@ import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
+import com.sapari.live.infrastructure.persistence.entity.StreamType;
 import com.sapari.live.infrastructure.persistence.mapper.LiveRoomMapper;
 
 @Slf4j
@@ -69,6 +70,12 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     public Optional<LiveRoom> findByIdAndSellerIdForUpdate(UUID id, UUID hostId){
         return liveRoomJpaRepository.findWithLockByIdAndSellerId(id, hostId)
                 .map(liveRoomMapper::toDomain);
+    }
+
+    @Override
+    public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now){
+        return liveRoomJpaRepository.assignRtmpIngressIfAbsent(
+                roomId, sellerId, ingressId, StreamType.RTMP, LiveRoomStatus.SCHEDULED, now) == 1;
     }
 
     @Override

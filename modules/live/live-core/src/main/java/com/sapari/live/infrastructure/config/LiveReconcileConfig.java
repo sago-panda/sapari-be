@@ -29,6 +29,6 @@ public class LiveReconcileConfig {
 
     @Bean
     public ExpiredReadyReconcilePolicy expiredReadyReconcilePolicy(LiveReconcileProperties properties){
-        return new ExpiredReadyReconcilePolicy(properties.expireReady().threshold(), properties.batchSize());
+        return new ExpiredReadyReconcilePolicy(properties.expireReady().threshold(), properties.expireReady().batchSize());
     }
 }
