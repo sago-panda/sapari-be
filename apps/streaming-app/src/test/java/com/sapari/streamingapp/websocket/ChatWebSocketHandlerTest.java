@@ -46,6 +46,9 @@ import reactor.core.publisher.Flux;
 import io.netty.channel.ChannelId;
 import io.netty.channel.DefaultChannelId;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -507,5 +510,66 @@ class ChatWebSocketHandlerTest {
         then(registry).should(times(1)).sendToSession(eq("s1"), sent.capture());
         assertThat(sent.getValue().type()).isEqualTo("RATE_LIMIT");
         assertThat(sent.getValue().retryAfterSeconds()).isEqualTo(2L);
+    }
+
+    @Test
+    @DisplayName("인바운드는 한 번에 한 건씩 처리된다 — 동시에 들어가면 레이트리밋 로컬 창이 무력해진다")
+    void runInbound_processesOneAtATime() {
+        // given: 전송이 끝나기 전에 다음 프레임이 들어오는지 세어본다. flatMap이면 기본 동시성 256이라
+        // 한 클라가 파이프라이닝하는 것만으로 창이 무장되기 전에 전부 Redis를 다녀온다.
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger maxInFlight = new AtomicInteger();
+        given(registry.rateLimitRetryAfterSeconds(anyString())).willReturn(0L);
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(sendUseCase.send(any())).willAnswer(inv -> Mono.fromCallable(() -> {
+                    maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+                    return view("id");
+                })
+                .delayElement(Duration.ofMillis(20))
+                .doOnNext(v -> inFlight.decrementAndGet()));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        Flux<String> payloads = Flux.range(1, 5)
+                .map(i -> "{\"type\":\"NORMAL\",\"content\":\"m" + i + "\",\"clientMsgId\":\"c" + i + "\"}");
+
+        // when
+        StepVerifier.create(handler.runInbound(payloads, "s1", session))
+                .verifyComplete();
+
+        // then
+        assertThat(maxInFlight.get()).isOne();
+        then(sendUseCase).should(times(5)).send(any());
+    }
+
+    @Test
+    @DisplayName("인바운드 처리 순서가 전송 순서와 같다 — 어긋나면 저장·중계 순서가 화면과 달라진다")
+    void runInbound_preservesOrder() {
+        // given
+        List<String> seen = new ArrayList<>();
+        given(registry.rateLimitRetryAfterSeconds(anyString())).willReturn(0L);
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(sendUseCase.send(any())).willAnswer(inv -> {
+            SendChatCommand c = inv.getArgument(0);
+            // 앞 프레임일수록 오래 걸리게 만든다 — 순서를 안 지키면 뒤엣것이 먼저 끝난다
+            long delay = "m1".equals(c.content()) ? 40 : 5;
+            return Mono.delay(Duration.ofMillis(delay))
+                    .doOnNext(t -> seen.add(c.content()))
+                    .thenReturn(view("id"));
+        });
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        Flux<String> payloads = Flux.just(
+                "{\"type\":\"NORMAL\",\"content\":\"m1\",\"clientMsgId\":\"c1\"}",
+                "{\"type\":\"NORMAL\",\"content\":\"m2\",\"clientMsgId\":\"c2\"}",
+                "{\"type\":\"NORMAL\",\"content\":\"m3\",\"clientMsgId\":\"c3\"}");
+
+        // when
+        StepVerifier.create(handler.runInbound(payloads, "s1", session)).verifyComplete();
+
+        // then
+        assertThat(seen).containsExactly("m1", "m2", "m3");
+    }
+
+    private ChatMessageView view(String id) {
+        return new ChatMessageView(id, roomId, userId, "닉", null, "BUYER", "NORMAL",
+                "hi", null, "c1", Instant.parse("2026-06-11T00:00:00Z"));
     }
 }

@@ -1,5 +1,6 @@
 package com.sapari.chat.application.handler;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.times;
@@ -23,6 +24,7 @@ import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -148,5 +150,71 @@ class LiveRoomEndedHandlerTest {
 
         // then
         then(kickRepository).should(times(1)).clearRoom(roomId);
+    }
+
+    // ── 구독 자가복구 ──
+    // 이 구독이 죽으면 이 Pod는 재시작 전까지 모든 방 종료를 놓친다. 그러면 세션이 안 닫히고,
+    // 끝난 방에 계속 글이 쌓인다. 아래 둘은 그 구독이 무슨 일이 있어도 살아남는지를 본다.
+
+    @Test
+    @DisplayName("한 방 처리가 실패해도 다음 방 종료는 정상 처리된다 — 봉투 하나가 구독을 죽이면 안 된다")
+    void start_survivesFailureOfOneRoom() {
+        // given: 첫 방은 알림에서 터지고, 둘째 방은 정상
+        UUID broken = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        given(liveRoomEndedSource.ended()).willReturn(Flux.just(broken, roomId));
+        given(roomEndedRepository.markEnded(any())).willReturn(Mono.empty());
+        given(systemMessageService.renderToRoom(broken, SystemMessageCode.ROOM_ENDED))
+                .willReturn(Mono.error(new RuntimeException("render 실패")));
+        given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
+        given(sessionManager.closeAll(any())).willReturn(Mono.empty());
+        given(sessionRepository.clearRoom(any())).willReturn(Mono.empty());
+        given(kickRepository.clearRoom(any())).willReturn(Mono.empty());
+
+        // when
+        handler.start();
+
+        // then: 둘 다 끝까지 갔다
+        then(sessionManager).should(times(1)).closeAll(broken);
+        then(sessionManager).should(times(1)).closeAll(roomId);
+    }
+
+    @Test
+    @DisplayName("조립 시점에 터져도 구독이 살아남는다 — defer로 감싸지 않으면 여기서 스트림이 죽는다")
+    void start_survivesAssemblyTimeThrow() {
+        // given: 포트가 Mono를 돌려주기 전에 동기 throw하는 상황(어댑터 버그·설정 오류).
+        // defer 없이 조립하면 이 예외가 onErrorResume을 지나쳐 구독 자체를 끝낸다.
+        UUID broken = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        given(liveRoomEndedSource.ended()).willReturn(Flux.just(broken, roomId));
+        given(roomEndedRepository.markEnded(broken)).willThrow(new IllegalStateException("조립 중 폭발"));
+        given(roomEndedRepository.markEnded(roomId)).willReturn(Mono.empty());
+        given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
+        given(sessionManager.closeAll(roomId)).willReturn(Mono.empty());
+        given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
+        given(kickRepository.clearRoom(roomId)).willReturn(Mono.empty());
+
+        // when
+        handler.start();
+
+        // then: 뒤따르는 방은 그대로 처리된다
+        then(sessionManager).should(times(1)).closeAll(roomId);
+    }
+
+    @Test
+    @DisplayName("종료 시 구독을 해제한다 — Pod가 내려가는데 스트림이 남으면 안 된다")
+    void stop_disposesSubscription() {
+        // given
+        given(liveRoomEndedSource.ended()).willReturn(Flux.never());
+        handler.start();
+
+        // when & then: 구독 전에 stop을 불러도(=start 실패 등) 터지지 않아야 한다
+        handler.stop();
+        handler.stop();
+    }
+
+    @Test
+    @DisplayName("start 없이 stop을 불러도 터지지 않는다 — 부팅 실패 후 컨텍스트 종료 경로")
+    void stop_withoutStart_isSafe() {
+        // when & then
+        handler.stop();
     }
 }

@@ -155,18 +155,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         Mono<Void> outbound = session.send(
                 Flux.defer(() -> registry.outbound(sid)).map(message -> session.textMessage(serialize(message))));
 
-        Mono<Void> inbound = session.receive()
+        Mono<Void> inbound = runInbound(session.receive()
                 // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
                 // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(Ping은 Netty가 자동 응답하고 올려주지 않음).
                 .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
-                .map(WebSocketMessage::getPayloadAsText)
-                // concatMap이다 — flatMap의 기본 동시성은 256이라, 한 세션이 프레임을 파이프라이닝하면
-                // 최대 256건이 응답을 기다리지 않고 한꺼번에 안으로 들어간다. 그러면 아래 레이트리밋 로컬 창이
-                // 무력해진다: 창은 첫 거부가 돌아온 뒤에야 무장되는데 그 시점엔 이미 다 통과한 뒤다.
-                // 한 세션의 인바운드를 병렬로 처리해서 얻는 것도 없다 — 오히려 저장·중계 순서가 전송 순서와
-                // 어긋난다(레이트리밋이 면제되는 방 주인에게서 실제로 드러난다).
-                .concatMap(payload -> onInbound(sid, chatSession, payload))
-                .then();
+                .map(WebSocketMessage::getPayloadAsText), sid, chatSession);
 
         // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
         // 위한 것이라, 정상 클라가 남은 메시지를 다 받고 스스로 끝낼 시간을 준 뒤에야 발화한다.
@@ -305,6 +298,20 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return registry.shouldReplyToRejection(sid)
                 ? registry.sendToSession(sid, response)
                 : Mono.empty();
+    }
+
+    /**
+     * 한 세션의 인바운드 프레임을 <b>하나씩 차례로</b> 처리한다. (테스트 진입점)
+     *
+     * <p>concatMap이어야 한다. flatMap은 기본 동시성이 256이라, 클라가 프레임을 파이프라이닝하면
+     * 최대 256건이 응답을 기다리지 않고 한꺼번에 안으로 들어간다. 그러면 레이트리밋 로컬 창이 무력해진다 —
+     * 창은 첫 거부가 돌아온 뒤에야 무장되는데 그 시점엔 이미 전부 통과해 Redis를 다녀온 뒤다.
+     *
+     * <p>병렬로 처리해서 얻는 것도 없다. 오히려 저장·중계 순서가 전송 순서와 어긋난다
+     * (레이트리밋이 면제되는 방 주인에게서 실제로 드러난다).
+     */
+    Mono<Void> runInbound(Flux<String> payloads, String sid, ChatSession chatSession) {
+        return payloads.concatMap(payload -> onInbound(sid, chatSession, payload)).then();
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──

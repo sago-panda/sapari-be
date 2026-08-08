@@ -3,6 +3,8 @@ package com.sapari.chat.domain.rule;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
@@ -83,6 +85,63 @@ class AhoCorasickTest {
             AhoCorasick ac = new AhoCorasick(Set.of());
 
             assertThat(ac.containsAny("아무거나")).isFalse();
+        }
+    }
+
+    @Nested
+    @DisplayName("사전 모양에 대한 방어")
+    class DictionaryShape {
+
+        @Test
+        @DisplayName("한 패턴이 다른 패턴의 접두인 경우 — 짧은 쪽도 독립적으로 잡힌다")
+        void prefixOverlappingPatterns() {
+            // given
+            AhoCorasick ac = new AhoCorasick(List.of("시발", "시발놈"));
+
+            // when & then
+            assertThat(ac.containsAny("시발놈")).isTrue();
+            assertThat(ac.containsAny("시발")).isTrue();
+        }
+
+        @Test
+        @DisplayName("겹치는 패턴이 서로 다른 위치에서 시작해도 각각 잡힌다 — fail 체인을 두 번 이상 타는 경우")
+        void chainedFailLinks() {
+            // given: "aab"를 찾다 실패하면 "ab"로, 거기서 또 실패하면 "b"로 내려가야 한다
+            AhoCorasick ac = new AhoCorasick(List.of("aab", "ab", "b"));
+
+            // when & then
+            assertThat(ac.containsAny("aab")).isTrue();
+            assertThat(ac.containsAny("cab")).isTrue();
+            assertThat(ac.containsAny("cb")).isTrue();
+        }
+
+        @Test
+        @DisplayName("사전에 null·빈 문자열이 섞여도 무시하고 나머지로 동작한다 — 사전은 DB에서 온다")
+        void ignoresNullAndEmptyPatterns() {
+            // given: 로더가 공백 행이나 NULL 컬럼을 그대로 넘길 수 있다.
+            // 빈 패턴을 트라이에 넣으면 모든 위치에서 매칭되어 전 문장이 마스킹된다.
+            List<String> dirty = new ArrayList<>();
+            dirty.add("욕설");
+            dirty.add(null);
+            dirty.add("");
+
+            // when
+            AhoCorasick ac = new AhoCorasick(dirty);
+
+            // then
+            assertThat(ac.containsAny("욕설이다")).isTrue();
+            assertThat(ac.containsAny("멀쩡한 문장")).isFalse();
+        }
+
+        @Test
+        @DisplayName("빈 사전은 아무것도 잡지 않는다 — 필터가 꺼진 상태여도 크래시하지 않는다")
+        void emptyDictionaryMatchesNothing() {
+            // given & when
+            AhoCorasick ac = new AhoCorasick(List.of());
+
+            // then
+            assertThat(ac.containsAny("무슨 말이든")).isFalse();
+            assertThat(ac.findAll("무슨 말이든")).isEmpty();
         }
     }
 }

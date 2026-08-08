@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
@@ -565,5 +566,53 @@ class ChatSessionRegistryTest {
         // then: 캐시가 남아 있으면 이전 값이 나오고, 방송이 끝난 방의 항목이 계속 쌓인다
         StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).verifyComplete();
         then(sessionRepository).should(times(2)).count(room);
+    }
+
+    @Test
+    @DisplayName("모르는 세션에 어떤 호출이 와도 조용히 무시한다 — 정리·경합 경로는 이미 사라진 세션을 부른다")
+    void unknownSession_isHarmlessForEveryEntryPoint() {
+        // given: 퇴장과 방 fan-out·강퇴 이벤트는 서로 다른 스레드에서 오므로, 이미 빠진 세션을
+        // 가리키는 호출이 정상적으로 발생한다. 여기서 NPE가 나면 그 스트림이 통째로 죽는다.
+        String gone = "이미-없는-세션";
+
+        // when & then
+        assertThatCode(() -> {
+            registry.recordRateLimited(gone, 3);
+            registry.markRoomEnded(gone);
+            registry.sendToSession(gone, out("SYSTEM")).block();
+        }).doesNotThrowAnyException();
+
+        assertThat(registry.rateLimitRetryAfterSeconds(gone)).isZero();
+        assertThat(registry.shouldReplyToRejection(gone)).isFalse();
+        assertThat(registry.shouldRecheckRoomAlive(gone)).isFalse();
+        assertThat(registry.isRoomKnownEnded(gone)).isFalse();
+        assertThat(registry.isTerminating(gone)).isFalse();
+        assertThat(registry.outbound(gone)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("종료 사유가 정해지지 않았으면 정상 종료(1000)로 닫는다 — 클라가 먼저 끊은 경우")
+    void closeStatus_defaultsToNormal() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+
+        // when & then: 서버가 정한 사유가 없으면 정책 위반 코드를 붙이면 안 된다 — 프론트가 재접속을 포기한다
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
+        assertThat(registry.closeStatusOf("모르는세션")).isEqualTo(CloseStatus.NORMAL);
+    }
+
+    @Test
+    @DisplayName("강퇴로 끊긴 세션은 1008로 닫힌다 — 프론트는 이 코드로 재접속 금지를 판단한다")
+    void closeStatus_reflectsKick() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+
+        // when
+        registry.terminateKicked("s1");
+
+        // then
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.POLICY_VIOLATION);
     }
 }

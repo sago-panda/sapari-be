@@ -28,6 +28,8 @@ import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -168,5 +170,45 @@ class ChatBroadcastSubscriberTest {
         OutboundMessage self = cap.getValue().apply(owner());
         assertThat(self.clientMsgId()).isEqualTo("c-2");
         assertThat(self.senderEmail()).isEqualTo("seller@example.com");
+    }
+
+    @Test
+    @DisplayName("봉투 하나의 라우팅이 실패해도 방 구독은 살아 다음 봉투를 계속 받는다")
+    void subscribeRoom_survivesPoisonEnvelope() {
+        // given: 첫 봉투는 세션 전달에서 터지고, 둘째는 정상
+        ChatMessage first = normal("첫 번째");
+        ChatMessage second = normal("두 번째");
+        given(broadcaster.subscribe(roomId))
+                .willReturn(Flux.just(new ChatEnvelope.ChatMsg(first), new ChatEnvelope.ChatMsg(second)));
+        given(sessionManager.sendToRoomGated(eq(roomId), any()))
+                .willReturn(Mono.error(new RuntimeException("전달 실패")))
+                .willReturn(Mono.empty());
+
+        // when: 여기서 스트림이 죽으면 그 방은 이후 어떤 메시지도 못 받는다 — 조용한 전면 장애다
+        Disposable subscription = subscriber.subscribeRoom(roomId);
+
+        // then
+        then(sessionManager).should(times(2)).sendToRoomGated(eq(roomId), any());
+        assertThat(subscription).isNotNull();
+    }
+
+    @Test
+    @DisplayName("구독 Disposable로 해제할 수 있다 — 마지막 퇴장에서 회수되지 않으면 방마다 스트림이 쌓인다")
+    void subscribeRoom_isDisposable() {
+        // given
+        given(broadcaster.subscribe(roomId)).willReturn(Flux.never());
+
+        // when
+        Disposable subscription = subscriber.subscribeRoom(roomId);
+        subscription.dispose();
+
+        // then
+        assertThat(subscription.isDisposed()).isTrue();
+    }
+
+    private ChatMessage normal(String content) {
+        return new ChatMessage("65a1f2c3d4e5f60718293a4b", roomId, buyerId, "구매자", "buyer@example.com",
+                ChatRole.BUYER, new ChatMessageType.Normal(), content, content, null,
+                Instant.parse("2026-06-11T00:00:00Z"));
     }
 }
