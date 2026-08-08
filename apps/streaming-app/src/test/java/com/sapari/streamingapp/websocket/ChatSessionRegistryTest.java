@@ -548,4 +548,22 @@ class ChatSessionRegistryTest {
         registry.markRoomEnded("없는세션");   // 조용히 무시
         assertThat(registry.isRoomKnownEnded("없는세션")).isFalse();
     }
+
+    @Test
+    @DisplayName("시청자 수 캐시 — 방이 비면 같이 걷힌다(캐시 자체가 누수원이 되면 안 된다)")
+    void activeCount_cacheEvictedWhenRoomEmpties() {
+        // given: 한 명이 들어와 값을 캐시한 뒤 나간다
+        UUID room = UUID.randomUUID();
+        given(sessionRepository.count(room)).willReturn(Mono.just(1L), Mono.just(9L));
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+        StepVerifier.create(registry.getActiveCount(room)).expectNext(1L).verifyComplete();
+        registry.unregister(room, "s1").block();
+
+        // when: 같은 방에 다시 들어온다
+        registry.register("s2", session(room, UUID.randomUUID())).block();
+
+        // then: 캐시가 남아 있으면 이전 값이 나오고, 방송이 끝난 방의 항목이 계속 쌓인다
+        StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).verifyComplete();
+        then(sessionRepository).should(times(2)).count(room);
+    }
 }

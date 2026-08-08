@@ -361,4 +361,71 @@ class SendChatServiceTest {
 
         then(chatMessageRepository).should(never()).save(any());
     }
+
+    @Test
+    @DisplayName("clientMsgId 64자 초과 → 거부. 본문 200자 제한을 이 필드로 우회할 수 있으면 안 된다")
+    void clientMsgId_tooLong_rejected() {
+        // given: 이 값은 Mongo 문서 + unique 인덱스 키로 들어가고 봉투에 실려 전 Pod로 중계된다.
+        // 상한이 없으면 프레임 한도까지 채워 보낼 수 있고, 레이트리밋이 면제되는 진행자는 속도 제한도 없다.
+        String tooLong = "x".repeat(65);
+
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", tooLong)))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+        then(kickRepository).should(never()).isKicked(any(), any());
+        then(chatMessageRepository).should(never()).save(any());
+    }
+
+    @Test
+    @DisplayName("clientMsgId 정확히 64자 → 통과(경계는 허용 쪽이다 — UUID 36자 계약에 여유를 둔 값)")
+    void clientMsgId_atLimit_allowed() {
+        // given
+        stubAllowedAndSaved();
+
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "x".repeat(64))))
+                .expectNextCount(1)
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("clientMsgId가 공백뿐이면 거부 — blank를 통과시키면 부분 unique 인덱스가 안 걸려 멱등이 꺼진다")
+    void clientMsgId_blank_rejected() {
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "   ")))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+        then(chatMessageRepository).should(never()).save(any());
+    }
+
+    @Test
+    @DisplayName("클라가 messageType=SYSTEM을 보내면 거부 — SYSTEM은 서버만 만드는 신호다")
+    void systemType_fromClient_rejected() {
+        // when & then: 통과시키면 일반 사용자가 '방송이 종료되었습니다' 같은 신호를 위조해 방에 뿌릴 수 있다
+        StepVerifier.create(service.send(command("BUYER", false, true, "SYSTEM", "안녕", "c1")))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+        then(chatMessageRepository).should(never()).save(any());
+    }
+
+    @Test
+    @DisplayName("모르는 messageType은 거부 — 조용히 NORMAL로 떨어뜨리면 계약에 없는 값이 저장된다")
+    void unknownType_rejected() {
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "WHISPER", "안녕", "c1")))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+        then(chatMessageRepository).should(never()).save(any());
+    }
+
+    @Test
+    @DisplayName("모르는 senderRole은 에러로 나온다 — 스트림을 죽이지 않고 그 전송만 실패시킨다")
+    void unknownRole_becomesErrorSignal() {
+        // when & then: 신뢰 필드라 정상 경로에선 올 수 없지만, valueOf가 조립 시점에 터지면
+        // onErrorResume을 지나쳐 인바운드 스트림이 죽는다. 반드시 onError 신호여야 한다.
+        StepVerifier.create(service.send(command("SUPERUSER", false, true, "NORMAL", "안녕", "c1")))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+    }
 }
