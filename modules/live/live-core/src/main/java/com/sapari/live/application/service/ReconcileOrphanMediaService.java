@@ -20,8 +20,8 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
-import com.sapari.live.application.port.RoomSummary;
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
+import com.sapari.live.application.port.RoomSummary;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStreamType;
@@ -106,22 +106,15 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
             if (!(room.status() instanceof LiveStatus.Ended)) {
                 continue;
             }
-            // 생성 시각을 모르면 나이를 못 재므로 넘긴다. 다만 <b>조용히</b> 넘기면 안 된다 — LiveKit 이
-            // 시각을 안 주는 상황에서는 전건이 여기로 빠져 이 잡이 아무것도 안 하는데, 회차 로그는
-            // "전체=N, 닫음=0" 이라 정상으로 보인다. 좀비 방의 유일한 회수 주체라 무동작이 치명적이다.
-            if (sfuRoom.createdAt() == null) {
-                log.warn("SFU 방 생성 시각을 알 수 없어 회수 판단 불가 — roomName={}", sfuRoom.roomName());
-                continue;
-            }
-            if (sfuRoom.createdAt().isAfter(threshold)) {
-                continue; // 방금 만들어진 방은 건드리지 않는다
-            }
-            // 삭제 대상은 LiveKit 이 준 원문이 아니라 DB 에서 나온 값으로 넘긴다 — 위 파싱이 정규 표기만
-            // 통과시키므로 지금은 같은 값이지만, 그 대조가 느슨해져도 남의 이름으로는 나가지 않는다.
+            // <b>여기에는 유예를 두지 않는다.</b> 위 가드 때문에 이 지점에 오는 건 Ended 방뿐인데, Ended 방에
+            // 정당한 SFU 방은 존재할 수 없다(시작은 Scheduled 에서만 하고 그 시점의 DB 는 Ended 가 아니다).
+            // 즉 유예는 보호하는 게 없으면서 구멍을 만든다: 판매자가 토큰으로 재입장하면 방이 <b>새 생성
+            // 시각으로 다시 생기므로</b>, 유예보다 짧은 주기로 재입장하면 이 잡이 영원히 발화하지 않는다.
+            // 그게 바로 이 스윕을 만든 시나리오다. createdAt 은 이제 판정이 아니라 로그용이다.
             liveMediaManager.closeRoom(roomId.toString());
             closed++;
-            log.warn("종료된 방의 SFU 방 회수 — 판매자 토큰 재입장 또는 종료 정리 실패. roomId={}, 참가자={}",
-                    roomId, sfuRoom.participants());
+            log.warn("종료된 방의 SFU 방 회수 — 판매자 토큰 재입장 또는 종료 정리 실패. roomId={}, 참가자={}, 방 생성={}",
+                    roomId, sfuRoom.participants(), sfuRoom.createdAt());
         }
         log.info("고아 SFU 방 정리 완료. 전체={}, 닫음={}", sfuRooms.size(), closed);
     }
@@ -170,7 +163,12 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
             // 에는 갓 만든 ingress 인데 방의 updated_at 은 예약 시각이라 유예가 이미 지난 것으로 읽힌다.
             // 고치려면 외부 호출 전에 쓰기 트랜잭션을 한 번 더 열어야 해서(= "외부 호출은 트랜잭션 밖" 결정과
             // 충돌) ms 창을 막자고 지불하기엔 비싸다. 회수돼도 판매자가 재발급받으면 되는 범위라 남겨둔다.
-            if (room.updatedAt() == null || room.updatedAt().isAfter(threshold)) {
+            // Ended 방에는 유예를 적용하지 않는다. 유예는 "방금 만든 정상 ingress" 를 지키는 장치인데
+            // canPrepareIngress() 가 Scheduled 만 허용하므로 Ended 방에 갓 만든 ingress 는 존재할 수 없다.
+            // 그대로 두면 종료 커밋이 updated_at 을 갱신하기 때문에, 커밋~afterCommit 사이에 파드가 죽어
+            // 살아남은 ingress 가 유예 + 다음 회차만큼 회수되지 않고 판매자는 그동안 계속 push 할 수 있다.
+            boolean ended = room.status() instanceof LiveStatus.Ended;
+            if (!ended && (room.updatedAt() == null || room.updatedAt().isAfter(threshold))) {
                 continue;
             }
             if (!isOrphanIngress(room, ingress.ingressId())) {

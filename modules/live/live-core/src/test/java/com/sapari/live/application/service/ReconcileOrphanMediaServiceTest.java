@@ -157,27 +157,27 @@ class ReconcileOrphanMediaServiceTest {
     }
 
     @Test
-    @DisplayName("방 — 유예 시간 안에 만들어진 방은 닫지 않는다")
-    void room_withinGrace_isNeverClosed() {
-        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(0, RECENT)));
+    @DisplayName("방 — 방금 만들어졌어도 닫는다: 유예를 두면 재입장이 시각을 리셋해 영영 회수되지 않는다")
+    void room_recentlyCreated_isStillClosed() {
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(1, RECENT)));
         given(liveRoomRepository.findAllByIds(Set.of(roomId)))
                 .willReturn(List.of(room(ended(), new LiveStreamType.WebRtc(), OLD)));
 
         service.reconcile();
 
-        then(liveMediaManager).should(never()).closeRoom(anyString());
+        then(liveMediaManager).should(times(1)).closeRoom(roomId.toString());
     }
 
     @Test
-    @DisplayName("방 — 생성 시각을 모르면 닫지 않는다: 나이를 못 재면 유예를 지켰는지도 모른다")
-    void room_unknownCreatedAt_isNeverClosed() {
+    @DisplayName("방 — 생성 시각을 몰라도 닫는다: createdAt 은 판정이 아니라 로그용이다")
+    void room_unknownCreatedAt_isStillClosed() {
         givenLiveKit(List.of(), List.of(), List.of(sfuRoom(0, null)));
         given(liveRoomRepository.findAllByIds(Set.of(roomId)))
                 .willReturn(List.of(room(ended(), new LiveStreamType.WebRtc(), OLD)));
 
         service.reconcile();
 
-        then(liveMediaManager).should(never()).closeRoom(anyString());
+        then(liveMediaManager).should(times(1)).closeRoom(roomId.toString());
     }
 
     @Test
@@ -343,13 +343,28 @@ class ReconcileOrphanMediaServiceTest {
     @Test
     @DisplayName("ingress — 유예가 지나지 않았으면 지우지 않는다 (createIngress 직후 save 전인 정상 요청)")
     void ingress_withinGrace_isKept() {
+        // 이 시나리오의 방은 아직 Scheduled + WebRtc 다 — createIngress 는 끝났고 조건부 UPDATE 가 안 된 상태.
+        // (Ended 로 두면 유예 면제에 걸려 이 테스트가 무엇을 재는지 알 수 없게 된다.)
         givenLiveKit(List.of(new IngressSummary("ing-DUP", roomId.toString(), false)), List.of());
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(new LiveStatus.Scheduled(NOW), new LiveStreamType.WebRtc(), RECENT)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), anyString());
+    }
+
+    @Test
+    @DisplayName("ingress — 종료된 방은 유예를 기다리지 않는다: 종료 직후 크래시면 판매자가 계속 push 할 수 있다")
+    void ingress_endedRoom_skipsGrace() {
+        // 종료 트랜잭션이 updated_at 을 갱신하므로, 유예를 적용하면 종료 직후 15분간 무조건 건너뛴다.
+        givenLiveKit(List.of(new IngressSummary("ing-1", roomId.toString(), true)), List.of());
         given(liveRoomRepository.findAllByIds(Set.of(roomId)))
                 .willReturn(List.of(room(ended(), new LiveStreamType.Rtmp("ing-1"), RECENT)));
 
         service.reconcile();
 
-        then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), anyString());
+        then(liveMediaManager).should(times(1)).deleteIngress(roomId, "ing-1");
     }
 
     @Test
