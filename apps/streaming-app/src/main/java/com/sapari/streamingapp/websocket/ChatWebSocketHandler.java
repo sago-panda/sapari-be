@@ -458,6 +458,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         OutboundMessage system = new OutboundMessage("SYSTEM", systemCode(reason), null,
                 ChatConstants.SYSTEM_SENDER_ID, SYSTEM_NICKNAME, null, null, null, null,
                 null, null, null, null, null, null);
+        // 사유가 무엇이든 1008이다. 접속 중 방이 끝난 경우(terminateRoomEnded)는 1000인데 여기만 1008인 게
+        // 비대칭으로 보이지만, 그쪽은 "성립해 있던 세션의 정상 종료"고 이쪽은 "세션이 성립하지 못한 거부"다.
+        // 프론트 계약도 1008을 강퇴·밴과 함께 "입장 거부"로 묶어두고 있고, 무엇 때문인지는 함께 보낸
+        // SYSTEM code가 전달한다. 재접속 정책도 두 코드가 같아(둘 다 하지 않음) 실제 동작 차이가 없다.
         return session.send(Mono.just(session.textMessage(serialize(system))))
                 .then(session.close(CloseStatus.POLICY_VIOLATION));
     }

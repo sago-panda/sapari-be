@@ -16,7 +16,8 @@ import org.springframework.test.context.DynamicPropertySource;
  * (.gitignore가 {@code application*.yml}을 전부 막는다). 그래서 리소스 파일로 두면 이 테스트는
  * 각자 로컬에만 초록이고 클린 체크아웃에서는 계속 빨갛다 — 실제로 그런 상태였다.
  *
- * <p><b>DB에 접속하지 않는다.</b> 방언을 명시해 Hibernate가 방언 판별을 위해 커넥션을 여는 것을 막고,
+ * <p><b>DB에 접속하지 않는다.</b> 방언을 명시하고 {@code hibernate.boot.allow_jdbc_metadata_access=false}로
+     * 부팅 중 메타데이터 조회까지 꺼서 커넥션이 열리지 않게 하고,
  * {@code ddl-auto=none}으로 스키마 작업도 하지 않는다. 실제 쿼리를 도는 테스트가 생기면 그 테스트가
  * TestContainers를 직접 띄워야 한다 — 여기 URL을 실 DB로 바꾸지 말 것.
  *

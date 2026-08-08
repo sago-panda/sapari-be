@@ -640,10 +640,16 @@ class ChatSessionRegistryTest {
         UUID room = UUID.randomUUID();
         registry.register("s1", session(room, UUID.randomUUID())).block();
 
+        // 종료 전에는 사유가 미정이라 closeStatusOf가 기본값 NORMAL을 돌려준다 —
+        // 그것만 보면 terminateRoomEnded를 통째로 지워도 통과한다. 그래서 종료 여부를 함께 고정한다.
+        assertThat(registry.isTerminating("s1")).isFalse();
+
         // when
         registry.terminateRoomEnded("s1");
 
-        // then: 정상 종료 경로(closeAll)와 같은 코드여야 와이어에서 구분되지 않는다
+        // then: 실제로 종료됐고, 정상 종료 경로(closeAll)와 같은 코드여야 와이어에서 구분되지 않는다
+        assertThat(registry.isTerminating("s1")).isTrue();
         assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
+        StepVerifier.create(registry.terminationSignal("s1")).expectNext(CloseStatus.NORMAL).verifyComplete();
     }
 }
