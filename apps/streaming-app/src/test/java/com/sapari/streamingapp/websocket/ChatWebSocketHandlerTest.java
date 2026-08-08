@@ -28,6 +28,8 @@ import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSess
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
+import com.sapari.chat.application.service.SystemMessageService;
+import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
@@ -61,6 +63,7 @@ class ChatWebSocketHandlerTest {
 
     private NettyConnectionRegistry connections;
     private EntryGate entryGate;
+    private SystemMessageService systemMessageService;
 
     private final UUID roomId = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private final UUID userId = UUID.fromString("44444444-4444-4444-4444-444444444444");
@@ -74,9 +77,11 @@ class ChatWebSocketHandlerTest {
         entryGate = mock(EntryGate.class);
         // 기본은 "방 살아있음" — 재확인 창이 닫혀 있을 때(대다수 프레임)의 동작이다.
         given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(true));
+        systemMessageService = mock(SystemMessageService.class);
+        given(systemMessageService.renderToSession(anyString(), any())).willReturn(Mono.empty());
         handler = new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), entryGate,
-                registry, sendUseCase, subscriber, connections);
+                registry, sendUseCase, subscriber, connections, systemMessageService);
     }
 
     @Test
@@ -432,6 +437,50 @@ class ChatWebSocketHandlerTest {
         // then: 커맨드에 실려 나간 값이 false여야 서비스 1단계가 거부한다
         then(sendUseCase).should(times(1)).send(argThat(c -> !c.isRoomAlive()));
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "NOT_ACTIVE".equals(m.code())));
+    }
+
+    @Test
+    @DisplayName("방 종료 확인 — 정상 종료 경로와 같은 프레임·같은 코드로 닫는다(프론트가 구분할 필요 없게)")
+    void roomEnded_onSend_mirrorsNormalEndPath() {
+        // given: 이 Pod가 종료 신호를 놓쳤고 게이트가 마커로 방금 확인한 상황
+        given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(false));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(systemMessageService.renderToSession("s1", SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
+        given(sendUseCase.send(any())).willReturn(Mono.error(new LiveNotActiveException("ended")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then: ERROR(롤백 키) → SYSTEM(종료 사유) → 종료. 순서가 뒤집히면 sink가 닫혀 뒤엣것이 사라진다.
+        InOrder order = inOrder(registry, systemMessageService);
+        order.verify(registry).sendToSession(eq("s1"),
+                argThat(m -> "NOT_ACTIVE".equals(m.code()) && "c1".equals(m.clientMsgId())));
+        order.verify(systemMessageService).renderToSession("s1", SystemMessageCode.ROOM_ENDED);
+        order.verify(registry).terminateRoomEnded("s1");
+    }
+
+    @Test
+    @DisplayName("방 종료 사유도 솎기를 거치지 않는다 — 세션이 끝나 반복될 수 없으니 증폭이 없다")
+    void roomEnded_bypassesRejectionThrottle() {
+        // given: 직전 거부로 솎기 창이 닫혀 있는 상황
+        given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(false));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(registry.shouldReplyToRejection("s1")).willReturn(false);
+        given(systemMessageService.renderToSession("s1", SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
+        given(sendUseCase.send(any())).willReturn(Mono.error(new LiveNotActiveException("ended")));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+
+        // then
+        then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "NOT_ACTIVE".equals(m.code())));
+        then(registry).should(times(1)).terminateRoomEnded("s1");
     }
 
     @Test

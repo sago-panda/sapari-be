@@ -22,6 +22,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
+import com.sapari.chat.application.service.SystemMessageService;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
@@ -78,6 +79,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     private final ChatSessionRegistry registry;
     private final SendChatUseCase sendUseCase;
     private final ChatBroadcastSubscriber subscriber;
+    private final SystemMessageService systemMessageService;
     private final ObjectMapper objectMapper;
 
     /** roomId → (공유 구독 Disposable + 참조 수). 이 Pod 로컬. */
@@ -87,13 +89,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     public ChatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate, ChatSessionRegistry registry,
-            SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber, NettyConnectionRegistry connections) {
+            SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber, NettyConnectionRegistry connections,
+            SystemMessageService systemMessageService) {
         this.verifier = verifier;
         this.connections = connections;
         this.entryGate = entryGate;
         this.registry = registry;
         this.sendUseCase = sendUseCase;
         this.subscriber = subscriber;
+        this.systemMessageService = systemMessageService;
         // createdAt(Instant)을 epoch 숫자가 아니라 ISO-8601 문자열로 직렬화(프론트 계약)
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
@@ -269,6 +273,23 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                                 .doFinally(signal -> {
                                     if (signal != SignalType.CANCEL) {
                                         registry.terminateKicked(sid);
+                                    }
+                                });
+                    }
+                    if (e instanceof LiveNotActiveException) {
+                        // 이 Pod가 종료 신호를 놓쳤고, 게이트가 마커를 읽어 방금 그 사실을 확인했다.
+                        // 정상 경로(SYSTEM(ROOM_ENDED) → closeAll)가 했을 일을 여기서 대신한다 —
+                        // 와이어에 나가는 프레임과 close code(1000)를 그쪽과 똑같이 맞춰야 프론트가
+                        // "뒤늦게 안 종료"를 위한 분기를 따로 만들 필요가 없다.
+                        //
+                        // ERROR를 먼저 보내는 건 발신자의 낙관적 말풍선을 되돌릴 키(clientMsgId)를
+                        // 나르는 프레임이 그것뿐이라서다. SYSTEM에는 clientMsgId가 실리지 않는다.
+                        // 강퇴와 같은 이유로 솎기도 거치지 않는다 — 세션이 그 자리에서 끝나 반복이 없다.
+                        return registry.sendToSession(sid, toError(e, clientMsgId))
+                                .then(systemMessageService.renderToSession(sid, SystemMessageCode.ROOM_ENDED))
+                                .doFinally(signal -> {
+                                    if (signal != SignalType.CANCEL) {
+                                        registry.terminateRoomEnded(sid);
                                     }
                                 });
                     }

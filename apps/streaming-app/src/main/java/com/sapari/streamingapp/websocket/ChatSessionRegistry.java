@@ -418,6 +418,23 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 그 세션은 방 메시지를 계속 읽으면서 프레임마다 강퇴 조회를 태운다(그 조회는 레이트리밋보다 앞이라
      * 유계가 아니다). 방금 권위 있게 확인했으니 여기서 닫는다.
      */
+    /**
+     * transport 전용: 방이 끝난 것으로 확인된 세션을 닫는다.
+     *
+     * <p>정상 종료(1000)로 닫는다 — {@link #closeAll}과 같은 코드다. 이 경로는 종료 신호를 놓친 Pod가
+     * 뒤늦게 같은 사실을 알게 된 것뿐이라, 클라이언트 입장에서 정상 종료와 달라야 할 이유가 없다.
+     * 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다(정상 경로와 동일).
+     */
+    public void terminateRoomEnded(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
+        }
+        log.warn("전송 경로에서 방 종료 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={}",
+                sessionId, ls.session().roomId());
+        terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
+    }
+
     public void terminateKicked(String sessionId) {
         LocalSession ls = local.get(sessionId);
         if (ls == null) {
