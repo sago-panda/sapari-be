@@ -55,3 +55,6 @@ bootJar {
 jar{
     enabled = false
 }
+
+// javadoc 오배치 검사 — 루트 check에 물린다(전 모듈 소스를 한 번에 훑으므로 모듈마다 걸지 않는다)
+apply from: "$rootDir/gradle/orphan-javadoc.gradle"
