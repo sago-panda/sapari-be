@@ -100,6 +100,7 @@ class EndStaleLiveServiceTest {
 
         endStaleLiveService.endStale(new EndStaleLiveCommand(roomId));
 
+        triggerAfterCommit();
         var order = inOrder(liveMediaManager);
         order.verify(liveMediaManager).stopHlsEgress(roomId);
         order.verify(liveMediaManager).deleteIngress(roomId);
@@ -135,7 +136,24 @@ class EndStaleLiveServiceTest {
 
         endStaleLiveService.endStale(new EndStaleLiveCommand(roomId));
 
+        triggerAfterCommit();
         then(liveMediaManager).should(never()).deleteIngress(roomId);
+    }
+
+    @Test
+    @DisplayName("미디어 정리는 커밋 이후에 한다 — 커밋 전엔 LiveKit 을 호출하지 않는다(행 잠금 밖으로 뺀 이유)")
+    void endStale_mediaCleanupDeferredUntilAfterCommit() {
+        given(liveRoomRepository.findByIdForUpdate(roomId))
+                .willReturn(Optional.of(liveRoom(new LiveStreamType.Rtmp("ing-1"))));
+        given(timeProvider.now()).willReturn(NOW);
+
+        endStaleLiveService.endStale(new EndStaleLiveCommand(roomId));
+
+        then(liveRoomRepository).should(times(1)).save(any(LiveRoom.class));
+        then(liveMediaManager).shouldHaveNoInteractions();
+
+        triggerAfterCommit();
+        then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
     }
 
     @Test
@@ -201,6 +219,7 @@ class EndStaleLiveServiceTest {
 
         endStaleLiveService.endStale(new EndStaleLiveCommand(roomId));
 
+        triggerAfterCommit();
         then(liveMediaManager).should(never()).closeRoom(anyString());
         then(liveMediaManager).should(times(1)).stopHlsEgress(roomId);
     }

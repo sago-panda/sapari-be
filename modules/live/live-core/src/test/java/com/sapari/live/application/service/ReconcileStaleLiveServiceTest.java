@@ -76,7 +76,8 @@ class ReconcileStaleLiveServiceTest {
     @DisplayName("활성 egress 가 없는 오래된 Live 방은 종료한다")
     void staleWithoutEgress_isEnded() {
         givenCandidates(roomId);
-        given(liveMediaManager.listAllEgress()).willReturn(List.of());
+        // 조회 자체가 살아 있다는 증거로 무관한 방의 활성 egress 를 하나 둔다 — 전체가 비면 오설정 가드에 걸린다.
+        given(liveMediaManager.listAllEgress()).willReturn(List.of(new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
 
         service.reconcile();
 
@@ -100,7 +101,7 @@ class ReconcileStaleLiveServiceTest {
     void inactiveEgress_countsAsStale() {
         givenCandidates(roomId);
         given(liveMediaManager.listAllEgress())
-                .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), false, STARTED)));
+                .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), false, STARTED), new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
 
         service.reconcile();
 
@@ -131,6 +132,29 @@ class ReconcileStaleLiveServiceTest {
     }
 
     @Test
+    @DisplayName("후보가 있는데 활성 egress 가 0건이면 회차를 접는다 — 200+빈 목록 오설정이 전 방송을 끊는다")
+    void emptyEgressList_abortsRound() {
+        givenCandidates(roomId);
+        given(liveMediaManager.listAllEgress()).willReturn(List.of());
+
+        service.reconcile();
+
+        then(endStaleLiveUseCase).should(never()).endStale(any(EndStaleLiveCommand.class));
+    }
+
+    @Test
+    @DisplayName("비활성 egress 만 있어도 회차를 접는다 — 활성 0건은 조회가 살아 있다는 증거가 되지 못한다")
+    void onlyInactiveEgress_abortsRound() {
+        givenCandidates(roomId);
+        given(liveMediaManager.listAllEgress())
+                .willReturn(List.of(new EgressSummary("eg-1", UUID.randomUUID().toString(), false, STARTED)));
+
+        service.reconcile();
+
+        then(endStaleLiveUseCase).should(never()).endStale(any(EndStaleLiveCommand.class));
+    }
+
+    @Test
     @DisplayName("egress 조회가 실패하면 아무 방도 종료하지 않는다 — 빈 목록이면 전 방송을 끊게 된다")
     void egressLookupFailure_endsNothing() {
         givenCandidates(roomId);
@@ -146,7 +170,7 @@ class ReconcileStaleLiveServiceTest {
     void alreadyEndedRoom_isSkippedAndLoopContinues() {
         UUID other = UUID.randomUUID();
         givenCandidates(roomId, other);
-        given(liveMediaManager.listAllEgress()).willReturn(List.of());
+        given(liveMediaManager.listAllEgress()).willReturn(List.of(new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
         willThrow(new InvalidLiveStateException(roomId.toString()))
                 .given(endStaleLiveUseCase).endStale(new EndStaleLiveCommand(roomId));
 
@@ -160,7 +184,7 @@ class ReconcileStaleLiveServiceTest {
     void nonUuidRoomName_isIgnored() {
         givenCandidates(roomId);
         given(liveMediaManager.listAllEgress())
-                .willReturn(List.of(new EgressSummary("eg-1", "not-a-uuid", true, STARTED)));
+                .willReturn(List.of(new EgressSummary("eg-1", "not-a-uuid", true, STARTED), new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
 
         service.reconcile();
 

@@ -143,20 +143,9 @@ public record LiveRoom(
                 .build();
     }
 
-    /**
-     * RTMP 송출로 전환하고 발급받은 ingress를 배정한다(방송 전 준비 단계).
-     * 방송 시작 전(Scheduled)에만 허용 — 진행 중/종료된 방의 송출 방식은 바꾸지 않는다.
-     * ingressId 유효성은 {@link LiveStreamType.Rtmp} 컴팩트 생성자가 검증한다.
-     */
-    public LiveRoom assignRtmpIngress(String ingressId, Instant now){
-        if (!canPrepareIngress()) {
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
-        }
-        return toBuilder()
-                .streamType(new LiveStreamType.Rtmp(ingressId))
-                .updatedAt(now)
-                .build();
-    }
+    // RTMP ingress 배정은 도메인 전이가 아니라 조건부 UPDATE 다(RtmpIngressAssigner) — 스냅샷 읽기 위에서는
+    // 배타성을 보장할 수 없어 DB 가 승자를 고른다. 여기에 assignRtmpIngress 를 되살리지 말 것:
+    // `ingress_id IS NULL` 조건 없는 경로가 생겨 한 방에 유효한 streamKey 가 여러 개 나간다.
 
     /**
      * OBS가 끝내 연결되지 않아 Ready 상태에 갇힌 방을 종료한다.
@@ -212,6 +201,16 @@ public record LiveRoom(
 
     public boolean isRtmp(){
         return streamType instanceof LiveStreamType.Rtmp;
+    }
+
+    /**
+     * 주어진 ingressId 가 이 방에 배정된 것인지. webhook 이 실어 온 id 를 전이 전에 대조하는 용도라
+     * 알 수 없는 값(null/blank)은 <b>거짓</b>이다 — 모르면 전이하지 않는 쪽이 안전하다.
+     */
+    public boolean hasIngress(String ingressId){
+        return streamType instanceof LiveStreamType.Rtmp rtmp
+                && ingressId != null && !ingressId.isBlank()
+                && rtmp.ingressId().equals(ingressId);
     }
 
     public CreateLiveView toCreateLiveView(){

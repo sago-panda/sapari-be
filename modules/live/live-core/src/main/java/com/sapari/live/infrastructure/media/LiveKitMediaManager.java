@@ -41,6 +41,7 @@ import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.MasterPlaylistPublisher;
+import com.sapari.live.application.port.RoomSummary;
 import com.sapari.live.application.port.SfuRoomResult;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.infrastructure.config.LiveKitProperties;
@@ -124,6 +125,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
             }
 
             IngressInfo info = response.body();
+            // IngressResult 도 같은 검증을 하지만 그건 raw IllegalArgumentException 이라 여기서 도메인
+            // 예외로 번역한다(어댑터가 인프라 예외를 번역한다는 계약). record 쪽은 마지막 그물로 남긴다.
+            if (info.getIngressId() == null || info.getIngressId().isBlank()) {
+                log.error("LiveKit 이 빈 ingressId 를 반환: roomId={}", roomId);
+                throw new LiveMediaException("발급된 ingressId 가 비어 있습니다: " + roomId);
+            }
             // streamKey 는 자격증명 — 로그에 남기지 않는다(ingressId/url 만 기록).
             log.info("RTMP Ingress 생성: roomId={}, ingressId={}", roomId, info.getIngressId());
             return new IngressResult(info.getIngressId(), info.getUrl(), info.getStreamKey());
@@ -134,28 +141,56 @@ public class LiveKitMediaManager implements LiveMediaManager {
     }
 
     /**
-     * 방의 RTMP ingress 가 실제 송출 중(OBS 연결·publish)인지 확인한다.
-     * 시작 시점 랑데부(판매자가 방송 시작을 누른 순간 OBS가 이미 붙어 있는 경우)를 판정하는 데 쓴다.
-     * roomName(=roomId)으로 필터해 조회하며, 상태가 PUBLISHING 인 ingress 가 하나라도 있으면 활성으로 본다.
+     * 시작 시점 랑데부 판정용 — 이 방에서 송출 중인 ingress 의 id (실패 시 빈 목록, 포트 javadoc 참고).
      *
-     * <p>조회 실패 시 false 를 반환한다(fail-safe — 활성으로 단정해 무단 Live 전이를 만들지 않음). 보통은 곧
-     * 도착할 {@code ingress_started} webhook 이 전이를 이어받지만, "OBS 가 시작 이전에 이미 연결(그때 webhook 은
-     * 방이 아직 Scheduled 라 no-op) + 마침 이 조회마저 실패"인 드문 경우엔 재전송될 이벤트가 없어 방이 Ready 로
-     * 남을 수 있다 — 이는 orphan reconciliation 배치의 몫(미구현 follow-up 버킷).
+     * <p>실패를 삼키는 건 여기 하나뿐이다. 조회가 흔들렸다고 판매자의 방송 시작을 깨뜨리지 않기 위함이고,
+     * 승격을 못 하고 {@code Ready} 로 남는 건 {@code ingress_started} webhook 과 Ready 고착 정리 잡이 받는다.
      */
     @Override
-    public boolean isIngressActive(UUID roomId){
+    public List<String> publishingIngressIdsOrEmpty(UUID roomId){
         try {
             List<IngressInfo> ingresses = ingressServiceClient.listIngress(roomId.toString()).execute().body();
-            if (ingresses == null || ingresses.isEmpty()) {
-                return false;
+            if (ingresses == null) {
+                return List.of();
             }
-            return ingresses.stream().anyMatch(this::isPublishing);
+            return ingresses.stream()
+                    .filter(this::isPublishing)
+                    .map(IngressInfo::getIngressId)
+                    .toList();
         } catch (Exception e) {
-            // 조회 실패 시 활성으로 단정하지 않고 false. 보통은 후속 ingress_started webhook 이 전이를 이어받으나,
-            // OBS 선연결 + 조회 실패가 겹치면 재전송 이벤트가 없어 Ready 로 남을 수 있음(reconciliation 대상).
-            log.warn("RTMP ingress 활성 조회 실패 — 비활성으로 간주: roomId={}", roomId, e);
-            return false;
+            // 활성으로 단정하지 않고 빈 목록. OBS 선연결 + 조회 실패가 겹치면 재전송될 이벤트가 없어
+            // Ready 로 남을 수 있는데, 그건 Ready 고착 정리 잡이 승격시킨다.
+            log.warn("RTMP ingress 송출 조회 실패 — 비활성으로 간주: roomId={}", roomId, e);
+            return List.of();
+        }
+    }
+
+    /**
+     * {@link #publishingIngressIdsOrEmpty(UUID)} 와 같은 조회지만 실패를 예외로 올리고, 불리언이 아니라 이 방의 ingress 를
+     * 전부(송출 여부와 함께) 돌려준다 — 호출자가 방의 ingress_id 와 대조하고, "등록은 됐지만 송출 안 함"과
+     * "LiveKit 이 이 방의 ingress 를 아예 모름"을 구분할 수 있도록. 포트 javadoc 참고.
+     */
+    @Override
+    public List<IngressSummary> listRoomIngress(UUID roomId){
+        try {
+            Response<List<IngressInfo>> response = ingressServiceClient.listIngress(roomId.toString()).execute();
+            if (!response.isSuccessful()) {
+                log.error("RTMP ingress 송출 조회 실패: roomId={}, code={}", roomId, response.code());
+                throw new LiveMediaException("ingress 송출 여부 조회에 실패했습니다: " + roomId);
+            }
+            // 성공 응답의 null body 는 "내용 없음"이지 실패가 아니다 — 실패는 위에서 걸렀다.
+            // 합쳐서 예외로 올리면 ingress 가 아예 없는 방(= 만료 대상의 전형)마다 회차가 죽는다.
+            if (response.body() == null) {
+                return List.of();
+            }
+            return response.body().stream()
+                    .map(info -> new IngressSummary(info.getIngressId(), info.getRoomName(), isPublishing(info)))
+                    .toList();
+        } catch (LiveMediaException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("RTMP ingress 송출 조회 오류: roomId={}", roomId, e);
+            throw new LiveMediaException("ingress 송출 여부 조회 중 오류: " + roomId, e);
         }
     }
 
@@ -430,6 +465,48 @@ public class LiveKitMediaManager implements LiveMediaManager {
         }
     }
 
+    /**
+     * SFU 방 전체 조회 — 고아 정리 배치 전용. {@code listAllIngress} 와 같은 fail-closed 규칙.
+     *
+     * <p>생성 시각은 <b>초</b>({@code creationTime})와 <b>밀리초</b>({@code creationTimeMs}) 두 필드가 있는데
+     * <b>초 쪽을 쓴다</b>. 밀리초는 나중에 추가된 필드라 서버 버전에 따라 안 채워질 수 있고, 그러면 0 →
+     * 나이를 모름 → 전건 skip 이 되어 <b>이 잡이 조용히 아무것도 안 하게</b> 된다(로그는 "전체=N, 닫음=0"
+     * 이라 정상으로 보인다). 유예가 분 단위라 밀리초 정밀도는 값어치가 없다.
+     *
+     * <p>ingress/egress 의 {@code startedAt} 은 <b>나노초</b>다 — {@link #toInstant(long)} 을 여기 쓰면
+     * 1970 이 되어 유예가 항상 지난 것으로 읽힌다.
+     */
+    @Override
+    public List<RoomSummary> listAllRooms(){
+        try{
+            Response<List<Room>> response = roomServiceClient.listRooms(null).execute();
+            if(!response.isSuccessful() || response.body() == null){
+                log.error("LiveKit 룸 전체 조회 실패: code={}, message={}", response.code(), response.message());
+                throw new LiveMediaException("SFU 룸 전체 조회에 실패했습니다.");
+            }
+            return response.body().stream()
+                    .map(room -> new RoomSummary(
+                            room.getName(),
+                            room.getNumParticipants(),
+                            toInstantFromSeconds(room.getCreationTime())
+                    ))
+                    .toList();
+        }catch (LiveMediaException e){
+            throw e;
+        }catch (Exception e){
+            log.error("LiveKit 룸 전체 조회 실패", e);
+            throw new LiveMediaException("SFU 룸 전체 조회 중 오류", e);
+        }
+    }
+
+    /** 0(미설정)은 null 로 — 그대로 변환하면 1970 이라 유예를 항상 통과한다({@link #toInstant(long)} 과 동일 규칙). */
+    private Instant toInstantFromSeconds(long seconds){
+        if(seconds == 0){
+            return null;
+        }
+        return Instant.ofEpochSecond(seconds);
+    }
+
     @Override
     public String getSfuUrl(){
         return liveKitProperties.host();
@@ -504,9 +581,18 @@ public class LiveKitMediaManager implements LiveMediaManager {
         }
     }
 
+    /**
+     * BUFFERING 도 송출로 본다 — OBS 가 순간 재접속하는 동안의 상태다. PUBLISHING 만 보면 그 찰나의 스냅샷
+     * 하나가 "송출 안 함"이 되어 만료 배치의 파괴적 판단(ingress 삭제·SFU 방 닫기)에 그대로 들어간다.
+     * 판정을 넓히는 방향은 fail-closed 다(살아 있다고 보고 손대지 않음).
+     */
     private boolean isPublishing(IngressInfo info){
-        return info.hasState()
-                && info.getState().getStatus() == IngressState.Status.ENDPOINT_PUBLISHING;
+        if (!info.hasState()) {
+            return false;
+        }
+        IngressState.Status status = info.getState().getStatus();
+        return status == IngressState.Status.ENDPOINT_PUBLISHING
+                || status == IngressState.Status.ENDPOINT_BUFFERING;
     }
 
     /**

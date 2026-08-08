@@ -33,7 +33,7 @@ class IngressStartedWebhookHandlerTest {
 
         handler.handle(event);
 
-        then(goLiveByRtmpService).should().goLiveByRtmp(roomId);
+        then(goLiveByRtmpService).should().goLiveByRtmp(roomId, "ing-1");
     }
 
     @Test
@@ -43,7 +43,7 @@ class IngressStartedWebhookHandlerTest {
 
         handler.handle(event);
 
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any());
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -53,6 +53,6 @@ class IngressStartedWebhookHandlerTest {
 
         handler.handle(event);
 
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any());
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 }

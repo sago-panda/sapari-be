@@ -32,7 +32,7 @@ public record LiveReconcileProperties(
             endStaleLive = new EndStaleLive(null);
         }
         if(expireReady == null){
-            expireReady = new ExpireReady(null);
+            expireReady = new ExpireReady(null, null);
         }
         if (batchSize == null) {
             batchSize = DEFAULT_BATCH_SIZE;
@@ -83,11 +83,22 @@ public record LiveReconcileProperties(
 
     /**
      * @param threshold 이만큼 Ready 에 머문 방은 만료시킨다. EndStaleLive 와 달리 이 시간이 곧 판정이다
+     * @param batchSize 공용 {@code batch-size} 를 쓰지 않고 따로 두는 이유는 <b>이 잡만 후보마다 LiveKit 을
+     *                  왕복</b>하기 때문이다. 왕복은 후보당 1회가 아니다 — 조회 1회에 더해 처리까지 따라온다:
+     *                  만료는 {@code stopHlsEgress}(목록 + 화질 3건 중단) + {@code deleteIngress}(목록 + 삭제)
+     *                  + {@code closeRoom} 으로 <b>최대 8회</b>, 승격은 {@code startHlsEgress} 3회다.
+     *                  그 정리가 {@code afterCommit} 이라 같은 스케줄러 스레드에서 동기로 돈다.
+     *                  <p>다만 {@code callTimeout} 15s 는 <b>타임아웃이지 지연이 아니다</b> — 정상 지연에서는
+     *                  20건이 수십 초로 끝난다. 최악 20분은 LiveKit 이 모든 호출에서 멎어야 나오는 값이고,
+     *                  그 상황이면 batch-size 를 뭘로 잡든 이미 고장이다. 20 은 "공용값 100 보다 회차가
+     *                  짧아야 한다"는 정도의 근거이지 최악을 주기 안에 넣는 값이 아니다.
      */
     public record ExpireReady(
-        Duration threshold
+        Duration threshold,
+        Integer batchSize
     ){
         private static final Duration DEFAULT_THRESHOLD = Duration.ofMinutes(60);
+        private static final int DEFAULT_BATCH_SIZE = 20;
 
         public ExpireReady {
             if(threshold == null){
@@ -95,6 +106,13 @@ public record LiveReconcileProperties(
             }
             if(threshold.isZero() || threshold.isNegative()){
                 throw new IllegalArgumentException("live.reconcile.expire-ready.threshold 는 양수여야 합니다: " + threshold);
+            }
+            if (batchSize == null) {
+                batchSize = DEFAULT_BATCH_SIZE;
+            }
+            if (batchSize <= 0) {
+                throw new IllegalArgumentException(
+                        "live.reconcile.expire-ready.batch-size 는 양수여야 합니다: " + batchSize);
             }
         }
     }
