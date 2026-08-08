@@ -98,6 +98,21 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
 
+    /**
+     * 방별 시청자 수 캐시. 입장할 때마다 Redis HASH를 통째로 읽어오는 비용을 끊는다.
+     *
+     * <p>없으면 입장 하나가 그 방의 세션 수만큼 값을 전송받는다 — 방이 커질수록 입장이 비싸지고,
+     * 그 비싸진 입장이 다시 방을 키우므로 총량이 세션 수의 제곱으로 간다. 인기 방에서 동시에 몰릴 때
+     * 그 부담이 그대로 Redis 단일 스레드에 실린다.
+     *
+     * <p>잠깐 낡아도 되는 값이라 캐시가 성립한다 — 이 수치는 입장 시 한 번만 내려가고 이후 갱신 push가
+     * 없어서, 클라가 보는 값은 어차피 그 시점의 스냅샷이다. 방이 비면 {@code unregister}가 같이 걷어낸다.
+     */
+    private final Map<UUID, CachedCount> activeCountCache = new ConcurrentHashMap<>();
+
+    private record CachedCount(long value, long expiresAtNanos) {
+    }
+
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
 
@@ -106,6 +121,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 짧게 잡을수록 그 구간은 줄지만 정상 전송에 붙는 Redis 왕복 빈도가 오른다.
      */
     private static final long ROOM_ALIVE_RECHECK_INTERVAL_NANOS = Duration.ofSeconds(30).toNanos();
+
+    /** 시청자 수 캐시 수명. 짧게 잡아도 몰리는 순간의 중복 조회는 대부분 걷힌다. */
+    private static final long ACTIVE_COUNT_CACHE_NANOS = Duration.ofSeconds(3).toNanos();
 
     /** 마지막 드롭 로그 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
     private final AtomicLong lastDropLogNanos = new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
@@ -213,7 +231,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
         roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
             sessionIds.remove(sessionId);
-            return sessionIds.isEmpty() ? null : sessionIds;
+            if (sessionIds.isEmpty()) {
+                activeCountCache.remove(roomId);   // 인덱스와 같은 수명 — 남기면 이쪽이 누수원이 된다
+                return null;
+            }
+            return sessionIds;
         });
         // 로컬 정리는 끝났고, Redis 필드는 아래 HDEL이 지운다 — 그게 정상 회수 경로다.
         // 실패하면 방 종료의 clearRoom이, 그마저 놓치면 키 TTL이 받는다(3단 폴백).
@@ -230,7 +252,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Long> getActiveCount(UUID roomId) {
-        return sessionRepository.count(roomId);   // HVALS distinct = 고유 유저 수
+        CachedCount cached = activeCountCache.get(roomId);
+        if (cached != null && System.nanoTime() - cached.expiresAtNanos() < 0) {
+            return Mono.just(cached.value());
+        }
+        // 조회 실패는 캐시에 담지 않는다 — 실패를 굳혀두면 그 방의 다음 입장까지 값 없이 나간다.
+        return sessionRepository.count(roomId)   // HVALS distinct = 고유 유저 수
+                .doOnNext(count -> activeCountCache.put(roomId,
+                        new CachedCount(count, System.nanoTime() + ACTIVE_COUNT_CACHE_NANOS)));
     }
 
     @Override

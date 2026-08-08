@@ -303,6 +303,9 @@ class ChatWebSocketIntegrationTest {
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
         AtomicReference<Integer> whileConnected = new AtomicReference<>();
+        // 카운터는 이 Pod 전역이고 서버는 클래스 안 다른 테스트와 공유한다 — 0이 아니라 기준선과 비교한다.
+        // 앞선 테스트의 채널 해제가 조금 늦으면 0 단언은 이 테스트를 엉뚱하게 깨뜨린다.
+        int baseline = connections.trackedCount();
 
         // when: 접속이 살아있는 동안의 추적 수를 본다
         new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
@@ -310,13 +313,13 @@ class ChatWebSocketIntegrationTest {
                         .doOnNext(f -> whileConnected.set(connections.trackedCount())).then())
                 .block(Duration.ofSeconds(15));
 
-        // then: 접속 중엔 추적되고, 끊긴 뒤에는 남지 않는다(맵 자체가 누수원이 되면 안 된다)
-        assertThat(whileConnected.get()).isPositive();
+        // then: 접속 중엔 늘고, 끊긴 뒤에는 돌아온다(맵 자체가 누수원이 되면 안 된다)
+        assertThat(whileConnected.get()).isGreaterThan(baseline);
         // 해제는 서버 이벤트루프에서 일어나므로 잠깐 기다린다
         long deadline = System.currentTimeMillis() + 5_000;
-        while (connections.trackedCount() > 0 && System.currentTimeMillis() < deadline) {
+        while (connections.trackedCount() > baseline && System.currentTimeMillis() < deadline) {
             Thread.onSpinWait();
         }
-        assertThat(connections.trackedCount()).isZero();
+        assertThat(connections.trackedCount()).isLessThanOrEqualTo(baseline);
     }
 }

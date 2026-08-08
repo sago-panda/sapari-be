@@ -479,4 +479,31 @@ class ChatSessionRegistryTest {
         // then: 0을 센티널로 쓰면 nanoTime이 음수인 JVM에서 전 세션이 막힌다
         assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
     }
+
+    @Test
+    @DisplayName("시청자 수 — 창 안의 재조회는 Redis로 가지 않는다(입장이 방 크기에 비례해 비싸지면 안 된다)")
+    void activeCount_servedFromCacheWithinWindow() {
+        // given
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(42L));
+
+        // when: 같은 방에 연달아 두 번 묻는다
+        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(42L).verifyComplete();
+        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(42L).verifyComplete();
+
+        // then
+        then(sessionRepository).should(times(1)).count(roomId);
+    }
+
+    @Test
+    @DisplayName("시청자 수 — 조회 실패는 캐시에 굳히지 않는다(다음 입장이 값 없이 나가면 안 된다)")
+    void activeCount_doesNotCacheFailures() {
+        // given
+        given(sessionRepository.count(roomId))
+                .willReturn(Mono.error(new RuntimeException("redis down")))
+                .willReturn(Mono.just(7L));
+
+        // when & then: 첫 번째는 실패하고, 두 번째는 다시 물어서 값을 얻는다
+        StepVerifier.create(registry.getActiveCount(roomId)).verifyError(RuntimeException.class);
+        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(7L).verifyComplete();
+    }
 }
