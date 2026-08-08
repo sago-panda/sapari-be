@@ -35,6 +35,9 @@ class LiveAppApplicationTests {
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "none");
         registry.add("spring.jpa.database-platform", () -> "org.hibernate.dialect.PostgreSQLDialect");
+        // 이게 없으면 방언을 지정해도 Hibernate가 부팅 중 메타데이터를 읽으려 커넥션을 연다
+        // (실패해도 컨텍스트는 뜨지만, CI 러너의 5432에 붙어 있는 아무 DB에나 인증을 시도하게 된다).
+        registry.add("spring.jpa.properties.hibernate.boot.allow_jdbc_metadata_access", () -> false);
 
         registry.add("jwt.issuer", () -> "sapari-test");
         registry.add("jwt.secret", () -> "test-only-secret-not-a-credential-32chars");
@@ -54,7 +57,7 @@ class LiveAppApplicationTests {
         registry.add("livekit.s3.key-prefix", () -> "test/");
         registry.add("livekit.s3.access-key", () -> "test-access");
         registry.add("livekit.s3.secret-key", () -> "test-secret");
-        registry.add("livekit.hls.cdn-base-url", () -> "http://localhost/hls");
+        registry.add("livekit.hls.cdn-base-url", () -> "https://cdn.example.com/hls");
         registry.add("livekit.hls.segment-duration", () -> 4);
     }
 

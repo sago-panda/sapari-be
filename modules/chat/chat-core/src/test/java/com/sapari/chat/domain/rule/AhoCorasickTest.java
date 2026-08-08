@@ -104,15 +104,17 @@ class AhoCorasickTest {
         }
 
         @Test
-        @DisplayName("겹치는 패턴이 서로 다른 위치에서 시작해도 각각 잡힌다 — fail 체인을 두 번 이상 타는 경우")
-        void chainedFailLinks() {
-            // given: "aab"를 찾다 실패하면 "ab"로, 거기서 또 실패하면 "b"로 내려가야 한다
-            AhoCorasick ac = new AhoCorasick(List.of("aab", "ab", "b"));
+        @DisplayName("접두가 반복될 때 fail 링크를 타고 되돌아가 찾는다 — root로 떨어지면 놓친다")
+        void failLinkBacktracking() {
+            // given: 짧은 패턴을 일부러 빼서 fail 링크로만 도달하게 만든다.
+            // "b"나 "ab"가 사전에 있으면 어떤 입력이든 직계 goto로 걸려 이 경로가 검증되지 않는다.
+            AhoCorasick ac = new AhoCorasick(List.of("aab"));
 
-            // when & then
+            // when & then: "aaab"는 [a][a]까지 간 뒤 세 번째 a에서 실패해 fail 링크([aa]→[a])를 타야만
+            // 다시 [a][a][b]로 이어진다. child.fail=root로 고정하면 여기서 놓친다.
+            assertThat(ac.containsAny("aaab")).isTrue();
             assertThat(ac.containsAny("aab")).isTrue();
-            assertThat(ac.containsAny("cab")).isTrue();
-            assertThat(ac.containsAny("cb")).isTrue();
+            assertThat(ac.containsAny("ab")).isFalse();
         }
 
         @Test

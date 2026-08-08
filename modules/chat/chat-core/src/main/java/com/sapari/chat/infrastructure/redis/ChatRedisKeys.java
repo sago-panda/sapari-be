@@ -22,7 +22,7 @@ final class ChatRedisKeys {
         return "room:" + roomId + ":sessions";
     }
 
-    /** 방 강퇴 userId 집합 SET (재접속 차단, 라이브 종료 시 삭제) */
+    /** 방 강퇴 userId 집합 SET (재접속 차단, 라이브 종료 시 만료 부여) */
     static String kicked(UUID roomId) {
         return "kicked:" + roomId;
     }

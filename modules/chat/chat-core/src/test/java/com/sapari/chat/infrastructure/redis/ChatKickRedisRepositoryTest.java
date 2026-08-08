@@ -68,7 +68,7 @@ class ChatKickRedisRepositoryTest {
     }
 
     @Test
-    @DisplayName("키 자체가 없으면 false (라이브 종료로 정리된 방)")
+    @DisplayName("키 자체가 없으면 false (라이브 종료로 회수된 방)")
     void missing_key_is_false() {
         // when & then
         assertThat(repository.isKicked(UUID.randomUUID(), userId).block()).isFalse();
@@ -93,5 +93,33 @@ class ChatKickRedisRepositoryTest {
         StepVerifier.create(new ChatKickRedisRepository(broken).isKicked(roomId, userId))
                 .expectError(RuntimeException.class)
                 .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    @DisplayName("방 종료 회수 — 지우지 않고 만료를 건다. 멤버가 남아야 잘못된 종료 신호를 되돌릴 수 있다")
+    void expireAfterRoomEnded_keepsMembersWithTtl() {
+        // given: 강퇴 명단이 있는 방
+        UUID room = UUID.randomUUID();
+        UUID kicked = UUID.randomUUID();
+        redisTemplate.opsForSet().add("kicked:" + room, kicked.toString()).block();
+
+        // when
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
+
+        // then: DEL로 되돌아가면 멤버십이 사라져 이 단언이 깨진다
+        StepVerifier.create(repository.isKicked(room, kicked)).expectNext(true).verifyComplete();
+        Duration ttl = redisTemplate.getExpire("kicked:" + room).block();
+        assertThat(ttl).isNotNull().isBetween(Duration.ofHours(23), Duration.ofHours(24));
+    }
+
+    @Test
+    @DisplayName("방 종료 회수 — 없는 키에 걸어도 무동작(어느 Pod가 몇 번 불러도 안전하다)")
+    void expireAfterRoomEnded_isNoopOnMissingKey() {
+        // given: 강퇴가 한 번도 없던 방
+        UUID room = UUID.randomUUID();
+
+        // when & then
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
+        StepVerifier.create(redisTemplate.hasKey("kicked:" + room)).expectNext(false).verifyComplete();
     }
 }

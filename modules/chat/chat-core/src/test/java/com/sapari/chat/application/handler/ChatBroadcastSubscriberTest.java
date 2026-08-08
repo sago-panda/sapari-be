@@ -9,6 +9,7 @@ import static org.mockito.Mockito.times;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.DisplayName;
@@ -193,17 +194,21 @@ class ChatBroadcastSubscriberTest {
     }
 
     @Test
-    @DisplayName("구독 Disposable로 해제할 수 있다 — 마지막 퇴장에서 회수되지 않으면 방마다 스트림이 쌓인다")
-    void subscribeRoom_isDisposable() {
-        // given
-        given(broadcaster.subscribe(roomId)).willReturn(Flux.never());
+    @DisplayName("구독 해제가 업스트림까지 전파된다 — 마지막 퇴장에서 회수되지 않으면 방마다 스트림이 쌓인다")
+    void subscribeRoom_disposePropagatesUpstream() {
+        // given: dispose()가 Disposable에서만 참인 건 Reactor의 성질이지 이 코드의 성질이 아니다.
+        // 실제로 업스트림 구독이 끊기는지를 본다.
+        AtomicBoolean cancelled = new AtomicBoolean();
+        given(broadcaster.subscribe(roomId))
+                .willReturn(Flux.<ChatEnvelope>never().doOnCancel(() -> cancelled.set(true)));
 
         // when
         Disposable subscription = subscriber.subscribeRoom(roomId);
+        assertThat(cancelled).isFalse();
         subscription.dispose();
 
         // then
-        assertThat(subscription.isDisposed()).isTrue();
+        assertThat(cancelled).isTrue();
     }
 
     private ChatMessage normal(String content) {

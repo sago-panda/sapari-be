@@ -366,19 +366,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 이 구간이 유계가 아니라서, 전송 경로에서 간격을 두고 다시 확인한다.
      *
      * <p>간격을 두는 이유는 비용이다. 매 프레임 물으면 정상 전송마다 Redis 왕복이 하나씩 더 붙는데,
-     * 여기서 얻으려는 건 실시간성이 아니라 <b>구간의 상한</b>이다. 창 길이가 곧 그 상한이 된다.
+     * 여기서 얻으려는 건 실시간성이 아니라 <b>구간의 상한</b>이다.
+     *
+     * <p><b>상한은 창 길이가 아니라 {@code min(창 길이, 마커 잔여수명)}이다.</b> 마커에는 TTL이 있어서,
+     * 종료 후 그 시간이 지나도록 한 프레임도 안 보낸 세션은 다시 보낼 때 마커를 못 찾고 통과한다.
+     * 그 세션은 이후 상한 없이 끝난 방에 쓴다 — 마커 수명을 넘기는 조용한 세션은 이 방어가 닿지 않는다.
      *
      * @return 지금 확인해야 하면 true. false면 호출자는 묻지 않고 살아있는 것으로 본다.
      *         이미 종료가 확인된 세션은 {@link #isRoomKnownEnded}가 앞에서 걸러야 한다.
      */
-    /** 마지막 확인 시각을 과거로 밀어 창이 열린 상태를 만든다. (테스트 진입점 — 30초를 기다리지 않기 위해) */
-    void expireRoomAliveWindow(String sessionId) {
-        LocalSession ls = local.get(sessionId);
-        if (ls != null) {
-            ls.lastRoomAliveCheckNanos().addAndGet(-ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
-        }
-    }
-
     public boolean shouldRecheckRoomAlive(String sessionId) {
         LocalSession ls = local.get(sessionId);
         if (ls == null) {
@@ -389,6 +385,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // CAS로 한 번만 통과시킨다 — 통과한 쪽만 실제로 조회하고, 나머지는 그 결과를 기다리지 않고 지나간다.
         return now - last >= ROOM_ALIVE_RECHECK_INTERVAL_NANOS
                 && ls.lastRoomAliveCheckNanos().compareAndSet(last, now);
+    }
+
+    /** 마지막 확인 시각을 과거로 밀어 창이 열린 상태를 만든다. (테스트 진입점 — 30초를 기다리지 않기 위해) */
+    void expireRoomAliveWindow(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.lastRoomAliveCheckNanos().addAndGet(-ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
+        }
     }
 
     /**
@@ -418,6 +422,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 그 세션은 방 메시지를 계속 읽으면서 프레임마다 강퇴 조회를 태운다(그 조회는 레이트리밋보다 앞이라
      * 유계가 아니다). 방금 권위 있게 확인했으니 여기서 닫는다.
      */
+    public void terminateKicked(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
+        }
+        log.warn("전송 경로에서 강퇴 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={} userId={}",
+                sessionId, ls.session().roomId(), ls.session().userId());
+        terminate(ls, CloseStatus.POLICY_VIOLATION, newBudget().completeDeadline());
+    }
+
     /**
      * transport 전용: 방이 끝난 것으로 확인된 세션을 닫는다.
      *
@@ -433,16 +447,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
         log.warn("전송 경로에서 방 종료 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={}",
                 sessionId, ls.session().roomId());
         terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
-    }
-
-    public void terminateKicked(String sessionId) {
-        LocalSession ls = local.get(sessionId);
-        if (ls == null) {
-            return;
-        }
-        log.warn("전송 경로에서 강퇴 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={} userId={}",
-                sessionId, ls.session().roomId(), ls.session().userId());
-        terminate(ls, CloseStatus.POLICY_VIOLATION, newBudget().completeDeadline());
     }
 
     /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */

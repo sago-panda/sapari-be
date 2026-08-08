@@ -579,6 +579,9 @@ class ChatSessionRegistryTest {
         assertThatCode(() -> {
             registry.recordRateLimited(gone, 3);
             registry.markRoomEnded(gone);
+            registry.terminateRoomEnded(gone);
+            registry.terminateKicked(gone);
+            registry.expireRoomAliveWindow(gone);
             registry.sendToSession(gone, out("SYSTEM")).block();
         }).doesNotThrowAnyException();
 
@@ -628,5 +631,19 @@ class ChatSessionRegistryTest {
         assertThat(registry.shouldRecheckRoomAlive("s1")).isTrue();
         // 한 번 통과하면 그 시각으로 갱신되므로 바로 다음 호출은 막힌다(중복 조회 방지)
         assertThat(registry.shouldRecheckRoomAlive("s1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("방 종료로 끊긴 세션은 1000으로 닫힌다 — 강퇴(1008)와 달라야 프론트가 재접속 금지로 오독하지 않는다")
+    void closeStatus_reflectsRoomEnded() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+
+        // when
+        registry.terminateRoomEnded("s1");
+
+        // then: 정상 종료 경로(closeAll)와 같은 코드여야 와이어에서 구분되지 않는다
+        assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
     }
 }

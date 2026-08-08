@@ -278,9 +278,13 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     }
                     if (e instanceof LiveNotActiveException) {
                         // 이 Pod가 종료 신호를 놓쳤고, 게이트가 마커를 읽어 방금 그 사실을 확인했다.
-                        // 정상 경로(SYSTEM(ROOM_ENDED) → closeAll)가 했을 일을 여기서 대신한다 —
-                        // 와이어에 나가는 프레임과 close code(1000)를 그쪽과 똑같이 맞춰야 프론트가
-                        // "뒤늦게 안 종료"를 위한 분기를 따로 만들 필요가 없다.
+                        // 와이어에 나가는 프레임과 close code(1000)를 정상 경로와 똑같이 맞춘다 —
+                        // 프론트가 "뒤늦게 안 종료"를 위한 분기를 따로 만들 필요가 없어야 한다.
+                        //
+                        // 다만 닫는 범위는 다르다. 정상 경로는 방 전체(renderToRoom+closeAll)를 닫지만
+                        // 여기는 이 세션 하나뿐이다 — 마커를 읽는 계기가 "이 세션이 보냈다"라서다.
+                        // 같은 Pod의 수신 전용 세션은 각자 보낼 때까지 닫히지 않는다. 방 단위로 닫으려면
+                        // 종료 처리 5단계를 transport에서 복제해야 하고, 그러면 한쪽만 갱신되는 분기가 생긴다.
                         //
                         // ERROR를 먼저 보내는 건 발신자의 낙관적 말풍선을 되돌릴 키(clientMsgId)를
                         // 나르는 프레임이 그것뿐이라서다. SYSTEM에는 clientMsgId가 실리지 않는다.
@@ -313,7 +317,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      *
      * <p>솎인 프레임은 <b>아무 응답도 받지 못한다.</b> 클라가 낙관적으로 그린 말풍선을 되돌릴 신호가
      * 없다는 뜻이라, 프론트는 응답 없음을 성공으로 읽지 말고 자체 타임아웃으로도 정리해야 한다.
-     * 유일한 예외는 강퇴다 — 연결당 한 번뿐이라 반복 비용이 없어 그대로 답한다.
+     * 예외는 강퇴와 방 종료 확인 둘이다 — 그 자리에서 세션이 끝나 반복될 수 없으니 증폭이 없다.
      */
     private Mono<Void> respondRejected(String sid, OutboundMessage response) {
         return registry.shouldReplyToRejection(sid)
