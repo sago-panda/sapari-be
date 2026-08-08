@@ -16,6 +16,9 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -277,6 +280,29 @@ class CustomerAuthServiceTest {
         );
 
         verifyNoInteractions(userSignupContactVerificationUseCase, userAccountUseCase);
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"   "})
+    @DisplayName("소셜 이미지 사용을 선택했는데 callback URL이 없으면 가입 저장 전에 실패한다")
+    void completeSocialSignupFailsBeforeRegistrationWhenSelectedProviderImageUrlIsMissing(String profileImageUrl)
+            throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(
+                        socialSignupInfoWithProfileImageUrl(profileImageUrl)
+                )));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED)
+        );
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
         verifyNoInteractions(refreshTokenStore);
     }
@@ -1188,6 +1214,10 @@ class CustomerAuthServiceTest {
     }
 
     private SocialSignupInfo socialSignupInfo() {
+        return socialSignupInfoWithProfileImageUrl("https://image.example/profile.png");
+    }
+
+    private SocialSignupInfo socialSignupInfoWithProfileImageUrl(String profileImageUrl) {
         return new SocialSignupInfo(
                 ProviderType.NAVER,
                 "naver-id",
@@ -1195,7 +1225,7 @@ class CustomerAuthServiceTest {
                 "소셜이름",
                 "소셜닉네임",
                 "01012345678",
-                "https://image.example/profile.png",
+                profileImageUrl,
                 UserGender.MALE,
                 LocalDate.of(2000, 1, 1)
         );

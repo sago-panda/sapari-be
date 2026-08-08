@@ -337,7 +337,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     /**
      * DB 가입 전에 직접 업로드 이미지를 검증하거나 서버 보관 provider URL의 이미지를 내려받아 정규화한다.
-     * 선택한 provider 이미지를 준비하지 못하면 가입을 중단한다.
+     * 선택한 provider 이미지의 URL이 없거나 이미지를 준비하지 못하면 가입을 중단한다.
      */
     private PreparedSignupProfileImage prepareSignupProfileImageChoice(
             SocialSignupCommand command,
@@ -353,11 +353,12 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             return new PreparedSignupProfileImage(image);
         }
 
-        if (!command.useSocialProfileImage()
-                || socialSignupInfo.profileImageUrl() == null
-                || socialSignupInfo.profileImageUrl().isBlank()) {
-            // 이미지 미선택 또는 callback에 provider URL이 없으면 프로필 이미지 없는 가입이 정상 경로다.
+        if (!command.useSocialProfileImage()) {
             return null;
+        }
+        if (socialSignupInfo.profileImageUrl() == null || socialSignupInfo.profileImageUrl().isBlank()) {
+            // 사용자가 선택한 소셜 이미지를 URL이 없다는 이유로 이미지 없는 가입으로 바꾸지 않는다.
+            throw new CustomerException(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED);
         }
 
         // 클라이언트 입력 URL이 아니라 OAuth callback에서 서버가 보관한 provider URL만 다운로드한다.

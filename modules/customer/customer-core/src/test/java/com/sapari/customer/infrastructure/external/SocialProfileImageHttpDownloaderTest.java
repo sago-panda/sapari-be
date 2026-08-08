@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import java.awt.image.BufferedImage;
@@ -16,6 +17,10 @@ import javax.imageio.ImageIO;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
@@ -25,6 +30,81 @@ import com.sapari.user.model.ProviderType;
 
 @DisplayName("소셜 프로필 이미지 HTTP downloader 테스트")
 class SocialProfileImageHttpDownloaderTest {
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "file:///etc/passwd",
+            "https://image.example:8080/profile.png",
+            "https://user:password@image.example/profile.png",
+            "http://127.0.0.1/profile.png"
+    })
+    @DisplayName("금지된 최초 URI는 HTTP 요청 없이 빈 결과로 처리한다")
+    void rejectsUnsafeInitialUriWithoutHttpRequest(String value) {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        SocialProfileImageHttpDownloader downloader = downloader(builder.build(), 1024);
+
+        assertThat(downloader.download(ProviderType.KAKAO, value)).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("안전한 redirect 목적지는 같은 URI 정책을 다시 적용한 뒤 다운로드한다")
+    void followsSafeRedirectAfterRevalidation() throws IOException {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        SocialProfileImageHttpDownloader downloader = downloader(builder.build(), 1024, 1);
+        byte[] png = pngBytes();
+        server.expect(once(), requestTo("https://image.example/start"))
+                .andRespond(withStatus(HttpStatus.FOUND)
+                        .header(HttpHeaders.LOCATION, "https://cdn.example/profile.png"));
+        server.expect(once(), requestTo("https://cdn.example/profile.png"))
+                .andRespond(withSuccess(png, MediaType.IMAGE_PNG));
+
+        assertThat(downloader.download(ProviderType.KAKAO, "https://image.example/start")).isPresent();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("redirect가 내부 IP literal을 가리키면 두 번째 요청 없이 실패한다")
+    void rejectsInternalIpRedirectWithoutSecondRequest() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        SocialProfileImageHttpDownloader downloader = downloader(builder.build(), 1024, 1);
+        server.expect(once(), requestTo("https://image.example/start"))
+                .andRespond(withStatus(HttpStatus.FOUND)
+                        .header(HttpHeaders.LOCATION, "http://127.0.0.1/admin"));
+
+        assertThat(downloader.download(ProviderType.KAKAO, "https://image.example/start")).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("Location 없는 redirect는 빈 결과로 처리한다")
+    void rejectsRedirectWithoutLocation() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        SocialProfileImageHttpDownloader downloader = downloader(builder.build(), 1024, 1);
+        server.expect(once(), requestTo("https://image.example/start"))
+                .andRespond(withStatus(HttpStatus.FOUND));
+
+        assertThat(downloader.download(ProviderType.KAKAO, "https://image.example/start")).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("허용 redirect 횟수를 넘으면 다음 목적지를 요청하지 않는다")
+    void rejectsRedirectBeyondLimit() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        SocialProfileImageHttpDownloader downloader = downloader(builder.build(), 1024, 0);
+        server.expect(once(), requestTo("https://image.example/start"))
+                .andRespond(withStatus(HttpStatus.FOUND)
+                        .header(HttpHeaders.LOCATION, "https://cdn.example/profile.png"));
+
+        assertThat(downloader.download(ProviderType.KAKAO, "https://image.example/start")).isEmpty();
+        server.verify();
+    }
 
     @Test
     @DisplayName("이미지 응답을 제한 크기 안에서 다운로드한다")
@@ -211,15 +291,20 @@ class SocialProfileImageHttpDownloaderTest {
     }
 
     private SocialProfileImageHttpDownloader downloader(RestClient restClient, long maxSizeBytes) {
+        return downloader(restClient, maxSizeBytes, 0);
+    }
+
+    private SocialProfileImageHttpDownloader downloader(RestClient restClient, long maxSizeBytes, int maxRedirects) {
         SocialProfileImageDownloadProperties properties = new SocialProfileImageDownloadProperties(
                 Duration.ofSeconds(2),
                 Duration.ofSeconds(3),
                 maxSizeBytes,
-                0
+                maxRedirects
         );
         return new SocialProfileImageHttpDownloader(
                 restClient,
-                properties
+                properties,
+                new SocialProfileImageUriPolicy()
         );
     }
 }

@@ -30,16 +30,23 @@ public class SocialProfileImageHttpDownloader implements SocialProfileImageDownl
 
     private final RestClient restClient;
     private final SocialProfileImageDownloadProperties properties;
+    private final SocialProfileImageUriPolicy uriPolicy;
 
+    /** 소셜 이미지 전용 client, 다운로드 제한, URI SSRF 정책을 결합한다. */
     public SocialProfileImageHttpDownloader(
             @Qualifier("socialProfileImageRestClient") RestClient restClient,
-            SocialProfileImageDownloadProperties properties
+            SocialProfileImageDownloadProperties properties,
+            SocialProfileImageUriPolicy uriPolicy
     ) {
         this.restClient = restClient;
         this.properties = properties;
+        this.uriPolicy = uriPolicy;
     }
 
-    /** provider URL, redirect, 응답 크기를 제한하며 이미지를 다운로드한다. */
+    /**
+     * provider URL의 구조를 검증한 뒤 redirect와 응답 크기를 제한하며 이미지를 다운로드한다.
+     * URL 구조·다운로드·파일 검증 실패는 선택 이미지 import 실패로 이어지도록 빈 결과로 반환한다.
+     */
     @Override
     public Optional<SocialProfileImageDownloadResult> download(
             ProviderType provider,
@@ -65,8 +72,13 @@ public class SocialProfileImageHttpDownloader implements SocialProfileImageDownl
         }
     }
 
-    /** 허용 횟수 안에서 redirect를 추적해 이미지를 다운로드한다. */
+    /** 최초 URL과 각 redirect URL에 같은 URI 정책을 적용한 뒤 허용 횟수 안에서 다운로드한다. */
     private Optional<SocialProfileImageDownloadResult> download(ProviderType provider, URI uri, int redirectCount) {
+        if (!uriPolicy.isAllowed(uri)) {
+            // 보안 거부 목적지는 URL·host·IP를 로그에 남기지 않고 선택 이미지 실패로만 처리한다.
+            return Optional.empty();
+        }
+
         return restClient.get()
                 .uri(uri)
                 .exchange((request, response) -> {
@@ -76,6 +88,7 @@ public class SocialProfileImageHttpDownloader implements SocialProfileImageDownl
                             return Optional.empty();
                         }
                         URI redirectUri = uri.resolve(location);
+                        // 최초 URL이 안전해도 Location은 새 목적지이므로 재귀 진입점에서 같은 정책을 다시 적용한다.
                         return download(provider, redirectUri, redirectCount + 1);
                     }
                     if (!response.getStatusCode().is2xxSuccessful()) {
