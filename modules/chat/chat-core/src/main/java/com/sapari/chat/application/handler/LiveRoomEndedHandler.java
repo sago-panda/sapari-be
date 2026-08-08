@@ -84,7 +84,7 @@ public class LiveRoomEndedHandler {
      */
     Mono<Void> onRoomEnded(UUID roomId) {
         return keepGoing(roomEndedRepository.markEnded(roomId), roomId,
-                        "종료 마커 기록 실패 — 이 방의 종료 판정이 전 세션에서 무력화된다(재입장·전송 모두)", false)
+                        "종료 마커 기록 실패 — 이 방의 종료 판정이 전 세션에서 무력화된다(재입장·전송 모두)", true)
                 .then(keepGoing(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED), roomId,
                         "종료 알림 전송 실패 — 클라는 사유 없이 끊긴다", true))
                 .then(keepGoing(sessionManager.closeAll(roomId), roomId,
@@ -99,12 +99,16 @@ public class LiveRoomEndedHandler {
     /**
      * 실패를 삼키지 않고 무엇을 잃었는지 남긴 뒤, 남은 단계를 계속 진행시킨다.
      *
-     * <p>Redis 어댑터 실패는 원인이 자명해 종류만 남기지만, 프로세스 안 fan-out(세션 종료)에서 나는
-     * 예외는 우리 코드의 버그라 위치를 알아야 한다 — 그쪽만 예외를 통째로 싣는다.
+     * <p>등급은 <b>무엇을 잃었는지</b>로 정한다 — 어떤 종류의 오류인지가 아니다. 통제(종료 판정)를
+     * 잃는 실패는 ERROR고, 스스로 복구되는 것(TTL이 받아주는 정리)은 WARN이다. 원인 종류로 등급을
+     * 매기면 Redis 장애로 통제가 열린 순간이 WARN에 묻혀 ERROR만 보는 사람에게 안 보인다.
+     *
+     * <p>이 체인은 방송 종료마다 한 번씩만 돌아 로그 폭주 위험이 없으므로 예외를 통째로 싣는다
+     * (건당 호출되는 전송 경로와 다르다).
      */
-    private Mono<Void> keepGoing(Mono<Void> step, UUID roomId, String whatIsLost, boolean ourBug) {
+    private Mono<Void> keepGoing(Mono<Void> step, UUID roomId, String whatIsLost, boolean losesControl) {
         return step.onErrorResume(e -> {
-            if (ourBug) {
+            if (losesControl) {
                 log.error("{} roomId={}", whatIsLost, roomId, e);
             } else {
                 log.warn("{} roomId={} cause={}", whatIsLost, roomId, e.getClass().getSimpleName());

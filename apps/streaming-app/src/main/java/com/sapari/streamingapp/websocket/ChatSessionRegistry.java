@@ -260,8 +260,21 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
         // 조회 실패는 캐시에 담지 않는다 — 실패를 굳혀두면 그 방의 다음 입장까지 값 없이 나간다.
         return sessionRepository.count(roomId)   // HVALS distinct = 고유 유저 수
-                .doOnNext(count -> activeCountCache.put(roomId,
-                        new CachedCount(count, System.nanoTime() + ACTIVE_COUNT_CACHE_NANOS)));
+                .doOnNext(count -> cacheIfRoomStillLocal(roomId, count));
+    }
+
+    /**
+     * 조회가 끝난 시점에도 그 방이 이 Pod에 남아 있을 때만 캐시에 담는다.
+     *
+     * <p>담는 시점과 회수 시점이 다른 락 구간이라 그냥 넣으면 샌다 — Redis를 다녀오는 수 ms 사이에
+     * 마지막 세션이 끊기면 회수({@code unregister})가 먼저 지나가고 그 뒤에 항목이 새로 생긴다.
+     * 그 방에 아무도 다시 안 들어오면 영영 남는다. 방 인덱스와 같은 락 안에서 판단해 그 창을 없앤다.
+     */
+    private void cacheIfRoomStillLocal(UUID roomId, long count) {
+        roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
+            activeCountCache.put(roomId, new CachedCount(count, System.nanoTime() + ACTIVE_COUNT_CACHE_NANOS));
+            return sessionIds;
+        });
     }
 
     @Override

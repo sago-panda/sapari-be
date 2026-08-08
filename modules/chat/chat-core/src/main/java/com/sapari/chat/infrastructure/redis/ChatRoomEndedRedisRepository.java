@@ -9,11 +9,13 @@ import org.springframework.stereotype.Repository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
  * room:{roomId}:ended 마커 어댑터 — 종료 사실 기록(SET)·조회(EXISTS).
  */
+@Slf4j
 @Repository
 @RequiredArgsConstructor
 public class ChatRoomEndedRedisRepository implements ChatRoomEndedRepository {
@@ -44,6 +46,11 @@ public class ChatRoomEndedRedisRepository implements ChatRoomEndedRepository {
     public Mono<Void> markEnded(UUID roomId) {
         return redisTemplate.opsForValue()
                 .set(ChatRedisKeys.roomEnded(roomId), MARKER, ENDED_TTL)
+                // 성공도 남긴다 — 이 한 줄이 그 방을 TTL 동안 입장·전송 불가로 만든다. 잘못된 신호였을 때
+                // "언제 어느 방이 잠겼는지"를 되짚을 근거가 이것뿐이고, 해제는 키를 직접 지우는 수밖에 없다.
+                .doOnSuccess(ignored -> log.info("방 종료 마커 기록 — 이 방은 만료까지 입장·전송이 막힌다 "
+                        + "roomId={} ttl={}분 (해제: DEL {})", roomId, ENDED_TTL.toMinutes(),
+                        ChatRedisKeys.roomEnded(roomId)))
                 .then();
     }
 

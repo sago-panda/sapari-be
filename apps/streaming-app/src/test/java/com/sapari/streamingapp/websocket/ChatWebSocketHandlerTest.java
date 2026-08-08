@@ -617,6 +617,25 @@ class ChatWebSocketHandlerTest {
         assertThat(seen).containsExactly("m1", "m2", "m3");
     }
 
+    @Test
+    @DisplayName("에코 절삭이 이모지를 반으로 갈라도 프레임은 나간다 — 여기서 터지면 그 세션 아웃바운드가 죽는다")
+    void truncatedSurrogate_stillSerializes() {
+        // given: 64번째 char가 상위 서로게이트라 substring(0,64)가 짝을 쪼갠다.
+        // 쪼개진 문자가 직렬화에서 예외를 내면 onInbound가 아니라 아웃바운드 Flux가 죽어 세션이 멎는다.
+        String id = "x".repeat(63) + "\uD83D\uDE00";
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.shouldReplyToRejection("s1")).willReturn(true);
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"" + id + "\"}";
+        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        // 실제 와이어로 나가는 직렬화까지 태운다
+        then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> {
+            assertThat(handler.serialize(m)).isNotBlank();
+            return true;
+        }));
+    }
+
     private ChatMessageView view(String id) {
         return new ChatMessageView(id, roomId, userId, "닉", null, "BUYER", "NORMAL",
                 "hi", null, "c1", Instant.parse("2026-06-11T00:00:00Z"));

@@ -484,7 +484,9 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("시청자 수 — 창 안의 재조회는 Redis로 가지 않는다(입장이 방 크기에 비례해 비싸지면 안 된다)")
     void activeCount_servedFromCacheWithinWindow() {
-        // given
+        // given: 실제 흐름대로 등록 뒤에 묻는다 — 캐시는 이 Pod에 남아 있는 방에만 붙는다
+        // (조회를 다녀온 사이 방이 비면 담지 않는다. 담으면 회수 주체가 사라져 항목이 영영 남는다.)
+        registry.register("s1", session(roomId, UUID.randomUUID())).block();
         given(sessionRepository.count(roomId)).willReturn(Mono.just(42L));
 
         // when: 같은 방에 연달아 두 번 묻는다
@@ -499,6 +501,7 @@ class ChatSessionRegistryTest {
     @DisplayName("시청자 수 — 조회 실패는 캐시에 굳히지 않는다(다음 입장이 값 없이 나가면 안 된다)")
     void activeCount_doesNotCacheFailures() {
         // given
+        registry.register("s1", session(roomId, UUID.randomUUID())).block();
         given(sessionRepository.count(roomId))
                 .willReturn(Mono.error(new RuntimeException("redis down")))
                 .willReturn(Mono.just(7L));
@@ -651,5 +654,30 @@ class ChatSessionRegistryTest {
         assertThat(registry.isTerminating("s1")).isTrue();
         assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
         StepVerifier.create(registry.terminationSignal("s1")).expectNext(CloseStatus.NORMAL).verifyComplete();
+    }
+
+    @Test
+    @DisplayName("시청자 수 캐시 — 조회 중에 방이 비면 담지 않는다(회수 주체가 사라진 뒤 생긴 항목은 영영 남는다)")
+    void activeCount_doesNotCacheWhenRoomEmptiedDuringLookup() {
+        // given: Redis를 다녀오는 사이에 마지막 세션이 끊기는 상황.
+        // 담는 시점과 회수 시점이 다른 락 구간이라, 그냥 넣으면 unregister가 먼저 지나간 뒤 항목이 새로 생긴다.
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+        given(sessionRepository.count(room))
+                .willReturn(Mono.just(5L).delayElement(Duration.ofMillis(60)))
+                .willReturn(Mono.just(9L));
+
+        // when: 조회를 걸어두고 그 사이에 방을 비운다
+        Mono<Long> inFlight = registry.getActiveCount(room);
+        StepVerifier.create(inFlight.doOnSubscribe(sub -> {
+                    registry.unregister(room, "s1").block();   // 조회 응답 전에 방이 빈다
+                }))
+                .expectNext(5L)
+                .verifyComplete();
+
+        // then: 그 방에 다시 들어오면 캐시가 아니라 Redis를 봐야 한다.
+        // 고아 항목이 남았다면 아래가 9가 아니라 5로 나온다.
+        registry.register("s2", session(room, UUID.randomUUID())).block();
+        StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).verifyComplete();
     }
 }

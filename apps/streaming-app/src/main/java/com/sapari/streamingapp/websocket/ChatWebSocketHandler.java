@@ -475,7 +475,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         };
     }
 
-    private String serialize(OutboundMessage message) {
+    String serialize(OutboundMessage message) {   // 테스트가 와이어 직렬화까지 태울 수 있게 package-private
         try {
             return objectMapper.writeValueAsString(message);
         } catch (Exception e) {
