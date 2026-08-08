@@ -10,10 +10,12 @@ import org.springframework.web.reactive.handler.SimpleUrlHandlerMapping;
 import org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter;
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
+import com.sapari.chat.application.service.SystemMessageService;
 import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 import com.sapari.streamingapp.websocket.ChatWebSocketHandler;
 import com.sapari.streamingapp.websocket.EntryGate;
+import com.sapari.streamingapp.websocket.NettyConnectionRegistry;
 import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
 
 /**
@@ -27,8 +29,10 @@ public class WebSocketConfig {
 
     @Bean
     public ChatWebSocketHandler chatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate,
-            ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber) {
-        return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber);
+            ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber,
+            NettyConnectionRegistry connections, SystemMessageService systemMessageService) {
+        return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber, connections,
+                systemMessageService);
     }
 
     @Bean

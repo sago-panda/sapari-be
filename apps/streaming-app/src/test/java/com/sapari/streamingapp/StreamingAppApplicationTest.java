@@ -21,6 +21,7 @@ class StreamingAppApplicationTest {
     @Test
     @DisplayName("컨텍스트가 로드되고 리액티브 Redis·Mongo 템플릿 빈이 준비된다")
     void contextLoadsWithReactiveTemplates() {
+        // when & then
         assertThat(reactiveStringRedisTemplate).isNotNull();
         assertThat(reactiveMongoTemplate).isNotNull();
     }

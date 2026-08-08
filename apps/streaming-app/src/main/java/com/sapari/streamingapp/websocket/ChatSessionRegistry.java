@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -46,6 +47,20 @@ public class ChatSessionRegistry implements ChatSessionManager {
     static final int OUTBOUND_BUFFER_SIZE = 256;
 
     /**
+     * 거부 응답을 되돌려주는 최소 간격.
+     *
+     * <p><b>세지 않고 솎아낸다.</b> 거부 프레임을 누적해 세다 상한에서 끊는 방식을 먼저 시도했는데,
+     * 무엇을 셀지 정하는 순간 <b>세지 않는 사유가 곧 우회로</b>가 됐다(파싱 실패만 세면 {@code {}}가,
+     * 검증 실패만 세면 레이트리밋 창이 비켜갔다). 게다가 누적이라 200자 초과처럼 <b>정상 사용자가
+     * 반복하는 실수</b>도 결국 상한에 닿아 연결을 잃게 만들었다.
+     *
+     * <p>솎아내면 그 둘이 같이 사라진다 — 사유를 가리지 않으므로 우회할 문이 없고, 연결을 끊지 않으므로
+     * 오탐도 없다. 막으려던 것은 애초에 되돌림 비용이었고, 답을 안 보내면 그 비용이 0이다.
+     * 첫 거부는 반드시 답한다 — 클라가 무엇이 틀렸는지 알아야 고친다.
+     */
+    private static final long REJECTION_REPLY_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos();
+
+    /**
      * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
      *
      * <p>락 보유 구간은 큐 적재 + 드레인(직렬화)이라 정상 상태엔 수십 µs 수준이고 5ms는 두 자릿수 여유다.
@@ -84,8 +99,32 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
 
+    /**
+     * 방별 시청자 수 캐시. 입장할 때마다 Redis HASH를 통째로 읽어오는 비용을 끊는다.
+     *
+     * <p>없으면 입장 하나가 그 방의 세션 수만큼 값을 전송받는다 — 방이 커질수록 입장이 비싸지고,
+     * 그 비싸진 입장이 다시 방을 키우므로 총량이 세션 수의 제곱으로 간다. 인기 방에서 동시에 몰릴 때
+     * 그 부담이 그대로 Redis 단일 스레드에 실린다.
+     *
+     * <p>잠깐 낡아도 되는 값이라 캐시가 성립한다 — 이 수치는 입장 시 한 번만 내려가고 이후 갱신 push가
+     * 없어서, 클라가 보는 값은 어차피 그 시점의 스냅샷이다. 방이 비면 {@code unregister}가 같이 걷어낸다.
+     */
+    private final Map<UUID, CachedCount> activeCountCache = new ConcurrentHashMap<>();
+
+    private record CachedCount(long value, long expiresAtNanos) {
+    }
+
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
+
+    /**
+     * 방 종료를 다시 확인하는 간격. 종료 신호를 놓친 Pod가 끝난 방에 글을 받아주는 구간의 상한이 된다.
+     * 짧게 잡을수록 그 구간은 줄지만 정상 전송에 붙는 Redis 왕복 빈도가 오른다.
+     */
+    static final long ROOM_ALIVE_RECHECK_INTERVAL_NANOS = Duration.ofSeconds(30).toNanos();
+
+    /** 시청자 수 캐시 수명. 짧게 잡아도 몰리는 순간의 중복 조회는 대부분 걷힌다. */
+    private static final long ACTIVE_COUNT_CACHE_NANOS = Duration.ofSeconds(3).toNanos();
 
     /** 마지막 드롭 로그 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
     private final AtomicLong lastDropLogNanos = new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
@@ -101,7 +140,49 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 따로 보관한다(complete 신호엔 코드를 실을 수 없다).
      */
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
-            Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus) {
+            Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
+            AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
+            AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded) {
+    }
+
+    /**
+     * transport 전용: 레이트리밋에 걸렸다는 사실과 해제 시각을 이 세션에 적어둔다.
+     *
+     * <p>거부 자체는 레이트리밋이 하지만, <b>거부하는 비용</b>은 제한하지 못한다 — 거부 한 번에 Redis 왕복이
+     * 세 번(강퇴 조회·SET NX·잔여 TTL 조회) 든다. 회선 속도로 밀면 그 비용이 그대로 반복된다.
+     * 해제 시각을 알고 있는 동안은 같은 답을 다시 물을 이유가 없으므로 여기에 적어두고 로컬에서 끊는다.
+     */
+    public void recordRateLimited(String sessionId, long retryAfterSeconds) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
+        }
+        // 상한을 둔다 — 값 출처가 바뀌어 큰 수가 들어오면 Duration 환산이 ArithmeticException을 던져
+        // 인바운드 스트림을 죽인다. 레이트리밋 창은 분 단위를 넘길 이유가 없다.
+        long clamped = Math.max(0, Math.min(retryAfterSeconds, MAX_RATE_LIMIT_WINDOW_SECONDS));
+        ls.rateLimitedUntilNanos().set(System.nanoTime() + Duration.ofSeconds(clamped).toNanos());
+    }
+
+    /** 로컬 레이트리밋 창 상한 — 어댑터가 주는 값이 커져도 여기서 잘린다. */
+    private static final long MAX_RATE_LIMIT_WINDOW_SECONDS = 60;
+
+    /**
+     * transport 전용: 아직 레이트리밋 창 안이면 남은 초, 아니면 0.
+     *
+     * <p><b>거부에만 쓴다.</b> 0이 나와도 통과시키지 않고 평소대로 레이트리밋을 묻는다 — 이 값은 세션 로컬이라
+     * 같은 유저의 다른 탭이나 다른 Pod가 소모한 몫을 모른다. "확실히 막혀 있다"만 여기서 답할 수 있다.
+     */
+    public long rateLimitRetryAfterSeconds(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return 0;
+        }
+        long remaining = ls.rateLimitedUntilNanos().get() - System.nanoTime();
+        if (remaining <= 0) {
+            return 0;
+        }
+        // 올림한다 — 절삭하면 1초 미만이 0이 되어 "제한 없음"과 구분되지 않고, 클라 카운트다운도 짧아진다.
+        return (remaining + 999_999_999L) / 1_000_000_000L;
     }
 
     @Override
@@ -110,7 +191,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
         local.put(sessionId, new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get()),
-                Sinks.one(), new AtomicReference<>()));   // closeStatus는 종료가 정해질 때 채워진다(null=미정)
+                Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
+                // 둘 다 nanoTime 기준이라 0을 센티널로 쓰면 안 된다 — nanoTime 원점은 임의고 음수일 수 있어,
+                // 0과 비교하면 등록 직후부터 "창 안"으로 오판해 전송이 통째로 막힌다.
+                new AtomicLong(System.nanoTime() - REJECTION_REPLY_INTERVAL_NANOS),
+                new AtomicLong(System.nanoTime()),
+                // 입장 게이트가 방금 확인했으므로 창을 지금부터 연다 — 첫 프레임에서 또 묻지 않는다.
+                new AtomicLong(System.nanoTime()),
+                new AtomicBoolean()));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
         roomSessions.compute(session.roomId(), (room, sessionIds) -> {
@@ -145,7 +233,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
         roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
             sessionIds.remove(sessionId);
-            return sessionIds.isEmpty() ? null : sessionIds;
+            if (sessionIds.isEmpty()) {
+                activeCountCache.remove(roomId);   // 인덱스와 같은 수명 — 남기면 이쪽이 누수원이 된다
+                return null;
+            }
+            return sessionIds;
         });
         // 로컬 정리는 끝났고, Redis 필드는 아래 HDEL이 지운다 — 그게 정상 회수 경로다.
         // 실패하면 방 종료의 clearRoom이, 그마저 놓치면 키 TTL이 받는다(3단 폴백).
@@ -162,7 +254,27 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Long> getActiveCount(UUID roomId) {
-        return sessionRepository.count(roomId);   // HVALS distinct = 고유 유저 수
+        CachedCount cached = activeCountCache.get(roomId);
+        if (cached != null && System.nanoTime() - cached.expiresAtNanos() < 0) {
+            return Mono.just(cached.value());
+        }
+        // 조회 실패는 캐시에 담지 않는다 — 실패를 굳혀두면 그 방의 다음 입장까지 값 없이 나간다.
+        return sessionRepository.count(roomId)   // HVALS distinct = 고유 유저 수
+                .doOnNext(count -> cacheIfRoomStillLocal(roomId, count));
+    }
+
+    /**
+     * 조회가 끝난 시점에도 그 방이 이 Pod에 남아 있을 때만 캐시에 담는다.
+     *
+     * <p>담는 시점과 회수 시점이 다른 락 구간이라 그냥 넣으면 샌다 — Redis를 다녀오는 수 ms 사이에
+     * 마지막 세션이 끊기면 회수({@code unregister})가 먼저 지나가고 그 뒤에 항목이 새로 생긴다.
+     * 그 방에 아무도 다시 안 들어오면 영영 남는다. 방 인덱스와 같은 락 안에서 판단해 그 창을 없앤다.
+     */
+    private void cacheIfRoomStillLocal(UUID roomId, long count) {
+        roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
+            activeCountCache.put(roomId, new CachedCount(count, System.nanoTime() + ACTIVE_COUNT_CACHE_NANOS));
+            return sessionIds;
+        });
     }
 
     @Override
@@ -232,6 +344,124 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return ls != null && ls.closeStatus().get() != null;
     }
 
+    /**
+     * transport 전용: 이 세션이 쓰던 방이 <b>이미 끝난 것으로 확인됐는지</b>.
+     *
+     * <p>{@link #shouldRecheckRoomAlive}보다 <b>먼저</b> 봐야 한다. 창만으로 두면 종료를 확인한 직후부터
+     * 다음 확인까지의 프레임이 전부 통과해 끝난 방에 그대로 쌓인다 — 창 간격마다 한 건만 막는 꼴이 된다.
+     *
+     * @return 종료가 확인된 세션이면 true. 그 세션은 더 물을 것 없이 전송을 막는다.
+     */
+    public boolean isRoomKnownEnded(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        return ls != null && ls.roomEnded().get();
+    }
+
+    /**
+     * transport 전용: 이 세션이 쓰던 방이 끝났다는 사실을 적어둔다.
+     *
+     * <p><b>되돌리는 경로가 없다.</b> 끝난 방은 다시 라이브가 되지 않으므로(live 상태머신에서 Ended는
+     * 종착 상태다) 한 번 확인한 종료는 이 세션이 끝날 때까지 유효하다. 창으로만 두면 확인한 직후부터
+     * 다음 확인까지의 프레임이 그대로 통과해 이력에 쌓인다 — 막으려던 것이 거의 그대로 남는다.
+     */
+    public void markRoomEnded(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.roomEnded().set(true);
+        }
+    }
+
+    /**
+     * transport 전용: 이 세션이 쓰는 방이 아직 살아있는지 <b>다시 물어봐야 하는지</b>.
+     *
+     * <p>종료 신호는 Pub/Sub이라 그 순간 구독이 끊겨 있던 Pod는 통째로 놓친다. 놓치면 그 Pod의 세션은
+     * 닫히지 않고, 끝난 방에 계속 글이 쌓인다 — 그리고 그 글은 Mongo에 남는다. 입장 때 한 번 본 것으로는
+     * 이 구간이 유계가 아니라서, 전송 경로에서 간격을 두고 다시 확인한다.
+     *
+     * <p>간격을 두는 이유는 비용이다. 매 프레임 물으면 정상 전송마다 Redis 왕복이 하나씩 더 붙는데,
+     * 여기서 얻으려는 건 실시간성이 아니라 <b>구간의 상한</b>이다.
+     *
+     * <p><b>상한은 창 길이가 아니라 {@code min(창 길이, 마커 잔여수명)}이다.</b> 마커에는 TTL이 있어서,
+     * 종료 후 그 시간이 지나도록 한 프레임도 안 보낸 세션은 다시 보낼 때 마커를 못 찾고 통과한다.
+     * 그 세션은 이후 상한 없이 끝난 방에 쓴다 — 마커 수명을 넘기는 조용한 세션은 이 방어가 닿지 않는다.
+     *
+     * @return 지금 확인해야 하면 true. false면 호출자는 묻지 않고 살아있는 것으로 본다.
+     *         이미 종료가 확인된 세션은 {@link #isRoomKnownEnded}가 앞에서 걸러야 한다.
+     */
+    public boolean shouldRecheckRoomAlive(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return false;
+        }
+        long now = System.nanoTime();
+        long last = ls.lastRoomAliveCheckNanos().get();
+        // CAS로 한 번만 통과시킨다 — 통과한 쪽만 실제로 조회하고, 나머지는 그 결과를 기다리지 않고 지나간다.
+        return now - last >= ROOM_ALIVE_RECHECK_INTERVAL_NANOS
+                && ls.lastRoomAliveCheckNanos().compareAndSet(last, now);
+    }
+
+    /** 마지막 확인 시각을 과거로 밀어 창이 열린 상태를 만든다. (테스트 진입점 — 30초를 기다리지 않기 위해) */
+    void expireRoomAliveWindow(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.lastRoomAliveCheckNanos().addAndGet(-ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
+        }
+    }
+
+    /**
+     * transport 전용: 지금 이 세션에 거부 응답을 되돌려줘도 되는가.
+     *
+     * <p>사유를 가리지 않는다 — 무엇을 예외로 두든 그게 곧 우회로가 되기 때문이다. 간격 안의 거부는
+     * 조용히 버린다(연결은 유지). 되돌림 비용이 0이 되므로 반복해 밀어넣을 이유가 사라진다.
+     *
+     * @return 답해도 되면 true. false면 호출자는 아무것도 보내지 않는다.
+     */
+    public boolean shouldReplyToRejection(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return false;   // 이미 사라진 세션 — 되돌려 보낼 곳이 없다
+        }
+        long now = System.nanoTime();
+        long last = ls.lastRejectionReplyNanos().get();
+        return now - last >= REJECTION_REPLY_INTERVAL_NANOS
+                && ls.lastRejectionReplyNanos().compareAndSet(last, now);
+    }
+
+    /**
+     * transport 전용: 강퇴가 확인된 세션을 끊는다.
+     *
+     * <p>전송 경로에서 강퇴가 확인됐다는 건 <b>이 Pod가 강퇴 신호를 못 받았다</b>는 뜻이다 — 받았다면
+     * 이미 닫혀서 여기까지 오지 않는다. 강퇴 전달도 무영속 Pub/Sub이라 놓친 Pod가 생길 수 있고, 그때
+     * 그 세션은 방 메시지를 계속 읽으면서 프레임마다 강퇴 조회를 태운다(그 조회는 레이트리밋보다 앞이라
+     * 유계가 아니다). 방금 권위 있게 확인했으니 여기서 닫는다.
+     */
+    public void terminateKicked(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
+        }
+        log.warn("전송 경로에서 강퇴 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={} userId={}",
+                sessionId, ls.session().roomId(), ls.session().userId());
+        terminate(ls, CloseStatus.POLICY_VIOLATION, newBudget().completeDeadline());
+    }
+
+    /**
+     * transport 전용: 방이 끝난 것으로 확인된 세션을 닫는다.
+     *
+     * <p>정상 종료(1000)로 닫는다 — {@link #closeAll}과 같은 코드다. 이 경로는 종료 신호를 놓친 Pod가
+     * 뒤늦게 같은 사실을 알게 된 것뿐이라, 클라이언트 입장에서 정상 종료와 달라야 할 이유가 없다.
+     * 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다(정상 경로와 동일).
+     */
+    public void terminateRoomEnded(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
+        }
+        log.warn("전송 경로에서 방 종료 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={}",
+                sessionId, ls.session().roomId());
+        terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
+    }
+
     /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */
     public CloseStatus closeStatusOf(String sessionId) {
         LocalSession ls = local.get(sessionId);
@@ -249,6 +479,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private void terminate(LocalSession ls, CloseStatus status, long deadline) {
         // 이미 종료 중이면 그때 정해진 사유를 유지한다 — 제어 채널(Sinks.One)도 첫 값만 받으므로,
         // 저장된 사유와 실제로 흘러간 사유가 어긋나지 않게 여기서 한 번만 확정한다.
+        //
+        // 뒤늦은 강퇴가 앞선 종료 사유를 덮지 못한다는 뜻이기도 하다(버퍼 초과 직후 강퇴가 오면 1013으로 닫힌다).
+        // 덮게 만들려면 제어 채널을 다시 발화해야 하는데 Sinks.One은 못 하고, 억지로 하면 위 불변식이 깨진다.
+        // 실질 피해도 없다 — 어느 코드로 닫히든 재접속은 입장 게이트의 강퇴 조회에서 다시 막힌다.
         if (!ls.closeStatus().compareAndSet(null, status)) {
             return;
         }
@@ -302,10 +536,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
         Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), budget.emitDeadline());
         if (consumerCannotKeepUp(result)) {
-            // 코드는 1000 유지 — overflow 종료는 아직 프론트 계약에 없는 신규 케이스라 코드를 선점하지 않는다.
+            // 1013(SERVICE_OVERLOAD) — 정상 종료(1000)로 닫으면 프론트가 곧장 다시 붙는다. 버퍼가 넘친 건
+            // 그 클라가 못 따라온다는 뜻이라, 즉시 재접속은 같은 결과를 부르고 부하 상황일수록 스스로 번진다.
+            // 재시도 자체는 의미가 있으므로 금지(1008)가 아니라 "나중에"로 알린다 — 간격은 프론트 backoff가 정한다.
             log.warn("아웃바운드 버퍼 초과 — 세션 종료 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
-            terminate(ls, CloseStatus.NORMAL, budget.completeDeadline());
+            // complete에 별도 예산을 주지 않는다(이 fan-out의 emitDeadline을 그대로 넘긴다). complete는 "버퍼에 남은 걸
+            // 흘려보낸 뒤 곱게 닫는" 경로인데, 여기 온 이유가 바로 그 버퍼가 꽉 차서 클라가 안 읽는다는
+            // 것이라 흘려보낼 곳이 없다. 그 무의미한 일에 최대 45ms를 쓰면 — 그것도 이 Pod의 모든 방을
+            // 중계하는 Redis 구독 스레드 위에서 — fan-out 예산이 그만큼 지나가 뒤쪽 세션들이 재시도
+            // 없이 한 번만 시도하게 된다. 종료 자체는 제어 채널이 보장하므로 잃는 것도 없다.
+            terminate(ls, CloseStatus.SERVICE_OVERLOAD, budget.emitDeadline());
         } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.

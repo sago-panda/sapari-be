@@ -14,12 +14,12 @@ public record SendChatCommand(
         UUID senderId,          // 서버 신뢰 (세션)
         String senderRole,      // 서버 신뢰 — ChatRole 이름(NORMAL/NOTICE 권한 판정)
         boolean isRoomOwner,    // 서버 신뢰 — NOTICE 권한(방 주인만)
-        boolean isRoomAlive,    // 서버 신뢰 — 세션 메모리 플래그(ROOM_ENDED 수신 시 off). send() 1단계 거부 근거
+        boolean isRoomAlive,    // 서버 신뢰 — 입장 게이트가 방 종료 마커를 보고 채운다. send() 1단계 거부 근거
         String senderNickname,  // 서버 신뢰 (발신 스냅샷)
         String senderEmail,     // 서버 신뢰 (nullable, 발신 스냅샷)
         String messageType,     // 클라 — NORMAL | NOTICE
         String content,         // 클라 — 원문(서버에서 욕설 필터링)
-        String clientMsgId      // 클라 — nullable, 재전송 멱등 키
+        String clientMsgId      // 클라 — 필수(빈 값·길이 초과는 거부), 재전송 멱등 겸 낙관적 렌더 짝짓기 키
 ) {
     public SendChatCommand {
         // 서버가 채우는 신뢰 필드 + 클라가 보내는 타입은 누락되면 안 된다.

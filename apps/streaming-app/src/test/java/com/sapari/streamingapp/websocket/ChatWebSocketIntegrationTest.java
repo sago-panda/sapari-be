@@ -62,6 +62,9 @@ class ChatWebSocketIntegrationTest {
     @Autowired
     ReactiveStringRedisTemplate redisTemplate;
 
+    @Autowired
+    NettyConnectionRegistry connections;
+
     @BeforeAll
     static void genKeys() throws Exception {
         KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
@@ -109,6 +112,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("연결 — 유효 룸 토큰이면 ROOM_INFO를 받는다")
     void valid_token_receives_room_info() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -119,6 +123,7 @@ class ChatWebSocketIntegrationTest {
                         .doOnNext(frames::add).take(1).then())
                 .block(Duration.ofSeconds(15));
 
+        // when & then
         assertThat(frames).hasSize(1);
         assertThat(frames.get(0)).contains("\"type\":\"ROOM_INFO\"");
     }
@@ -126,6 +131,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("송신 — NORMAL 전송 시 clientMsgId가 실린 ACK를 받는다")
     void send_receives_ack() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -138,6 +144,7 @@ class ChatWebSocketIntegrationTest {
                                 .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
                 .block(Duration.ofSeconds(20));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ROOM_INFO\""));
         // ACK에 clientMsgId + createdAt이 ISO-8601 문자열(따옴표)로 — epoch 숫자가 아님(프론트 계약, F2 회귀)
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ACK\"")
@@ -147,6 +154,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("거부 — 위조 서명(다른 키) 토큰이면 ROOM_INFO 없이 닫힌다")
     void forged_token_rejected() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String forged = roomToken(otherKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -161,12 +169,14 @@ class ChatWebSocketIntegrationTest {
             // 서버 1008 close가 클라에 에러로 surface될 수 있음 — 핵심은 ROOM_INFO 미수신
         }
 
+        // when & then
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
     }
 
     @Test
     @DisplayName("강퇴 — kicked SET에 있으면 SYSTEM(KICKED) 후 ROOM_INFO 없이 닫힌다")
     void kicked_member_rejected() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         redisTemplate.opsForSet().add("kicked:" + roomId, userId.toString()).block();
@@ -174,6 +184,7 @@ class ChatWebSocketIntegrationTest {
 
         List<String> frames = collect(roomId, token, null, Duration.ofSeconds(3));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"SYSTEM\"") && f.contains("KICKED"));
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
     }
@@ -181,6 +192,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("권한 — BUYER가 NOTICE 시도하면 ERROR(PERMISSION)")
     void buyer_notice_denied() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -188,6 +200,7 @@ class ChatWebSocketIntegrationTest {
 
         List<String> frames = collect(roomId, token, notice, Duration.ofSeconds(3));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ERROR\"")
                 && f.contains("PERMISSION") && f.contains("\"clientMsgId\":\"n1\""));
     }
@@ -195,6 +208,7 @@ class ChatWebSocketIntegrationTest {
     @Test
     @DisplayName("레이트리밋 — BUYER 연속 전송 시 2번째는 RATE_LIMIT")
     void rapid_send_rate_limited() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -210,12 +224,14 @@ class ChatWebSocketIntegrationTest {
                                 .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
                 .block(Duration.ofSeconds(20));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"") && f.contains("\"clientMsgId\":\"r2\""));
     }
 
     @Test
     @DisplayName("거부 — 토큰 서브프로토콜 누락(bearer만)이면 ROOM_INFO 없이 닫힌다")
     void missing_token_rejected() {
+        // given
         UUID roomId = UUID.randomUUID();
         HttpHeaders onlyBearer = new HttpHeaders();
         onlyBearer.add("Sec-WebSocket-Protocol", "bearer");   // 토큰 값 없음 → extractToken null
@@ -230,12 +246,14 @@ class ChatWebSocketIntegrationTest {
             // 서버 1008 close가 에러로 surface될 수 있음
         }
 
+        // when & then
         assertThat(frames).noneMatch(f -> f.contains("ROOM_INFO"));
     }
 
     @Test
     @DisplayName("강퇴 — 접속 중 KICK_EVENT를 받으면 SYSTEM(KICKED) 후 1008로 닫힌다")
     void kicked_mid_session_closes_with_policy_violation() {
+        // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
@@ -255,6 +273,7 @@ class ChatWebSocketIntegrationTest {
             return receive.and(kick);
         }).block(Duration.ofSeconds(20));
 
+        // when & then
         assertThat(frames).anyMatch(f -> f.contains("\"code\":\"KICKED\""));
         // 프론트가 "재접속하지 말 것"으로 읽는 신호는 close code다 — 와이어에 실제로 실려야 한다
         assertThat(observed.get()).isNotNull();
@@ -274,5 +293,34 @@ class ChatWebSocketIntegrationTest {
                     .and(receive);
         }).block(window.plusSeconds(15));
         return frames;
+    }
+
+    @Test
+    @DisplayName("커넥션 추적 — 접속하면 등록되고, 끊기면 스스로 빠진다(강제 회수의 전제)")
+    void connections_are_tracked_and_released() throws InterruptedException {
+        // given
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        AtomicReference<Integer> whileConnected = new AtomicReference<>();
+        // 카운터는 이 Pod 전역이고 서버는 클래스 안 다른 테스트와 공유한다 — 0이 아니라 기준선과 비교한다.
+        // 앞선 테스트의 채널 해제가 조금 늦으면 0 단언은 이 테스트를 엉뚱하게 깨뜨린다.
+        int baseline = connections.trackedCount();
+
+        // when: 접속이 살아있는 동안의 추적 수를 본다
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
+                session.receive().map(WebSocketMessage::getPayloadAsText).take(1)
+                        .doOnNext(f -> whileConnected.set(connections.trackedCount())).then())
+                .block(Duration.ofSeconds(15));
+
+        // then: 접속 중엔 늘고, 끊긴 뒤에는 돌아온다(맵 자체가 누수원이 되면 안 된다)
+        assertThat(whileConnected.get()).isGreaterThan(baseline);
+        // 해제는 서버 이벤트루프에서 일어나므로 잠깐 기다린다
+        // 폴링 간격을 둔다 — busy-spin은 CI 병렬 실행에서 코어 하나를 5초 태워 다른 테스트를 느리게 만든다
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (connections.trackedCount() > baseline && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(connections.trackedCount()).isLessThanOrEqualTo(baseline);
     }
 }

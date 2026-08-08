@@ -75,6 +75,7 @@ class CrossPodBroadcastTest {
     @Test
     @DisplayName("G2 — Pod A 발행 → Pod B 로컬 세션이 수신 (cross-pod fan-out)")
     void publish_on_podA_reaches_session_on_podB() throws Exception {
+        // given
         // Pod B: 방 구독 시작 + 로컬 세션 등록(비-owner → 마스킹 뷰)
         Disposable sub = subscriberB.subscribeRoom(roomId);
         ChatSession sessionB = new ChatSession(roomId, UUID.randomUUID(), ChatRole.BUYER, "구매자B", "b@example.com", false);
@@ -88,6 +89,7 @@ class CrossPodBroadcastTest {
                 ChatRole.BUYER, new ChatMessageType.Normal(),
                 "크로스팟 안녕", "크로스팟 안녕", null, Instant.parse("2026-06-27T00:00:00Z"));
 
+        // when & then
         StepVerifier.create(registryB.outbound("sessB").next().timeout(Duration.ofSeconds(5)))
                 .then(() -> broadcasterA.publish(roomId, fromA).block())
                 .assertNext(out -> {

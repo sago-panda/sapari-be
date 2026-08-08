@@ -16,6 +16,7 @@ import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserKickedException;
+import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
@@ -114,6 +115,19 @@ public class SendChatService implements SendChatUseCase {
         }
         if (content.length() > MAX_CONTENT_LENGTH) {
             return Mono.error(new IllegalArgumentException("메시지는 " + MAX_CONTENT_LENGTH + "자를 초과할 수 없습니다."));
+        }
+        // clientMsgId를 필수로 받는다 — 재전송 멱등이 이 값에만 걸려 있다(unique 인덱스가 부분 인덱스라
+        // 값이 없으면 적용되지 않는다). 없어도 받아주면 그 메시지만 조용히 멱등이 꺼져, 재전송이 곧 중복 저장이 된다.
+        String clientMsgId = command.clientMsgId();
+        if (clientMsgId == null || clientMsgId.isBlank()) {
+            return Mono.error(new IllegalArgumentException("clientMsgId는 필수입니다."));
+        }
+        // 필수로 만든 이상 상한도 같이 정한다. 이 값은 본문과 달리 Mongo 문서 + unique 인덱스 키로 들어가고
+        // 봉투에 실려 전 Pod로 중계되는데, 상한이 없으면 프레임 한도(수십 KB)까지 채워 보낼 수 있다.
+        // 그러면 본문 200자 제한이 우회된다 — 레이트리밋이 면제되는 진행자·운영자는 그 속도 제한도 없다.
+        if (clientMsgId.length() > ChatConstants.MAX_CLIENT_MSG_ID_LENGTH) {
+            return Mono.error(new IllegalArgumentException(
+                    "clientMsgId는 " + ChatConstants.MAX_CLIENT_MSG_ID_LENGTH + "자를 초과할 수 없습니다."));
         }
         ChatRole role = ChatRole.valueOf(command.senderRole());   // 잘못된 role 문자열이면 throw → defer가 onError로
         ChatMessageType type = toType(command.messageType());     // NORMAL/NOTICE만 허용(SYSTEM·미지 타입 거부)

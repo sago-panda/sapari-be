@@ -3,14 +3,16 @@ package com.sapari.chat.infrastructure.redis;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -25,6 +27,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.core.read.ListAppender;
 
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.protocol.ChatEnvelope;
@@ -33,6 +36,7 @@ import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
@@ -62,13 +66,16 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("publish — chat:pubsub:{roomId} 채널에 CHAT 봉투 JSON을 발행한다(round-trip 일치)")
     void publish_sends_chat_envelope_to_channel() throws Exception {
-        when(redis.convertAndSend(anyString(), anyString())).thenReturn(Mono.just(1L));
+        // given
+        given(redis.convertAndSend(anyString(), anyString())).willReturn(Mono.just(1L));
         ChatMessage message = sampleMessage();
 
+        // when
         StepVerifier.create(broadcaster.publish(roomId, message)).verifyComplete();
 
+        // then
         ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
-        verify(redis).convertAndSend(eq(channel), json.capture());
+        then(redis).should(times(1)).convertAndSend(eq(channel), json.capture());
         ChatEnvelope sent = mapper.readValue(json.getValue(), ChatEnvelope.class);
         assertThat(sent).isInstanceOf(ChatEnvelope.ChatMsg.class);
         assertThat(((ChatEnvelope.ChatMsg) sent).message()).isEqualTo(message);
@@ -77,8 +84,10 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("subscribe — 패턴 스트림의 해당 방 메시지를 ChatEnvelope로 역직렬화한다")
     void subscribe_deserializes_envelope() throws Exception {
+        // given
         String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
 
+        // when & then
         StepVerifier.create(broadcaster.subscribe(roomId))
                 .then(() -> pattern.tryEmitNext(message(channel, wire)))
                 .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg cm
@@ -90,9 +99,11 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("subscribe — 다른 방 채널 메시지는 받지 않는다(roomId 필터)")
     void subscribe_filters_other_room() throws Exception {
+        // given
         String otherWire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
         String otherChannel = "chat:pubsub:" + UUID.randomUUID();
 
+        // when & then
         StepVerifier.create(broadcaster.subscribe(roomId))
                 .then(() -> pattern.tryEmitNext(message(otherChannel, otherWire)))
                 .expectNoEvent(Duration.ofMillis(150))
@@ -103,8 +114,10 @@ class RedisChatBroadcasterTest {
     @Test
     @DisplayName("subscribe — 깨진 봉투 1건은 skip하고 스트림은 살아남는다(poison 생존)")
     void subscribe_skips_poison_message() throws Exception {
+        // given
         String good = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
 
+        // when & then
         StepVerifier.create(broadcaster.subscribe(roomId))
                 .then(() -> {
                     pattern.tryEmitNext(message(channel, "{깨진 json"));
@@ -157,11 +170,83 @@ class RedisChatBroadcasterTest {
         return text.toString();
     }
 
+    @Test
+    @DisplayName("실패 필드 경로 — 봉투에 없는 필드명이 와도 로그를 위조할 문자는 남지 않는다")
+    void failed_field_path_strips_injection_from_unknown_property() throws Exception {
+        // given
+        // 나머지가 전부 유효해야 record가 생성되고, 그제서야 "모르는 필드"가 실패 사유가 된다.
+        // (하나라도 어긋나면 생성 단계에서 먼저 터져 그 이름이 경로에 닿지 않는다.)
+        String valid = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
+        String injected = valid.replace("\"message\":{", "\"message\":{\"ev\\nil주입\":1,");
+
+        Exception raw = catchDeserialize(injected);
+
+        // 전제 검증 — 발행한 쪽이 지은 이름이 실제로 예외 경로에 담긴다. 그래서 걸러야 한다.
+
+        // when & then
+        assertThat(raw).isInstanceOf(JsonMappingException.class);
+        assertThat(((JsonMappingException) raw).getPath())
+                .anyMatch(ref -> ref.getFieldName() != null && ref.getFieldName().contains("\n"));
+
+        assertThat(broadcaster.failedFieldPath(raw))
+                .doesNotContain("\n")
+                .doesNotContain("\r");
+    }
+
+    @Test
+    @DisplayName("실패 필드 경로 — 정상 필드명은 그대로 남아 진단이 가능하다")
+    void failed_field_path_keeps_real_field_names() {
+        // given
+        // senderId 자리에 UUID가 아닌 값 → 그 필드에서 매핑 실패
+        Exception raw = catchDeserialize(
+                "{\"kind\":\"CHAT\",\"message\":{\"senderId\":\"uuid아님\"}}");
+
+        // when & then
+        assertThat(broadcaster.failedFieldPath(raw)).isEqualTo("message.senderId");
+    }
+
+    @Test
+    @DisplayName("패턴 구독이 끊겨도 재구독으로 되살아나 이후 메시지가 다시 흐른다")
+    void subscribe_recovers_after_upstream_failure() throws Exception {
+        // given: 첫 구독은 즉시 끊기고, 재구독부터 정상 스트림을 준다.
+        // replay 싱크라 재구독이 언제 일어나든 그 전에 넣어둔 메시지가 전달된다(타이밍 의존 제거).
+        Sinks.Many<ReactiveSubscription.Message<String, String>> afterReconnect =
+                Sinks.many().replay().all();
+        AtomicInteger subscribeCount = new AtomicInteger();
+        ReactiveStringRedisTemplate flaky = mock(ReactiveStringRedisTemplate.class);
+        doReturn(Flux.defer(() -> subscribeCount.getAndIncrement() == 0
+                ? Flux.<ReactiveSubscription.Message<String, String>>error(new RuntimeException("연결 끊김"))
+                : afterReconnect.asFlux()))
+                .when(flaky).listenToPattern("chat:pubsub:*");
+
+        RedisChatBroadcaster recovering = new RedisChatBroadcaster(flaky);
+        String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
+        afterReconnect.tryEmitNext(message(channel, wire));
+
+        // when & then: backoff(최소 1초) 뒤 재구독이 일어나 메시지가 도착한다
+        StepVerifier.create(recovering.subscribe(roomId))
+                .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg)
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+
+        assertThat(subscribeCount.get()).isGreaterThan(1);   // 실제로 다시 붙었다
+    }
+
+    /** 봉투 역직렬화를 실제로 시도해 터진 예외를 돌려준다(계약 그대로 — mixin/모듈 동일). */
+    private Exception catchDeserialize(String json) {
+        try {
+            mapper.readValue(json, ChatEnvelope.class);
+            throw new AssertionError("역직렬화가 실패해야 하는 입력인데 성공했다");
+        } catch (Exception e) {
+            return e;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private ReactiveSubscription.Message<String, String> message(String channel, String body) {
         ReactiveSubscription.Message<String, String> m = mock(ReactiveSubscription.Message.class);
-        when(m.getChannel()).thenReturn(channel);
-        when(m.getMessage()).thenReturn(body);
+        given(m.getChannel()).willReturn(channel);
+        given(m.getMessage()).willReturn(body);
         return m;
     }
 

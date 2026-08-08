@@ -89,7 +89,11 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
             UUID roomId = UUID.fromString(channel.substring(ChatRedisKeys.PUBSUB_PREFIX.length()));
             return new RawMessage(roomId, body);
         } catch (IllegalArgumentException e) {
-            log.error("chat:pubsub 채널명 roomId 파싱 실패 — skip channel={}", channel);
+            // 채널명도 payload와 같은 신뢰경계 밖 문자열이라 원문을 싣지 않는다 — 개행을 섞어 로그 줄을
+            // 위조할 수 있다. 여기 오는 건 우리 발행이 아니다(우리는 UUID로 키를 만든다). 남의 발행이
+            // 잘못됐다는 사실과 규모만 알면 되므로 접미사 길이로 갈음한다.
+            log.error("chat:pubsub 채널명 roomId 파싱 실패 — skip suffixLength={}",
+                    channel.length() - ChatRedisKeys.PUBSUB_PREFIX.length());
             return null;
         }
     }
@@ -100,21 +104,40 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         } catch (Exception e) {
             // 예외 객체·메시지를 그대로 찍지 않는다 — InvalidFormatException 등은 실패한 "값"을 메시지에 인용하므로
             // 봉투의 senderEmail 같은 PII가 로그로 샌다. 진단에 필요한 건 실패 종류와 위치지 값이 아니다.
-            log.error("chat:pubsub 봉투 역직렬화 실패 — 해당 메시지 skip(구독 스트림 유지) cause={} path={}",
-                    e.getClass().getSimpleName(), failedFieldPath(e));
+            // 길이를 함께 남긴다 — JSON 자체가 깨진 경우엔 필드 경로가 안 나와(-) 사유만으론 좁혀지지 않는다.
+            // 발행 측이 계약을 바꿔 전 방 메시지가 통째로 버려지는 상황에서 규모를 가늠할 단서가 필요하다.
+            log.error("chat:pubsub 봉투 역직렬화 실패 — 해당 메시지 skip(구독 스트림 유지) cause={} path={} payloadLength={}",
+                    e.getClass().getSimpleName(), failedFieldPath(e), json == null ? -1 : json.length());
             return Mono.empty();
         }
     }
 
-    /** 역직렬화가 걸린 필드 경로만 뽑는다(값 제외) — 예: message.senderId. 경로를 못 얻으면 "-". */
-    private String failedFieldPath(Exception e) {
+    /** 역직렬화가 걸린 필드 경로만 뽑는다(값 제외) — 예: message.senderId. 경로를 못 얻으면 "-". (테스트 진입점) */
+    String failedFieldPath(Exception e) {
         if (!(e instanceof JsonMappingException mappingException)) {
             return "-";
         }
         String path = mappingException.getPath().stream()
                 .map(JsonMappingException.Reference::getFieldName)
                 .filter(Objects::nonNull)
+                .map(RedisChatBroadcaster::safeFieldName)
                 .collect(Collectors.joining("."));
         return path.isEmpty() ? "-" : path;
     }
+
+    /**
+     * 필드명을 로그에 넣기 전에 거른다.
+     *
+     * <p>우리 타입의 필드명은 전부 그대로 통과한다. 문제는 <b>봉투에 없는 필드</b>가 왔을 때다 —
+     * 그때 예외 경로에 담기는 이름은 우리가 지은 게 아니라 발행한 쪽이 지은 것이라, 개행을 섞으면
+     * 로그에 없는 줄을 만들어낼 수 있다. 값이 아니라 이름이라 방심하기 쉬운 자리다.
+     */
+    private static String safeFieldName(String name) {
+        String filtered = name.replaceAll("[^A-Za-z0-9_$]", "");
+        return filtered.length() <= MAX_FIELD_NAME_LENGTH ? filtered
+                : filtered.substring(0, MAX_FIELD_NAME_LENGTH);
+    }
+
+    /** 필드명 로그 길이 상한 — 우리 필드명은 한참 아래라 정상 진단은 손실 없다. */
+    private static final int MAX_FIELD_NAME_LENGTH = 64;
 }
