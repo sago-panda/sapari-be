@@ -179,7 +179,7 @@ class ChatWebSocketIntegrationTest {
         // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
-        redisTemplate.opsForSet().add("kicked:" + roomId, userId.toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + roomId, userId.toString()).block();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
 
         List<String> frames = collect(roomId, token, null, Duration.ofSeconds(3));

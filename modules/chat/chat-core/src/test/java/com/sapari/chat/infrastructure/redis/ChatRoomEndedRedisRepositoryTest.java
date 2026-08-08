@@ -58,7 +58,7 @@ class ChatRoomEndedRedisRepositoryTest {
 
         // when & then
         assertThat(repository.isEnded(roomId).block()).isTrue();
-        Long ttl = redisTemplate.getExpire("room:" + roomId + ":ended").block().toSeconds();
+        Long ttl = redisTemplate.getExpire("chat:room:" + roomId + ":ended").block().toSeconds();
         assertThat(ttl).isPositive();   // -1(무기한)이면 키가 영원히 남는다
     }
 

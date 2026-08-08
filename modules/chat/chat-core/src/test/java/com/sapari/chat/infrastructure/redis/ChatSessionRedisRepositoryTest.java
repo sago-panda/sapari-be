@@ -49,7 +49,7 @@ class ChatSessionRedisRepositoryTest {
     @BeforeEach
     void setUp() {
         repository = new ChatSessionRedisRepository(redisTemplate);
-        redisTemplate.delete("room:" + roomId + ":sessions").block();
+        redisTemplate.delete("chat:room:" + roomId + ":sessions").block();
     }
 
     @Test
@@ -59,7 +59,7 @@ class ChatSessionRedisRepositoryTest {
         repository.add(roomId, "session-1", userId).block();
 
         Object stored = redisTemplate.opsForHash()
-                .get("room:" + roomId + ":sessions", "session-1").block();
+                .get("chat:room:" + roomId + ":sessions", "session-1").block();
 
         // when & then
         assertThat(stored).isEqualTo(userId.toString());
@@ -110,7 +110,7 @@ class ChatSessionRedisRepositoryTest {
         // when & then
         assertThat(repository.count(roomId).block()).isEqualTo(1);
         assertThat(redisTemplate.opsForHash()
-                .hasKey("room:" + roomId + ":sessions", "s1").block()).isFalse();
+                .hasKey("chat:room:" + roomId + ":sessions", "s1").block()).isFalse();
     }
 
     @Test
@@ -124,7 +124,7 @@ class ChatSessionRedisRepositoryTest {
 
         // when & then
         assertThat(redisTemplate.opsForHash()
-                .hasKey("room:" + roomId + ":sessions", "tab-2").block()).isTrue();
+                .hasKey("chat:room:" + roomId + ":sessions", "tab-2").block()).isTrue();
         assertThat(repository.count(roomId).block()).isEqualTo(1);
     }
 
@@ -137,7 +137,7 @@ class ChatSessionRedisRepositoryTest {
         repository.clearRoom(roomId).block();
 
         // when & then
-        assertThat(redisTemplate.hasKey("room:" + roomId + ":sessions").block()).isFalse();
+        assertThat(redisTemplate.hasKey("chat:room:" + roomId + ":sessions").block()).isFalse();
         assertThat(repository.count(roomId).block()).isZero();
     }
 
@@ -148,6 +148,6 @@ class ChatSessionRedisRepositoryTest {
         repository.add(roomId, "s1", userId).block();
 
         // then: -1(무기한)이면 정상 회수가 다 실패했을 때 키를 받아줄 폴백이 사라진다
-        assertThat(redisTemplate.getExpire("room:" + roomId + ":sessions").block().toSeconds()).isPositive();
+        assertThat(redisTemplate.getExpire("chat:room:" + roomId + ":sessions").block().toSeconds()).isPositive();
     }
 }
