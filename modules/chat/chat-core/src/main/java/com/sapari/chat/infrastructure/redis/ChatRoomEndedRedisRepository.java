@@ -29,6 +29,10 @@ public class ChatRoomEndedRedisRepository implements ChatRoomEndedRepository {
      * 예정·준비 상태에서만 일어난다), 그 전제는 <b>받은 신호가 진짜 종료일 때만</b> 성립한다. 채널 페이로드에는
      * 진위를 확인할 수단이 없고 마커를 지우는 경로도 없어서, 오발행 한 건이 진행 중인 방을 이 시간만큼
      * 채팅 불능으로 만든다. 그래서 하한 대비 여유는 크게 두되 시간 단위로 늘리지는 않는다.
+     *
+     * <p>오발행이 사람 실수만은 아니다 — 방치된 Live를 정리하는 <b>배치도 이 신호를 발행</b>하므로
+     * 자동으로 잘못 판정될 수 있다. live 쪽에 전량 오판을 막는 가드는 있지만 방 단위 오판은 남는다.
+     * 이 상한이 그 경우의 회복 시간이 된다.
      */
     private static final Duration ENDED_TTL = Duration.ofMinutes(30);
 

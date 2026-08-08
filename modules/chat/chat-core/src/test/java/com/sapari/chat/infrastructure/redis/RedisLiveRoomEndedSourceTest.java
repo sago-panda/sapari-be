@@ -35,7 +35,9 @@ class RedisLiveRoomEndedSourceTest {
     void parse_extracts_roomId() {
         // given
         UUID roomId = UUID.fromString("11111111-1111-1111-1111-111111111111");
-        String payload = "{\"roomId\":\"" + roomId + "\",\"endedAt\":\"2026-07-03T00:00:00Z\"}";
+        // live가 실제로 싣는 모양 그대로 쓴다 — endedAt은 ISO 문자열이 아니라 epoch millis(숫자)다.
+        // 픽스처가 실제와 다르면 나중에 endedAt을 읽게 됐을 때 이 테스트가 거짓 안심을 준다.
+        String payload = "{\"roomId\":\"" + roomId + "\",\"endedAt\":1783036800000}";
 
         // when & then
         StepVerifier.create(source.parse(payload)).expectNext(roomId).verifyComplete();
@@ -52,7 +54,7 @@ class RedisLiveRoomEndedSourceTest {
     @DisplayName("parse — roomId 필드 없으면 skip")
     void parse_skips_missing_roomId() {
         // when & then
-        StepVerifier.create(source.parse("{\"endedAt\":\"2026-07-03T00:00:00Z\"}")).verifyComplete();
+        StepVerifier.create(source.parse("{\"endedAt\":1783036800000}")).verifyComplete();
     }
 
     @Test
