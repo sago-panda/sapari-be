@@ -68,5 +68,4 @@ public class EndLiveService implements EndLiveUseCase {
             }
         });
     }
-
 }

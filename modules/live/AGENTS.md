@@ -88,8 +88,13 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
 - **When in doubt, don't delete.** No DB row → log only; grace covers the create-then-save window.
 - Per-room work is a separate bean so `@Transactional` + row lock apply. **Single replica assumed** — add
   ShedLock before scaling out.
-- Deploy gate: one round against a cluster **with a live room**, and no "생성 시각을 알 수 없어" warning —
-  LiveKit exposes creation time in two fields, and reading the unpopulated one makes this a silent no-op.
+- **The room sweep applies no grace.** Only `Ended` rooms reach that point, and an `Ended` room can never
+  have a legitimate SFU room (starting requires `Scheduled`). Grace would protect nothing while opening a
+  hole: a seller re-joining recreates the room with a **fresh creation time**, so anyone reconnecting more
+  often than the grace window would never be swept — which is the exact scenario this sweep exists for.
+- **`Ended` rooms skip the ingress grace too.** The end transaction refreshes `updated_at`, so applying it
+  would blind the job for a full grace window right after a crash between commit and cleanup — precisely
+  when a surviving ingress lets the seller keep pushing.
 
 ## LiveKit webhooks
 
@@ -105,6 +110,9 @@ through a bounded stream, not `@RequestBody byte[]`.
 - The rate limit is a **CPU ceiling, not availability protection** — nothing tells a forged request from a
   real one before verifying it. Keep it far above real traffic; lowering it lets an attacker starve
   `ingress_started` cheaply. rps limiting belongs upstream. Counter is per-instance.
+  **A dropped `ingress_started` is not recovered quickly**: the fallback is `expire-ready`, which only picks
+  up rooms older than its 60m threshold — so the room can sit in `Ready` for 60–70 minutes. Whether LiveKit
+  re-sends after a 429 is not visible from this repo and decides how often that actually happens.
 
 ## Persistence & cache
 

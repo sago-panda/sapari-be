@@ -125,16 +125,17 @@ class WebhookRateLimitFilterTest {
     @Test
     @DisplayName("시간이 지나면 다시 통과한다 — 한 번 넘기면 영구 차단되는 구조면 방이 Ready 에 갇힌다")
     void refillsOverTime() throws Exception {
-        // 초당 100 개면 10ms 남짓이면 토큰 하나가 찬다
-        WebhookRateLimitFilter filter = new WebhookRateLimitFilter(props(100, 100));
+        // 용량 2 · 초당 2 개 = 500ms 당 1 토큰. 2 건 비우는 데 드는 시간이 리필 간격보다 수백 배 짧아야
+        // "소진 도중에 리필되어 마지막 요청이 200 이 되는" 불안정이 생기지 않는다 — 100 건 루프로 비우면
+        // 루프가 리필 간격을 넘길 수 있어 CI 부하에서 깨진다.
+        WebhookRateLimitFilter filter = new WebhookRateLimitFilter(props(2, 2));
         CountingChain chain = new CountingChain();
 
-        for (int i = 0; i < 100; i++) {
-            send(filter, chain, WEBHOOK_URI);
-        }
+        assertThat(send(filter, chain, WEBHOOK_URI).getStatus()).isEqualTo(200);
+        assertThat(send(filter, chain, WEBHOOK_URI).getStatus()).isEqualTo(200);
         assertThat(send(filter, chain, WEBHOOK_URI).getStatus()).isEqualTo(429);
 
-        Thread.sleep(50);
+        Thread.sleep(600);
 
         assertThat(send(filter, chain, WEBHOOK_URI).getStatus()).isEqualTo(200);
     }
