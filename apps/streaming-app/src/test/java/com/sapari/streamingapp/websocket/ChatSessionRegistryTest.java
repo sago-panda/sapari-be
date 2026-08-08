@@ -506,4 +506,46 @@ class ChatSessionRegistryTest {
         StepVerifier.create(registry.getActiveCount(roomId)).verifyError(RuntimeException.class);
         StepVerifier.create(registry.getActiveCount(roomId)).expectNext(7L).verifyComplete();
     }
+
+    @Test
+    @DisplayName("방 종료 재확인 창 — 등록 직후에는 묻지 않는다(입장 게이트가 방금 확인했다)")
+    void roomAliveRecheck_notDueRightAfterRegister() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+
+        // when & then: 첫 프레임마다 Redis를 치면 창을 둔 의미가 없다
+        assertThat(registry.shouldRecheckRoomAlive("s1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("방 종료 재확인 창 — 모르는 세션은 묻지 않는다")
+    void roomAliveRecheck_unknownSession() {
+        // when & then
+        assertThat(registry.shouldRecheckRoomAlive("없는세션")).isFalse();
+    }
+
+    @Test
+    @DisplayName("종료 래치 — 한 번 표시하면 계속 종료로 답한다(창이 다시 열려도 되돌아가지 않는다)")
+    void roomEndedLatch_isSticky() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+        assertThat(registry.isRoomKnownEnded("s1")).isFalse();
+
+        // when
+        registry.markRoomEnded("s1");
+
+        // then: 창으로만 두면 확인 직후부터 다음 확인까지의 프레임이 그대로 통과해 이력에 쌓인다
+        assertThat(registry.isRoomKnownEnded("s1")).isTrue();
+        assertThat(registry.isRoomKnownEnded("s1")).isTrue();
+    }
+
+    @Test
+    @DisplayName("종료 래치 — 모르는 세션은 종료로 답하지 않는다(막는 데만 쓰는 값)")
+    void roomEndedLatch_unknownSession() {
+        // when & then
+        registry.markRoomEnded("없는세션");   // 조용히 무시
+        assertThat(registry.isRoomKnownEnded("없는세션")).isFalse();
+    }
 }

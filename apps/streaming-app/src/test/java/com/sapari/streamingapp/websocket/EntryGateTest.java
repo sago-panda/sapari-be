@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 
 import java.util.UUID;
@@ -171,5 +172,31 @@ class EntryGateTest {
 
         // when & then: Redis가 죽었다고 채팅이 통째로 멈추는 쪽이 더 나쁜 결과다
         StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(true).verifyComplete();
+    }
+
+    @Test
+    @DisplayName("재확인 — 종료를 확인하면 세션에 표시해 이후 프레임이 창을 타고 빠져나가지 못하게 한다")
+    void isRoomAlive_MarksSessionOnEnded() {
+        // given
+        given(registry.shouldRecheckRoomAlive("s1")).willReturn(true);
+        given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.just(true));
+
+        // when
+        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).verifyComplete();
+
+        // then: 표시하지 않으면 다음 30초 동안의 프레임이 전부 통과해 이력에 쌓인다
+        then(registry).should(times(1)).markRoomEnded("s1");
+    }
+
+    @Test
+    @DisplayName("재확인 — 이미 종료로 표시된 세션은 Redis에 묻지 않고 곧장 막는다")
+    void isRoomAlive_ShortCircuitsWhenAlreadyEnded() {
+        // given
+        given(registry.isRoomKnownEnded("s1")).willReturn(true);
+
+        // when & then
+        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).verifyComplete();
+        then(roomEndedRepository).should(never()).isEnded(roomId);
+        then(registry).should(never()).shouldRecheckRoomAlive("s1");
     }
 }

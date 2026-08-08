@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -141,7 +142,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
             AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
-            AtomicLong lastRoomAliveCheckNanos) {
+            AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded) {
     }
 
     /**
@@ -196,7 +197,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 new AtomicLong(System.nanoTime() - REJECTION_REPLY_INTERVAL_NANOS),
                 new AtomicLong(System.nanoTime()),
                 // 입장 게이트가 방금 확인했으므로 창을 지금부터 연다 — 첫 프레임에서 또 묻지 않는다.
-                new AtomicLong(System.nanoTime())));
+                new AtomicLong(System.nanoTime()),
+                new AtomicBoolean()));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
         roomSessions.compute(session.roomId(), (room, sessionIds) -> {
@@ -340,7 +342,27 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 여기서 얻으려는 건 실시간성이 아니라 <b>구간의 상한</b>이다. 창 길이가 곧 그 상한이 된다.
      *
      * @return 지금 확인해야 하면 true. false면 호출자는 묻지 않고 살아있는 것으로 본다.
+     *         단 이미 종료가 확인된 세션은 {@link #isRoomKnownEnded}가 먼저 걸러야 한다.
      */
+    public boolean isRoomKnownEnded(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        return ls != null && ls.roomEnded().get();
+    }
+
+    /**
+     * transport 전용: 이 세션이 쓰던 방이 끝났다는 사실을 적어둔다.
+     *
+     * <p><b>되돌리는 경로가 없다.</b> 끝난 방은 다시 라이브가 되지 않으므로(live 상태머신에서 Ended는
+     * 종착 상태다) 한 번 확인한 종료는 이 세션이 끝날 때까지 유효하다. 창으로만 두면 확인한 직후부터
+     * 다음 확인까지의 프레임이 그대로 통과해 이력에 쌓인다 — 막으려던 것이 거의 그대로 남는다.
+     */
+    public void markRoomEnded(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.roomEnded().set(true);
+        }
+    }
+
     public boolean shouldRecheckRoomAlive(String sessionId) {
         LocalSession ls = local.get(sessionId);
         if (ls == null) {

@@ -66,14 +66,27 @@ public class EntryGate {
      * <p>매 프레임 묻지 않는다. 창 안이면 Redis에 가지 않고 곧장 통과시킨다. 놓친 신호로 열리는 구간을
      * 창 길이만큼으로 줄이는 것이 목적이지, 실시간으로 아는 것이 목적이 아니기 때문이다.
      *
+     * <p>다만 <b>종료를 확인한 뒤로는 다시 묻지 않고 계속 막는다</b>. 끝난 방이 다시 라이브가 되지는
+     * 않으므로, 여기서 창을 다시 여는 건 그 방에 글이 더 쌓일 틈만 만든다.
+     *
      * <p>조회 실패는 입장 게이트와 <b>같은 fail-open</b>이다 — Redis가 죽었다고 채팅이 통째로 멈추는 쪽이
      * 끝난 방에 몇 줄 더 쌓이는 것보다 나쁘다.
      */
     public Mono<Boolean> isRoomAlive(String sessionId, ChatSession session) {
+        // 한 번 확인된 종료는 되묻지 않는다. 창으로만 두면 확인한 직후부터 다음 확인까지의 프레임이
+        // 그대로 통과해 이력에 쌓인다 — 창 간격마다 한 건만 막는 꼴이라 막으려던 것이 거의 그대로 남는다.
+        if (registry.isRoomKnownEnded(sessionId)) {
+            return Mono.just(false);
+        }
         if (!registry.shouldRecheckRoomAlive(sessionId)) {
             return Mono.just(true);
         }
         return roomEndedRepository.isEnded(session.roomId())
+                .doOnNext(ended -> {
+                    if (ended) {
+                        registry.markRoomEnded(sessionId);
+                    }
+                })
                 .map(ended -> !ended)
                 .onErrorResume(e -> {
                     logGateOpen("방 종료 재확인", session, e);

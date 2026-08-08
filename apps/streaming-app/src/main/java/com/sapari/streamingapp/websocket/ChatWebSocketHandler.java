@@ -38,6 +38,7 @@ import lombok.extern.slf4j.Slf4j;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 
 /**
  * 채팅 WS 핸들러 — 입장 게이트(룸 토큰·강퇴)부터 송수신 배선까지 한 연결의 생애를 묶는다.
@@ -269,8 +270,14 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         //
                         // 솎기도 거치지 않는다. 솎기는 되돌림이 반복될 때 비용이 되기 때문인데, 강퇴는 그 자리에서
                         // 세션을 끝내므로 연결당 한 번뿐이다. 반복이 없으니 증폭도 없고, 우회로가 되지도 않는다.
+                        // 취소는 제외한다 — 그때는 이미 세션이 끝나는 중이고, 여기서 또 닫으면 아직
+                        // 사유가 정해지지 않은 정상 종료를 "강퇴로 끊김"으로 덮어쓴다(경고 로그도 함께 남는다).
                         return registry.sendToSession(sid, toError(e, clientMsgId))
-                                .doFinally(signal -> registry.terminateKicked(sid));
+                                .doFinally(signal -> {
+                                    if (signal != SignalType.CANCEL) {
+                                        registry.terminateKicked(sid);
+                                    }
+                                });
                     }
                     return respondRejected(sid, toError(e, clientMsgId));
                 });
