@@ -587,7 +587,7 @@ class ChatSessionRegistryTest {
         assertThat(registry.shouldRecheckRoomAlive(gone)).isFalse();
         assertThat(registry.isRoomKnownEnded(gone)).isFalse();
         assertThat(registry.isTerminating(gone)).isFalse();
-        assertThat(registry.outbound(gone)).isNotNull();
+        StepVerifier.create(registry.outbound(gone)).verifyComplete();   // 빈 스트림이어야 한다
     }
 
     @Test
@@ -614,5 +614,19 @@ class ChatSessionRegistryTest {
 
         // then
         assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    @DisplayName("방 종료 재확인 창 — 간격이 지나면 다시 열리고, 통과한 뒤에는 곧바로 닫힌다")
+    void roomAliveRecheck_reopensAfterInterval() {
+        // given: 30초를 실제로 기다리지 않고 마지막 확인 시각만 과거로 민다
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.expireRoomAliveWindow("s1");
+
+        // when & then: 부등호나 CAS를 잘못 고쳐 창이 영영 안 열려도 이 단언이 없으면 전부 초록이다
+        assertThat(registry.shouldRecheckRoomAlive("s1")).isTrue();
+        // 한 번 통과하면 그 시각으로 갱신되므로 바로 다음 호출은 막힌다(중복 조회 방지)
+        assertThat(registry.shouldRecheckRoomAlive("s1")).isFalse();
     }
 }

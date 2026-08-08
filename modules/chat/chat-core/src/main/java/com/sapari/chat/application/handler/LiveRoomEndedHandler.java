@@ -32,9 +32,10 @@ import reactor.core.publisher.Mono;
  * 모든 Pod가 불러도, 뒤늦은 unregister가 삭제 뒤에 도착해도 안전하다(없는 키 HDEL은 무동작).
  * 종료 알림 다음에 두는 건 순서 보장이 필요해서가 아니라, 알림·닫기를 마친 뒤 정리하는 흐름이 읽기 쉬워서다.
  *
- * <p><b>강퇴 SET {@code kicked:{roomId}}도 같이 지운다</b>: 등록(SADD)은 api-app 강퇴 기능의 몫이지만
- * 키 자체는 chat 소유고, 그 키에는 TTL이 없다(방송 도중 만료되면 강퇴자가 되돌아온다). 방이 끝날 때
- * 지우지 않으면 방 하나당 SET 하나가 영구히 남는다.
+ * <p><b>강퇴 SET {@code kicked:{roomId}}에는 만료를 붙인다</b>: 키 자체는 chat 소유인데 평시엔 TTL이
+ * 없어(방송 도중 만료되면 강퇴자가 되돌아온다) 방이 끝날 때 회수하지 않으면 방마다 하나씩 영구히 남는다.
+ * 지우지 않고 만료시키는 건 이 핸들러를 깨우는 근거가 진위를 확인할 수 없는 신호 한 건이기 때문이다 —
+ * 즉시 삭제하면 잘못된 신호 하나가 모더레이션 기록을 되돌릴 수 없게 만든다.
  */
 @Slf4j
 @Component
@@ -53,7 +54,7 @@ public class LiveRoomEndedHandler {
     @PostConstruct
     void start() {
         subscription = source.ended()
-                // defer로 감싼다 — onRoomEnded의 네 인자는 조립 시점에 즉시 평가되므로, 그중 하나가
+                // defer로 감싼다 — onRoomEnded 안의 각 단계 표현식은 조립 시점에 즉시 평가되므로, 그중 하나가
                 // 동기 throw하면 Mono를 돌려주기 전에 터져 아래 onErrorResume이 못 잡는다. 그러면 이 Pod의
                 // 구독이 죽어 이후 모든 방 종료를 영구히 놓친다(재시작 전까지 세션도 안 닫힌다).
                 .flatMap(roomId -> Mono.defer(() -> onRoomEnded(roomId))
@@ -72,7 +73,7 @@ public class LiveRoomEndedHandler {
     }
 
     /**
-     * 종료 마커 → SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리 → 강퇴 명단 정리. (테스트 진입점)
+     * 종료 마커 → SYSTEM(ROOM_ENDED) 렌더 → close → 방 세션 키 정리 → 강퇴 명단 만료. (테스트 진입점)
      *
      * <p><b>각 단계가 서로의 실패에 묶이지 않는다.</b> 그냥 이어 붙이면 앞이 터졌을 때 뒤가 통째로 안 돈다 —
      * 알림 전송 하나가 실패했다고 <b>세션이 안 닫히는</b> 것이 이 체인에서 가장 나쁜 결과다. 각 단계는
@@ -83,16 +84,16 @@ public class LiveRoomEndedHandler {
      */
     Mono<Void> onRoomEnded(UUID roomId) {
         return keepGoing(roomEndedRepository.markEnded(roomId), roomId,
-                        "종료 마커 기록 실패 — 재입장이 토큰 만료까지 열린다", false)
+                        "종료 마커 기록 실패 — 이 방의 종료 판정이 전 세션에서 무력화된다(재입장·전송 모두)", false)
                 .then(keepGoing(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED), roomId,
                         "종료 알림 전송 실패 — 클라는 사유 없이 끊긴다", true))
                 .then(keepGoing(sessionManager.closeAll(roomId), roomId,
                         "세션 종료 실패 — 그 방 세션이 남는다", true))
                 .then(keepGoing(sessionRepository.clearRoom(roomId), roomId,
                         "세션 키 정리 실패 — 키 TTL이 받는다", false))
-                // 세션 키와 달리 이쪽은 TTL 백스톱이 없다 — 실패하면 그 방의 SET이 그대로 남는다.
-                .then(keepGoing(kickRepository.clearRoom(roomId), roomId,
-                        "강퇴 명단 정리 실패 — 그 방 SET이 영구히 남는다", false));
+                // 이 단계만 실패하면 그 방의 SET이 만료 없이 남는다(데이터는 온전하다).
+                .then(keepGoing(kickRepository.expireAfterRoomEnded(roomId), roomId,
+                        "강퇴 명단 만료 부여 실패 — 그 방 SET이 회수되지 않는다", false));
     }
 
     /**

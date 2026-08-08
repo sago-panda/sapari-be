@@ -121,7 +121,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 방 종료를 다시 확인하는 간격. 종료 신호를 놓친 Pod가 끝난 방에 글을 받아주는 구간의 상한이 된다.
      * 짧게 잡을수록 그 구간은 줄지만 정상 전송에 붙는 Redis 왕복 빈도가 오른다.
      */
-    private static final long ROOM_ALIVE_RECHECK_INTERVAL_NANOS = Duration.ofSeconds(30).toNanos();
+    static final long ROOM_ALIVE_RECHECK_INTERVAL_NANOS = Duration.ofSeconds(30).toNanos();
 
     /** 시청자 수 캐시 수명. 짧게 잡아도 몰리는 순간의 중복 조회는 대부분 걷힌다. */
     private static final long ACTIVE_COUNT_CACHE_NANOS = Duration.ofSeconds(3).toNanos();
@@ -332,17 +332,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
-     * transport 전용: 이 세션이 쓰는 방이 아직 살아있는지 <b>다시 물어봐야 하는지</b>.
+     * transport 전용: 이 세션이 쓰던 방이 <b>이미 끝난 것으로 확인됐는지</b>.
      *
-     * <p>종료 신호는 Pub/Sub이라 그 순간 구독이 끊겨 있던 Pod는 통째로 놓친다. 놓치면 그 Pod의 세션은
-     * 닫히지 않고, 끝난 방에 계속 글이 쌓인다 — 그리고 그 글은 Mongo에 남는다. 입장 때 한 번 본 것으로는
-     * 이 구간이 유계가 아니라서, 전송 경로에서 간격을 두고 다시 확인한다.
+     * <p>{@link #shouldRecheckRoomAlive}보다 <b>먼저</b> 봐야 한다. 창만으로 두면 종료를 확인한 직후부터
+     * 다음 확인까지의 프레임이 전부 통과해 끝난 방에 그대로 쌓인다 — 창 간격마다 한 건만 막는 꼴이 된다.
      *
-     * <p>간격을 두는 이유는 비용이다. 매 프레임 물으면 정상 전송마다 Redis 왕복이 하나씩 더 붙는데,
-     * 여기서 얻으려는 건 실시간성이 아니라 <b>구간의 상한</b>이다. 창 길이가 곧 그 상한이 된다.
-     *
-     * @return 지금 확인해야 하면 true. false면 호출자는 묻지 않고 살아있는 것으로 본다.
-     *         단 이미 종료가 확인된 세션은 {@link #isRoomKnownEnded}가 먼저 걸러야 한다.
+     * @return 종료가 확인된 세션이면 true. 그 세션은 더 물을 것 없이 전송을 막는다.
      */
     public boolean isRoomKnownEnded(String sessionId) {
         LocalSession ls = local.get(sessionId);
@@ -360,6 +355,27 @@ public class ChatSessionRegistry implements ChatSessionManager {
         LocalSession ls = local.get(sessionId);
         if (ls != null) {
             ls.roomEnded().set(true);
+        }
+    }
+
+    /**
+     * transport 전용: 이 세션이 쓰는 방이 아직 살아있는지 <b>다시 물어봐야 하는지</b>.
+     *
+     * <p>종료 신호는 Pub/Sub이라 그 순간 구독이 끊겨 있던 Pod는 통째로 놓친다. 놓치면 그 Pod의 세션은
+     * 닫히지 않고, 끝난 방에 계속 글이 쌓인다 — 그리고 그 글은 Mongo에 남는다. 입장 때 한 번 본 것으로는
+     * 이 구간이 유계가 아니라서, 전송 경로에서 간격을 두고 다시 확인한다.
+     *
+     * <p>간격을 두는 이유는 비용이다. 매 프레임 물으면 정상 전송마다 Redis 왕복이 하나씩 더 붙는데,
+     * 여기서 얻으려는 건 실시간성이 아니라 <b>구간의 상한</b>이다. 창 길이가 곧 그 상한이 된다.
+     *
+     * @return 지금 확인해야 하면 true. false면 호출자는 묻지 않고 살아있는 것으로 본다.
+     *         이미 종료가 확인된 세션은 {@link #isRoomKnownEnded}가 앞에서 걸러야 한다.
+     */
+    /** 마지막 확인 시각을 과거로 밀어 창이 열린 상태를 만든다. (테스트 진입점 — 30초를 기다리지 않기 위해) */
+    void expireRoomAliveWindow(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.lastRoomAliveCheckNanos().addAndGet(-ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
         }
     }
 
@@ -491,7 +507,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 재시도 자체는 의미가 있으므로 금지(1008)가 아니라 "나중에"로 알린다 — 간격은 프론트 backoff가 정한다.
             log.warn("아웃바운드 버퍼 초과 — 세션 종료 sessionId={} roomId={} userId={} result={}",
                     ls.sessionId(), ls.session().roomId(), ls.session().userId(), result);
-            // complete 예산을 주지 않는다(이미 지난 emitDeadline을 넘긴다). complete는 "버퍼에 남은 걸
+            // complete에 별도 예산을 주지 않는다(이 fan-out의 emitDeadline을 그대로 넘긴다). complete는 "버퍼에 남은 걸
             // 흘려보낸 뒤 곱게 닫는" 경로인데, 여기 온 이유가 바로 그 버퍼가 꽉 차서 클라가 안 읽는다는
             // 것이라 흘려보낼 곳이 없다. 그 무의미한 일에 최대 45ms를 쓰면 — 그것도 이 Pod의 모든 방을
             // 중계하는 Redis 구독 스레드 위에서 — fan-out 예산이 그만큼 지나가 뒤쪽 세션들이 재시도

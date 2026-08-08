@@ -1,12 +1,14 @@
 package com.sapari.chat.application.handler;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.inOrder;
 
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -62,7 +64,7 @@ class LiveRoomEndedHandlerTest {
         given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
         given(sessionManager.closeAll(roomId)).willReturn(Mono.empty());
         given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
-        given(kickRepository.clearRoom(roomId)).willReturn(Mono.empty());
+        given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
         StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
@@ -76,7 +78,7 @@ class LiveRoomEndedHandlerTest {
         order.verify(systemMessageService).renderToRoom(roomId, SystemMessageCode.ROOM_ENDED);
         order.verify(sessionManager).closeAll(roomId);
         order.verify(sessionRepository).clearRoom(roomId);
-        order.verify(kickRepository).clearRoom(roomId);
+        order.verify(kickRepository).expireAfterRoomEnded(roomId);
     }
 
     @Test
@@ -88,7 +90,7 @@ class LiveRoomEndedHandlerTest {
         given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
         given(sessionManager.closeAll(roomId)).willReturn(Mono.empty());
         given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
-        given(kickRepository.clearRoom(roomId)).willReturn(Mono.empty());
+        given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
         StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
@@ -107,7 +109,7 @@ class LiveRoomEndedHandlerTest {
                 .willReturn(Mono.error(new RuntimeException("render failed")));
         given(sessionManager.closeAll(roomId)).willReturn(Mono.empty());
         given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
-        given(kickRepository.clearRoom(roomId)).willReturn(Mono.empty());
+        given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
         StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
@@ -125,14 +127,14 @@ class LiveRoomEndedHandlerTest {
         given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
         given(sessionManager.closeAll(roomId)).willReturn(Mono.error(new RuntimeException("close failed")));
         given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
-        given(kickRepository.clearRoom(roomId)).willReturn(Mono.empty());
+        given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
         StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
 
         // then
         then(sessionRepository).should(times(1)).clearRoom(roomId);
-        then(kickRepository).should(times(1)).clearRoom(roomId);
+        then(kickRepository).should(times(1)).expireAfterRoomEnded(roomId);
     }
 
     @Test
@@ -143,13 +145,13 @@ class LiveRoomEndedHandlerTest {
         given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
         given(sessionManager.closeAll(roomId)).willReturn(Mono.empty());
         given(sessionRepository.clearRoom(roomId)).willReturn(Mono.error(new RuntimeException("redis down")));
-        given(kickRepository.clearRoom(roomId)).willReturn(Mono.empty());
+        given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
         StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
 
         // then
-        then(kickRepository).should(times(1)).clearRoom(roomId);
+        then(kickRepository).should(times(1)).expireAfterRoomEnded(roomId);
     }
 
     // ── 구독 자가복구 ──
@@ -168,7 +170,7 @@ class LiveRoomEndedHandlerTest {
         given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
         given(sessionManager.closeAll(any())).willReturn(Mono.empty());
         given(sessionRepository.clearRoom(any())).willReturn(Mono.empty());
-        given(kickRepository.clearRoom(any())).willReturn(Mono.empty());
+        given(kickRepository.expireAfterRoomEnded(any())).willReturn(Mono.empty());
 
         // when
         handler.start();
@@ -190,7 +192,7 @@ class LiveRoomEndedHandlerTest {
         given(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
         given(sessionManager.closeAll(roomId)).willReturn(Mono.empty());
         given(sessionRepository.clearRoom(roomId)).willReturn(Mono.empty());
-        given(kickRepository.clearRoom(roomId)).willReturn(Mono.empty());
+        given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
         handler.start();
@@ -200,13 +202,30 @@ class LiveRoomEndedHandlerTest {
     }
 
     @Test
-    @DisplayName("종료 시 구독을 해제한다 — Pod가 내려가는데 스트림이 남으면 안 된다")
+    @DisplayName("종료 시 구독을 실제로 해제한다 — Pod가 내려가는데 스트림이 남으면 안 된다")
     void stop_disposesSubscription() {
+        // given: 취소가 업스트림까지 전파되는지 관측한다. 이걸 안 보면 stop() 본문을 비워도 통과한다.
+        AtomicBoolean cancelled = new AtomicBoolean();
+        given(liveRoomEndedSource.ended())
+                .willReturn(Flux.<UUID>never().doOnCancel(() -> cancelled.set(true)));
+        handler.start();
+        assertThat(cancelled).isFalse();
+
+        // when
+        handler.stop();
+
+        // then
+        assertThat(cancelled).isTrue();
+    }
+
+    @Test
+    @DisplayName("stop을 두 번 불러도 안전하다 — 컨텍스트 종료 경로가 중복 호출될 수 있다")
+    void stop_isIdempotent() {
         // given
         given(liveRoomEndedSource.ended()).willReturn(Flux.never());
         handler.start();
 
-        // when & then: 구독 전에 stop을 불러도(=start 실패 등) 터지지 않아야 한다
+        // when & then
         handler.stop();
         handler.stop();
     }

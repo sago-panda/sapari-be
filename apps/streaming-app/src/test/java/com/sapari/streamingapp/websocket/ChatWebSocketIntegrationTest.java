@@ -297,7 +297,7 @@ class ChatWebSocketIntegrationTest {
 
     @Test
     @DisplayName("커넥션 추적 — 접속하면 등록되고, 끊기면 스스로 빠진다(강제 회수의 전제)")
-    void connections_are_tracked_and_released() {
+    void connections_are_tracked_and_released() throws InterruptedException {
         // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
@@ -316,9 +316,10 @@ class ChatWebSocketIntegrationTest {
         // then: 접속 중엔 늘고, 끊긴 뒤에는 돌아온다(맵 자체가 누수원이 되면 안 된다)
         assertThat(whileConnected.get()).isGreaterThan(baseline);
         // 해제는 서버 이벤트루프에서 일어나므로 잠깐 기다린다
+        // 폴링 간격을 둔다 — busy-spin은 CI 병렬 실행에서 코어 하나를 5초 태워 다른 테스트를 느리게 만든다
         long deadline = System.currentTimeMillis() + 5_000;
         while (connections.trackedCount() > baseline && System.currentTimeMillis() < deadline) {
-            Thread.onSpinWait();
+            Thread.sleep(20);
         }
         assertThat(connections.trackedCount()).isLessThanOrEqualTo(baseline);
     }
