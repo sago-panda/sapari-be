@@ -64,44 +64,49 @@ against the test file in CI** — if they diverge, the build fails, so fix the l
 around it.
 
 ## Review focus (what ArchUnit can't see)
-- **Controller → `-api` only** — a controller injecting a `-core` service instead of the `-api` UseCase
+- `CONV-01` **Controller → `-api` only** — a controller injecting a `-core` service instead of the `-api` UseCase
   port. (Module-level `apps → -core` is allowed for wiring; ArchUnit doesn't analyze `apps`.)
-- **Hexagonal** — SDK/JPA called directly in a service. (Layer placement of `@Transactional` and the
+- `CONV-02` **Hexagonal** — SDK/JPA called directly in a service. (Layer placement of `@Transactional` and the
   `TimeProvider` rule are ArchUnit's — see the list above. What ArchUnit cannot see is *semantic*:
   a `TimeProvider` call whose result is then compared against a hardcoded instant, or a transaction
   boundary drawn around the wrong unit of work.)
-- **Domain model** — mutable field on a record; in-place transition; non-exhaustive `sealed` switch
+- `CONV-03` **Domain model** — mutable field on a record; in-place transition; non-exhaustive `sealed` switch
   (a `default` hiding a missing case).
-- **Exceptions** — swallowed (`catch … { log… }`, no re-throw); raw `RuntimeException` from a service;
+- `CONV-04` **Exceptions** — swallowed (`catch … { log… }`, no re-throw); raw `RuntimeException` from a service;
   infra exception not translated.
-- **Transactions** — external calls inside a tx, *but* respect documented intentional exceptions.
-- **Schema** — `@Entity` field/table change without a matching Flyway migration.
-- **Tests** — missing tests for changed behavior.
-- **Secret floor (you own this)** — hardcoded secret/credential, in code *or* config.
-- **Unattended code — blast radius** (schedulers, batch, webhook handlers). *Correct* and *safe when
+- `CONV-05` **Transactions** — external calls inside a tx, *but* respect documented intentional exceptions.
+- `CONV-06` **Schema** — `@Entity` field/table change without a matching Flyway migration.
+- `CONV-07` **Tests** — missing tests for changed behavior.
+- `CONV-08` **Secret floor (you own this)** — hardcoded secret/credential, in code *or* config.
+- `CONV-09` **Unattended code — blast radius** (schedulers, batch, webhook handlers). *Correct* and *safe when
   wrong* are different axes. How much does one bad round destroy (rows × batch size × frequency), and
   **is it reversible**? Where does it trust an external answer — and what does a *successfully empty*
   one make it do? (200 OK + `[]` is the signature of a misconfigured host/key, ≠ transport failure,
   which is usually already handled.) Does the kill switch actually gate the job bean?
-- **Stale rationale** — is the fact a comment or `AGENTS.md` cites as its justification still true? A
+- `CONV-10` **Stale rationale** — is the fact a comment or `AGENTS.md` cites as its justification still true? A
   right decision defended by an outdated reason is a finding: the next person extends the reason.
 
-General quality: edge cases, null/Optional, concurrency, N+1, request-DTO validation *presence*
+`CONV-11` General quality: edge cases, null/Optional, concurrency, N+1, request-DTO validation *presence*
 (mass-assignment & injection are `security-reviewer`'s), resource leaks.
 
 ## Known traps here (check by name)
-- **Retrofit `execute()` doesn't throw on non-2xx** → `body()` null; `isSuccessful()` is mandatory.
-- **200 + empty list** is not authoritative evidence that nothing exists.
-- **`@Modifying` bulk UPDATE bypasses the persistence context** — auditing won't fire; set `updated_at`
+- `TRAP-01` **Retrofit `execute()` doesn't throw on non-2xx** → `body()` null; `isSuccessful()` is mandatory.
+- `TRAP-02` **200 + empty list** is not authoritative evidence that nothing exists.
+- `TRAP-03` **`@Modifying` bulk UPDATE bypasses the persistence context** — auditing won't fire; set `updated_at`
   from `TimeProvider`.
-- **Custom `@Modifying` methods don't inherit `SimpleJpaRepository`'s `@Transactional`.**
-- **A record's default `toString()` prints credentials** — asymmetry with a masking sibling is the tell.
-- **A store that is only ever read** — no writer means the feature is dead; grep the write side.
+- `TRAP-04` **Custom `@Modifying` methods don't inherit `SimpleJpaRepository`'s `@Transactional`.**
+- `TRAP-05` **A record's default `toString()` prints credentials** — asymmetry with a masking sibling is the tell.
+- `TRAP-06` **A store that is only ever read** — no writer means the feature is dead; grep the write side.
 
 ## Output
 **Korean**, concise (no praise, no restating code). Grouped by severity, highest first:
-**[Critical | High | Medium | Low]** `path:line` — what's wrong · why it matters (one line) + fix ·
-name the rule it breaks. **Critical** = blocks startup/deploy or destroys data/media irreversibly ·
+**[Critical | High | Medium | Low]** `<ID>` `path:line` — what's wrong · why it matters (one line) +
+fix. The **ID is the rule it breaks** (`CONV-*` / `TRAP-*` above), so naming it replaces prose about
+which rule applies. A finding no item covers gets `CONV-11`; if that keeps happening for the same
+kind of problem, say so — the list is missing an item.
+
+**At most 10 findings.** Over that, keep Critical and High and say how many you dropped — a report
+nobody reads catches nothing. **Critical** = blocks startup/deploy or destroys data/media irreversibly ·
 **High** = wrong behavior reaching users, or a rule violation with production consequences ·
 **Medium** = real but bounded/conditional · **Low** = correctness-neutral (style, docs, test gaps).
 
