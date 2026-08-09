@@ -27,6 +27,9 @@ build:
     # 리뷰어 md 의 ArchUnit 목록이 실제 규칙과 어긋나면 여기서 막는다.
     # 빌드보다 먼저 두는 이유는 초 단위로 끝나고, 실패 원인이 명확해서다.
     - sh .claude/scripts/check-archunit-sync.sh
+    # anchors.yml 이 켜는 ID 가 리뷰어 md 에 실재하는지. 없는 ID 를 켜면 그 규칙은
+    # 아무 일도 하지 않는데, 로그만 보면 켜진 것처럼 보인다.
+    - sh .claude/scripts/check-item-ids.sh
     # architecture-test:test 는 build 에 포함된다. 명시하면 어느 검사가 막았는지 로그에서 갈린다.
     - ./gradlew build --console=plain
   artifacts:
