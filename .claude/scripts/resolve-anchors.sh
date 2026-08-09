@@ -19,12 +19,10 @@ doc = open(".claude/anchors.yml", encoding="utf-8").read()
 def items(line):
     return [x.strip().strip('"') for x in line[line.index("[") + 1:line.rindex("]")].split(",") if x.strip()]
 
-rules, cur, fallback, always = [], None, [], []
+rules, cur, always = [], None, []
 for line in doc.splitlines():
     s = line.strip()
-    if s.startswith("on_no_match:"):
-        fallback = items(s)
-    elif s.startswith("always:"):
+    if s.startswith("always:"):
         always = items(s)
     elif s.startswith("- trigger:"):
         cur = {"trigger": items(s), "anchors": [], "activate": []}
@@ -47,14 +45,14 @@ for r in rules:
         hit.append(r["trigger"][0])
 
 if not hit:
-    active.update(fallback)
-    hit.append("(매칭 없음 -> 기본 집합)")
+    hit.append("(매칭 없음 -> always 만)")
 
-# fail-closed. 활성 항목이 비면 프롬프트가 "전부 범위 외" 가 되어, 아무것도
-# 판정하지 않은 리뷰가 "이슈 없음" 으로 나간다. 침묵보다 실패가 낫다.
+# fail-closed. 활성 항목이 비면 프롬프트가 "전부 범위 외" 가 되어, 아무것도 판정하지
+# 않은 리뷰가 "이슈 없음" 으로 나간다.
+# 다만 이것이 막는 것은 '0건' 뿐이다. 글롭이 전부 오타여도 always 는 남으므로 여기서는
+# 걸리지 않는다 — 그쪽은 harness-check 의 글롭 유효성 검사가 담당한다.
 if not active:
-    print("ERROR: 활성 항목이 비었습니다. anchors.yml 의 always/on_no_match 를 확인하세요.",
-          file=sys.stderr)
+    print("ERROR: 활성 항목이 비었습니다. anchors.yml 의 always 를 확인하세요.", file=sys.stderr)
     sys.exit(1)
 
 print("ACTIVE=" + ",".join(sorted(active)))

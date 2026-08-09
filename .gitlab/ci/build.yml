@@ -66,3 +66,6 @@ harness-check:
     # anchors.yml 이 켜는 ID 가 리뷰어 md 에 실재하는가. 없는 ID 를 켜면 그 규칙은
     # 아무 일도 하지 않는데, 로그만 보면 켜진 것처럼 보인다.
     - sh .claude/scripts/check-item-ids.sh
+    # 글롭이 실재 파일을 잡는가. 리뷰 잡의 fail-closed 는 "활성 0건" 만 막으므로,
+    # 글롭이 전부 오타여도 always 항목이 남아 초록불로 게시된다. 그쪽을 여기서 막는다.
+    - sh .claude/scripts/check-anchor-globs.sh

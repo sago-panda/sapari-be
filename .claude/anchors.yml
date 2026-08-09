@@ -12,10 +12,13 @@
 version: 1
 
 defaults:
-  # 어떤 규칙도 안 걸리면 최소 집합. 무엇이 바뀌었든 이 둘은 본다.
-  on_no_match: [CONV-11, SEC-00]
   # 앵커 파일을 읽지 못하면 통과시키지 않는다
   unresolved_anchor: 증거부족
+  # on_no_match 절은 두지 않는다. always 가 그 역할을 하고, 실제로 always 의
+  # 부분집합이라 아무것도 추가하지 못하는 죽은 절이었다.
+  # 어떤 규칙도 안 걸리는 것 자체는 정상이다(문서만 고친 MR). 정말 막아야 하는 것은
+  # "글롭이 저장소 어디에도 안 맞는 상태" 이고, 그건 리뷰 시점이 아니라
+  # harness-check 의 글롭 유효성 검사가 빌드 시점에 잡는다.
 
 # 경로와 무관하게 항상 켜지는 항목.
 # 시크릿은 자바 파일에만 박히지 않는다 — CI yml, 스크립트, gradle 어디에나 들어간다.
@@ -26,15 +29,15 @@ rules:
   - trigger: ["**/src/main/java/**/*.java"]
     activate: [CONV-04, CONV-07]
 
-  - trigger: ["**/presentation/**/*Controller.java", "**/presentation/dto/**/*.java"]
+  - trigger: ["**/controller/**/*Controller.java", "**/controller/**/dto/**/*.java"]
     # DTO 는 컨트롤러의 계약이라 같은 항목으로 본다. DTO 만 바뀌는 MR 이
     # 어디에도 안 걸리면 mass-assignment 검사가 발화하지 않는다.
-    anchors: ["**/config/**/SecurityConfig.java", "**/application/service/**/*.java", "**/*UseCase.java"]
+    anchors: ["**/config/*SecurityConfig.java", "**/application/service/**/*.java", "**/*UseCase.java"]
     activate: [CONV-01, SEC-01, SEC-05]
 
   - trigger: ["**/application/service/**/*.java"]
     # 권한 모델을 봐야 소유권 검증 누락을 판정할 수 있다.
-    anchors: ["**/domain/**/*.java", "**/*Port.java", "**/*UseCase.java", "**/config/**/SecurityConfig.java"]
+    anchors: ["**/domain/**/*.java", "**/port/*.java", "**/config/*SecurityConfig.java"]
     activate: [CONV-02, CONV-05, CONV-09, SEC-01, SEC-09, TRAP-01, TRAP-02]
 
   - trigger: ["**/domain/**/*.java"]
@@ -50,8 +53,8 @@ rules:
     anchors: ["db/migration/**/*.sql", "**/infrastructure/persistence/entity/**/*.java"]
     activate: [CONV-06]
 
-  - trigger: ["**/infrastructure/**/*Client.java", "**/infrastructure/**/*Manager.java"]
-    anchors: ["**/application/service/**/*.java", "**/resources/application*.yml"]
+  - trigger: ["**/infrastructure/**/*Manager.java", "**/application/port/*Manager.java"]
+    anchors: ["**/application/service/**/*.java", "**/resources/application*.y*ml*"]
     activate: [CONV-05, SEC-05, TRAP-01, TRAP-02, TRAP-06]
 
   - trigger: ["**/infrastructure/**/redis/**/*.java", "**/*RedisRepository*.java"]
@@ -60,23 +63,23 @@ rules:
   - trigger: ["apps/streaming-app/**/*.java"]
     activate: [SEC-07]
 
-  - trigger: ["**/*Properties.java", "**/resources/application*.yml"]
+  - trigger: ["**/*Properties.java", "**/resources/application*.y*ml*"]
     # 한 프로파일만 보면 값의 차이를 알 수 없다. 전 프로파일을 함께 읽는다.
-    anchors: ["**/resources/application*.yml"]
+    anchors: ["**/resources/application*.y*ml*"]
     activate: [CONV-08, SEC-10, TRAP-05]
 
-  - trigger: ["**/*Event*.java", "**/*EventPublisher.java", "**/*Listener.java", "**/*Subscriber.java"]
+  - trigger: ["**/*Event*.java", "**/*EventPublisher*.java"]
     # 이벤트는 at-least-once 라 소비자 멱등성이 판정 대상이다. 지금은 발행 측만
     # 있어서(live) 대부분 N/A 로 끝나지만, 소비자가 생기는 순간 켜져 있어야 한다.
     activate: [SEC-08, CONV-04]
 
-  - trigger: ["**/*Scheduler.java", "**/*Job.java", "apps/batch-app/**/*.java"]
+  - trigger: ["**/scheduler/*.java"]
     activate: [CONV-09, SEC-09, TRAP-02]
 
   - trigger: ["**/auth/**/*.java", "**/*Jwt*.java", "**/*Token*.java", "**/*OAuth*.java"]
     activate: [SEC-02, SEC-04, SEC-06]
 
-  - trigger: [".gitlab-ci.yml", ".gitlab/**", ".claude/**", "**/*.gradle", "Dockerfile*", "**/*.sh"]
+  - trigger: [".gitlab-ci.yml", ".gitlab/**", ".claude/**", "**/*.gradle", "**/Dockerfile*", "**/*.sh"]
     # 리뷰 파이프라인과 리뷰어 정의 자신을 바꾸는 변경. 자바가 아니라는 이유로
     # 기본 집합만 켜지면, 게이트를 무력화하는 변경이 가장 헐겁게 리뷰된다.
     # (CI 파일은 러너에서 실행되므로 무인 코드와 같은 축으로 본다)

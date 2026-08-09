@@ -43,21 +43,21 @@ diff and fail at startup.
 The build already fails on all 15 rules in `architecture-test/.../ArchitectureTest.java`, and the MR
 pipeline runs them (`.gitlab/ci/build.yml`) — a violation here blocks the merge without you.
 
-1. domain exception not extending `BusinessException`
-2. domain → application/infrastructure
-3. `@Entity` outside `infrastructure.persistence.entity`
-4. `-api` → `-core`
-5. cross-domain `-core` → `-core`
-6. foundation (`common`/`global`/`storage`) → domain module
-7. cross-domain slice cycles
-8. `@Entity` referenced outside `infrastructure.persistence` (mass-assignment guard)
-9. `common/security-jwt` → Servlet / web MVC / Spring Security
-10. domain or `-api` → `com.sapari.common.response`
-11. `-api` → `com.sapari.global` (only `com.sapari.common.page` is allowed)
-12. `streaming-app` → blocking `StringRedisTemplate` / `RedisTemplate`
-13. `@Transactional` outside the application layer
-14. time not obtained from `TimeProvider`
-15. application → infrastructure
+1. domain exception not extending `BusinessException` — `domain_exceptions_extend_BusinessException`
+2. domain → application/infrastructure — `domain_must_not_depend_on_application_or_infrastructure`
+3. `@Entity` outside `infrastructure.persistence.entity` — `jpa_entities_reside_in_persistence_entity_package`
+4. `-api` → `-core` — `api_must_not_depend_on_core`
+5. cross-domain `-core` → `-core` — `core_must_not_depend_on_another_domains_core`
+6. foundation (`common`/`global`/`storage`) → domain module — `foundation_must_not_depend_on_domain_modules`
+7. cross-domain slice cycles — `domain_slices_should_be_free_of_cycles`
+8. `@Entity` referenced outside `infrastructure.persistence` (mass-assignment guard) — `jpa_entities_are_only_used_within_persistence`
+9. `common/security-jwt` → Servlet / web MVC / Spring Security — `security_jwt_must_stay_servlet_free`
+10. domain or `-api` → `com.sapari.common.response` — `domain_and_api_must_not_depend_on_response_types`
+11. `-api` → `com.sapari.global` (only `com.sapari.common.page` is allowed) — `api_must_not_depend_on_spring_coupled_foundation`
+12. `streaming-app` → blocking `StringRedisTemplate` / `RedisTemplate` — `streaming_app_must_not_use_blocking_redis_template`
+13. `@Transactional` outside the application layer — `transactional_only_in_application_layer`
+14. time not obtained from `TimeProvider` — `time_must_come_from_time_provider`
+15. application → infrastructure — `application_must_not_depend_on_infrastructure`
 
 A one-line heads-up is fine only for a genuinely new pattern it can't guard. **This list is checked
 against the test file in CI** — if they diverge, the build fails, so fix the list rather than working
@@ -104,9 +104,7 @@ around it.
 fix. The **ID is the rule it breaks** (`CONV-*` / `TRAP-*` above), so naming it replaces prose about
 which rule applies. A finding no item covers gets `CONV-11`; if that keeps happening for the same
 kind of problem, say so — the list is missing an item.
-
-**At most 10 findings.** Over that, keep Critical and High and say how many you dropped — a report
-nobody reads catches nothing. **Critical** = blocks startup/deploy or destroys data/media irreversibly ·
+ **Critical** = blocks startup/deploy or destroys data/media irreversibly ·
 **High** = wrong behavior reaching users, or a rule violation with production consequences ·
 **Medium** = real but bounded/conditional · **Low** = correctness-neutral (style, docs, test gaps).
 

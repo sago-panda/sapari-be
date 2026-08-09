@@ -113,7 +113,8 @@ mr-precheck:
       # .claude/ 를 건드리는 MR 에서는 이 비교가 어긋날 수 있다 — 알림용 로그일 뿐이다.
       last_rules=$(printf '%s' "$last_body" | sed -n 's/.*claude-mr-review:marker sha=[0-9a-f]\{7,40\} rules=\([0-9a-f]\{7,40\}\).*/\1/p' | head -n1)
       now_rules=$(cat .claude/agents/sapari-reviewer.md .claude/agents/sapari-reviewer-ci.md \
-        .claude/agents/security-reviewer.md .claude/agents/security-reviewer-ci.md | sha1sum | cut -c1-12)
+        .claude/agents/security-reviewer.md .claude/agents/security-reviewer-ci.md \
+        .claude/anchors.yml | sha1sum | cut -c1-12)
       if [ -n "$last_rules" ] && [ "$last_rules" != "$now_rules" ]; then
         echo "리뷰 기준이 직전 리뷰 이후 바뀜 ($last_rules -> $now_rules). 재리뷰를 고려하세요."
       fi
@@ -180,7 +181,11 @@ mr-review:
       # 아무것도 판정하지 않은 리뷰가 "이슈 없음" 으로 나간다.
       [ -n "$ACTIVE" ] || { echo "ERROR: 활성 항목이 비어 리뷰를 중단한다"; exit 1; }
       SCOPE="Activated items for this change: ${ACTIVE}. \
-        Judge every one of them and nothing else — an item that is not activated is out of scope. \
+        Judge every one of them and report a result for each. \
+        Do not go hunting for items outside that set — that is what keeps this review cheap. \
+        One exception: a Critical or High problem you noticed while judging is reported even when its \
+        item is not activated, under its own item ID, never as a catch-all. Severity overrides scope; \
+        Medium and Low outside the set stay unreported. \
         Anchor globs: ${ANCHORS:-none}. Read those files even when the diff does not touch them; \
         that is how absence is judged. If an anchor cannot be read, report the item as 증거부족 — \
         never as clean."
@@ -213,6 +218,9 @@ mr-review:
           An ID that reappears with the same cause is 미해결, not a new finding. \
           '## 신규/회귀 이슈' — with severity, item ID and file:line. \
           State explicitly when a section has nothing to report. \
+          Cap the merged report at 10 findings: keep every Critical and High, then fill with the \
+          most severe remaining, and state how many were left out and at which severities. \
+          The cap applies to the merged report, not to each reviewer. \
           ${SCOPE}"
       else
         prompt="Use the sapari-reviewer-ci and security-reviewer-ci subagents to review the changes in mr.diff. \
@@ -220,6 +228,9 @@ mr-review:
           Merge their findings into a single report, each carrying its item ID (SEC-*/CONV-*/TRAP-*), \
           severity and file:line, and state explicitly when there are no issues. \
           Write the final report in Korean. \
+          Cap the merged report at 10 findings: keep every Critical and High, then fill with the \
+          most severe remaining, and state how many were left out and at which severities. \
+          The cap applies to the merged report, not to each reviewer. \
           ${SCOPE}"
       fi
       claude -p "$prompt" --allowedTools "Read,Grep,Glob,Task,Agent" --output-format text > review.md \
@@ -238,9 +249,12 @@ mr-review:
     - |
       # 무엇을(sha) 어떤 기준으로(rules) 판정했는지 함께 남긴다. 리뷰어 md 가 바뀌면
       # 같은 커밋에 다른 결과가 나오므로, sha 만으로는 과거 리뷰를 되읽을 수 없다.
+      # anchors.yml 도 포함한다 — '무엇을 판정할지' 를 정하는 파일이라, 빠지면 같은
+      # rules= 를 달고 다른 범위로 판정한 리뷰가 구분되지 않는다.
       # precheck 의 계산과 반드시 같은 방식이어야 한다 (파일 순서 포함).
       RULES_HASH=$(cat .claude/agents/sapari-reviewer.md .claude/agents/sapari-reviewer-ci.md \
-        .claude/agents/security-reviewer.md .claude/agents/security-reviewer-ci.md | sha1sum | cut -c1-12)
+        .claude/agents/security-reviewer.md .claude/agents/security-reviewer-ci.md \
+        .claude/anchors.yml | sha1sum | cut -c1-12)
       printf 'REVIEWED_SHA=%s\nRULES_HASH=%s\n' \
         "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$(git rev-parse HEAD)}" "$RULES_HASH" > review2.env
   artifacts:

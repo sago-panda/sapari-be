@@ -107,7 +107,6 @@ mass-assignment and injection (§5).
 - `<ID>` `path:line` — what is dangerous → **one-line attack scenario** + fix direction. The ID is the
   focus item above (`SEC-01`..`SEC-10`); a finding none of them covers gets `SEC-00`, and repeated
   `SEC-00` means the list is missing an item — say so.
-- **At most 10 findings.** Over that, keep Critical and High and say how many you dropped.
 - `confirmed`/`uncertain` per the Evidence rules. Don't invent issues; if clean, say so briefly.
 - **`증거부족` is a third state, not `uncertain`.** `uncertain` = you read it and could not settle the
   question; `증거부족` = the file you needed (an anchor outside the diff, a config you cannot open) was
