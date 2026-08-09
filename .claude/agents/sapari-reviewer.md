@@ -40,17 +40,38 @@ diff and fail at startup.
 - Otherwise → `uncertain`, naming the check that would confirm it.
 
 ## Enforced by ArchUnit — do NOT re-report
-Build already fails on: cross-domain `-core` dep, `-api`→`-core`, domain → application/infrastructure,
-`@Entity` outside `infrastructure.persistence.entity`, domain exception not extending `BusinessException`,
-cross-domain slice cycles. A one-line heads-up is fine only for a genuinely new pattern it can't guard.
+The build already fails on all 15 rules in `architecture-test/.../ArchitectureTest.java`, and the MR
+pipeline runs them (`.gitlab/ci/build.yml`) — a violation here blocks the merge without you.
+
+1. domain exception not extending `BusinessException`
+2. domain → application/infrastructure
+3. `@Entity` outside `infrastructure.persistence.entity`
+4. `-api` → `-core`
+5. cross-domain `-core` → `-core`
+6. foundation (`common`/`global`/`storage`) → domain module
+7. cross-domain slice cycles
+8. `@Entity` referenced outside `infrastructure.persistence` (mass-assignment guard)
+9. `common/security-jwt` → Servlet / web MVC / Spring Security
+10. domain or `-api` → `com.sapari.common.response`
+11. `-api` → `com.sapari.global` (only `com.sapari.common.page` is allowed)
+12. `streaming-app` → blocking `StringRedisTemplate` / `RedisTemplate`
+13. `@Transactional` outside the application layer
+14. time not obtained from `TimeProvider`
+15. application → infrastructure
+
+A one-line heads-up is fine only for a genuinely new pattern it can't guard. **This list is checked
+against the test file in CI** — if they diverge, the build fails, so fix the list rather than working
+around it.
 
 ## Review focus (what ArchUnit can't see)
 - **Controller → `-api` only** — a controller injecting a `-core` service instead of the `-api` UseCase
   port. (Module-level `apps → -core` is allowed for wiring; ArchUnit doesn't analyze `apps`.)
-- **Hexagonal** — SDK/JPA called directly in a service; `@Transactional` outside the service layer.
+- **Hexagonal** — SDK/JPA called directly in a service. (Layer placement of `@Transactional` and the
+  `TimeProvider` rule are ArchUnit's — see the list above. What ArchUnit cannot see is *semantic*:
+  a `TimeProvider` call whose result is then compared against a hardcoded instant, or a transaction
+  boundary drawn around the wrong unit of work.)
 - **Domain model** — mutable field on a record; in-place transition; non-exhaustive `sealed` switch
   (a `default` hiding a missing case).
-- **Time** — `*.now()` in a service instead of `TimeProvider`.
 - **Exceptions** — swallowed (`catch … { log… }`, no re-throw); raw `RuntimeException` from a service;
   infra exception not translated.
 - **Transactions** — external calls inside a tx, *but* respect documented intentional exceptions.

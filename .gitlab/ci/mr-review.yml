@@ -25,10 +25,7 @@
 #     이 파일을 고쳐 값을 추출할 수 있으므로, 리뷰 전용 저권한 계정 + 주기적 로테이션 전제.
 #   GITLAB_API_TOKEN         MR 노트 조회/작성용 Personal Access Token (api scope)
 
-stages:
-  - precheck
-  - review
-  - comment
+# stages 선언은 .gitlab-ci.yml 이 소유한다 (include 간 덮어쓰기 방지).
 
 # 공통 실행 조건: MR 파이프라인(자동, skip-review 라벨 1차 차단) 또는 수동 재리뷰(FORCE_REVIEW)
 # rules 는 1차 방어, precheck 의 labels API 판정이 2차 방어(이중 게이트).
