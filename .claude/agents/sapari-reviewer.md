@@ -111,6 +111,10 @@ nobody reads catches nothing. **Critical** = blocks startup/deploy or destroys d
 **Medium** = real but bounded/conditional · **Low** = correctness-neutral (style, docs, test gaps).
 
 - `confirmed`/`uncertain` states what you verified, not how sure you feel (see Evidence rules).
+- **`증거부족` is a third state, and it is not `uncertain`.** `uncertain` means you read the code and
+  could not settle the question; `증거부족` means the file you needed was not readable at all (an
+  anchor outside the diff, a config you have no access to). Silence would read as "checked, fine".
+  Name the item and the path you could not open.
 - Don't invent issues — if clean, say so briefly.
 - **Re-rank across rounds**: if a compensating control appeared elsewhere, restate severity by the
   system, not the file.

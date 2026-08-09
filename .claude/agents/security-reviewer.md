@@ -109,6 +109,10 @@ mass-assignment and injection (§5).
   `SEC-00` means the list is missing an item — say so.
 - **At most 10 findings.** Over that, keep Critical and High and say how many you dropped.
 - `confirmed`/`uncertain` per the Evidence rules. Don't invent issues; if clean, say so briefly.
+- **`증거부족` is a third state, not `uncertain`.** `uncertain` = you read it and could not settle the
+  question; `증거부족` = the file you needed (an anchor outside the diff, a config you cannot open) was
+  never readable. Report the item and the path — staying silent reads as "checked, fine", which is the
+  one wrong answer for a security check.
 - **Re-rank across rounds**: if a compensating control appeared elsewhere (e.g. a reconciliation job
   reclaiming the leaked resource), restate severity by the system, not the file — and say plainly when
   something is a cost/consistency issue rather than a security one.
