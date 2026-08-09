@@ -109,6 +109,8 @@ mr-precheck:
       printf '%s' "$last_body" > prev_review.md
       last_sha=$(printf '%s' "$last_body" | sed -n 's/.*claude-mr-review:marker sha=\([0-9a-f]\{7,40\}\).*/\1/p' | head -n1)
       # rules= 는 나중에 추가된 필드다. 그 이전 마커에는 없으므로 없어도 진행한다.
+      # 여기서는 체크아웃된 HEAD 로 계산한다. 판정은 base 기준으로 돌므로(review 잡),
+      # .claude/ 를 건드리는 MR 에서는 이 비교가 어긋날 수 있다 — 알림용 로그일 뿐이다.
       last_rules=$(printf '%s' "$last_body" | sed -n 's/.*claude-mr-review:marker sha=[0-9a-f]\{7,40\} rules=\([0-9a-f]\{7,40\}\).*/\1/p' | head -n1)
       now_rules=$(cat .claude/agents/sapari-reviewer.md .claude/agents/sapari-reviewer-ci.md \
         .claude/agents/security-reviewer.md .claude/agents/security-reviewer-ci.md | sha1sum | cut -c1-12)
@@ -156,11 +158,27 @@ mr-review:
     - git fetch origin -- "$TARGET_BRANCH"
     - git diff "origin/$TARGET_BRANCH...HEAD" -- > mr.diff
     - |
+      # --- 판정 기준을 base 시점으로 고정한다 ---
+      # 리뷰어 정의(.claude/)를 MR HEAD 에서 읽으면, 한 MR 안에서 규칙을 완화하고
+      # 그 완화된 규칙으로 자신을 리뷰하게 된다. 규칙 변경과 그 혜택을 같은 MR 에서
+      # 받는 경로를 닫는다. 완화 자체는 막지 않는다 — 다음 MR 부터 적용될 뿐이고,
+      # 이 MR 의 .claude/ 변경은 mr.diff 안에 리뷰 대상으로 그대로 들어 있다.
+      if git cat-file -e "origin/$TARGET_BRANCH:.claude/anchors.yml" 2>/dev/null; then
+        git checkout "origin/$TARGET_BRANCH" -- .claude/
+        echo "판정 기준: origin/$TARGET_BRANCH 시점의 .claude/"
+      else
+        # 하네스를 처음 들여오는 MR. base 에 아직 없으므로 이 브랜치 것을 쓴다.
+        echo "판정 기준: base 에 .claude/ 가 없어 이 브랜치 것을 사용 (하네스 도입 MR)"
+      fi
+    - |
       # 변경 경로로 활성 항목을 정한다. 무엇이 켜졌는지 로그에 남겨야
       # "이 MR 에서 인가 검사가 돌긴 했나" 에 답할 수 있다.
       git diff --name-only "origin/$TARGET_BRANCH...HEAD" -- > changed.txt
       sh .claude/scripts/resolve-anchors.sh changed.txt > anchors.env
       . ./anchors.env
+      # fail-closed 2차 방어. 활성 항목이 비면 프롬프트가 "전부 범위 외" 가 되어
+      # 아무것도 판정하지 않은 리뷰가 "이슈 없음" 으로 나간다.
+      [ -n "$ACTIVE" ] || { echo "ERROR: 활성 항목이 비어 리뷰를 중단한다"; exit 1; }
       SCOPE="Activated items for this change: ${ACTIVE}. \
         Judge every one of them and nothing else — an item that is not activated is out of scope. \
         Anchor globs: ${ANCHORS:-none}. Read those files even when the diff does not touch them; \

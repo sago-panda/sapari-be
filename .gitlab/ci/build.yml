@@ -24,16 +24,30 @@ build:
       - .gradle/wrapper
       - .gradle/caches
   script:
-    # 리뷰어 md 의 ArchUnit 목록이 실제 규칙과 어긋나면 여기서 막는다.
-    # 빌드보다 먼저 두는 이유는 초 단위로 끝나고, 실패 원인이 명확해서다.
-    - sh .claude/scripts/check-archunit-sync.sh
-    # anchors.yml 이 켜는 ID 가 리뷰어 md 에 실재하는지. 없는 ID 를 켜면 그 규칙은
-    # 아무 일도 하지 않는데, 로그만 보면 켜진 것처럼 보인다.
-    - sh .claude/scripts/check-item-ids.sh
     # architecture-test:test 는 build 에 포함된다. 명시하면 어느 검사가 막았는지 로그에서 갈린다.
     - ./gradlew build --console=plain
   artifacts:
     when: on_failure # 통과하면 남길 것이 없다
     paths:
-      - "**/build/reports/tests/"
-    expire_in: 1 week
+      # 실패한 테스트의 리포트만. 리포트 전체를 올리면 스택트레이스에 섞인
+      # 설정값과 픽스처 데이터까지 아티팩트로 남는다.
+      - "architecture-test/build/reports/tests/"
+    expire_in: 3 days
+
+# 하네스(리뷰 설정) 정합성 검사. 빌드와 나누는 이유는 두 가지다.
+#  - JDK 이미지에는 python3 가 없다. 검사만 하려고 빌드 이미지에 설치하지 않는다
+#  - 실패 원인이 갈린다. "코드가 깨졌다" 와 "리뷰 설정이 어긋났다" 는 다른 문제다
+harness-check:
+  stage: build
+  image: python:3.12-alpine
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  variables:
+    CLAUDE_CODE_OAUTH_TOKEN: ""
+    GITLAB_API_TOKEN: ""
+  script:
+    # 리뷰어 md 의 ArchUnit 목록이 실제 규칙과 어긋나는가
+    - sh .claude/scripts/check-archunit-sync.sh
+    # anchors.yml 이 켜는 ID 가 리뷰어 md 에 실재하는가. 없는 ID 를 켜면 그 규칙은
+    # 아무 일도 하지 않는데, 로그만 보면 켜진 것처럼 보인다.
+    - sh .claude/scripts/check-item-ids.sh

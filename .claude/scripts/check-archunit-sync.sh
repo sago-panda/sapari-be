@@ -13,7 +13,8 @@ set -eu
 TEST_FILE=architecture-test/src/test/java/com/sapari/architecture/ArchitectureTest.java
 DOC_FILE=.claude/agents/sapari-reviewer.md
 
-rules=$(grep -c '^    void ' "$TEST_FILE")
+# @Test 를 센다. 들여쓰기나 메서드 시그니처 형태에 기대지 않기 위해서다.
+rules=$(grep -c '^[[:space:]]*@Test' "$TEST_FILE")
 
 # "## Enforced by ArchUnit" 절 안의 번호 목록만 센다 (다음 '## ' 헤딩에서 끊는다)
 listed=$(awk '

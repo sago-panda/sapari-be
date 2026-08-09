@@ -24,7 +24,7 @@ for path in (".claude/agents/sapari-reviewer.md", ".claude/agents/security-revie
 referenced = set()
 with open(".claude/anchors.yml", encoding="utf-8") as f:
     for line in f:
-        if re.match(r"\s*(activate:|on_no_match:)", line):
+        if re.match(r"\s*(activate:|on_no_match:|always:)", line):
             referenced.update(re.findall(r"(?:CONV|TRAP|SEC)-\d{2}", line))
 
 # SEC-00 / CONV-11 은 "어느 항목에도 안 걸리는 발견" 을 담는 자리라 정의부에 목록으로

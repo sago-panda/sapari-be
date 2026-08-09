@@ -17,11 +17,14 @@ defaults:
   # 앵커 파일을 읽지 못하면 통과시키지 않는다
   unresolved_anchor: 증거부족
 
+# 경로와 무관하게 항상 켜지는 항목.
+# 시크릿은 자바 파일에만 박히지 않는다 — CI yml, 스크립트, gradle 어디에나 들어간다.
+# 경로 규칙에 맡기면 규칙에 없는 확장자로 커밋하는 것만으로 검사를 피할 수 있다.
+always: [CONV-08, CONV-10, CONV-11, SEC-00, SEC-03]
+
 rules:
-  # 프로덕션 자바는 무엇이 바뀌든 켜지는 항목이 있다.
-  # (CONV-10 은 근거의 유효기간을 보는 항목이라 파일 종류를 가리지 않는다)
   - trigger: ["**/src/main/java/**/*.java"]
-    activate: [CONV-04, CONV-07, CONV-08, CONV-10, CONV-11, SEC-03, SEC-00]
+    activate: [CONV-04, CONV-07]
 
   - trigger: ["**/presentation/**/*Controller.java", "**/presentation/dto/**/*.java"]
     # DTO 는 컨트롤러의 계약이라 같은 항목으로 본다. DTO 만 바뀌는 MR 이
@@ -72,6 +75,13 @@ rules:
 
   - trigger: ["**/auth/**/*.java", "**/*Jwt*.java", "**/*Token*.java", "**/*OAuth*.java"]
     activate: [SEC-02, SEC-04, SEC-06]
+
+  - trigger: [".gitlab-ci.yml", ".gitlab/**", ".claude/**", "**/*.gradle", "Dockerfile*", "**/*.sh"]
+    # 리뷰 파이프라인과 리뷰어 정의 자신을 바꾸는 변경. 자바가 아니라는 이유로
+    # 기본 집합만 켜지면, 게이트를 무력화하는 변경이 가장 헐겁게 리뷰된다.
+    # (CI 파일은 러너에서 실행되므로 무인 코드와 같은 축으로 본다)
+    anchors: [".gitlab-ci.yml", ".gitlab/ci/*.yml"]
+    activate: [CONV-09, SEC-09, SEC-05]
 
   - trigger: ["**/src/test/**/*.java"]
     # 프로덕션 코드를 겨냥한 항목은 켜지 않는다. 테스트에 걸면 픽스처와

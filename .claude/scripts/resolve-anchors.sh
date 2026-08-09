@@ -19,11 +19,13 @@ doc = open(".claude/anchors.yml", encoding="utf-8").read()
 def items(line):
     return [x.strip().strip('"') for x in line[line.index("[") + 1:line.rindex("]")].split(",") if x.strip()]
 
-rules, cur, fallback = [], None, []
+rules, cur, fallback, always = [], None, [], []
 for line in doc.splitlines():
     s = line.strip()
     if s.startswith("on_no_match:"):
         fallback = items(s)
+    elif s.startswith("always:"):
+        always = items(s)
     elif s.startswith("- trigger:"):
         cur = {"trigger": items(s), "anchors": [], "activate": []}
         rules.append(cur)
@@ -37,16 +39,23 @@ def matches(path, glob):
     rx = re.escape(glob).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*").replace(r"\?", "[^/]")
     return re.fullmatch(rx, path) is not None
 
-active, anchors, hit = set(), set(), []
+active, anchors, hit = set(always), set(), []
 for r in rules:
     if any(matches(p, g) for p in changed for g in r["trigger"]):
         active.update(r["activate"])
         anchors.update(r["anchors"])
         hit.append(r["trigger"][0])
 
-if not active:
+if not hit:
     active.update(fallback)
     hit.append("(매칭 없음 -> 기본 집합)")
+
+# fail-closed. 활성 항목이 비면 프롬프트가 "전부 범위 외" 가 되어, 아무것도
+# 판정하지 않은 리뷰가 "이슈 없음" 으로 나간다. 침묵보다 실패가 낫다.
+if not active:
+    print("ERROR: 활성 항목이 비었습니다. anchors.yml 의 always/on_no_match 를 확인하세요.",
+          file=sys.stderr)
+    sys.exit(1)
 
 print("ACTIVE=" + ",".join(sorted(active)))
 print("ANCHORS=" + ",".join(sorted(anchors)))
