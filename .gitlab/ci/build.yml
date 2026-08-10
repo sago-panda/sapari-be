@@ -1,0 +1,113 @@
+# 결정론적 차단 게이트 — 빌드와 아키텍처 테스트.
+#
+# 신뢰 경계 (읽고 넘기지 말 것):
+#   이 잡은 파이프라인에서 유일하게 MR 코드를 '실행'한다. Gradle 은 MR 의 build.gradle 과
+#   gradle-wrapper.properties(배포판 URL)를 실행하므로, MR 작성자는 러너에서 임의 코드를
+#   돌릴 수 있다. 리뷰 잡(mr-review)은 여전히 diff 를 데이터로만 읽으며, 실행하지 않는다.
+#
+#   이것이 새로 연 구멍은 아니다. mr-review.yml 상단이 이미 "MR 작성자가 CI 파일을 고쳐
+#   토큰을 추출할 수 있다"를 전제로 적고 있다 — 신뢰 경계는 원래부터 'MR 작성자를 신뢰한다'
+#   이고, 이 잡은 그 경로를 CI yml 수정에서 build.gradle 수정으로 넓혔을 뿐이다.
+#   달라진 것은 가시성이다. CI 파일 변경은 눈에 띄지만 빌드 파일 변경은 일상적이다.
+#   그래서 .claude/anchors.yml 이 **/*.gradle 을 하네스 경로로 잡아 SEC-05/SEC-09 를 켠다.
+#
+#   같은 스테이지의 harness-check 도 MR 의 .claude/scripts/*.sh 를 실행한다. 두 잡 모두
+#   리뷰 토큰을 비워 두는 이유가 이것이다 — 코드 실행과 토큰 보유를 한 잡에 두지 않는다.
+#   (리뷰 잡은 토큰을 들고 있으므로, 그쪽은 하네스 스크립트를 base 것으로 고정해 실행한다.)
+#
+#   이 전제가 깨지는 때 — 외부 기여자, 포크 MR, 신뢰 범위 밖 계정 — 에는 이 잡을 그대로
+#   두면 안 된다. 격리 러너(전용 태그 + 네트워크 제한)로 옮기거나, CI_JOB_TOKEN 허용목록을
+#   좁히는 것이 먼저다. 잡 안에서 변수를 비우는 것은 CI yml 수정 경로가 남아 방어가 되지 않는다.
+#
+# 리뷰(mr-review.yml)와 역할이 갈린다. 차단하는 것은 결과가 재현되는 검사뿐이다:
+# 같은 커밋에 같은 결과가 나오는 Gradle/ArchUnit 은 머지를 막고, LLM 리뷰는 지적만 남긴다.
+#
+# precheck 앞 스테이지에 두는 이유는 두 가지다.
+#  - 빌드가 깨진 MR 에 리뷰 토큰을 쓰지 않는다 (재리뷰 파이프라인에도 같이 건다)
+#  - ArchUnit 이 잡는 위반을 리뷰어가 중복 지적하지 않는다 (sapari-reviewer.md 의 전제)
+build:
+  stage: build
+  image: eclipse-temurin:21-jdk
+  # 재리뷰(FORCE_REVIEW) 파이프라인에도 건다. 넣지 않으면 ▶ 로 띄운 브랜치 파이프라인이
+  # build 없이 리뷰만 돌아, "빌드가 깨진 MR 에 리뷰 토큰을 쓰지 않는다" 가 절반만 참이 된다.
+  # 대가는 재리뷰마다 빌드가 한 번 더 도는 것이고, 그것이 맞는 동작이다 — 재리뷰 시점의
+  # 코드가 빌드되는지는 첫 리뷰 때와 별개다.
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$FORCE_REVIEW == "true"'
+  # 이 잡은 외부 서비스를 붙이지 않는다. 붙일 수도 없다 —
+  # application*.yaml 이 .gitignore 대상이라 클론에 설정 자체가 없고, 설정 없이 앱을 띄우면
+  # 데이터소스·LiveKit·룸토큰 프로퍼티가 연쇄로 없어 DB 를 붙여도 실패한다. 채우려면
+  # 룸토큰 개인키를 CI 변수에 넣어야 하므로 그 길은 택하지 않았다.
+  # 대신 컨텍스트 부팅 테스트(*ApplicationTests)를 CI 에서 제외한다(루트 build.gradle).
+  # 신선한 클론 + 설정 없음 + DB 없음 조건에서 build 가 통과함을 확인했다.
+  variables:
+    GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+    CLAUDE_CODE_OAUTH_TOKEN: "" # claude 미실행 단계
+    GITLAB_API_TOKEN: "" # API 호출 없음
+  # 캐시는 브랜치별로 나눈다. 이 잡은 MR 코드를 실행하므로, 전 브랜치가 공유하는 캐시에
+  # 쓰게 두면 한 MR 이 심은 것이 다른 MR 의 빌드에 실린다.
+  # 대가는 브랜치 첫 빌드가 의존성을 새로 받는다는 것(수십 초). fallback_keys 로 기본 브랜치
+  # 캐시를 당겨오는 방법이 있지만, 이 잡은 MR 이벤트에서만 돌아 기본 브랜치 캐시가 채워지지
+  # 않는다 — 지금 구조에서는 효과가 없어 넣지 않았다.
+  cache:
+    key: "gradle-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .gradle/wrapper
+      - .gradle/caches
+  script:
+    # architecture-test:test 는 build 에 포함된다. 명시하면 어느 검사가 막았는지 로그에서 갈린다.
+    - ./gradlew build --console=plain
+  artifacts:
+    when: on_failure # 통과하면 남길 것이 없다
+    paths:
+      # 어느 모듈이 깨졌는지 모르므로 테스트 리포트 전체를 올린다. architecture-test 만
+      # 올리면 정작 실패한 모듈의 리포트가 빠져 로그만 보고 원인을 찾아야 한다.
+      #
+      # 이 리포트에는 테스트가 찍은 표준출력이 그대로 들어간다. HTML 리포트가 실패 스택만
+      # 담는다는 것은 사실이 아니다 — 클래스별 페이지에 Standard output/error 섹션이 통째로
+      # 렌더링된다(실측 확인). Gradle 에는 HTML 리포트에서 출력 캡처만 끄는 스위치가 없다
+      # (reports.junitXml.includeSystemOutLog 는 XML 전용).
+      #
+      # 그래서 이것은 '막았다' 가 아니라 '감수한다' 다. 감수하는 근거:
+      #  - 테스트의 인적정보는 전부 자리표시자다 (01012345678 류). 실데이터 픽스처 없음
+      #  - 열람 범위가 프로젝트 멤버이고, 아래 만료로 창을 1시간으로 좁힌다
+      # 이 전제가 깨지면 — 실데이터·실사용 계정을 쓰는 픽스처가 들어오거나, Guest 추가·
+      # 공개 전환으로 열람 범위가 넓어지면 — 이 결정을 다시 판단해야 한다.
+      # 아티팩트를 여기에 더 추가할 때도 같은 판단을 처음부터 다시 한다.
+      - "**/build/reports/tests/"
+    # UI 열람 창을 좁힌다. 예약 삭제이지 즉시 삭제 보증이 아니며, 백업 스냅샷에는 남는다.
+    # 만료 뒤 리포트가 필요하면 잡을 재실행한다 — 결정론적 검사라 같은 결과가 나온다.
+    expire_in: 1 hour
+
+# 하네스(리뷰 설정) 정합성 검사.
+#
+# 이 잡은 MR 버전의 스크립트를 그대로 실행한다. 즉 MR 이 스크립트를 exit 0 으로 바꾸면
+# 세 검사가 함께 사라진다 — 이것은 '실수 방지' 게이트이지 보안 경계가 아니다.
+# (보안 경계는 리뷰 잡 쪽에 있다. 그쪽은 토큰을 들고 있으므로 하네스를 base 것으로 고정해
+#  실행한다.) 스크립트 무력화는 diff 에 드러나므로 사람 리뷰가 잡는 몫으로 남긴다.
+#
+# 빌드와 나누는 이유는 두 가지다.
+#  - JDK 이미지에는 python3 가 없다. 검사만 하려고 빌드 이미지에 설치하지 않는다
+#  - 실패 원인이 갈린다. "코드가 깨졌다" 와 "리뷰 설정이 어긋났다" 는 다른 문제다
+harness-check:
+  stage: build
+  image: python:3.12-alpine
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$FORCE_REVIEW == "true"'
+  variables:
+    CLAUDE_CODE_OAUTH_TOKEN: ""
+    GITLAB_API_TOKEN: ""
+  script:
+    # alpine 파이썬 이미지에는 git 이 없다. check-anchor-globs 가 git ls-files 로
+    # 추적 파일 목록을 얻으므로 없으면 잡이 통째로 실패한다.
+    - apk add --no-cache git >/dev/null
+    # 리뷰어 md 의 ArchUnit 목록이 실제 규칙과 어긋나는가
+    - sh .claude/scripts/check-archunit-sync.sh
+    # anchors.yml 이 켜는 ID 가 리뷰어 md 에 실재하는가. 없는 ID 를 켜면 그 규칙은
+    # 아무 일도 하지 않는데, 로그만 보면 켜진 것처럼 보인다.
+    - sh .claude/scripts/check-item-ids.sh
+    # 글롭이 실재 파일을 잡는가. 리뷰 잡의 fail-closed 는 "활성 0건" 만 막으므로,
+    # 글롭이 전부 오타여도 always 항목이 남아 초록불로 게시된다. 그쪽을 여기서 막는다.
+    - sh .claude/scripts/check-anchor-globs.sh
