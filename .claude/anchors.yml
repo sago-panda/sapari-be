@@ -32,21 +32,24 @@ rules:
   - trigger: ["**/controller/**/*Controller.java", "**/controller/**/dto/**/*.java"]
     # DTO 는 컨트롤러의 계약이라 같은 항목으로 본다. DTO 만 바뀌는 MR 이
     # 어디에도 안 걸리면 mass-assignment 검사가 발화하지 않는다.
-    anchors: ["**/config/*SecurityConfig.java", "**/application/service/**/*.java", "**/*UseCase.java"]
-    activate: [CONV-01, SEC-01, SEC-05]
+    # 예외 핸들러가 이미 만드는 에러 봉투를 컨트롤러가 또 만드는지(CONV-12) 보려면 그쪽을 읽어야 한다.
+    anchors: ["**/config/*SecurityConfig.java", "**/application/service/**/*.java", "**/*UseCase.java",
+              "**/exception/GlobalExceptionHandler.java", "apps/AGENTS.md"]
+    activate: [CONV-01, CONV-12, SEC-01, SEC-05]
 
   - trigger: ["**/application/service/**/*.java"]
     # 권한 모델을 봐야 소유권 검증 누락을 판정할 수 있다.
-    anchors: ["**/domain/**/*.java", "**/port/*.java", "**/config/*SecurityConfig.java"]
-    activate: [CONV-02, CONV-05, CONV-09, SEC-01, SEC-09, TRAP-01, TRAP-02]
+    anchors: ["**/domain/**/*.java", "**/port/*.java", "**/config/*SecurityConfig.java",
+              "common/AGENTS.md"]
+    activate: [CONV-02, CONV-05, CONV-09, CONV-13, SEC-01, SEC-09, TRAP-01, TRAP-02]
 
   - trigger: ["**/domain/**/*.java"]
     activate: [CONV-03]
 
   - trigger: ["**/infrastructure/persistence/**/*.java"]
     # 스키마 판정은 대응 마이그레이션을 함께 봐야 한다. diff 에 없어도 읽는다.
-    anchors: ["db/migration/**/*.sql"]
-    activate: [CONV-06, TRAP-03, TRAP-04]
+    anchors: ["db/migration/**/*.sql", "common/AGENTS.md"]
+    activate: [CONV-06, CONV-13, TRAP-03, TRAP-04]
 
   - trigger: ["db/migration/**/*.sql"]
     # 같은 도메인의 이전 마이그레이션 전체를 본다. 순서가 판정에 필요하다.

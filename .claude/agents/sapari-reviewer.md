@@ -85,6 +85,23 @@ around it.
   which is usually already handled.) Does the kill switch actually gate the job bean?
 - `CONV-10` **Stale rationale** — is the fact a comment or `AGENTS.md` cites as its justification still true? A
   right decision defended by an outdated reason is a finding: the next person extends the reason.
+- `CONV-12` **Response envelope** — a controller method returns `ResponseEnvelope<T>`, or `void` for 204
+  (no envelope). Status comes from `@ResponseStatus`; `ResponseEntity` only when a header (e.g. `Location`)
+  is actually needed — `ResponseEntity` used merely to set a status is the finding, and so is a raw DTO
+  with no envelope. The controller never builds `fail()` and never catches to make an error body: it
+  throws the domain exception and the handler wraps it. No envelope inside `data`. (ArchUnit owns
+  *who may depend on* `common.response` — item 10 above. This item is about *how the web layer uses it*.)
+  Existing controllers still return raw `ResponseEntity<Dto>`; judge what the diff changes or adds,
+  don't sweep untouched files.
+- `CONV-13` **Paging assembly** — repository returns `List<Domain>` and must fetch **`size + 1`**:
+  `CursorPage.of` derives `hasNext` from `rows.size() > size`, so fetching exactly `size` pins `hasNext`
+  to false and the scroll dies silently. Size goes through `PageSupport.normalizeSize` (unclamped size
+  is an unbounded read). A keyset `WHERE` must mirror its `orderBy` **including the id tie-break**
+  (`sortKey < x OR (sortKey = x AND id < y)`) — without it rows duplicate or vanish at ties, and a
+  composite index on the same keys is required or the list API degrades. Cursors are decoded with
+  `CursorCodec` + `Cursor.sortKeyAs*/idAsUuid` (they raise `InvalidCursorException` → 400); hand-rolled
+  `UUID.fromString`/`Long.parseLong` on the raw cursor turns bad input into a 500. Offset: the count
+  query must carry the same filters as the data query.
 
 `CONV-11` General quality: edge cases, null/Optional, concurrency, N+1, request-DTO validation *presence*
 (mass-assignment & injection are `security-reviewer`'s), resource leaks.
