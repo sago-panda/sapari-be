@@ -11,6 +11,8 @@
 set -eu
 exec python3 - <<'PY'
 import re, sys
+sys.path.insert(0, ".claude/scripts")
+from anchorlib import logical_lines
 
 defined = set()
 for path in (".claude/agents/sapari-reviewer.md", ".claude/agents/security-reviewer.md"):
@@ -22,10 +24,9 @@ for path in (".claude/agents/sapari-reviewer.md", ".claude/agents/security-revie
                 defined.add(m.group(1))
 
 referenced = set()
-with open(".claude/anchors.yml", encoding="utf-8") as f:
-    for line in f:
-        if re.match(r"\s*(activate:|on_no_match:|always:)", line):
-            referenced.update(re.findall(r"(?:CONV|TRAP|SEC)-\d{2}", line))
+for line in logical_lines(".claude/anchors.yml"):
+    if re.match(r"\s*(activate:|always:)", line.strip()):
+        referenced.update(re.findall(r"(?:CONV|TRAP|SEC)-\d{2}", line))
 
 # SEC-00 / CONV-11 은 "어느 항목에도 안 걸리는 발견" 을 담는 자리라 정의부에 목록으로
 # 존재하지 않는다. 리뷰어 md 의 출력 절이 문장으로 규정한다.

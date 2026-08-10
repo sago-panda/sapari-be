@@ -12,19 +12,20 @@
 set -eu
 exec python3 - <<'PY'
 import re, subprocess, sys
+sys.path.insert(0, ".claude/scripts")
+from anchorlib import logical_lines, glob_to_regex
 
-tracked = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout.split()
-
-def to_regex(glob):
-    return re.escape(glob).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*") \
-                          .replace(r"\*", "[^/]*").replace(r"\?", "[^/]")
+# split() 이 아니라 splitlines(). 공백이 든 경로가 두 개로 쪼개져 매칭이 어긋난다.
+tracked = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout.splitlines()
 
 def matches_any(glob):
-    rx = re.compile(to_regex(glob))
+    rx = re.compile(glob_to_regex(glob))
     return any(rx.fullmatch(p) for p in tracked)
 
+
+
 dead = []
-for line in open(".claude/anchors.yml", encoding="utf-8"):
+for line in logical_lines(".claude/anchors.yml"):
     s = line.strip()
     if not (s.startswith("- trigger:") or s.startswith("anchors:")):
         continue

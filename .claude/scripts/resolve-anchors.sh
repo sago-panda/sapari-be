@@ -11,16 +11,16 @@
 
 set -eu
 exec python3 - "${1:?변경 파일 목록 경로가 필요합니다}" <<'PY'
-import fnmatch, re, sys
+import re, sys
+sys.path.insert(0, ".claude/scripts")
+from anchorlib import logical_lines, items, glob_to_regex
 
 changed = [l.strip() for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
-doc = open(".claude/anchors.yml", encoding="utf-8").read()
 
-def items(line):
-    return [x.strip().strip('"') for x in line[line.index("[") + 1:line.rindex("]")].split(",") if x.strip()]
+
 
 rules, cur, always = [], None, []
-for line in doc.splitlines():
+for line in logical_lines(".claude/anchors.yml"):
     s = line.strip()
     if s.startswith("always:"):
         always = items(s)
@@ -33,9 +33,14 @@ for line in doc.splitlines():
         cur["activate"] = items(s)
 
 def matches(path, glob):
-    # fnmatch 는 '**' 를 모르므로 정규식으로 옮긴다. '**/' 는 0개 이상의 디렉터리.
-    rx = re.escape(glob).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*").replace(r"\?", "[^/]")
-    return re.fullmatch(rx, path) is not None
+    return re.fullmatch(glob_to_regex(glob), path) is not None
+
+# activate 가 비면 그 규칙은 아무것도 켜지 않는데 매칭은 성공한 것처럼 보인다.
+# 오타(activete:)나 누락이 여기로 샌다 — 파싱 직후 걸러 낸다.
+empty = [r["trigger"][0] for r in rules if not r["activate"]]
+if empty:
+    print("ERROR: activate 가 비어 있는 규칙: " + ", ".join(empty), file=sys.stderr)
+    sys.exit(1)
 
 active, anchors, hit = set(always), set(), []
 for r in rules:

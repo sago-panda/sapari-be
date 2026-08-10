@@ -61,6 +61,9 @@ rules:
     activate: [SEC-06, TRAP-06]
 
   - trigger: ["apps/streaming-app/**/*.java"]
+    # dev 최근 100커밋 백테스트에서 0회 발화한 유일한 규칙이다. 오타가 아니라 코드가
+    # 아직 없는 것 — dev 의 streaming-app 은 부트 클래스와 Swagger 설정뿐이고, WS 작업은
+    # 미머지 브랜치에 있다. 그것이 들어오는 순간 켜져야 하므로 지우지 않는다.
     activate: [SEC-07]
 
   - trigger: ["**/*Properties.java", "**/resources/application*.y*ml*"]
@@ -79,11 +82,20 @@ rules:
   - trigger: ["**/auth/**/*.java", "**/*Jwt*.java", "**/*Token*.java", "**/*OAuth*.java"]
     activate: [SEC-02, SEC-04, SEC-06]
 
-  - trigger: [".gitlab-ci.yml", ".gitlab/**", ".claude/**", "**/*.gradle", "**/Dockerfile*", "**/*.sh"]
+  - trigger: [".gitlab-ci.yml", ".gitlab/**", ".claude/**", "**/*.gradle", "**/Dockerfile*", "**/*.sh",
+              "gradle/wrapper/**", "gradlew*"]
     # 리뷰 파이프라인과 리뷰어 정의 자신을 바꾸는 변경. 자바가 아니라는 이유로
     # 기본 집합만 켜지면, 게이트를 무력화하는 변경이 가장 헐겁게 리뷰된다.
     # (CI 파일은 러너에서 실행되므로 무인 코드와 같은 축으로 본다)
-    anchors: [".gitlab-ci.yml", ".gitlab/ci/*.yml"]
+    #
+    # gradle wrapper 를 함께 넣는 이유는 build.yml 상단이 그것을 RCE 벡터로 명시하기
+    # 때문이다. 배포판 URL 이 여기 있으므로 *.gradle 만 잡으면 정작 그 벡터를 놓친다.
+    #
+    # 주의: .claude/ 는 리뷰 잡이 기본 브랜치 것으로 되돌린 뒤 리뷰가 돈다. 즉 아래 두
+    # 앵커로 읽는 스크립트·앵커 파일은 'MR 의 것' 이 아니라 '현재 기준' 이다. MR 이 가드를
+    # 지웠어도 앵커로는 있는 것처럼 보인다 — 그 변경 자체는 mr.diff 에 있으므로 거기서 본다.
+    anchors: [".gitlab-ci.yml", ".gitlab/ci/*.yml", ".claude/scripts/*.sh", ".claude/anchors.yml",
+              "gradle/wrapper/gradle-wrapper.properties"]
     activate: [CONV-09, SEC-09, SEC-05]
 
   - trigger: ["**/src/test/**/*.java"]
