@@ -252,12 +252,17 @@ mr-review:
       while IFS= read -r spec; do
         [ -e "$spec" ] || { echo "ERROR: 복원 후에도 없음 — $spec"; exit 1; }
       done < pinned.txt
-      for required in .claude/agents/sapari-reviewer-ci.md .claude/agents/security-reviewer-ci.md; do
+      # 방법론 md 2개도 함께 단언한다. -ci.md 는 그 파일을 Read 해서 항목 정의와 증거
+      # 규칙을 얻으므로, 없으면 실패가 아니라 "정의 없이 도는 리뷰" 가 된다.
+      for required in .claude/agents/sapari-reviewer-ci.md .claude/agents/security-reviewer-ci.md \
+                      .claude/rules/sapari-reviewer-methodology.md \
+                      .claude/rules/security-reviewer-methodology.md; do
         [ -f "$required" ] || { echo "ERROR: 서브에이전트 정의 없음 — $required"; exit 1; }
       done
       echo "판정 기준: $BASE_REF 시점 — $(wc -l < pinned.txt)개 경로 복원"
 
       # 로컬용 리뷰어 정의는 tools 에 Bash 가 있다. CI 에서는 쓰지 않으므로 복원 직후 지운다.
+      # 방법론 본문은 .claude/rules/ 에 있어 여기서 지워지지 않는다 — CI 변종이 그것을 읽는다.
       # 아래 deny 와 이중이지만, deny 가 어떤 이유로 적용되지 않더라도 Bash 를 가진
       # 서브에이전트 자체가 없게 만든다. CI 변종 2개는 위 단언이 이미 존재를 보장한다.
       # rm -f 는 대상이 없어도 성공하므로, 지워졌음을 따로 단언한다.
@@ -418,8 +423,12 @@ mr-review:
       # 판정 기준 파일들의 해시. 없는 파일은 조용히 빠지지 않고 부재 그대로 해시에 남는다
       # (cat 이 실패해도 파이프는 성공하므로, 목록에서 파일이 사라지면 거짓 통과가 된다).
       # 로컬용 리뷰어 md 2개는 위에서 지웠고 이 잡의 판정에 관여하지 않으므로 넣지 않는다.
+      # 방법론 md 2개는 반대로 반드시 넣는다 — 항목 정의가 거기 있어서, 빠지면 방법론을
+      # 통째로 바꿔도 RULES_HASH 가 그대로인 채 "같은 기준" 으로 기록된다.
       hash_rules() {
         for f in .claude/agents/sapari-reviewer-ci.md .claude/agents/security-reviewer-ci.md \
+                 .claude/rules/sapari-reviewer-methodology.md \
+                 .claude/rules/security-reviewer-methodology.md \
                  .claude/anchors.yml; do
           if [ -f "$f" ]; then cat "$f"; else echo "MISSING:$f"; fi
         done | sha1sum | cut -c1-12

@@ -9,8 +9,9 @@ You are the **CI/headless variant of `sapari-reviewer`**. You run on untrusted M
 have **NO shell** (Read/Grep/Glob only). Behave exactly like `sapari-reviewer`, with two overrides
 for the CI environment:
 
-1. **Load the methodology you must follow** — Read `.claude/agents/sapari-reviewer.md` and apply its
-   full review methodology and finding rules. Also Read the root `AGENTS.md` and the relevant module
+1. **Load the methodology you must follow** — Read `.claude/rules/sapari-reviewer-methodology.md` and
+   apply it in full. If it is not readable, say so and stop — do not review from memory.
+   Also Read the root `AGENTS.md` and the relevant module
    `AGENTS.md` for project rules and intentional exceptions.
 2. **The change set is already provided** — Read `mr.diff` in the working directory; it holds the
    full MR diff. **Ignore any git/shell steps** in the methodology (e.g. "run `git diff`") — the diff
