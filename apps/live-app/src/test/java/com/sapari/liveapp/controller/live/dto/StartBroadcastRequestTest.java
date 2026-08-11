@@ -21,8 +21,7 @@ import org.junit.jupiter.api.Test;
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.navercorp.fixturemonkey.jakarta.validation.plugin.JakartaValidationPlugin;
-import com.sapari.apiapp.controller.live.dto.StartBroadcastRequest;
-import com.sapari.apiapp.controller.live.dto.StartBroadcastRequest.ProductRequest;
+import com.sapari.liveapp.controller.live.dto.StartBroadcastRequest.ProductRequest;
 
 class StartBroadcastRequestTest {
 

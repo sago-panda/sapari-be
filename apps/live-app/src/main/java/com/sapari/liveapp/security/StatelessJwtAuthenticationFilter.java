@@ -87,9 +87,14 @@ public class StatelessJwtAuthenticationFilter extends OncePerRequestFilter {
     private void authenticate(JwtTokenClaims claims) {
         SimpleGrantedAuthority authority = new SimpleGrantedAuthority(ROLE_PREFIX + claims.role());
 
+        // principal에 userId뿐 아니라 role·nickname·email까지 실어, 채팅 룸 토큰 발급에 필요한 신원을
+        // 추가 조회 없이 확보한다. LiveUserPrincipal.getName()=userId라 CurrentUserIdArgumentResolver는 그대로 동작.
+        LiveUserPrincipal principal = new LiveUserPrincipal(
+                claims.userId(), claims.role(), claims.nickname(), claims.email());
+
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(
-                        claims.userId().toString(),
+                        principal,
                         null,
                         List.of(authority)
                 );

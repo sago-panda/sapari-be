@@ -74,6 +74,8 @@ Create a missing referenced file only when starting work in that area.
 | Live broadcast domain | `modules/live/AGENTS.md` |
 | New domain module layout | `modules/AGENTS.md` |
 | Order / payment domain | `modules/order/AGENTS.md` |
+| Controllers / response envelope | `apps/AGENTS.md` |
+| Paging (cursor / offset) | `common/AGENTS.md` |
 | JPA entities | `storage/db-core/AGENTS.md` |
 | DB schema / Flyway migrations | `infra/AGENTS.md` (Migrations) |
 | Redis cache patterns | `storage/redis-core/AGENTS.md` |

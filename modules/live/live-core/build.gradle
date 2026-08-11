@@ -16,6 +16,11 @@ dependencies {
     // LiveKit (WebRTC)
     implementation 'io.livekit:livekit-server:0.12.1'
 
+    // 채팅 입장용 룸 토큰(RS256) 서명 — api-app 인증 토큰(HMAC)과 별개
+    implementation 'io.jsonwebtoken:jjwt-api:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.13.0'
+
     // MapStruct
     implementation 'org.mapstruct:mapstruct:1.5.5.Final'
 
