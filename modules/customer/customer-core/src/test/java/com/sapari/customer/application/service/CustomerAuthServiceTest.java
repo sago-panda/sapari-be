@@ -14,6 +14,7 @@ import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -23,6 +24,7 @@ import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.redis.RedisConnectionFailureException;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -67,6 +69,8 @@ import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
 import com.sapari.customer.application.port.SocialProfileImageDownloader;
+import com.sapari.customer.domain.repository.SocialSignupAttemptRepository;
+
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
@@ -88,6 +92,7 @@ class CustomerAuthServiceTest {
     private static final String SIGNUP_SID = "signup-session-id";
     private static final String TEMPORARY_LOGIN_CODE = "temporary-login-code";
     private static final String EMAIL = "customer@example.com";
+    private static final String LEASE_TOKEN = "lease-token";
     private static final Instant NOW = Instant.now();
 
     private final SocialSignupRepository socialSignupRepository =
@@ -96,6 +101,7 @@ class CustomerAuthServiceTest {
             mock(SocialLoginCodeRepository.class);
     private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
     private final SocialProfileImageDownloader socialProfileImageDownloader = mock(SocialProfileImageDownloader.class);
+    private final SocialSignupAttemptRepository socialSignupAttemptRepository = mock(SocialSignupAttemptRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("customer-test", SECRET, 3600L, 1209600L),
             timeProvider()
@@ -137,8 +143,15 @@ class CustomerAuthServiceTest {
             objectMapper,
             Mappers.getMapper(CustomerViewMapper.class),
             signupContactVerificationAdapter,
-            socialProfileImageDownloader
+            socialProfileImageDownloader,
+            socialSignupAttemptRepository
     );
+
+    @BeforeEach
+    void allowSocialSignupAttempt() {
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID))
+                .thenReturn(SocialSignupAttemptRepository.AcquireResult.acquired(LEASE_TOKEN));
+    }
 
     @Test
     @DisplayName("소셜 고객 가입 완료 시 User를 저장하고 토큰을 발급한다")
@@ -341,6 +354,7 @@ class CustomerAuthServiceTest {
         );
         verifyNoInteractions(userSignupContactVerificationUseCase);
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
     }
 
     @Test
@@ -375,6 +389,7 @@ class CustomerAuthServiceTest {
         );
         verifyNoInteractions(userSignupContactVerificationUseCase);
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
     }
 
     @Test
@@ -408,6 +423,7 @@ class CustomerAuthServiceTest {
         );
         verifyNoInteractions(userSignupContactVerificationUseCase);
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
     }
 
     @Test
@@ -446,6 +462,7 @@ class CustomerAuthServiceTest {
         verifyNoInteractions(userSignupContactVerificationUseCase);
         verifyNoInteractions(userAccountUseCase);
         verifyNoInteractions(socialProfileImageDownloader);
+        verify(socialSignupAttemptRepository, never()).tryAcquire(any());
     }
 
     @Test
@@ -465,6 +482,7 @@ class CustomerAuthServiceTest {
         verifyNoInteractions(userSignupContactVerificationUseCase);
         verify(userAccountUseCase, never()).rollbackSocialCustomerRegistration(any());
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
     }
 
     @Test
@@ -488,6 +506,7 @@ class CustomerAuthServiceTest {
 
         verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
         verifyNoInteractions(refreshTokenStore);
     }
 
@@ -514,6 +533,7 @@ class CustomerAuthServiceTest {
         verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
         verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
         verifyNoInteractions(refreshTokenStore);
     }
 
@@ -548,6 +568,7 @@ class CustomerAuthServiceTest {
         order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(any());
         order.verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
         verifyNoInteractions(refreshTokenStore);
     }
 
@@ -572,6 +593,7 @@ class CustomerAuthServiceTest {
 
         verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
         verifyNoInteractions(refreshTokenStore);
     }
 
@@ -584,6 +606,219 @@ class CustomerAuthServiceTest {
                 );
 
         verifyNoInteractions(userAccountUseCase, refreshTokenStore);
+        verify(socialSignupAttemptRepository, never()).tryAcquire(any());
+    }
+
+    @Test
+    @DisplayName("소셜 가입 성공 시 SID를 삭제하고 호출자가 획득한 처리권을 해제한다")
+    void completeSocialSignupDeletesSidAndReleasesOwnedAttemptOnSuccess() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand());
+
+        InOrder order = inOrder(socialSignupRepository, socialSignupAttemptRepository);
+        order.verify(socialSignupRepository).delete(SIGNUP_SID);
+        order.verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("회원가입 본 처리가 성공해도 처리권 해제 장애는 CUSTOMER-031로 전파한다")
+    void completeSocialSignupPropagatesAttemptReleaseFailureAfterSuccess() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        CustomerException releaseFailure = new CustomerException(
+                CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE
+        );
+        doThrow(releaseFailure)
+                .when(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isSameAs(releaseFailure);
+
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("예상하지 못한 처리권 해제 오류는 성공으로 숨기지 않는다")
+    void completeSocialSignupPropagatesUnexpectedAttemptReleaseFailure() throws Exception {
+        UUID userId = UUID.randomUUID();
+        IllegalStateException unexpectedFailure = new IllegalStateException("unexpected release failure");
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        doThrow(unexpectedFailure).when(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isSameAs(unexpectedFailure);
+
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("처리권 해제 장애는 기존 회원가입 실패 원인을 덮어쓰지 않는다")
+    void completeSocialSignupKeepsPrimaryFailureWhenAttemptReleaseFails() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.empty());
+        CustomerException releaseFailure = new CustomerException(
+                CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE
+        );
+        doThrow(releaseFailure)
+                .when(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception -> {
+            assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED);
+            assertThat(exception.getSuppressed()).containsExactly(releaseFailure);
+        });
+
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("가입 확정 후 SID 삭제 장애는 CUSTOMER-031로 전파하고 토큰을 발급하지 않는다")
+    void completeSocialSignupPropagatesCompletedSidCleanupFailureWithoutIssuingTokens() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        doThrow(new RedisConnectionFailureException("test SID cleanup unavailable"))
+                .when(socialSignupRepository).delete(SIGNUP_SID);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode())
+                            .isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE);
+                    assertThat(exception).hasCauseInstanceOf(RedisConnectionFailureException.class);
+                });
+
+        verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        verify(userAccountUseCase, never()).rollbackSocialCustomerRegistration(any());
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("이미지 준비 실패 시 SID는 유지하고 호출자가 획득한 처리권만 해제한다")
+    void completeSocialSignupKeepsSidAndReleasesOwnedAttemptOnImageFailure() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOf(CustomerException.class);
+
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("동일 가입 요청이 처리 중이면 이미지 준비와 회원 생성을 시작하지 않는다")
+    void completeSocialSignupRejectsAlreadyProcessingAttemptBeforeExpensiveWork() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID))
+                .thenReturn(SocialSignupAttemptRepository.AcquireResult.alreadyProcessing());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_ALREADY_PROCESSING)
+        );
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
+        verify(socialSignupAttemptRepository, never()).release(any(), any());
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("가입 시도 한도를 소진하면 이미지 준비와 회원 생성을 시작하지 않는다")
+    void completeSocialSignupRejectsRateLimitedAttemptBeforeExpensiveWork() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID))
+                .thenReturn(SocialSignupAttemptRepository.AcquireResult.rateLimitExceeded());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_RATE_LIMIT_EXCEEDED)
+        );
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
+        verify(socialSignupAttemptRepository, never()).release(any(), any());
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("가입 시도 제어 Redis 장애 시 원인을 보존한 503 오류로 실패한다")
+    void completeSocialSignupFailsClosedWhenAttemptGuardRedisIsUnavailable() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        CustomerException attemptControlFailure = new CustomerException(
+                CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE,
+                new RedisConnectionFailureException("test Redis unavailable")
+        );
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID)).thenThrow(attemptControlFailure);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode())
+                            .isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE);
+                    assertThat(exception.getErrorCode().getStatus()).isEqualTo(503);
+                    assertThat(exception).isSameAs(attemptControlFailure);
+                    assertThat(exception).hasCauseInstanceOf(RedisConnectionFailureException.class);
+                });
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
+        verify(socialSignupAttemptRepository, never()).release(any(), any());
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("가입 시도권은 소셜 이미지 다운로드 전에 획득한다")
+    void completeSocialSignupAcquiresAttemptBeforeProviderImageDownload() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png", "image/png", new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/provider.png"));
+
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommandUsingSocialProfileImage());
+
+        InOrder order = inOrder(socialSignupAttemptRepository, socialProfileImageDownloader);
+        order.verify(socialSignupAttemptRepository).tryAcquire(SIGNUP_SID);
+        order.verify(socialProfileImageDownloader).download(
+                ProviderType.NAVER,
+                "https://image.example/profile.png"
+        );
     }
 
     @Test
@@ -811,7 +1046,8 @@ class CustomerAuthServiceTest {
                 objectMapper,
                 Mappers.getMapper(CustomerViewMapper.class),
                 signupContactVerificationAdapter,
-                socialProfileImageDownloader
+                socialProfileImageDownloader,
+                socialSignupAttemptRepository
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,

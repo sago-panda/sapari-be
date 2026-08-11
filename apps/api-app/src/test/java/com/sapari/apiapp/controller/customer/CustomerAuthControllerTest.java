@@ -14,7 +14,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.UUID;
 
@@ -29,11 +32,15 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.command.CustomerProfileImageChangeCommand;
+import com.sapari.customer.domain.exception.CustomerErrorCode;
+import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.customer.view.CustomerMeView;
 import com.sapari.customer.view.SocialSignupResult;
+import com.sapari.global.time.TimeProvider;
 
 @DisplayName("구매자 인증 컨트롤러 테스트")
 class CustomerAuthControllerTest {
@@ -124,6 +131,49 @@ class CustomerAuthControllerTest {
         assertThat(commandCaptor.getValue().profileImageContentType()).isEqualTo(MediaType.IMAGE_PNG_VALUE);
         assertThat(commandCaptor.getValue().profileImageContent()).containsExactly(1, 2, 3);
         assertThat(commandCaptor.getValue().useSocialProfileImage()).isFalse();
+    }
+
+    @Test
+    @DisplayName("소셜 가입 시도 제어 장애는 CUSTOMER-031 실패 봉투와 503으로 응답한다")
+    void completeSocialSignupReturnsServiceUnavailableWhenAttemptControlIsUnavailable() throws Exception {
+        CustomerAuthUseCase customerAuthUseCase = mock(CustomerAuthUseCase.class);
+        CustomerAuthController controller = new CustomerAuthController(customerAuthUseCase);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler(new TimeProvider(
+                        Clock.fixed(Instant.parse("2026-08-09T00:00:00Z"), ZoneOffset.UTC)
+                )))
+                .build();
+        when(customerAuthUseCase.completeSocialSignup(
+                eq("signup-sid"),
+                org.mockito.ArgumentMatchers.any(SocialSignupCommand.class)
+        )).thenThrow(new CustomerException(CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE));
+        MockMultipartFile request = new MockMultipartFile(
+                "request",
+                "request.json",
+                MediaType.APPLICATION_JSON_VALUE,
+                """
+                        {
+                          "phoneNumber": "01012345678",
+                          "email": "customer@example.com",
+                          "nickname": "customer",
+                          "name": "구매자",
+                          "birthDate": "2000-01-01",
+                          "gender": "FEMALE",
+                          "useSocialProfileImage": false,
+                          "privacyAgreed": true,
+                          "marketingAgreed": false
+                        }
+                        """.getBytes()
+        );
+
+        mockMvc.perform(multipart("/api/v1/customers/auth/signup/social")
+                        .file(request)
+                        .cookie(new jakarta.servlet.http.Cookie("signup_sid", "signup-sid")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.data").doesNotExist())
+                .andExpect(jsonPath("$.error.status").value(503))
+                .andExpect(jsonPath("$.error.code").value("CUSTOMER-031"));
     }
 
     @Test

@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +29,7 @@ import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
 import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
+import com.sapari.customer.domain.repository.SocialSignupAttemptRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.customer.port.CustomerAuthUseCase;
 import com.sapari.customer.view.CustomerMeView;
@@ -67,9 +69,11 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     private final CustomerViewMapper customerViewMapper;
     private final CustomerSignupContactVerificationAdapter signupContactVerificationAdapter;
     private final SocialProfileImageDownloader socialProfileImageDownloader;
+    private final SocialSignupAttemptRepository socialSignupAttemptRepository;
 
     /**
      * signup sid로 임시 소셜 정보를 조회하고 추가정보를 합쳐 구매자 가입을 완료한다.
+     * SID는 성공 시점까지 유지하고 별도 processing lock으로 중복 실행을 막으며, 실패 시 재시도를 위해 보존한다.
      * 이미지 반영까지 끝난 뒤 서버가 보관한 휴대폰·이메일 verified 상태를 함께 소비해 가입을 확정한다.
      * 직접 업로드 파일 검증/저장 실패는 회원가입 실패로 전파해 잘못된 파일을 조용히 무시하지 않는다.
      */
@@ -77,31 +81,64 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     public SocialSignupResult completeSocialSignup(String signupSid, SocialSignupCommand command) {
         SocialSignupInfo socialSignupInfo = findSocialSignupInfo(signupSid);
         validateProfileImageChoice(command);
-        PreparedSignupProfileImage profileImage = prepareSignupProfileImageChoice(command, socialSignupInfo);
-
-        // userId 기반 object key가 필요하므로 이미지는 검증만 마친 상태에서 회원을 먼저 생성한다.
-        UserView savedUser;
-        try {
-            savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
-        } catch (DataIntegrityViolationException e) {
-            throw new CustomerException(CustomerErrorCode.DUPLICATED_SIGNUP_INFO, e);
+        SocialSignupAttemptRepository.AcquireResult acquireResult = socialSignupAttemptRepository.tryAcquire(signupSid);
+        if (acquireResult.status() == SocialSignupAttemptRepository.AcquireStatus.ALREADY_PROCESSING) {
+            throw new CustomerException(CustomerErrorCode.SOCIAL_SIGNUP_ALREADY_PROCESSING);
+        }
+        if (acquireResult.status() == SocialSignupAttemptRepository.AcquireStatus.RATE_LIMIT_EXCEEDED) {
+            throw new CustomerException(CustomerErrorCode.SOCIAL_SIGNUP_RATE_LIMIT_EXCEEDED);
         }
 
-        UserView profileImageAppliedUser;
+        RuntimeException primaryFailure = null;
         try {
-            profileImageAppliedUser = applySignupProfileImageChoice(savedUser, profileImage);
-            // 저장소와 DB 후속 처리가 끝난 뒤 one-time 인증 상태를 소비해 가입을 확정한다.
-            signupContactVerificationAdapter.consumePhoneAndEmailVerification(command.phoneNumber(), command.email());
+            // 비싼 이미지 준비는 동시 실행과 시도 한도를 통과한 요청만 수행한다.
+            PreparedSignupProfileImage profileImage = prepareSignupProfileImageChoice(command, socialSignupInfo);
+
+            // userId 기반 object key가 필요하므로 이미지는 검증만 마친 상태에서 회원을 먼저 생성한다.
+            UserView savedUser;
+            try {
+                savedUser = userAccountUseCase.registerSocialCustomer(toRegisterCommand(command, socialSignupInfo));
+            } catch (DataIntegrityViolationException e) {
+                throw new CustomerException(CustomerErrorCode.DUPLICATED_SIGNUP_INFO, e);
+            }
+
+            UserView profileImageAppliedUser;
+            try {
+                profileImageAppliedUser = applySignupProfileImageChoice(savedUser, profileImage);
+                // 저장소와 DB 후속 처리가 끝난 뒤 one-time 인증 상태를 소비해 가입을 확정한다.
+                signupContactVerificationAdapter.consumePhoneAndEmailVerification(command.phoneNumber(), command.email());
+            } catch (RuntimeException e) {
+                // 사용자 생성 이후 인증 소비 전까지의 실패는 이번 요청이 만든 가입 데이터만 보상한다.
+                rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
+                throw e;
+            }
+
+            deleteCompletedSocialSignupSid(signupSid);
+            JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(profileImageAppliedUser);
+
+            return new SocialSignupResult(profileImageAppliedUser.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
         } catch (RuntimeException e) {
-            // 사용자 생성 이후 인증 소비 전까지의 실패는 이번 요청이 만든 가입 데이터만 보상한다.
-            rollbackSocialCustomerRegistration(savedUser, command, socialSignupInfo, e);
+            primaryFailure = e;
             throw e;
+        } finally {
+            try {
+                socialSignupAttemptRepository.release(signupSid, acquireResult.leaseToken());
+            } catch (RuntimeException cleanupFailure) {
+                if (primaryFailure != null) {
+                    primaryFailure.addSuppressed(cleanupFailure);
+                } else {
+                    throw cleanupFailure;
+                }
+            }
         }
+    }
 
-        socialSignupRepository.delete(signupSid);
-        JwtTokenLifecycle.IssuedTokenPair tokenPair = customerJwtTokenAdapter.issueTokenPair(profileImageAppliedUser);
-
-        return new SocialSignupResult(profileImageAppliedUser.userId(), tokenPair.accessToken(), tokenPair.refreshToken());
+    private void deleteCompletedSocialSignupSid(String signupSid) {
+        try {
+            socialSignupRepository.delete(signupSid);
+        } catch (DataAccessException e) {
+            throw new CustomerException(CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE, e);
+        }
     }
 
     /**
