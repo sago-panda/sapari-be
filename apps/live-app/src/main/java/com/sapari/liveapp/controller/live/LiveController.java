@@ -8,6 +8,7 @@ import jakarta.validation.Valid;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,20 +18,24 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.liveapp.controller.live.dto.StartBroadcastRequest;
 import com.sapari.liveapp.controller.live.dto.CreateRoomRequest;
+import com.sapari.liveapp.security.LiveUserPrincipal;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.command.GetLiveCommand;
+import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.port.CreateLiveUseCase;
 import com.sapari.live.port.EndLiveUseCase;
 import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.port.GetLiveUseCase;
+import com.sapari.live.port.PrepareIngressUseCase;
 import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.EnterLiveView;
 import com.sapari.live.view.GetLiveView;
+import com.sapari.live.view.IngressCredentialView;
 import com.sapari.live.view.StartLiveView;
 
 @RestController
@@ -43,6 +48,7 @@ public class LiveController {
     private final EnterLiveUseCase enterLiveUseCase;
     private final EndLiveUseCase endLiveUseCase;
     private final GetLiveUseCase getLiveUseCase;
+    private final PrepareIngressUseCase prepareIngressUseCase;
 
     @PostMapping("/rooms")
     public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @CurrentUserId UUID sellerId) {
@@ -63,10 +69,32 @@ public class LiveController {
         return ResponseEntity.ok(result);
     }
 
+    /**
+     * RTMP 송출 준비 — OBS 등 인코더에 입력할 rtmpUrl·streamKey 를 발급한다(방송 전 Scheduled 방).
+     * streamKey 는 자격증명이라 이 응답으로 1회만 전달된다(저장/재조회 없음).
+     */
+    @PostMapping("/rooms/{roomId}/ingress")
+    public ResponseEntity<IngressCredentialView> prepareIngress(
+            @CurrentUserId UUID sellerId,
+            @PathVariable UUID roomId
+    ) {
+        IngressCredentialView view = prepareIngressUseCase.prepare(
+                new PrepareIngressCommand(roomId, sellerId)
+        );
+        return ResponseEntity.status(HttpStatus.CREATED).body(view);
+    }
+
     @GetMapping("/rooms/{roomId}")
-    public ResponseEntity<EnterLiveView> enterRoom(@PathVariable UUID roomId) {
-        EnterLiveView result = enterLiveUseCase.enter(new EnterLiveCommand(roomId));
-        return ResponseEntity.ok(result);
+    public ResponseEntity<EnterLiveView> enterRoom(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal LiveUserPrincipal principal
+    ) {
+        // 시청은 공개라 미인증(principal=null, 게스트)도 입장. 인증 회원은 신원을 실어 룸 토큰을 발급받는다.
+        EnterLiveCommand command = (principal == null)
+                ? new EnterLiveCommand(roomId, null, null, null, null)
+                : new EnterLiveCommand(roomId, principal.userId(), principal.role(),
+                        principal.nickname(), principal.email());
+        return ResponseEntity.ok(enterLiveUseCase.enter(command));
     }
 
     @GetMapping("/rooms")

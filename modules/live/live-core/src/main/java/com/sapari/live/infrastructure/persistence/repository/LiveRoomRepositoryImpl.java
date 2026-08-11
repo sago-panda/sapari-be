@@ -3,16 +3,22 @@ package com.sapari.live.infrastructure.persistence.repository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import jakarta.persistence.EntityNotFoundException;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Repository;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
+import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
+import com.sapari.live.infrastructure.persistence.entity.StreamType;
 import com.sapari.live.infrastructure.persistence.mapper.LiveRoomMapper;
 
 @Slf4j
@@ -52,5 +58,46 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     public Optional<LiveRoom> findByIdAndSellerId(UUID id, UUID hostId){
         return liveRoomJpaRepository.findByIdAndSellerId(id, hostId)
                 .map(liveRoomMapper::toDomain);
+    }
+
+    @Override
+    public Optional<LiveRoom> findByIdForUpdate(UUID id){
+        return liveRoomJpaRepository.findWithLockById(id)
+                .map(liveRoomMapper::toDomain);
+    }
+
+    @Override
+    public Optional<LiveRoom> findByIdAndSellerIdForUpdate(UUID id, UUID hostId){
+        return liveRoomJpaRepository.findWithLockByIdAndSellerId(id, hostId)
+                .map(liveRoomMapper::toDomain);
+    }
+
+    @Override
+    public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now){
+        return liveRoomJpaRepository.assignRtmpIngressIfAbsent(
+                roomId, sellerId, ingressId, StreamType.RTMP, LiveRoomStatus.SCHEDULED, now) == 1;
+    }
+
+    @Override
+    public List<UUID> findStaleLiveRoomIds(Instant threshold, int limit){
+        return liveRoomJpaRepository.findByLiveStatusAndStartedAtBeforeOrderByStartedAtAsc(
+                        LiveRoomStatus.LIVE, threshold, Limit.of(limit))
+                .stream().map(LiveRoomEntity::getId)
+                .toList();
+    }
+
+    @Override
+    public List<LiveRoom> findAllByIds(Set<UUID> ids){
+        return liveRoomJpaRepository.findAllById(ids)
+                .stream().map(liveRoomMapper::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<UUID> findExpiredReadyRoomIds(Instant threshold, int limit){
+        return liveRoomJpaRepository.findByLiveStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(
+                LiveRoomStatus.READY, threshold, Limit.of(limit)
+                ).stream().map(LiveRoomEntity::getId)
+                .toList();
     }
 }
