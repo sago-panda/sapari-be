@@ -13,6 +13,10 @@ dependencies {
     implementation('com.fasterxml.jackson.core:jackson-databind')
     implementation('com.fasterxml.jackson.datatype:jackson-datatype-jsr310')
 
+    // 강퇴 증거 로그(live_schema.chat_kick_log) — 호출자가 api-app(MVC)이라 blocking JPA다.
+    // db-core가 spring-boot-starter-data-jpa를 api 스코프로 노출하므로 스타터를 따로 적지 않는다.
+    implementation(project(':storage:db-core'))
+
     // 영속 어댑터 (T6) — Mongo 메시지 저장소 · Redis 세션/강퇴/레이트리밋
     implementation(project(':storage:mongo-core'))
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
@@ -28,6 +32,13 @@ dependencies {
     testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')
     testImplementation 'org.testcontainers:junit-jupiter'
     testImplementation 'org.testcontainers:mongodb'
+    // 강퇴 로그는 UNIQUE 제약과 ON CONFLICT가 곧 멱등 보장이라, 실제 Postgres 없이는 검증되는 게 없다
+    testImplementation 'org.testcontainers:postgresql'
+    // 드라이버는 테스트에만 — 실제 구동 시 드라이버 선택은 앱(api-app)이 이미 하고 있다
+    testRuntimeOnly 'org.postgresql:postgresql'
+    // Boot 4는 테스트 슬라이스를 스타터에서 떼어내 모듈로 나눴다 — @DataJpaTest / @AutoConfigureTestDatabase
+    testImplementation 'org.springframework.boot:spring-boot-data-jpa-test'
+    testImplementation 'org.springframework.boot:spring-boot-jdbc-test'
     testImplementation 'io.projectreactor:reactor-test'
 
     // 순수 정책·도메인 단위테스트는 enum/primitive 입력이라 픽스처 생성기가 불필요(루트 spring-boot-starter-test로 충분).

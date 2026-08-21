@@ -34,7 +34,12 @@ import reactor.test.StepVerifier;
  * TC 번호는 GetChatHistoryService 표(§12.1) 중 repository 책임 항목.
  * (Boot 4는 @DataMongoTest 슬라이스가 없어 @SpringBootTest 사용 — chat-core 컨텍스트는 어댑터뿐이라 작다)
  */
-@SpringBootTest  // UUID 인코딩은 ChatMongoConfig의 MongoClientSettingsBuilderCustomizer가 STANDARD로 고정
+// UUID 인코딩은 ChatMongoConfig의 MongoClientSettingsBuilderCustomizer가 STANDARD로 고정.
+// DataSource 자동설정은 끈다 — 강퇴 로그 때문에 모듈에 JPA가 들어오면서 이 Mongo 테스트까지 관계형 DB를
+// 요구하게 됐다. 여기는 Postgres를 쓰지 않으므로 컨테이너를 늘리는 대신 자동설정을 잘라낸다.
+// (Hibernate·트랜잭션 자동설정은 DataSource 빈에 조건이 걸려 있어 함께 꺼진다)
+@SpringBootTest(properties =
+        "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
 @Testcontainers
 class ChatMessageRepositoryImplTest {
 
