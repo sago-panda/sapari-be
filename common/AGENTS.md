@@ -4,7 +4,7 @@ How `common/page` (`CursorPage`/`OffsetPage`/`CursorCodec`/`PageSupport`) is use
 Who may depend on whom lives in the root `AGENTS.md` and is ArchUnit-enforced.
 Envelope usage in controllers is `apps/AGENTS.md`.
 The reviewer judges this file's rules as `CONV-13` — change one, check the other
-(`.claude/agents/sapari-reviewer.md`).
+(`.claude/review/sapari-reviewer-methodology.md`).
 
 Layer split: **repository returns `List<Domain>`** · **service assembles the page** ·
 **controller wraps it in the envelope**. `CursorPage`/`OffsetPage` are allowed in `-api` use-case
