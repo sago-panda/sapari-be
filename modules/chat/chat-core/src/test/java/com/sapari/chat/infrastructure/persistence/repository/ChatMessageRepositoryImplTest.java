@@ -17,6 +17,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -46,6 +47,21 @@ class ChatMessageRepositoryImplTest {
     @Container
     @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+
+    /**
+     * 이 테스트가 Redis를 쓰지는 않는다. 그런데 부트 컨텍스트에 {@code RedisChatBroadcaster}가 함께 올라오고,
+     * 그 어댑터는 <b>생성자에서 곧장 구독을 연다</b>({@code autoConnect(0)}) — 구독 활성 전 메시지를 흘리지
+     * 않으려는 설계라, 컨테이너가 없으면 빈 생성 단계에서 접속 실패로 컨텍스트 전체가 못 뜬다.
+     *
+     * <p>어댑터를 늦게 붙게 고치는 쪽이 아니라 컨테이너를 하나 더 띄우는 쪽을 택한다. 즉시 연결이
+     * 그 어댑터가 유실 레이스를 없앤 방법 자체라, 테스트 편의로 되돌리면 운영에서 잃는 것이 생긴다.
+     *
+     * <p>{@code @ServiceConnection}에 이름을 준 이유: 이미지 이름만으로 종류를 알아내는 대상이
+     * {@code GenericContainer}에는 없다.
+     */
+    @Container
+    @ServiceConnection(name = "redis")
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
     @Autowired
     private ChatMessageRepositoryImpl repository;
