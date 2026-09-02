@@ -22,6 +22,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.http.HttpHeaders;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.reactive.socket.CloseStatus;
@@ -50,10 +51,19 @@ class ChatWebSocketIntegrationTest {
     private static KeyPair liveKeys;    // 발급용(앱이 공개키로 검증)
     private static KeyPair otherKeys;   // 위조 서명용
 
+    /**
+     * 컨테이너 주소는 {@code @ServiceConnection}으로 붙인다 — 프로퍼티 이름을 테스트가 직접 적으면
+     * 그 이름이 바뀌는 순간 조용히 기본값(로컬호스트)으로 돌아간다. 실제로 Boot 4에서
+     * {@code spring.data.mongodb.*}가 {@code spring.mongodb.*}로 바뀌면서 이 테스트가 그 함정에 빠져 있었다:
+     * 환경에는 컨테이너 주소가 들어 있는데 바인딩이 되지 않아 앱이 27017을 두드리다 타임아웃으로 죽었다.
+     * 이름을 코드에서 들어내면 다음 개명에도 같은 일이 반복되지 않는다.
+     */
     @Container
+    @ServiceConnection(name = "redis")
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
     @Container
+    @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
 
     @Value("${local.server.port}")
@@ -73,11 +83,9 @@ class ChatWebSocketIntegrationTest {
         otherKeys = gen.generateKeyPair();
     }
 
+    /** 컨테이너 주소는 위 {@code @ServiceConnection}이 붙인다. 여기 남은 것은 앱 소유 설정뿐이다. */
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.redis.host", redis::getHost);
-        registry.add("spring.data.redis.port", () -> redis.getFirstMappedPort());
-        registry.add("spring.data.mongodb.uri", mongo::getReplicaSetUrl);
         registry.add("chat.room-token.public-key",
                 () -> Base64.getEncoder().encodeToString(liveKeys.getPublic().getEncoded()));
     }
