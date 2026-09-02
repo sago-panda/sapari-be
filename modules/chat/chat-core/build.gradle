@@ -39,6 +39,10 @@ dependencies {
     // Boot 4는 테스트 슬라이스를 스타터에서 떼어내 모듈로 나눴다 — @DataJpaTest / @AutoConfigureTestDatabase
     testImplementation 'org.springframework.boot:spring-boot-data-jpa-test'
     testImplementation 'org.springframework.boot:spring-boot-jdbc-test'
+    // 증거 조회는 블로킹 Mongo다. 드라이버를 test에만 두는 건 의도적이다 — 운영 의존으로 올리면
+    // streaming-app(리액티브 전용)까지 동기 드라이버와 그 자동설정을 물려받는다. 실제 구동 시
+    // 드라이버·템플릿을 세우는 건 이 어댑터를 등록하는 앱(api-app)의 몫이다.
+    testImplementation 'org.mongodb:mongodb-driver-sync'
     testImplementation 'io.projectreactor:reactor-test'
 
     // 순수 정책·도메인 단위테스트는 enum/primitive 입력이라 픽스처 생성기가 불필요(루트 spring-boot-starter-test로 충분).

@@ -43,4 +43,41 @@ public record ChatKickLog(
             throw new IllegalArgumentException("kickedAt은 필수입니다.");
         }
     }
+
+    /**
+     * 조회한 메시지를 증거로 삼아 강퇴 기록을 만든다. <b>메시지가 정말 그 방에서 그 사람이 한 말일 때만</b>
+     * 만들어진다.
+     *
+     * <p>이 확인이 없으면 남의 방 메시지 id 하나로 아무나 강퇴할 수 있다. 강퇴 요청이 들고 오는 것은
+     * "방 · 대상 · 메시지 id" 셋인데 그 셋이 서로 맞는지는 아무도 보장해 주지 않는다 — 방과 대상은 요청자가
+     * 정하고, 메시지 id도 요청자가 정한다. 셋을 맞춰 보는 곳이 여기 하나뿐이라 여기서 막는다.
+     *
+     * <p>맞지 않으면 <b>거부한다</b>. 원문 자리를 "(알 수 없음)" 같은 값으로 채워 강퇴를 진행시키지 않는다 —
+     * 그렇게 남긴 행은 나중에 진짜 증거와 구분되지 않고, 그 행 하나가 누적 강퇴를 올려 밴까지 밀어 올린다.
+     *
+     * <p>실패를 {@code IllegalArgumentException}으로 던지는 것은 이 도메인의 다른 불변식과 같은 방식이다.
+     * 어긋난 축(방/발신자)을 메시지에 적어 두되 응답으로 그대로 내보내지는 말 것 — 어디까지 맞았는지를
+     * 알려주면 방·메시지 id를 탐색하는 통로가 된다.
+     *
+     * @param evidence  {@code messageId}로 조회한 메시지 조각
+     * @param roomId    강퇴가 일어나는 방
+     * @param targetUserId 강퇴 대상
+     * @param kickedById   강퇴를 실행한 사람
+     * @param kickedByRole 그 사람의 역할(SELLER·ADMIN)
+     * @param kickedAt     주입된 시계에서 온 시각 — 누적 강퇴 2년 창이 이 값으로 계산된다
+     */
+    public static ChatKickLog from(ChatMessageEvidence evidence, UUID roomId, UUID targetUserId,
+                                   UUID kickedById, ChatRole kickedByRole, Instant kickedAt) {
+        if (evidence == null) {
+            throw new IllegalArgumentException("증거 메시지가 없어 강퇴할 수 없습니다.");
+        }
+        if (!evidence.roomId().equals(roomId)) {
+            throw new IllegalArgumentException("증거 메시지가 이 방의 것이 아닙니다.");
+        }
+        if (!evidence.senderId().equals(targetUserId)) {
+            throw new IllegalArgumentException("증거 메시지의 작성자가 강퇴 대상이 아닙니다.");
+        }
+        return new ChatKickLog(targetUserId, roomId, kickedById, kickedByRole,
+                evidence.originalMessage(), kickedAt);
+    }
 }
