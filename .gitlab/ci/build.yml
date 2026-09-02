@@ -24,7 +24,7 @@
 #
 # precheck 앞 스테이지에 두는 이유는 두 가지다.
 #  - 빌드가 깨진 MR 에 리뷰 토큰을 쓰지 않는다 (재리뷰 파이프라인에도 같이 건다)
-#  - ArchUnit 이 잡는 위반을 리뷰어가 중복 지적하지 않는다 (sapari-reviewer.md 의 전제)
+#  - ArchUnit 이 잡는 위반을 리뷰어가 중복 지적하지 않는다 (.claude/review/common.md 의 전제)
 build:
   stage: build
   image: eclipse-temurin:21-jdk
@@ -103,7 +103,7 @@ harness-check:
     # alpine 파이썬 이미지에는 git 이 없다. check-anchor-globs 가 git ls-files 로
     # 추적 파일 목록을 얻으므로 없으면 잡이 통째로 실패한다.
     - apk add --no-cache git >/dev/null
-    # 리뷰어 md 의 ArchUnit 목록이 실제 규칙과 어긋나는가
+    # 리뷰어 공통 방법론의 ArchUnit 목록이 실제 규칙과 어긋나는가
     - sh .claude/scripts/check-archunit-sync.sh
     # anchors.yml 이 켜는 ID 가 리뷰어 md 에 실재하는가. 없는 ID 를 켜면 그 규칙은
     # 아무 일도 하지 않는데, 로그만 보면 켜진 것처럼 보인다.

@@ -48,4 +48,4 @@ only. The flow modules own the catalogs (`SellerErrorCode` / `CustomerErrorCode`
 ## Security
 
 Auth attack surface (authz/IDOR, token lifecycle, PII, OAuth) is owned by the **security-reviewer**
-agent — see `.claude/agents/security-reviewer.md`. Don't restate it here.
+agent — see `.claude/review/security-reviewer-methodology.md`. Don't restate it here.
