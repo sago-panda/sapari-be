@@ -6,6 +6,7 @@ import java.util.UUID;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -43,10 +44,22 @@ public class ChatKickWriteRedisRepository implements ChatKickWriteRepository {
 
     @Override
     public void register(UUID roomId, UUID userId) {
-        // 실패는 그대로 던진다 — 명단에 못 올렸다는 건 그 사람이 곧 돌아온다는 뜻이라,
-        // 호출자가 강퇴를 실패로 처리하고 재시도할 수 있어야 한다.
-        redisTemplate.execute(REGISTER_KICKED,
-                List.of(ChatRedisKeys.kicked(roomId)),
-                userId.toString());
+        String key = ChatRedisKeys.kicked(roomId);
+        try {
+            // 실패는 그대로 던진다 — 명단에 못 올렸다는 건 그 사람이 곧 돌아온다는 뜻이라,
+            // 호출자가 강퇴를 실패로 처리하고 재시도할 수 있어야 한다.
+            redisTemplate.execute(REGISTER_KICKED, List.of(key), userId.toString());
+        } catch (RuntimeException e) {
+            // 낫지 않는 실패만 갈라낸다. 키가 우리 타입이 아니면 이 쓰기는 Redis가 멀쩡해도 계속 실패한다 —
+            // 재시도는 멱등이면서 영원히 실패한다. 일시 장애와 같은 예외로 두면 운영자에게는 "곧 나을 오류"로
+            // 보이고, 정작 사람이 그 키를 치우기 전에는 이 방의 강퇴가 하나도 성립하지 않는다.
+            //
+            // 읽기 경로가 이미 같은 판별을 쓴다. 거기서는 fail-open으로 흡수해 로그 등급만 올리지만
+            // 여기서는 흡수할 것이 없다 — 등록하지 못한 강퇴는 일어나지 않은 강퇴다.
+            if (RedisWrongType.matches(e)) {
+                throw new KickStoreCorruptedException(key, e);
+            }
+            throw e;
+        }
     }
 }

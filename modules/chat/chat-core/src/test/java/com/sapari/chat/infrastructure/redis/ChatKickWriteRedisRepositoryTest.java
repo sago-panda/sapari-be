@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.util.UUID;
@@ -14,6 +15,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 
 /**
  * 강퇴 등록이 <b>명단을 만료에서 건져내는지</b>를 실제 Redis에서 고정한다.
@@ -95,6 +98,18 @@ class ChatKickWriteRedisRepositoryTest {
         // then: -1 = 만료 없음. 그대로 두면 이 명단은 24시간 뒤 통째로 사라진다
         assertThat(redisTemplate.getExpire(key())).isEqualTo(-1L);
         assertThat(redisTemplate.opsForSet().size(key())).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("키가 우리 타입이 아니면 낫지 않는 실패로 갈라 던진다 — 재시도는 멱등이면서 영원히 실패한다")
+    void wrongTypeKeyIsReportedAsUnrecoverable() {
+        // given: 누가 같은 이름을 String으로 선점했다
+        redisTemplate.opsForValue().set(key(), "someone-elses-value");
+
+        // when & then: 일시 장애와 같은 예외로 두면 사람이 그 키를 치울 때까지 조용히 계속 실패한다
+        assertThatThrownBy(() -> repository.register(roomId, userId))
+                .isInstanceOf(KickStoreCorruptedException.class)
+                .satisfies(e -> assertThat(((KickStoreCorruptedException) e).getKey()).isEqualTo(key()));
     }
 
     @Test
