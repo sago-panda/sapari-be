@@ -4,10 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import com.sapari.chat.domain.exception.ChatErrorCode;
+import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
 
 /**
  * 강퇴 기록이 <b>증거와 맞을 때만</b> 만들어지는지 고정한다.
@@ -53,8 +60,8 @@ class ChatKickLogTest {
 
         // when & then
         assertThatThrownBy(() -> from(otherRoom))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("이 방의 것이 아닙니다");
+                .isInstanceOf(ChatKickEvidenceMismatchException.class)
+                .hasMessageContaining("다른 방의 것이다");
     }
 
     @Test
@@ -65,8 +72,8 @@ class ChatKickLogTest {
 
         // when & then
         assertThatThrownBy(() -> from(otherSender))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("작성자가 강퇴 대상이 아닙니다");
+                .isInstanceOf(ChatKickEvidenceMismatchException.class)
+                .hasMessageContaining("작성자가 강퇴 대상이 아니다");
     }
 
     @Test
@@ -74,8 +81,41 @@ class ChatKickLogTest {
     void rejectsMissingEvidence() {
         // when & then: placeholder로 채우면 그 행이 누적 강퇴를 올려 밴까지 밀어 올린다
         assertThatThrownBy(() -> from(null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("증거 메시지가 없어");
+                .isInstanceOf(ChatKickEvidenceMismatchException.class)
+                .hasMessageContaining("증거 메시지가 없다");
+    }
+
+    @Test
+    @DisplayName("거부는 4xx다 — 요청자가 정한 값이 어긋난 것이지 서버 오류가 아니다")
+    void mismatchIsARejectionNotAServerError() {
+        // when & then: 5xx로 두면 전역 핸들러가 요청마다 풀 스택을 ERROR로 쌓는다
+        assertThatThrownBy(() -> from(evidence(UUID.randomUUID(), targetUserId)))
+                .isInstanceOf(ChatKickEvidenceMismatchException.class)
+                .extracting(e -> ((ChatKickEvidenceMismatchException) e).getErrorCode().getStatus())
+                .isEqualTo(400);
+    }
+
+    @Test
+    @DisplayName("세 갈래 모두 응답 문구가 같다 — 어디까지 맞았는지 알려주면 id 탐색 통로가 된다")
+    void allThreeRejectionsLookIdenticalToTheClient() {
+        // given: 없음 / 다른 방 / 다른 작성자
+        List<ChatMessageEvidence> mismatches = new ArrayList<>();
+        mismatches.add(null);
+        mismatches.add(evidence(UUID.randomUUID(), targetUserId));
+        mismatches.add(evidence(roomId, UUID.randomUUID()));
+
+        // when: 클라이언트가 보는 문구만 모은다(로그용 debugMessage가 아니라 에러코드의 문구)
+        Set<String> clientFacing = new HashSet<>();
+        for (ChatMessageEvidence e : mismatches) {
+            try {
+                from(e);
+            } catch (ChatKickEvidenceMismatchException ex) {
+                clientFacing.add(ex.getErrorCode().getMessage());
+            }
+        }
+
+        // then
+        assertThat(clientFacing).containsExactly(ChatErrorCode.KICK_EVIDENCE_MISMATCH.getMessage());
     }
 
     @Test
