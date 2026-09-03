@@ -68,6 +68,9 @@ public class ActiveRoomGauge {
             // "actuator 없는 다른 앱을 위해" 가 아니다. 확인: grep -rn "live-core" --include=*.gradle)
             return;
         }
+        // micrometer 는 여기 넘긴 객체(this)를 <b>약한 참조</b>로 붙잡는다. 이 클래스가 스프링 싱글턴
+        // 빈이라 컨텍스트가 강한 참조를 들고 있어 안전하다 — 임시 객체에 게이지를 등록하면 GC 가 수거한
+        // 순간부터 값이 조용히 NaN 이 된다(예외도 로그도 없다). 빈 스코프를 바꾸지 말 것.
         Gauge.builder(LiveMeterNames.ROOM_ACTIVE, this, ActiveRoomGauge::cachedCount)
                 .description("DB 기준 LIVE 상태인 방 수 (최대 " + TTL.toSeconds() + "초 캐시)")
                 .register(registry);

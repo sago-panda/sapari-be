@@ -34,6 +34,15 @@ class ActiveRoomGaugeTest {
     private final LiveRoomRepository repository = mock(LiveRoomRepository.class);
     private final TimeProvider timeProvider = mock(TimeProvider.class);
 
+    /**
+     * 등록한 게이지 객체를 <b>테스트가 끝날 때까지 강하게 붙잡는다</b>.
+     *
+     * <p>micrometer 의 {@code Gauge.builder(name, obj, fn)} 는 {@code obj} 를 <b>약한 참조</b>로 들고
+     * 있다. 지역 변수로만 두면 GC 가 수거하는 순간 게이지가 함수를 부르지 않고 조용히 {@code NaN} 을
+     * 돌려준다 — 예외도, 로그도 없다. 로컬에서는 GC 가 안 돌아 통과하고 CI 에서만 깨진다(실제로 그랬다).
+     */
+    private ActiveRoomGauge registered;
+
     @Test
     @DisplayName("registry 가 있으면 게이지를 등록하고 DB 값을 그대로 노출한다")
     void withRegistry_registersGauge() {
@@ -144,7 +153,8 @@ class ActiveRoomGaugeTest {
     }
 
     private ActiveRoomGauge gauge(MeterRegistry registry) {
-        return new ActiveRoomGauge(providerOf(registry), repository, timeProvider);
+        registered = new ActiveRoomGauge(providerOf(registry), repository, timeProvider);
+        return registered;
     }
 
     @SuppressWarnings("unchecked")
