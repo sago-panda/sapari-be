@@ -27,6 +27,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndStaleLiveCommand;
@@ -55,6 +56,9 @@ class EndStaleLiveServiceTest {
 
     @Mock
     private TimeProvider timeProvider;
+
+    @Mock
+    private LiveMetrics liveMetrics;
 
     @InjectMocks
     private EndStaleLiveService endStaleLiveService;

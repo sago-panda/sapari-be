@@ -30,6 +30,7 @@ import java.time.Instant;
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndLiveCommand;
@@ -55,6 +56,9 @@ public class EndLiveServiceTest {
 
     @Mock
     private TimeProvider timeProvider;
+
+    @Mock
+    private LiveMetrics liveMetrics;
 
     @InjectMocks
     private EndLiveService endLiveService;

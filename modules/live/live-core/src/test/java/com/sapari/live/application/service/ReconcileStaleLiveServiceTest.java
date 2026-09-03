@@ -3,6 +3,7 @@ package com.sapari.live.application.service;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.BDDMockito.willThrow;
@@ -22,6 +23,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.ReconcileAbortReason;
+import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.StaleLiveReconcilePolicy;
@@ -55,6 +59,8 @@ class ReconcileStaleLiveServiceTest {
     @Mock
     private TimeProvider timeProvider;
 
+    private final RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
+
     private ReconcileStaleLiveService service;
 
     private UUID roomId;
@@ -63,7 +69,7 @@ class ReconcileStaleLiveServiceTest {
     void setup() {
         service = new ReconcileStaleLiveService(
                 liveRoomRepository, liveMediaManager, endStaleLiveUseCase,
-                new StaleLiveReconcilePolicy(Duration.ofMinutes(60), 100), timeProvider);
+                new StaleLiveReconcilePolicy(Duration.ofMinutes(60), 100), timeProvider, liveMetrics);
         roomId = UUID.randomUUID();
     }
 
@@ -189,5 +195,43 @@ class ReconcileStaleLiveServiceTest {
         service.reconcile();
 
         then(endStaleLiveUseCase).should(times(1)).endStale(new EndStaleLiveCommand(roomId));
+    }
+
+    @Test
+    @DisplayName("클러스터 전체 활성 egress 0 으로 회차를 접으면 중단 사유를 지표로 남긴다 — 로그만으로는 평온한 회차와 구분되지 않는다")
+    void abortedRound_isRecordedWithReason() {
+        givenCandidates(roomId);
+        given(liveMediaManager.listAllEgress()).willReturn(List.of());
+
+        service.reconcile();
+
+        assertThat(liveMetrics.abortedRounds)
+                .containsExactly(ReconcileAbortReason.NO_ACTIVE_EGRESS_CLUSTER_WIDE);
+        assertThat(liveMetrics.completedRounds).isEmpty();
+    }
+
+    @Test
+    @DisplayName("후보가 없어도 완료 회차로 센다 — 무기록이면 스케줄러가 죽은 것과 같아 보인다")
+    void emptyCandidates_stillCountsAsCompletedRound() {
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findStaleLiveRoomIds(any(Instant.class), anyInt())).willReturn(List.of());
+
+        service.reconcile();
+
+        assertThat(liveMetrics.completedRounds).containsExactly(ReconcileJob.END_STALE_LIVE);
+    }
+
+    @Test
+    @DisplayName("예외로 죽은 회차는 failed 로 센다 — 없으면 매 회차 깨지는 잡과 스케줄러가 안 도는 상황이 지표상 같아진다")
+    void failedRound_isCountedAndRethrown() {
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findStaleLiveRoomIds(any(Instant.class), anyInt()))
+                .willThrow(new IllegalStateException("DB 장애"));
+
+        assertThatThrownBy(() -> service.reconcile()).isInstanceOf(IllegalStateException.class);
+
+        assertThat(liveMetrics.failedRounds).containsExactly(ReconcileJob.END_STALE_LIVE);
+        assertThat(liveMetrics.completedRounds).isEmpty();
+        assertThat(liveMetrics.abortedRounds).isEmpty();
     }
 }

@@ -96,6 +96,58 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   would blind the job for a full grace window right after a crash between commit and cleanup — precisely
   when a surviving ingress lets the seller keep pushing.
 
+## Observability — `LiveMetrics`
+
+Ports-and-adapters, same as media: `application/port/LiveMetrics` (no micrometer) ← `infrastructure/metrics`.
+ArchUnit rule 16 fails the build if `domain`/`application` imports `io.micrometer`. `LiveMetrics.NOOP` is
+selected at runtime via `ObjectProvider` when no `MeterRegistry` exists — **not** `@ConditionalOnBean`, which
+evaluates before autoconfiguration and would silently disable all metrics.
+
+- **Transitions and promotions are counted after commit** (the adapter registers a synchronization). Inside
+  a tx the transition may still roll back — `StartLiveService` saves products *after* the room.
+- **Round counters fire even on a 0-candidate round.** No record must mean "the scheduler is dead", not
+  "nothing to do", or a dead job is indistinguishable from a quiet one.
+- **A round ends exactly one way: `completed` / `aborted` / `failed`** (`outcome` tag on
+  `live.reconcile.round`). `aborted` is the guard folding the round on its own; `failed` is an exception
+  escaping to the scheduler. Both look like "completed didn't rise" from outside but need opposite
+  responses — check the config vs. chase the exception — so they must never be merged.
+- `reconcileRoundAborted` is **round-scoped** — only `end-stale-live`'s cluster-wide guard raises it, and it
+  is the only external signal that a guard swallowed a round (those paths are a bare `return`). A per-room
+  verdict must never raise it: it would fire up to batch-size times in one round and break
+  `aborted + completed = rounds`. `expire-ready`'s "LiveKit doesn't know this room's ingress" is therefore
+  `ReconcileAction.SKIPPED_INGRESS_MISSING`, split out of plain `SKIPPED` so the misconfiguration signal
+  isn't buried under routine skips.
+- **`orphan-media` deliberately has no abort guard.** All three lists empty is the normal state on a quiet
+  night; counting it as `aborted` would alarm daily until someone mutes the alarm. It owns the
+  `live.livekit.egress.rooms` gauge instead — it sweeps unconditionally every round, so a misconfigured
+  `200 + []` shows up as the gauge dropping to 0 while DB-side `live.room.active` holds.
+- `MeteredLiveMediaManager` wraps `LiveKitMediaManager` as `@Primary`. **It must never swallow** — each port
+  method's failure direction is deliberate (see Media ports); swallowing one disarms the reconcile guards.
+- `PromotionTrigger` has three values because there are three go-live paths (`SELLER_START` rendezvous,
+  `WEBHOOK`, `RECONCILE`). A new entry point gets a compile error, not a silent metric gap.
+- `live.room.active` (DB `COUNT`, per scrape) is meant to be read **next to** `live.livekit.egress.rooms`
+  (last round's observation, `-1` = never observed). The two diverging is the shared symptom of live outages.
+  `end-stale-live` also refreshes the gauge, but only past its 0-candidate return — never rely on that one.
+- **Exposure: `management.server.port` is separate (template default 8091 — the app itself runs on 8081) and must stay cluster-internal.** Metrics
+  carry business volume and the gauge hits the DB per scrape, so on the user port an anonymous scraper reads
+  the numbers *and* competes for the pool that starts broadcasts.
+- **Splitting the port does not split security.** The management context inherits the filter chain, so
+  without a dedicated chain the scraper gets 401 and metrics silently stay empty — indistinguishable from
+  "no broadcasts". `LiveSecurityConfig.actuatorFilterChain` (`@Order(0)`, `EndpointRequest.toAnyEndpoint()`)
+  permits them, and that opening is safe **only** because the ports differ — which
+  `managementPortMustDiffer` enforces by refusing to boot. Never relax one of the two without the other.
+- **The round wrapper catches nothing.** It marks a completed flag on the normal path and counts `failed`
+  from `finally`, so an `Error` is counted like any other abnormal exit while never being caught — the
+  earlier "catch `RuntimeException` vs `Throwable`" dilemma disappears. Same trick in
+  `MeteredLiveMediaManager.timed`; prefer it over widening a catch.
+- **The metrics adapter never throws** (`MicrometerLiveMetrics.safe`, `MeteredLiveMediaManager.record`).
+  Two paths make this business-critical, not tidiness: a throw from an `afterCommit` hook propagates to
+  the commit caller, so an already-committed `Ready→Live` would surface to the seller as a failed start;
+  and `reconcileRoundFailed` is called right before a rethrow, so a throw there replaces the real cause.
+- **`live.livekit.egress.rooms` counts rooms, not egress records** — one broadcast runs several egresses
+  (renditions), so record counts are a multiple of room counts and could not be read beside
+  `live.room.active`. Both writers (`orphan-media`, `end-stale-live`) parse and distinct the room id.
+
 ## LiveKit webhooks
 
 `POST /webhooks/livekit`, `permitAll` — auth is the **body signature**, not Spring Security. Body is read

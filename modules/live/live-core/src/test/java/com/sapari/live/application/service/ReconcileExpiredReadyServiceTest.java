@@ -25,6 +25,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.PromotionTrigger;
+import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.ExpiredReadyReconcilePolicy;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
@@ -65,13 +68,15 @@ class ReconcileExpiredReadyServiceTest {
     @Mock
     private TimeProvider timeProvider;
 
+    private final RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
+
     private ReconcileExpiredReadyService service;
 
     @BeforeEach
     void setup() {
         service = new ReconcileExpiredReadyService(
                 liveRoomRepository, liveMediaManager, expireOrphanLiveUseCase, goLiveByRtmpService,
-                new ExpiredReadyReconcilePolicy(THRESHOLD, 100), timeProvider);
+                new ExpiredReadyReconcilePolicy(THRESHOLD, 100), timeProvider, liveMetrics);
     }
 
     /** 후보만 있고 송출 중인 방은 없는 기본 상태. */
@@ -205,7 +210,7 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         // webhook 과 같은 진입점으로, 확인한 ingressId 를 실어 보낸다
-        then(goLiveByRtmpService).should(times(1)).goLiveByRtmp(roomId, "ing-1");
+        then(goLiveByRtmpService).should(times(1)).goLiveByRtmp(roomId, "ing-1", PromotionTrigger.RECONCILE);
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
     }
 
@@ -221,7 +226,7 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class), org.mockito.ArgumentMatchers.any());
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -249,7 +254,7 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class), org.mockito.ArgumentMatchers.any());
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -304,7 +309,7 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         // 승격하면 방이 인정 안 한 ingress 가 방송을 시작하고, 만료하면 그 송출을 끊는다
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class), org.mockito.ArgumentMatchers.any());
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
     }
 
@@ -320,7 +325,7 @@ class ReconcileExpiredReadyServiceTest {
 
         service.reconcile();
 
-        then(goLiveByRtmpService).should(times(1)).goLiveByRtmp(roomId, "ing-WINNER");
+        then(goLiveByRtmpService).should(times(1)).goLiveByRtmp(roomId, "ing-WINNER", PromotionTrigger.RECONCILE);
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
     }
 
@@ -362,5 +367,41 @@ class ReconcileExpiredReadyServiceTest {
 
         then(liveMediaManager).should(never()).listRoomIngress(any(UUID.class));
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
+    }
+
+    @Test
+    @DisplayName("LiveKit 이 방의 ingress 를 모르는 스킵은 회차 중단이 아니라 별도 갈래로 센다 — 방 단위로 aborted 를 올리면 회차 지표가 깨진다")
+    void ingressMissing_countsAsOwnActionNotAbortedRound() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt()))
+                .willReturn(List.of(first, second));
+        given(liveMediaManager.listRoomIngress(any(UUID.class))).willReturn(List.of());
+        givenRoomWithIngress(first, "ing-1");
+        givenRoomWithIngress(second, "ing-2");
+
+        service.reconcile();
+
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.abortedRounds).isEmpty();
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.completedRounds)
+                .containsExactly(ReconcileJob.EXPIRE_READY);
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted)
+                .contains("SKIPPED_INGRESS_MISSING=2")
+                .doesNotContain("SKIPPED=2");
+    }
+
+    @Test
+    @DisplayName("예외로 죽은 회차는 이 잡의 이름으로 failed 를 센다 — 세 잡이 같은 래퍼를 복사한 구조라 잡 이름이 어긋나기 쉽다")
+    void failedRound_isCountedWithOwnJobName() {
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt()))
+                .willThrow(new IllegalStateException("DB 장애"));
+
+        assertThatThrownBy(() -> service.reconcile()).isInstanceOf(IllegalStateException.class);
+
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.failedRounds)
+                .containsExactly(ReconcileJob.EXPIRE_READY);
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.completedRounds).isEmpty();
     }
 }
