@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
+import com.sapari.chat.domain.repository.ChatBanRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
@@ -23,12 +24,14 @@ import reactor.core.publisher.Mono;
  * <p>토큰은 "라이브 여부 + 신원 + owner"까지 담지만 enter <i>이후</i>의 강퇴/밴은 못 담는다. 그건 chat 소유
  * 상태(Redis)라 핸드셰이크에서 여기서 검사한다.
  *
- * <p>검사는 둘이다 — <b>방 종료 마커</b>(게스트 포함 전원)와 <b>강퇴</b>(회원만).
+ * <p>검사는 셋이다 — <b>방 종료 마커</b>(게스트 포함 전원), <b>강퇴</b>(회원만), <b>플랫폼 밴</b>(회원만).
+ * 강퇴는 이 방에서 나가는 것이고 밴은 어느 방에도 못 들어오는 것이라, 축이 달라 따로 본다.
  *
  * <p><b>둘 다 fail-open</b>: 조회 실패(Redis 장애) 시 입장을 <i>허용</i>한다(가용성 우선 — 채팅 전면 불능이
  * 강퇴자·종료방 일시 통과보다 나쁜 결과). 열린 구간은 사유별로 스로틀 로그 + 누적 통과 건수를 남긴다.
  *
- * <p>banned 검사는 ban 모델(#27) 구현 후 추가. 게스트(에페메랄 id)는 강퇴/밴 대상이 아니므로 건너뛴다.
+ * <p>게스트(에페메랄 id)는 강퇴·밴 대상이 아니므로 건너뛴다 — 접속마다 id가 새로 발급돼 명단에 올려도
+ * 다음 접속에서 다른 사람이 된다. 검사해봐야 항상 통과라 Redis 왕복만 늘어난다.
  *
  * <p><b>입장 이후에도 한 번 더 본다</b>({@link #isRoomAlive}): 종료 신호는 Pub/Sub(무영속)이라 그 순간
  * 구독이 끊겨 있던 Pod는 통째로 놓친다. 그 Pod의 세션은 닫히지 않고, 끝난 방에 계속 글을 쓴다.
@@ -54,6 +57,7 @@ public class EntryGate {
 
     private final ChatKickRepository kickRepository;
     private final ChatRoomEndedRepository roomEndedRepository;
+    private final ChatBanRepository banRepository;
 
     /**
      * 전송 경로에서 방 종료를 다시 확인할지 판단해 알려주는 창. 세션별 상태라 레지스트리가 갖는다
@@ -97,8 +101,15 @@ public class EntryGate {
 
     public Mono<Void> verify(ChatSession session) {
         // 방 종료는 게스트에게도 적용된다 — 끝난 방은 볼 것도 없다. 강퇴/밴만 게스트 대상이 아니다.
+        //
+        // 순서는 싼 것부터가 아니라 <b>넓은 것부터</b>다. 끝난 방은 신원과 무관하게 아무도 못 들어오고,
+        // 강퇴는 이 방에서, 밴은 이 사람에게 걸린다. 앞에서 걸리면 뒤는 묻지 않으므로 왕복이 줄어든다.
+        //
+        // 왕복이 셋이 됐다. 하나로 묶는 것(pipeline)은 정합성과 무관한 순수 성능이라 여기서 하지 않는다 —
+        // 묶으면 세 조회의 실패를 따로 분류하던 것이 한 덩어리가 되어, 어느 게이트가 열렸는지가 흐려진다.
         return verifyRoomAlive(session)
-                .then(Mono.defer(() -> verifyNotKicked(session)));
+                .then(Mono.defer(() -> verifyNotKicked(session)))
+                .then(Mono.defer(() -> verifyNotBanned(session)));
     }
 
     /**
@@ -131,6 +142,29 @@ public class EntryGate {
                 })
                 .flatMap(kicked -> kicked
                         ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.KICKED))
+                        : Mono.empty());
+    }
+
+    /**
+     * 플랫폼 밴은 어느 방에도 들어갈 수 없다.
+     *
+     * <p>방을 묻지 않는 것이 강퇴와의 차이다 — 그래서 {@code roomId}가 인자에 없다.
+     *
+     * <p>여기도 <b>fail-open</b>이다. Redis가 죽으면 밴된 사람이 잠시 들어올 수 있는데, 그 대가로
+     * 정상 사용자 전원이 채팅을 잃는 쪽을 택하지 않는다 — 종료 마커·강퇴 조회와 같은 저울질이다.
+     * 열린 구간은 사유를 따로 세어 남긴다.
+     */
+    private Mono<Void> verifyNotBanned(ChatSession session) {
+        if (session.role() == ChatRole.GUEST) {
+            return Mono.empty();
+        }
+        return banRepository.isBanned(session.userId())
+                .onErrorResume(e -> {
+                    logGateOpen("밴", session, e);
+                    return Mono.just(false);
+                })
+                .flatMap(banned -> banned
+                        ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.BANNED))
                         : Mono.empty());
     }
 

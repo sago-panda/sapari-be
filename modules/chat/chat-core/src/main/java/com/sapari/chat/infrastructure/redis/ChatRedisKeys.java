@@ -9,7 +9,7 @@ import java.util.UUID;
  * 강퇴 쓰기(SADD)처럼 blocking 스택 어댑터가 나중에 붙어도 <b>같은 패키지</b>에 두면 그대로 공유된다 —
  * 다른 모듈에서 쓰겠다고 public으로 열지 말 것. 키를 아는 코드가 늘어나는 만큼 drift 위험이 늘어난다.
  *
- * <p>밴 상태 키(banned:{userId})는 강퇴 에스컬레이션이 쓰는 chat 소유 키라 여기 들어올 자리다(미구현).
+ * <p>밴 상태 키({@code chat:banned:{userId}})도 여기 있다 — 강퇴 에스컬레이션이 쓰는 chat 소유 키다.
  * 반면 라이브 진행 여부처럼 live가 소유·판정하는 키는 여기 두지 않는다.
  *
  * <p><b>새 키는 {@code chat:}로 시작한다.</b> 네 앱이 같은 Redis 논리 DB를 쓰므로 이름이 겹치면 그 키는
@@ -35,6 +35,14 @@ final class ChatRedisKeys {
     /** 방 종료 마커 (종료 후 남은 토큰으로 재입장하는 것을 막는다) */
     static String roomEnded(UUID roomId) {
         return "chat:room:" + roomId + ":ended";
+    }
+
+    /**
+     * 플랫폼 밴 캐시. <b>키가 있으면 밴</b>이고 값은 보지 않는다 — 만료가 곧 해제라 상태를 따로 두지 않는다.
+     * 방이 아니라 사람에게 붙는다: 강퇴는 방 단위지만 밴은 플랫폼 전체다.
+     */
+    static String banned(UUID userId) {
+        return "chat:banned:" + userId;
     }
 
     /** 전송 레이트리밋 키 (3초 TTL). 면제는 운영자와 이 방을 진행하는 판매자뿐 — 남의 방 판매자도 대상이다. */
