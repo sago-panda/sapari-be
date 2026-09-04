@@ -258,20 +258,25 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
-    // OutboundMessage는 여덟 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 직접 생성하면 호출부가
-    // null을 열 개씩 늘어놓게 되고, 그 줄에서 인자 하나가 밀려도 컴파일도 타입 검사도 통과한다.
-    // 하필 senderEmail 바로 뒤가 displayMessage라, 한 칸 밀린 실수는 발신자 이메일을 본문 자리에 넣어
-    // 방 전원에게 뿌린다 — 타입 시스템이 잡아주지 못하는 PII 유출 경로다.
-    // 타입별 정적 팩토리만 쓰게 해서 그 자리를 없앤다. 팩토리 자신은 같은 클래스라 예외가 필요 없다.
+    // OutboundMessage는 여덟 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 위치 인자로 지으면
+    // 한 칸 밀린 실수가 컴파일도 타입 검사도 통과한다 — 하필 senderEmail 바로 뒤가 displayMessage라,
+    // 그 실수는 발신자 이메일을 본문 자리에 넣어 방 전원에게 뿌린다.
+    //
+    // 밖에서는 타입별 정적 팩토리로만 짓는다. 팩토리 안에서 위치 인자를 안 쓰게 하는 것은 빌더가
+    // 맡고, 그 빌더는 package 접근이라 컴파일러가 이미 막는다 — 그래서 이 규칙은 생성자만 본다.
+    //
+    // 대상에서 빼는 것은 OutboundMessage <b>와 그 중첩 클래스</b>다. 빌더는 Lombok이 만든 중첩
+    // 클래스라 FQN이 다르고, 이름 하나만 비교하면 자기 빌더를 자기 규칙이 잡는다(실제로 그랬다).
     @Test
     void outbound_message_must_be_built_through_factories() {
+        String outbound = "com.sapari.chat.application.protocol.OutboundMessage";
+
         ArchRule rule = noClasses()
-                .that().doNotHaveFullyQualifiedName(
-                        "com.sapari.chat.application.protocol.OutboundMessage")
+                .that(DescribedPredicate.describe("OutboundMessage와 그 중첩 클래스가 아닌",
+                        javaClass -> !javaClass.getName().startsWith(outbound)))
                 .should().callConstructorWhere(DescribedPredicate.describe(
                         "OutboundMessage 생성자",
-                        target -> target.getTargetOwner().getName()
-                                .equals("com.sapari.chat.application.protocol.OutboundMessage")))
+                        target -> target.getTargetOwner().getName().equals(outbound)))
                 .as("OutboundMessage는 타입별 정적 팩토리로만 생성해야 한다(위치 인자 밀림 = PII 유출)");
 
         rule.check(SAPARI);

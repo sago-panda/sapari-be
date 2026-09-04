@@ -245,7 +245,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // SET NX·잔여 TTL)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
         long retryAfter = registry.rateLimitRetryAfterSeconds(sid);
         if (retryAfter > 0) {
-            return respondRejected(sid, rateLimited(retryAfter, clientMsgId));
+            return respondRejected(sid, OutboundMessage.rateLimit(retryAfter, clientMsgId));
         }
         // 방이 아직 살아있는지 게이트에 맡긴다 — 간격 안이면 Redis에 가지 않고 곧장 true다.
         return entryGate.isRoomAlive(sid, chatSession)
@@ -303,7 +303,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * 파싱 불가 프레임에 ERROR로 답한다. clientMsgId는 알 수 없어 싣지 못한다.
      */
     private Mono<Void> rejectMalformed(String sid) {
-        return respondRejected(sid, error("VALIDATION", null));
+        return respondRejected(sid, OutboundMessage.error("VALIDATION", null));
     }
 
     /**
@@ -365,20 +365,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return clientMsgId == null || clientMsgId.length() <= max ? clientMsgId : clientMsgId.substring(0, max);
     }
 
-    /** 레이트리밋 응답 — 서비스가 준 것이든 로컬 창에서 만든 것이든 같은 모양이어야 한다. */
-    private OutboundMessage rateLimited(long retryAfterSeconds, String clientMsgId) {
-        return OutboundMessage.rateLimit(retryAfterSeconds, clientMsgId);
-    }
-
     OutboundMessage toError(Throwable e, String clientMsgId) {
         if (e instanceof ChatRateLimitException rle) {
-            return rateLimited(rle.getRetryAfterSeconds(), clientMsgId);
+            return OutboundMessage.rateLimit(rle.getRetryAfterSeconds(), clientMsgId);
         }
-        return error(errorCode(e), clientMsgId);
-    }
-
-    private OutboundMessage error(String code, String clientMsgId) {
-        return OutboundMessage.error(code, clientMsgId);
+        return OutboundMessage.error(errorCode(e), clientMsgId);
     }
 
     private String errorCode(Throwable e) {

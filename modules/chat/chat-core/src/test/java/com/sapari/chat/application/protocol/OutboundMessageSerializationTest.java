@@ -12,6 +12,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.sapari.chat.domain.model.ChatMessage;
+import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 
 /**
@@ -32,12 +34,28 @@ class OutboundMessageSerializationTest {
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-    /** 가장 흔한 프레임 — 남이 보낸 NORMAL 메시지를 받는 경우. */
+    /**
+     * 가장 흔한 프레임 — 남이 보낸 NORMAL 메시지를 받는 경우.
+     *
+     * <p><b>생산 경로를 그대로 태운다.</b> 손으로 지으면 팩토리가 바뀌어도 이 테스트가 초록이라,
+     * 와이어 계약을 못 박는다면서 실제로 나가는 프레임을 안 보게 된다.
+     */
     private OutboundMessage normalReceivedByOther() {
-        return new OutboundMessage(
-                "NORMAL", null, "68b7f0c2e1a4b93d5c0a1234", UUID.randomUUID(), "구매자닉",
-                ChatRole.BUYER, null, "안녕하세요", null, Instant.parse("2026-09-04T00:00:00Z"),
-                null, null, null, null, null);
+        ChatMessage message = ChatMessage.builder()
+                .id("68b7f0c2e1a4b93d5c0a1234")
+                .roomId(UUID.randomUUID())
+                .senderId(UUID.randomUUID())
+                .senderNickname("구매자닉")
+                .senderEmail("buyer@example.com")
+                .senderRole(ChatRole.BUYER)
+                .type(new ChatMessageType.Normal())
+                .originalMessage("안녕하세요")
+                .displayMessage("안녕하세요")
+                .clientMsgId("c1")
+                .createdAt(Instant.parse("2026-09-04T00:00:00Z"))
+                .build();
+        // 방주인도 발신자도 아닌 세션 — 이메일·원문·clientMsgId가 모두 빠지는 조합이다
+        return OutboundMessage.chat(message, false, false);
     }
 
     @Test
@@ -89,10 +107,7 @@ class OutboundMessageSerializationTest {
     @DisplayName("SYSTEM은 code만 남는다 — 표시 문구는 클라가 code로 렌더한다")
     void systemFrameIsTiny() throws Exception {
         // given
-        OutboundMessage system = new OutboundMessage(
-                "SYSTEM", SystemMessageCode.KICKED.name(), null,
-                UUID.fromString("00000000-0000-0000-0000-000000000001"), "SYSTEM", null,
-                null, null, null, null, null, null, null, null, null);
+        OutboundMessage system = OutboundMessage.system(SystemMessageCode.KICKED);
 
         // when
         var json = mapper.readTree(mapper.writeValueAsString(system));
