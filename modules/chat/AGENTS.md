@@ -1,7 +1,9 @@
 # chat — live chat domain
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
-✅ connect / send / fan-out / room-end / ban gate. 🚧 kick (every piece exists, nothing wires them).
+✅ connect / send / fan-out / room-end. 🚧 kick (every piece exists, nothing wires them).
+🚧 ban gate — the read path is wired, but **nothing writes `chat:banned:`**, so it can never deny.
+Its writer is kick escalation, which is what is unwired.
 ⬜ history (VOD). Run `./gradlew :modules:chat:chat-core:test`.
 
 ## One module, two stacks — the rule that governs everything else
