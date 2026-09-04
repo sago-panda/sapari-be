@@ -5,6 +5,7 @@ import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
@@ -253,6 +254,25 @@ class ArchitectureTest {
                 .should().dependOnClassesThat()
                         .haveNameMatching(".*\\.(SendChatUseCase|SendChatService)")
                 .as("api-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // OutboundMessage는 여덟 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 직접 생성하면 호출부가
+    // null을 열 개씩 늘어놓게 되고, 그 줄에서 인자 하나가 밀려도 컴파일도 타입 검사도 통과한다.
+    // 하필 senderEmail 바로 뒤가 displayMessage라, 한 칸 밀린 실수는 발신자 이메일을 본문 자리에 넣어
+    // 방 전원에게 뿌린다 — 타입 시스템이 잡아주지 못하는 PII 유출 경로다.
+    // 타입별 정적 팩토리만 쓰게 해서 그 자리를 없앤다. 팩토리 자신은 같은 클래스라 예외가 필요 없다.
+    @Test
+    void outbound_message_must_be_built_through_factories() {
+        ArchRule rule = noClasses()
+                .that().doNotHaveFullyQualifiedName(
+                        "com.sapari.chat.application.protocol.OutboundMessage")
+                .should().callConstructorWhere(DescribedPredicate.describe(
+                        "OutboundMessage 생성자",
+                        target -> target.getTargetOwner().getName()
+                                .equals("com.sapari.chat.application.protocol.OutboundMessage")))
+                .as("OutboundMessage는 타입별 정적 팩토리로만 생성해야 한다(위치 인자 밀림 = PII 유출)");
 
         rule.check(SAPARI);
     }

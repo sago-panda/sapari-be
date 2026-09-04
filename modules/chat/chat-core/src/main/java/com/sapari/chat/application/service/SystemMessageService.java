@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
-import com.sapari.chat.domain.model.ChatConstants;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
@@ -23,37 +22,16 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class SystemMessageService {
 
-    private static final String SYSTEM_NICKNAME = "SYSTEM";
-
     private final ChatSessionManager sessionManager;
 
     /** 특정 세션 1개에 SYSTEM 렌더 (예: 강퇴 대상 본인에게 KICKED). */
     public Mono<Void> renderToSession(String sessionId, SystemMessageCode code) {
-        return sessionManager.sendToSession(sessionId, build(code));
+        return sessionManager.sendToSession(sessionId, OutboundMessage.system(code));
     }
 
     /** 이 Pod의 방 로컬 세션 전체에 SYSTEM 렌더 (예: ROOM_ENDED). */
     public Mono<Void> renderToRoom(UUID roomId, SystemMessageCode code) {
-        return sessionManager.sendToRoomLocal(roomId, build(code));
+        return sessionManager.sendToRoomLocal(roomId, OutboundMessage.system(code));
     }
 
-    private OutboundMessage build(SystemMessageCode code) {
-        return new OutboundMessage(
-                "SYSTEM",                        // type
-                code.name(),                     // code (KICKED|ROOM_ENDED|BANNED)
-                null,                            // id — NORMAL/NOTICE만
-                ChatConstants.SYSTEM_SENDER_ID,  // senderId — 고정 시스템 UUID
-                SYSTEM_NICKNAME,                 // senderNickname
-                null,                            // senderRole
-                null,                            // senderEmail
-                null,                            // displayMessage — SYSTEM은 code로 클라가 렌더
-                null,                            // originalMessage
-                null,                            // createdAt
-                null,                            // userId — KICK 타입 전용
-                null,                            // activeCount — ROOM_INFO 전용
-                null,                            // retryAfterSeconds — RATE_LIMIT 전용
-                null,                            // clientMsgId — send 결과(ACK/ERROR/RATE_LIMIT)만 운반, SYSTEM은 null
-                null                             // isRoomOwner — ROOM_INFO 전용
-        );
-    }
 }

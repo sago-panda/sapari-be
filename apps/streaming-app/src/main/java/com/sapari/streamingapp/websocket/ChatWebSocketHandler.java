@@ -57,8 +57,6 @@ import reactor.core.publisher.SignalType;
 @Slf4j
 public class ChatWebSocketHandler implements WebSocketHandler {
 
-    private static final String SYSTEM_NICKNAME = "SYSTEM";
-
     /** 룸 토큰을 실어 나르는 서브프로토콜 이름. 클라는 ["bearer", <token>] 두 개를 제시한다. */
     private static final String TOKEN_SUBPROTOCOL = "bearer";
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
@@ -358,8 +356,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     OutboundMessage toAck(ChatMessageView view, String clientMsgId) {
-        return new OutboundMessage("ACK", null, view.id(), null, null, null, null, null, null,
-                view.createdAt(), null, null, null, clientMsgId, null);
+        return OutboundMessage.ack(view.id(), view.createdAt(), clientMsgId);
     }
 
     /** 거부 응답에 되돌려 실을 만큼만 남긴다. 계약 상한(64자)을 넘는 값은 어차피 거부된다. */
@@ -370,8 +367,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     /** 레이트리밋 응답 — 서비스가 준 것이든 로컬 창에서 만든 것이든 같은 모양이어야 한다. */
     private OutboundMessage rateLimited(long retryAfterSeconds, String clientMsgId) {
-        return new OutboundMessage("RATE_LIMIT", null, null, null, null, null, null, null, null,
-                null, null, null, retryAfterSeconds, clientMsgId, null);
+        return OutboundMessage.rateLimit(retryAfterSeconds, clientMsgId);
     }
 
     OutboundMessage toError(Throwable e, String clientMsgId) {
@@ -382,8 +378,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     private OutboundMessage error(String code, String clientMsgId) {
-        return new OutboundMessage("ERROR", code, null, null, null, null, null, null, null,
-                null, null, null, null, clientMsgId, null);
+        return OutboundMessage.error(code, clientMsgId);
     }
 
     private String errorCode(Throwable e) {
@@ -419,8 +414,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     /** activeCount가 null이면 "알 수 없음" — 조회 실패 시 0 같은 거짓값 대신 비워 보낸다. */
     OutboundMessage roomInfo(Long activeCount, boolean isRoomOwner) {
-        return new OutboundMessage("ROOM_INFO", null, null, null, null, null, null, null, null,
-                null, null, activeCount, null, null, isRoomOwner);
+        return OutboundMessage.roomInfo(activeCount, isRoomOwner);
     }
 
     // ── 구독 ref-count ──
@@ -455,9 +449,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     private Mono<Void> denyAndClose(WebSocketSession session, EntryDeniedException.Reason reason) {
-        OutboundMessage system = new OutboundMessage("SYSTEM", systemCode(reason), null,
-                ChatConstants.SYSTEM_SENDER_ID, SYSTEM_NICKNAME, null, null, null, null,
-                null, null, null, null, null, null);
+        OutboundMessage system = OutboundMessage.system(systemCode(reason));
         // 사유가 무엇이든 1008이다. 접속 중 방이 끝난 경우(terminateRoomEnded)는 1000인데 여기만 1008인 게
         // 비대칭으로 보이지만, 그쪽은 "성립해 있던 세션의 정상 종료"고 이쪽은 "세션이 성립하지 못한 거부"다.
         // 프론트 계약도 1008을 강퇴·밴과 함께 "입장 거부"로 묶어두고 있고, 무엇 때문인지는 함께 보낸
@@ -467,11 +459,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     /** 거부 사유를 클라가 렌더할 code로. switch 식이라 Reason이 늘면 컴파일이 막는다(조용한 오매핑 방지). */
-    private String systemCode(EntryDeniedException.Reason reason) {
+    private SystemMessageCode systemCode(EntryDeniedException.Reason reason) {
         return switch (reason) {
-            case KICKED -> SystemMessageCode.KICKED.name();
-            case BANNED -> SystemMessageCode.BANNED.name();
-            case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED.name();
+            case KICKED -> SystemMessageCode.KICKED;
+            case BANNED -> SystemMessageCode.BANNED;
+            case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED;
         };
     }
 

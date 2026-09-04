@@ -9,9 +9,7 @@ import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
-import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatMessage;
-import com.sapari.chat.domain.model.ChatMessageType;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,8 +33,6 @@ import reactor.core.publisher.Mono;
 @Component
 @RequiredArgsConstructor
 public class ChatBroadcastSubscriber {
-
-    private static final String SYSTEM_NICKNAME = "SYSTEM";
 
     private final ChatBroadcaster broadcaster;
     private final ChatSessionManager sessionManager;
@@ -75,10 +71,10 @@ public class ChatBroadcastSubscriber {
      * 세션 식별자를 영속 메시지까지 관통시켜야 해서 얻는 것보다 잃는 게 크다.
      */
     private Mono<Void> fanOutChat(UUID roomId, ChatMessage message) {
-        OutboundMessage ownerView = toOutbound(message, true, false);
-        OutboundMessage normalView = toOutbound(message, false, false);
-        OutboundMessage ownerSenderView = toOutbound(message, true, true);
-        OutboundMessage senderView = toOutbound(message, false, true);
+        OutboundMessage ownerView = OutboundMessage.chat(message, true, false);
+        OutboundMessage normalView = OutboundMessage.chat(message, false, false);
+        OutboundMessage ownerSenderView = OutboundMessage.chat(message, true, true);
+        OutboundMessage senderView = OutboundMessage.chat(message, false, true);
         return sessionManager.sendToRoomGated(roomId, session -> {
             boolean sender = session.userId().equals(message.senderId());
             return session.isRoomOwner()
@@ -88,58 +84,12 @@ public class ChatBroadcastSubscriber {
     }
 
     private Mono<Void> fanOutKick(UUID roomId, UUID kickedUserId) {
-        OutboundMessage kicked = kickedSystem();
-        OutboundMessage kickNotice = kickNotice(kickedUserId);
+        OutboundMessage kicked = OutboundMessage.system(SystemMessageCode.KICKED);
+        OutboundMessage kickNotice = OutboundMessage.kick(kickedUserId);
         // 당사자엔 KICKED, 그 외엔 KICK 전송 → 그 다음 당사자 세션 close(KICKED가 close보다 먼저 도착하도록 순서 보장)
         return sessionManager.sendToRoomGated(roomId,
                         session -> session.userId().equals(kickedUserId) ? kicked : kickNotice)
                 .then(sessionManager.closeUser(roomId, kickedUserId));
     }
 
-    /**
-     * ChatMessage → 렌더용 OutboundMessage.
-     * ownerView일 때만 senderEmail·원문 포함, senderView일 때만 clientMsgId 포함(secure-by-default).
-     */
-    private OutboundMessage toOutbound(ChatMessage m, boolean ownerView, boolean senderView) {
-        return new OutboundMessage(
-                typeName(m.type()),                       // NORMAL | NOTICE
-                null,                                     // code
-                m.id(),                                   // MongoDB ObjectId
-                m.senderId(),
-                m.senderNickname(),
-                m.senderRole(),
-                ownerView ? m.senderEmail() : null,       // PII — 방주인만
-                m.displayMessage(),
-                ownerView ? m.originalMessage() : null,   // 원문 — 방주인만(강퇴 판단)
-                m.createdAt(),
-                null,                                     // userId — KICK 전용
-                null,                                     // activeCount — ROOM_INFO 전용
-                null,                                     // retryAfterSeconds — RATE_LIMIT 전용
-                senderView ? m.clientMsgId() : null,       // 보낸 사람에게만 — 자기 낙관적 버블과 짝짓는 키
-                null                                      // isRoomOwner — ROOM_INFO 전용
-        );
-    }
-
-    private String typeName(ChatMessageType type) {
-        return switch (type) {
-            case ChatMessageType.Normal n -> "NORMAL";
-            case ChatMessageType.Notice no -> "NOTICE";
-            case ChatMessageType.System s -> "SYSTEM";   // 와이어엔 안 옴 — sealed 전수성 방어
-        };
-    }
-
-    /** 강퇴 당사자에게 보내는 SYSTEM(KICKED). */
-    private OutboundMessage kickedSystem() {
-        return new OutboundMessage(
-                "SYSTEM", SystemMessageCode.KICKED.name(), null,
-                ChatConstants.SYSTEM_SENDER_ID, SYSTEM_NICKNAME, null,
-                null, null, null, null, null, null, null, null, null);
-    }
-
-    /** 그 외 세션에게 보내는 KICK(userId) — 프론트가 해당 userId 메시지 숨김. */
-    private OutboundMessage kickNotice(UUID kickedUserId) {
-        return new OutboundMessage(
-                "KICK", null, null, null, null, null,
-                null, null, null, null, kickedUserId, null, null, null, null);
-    }
 }
