@@ -88,6 +88,9 @@ class ReconcileStaleLiveServiceTest {
         service.reconcile();
 
         then(endStaleLiveUseCase).should(times(1)).endStale(new EndStaleLiveCommand(roomId));
+    
+        // 잡 이름과 갈래를 함께 못박는다 — 세 잡이 같은 모양이라 상수만 잘못 넣어도 통과한다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted).contains("ENDED=1");
     }
 
     @Test

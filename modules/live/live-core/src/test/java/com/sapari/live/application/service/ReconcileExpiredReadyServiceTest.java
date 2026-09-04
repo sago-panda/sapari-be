@@ -205,13 +205,29 @@ class ReconcileExpiredReadyServiceTest {
         given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
         given(liveMediaManager.listRoomIngress(roomId)).willReturn(List.of(ing("ing-1", true)));
-        givenRoomWithIngress(roomId, "ing-1");
+        // 판정 시점에는 Ready, 승격 후 재조회에서는 Live — 서비스가 전이 성공을 그 재조회로 확인한다.
+        LiveRoom ready = LiveRoom.builder()
+                .id(roomId)
+                .status(new LiveStatus.Ready(NOW.minus(THRESHOLD)))
+                .streamType(new LiveStreamType.Rtmp("ing-1"))
+                .build();
+        LiveRoom live = LiveRoom.builder()
+                .id(roomId)
+                .status(new LiveStatus.Live(NOW, "sfu-1", "eg-1", "http://hls/index.m3u8"))
+                .streamType(new LiveStreamType.Rtmp("ing-1"))
+                .build();
+        given(liveRoomRepository.findById(roomId))
+                .willReturn(java.util.Optional.of(ready), java.util.Optional.of(live));
 
         service.reconcile();
 
         // webhook 과 같은 진입점으로, 확인한 ingressId 를 실어 보낸다
         then(goLiveByRtmpService).should(times(1)).goLiveByRtmp(roomId, "ing-1", PromotionTrigger.RECONCILE);
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
+
+        // 승격 카운터는 재조회에서 Live 가 확인될 때만 오른다 — 그 계약을 여기서 못박는다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted).contains("PROMOTED=1");
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted).contains("EXPIRED=0");
     }
 
     @Test
@@ -227,6 +243,8 @@ class ReconcileExpiredReadyServiceTest {
 
         then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
         then(goLiveByRtmpService).should(never()).goLiveByRtmp(any(UUID.class), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted).contains("EXPIRED=1");
     }
 
     @Test

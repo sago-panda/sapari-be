@@ -21,6 +21,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -30,7 +31,7 @@ import java.time.Instant;
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.global.time.TimeProvider;
-import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndLiveCommand;
@@ -57,8 +58,8 @@ public class EndLiveServiceTest {
     @Mock
     private TimeProvider timeProvider;
 
-    @Mock
-    private LiveMetrics liveMetrics;
+    @Spy
+    private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
     @InjectMocks
     private EndLiveService endLiveService;
@@ -131,6 +132,10 @@ public class EndLiveServiceTest {
 
         assertThat(savedRoom.id()).isEqualTo(command.roomId());
         assertThat(savedRoom.status()).isInstanceOf(LiveStatus.Ended.class);
+    
+        // 종료 세 경로(판매자 종료·방치 종료·만료)가 같은 래퍼를 복사한 구조라, 전이 상수를
+        // 잘못 넣어도 빌드가 통과한다. 갈래를 여기서 못박는다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Live->Ended");
     }
 
     @Test
