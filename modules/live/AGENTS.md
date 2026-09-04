@@ -19,6 +19,7 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 
 - `Ended` is terminal. `expire()` publishes no `RoomEnded` — the room was never `Live`, so chat has no session.
 - No transition INTO `Suspended` exists yet (record + exit only).
+- `Suspended` counts as **not live** for external readers (`GetLiveRoomUseCase.live=false`) — 송출이 멈춘 방이므로 진행 중 통제(강퇴 등)의 판정 근거를 그렇게 제공한다. 거부 여부는 소비 도메인이 정한다. `startedAt` 은 다시보기 싱크용으로 보존한다. 뷰에서 `Ended` 와 구분되지 않으므로, `Suspended` 로 들어가는 전이를 만들 때 구분이 필요하면 그때 필드를 추가할 것.
 - Adding a state = `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum, together.
 
 ## Media ports — pick the failure direction
