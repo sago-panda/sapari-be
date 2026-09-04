@@ -265,15 +265,18 @@ class ArchitectureTest {
     // 밖에서는 타입별 정적 팩토리로만 짓는다. 팩토리 안에서 위치 인자를 안 쓰게 하는 것은 빌더가
     // 맡고, 그 빌더는 package 접근이라 컴파일러가 이미 막는다 — 그래서 이 규칙은 생성자만 본다.
     //
-    // 대상에서 빼는 것은 OutboundMessage <b>와 그 중첩 클래스</b>다. 빌더는 Lombok이 만든 중첩
-    // 클래스라 FQN이 다르고, 이름 하나만 비교하면 자기 빌더를 자기 규칙이 잡는다(실제로 그랬다).
+    // 대상에서 빼는 것은 OutboundMessage와 그 중첩 클래스뿐이다. 빌더는 Lombok이 만든 중첩 클래스라
+    // FQN이 다르고(OutboundMessage$OutboundMessageBuilder), 이름 하나만 비교하면 자기 빌더를 자기
+    // 규칙이 잡는다(실제로 그랬다). 그렇다고 접두로 비교하면 같은 패키지의 OutboundMessageFactory 같은
+    // 이름까지 조용히 면제된다 — 중첩 구분자 '$'까지 붙여 정확히 중첩만 뺀다.
     @Test
     void outbound_message_must_be_built_through_factories() {
         String outbound = "com.sapari.chat.application.protocol.OutboundMessage";
 
         ArchRule rule = noClasses()
                 .that(DescribedPredicate.describe("OutboundMessage와 그 중첩 클래스가 아닌",
-                        javaClass -> !javaClass.getName().startsWith(outbound)))
+                        javaClass -> !javaClass.getName().equals(outbound)
+                                && !javaClass.getName().startsWith(outbound + "$")))
                 .should().callConstructorWhere(DescribedPredicate.describe(
                         "OutboundMessage 생성자",
                         target -> target.getTargetOwner().getName().equals(outbound)))
