@@ -280,6 +280,25 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    /**
+     * 도메인 계층(domain / application)은 관측 라이브러리를 몰라야 한다.
+     *
+     * <p>관측은 도구가 바뀌는 관심사다(micrometer → 다른 무엇). 서비스가 {@code MeterRegistry} 를 직접
+     * 주입받기 시작하면 그 교체가 도메인 문장을 흔들고, 계측이 도메인 로직 사이에 섞여 "무슨 일이
+     * 일어나는가" 를 읽기 어렵게 만든다. {@code LiveMetrics} 같은 포트를 두고 구현만 infrastructure 에
+     * 두라는 규칙이며, 사람이 지키는 대신 빌드가 지킨다.
+     */
+    @Test
+    void domain_and_application_must_not_depend_on_metrics_library(){
+        ArchRule rule = noClasses()
+                .that().resideInAnyPackage(
+                        "com.sapari.*.domain..",
+                        "com.sapari.*.application.."
+                ).should().dependOnClassesThat().resideInAPackage("io.micrometer..");
+
+        rule.check(SAPARI);
+    }
+
     private static final Set<String> NON_DOMAIN_ROOTS = Set.of("common", "global", "storage", "architecture");
 
     /** 대상이 도메인 모듈(com.sapari.<도메인>) 클래스이면 위반으로 기록하는 조건. */
