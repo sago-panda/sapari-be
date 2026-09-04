@@ -24,7 +24,7 @@ import reactor.core.publisher.Mono;
  * <ul>
  *   <li><b>CHAT</b>: 방 로컬 세션에 fan-out. <b>방 주인(isRoomOwner) 세션만</b> senderEmail·원문(originalMessage)
  *       포함(toOwnerView), 그 외는 마스킹된 displayMessage만(toView). PII 게이팅은 와이어가 아니라 이 fan-out
- *       시점에 적용된다(봉투엔 평문 PII 잔존 — 크로스 Pod 방주인 렌더에 필요, §8.2).
+ *       시점에 적용된다(봉투엔 평문 PII 잔존 — 방주인이 다른 Pod에 붙어 있을 수 있어 필요하다).
  *   <li><b>KICK_EVENT</b>: 강퇴 당사자 세션엔 SYSTEM(KICKED) 후 WS close, 그 외 세션엔 KICK(userId).
  * </ul>
  *

@@ -36,7 +36,7 @@ import reactor.core.publisher.Mono;
 /**
  * 메시지 전송 파이프라인 (reactive — streaming-app 이벤트루프에서 호출).
  *
- * <p>전송 체크 순서(§10.12): isRoomAlive → 입력검증 → 권한 → kicked → rate limit → 욕설필터 → 저장 → 발행.
+ * <p><b>전송 체크 순서는 계약이다</b>: isRoomAlive → 입력검증 → 권한 → kicked → rate limit → 욕설필터 → 저장 → 발행.
  * 비용 0(메모리·입력)을 앞에 두고 Redis는 뒤로 미뤄 불필요한 I/O를 차단한다.
  *
  * <p>{@code @Transactional}을 두지 않는다 — 단일 Mongo 문서 저장 + Redis 발행이라 다중 엔티티 트랜잭션이 없고,
@@ -203,7 +203,7 @@ public class SendChatService implements SendChatUseCase {
                 .createdAt(timeProvider.now())     // Instant.now() 직접 금지 — TimeProvider
                 .build();
 
-        // persist-then-publish: DuplicateKey를 발행 전에 잡아 중복 broadcast를 억제(§7.2)
+        // persist-then-publish: DuplicateKey를 발행 전에 잡아 중복 broadcast를 억제한다
         return chatMessageRepository.save(message)
                 .flatMap(saved -> broadcaster.publish(command.roomId(), saved)
                         // publish 실패는 흡수한다 — 저장은 됐으므로 반환 view(=ack)를 그대로 돌려준다.

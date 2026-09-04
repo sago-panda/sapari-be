@@ -18,7 +18,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 /**
  * Redis 세션 HASH 어댑터 단위 통합 테스트 — 컨테이너 + 수동 조립.
  * 어댑터 1개만 검증하므로 @SpringBootTest(전체 컴포넌트 스캔=mongo 저장소까지 부트스트랩)를 쓰지 않는다.
- * TC 번호는 WebSocket 연결 표(§12.2) 중 sessions HASH 책임 항목.
+ * TC 번호는 설계 문서 통합 테스트 계획의 WebSocket 연결 표 중 sessions HASH 책임 항목을 따른다.
  */
 @Testcontainers
 class ChatSessionRedisRepositoryTest {

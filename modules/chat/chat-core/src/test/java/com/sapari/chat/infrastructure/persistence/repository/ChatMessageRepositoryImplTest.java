@@ -32,7 +32,7 @@ import reactor.test.StepVerifier;
 
 /**
  * 실제 MongoDB(TestContainers)로 저장·dedup·역순 페이징을 검증한다.
- * TC 번호는 GetChatHistoryService 표(§12.1) 중 repository 책임 항목.
+ * TC 번호는 설계 문서 검증 계획의 GetChatHistoryService 표 중 repository 책임 항목을 따른다.
  * (Boot 4는 @DataMongoTest 슬라이스가 없어 @SpringBootTest 사용 — chat-core 컨텍스트는 어댑터뿐이라 작다)
  */
 // UUID 인코딩은 ChatMongoConfig의 MongoClientSettingsBuilderCustomizer가 STANDARD로 고정.

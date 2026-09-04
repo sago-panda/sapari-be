@@ -18,7 +18,7 @@ import reactor.core.publisher.Mono;
  * ratelimit:chat:{userId} 3초 fixed window — SET NX EX 단일 원자 연산이라
  * 동시 요청 TOCTOU race가 없다(둘 중 하나만 NX 획득). 거부는 잔여 TTL만 읽으므로 윈도우를 연장하지 않는다.
  *
- * <p>Redis 장애 시 fail-open(allowed=true) — 채팅 가용성이 레이트리밋 엄격성보다 우선(§12.1 TC#9).
+ * <p>Redis 장애 시 fail-open(allowed=true) — 채팅 가용성이 레이트리밋 엄격성보다 우선이다.
  */
 @Slf4j
 @Component

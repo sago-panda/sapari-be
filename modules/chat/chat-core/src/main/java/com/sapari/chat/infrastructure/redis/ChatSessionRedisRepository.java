@@ -15,7 +15,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * chat:room:{roomId}:sessions HASH 어댑터 — 크로스 Pod 세션 집계.
- * count는 HLEN(탭 수)이 아니라 HVALS distinct(고유 유저 수)다 — 같은 유저 멀티탭은 1로 센다(§6.1 activeCount).
+ * count는 HLEN(탭 수)이 아니라 HVALS distinct(고유 유저 수)다 — 같은 유저 멀티탭은 1로 센다(시청자 수는 사람 수지 창 수가 아니다).
  */
 @Repository
 @RequiredArgsConstructor
