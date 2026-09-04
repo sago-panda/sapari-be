@@ -9,7 +9,7 @@ Its writer is kick escalation, which is what is unwired.
 ## One module, two stacks — the rule that governs everything else
 
 `chat-core` is consumed by **streaming-app (WebFlux, no relational DB, no blocking Mongo)** and by
-**api-app (MVC)**. Both stacks therefore land on the classpath of both apps.
+**live-app (MVC)**, which hosts the kick REST endpoint. Both stacks land on the classpath of both apps.
 
 - **Reactive adapters carry `@Repository`** and are component-scanned.
 - **Blocking adapters carry no stereotype at all** (`ChatKickLogRepositoryImpl`,
@@ -20,11 +20,15 @@ Its writer is kick escalation, which is what is unwired.
 - Auto-configuration ignores stereotypes: `DataSourceAutoConfiguration` fires on classpath presence alone
   and broke streaming-app's boot once. It is cut by `excludeName` (string, because the class is
   runtime-only there) and `AutoConfigurationExclusionTest` guards the spelling.
+- **The MVC host is live-app, and that is forced, not chosen.** Any app carrying `live-core` (needed for the
+  `GetLiveRoomUseCase` bean) also scans `RoomTokenConfig`, whose `@Validated` properties require live's RS256
+  **private signing key** and LiveKit credentials — so any other host would have to duplicate those secrets.
+  There is no inter-app HTTP anywhere in this repo to route around it.
 - `mongodb-driver-sync` is **testImplementation only** — the blocking adapter compiles against
   `MongoTemplate` without it, and promoting it would hand the reactive app a sync driver.
 
 ArchUnit enforces the calling direction: streaming-app must not touch blocking Redis/Mongo templates or
-blocking chat use cases; api-app must not touch reactive ones. **Rule ② matches class names by regex** —
+blocking chat use cases; the MVC apps must not touch reactive ones. **Rule ② matches class names by regex** —
 name a service something other than `KickUserService` and it silently guards nothing.
 
 ## Failure policy — everything opens, nothing closes
@@ -147,7 +151,7 @@ Lua call because `SADD` inherits a leftover expiry and the whole list would then
 
 Gates left for the wiring commit: **room must be LIVE** (rejects the late registration that leaks a key),
 kicker↔room authorization from the authenticated principal (`kickerRole` in the command is client input),
-api-app `@EntityScan` + `mongodb-driver-sync` runtime + four `@Bean` registrations.
+live-app `@EntityScan` + `mongodb-driver-sync` runtime + four `@Bean` registrations.
 
 ## Tests
 

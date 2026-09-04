@@ -20,7 +20,7 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
 /**
  * chat_messages용 Mongo 설정 — UUID 인코딩 + 인덱스 부트스트랩.
  *
- * <p>chat-core는 라이브러리라 reactive Mongo가 없는 소비처(api-app=blocking mongo)나
+ * <p>chat-core는 라이브러리라 reactive Mongo가 없는 소비처(live-app=blocking mongo)나
  * Redis 전용 테스트 컨텍스트에도 컴포넌트 스캔된다. 그래서 인덱스 생성은 {@code ObjectProvider}로
  * ReactiveMongoTemplate 존재 여부를 런타임에 판정해 없으면 건너뛴다(부팅 실패 방지).
  */
@@ -36,7 +36,7 @@ public class ChatMongoConfig {
         return builder -> builder.uuidRepresentation(UuidRepresentation.STANDARD);
     }
 
-    /** reactive Mongo가 있는 런타임(streaming-app 등)에서만 인덱스 생성. 없으면 skip(api-app·redis-only test 안전). */
+    /** reactive Mongo가 있는 런타임(streaming-app 등)에서만 인덱스 생성. 없으면 skip(live-app·redis-only test 안전). */
     @Bean
     public ApplicationRunner chatMessagesIndexInitializer(ObjectProvider<ReactiveMongoTemplate> templateProvider) {
         return args -> {

@@ -3,7 +3,7 @@ package com.sapari.chat.application.port;
 import java.util.UUID;
 
 /**
- * 강퇴 사실을 모든 Pod에 알리는 포트. <b>블로킹</b> — 호출자가 api-app(MVC)이다.
+ * 강퇴 사실을 모든 Pod에 알리는 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
  * <p>{@link ChatBroadcaster}와 <b>같은 채널을 쓰지만 다른 포트</b>다. 그쪽은 리액티브 스택에서 채팅
  * 봉투를 주고받는 통로이고(구독까지 포함한다), 이쪽은 강퇴 봉투 한 종류를 내보내기만 한다. 채널만 같고

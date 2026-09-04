@@ -247,13 +247,16 @@ class ArchitectureTest {
     }
 
     // MVC 앱이 Mono/Flux를 반환하는 유스케이스를 호출하면 결국 .block()을 강요당한다.
+    // 강퇴 REST가 얹히는 MVC 앱은 live-app이 될 예정이라, 배선 커밋에서 이 규칙의 대상을 옮겨야 한다.
+    // 지금 옮기지 못하는 이유: live-app은 plain jar를 끄고 있어(bootJar만 생성) ArchUnit이 그 클래스를
+    // 읽지 못한다. api-app·streaming-app은 바로 그 목적으로 jar를 켜 두었다.
     @Test
-    void api_app_must_not_call_reactive_chat_use_cases() {
+    void mvc_app_must_not_call_reactive_chat_use_cases() {
         ArchRule rule = noClasses()
                 .that().resideInAPackage("com.sapari.apiapp..")
                 .should().dependOnClassesThat()
                         .haveNameMatching(".*\\.(SendChatUseCase|SendChatService)")
-                .as("api-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+                .as("MVC 앱은 reactive chat 유스케이스를 호출하면 안 된다");
 
         rule.check(SAPARI);
     }

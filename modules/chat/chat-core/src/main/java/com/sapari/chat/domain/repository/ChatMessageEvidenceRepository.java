@@ -5,7 +5,7 @@ import java.util.Optional;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 
 /**
- * 강퇴 증거로 삼을 메시지를 서버가 직접 읽는 포트. <b>블로킹</b> — 호출자가 api-app(MVC)이다.
+ * 강퇴 증거로 삼을 메시지를 서버가 직접 읽는 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
  * <p><b>{@link ChatMessageRepository}와 왜 따로 있나</b>: 그쪽은 {@code Mono}/{@code Flux}를 반환하는
  * 리액티브 포트라 MVC에서 쓰면 결국 {@code block()}을 강요당한다. 스택이 다르면 포트도 다르다는 것이

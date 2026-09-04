@@ -9,7 +9,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * 채팅 메시지 영속 포트 (reactive — streaming-app 이벤트루프에서 호출).
- * VOD 강퇴자 제외 조회는 api-app(blocking) 책임이라 여기 두지 않는다.
+ * VOD 강퇴자 제외 조회는 live-app(blocking) 책임이라 여기 두지 않는다.
  */
 public interface ChatMessageRepository {
 

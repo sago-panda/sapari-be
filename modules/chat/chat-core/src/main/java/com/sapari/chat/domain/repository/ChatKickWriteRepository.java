@@ -3,7 +3,7 @@ package com.sapari.chat.domain.repository;
 import java.util.UUID;
 
 /**
- * 강퇴 명단에 사람을 올리는 포트. <b>블로킹</b> — 호출자가 api-app(MVC)이다.
+ * 강퇴 명단에 사람을 올리는 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
  * <p>읽는 쪽은 {@link ChatKickRepository}(리액티브, streaming-app)다. 같은 Redis SET을 두 스택이 나눠
  * 쓰는 셈이라 키 문자열은 {@code infrastructure.redis} 패키지의 단일 소스가 계속 쥐고 있다 —

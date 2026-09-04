@@ -3,7 +3,7 @@ package com.sapari.chat.command;
 import java.util.UUID;
 
 /**
- * 강퇴 명령 (api-app REST). 방 주인 여부는 서비스가 방을 로드해 roomOwnerId로 판정하므로
+ * 강퇴 명령 (live-app REST). 방 주인 여부는 서비스가 방을 로드해 roomOwnerId로 판정하므로
  * 커맨드는 강퇴자 신원만 담는다(세션 boolean을 신뢰하지 않음 — REST는 DB 로드 경로).
  *
  * <p><b>본문이 아니라 {@code messageId}를 받는다.</b> 강퇴 증거로 남길 원문은 서버가 그 id로 직접 읽어
