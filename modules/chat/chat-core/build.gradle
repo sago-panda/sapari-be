@@ -31,6 +31,11 @@ dependencies {
     annotationProcessor 'org.mapstruct:mapstruct-processor:1.5.5.Final'
     annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
 
+    // 강퇴 경로는 user 도메인에 운영 의존이 없다(역할은 인증 주체와 증거 메시지가 들고 있다).
+    // 다만 이름이 갈라지면 정당한 권한자의 강퇴가 런타임에 실패하는 형태로만 드러나므로,
+    // 두 열거의 이름 집합이 같은지를 테스트가 빌드에서 대조한다.
+    testImplementation(project(':modules:user:user-api'))
+
     // 어댑터 통합 테스트 — TestContainers로 실제 Mongo/Redis 기동 (Phase 3 처방)
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')

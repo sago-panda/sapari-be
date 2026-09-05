@@ -2,10 +2,13 @@ package com.sapari.liveapp.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.bson.UuidRepresentation;
+import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
+import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.KickUserService;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
@@ -41,6 +44,23 @@ import com.sapari.live.port.GetLiveRoomUseCase;
  */
 @Configuration
 public class ChatModerationBeansConfig {
+
+    /**
+     * UUID를 standard BSON binary로 읽는다. <b>이 빈이 없으면 증거 조회가 조용히 깨진다.</b>
+     *
+     * <p>chat이 UUID를 그 표현으로 <b>쓰고</b> 있다(streaming-app의 {@code ChatMongoConfig}가 같은
+     * 커스터마이저를 등록한다). 그런데 이 앱은 {@code com.sapari.chat}을 컴포넌트 스캔에서 빼므로 그 설정이
+     * 함께 빠진다 — 드라이버 기본값은 {@code UNSPECIFIED}이고, 그러면 standard로 쓰인 UUID가
+     * {@code org.bson.types.Binary}로 돌아온다. spring-data-mongodb에 그걸 UUID로 되돌리는 컨버터가 없어
+     * 증거 문서 매핑이 실패한다.
+     *
+     * <p>설정 파일이 아니라 코드로 고정하는 이유도 같다 — {@code application.yaml}은 저장소에 없어서,
+     * yml에 맡기면 개발자 환경마다 다르고 클린 배포에서 조용히 빠진다.
+     */
+    @Bean
+    public MongoClientSettingsBuilderCustomizer chatUuidRepresentationCustomizer() {
+        return builder -> builder.uuidRepresentation(UuidRepresentation.STANDARD);
+    }
 
     /** 순수 정책이라 프레임워크 애너테이션이 없다 — 그래서 호스트가 직접 세운다. */
     @Bean
@@ -86,18 +106,27 @@ public class ChatModerationBeansConfig {
         return new ChatKickEventRedisPublisher(redisTemplate);
     }
 
+    /**
+     * 강퇴의 DB 쓰기를 감싸는 트랜잭션 빈. {@code @Transactional}이 프록시로 걸리려면 별도 빈이어야 한다 —
+     * 같은 클래스 안의 메서드로 두면 자기 호출이라 프록시를 타지 않고, 붙여 놓고 안 걸리는 상태가 된다.
+     */
+    @Bean
+    public ChatKickRecorder chatKickRecorder(ChatKickLogRepository kickLogRepository,
+                                             ChatBanStateRepository banStateRepository) {
+        return new ChatKickRecorder(kickLogRepository, banStateRepository);
+    }
+
     @Bean
     public KickUserUseCase kickUserUseCase(GetLiveRoomUseCase liveRoomReader,
                                            ChatMessageEvidenceRepository evidenceRepository,
-                                           ChatKickLogRepository kickLogRepository,
-                                           ChatBanStateRepository banStateRepository,
+                                           ChatKickRecorder kickRecorder,
                                            ChatBanWriteRepository banWriteRepository,
                                            ChatKickWriteRepository kickWriteRepository,
                                            ChatKickEventPublisher kickEventPublisher,
                                            ChatPermissionPolicy permissionPolicy,
                                            TimeProvider timeProvider) {
-        return new KickUserService(liveRoomReader, evidenceRepository,
-                kickLogRepository, banStateRepository, banWriteRepository,
-                kickWriteRepository, kickEventPublisher, permissionPolicy, timeProvider);
+        return new KickUserService(liveRoomReader, evidenceRepository, kickRecorder,
+                banWriteRepository, kickWriteRepository, kickEventPublisher,
+                permissionPolicy, timeProvider);
     }
 }

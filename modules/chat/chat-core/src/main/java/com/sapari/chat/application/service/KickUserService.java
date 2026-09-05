@@ -1,22 +1,17 @@
 package com.sapari.chat.application.service;
 
-import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
 import java.util.UUID;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.command.KickUserCommand;
+import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
-import com.sapari.chat.domain.model.ChatBan;
-import com.sapari.chat.domain.model.ChatBanTier;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
-import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
-import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
@@ -48,16 +43,9 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class KickUserService implements KickUserUseCase {
 
-    /**
-     * 누적 강퇴를 세는 창. 2년이 지난 강퇴는 밴 판단에서 빠진다 — 제재는 지금의 행동에 걸어야지
-     * 몇 해 전 기록으로 영구히 따라다니면 안 된다.
-     */
-    private static final Duration KICK_COUNT_WINDOW = Duration.ofDays(730);
-
     private final GetLiveRoomUseCase liveRoomReader;
     private final ChatMessageEvidenceRepository evidenceRepository;
-    private final ChatKickLogRepository kickLogRepository;
-    private final ChatBanStateRepository banStateRepository;
+    private final ChatKickRecorder kickRecorder;
     private final ChatBanWriteRepository banWriteRepository;
     private final ChatKickWriteRepository kickWriteRepository;
     private final ChatKickEventPublisher kickEventPublisher;
@@ -97,7 +85,12 @@ public class KickUserService implements KickUserUseCase {
                     "진행 중인 방이 아니라 강퇴할 수 없다 — roomId=" + command.roomId());
         }
 
-        ChatMessageEvidence evidence = evidenceRepository.findEvidence(command.messageId()).orElse(null);
+        // 없는 증거를 여기서 끊는다. 아래에서 이 값을 다시 읽으므로, null을 흘려보내고 다른 클래스가
+        // 던져 주기를 기대하면 그 계약이 바뀌는 날 여기가 조용히 NPE가 된다.
+        // 예외는 불일치와 같은 것을 쓴다 — "없음"과 "안 맞음"을 가르면 messageId 탐색 오라클이 된다.
+        ChatMessageEvidence evidence = evidenceRepository.findEvidence(command.messageId())
+                .orElseThrow(() -> new ChatKickEvidenceMismatchException(
+                        "증거 메시지가 없다 — roomId=" + command.roomId()));
         ChatKickLog log = ChatKickLog.from(evidence, command.roomId(), command.targetUserId(),
                 command.kickerId(), kickerRole, timeProvider.now());
 
@@ -109,45 +102,14 @@ public class KickUserService implements KickUserUseCase {
                     "강퇴 권한이 없다 — kicker=" + command.kickerId() + " room=" + command.roomId());
         }
 
-        // 반환값은 "이번에 실제로 들어갔는가"다. 중복 강퇴면 false지만 여기서 되돌아가면 안 된다 —
-        // 집행 캐시가 날아간 사용자를 그 방에서 다시는 강퇴하지 못하게 된다. 뒤 단계는 항상 돈다.
-        // 이 값이 쓰이는 곳은 밴 승격 하나뿐이다.
-        boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(log);
-        syncBan(command.targetUserId(), firstKickInThisRoom, log.kickedAt());
+        // DB 쓰기는 여기서 끝난다. 이 호출이 반환됐다는 건 커밋이 확정됐다는 뜻이고, 그 다음에야
+        // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
+        kickRecorder.record(log, log.kickedAt())
+                .ifPresent(ban -> banWriteRepository.ban(
+                        command.targetUserId(), ban.expiresAt(), log.kickedAt()));
 
         kickWriteRepository.register(command.roomId(), command.targetUserId());
         kickEventPublisher.publishKicked(command.roomId(), command.targetUserId());
-    }
-
-    /**
-     * 밴 상태를 정본과 미러에 맞춘다 — 승격시키거나, 이미 걸린 밴을 다시 비춘다.
-     *
-     * <p><b>활성 밴이 있으면 새로 만들지 않고 미러만 맞춘다.</b> 그래야 재시도가 밴을 겹쳐 쌓지 않고,
-     * 미러 키가 사라졌던 사용자도 다음 강퇴 때 자동으로 복구된다.
-     *
-     * <p><b>중복 강퇴는 카운트를 세지 않는다.</b> 같은 방 두 번째 강퇴는 정본에 행을 만들지 않으므로 누적도
-     * 늘지 않는다. 여기서 굳이 다시 세면 만료된 밴을 같은 카운트로 되살릴 수 있고, 그러면 판매자가 같은
-     * 사람을 반복해서 "다시 강퇴"하는 것만으로 밴을 무한히 연장하게 된다.
-     *
-     * <p>⚠️ 그 대가로 구멍이 하나 남는다 — 강퇴 로그는 커밋됐는데 밴 쓰기가 실패하면, 재시도는 중복
-     * 경로로 들어가 승격을 건너뛴다. 반복 강퇴로 밴을 연장하는 쪽이 더 나쁘다고 보고 이 순서를 골랐다.
-     */
-    private void syncBan(UUID targetUserId, boolean firstKickInThisRoom, Instant now) {
-        Optional<ChatBan> active = banStateRepository.findActive(targetUserId, now);
-        if (active.isPresent()) {
-            banWriteRepository.ban(targetUserId, active.get().expiresAt(), now);
-            return;
-        }
-        if (!firstKickInThisRoom) {
-            return;
-        }
-        ChatBanTier.of(kickLogRepository.countSince(targetUserId, now.minus(KICK_COUNT_WINDOW)))
-                .ifPresent(tier -> {
-                    ChatBan ban = ChatBan.escalated(targetUserId, tier, now);
-                    // 정본 먼저다. 미러만 남으면 근거 없는 밴이 되고, 정본만 남으면 다음 강퇴가 미러를 맞춘다.
-                    banStateRepository.append(ban);
-                    banWriteRepository.ban(targetUserId, ban.expiresAt(), now);
-                });
     }
 
     /**

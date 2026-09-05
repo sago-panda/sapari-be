@@ -1,0 +1,80 @@
+package com.sapari.chat.application.service;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Optional;
+
+import org.springframework.transaction.annotation.Transactional;
+
+import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.domain.model.ChatBanTier;
+import com.sapari.chat.domain.model.ChatKickLog;
+import com.sapari.chat.domain.repository.ChatBanStateRepository;
+import com.sapari.chat.domain.repository.ChatKickLogRepository;
+
+import lombok.RequiredArgsConstructor;
+
+/**
+ * 강퇴의 <b>DB 쓰기만</b> 한 트랜잭션에 담는 얇은 빈.
+ *
+ * <p><b>왜 별도 빈인가.</b> 두 쓰기가 모두 `@Modifying` 네이티브 INSERT다. Spring Data는 리포지토리
+ * 인터페이스에 직접 선언된 이런 쿼리에 기본 트랜잭션을 얹어 주지 않는다 — 트랜잭션 없이 부르면
+ * {@code InvalidDataAccessApiUsageException("No active transaction for update or delete query")}로
+ * 실패한다(실측). live의 {@code RtmpIngressAssigner}가 같은 이유로 UPDATE 한 문장만 감싼 것과 같은 처방이다.
+ *
+ * <p><b>왜 {@code kick()} 전체를 감싸지 않는가.</b> 강퇴는 로그 커밋이 확정된 <i>다음에</i> Redis와 발행으로
+ * 가야 한다. 전체를 트랜잭션에 넣으면 커밋 전에 Redis가 먼저 쓰이고, 롤백되면 DB에 없는 강퇴가 Redis에만
+ * 남는다. 그래서 <b>DB 쓰기 둘만</b> 여기 담고 Redis는 호출자가 이 메서드가 끝난 뒤에 한다.
+ *
+ * <p><b>왜 같은 클래스의 메서드가 아닌가.</b> 자기 호출은 프록시를 타지 않아 {@code @Transactional}이
+ * 아예 걸리지 않는다. 붙여 놓고 안 걸리는 쪽이 안 붙인 것보다 나쁘다 — 고쳤다고 믿게 된다.
+ *
+ * <p>스테레오타입을 달지 않는다. 이 스택을 소유한 앱이 {@code @Bean}으로 등록한다.
+ */
+@RequiredArgsConstructor
+public class ChatKickRecorder {
+
+    /**
+     * 누적 강퇴를 세는 창. 2년이 지난 강퇴는 밴 판단에서 빠진다 — 제재는 지금의 행동에 걸어야지
+     * 몇 해 전 기록으로 영구히 따라다니면 안 된다.
+     */
+    private static final Duration KICK_COUNT_WINDOW = Duration.ofDays(730);
+
+    private final ChatKickLogRepository kickLogRepository;
+    private final ChatBanStateRepository banStateRepository;
+
+    /**
+     * 강퇴를 기록하고, 필요하면 밴으로 올린다. <b>Redis는 건드리지 않는다.</b>
+     *
+     * <p><b>활성 밴이 있으면 새로 만들지 않는다.</b> 그래야 재시도가 밴을 겹쳐 쌓지 않는다. 그래도 그 밴을
+     * 돌려주는 이유는 호출자가 미러를 다시 맞출 수 있게 하기 위해서다 — 키가 사라졌던 사용자도 다음 강퇴에
+     * 자동으로 복구된다.
+     *
+     * <p><b>중복 강퇴는 누적을 세지 않는다.</b> 같은 방 두 번째 강퇴는 정본에 행을 만들지 않으므로 누적도
+     * 늘지 않는다. 여기서 굳이 다시 세면 만료된 밴을 같은 카운트로 되살릴 수 있고, 그러면 판매자가 같은
+     * 사람을 반복해서 "다시 강퇴"하는 것만으로 밴을 무한히 연장하게 된다.
+     *
+     * <p>⚠️ 그 대가로 구멍이 하나 남는다 — 강퇴 로그는 커밋됐는데 밴 쓰기가 실패하면, 재시도는 중복
+     * 경로로 들어가 승격을 건너뛴다. 반복 강퇴로 밴을 연장하는 쪽이 더 나쁘다고 보고 이 순서를 골랐다.
+     *
+     * @return 미러에 반영해야 할 밴(새로 건 것이든 이미 있던 것이든). 밴이 없으면 비어 있다
+     */
+    @Transactional
+    public Optional<ChatBan> record(ChatKickLog log, Instant now) {
+        boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(log);
+
+        Optional<ChatBan> active = banStateRepository.findActive(log.targetUserId(), now);
+        if (active.isPresent()) {
+            return active;
+        }
+        if (!firstKickInThisRoom) {
+            return Optional.empty();
+        }
+        return ChatBanTier.of(kickLogRepository.countSince(log.targetUserId(), now.minus(KICK_COUNT_WINDOW)))
+                .map(tier -> {
+                    ChatBan ban = ChatBan.escalated(log.targetUserId(), tier, now);
+                    banStateRepository.append(ban);
+                    return ban;
+                });
+    }
+}

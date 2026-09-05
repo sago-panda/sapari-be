@@ -23,5 +23,13 @@ public interface ChatBanStateRepository {
      */
     Optional<ChatBan> findActive(UUID userId, Instant now);
 
+    /**
+     * 밴을 남긴다.
+     *
+     * <p><b>호출자가 트랜잭션을 열어야 한다.</b> 구현이 {@code @Modifying} 네이티브 INSERT라 경계가 없으면
+     * {@code "No active transaction for update or delete query"}로 실패한다(실측). 이 포트는 경계를
+     * 만들지 않는다 — 강퇴 흐름은 이 커밋이 확정된 <i>다음에</i> Redis로 넘어가야 하므로 경계가 어디서
+     * 닫히는지가 설계의 일부이고, 그 판단은 유스케이스의 몫이다.
+     */
     void append(ChatBan ban);
 }

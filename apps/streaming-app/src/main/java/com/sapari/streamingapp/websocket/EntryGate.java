@@ -108,10 +108,7 @@ public class EntryGate {
         // 왕복이 셋이 됐다. 하나로 묶는 것(pipeline)은 정합성과 무관한 순수 성능이라 여기서 하지 않는다 —
         // 묶으면 세 조회의 실패를 따로 분류하던 것이 한 덩어리가 되어, 어느 게이트가 열렸는지가 흐려진다.
         //
-        // ⚠️ 다만 지금은 셋 중 둘이 사실상 상수다. 강퇴 명단과 밴 키에 쓰는 코드(강퇴 유스케이스·밴
-        // 에스컬레이션)가 아직 배선되지 않아 두 조회는 언제나 false를 돌려준다. 그래도 게이트를 미리
-        // 세워 두는 쪽을 택한 것은, 쓰는 쪽이 붙을 때 transport를 다시 열지 않기 위해서다 — 비용은
-        // 접속당(메시지당이 아니다) EXISTS 두 번이다. 배선이 끝나면 이 문단을 지울 것.
+        // 비용은 접속당(메시지당이 아니다) 왕복 셋이다.
         return verifyRoomAlive(session)
                 .then(Mono.defer(() -> verifyNotKicked(session)))
                 .then(Mono.defer(() -> verifyNotBanned(session)));

@@ -3,7 +3,6 @@ package com.sapari.chat.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.inOrder;
@@ -33,7 +32,6 @@ import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.model.ChatBan;
-import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
@@ -67,9 +65,7 @@ class KickUserServiceTest {
     @Mock
     private ChatMessageEvidenceRepository evidenceRepository;
     @Mock
-    private ChatKickLogRepository kickLogRepository;
-    @Mock
-    private ChatBanStateRepository banStateRepository;
+    private ChatKickRecorder kickRecorder;
     @Mock
     private ChatBanWriteRepository banWriteRepository;
     @Mock
@@ -89,9 +85,9 @@ class KickUserServiceTest {
     @BeforeEach
     void setUp() {
         service = new KickUserService(
-                liveRoomReader, evidenceRepository, kickLogRepository,
-                banStateRepository, banWriteRepository, kickWriteRepository, kickEventPublisher,
-                new ChatPermissionPolicy(), new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+                liveRoomReader, evidenceRepository, kickRecorder, banWriteRepository,
+                kickWriteRepository, kickEventPublisher, new ChatPermissionPolicy(),
+                new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
     /** 인증 주체에서 오는 값(kickerId·kickerRole)은 컨트롤러가 채운다 — 요청 본문에는 자리가 없다. */
@@ -135,14 +131,14 @@ class KickUserServiceTest {
         void writesInDbFirstOrder() {
             // given
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
 
             // then: 순서가 뒤집히면 롤백된 강퇴가 Redis에만 남는다
-            InOrder order = inOrder(kickLogRepository, kickWriteRepository, kickEventPublisher);
-            order.verify(kickLogRepository).appendIfAbsent(any());
+            InOrder order = inOrder(kickRecorder, kickWriteRepository, kickEventPublisher);
+            order.verify(kickRecorder).record(any(), any());
             order.verify(kickWriteRepository).register(roomId, targetId);
             order.verify(kickEventPublisher).publishKicked(roomId, targetId);
         }
@@ -152,14 +148,14 @@ class KickUserServiceTest {
         void logCarriesServerReadEvidence() {
             // given
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
 
             // then
             ArgumentCaptor<ChatKickLog> captor = ArgumentCaptor.forClass(ChatKickLog.class);
-            verify(kickLogRepository).appendIfAbsent(captor.capture());
+            verify(kickRecorder).record(captor.capture(), any());
             ChatKickLog log = captor.getValue();
             assertThat(log.triggeringMessage()).isEqualTo("문제의 원문");
             assertThat(log.targetUserId()).isEqualTo(targetId);
@@ -173,7 +169,7 @@ class KickUserServiceTest {
         void duplicateStillRegistersAndPublishes() {
             // given: 이미 같은 (user, room) 로그가 있어 이번 INSERT는 no-op이다
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(false);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -189,7 +185,7 @@ class KickUserServiceTest {
             // given: 방 주인이 아닌 관리자
             UUID adminId = UUID.randomUUID();
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
 
             // when
             service.kick(command(adminId, "ADMIN"));
@@ -205,7 +201,7 @@ class KickUserServiceTest {
             // 판정에 끼어들 자리가 없고, 그게 필요한 동작이다 — REST가 막힌 뒤에도 채팅 세션은
             // 살아 있어 그 사람이 방에서 계속 말한다.
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -221,7 +217,7 @@ class KickUserServiceTest {
 
         /** 거부되면 쓰기 세 단계가 하나도 일어나지 않아야 한다. */
         private void assertNothingWritten() {
-            verify(kickLogRepository, never()).appendIfAbsent(any());
+            verify(kickRecorder, never()).record(any(), any());
             verify(kickWriteRepository, never()).register(any(), any());
             verify(kickEventPublisher, never()).publishKicked(any(), any());
         }
@@ -353,7 +349,7 @@ class KickUserServiceTest {
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
-            verify(kickLogRepository, never()).appendIfAbsent(any());
+            verify(kickRecorder, never()).record(any(), any());
         }
 
         @Test
@@ -366,7 +362,7 @@ class KickUserServiceTest {
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
-            verify(kickLogRepository, never()).appendIfAbsent(any());
+            verify(kickRecorder, never()).record(any(), any());
         }
 
         @Test
@@ -379,154 +375,82 @@ class KickUserServiceTest {
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
-            verify(kickLogRepository, never()).appendIfAbsent(any());
+            verify(kickRecorder, never()).record(any(), any());
         }
     }
 
     @Nested
-    @DisplayName("밴 승격 — 누적 강퇴가 임계에 닿을 때")
-    class BanEscalation {
+    @DisplayName("밴 미러 — 정본이 돌려준 것을 그대로 비춘다")
+    class BanMirror {
 
-        private void givenNoActiveBan() {
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
-        }
-
-        private void givenKickCount(long count) {
-            given(kickLogRepository.countSince(eq(targetId), any())).willReturn(count);
-        }
-
+        /**
+         * 임계 판정과 중복 카운트는 이 서비스의 일이 아니라 {@code ChatKickRecorder}의 일이고, 그쪽은
+         * 실제 Postgres로 검증한다({@code ChatKickRecorderTest}). 여기서 고정하는 것은 <b>돌려받은 밴을
+         * 미러에 반영하는가</b>와 <b>그 반영이 강퇴 집행보다 먼저인가</b> 둘뿐이다.
+         */
         @Test
-        @DisplayName("2회까지는 밴이 없다 — 방에서 나갈 뿐이다")
-        void belowThresholdDoesNotBan() {
+        @DisplayName("밴이 없으면 미러를 건드리지 않는다")
+        void noBanLeavesMirrorAlone() {
             // given
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
-            givenNoActiveBan();
-            givenKickCount(2);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
 
             // then
-            verify(banStateRepository, never()).append(any());
             verify(banWriteRepository, never()).ban(any(), any(), any());
         }
 
         @Test
-        @DisplayName("3회에서 1주 밴 — 정본과 미러에 같은 만료가 들어간다")
-        void thirdKickBansForAWeek() {
+        @DisplayName("돌려받은 만료를 그대로 미러에 쓴다 — 정본과 미러가 갈리면 밴이 일찍 풀린다")
+        void mirrorsTheReturnedExpiry() {
             // given
+            Instant expiry = NOW.plus(Duration.ofDays(7));
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
-            givenNoActiveBan();
-            givenKickCount(3);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.of(
+                    new ChatBan(targetId, UUID.randomUUID(), expiry, NOW)));
 
             // when
             service.kick(ownerKick());
 
             // then
-            ArgumentCaptor<ChatBan> captor = ArgumentCaptor.forClass(ChatBan.class);
-            verify(banStateRepository).append(captor.capture());
-            ChatBan ban = captor.getValue();
-            assertThat(ban.userId()).isEqualTo(targetId);
-            assertThat(ban.bannedById()).isEqualTo(ChatConstants.SYSTEM_SENDER_ID);
-            assertThat(ban.expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
-            verify(banWriteRepository).ban(targetId, NOW.plus(Duration.ofDays(7)), NOW);
+            verify(banWriteRepository).ban(targetId, expiry, NOW);
         }
 
         @Test
-        @DisplayName("12회부터는 영구 밴 — 만료를 두지 않는다")
-        void twelfthKickBansPermanently() {
+        @DisplayName("영구 밴은 만료 없이 비춘다")
+        void permanentBanHasNoExpiry() {
             // given
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
-            givenNoActiveBan();
-            givenKickCount(12);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.of(
+                    new ChatBan(targetId, UUID.randomUUID(), null, NOW)));
 
             // when
             service.kick(ownerKick());
 
             // then
-            ArgumentCaptor<ChatBan> captor = ArgumentCaptor.forClass(ChatBan.class);
-            verify(banStateRepository).append(captor.capture());
-            assertThat(captor.getValue().isPermanent()).isTrue();
             verify(banWriteRepository).ban(targetId, null, NOW);
         }
 
         @Test
-        @DisplayName("⭐ 이미 밴이 걸려 있으면 새로 만들지 않고 미러만 맞춘다 — 재시도가 밴을 겹치지 않는다")
-        void activeBanIsMirroredNotStacked() {
-            // given: 만료가 남아 있는 밴
-            Instant existingExpiry = NOW.plus(Duration.ofDays(3));
-            givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(
-                    Optional.of(new ChatBan(targetId, ChatConstants.SYSTEM_SENDER_ID,
-                            existingExpiry, NOW.minus(Duration.ofDays(4)))));
-
-            // when
-            service.kick(ownerKick());
-
-            // then: 카운트를 세지도 않는다
-            verify(kickLogRepository, never()).countSince(any(), any());
-            verify(banStateRepository, never()).append(any());
-            verify(banWriteRepository).ban(targetId, existingExpiry, NOW);
-        }
-
-        @Test
-        @DisplayName("⭐ 중복 강퇴는 누적을 세지 않는다 — 재강퇴만으로 밴을 연장할 수 없다")
-        void duplicateKickDoesNotCount() {
-            // given: 같은 방 두 번째 강퇴라 정본에 행이 생기지 않았고, 활성 밴도 없다
-            givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(false);
-            givenNoActiveBan();
-
-            // when
-            service.kick(ownerKick());
-
-            // then
-            verify(kickLogRepository, never()).countSince(any(), any());
-            verify(banStateRepository, never()).append(any());
-            verify(banWriteRepository, never()).ban(any(), any(), any());
-        }
-
-        @Test
-        @DisplayName("밴은 명단 등록·발행보다 먼저다 — 정본이 확정된 뒤에 집행이 간다")
-        void banIsWrittenBeforeEnforcement() {
+        @DisplayName("⭐ 미러가 명단 등록·발행보다 먼저다 — 정본이 확정된 뒤에 집행이 간다")
+        void mirrorPrecedesEnforcement() {
             // given
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
-            givenNoActiveBan();
-            givenKickCount(3);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.of(
+                    new ChatBan(targetId, UUID.randomUUID(), NOW.plus(Duration.ofDays(7)), NOW)));
 
             // when
             service.kick(ownerKick());
 
             // then
-            InOrder order = inOrder(banStateRepository, banWriteRepository,
+            InOrder order = inOrder(kickRecorder, banWriteRepository,
                     kickWriteRepository, kickEventPublisher);
-            order.verify(banStateRepository).append(any());
+            order.verify(kickRecorder).record(any(), any());
             order.verify(banWriteRepository).ban(any(), any(), any());
             order.verify(kickWriteRepository).register(roomId, targetId);
             order.verify(kickEventPublisher).publishKicked(roomId, targetId);
-        }
-
-        @Test
-        @DisplayName("누적 창은 2년이다 — 그보다 오래된 강퇴는 세지 않는다")
-        void countsOnlyTheLastTwoYears() {
-            // given
-            givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
-            givenNoActiveBan();
-            givenKickCount(1);
-
-            // when
-            service.kick(ownerKick());
-
-            // then
-            ArgumentCaptor<Instant> since = ArgumentCaptor.forClass(Instant.class);
-            verify(kickLogRepository).countSince(eq(targetId), since.capture());
-            assertThat(since.getValue()).isEqualTo(NOW.minus(Duration.ofDays(730)));
         }
     }
 
@@ -535,11 +459,11 @@ class KickUserServiceTest {
     class Propagation {
 
         @Test
-        @DisplayName("로그 저장이 실패하면 명단·발행이 실행되지 않는다 — 재시도가 안전해야 한다")
-        void logFailureStopsTheRest() {
+        @DisplayName("기록이 실패하면 명단·발행이 실행되지 않는다 — 재시도가 안전해야 한다")
+        void recordFailureStopsTheRest() {
             // given
             givenHappyPath();
-            willThrow(new IllegalStateException("DB 장애")).given(kickLogRepository).appendIfAbsent(any());
+            willThrow(new IllegalStateException("DB 장애")).given(kickRecorder).record(any(), any());
 
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
@@ -553,7 +477,7 @@ class KickUserServiceTest {
         void registerFailureStopsPublish() {
             // given
             givenHappyPath();
-            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
             willThrow(new IllegalStateException("Redis 장애"))
                     .given(kickWriteRepository).register(any(), any());
 

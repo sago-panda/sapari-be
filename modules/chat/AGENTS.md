@@ -28,6 +28,11 @@ Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
   regex** and registers the blocking beans with `@Bean`. Excluding by class would rot — a new reactive
   adapter would silently boot there, and one of them connects to Redis in its constructor.
   `ChatScanExclusionTest` guards the filter without booting a context.
+- ⚠️ **The exclusion also drops `ChatMongoConfig`, which is the only place UUIDs are pinned to standard BSON
+  binary.** The writing side (streaming-app) still pins it, so data stays correct and only the *reading* side
+  breaks — evidence documents come back with `org.bson.types.Binary` where a UUID belongs, and there is no
+  converter for that. live-app re-registers the customizer itself. Anything else that config provides has to
+  be re-provided the same way.
 - `mongodb-driver-sync` is **testImplementation only** — the blocking adapter compiles against
   `MongoTemplate` without it, and promoting it would hand the reactive app a sync driver.
 
@@ -165,6 +170,14 @@ user whose enforcement cache was lost can never be kicked in that room again.
 **DB-first**: the log commit is confirmed before Redis and publish. Registration is `SADD` + `PERSIST` in one
 Lua call because `SADD` inherits a leftover expiry and the whole list would then vanish silently.
 
+⚠️ **Both DB writes are `@Modifying` native INSERTs, and Spring Data gives those no ambient transaction.**
+Called without one they fail with `No active transaction for update or delete query` — measured, and it made
+every kick a 500 until `ChatKickRecorder` was introduced. That bean exists solely to hold the boundary around
+the two DB writes while leaving Redis outside it; it must stay a **separate bean** because a same-class call
+skips the proxy and the annotation silently does nothing. live's `RtmpIngressAssigner` is the same pattern.
+**Unit tests cannot see this** — mocks never run the query and `@DataJpaTest` opens a transaction for you.
+`ChatKickRecorderTest` calls with `Propagation.NOT_SUPPORTED` to remove that help.
+
 Escalation counts kicks **across rooms** on a 2-year window; per-seller counting lets a user who rotates
 rooms reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
 (3/6/9/12+) gives the same answer while kicks arrive one at a time, and differs only where the table is
@@ -186,5 +199,9 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   (`autoConnect(0)`, deliberate — it removes the pre-subscribe loss race). **Such tests need a Redis container**
   even when they test something else.
 - Schema for JPA tests is applied from the **real Flyway file**; a second copy drifts while staying green.
+- **A test that supplies wiring the app does not is worse than no test** — it goes green while production
+  breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
+  test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the
+  beans it actually built; it supplies its own properties so CI runs it rather than skipping it by tag.
 - **A test claiming a guarantee must be mutation-checked**: revert the production line, confirm that test —
   and ideally only that test — fails, restore. `checkOrphanJavadoc` gates javadoc placement in `check`.

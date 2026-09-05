@@ -24,7 +24,7 @@ import org.springframework.data.mongodb.repository.config.EnableReactiveMongoRep
  *
  * <p>같은 이유로 <b>chat-core의 블로킹 어댑터는 컴포넌트 스캔 대상이 아니다</b>. 스캔되면 여기에도 빈이
  * 만들어지려 하고, 그 의존(JPA·블로킹 Mongo)이 이 앱엔 없다. 블로킹 어댑터는 그 스택을 실제로 가진
- * 앱(api-app)이 명시로 등록한다 — 이 앱이 제외 목록을 관리하는 방식은 어댑터가 늘 때마다 빠뜨릴 자리를
+ * 앱(live-app)이 명시로 등록한다 — 이 앱이 제외 목록을 관리하는 방식은 어댑터가 늘 때마다 빠뜨릴 자리를
  * 하나씩 만든다.
  */
 @SpringBootApplication(
