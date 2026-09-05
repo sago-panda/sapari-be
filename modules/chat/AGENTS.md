@@ -97,8 +97,15 @@ corruption split is not widened to them.
    `null` — `=== null` breaks, everything else does not.
 
 **PII gating happens at fan-out, not on the wire.** The envelope carries `senderEmail` and the unmasked
-original in plaintext because the room owner may be on a different pod. `toView()` is the default and
-`toOwnerView()` the exception — never invert that.
+original in plaintext because a privileged reader may be on a different pod. The masked view is the default
+and the privileged one is the exception — **never invert that**, or every new role leaks by omission.
+
+Privileged means **room owner or ADMIN**, and those are two different axes on purpose. Ownership is
+per-room: a SELLER visiting someone else's broadcast is a viewer and sees masked text — that split is why
+gating moved off `role == SELLER` in the first place. ADMIN is account-level and ignores ownership, which is
+what the permission model always said (`f(role, isRoomOwner)`); fan-out had only ever implemented the
+ownership half. Moderators need the unmasked text for the same reason owners do — you cannot judge what to
+kick without seeing what was said.
 
 ## Send path — the order is the contract
 

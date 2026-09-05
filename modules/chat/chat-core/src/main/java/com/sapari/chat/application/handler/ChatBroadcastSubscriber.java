@@ -10,6 +10,8 @@ import com.sapari.chat.application.protocol.ChatEnvelope;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.domain.model.ChatMessage;
+import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.model.ChatSession;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -71,16 +73,31 @@ public class ChatBroadcastSubscriber {
      * 세션 식별자를 영속 메시지까지 관통시켜야 해서 얻는 것보다 잃는 게 크다.
      */
     private Mono<Void> fanOutChat(UUID roomId, ChatMessage message) {
-        OutboundMessage ownerView = OutboundMessage.chat(message, true, false);
+        OutboundMessage moderatorView = OutboundMessage.chat(message, true, false);
         OutboundMessage normalView = OutboundMessage.chat(message, false, false);
-        OutboundMessage ownerSenderView = OutboundMessage.chat(message, true, true);
+        OutboundMessage moderatorSenderView = OutboundMessage.chat(message, true, true);
         OutboundMessage senderView = OutboundMessage.chat(message, false, true);
         return sessionManager.sendToRoomGated(roomId, session -> {
             boolean sender = session.userId().equals(message.senderId());
-            return session.isRoomOwner()
-                    ? (sender ? ownerSenderView : ownerView)
+            return canModerate(session)
+                    ? (sender ? moderatorSenderView : moderatorView)
                     : (sender ? senderView : normalView);
         });
+    }
+
+    /**
+     * 원문과 발신자 이메일을 받을 자격이 있는 세션인가.
+     *
+     * <p><b>방 주인이거나 관리자다.</b> 소유는 방 단위 권한이고 ADMIN은 그와 무관한 계정 권한이라 두 축이
+     * 따로 선다 — 남의 방에 시청자로 들어온 SELLER는 여기 해당하지 않는다(그게 소유 기반 게이팅을 도입한
+     * 이유다). 관리자를 포함하는 것은 그 결정을 되돌리는 게 아니라, 처음부터 함께 적혀 있었으나 구현되지
+     * 않았던 절반이다.
+     *
+     * <p><b>기본은 여전히 마스킹이다.</b> 이 메서드가 참을 돌려주는 경우만 예외이고, 그 방향을 뒤집으면
+     * (기본을 원문으로 두고 예외를 마스킹으로 두면) 새 역할이 늘 때마다 조용히 노출된다.
+     */
+    private boolean canModerate(ChatSession session) {
+        return session.isRoomOwner() || session.role() == ChatRole.ADMIN;
     }
 
     private Mono<Void> fanOutKick(UUID roomId, UUID kickedUserId) {

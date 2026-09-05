@@ -63,8 +63,18 @@ class ChatBroadcastSubscriberTest {
         return new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "buyer@example.com", false);
     }
 
+    /** 관리자는 소유와 무관하다 — 남의 방에 들어와도 owner=false다(그 조합만 유효하다). */
+    private ChatSession admin() {
+        return new ChatSession(roomId, UUID.randomUUID(), ChatRole.ADMIN, "관리자", "admin@sapari.com", false);
+    }
+
+    /** 남의 방에 시청자로 들어온 판매자 — 계정 role은 SELLER지만 이 방에서는 소유가 없다. */
+    private ChatSession visitingSeller() {
+        return new ChatSession(roomId, UUID.randomUUID(), ChatRole.SELLER, "방문셀러", "other@example.com", false);
+    }
+
     @Test
-    @DisplayName("CHAT 팬아웃 성공: 방주인 세션이면 email·원문을 싣고, 일반 세션이면 마스킹 본문만 싣는다")
+    @DisplayName("CHAT 팬아웃: 방주인·관리자에겐 email·원문을, 시청자와 방문 판매자에겐 마스킹 본문만")
     void routeChat_Success() {
         // given
         given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).willReturn(Mono.empty());
@@ -93,6 +103,18 @@ class ChatBroadcastSubscriberTest {
         assertThat(viewerMsg.senderEmail()).isNull();          // PII 제외
         assertThat(viewerMsg.originalMessage()).isNull();      // 원문 제외
         assertThat(viewerMsg.displayMessage()).isEqualTo("원본**");   // 마스킹 본문은 유지
+
+        // ⭐ 관리자도 방 주인과 같은 것을 본다 — 소유가 아니라 계정 권한으로 열린다.
+        //    무엇을 강퇴할지 판단하려면 무슨 말을 했는지를 봐야 한다.
+        OutboundMessage adminMsg = resolver.apply(admin());
+        assertThat(adminMsg.senderEmail()).isEqualTo("buyer@example.com");
+        assertThat(adminMsg.originalMessage()).isEqualTo("원본바보");
+
+        // ⭐ 남의 방에 들어온 판매자는 여전히 못 본다 — 소유 기반 게이팅을 도입한 이유가 이것이고,
+        //    관리자를 여는 것이 그 결정을 되돌리는 게 아님을 여기서 고정한다.
+        OutboundMessage visitorMsg = resolver.apply(visitingSeller());
+        assertThat(visitorMsg.senderEmail()).isNull();
+        assertThat(visitorMsg.originalMessage()).isNull();
     }
 
     @Test
