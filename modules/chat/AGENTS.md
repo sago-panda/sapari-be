@@ -200,6 +200,13 @@ skips the proxy and the annotation silently does nothing. live's `RtmpIngressAss
 **Unit tests cannot see this** — mocks never run the query and `@DataJpaTest` opens a transaction for you.
 `ChatKickRecorderTest` calls with `Propagation.NOT_SUPPORTED` to remove that help.
 
+The mirror write is **extend-only** (`PTTL` compare + `SET` in one `EVAL`). Concurrent kicks in different
+rooms each create their own ban and each write the mirror, so an unconditional `SET` lets whoever arrives
+last win — and a short TTL landing last releases a user weeks early, because **the mirror is what enforces**.
+Re-reading the record for the longest ban was tried and only narrows it: it fixes *what* gets written, never
+*who writes last*. Ordering problems need order-independent writes. The cost is that this port can no longer
+shorten a ban — an admin reprieve needs `DEL` + set, in the same change that adds it.
+
 Escalation counts kicks **across rooms** on a 2-year window; per-seller counting lets a user who rotates
 rooms reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
 gives the same answer while kicks arrive one at a time, and differs only where the table is silent (window

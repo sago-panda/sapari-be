@@ -46,7 +46,15 @@ public record ChatMessage(
         return view(null, null);
     }
 
-    /** 방 주인 수신자 전용 view — senderEmail과 원문을 포함(마스킹↔원문 토글). 수신자의 방 소유를 확인한 경우에만 호출한다. */
+    /**
+     * 방 주인 수신자 전용 view — senderEmail과 원문을 포함(마스킹↔원문 토글).
+     * 수신자의 방 소유를 확인한 경우에만 호출한다.
+     *
+     * <p>⚠️ <b>이름이 좁다 — 실시간 게이팅과 다르다.</b> 팬아웃은 방 주인 <b>또는 관리자</b>에게
+     * 원문·이메일을 주는데({@code ChatMessageVisibility.FULL}) 이 메서드는 이름 그대로 방 주인만 상정한다.
+     * 아직 프로덕션 호출자가 없지만, 이력 조회를 짜면서 이걸 그대로 쓰면 <b>실시간은 관리자에게 열리고
+     * 이력은 닫히는</b> 두 갈래 정책이 된다. 그때는 팬아웃과 같은 판정을 쓰거나, 왜 다른지를 적을 것.
+     */
     public ChatMessageView toOwnerView() {
         return view(senderEmail, originalMessage);
     }

@@ -17,6 +17,7 @@ import org.springframework.web.reactive.socket.CloseStatus;
 
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.OutboundMessage;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 
@@ -187,6 +188,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> register(String sessionId, ChatSession session) {
+        // 관리자 입장만 남긴다. 이 세션은 방 주인과 같은 것을 받는다 — 마스킹 전 원문과 발신자
+        // 이메일이다. 방 주인은 자기 방에 묶이지만 관리자는 진행 중인 아무 방이나 들어갈 수 있어
+        // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
+        // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
+        if (session.role() == ChatRole.ADMIN) {
+            log.info("관리자 채팅 입장 — userId={} roomId={}", session.userId(), session.roomId());
+        }
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
         local.put(sessionId, new LocalSession(sessionId, session,

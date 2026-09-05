@@ -35,10 +35,7 @@ import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
-import com.sapari.chat.domain.repository.ChatBanStateRepository;
-import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
-import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
@@ -68,8 +65,6 @@ class KickUserServiceTest {
     @Mock
     private ChatKickRecorder kickRecorder;
     @Mock
-    private ChatBanStateRepository banStateRepository;
-    @Mock
     private ChatBanWriteRepository banWriteRepository;
     @Mock
     private ChatKickWriteRepository kickWriteRepository;
@@ -88,9 +83,9 @@ class KickUserServiceTest {
     @BeforeEach
     void setUp() {
         service = new KickUserService(
-                liveRoomReader, evidenceRepository, kickRecorder, banStateRepository,
-                banWriteRepository, kickWriteRepository, kickEventPublisher,
-                new ChatPermissionPolicy(), new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+                liveRoomReader, evidenceRepository, kickRecorder, banWriteRepository,
+                kickWriteRepository, kickEventPublisher, new ChatPermissionPolicy(),
+                new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
     /** 인증 주체에서 오는 값(kickerId·kickerRole)은 컨트롤러가 채운다 — 요청 본문에는 자리가 없다. */
@@ -134,7 +129,7 @@ class KickUserServiceTest {
         void writesInDbFirstOrder() {
             // given
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -151,7 +146,7 @@ class KickUserServiceTest {
         void logCarriesServerReadEvidence() {
             // given
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -172,7 +167,7 @@ class KickUserServiceTest {
         void duplicateStillRegistersAndPublishes() {
             // given: 이미 같은 (user, room) 로그가 있어 이번 INSERT는 no-op이다
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -188,7 +183,7 @@ class KickUserServiceTest {
             // given: 방 주인이 아닌 관리자
             UUID adminId = UUID.randomUUID();
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(command(adminId, "ADMIN"));
@@ -204,7 +199,7 @@ class KickUserServiceTest {
             // 판정에 끼어들 자리가 없고, 그게 필요한 동작이다 — REST가 막힌 뒤에도 채팅 세션은
             // 살아 있어 그 사람이 방에서 계속 말한다.
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -396,7 +391,7 @@ class KickUserServiceTest {
         void noBanLeavesMirrorAlone() {
             // given
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -411,7 +406,7 @@ class KickUserServiceTest {
             // given
             Instant expiry = NOW.plus(Duration.ofDays(7));
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.of(
+            given(kickRecorder.record(any())).willReturn(Optional.of(
                     new ChatBan(targetId, UUID.randomUUID(), expiry, NOW)));
 
             // when
@@ -430,7 +425,7 @@ class KickUserServiceTest {
         void manualPermanentBanHasNoExpiry() {
             // given
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.of(
+            given(kickRecorder.record(any())).willReturn(Optional.of(
                     new ChatBan(targetId, UUID.randomUUID(), null, NOW)));
 
             // when
@@ -445,7 +440,7 @@ class KickUserServiceTest {
         void mirrorPrecedesEnforcement() {
             // given
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.of(
+            given(kickRecorder.record(any())).willReturn(Optional.of(
                     new ChatBan(targetId, UUID.randomUUID(), NOW.plus(Duration.ofDays(7)), NOW)));
 
             // when
@@ -484,7 +479,7 @@ class KickUserServiceTest {
         void registerFailureStopsPublish() {
             // given
             givenHappyPath();
-            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
             willThrow(new IllegalStateException("Redis 장애"))
                     .given(kickWriteRepository).register(any(), any());
 

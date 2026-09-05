@@ -9,6 +9,7 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -136,9 +137,10 @@ class ChatKickRecorderTest {
         // given: 호출자가 트랜잭션을 열지 않은, 실제 유스케이스와 같은 조건
 
         // when
-        recorder.record(kick(UUID.randomUUID(), NOW));
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
 
         // then: 예외 없이 커밋됐고, 누적 1회는 임계 미만이라 밴은 없다
+        assertThat(ban).isEmpty();
         assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
         assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(1);
     }
@@ -152,11 +154,13 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
 
         // when
-        recorder.record(kick(UUID.randomUUID(), NOW));
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
 
-        // then: 정본에 1주 밴이 남는다 — 미러는 호출자가 이 값을 다시 읽어 쓴다
-        ChatBan active = bans.findActive(targetUserId, NOW).orElseThrow();
-        assertThat(active.expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
+        // then: 돌려받은 값과 정본이 같은 밴이다 — 호출자는 이걸 미러에 쓴다
+        assertThat(ban).isPresent();
+        assertThat(ban.get().expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
+        assertThat(bans.findActive(targetUserId, NOW).orElseThrow().expiresAt())
+                .isEqualTo(NOW.plus(Duration.ofDays(7)));
     }
 
     @Test
@@ -176,19 +180,28 @@ class ChatKickRecorderTest {
 
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    @DisplayName("이미 밴이 있으면 겹쳐 쌓지 않는다 — 재시도가 밴을 늘리지 않는다")
+    @DisplayName("⭐ 이미 밴이 있으면 임계에 닿아도 겹쳐 쌓지 않는다 — 재시도가 밴을 늘리지 않는다")
     void existingBanIsReturnedNotStacked() {
-        // given: 이미 활성 밴
-        // ⚠️ append도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
-        //    준비 코드라 직접 연다 — 이 테스트가 일부러 주변 트랜잭션을 걷어냈기 때문이다.
+        // given: ⚠️ 가드가 <b>실제로 일하는</b> 조합이어야 한다. 누적이 임계에 닿아 있어야
+        //        "가드가 없으면 새 밴이 생긴다"가 성립하고, 그때만 이 테스트가 가드를 잰다.
+        //        선행 강퇴 둘(다른 방)로 누적을 2로 만들어 아래 강퇴가 3회째가 되게 한다.
+        recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
+
+        // append도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
+        // 준비 코드라 직접 연다 — 이 테스트가 일부러 주변 트랜잭션을 걷어냈기 때문이다.
         Instant expiry = NOW.plus(Duration.ofDays(30));
         transactionTemplate.executeWithoutResult(status -> bans.append(
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
-        // when
-        recorder.record(kick(UUID.randomUUID(), NOW));
+        // when: 3회째 — 가드가 없으면 여기서 1주 밴이 새로 생기고 그것이 반환된다
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
 
-        // then: 새로 쌓지 않았으므로 원래 밴 그대로다
+        // then: 기존 밴을 그대로 돌려주고, 정본에도 새 행이 생기지 않았다
+        assertThat(ban).isPresent();
+        assertThat(ban.get().expiresAt())
+                .as("가드가 통과돼 새 밴이 생겼다 — 재시도마다 밴이 쌓인다")
+                .isEqualTo(expiry);
         assertThat(bans.findActive(targetUserId, NOW).orElseThrow().expiresAt()).isEqualTo(expiry);
     }
 }
