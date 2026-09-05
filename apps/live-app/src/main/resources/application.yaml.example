@@ -94,18 +94,33 @@ live:
   # 모르는 방송을 강제 종료하므로, 오작동이 의심되면 그것만 내린다.
   # cron 은 세 잡이 동시에 LiveKit 을 때리지 않게 3분씩 어긋내 둔다(정렬하지 말 것).
   #
-  # ※ live-app 단일 레플리카 전제 — 늘리면 잡이 중복 실행된다(멱등이라 오류는 아니나 낭비).
-  #    확장 전에 ShedLock 을 붙일 것.
+  # ※ 레플리카 2 이상에서 돌 수 있다 — 잡마다 ShedLock 분산 락이 걸려 있어 회차는 한 인스턴스만 돈다
+  #    (락 저장소: live_schema.shedlock, 프로바이더 설정은 ReconcileLockConfig).
+  #    락을 못 잡은 인스턴스는 조용히 넘어가고 다음 주기에 다시 시도한다.
+  #
+  #    셋 중 orphan-media 만 DB 전이가 없어 락이 실질적으로 필요하다. 나머지 둘은 행 잠금 + 상태 가드를
+  #    지나 커밋한 쪽만 외부 정리를 등록하므로 락이 없어도 파괴적 정리(stop/delete/close)는 한 번뿐이다
+  #    — 조회(listAllEgress·listRoomIngress)는 레플리카 수만큼 중복된다. 그래도 세 잡을 같은 방식으로
+  #    두는 편이 "이 잡만 왜 다른가"를 매번 확인하지 않아도 되어 안전하다.
   # -------------------------------------------------------------------------
   reconcile:
-    enabled: ${LIVE_RECONCILE_ENABLED:true}  # 마스터 스위치 — off 면 @EnableScheduling 과 잡 빈이 전부 내려간다
+    # 마스터 스위치 — off 면 @EnableScheduling·잡 빈·락 설정·부팅 가드가 전부 내려간다.
+    # on(기본) 이면 live_schema.shedlock 이 있어야 부팅된다(ShedLockTableGuard). 마이그레이션이 앱보다 먼저다.
+    enabled: ${LIVE_RECONCILE_ENABLED:true}
     batch-size: ${LIVE_RECONCILE_BATCH_SIZE:100}
+    # 회차가 순식간에 끝나도 이만큼은 락을 쥔다. 두 인스턴스의 cron 발화가 지터로 수백 ms 어긋날 때
+    # 뒤에 온 쪽이 같은 회차를 한 번 더 도는 걸 막는다. cron 간격(10분)보다 짧게 유지할 것.
+    lock-at-least-for: ${LIVE_RECONCILE_LOCK_AT_LEAST_FOR:PT1M}
     # OBS 가 끝내 연결되지 않아 Ready 에 갇힌 방 → Ended (송출 중이면 대신 Live 로 승격)
     expire-ready:
       enabled: ${LIVE_RECONCILE_EXPIRE_READY_ENABLED:true}
       threshold: ${LIVE_RECONCILE_READY_THRESHOLD:60m}
       cron: ${LIVE_RECONCILE_EXPIRE_READY_CRON:0 0/10 * * * *}
-      # 이 잡만 후보마다 LiveKit 을 왕복한다(조회 1회 + 만료·승격 처리에서 최대 8회 더). 공용값 100 을
+      # 락 유지 시간 = 락 보유 인스턴스가 죽었을 때의 인계 지연. 잡의 최악 실행 시간보다 길게 잡는다 —
+      # 짧으면 느린 회차 도중 락이 만료돼 두 인스턴스가 겹친다(= 락을 건 이유가 사라진다).
+      # 상한: 후보 20 × (송출 조회 1 + 커밋 후 정리 3) = 80회 × callTimeout 15s ≈ 20분.
+      lock-at-most-for: ${LIVE_RECONCILE_EXPIRE_READY_LOCK_AT_MOST_FOR:PT45M}
+      # 이 잡만 후보마다 LiveKit 을 왕복한다(조회 1회 + 만료 시 커밋 후 정리 최대 3회). 공용값 100 을
       # 그대로 쓰면 회차가 너무 길어져 다음 주기와 겹친다.
       batch-size: ${LIVE_RECONCILE_EXPIRE_READY_BATCH_SIZE:20}
     # 방송은 끝났는데 room_finished 유실로 Live 에 갇힌 방 → Ended
@@ -113,12 +128,20 @@ live:
       enabled: ${LIVE_RECONCILE_END_STALE_LIVE_ENABLED:true}
       threshold: ${LIVE_RECONCILE_STALE_LIVE_THRESHOLD:60m}
       cron: ${LIVE_RECONCILE_END_STALE_LIVE_CRON:0 3/10 * * * *}
+      # 셋 중 가장 길다. 이 잡만 공용 batch-size(100)를 쓰고, 종료된 방마다 커밋 후 미디어 정리가
+      # 회차 스레드에서 동기로 최대 3회 LiveKit 을 부른다 → 1 + 100×3 = 301회 × 15s ≈ 75분.
+      # 인계가 최대 90분 늦는 대가다. 줄이려면 이 값이 아니라 이 잡 전용 batch-size 로 회차를 묶을 것.
+      lock-at-most-for: ${LIVE_RECONCILE_END_STALE_LIVE_LOCK_AT_MOST_FOR:PT90M}
     # DB 정본과 어긋난 LiveKit ingress/egress/room 회수.
     # grace 는 생성 직후 정상 리소스를 지우지 않기 위한 유예라 0 이 될 수 없다.
     orphan-media:
       enabled: ${LIVE_RECONCILE_ORPHAN_MEDIA_ENABLED:true}
       grace: ${LIVE_RECONCILE_MEDIA_GRACE:15m}
       cron: ${LIVE_RECONCILE_ORPHAN_MEDIA_CRON:0 6/10 * * * *}
+      # 배치 개념이 없어 회차 길이가 리소스 수에 비례한다 — "최악보다 길게"를 만족하는 고정값이 없다.
+      # PT60M 은 15s 기준 약 240회분이고, 고아가 쌓인 회차(= 이 잡이 가장 중요한 순간)엔 넘길 수 있다.
+      # 이 잡이 락이 실질적으로 필요한 유일한 잡이라, 초과하면 겹쳐 돌며 reconcileActed 가 배로 부푼다.
+      lock-at-most-for: ${LIVE_RECONCILE_ORPHAN_MEDIA_LOCK_AT_MOST_FOR:PT60M}
 
   # -------------------------------------------------------------------------
   # webhook 수신 경로 레이트리밋 (전부 optional — 코드 기본값 있음)

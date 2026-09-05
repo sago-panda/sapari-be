@@ -3,6 +3,8 @@ package com.sapari.liveapp.scheduler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -22,7 +24,16 @@ public class ExpireReadyScheduler {
 
     private final ReconcileExpiredReadyUseCase reconcileExpiredReadyUseCase;
 
+    /**
+     * 잡별 락. 유지 시간의 의미와 {@code lock-at-least-for} 는 {@link com.sapari.liveapp.config.ReconcileLockConfig} 참고.
+     *
+     * <p>상한 근거: 후보 {@code expire-ready.batch-size} 20건 × (송출 조회 1 + 만료 시 커밋 후 정리 3)
+     * = 80회 × {@code callTimeout} 15s ≈ 20분. 승격 경로는 후보당 1회뿐이라 더 짧다.
+     */
     @Scheduled(cron = "${live.reconcile.expire-ready.cron:0 0/10 * * * *}")
+    @SchedulerLock(name = "live-reconcile-expire-ready",
+            lockAtMostFor = "${live.reconcile.expire-ready.lock-at-most-for:PT45M}",
+            lockAtLeastFor = "${live.reconcile.lock-at-least-for:PT1M}")
     public void run() {
         try {
             reconcileExpiredReadyUseCase.reconcile();

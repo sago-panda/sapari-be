@@ -26,6 +26,16 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
 - **Adding a schema:** one `folder:schema` line in `migrate.sh`'s `SCHEMAS` list **+** create
   `db/migration/<folder>/`. Nothing else.
 
+- **Deployment prerequisite — the migration leads, live-app follows.** Since SPR-142 the reconcile
+  schedulers take a ShedLock lock on `live_schema.shedlock`, created by `db/migration/live/V*__shedlock.sql`.
+  Roll out the migration **before** the app. `ShedLockTableGuard` **refuses to boot** when the table is
+  missing, so the failure is loud and at the right moment — same choice as `managementPortMustDiffer`.
+  Without that guard the app would come up fine and only the three cleanup jobs would stop: every round
+  throws, but from the ShedLock proxy **outside** each scheduler's `try/catch`, so the prepared domain
+  message never appears and still-billing egress goes unreclaimed. The guard adds no new boot-time DB
+  dependency (`ddl-auto: validate` already needs the DB); it covers what `validate` cannot, since the
+  lock table has no entity.
+
 How it runs:
 - **local:** `DB_URL=… DB_USER=… DB_PASSWORD=… ./infra/migration/migrate.sh` (needs Flyway CLI;
   auto-detects `db/migration` from repo root).

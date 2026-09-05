@@ -62,10 +62,11 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
 
 | Key (`live.reconcile`) | Default |
 |---|---|
-| `enabled` | on — master switch; drops `@EnableScheduling` and the job beans |
+| `enabled` | on — master switch; drops `@EnableScheduling`, the job beans and the lock config |
 | `<job>.enabled` · `<job>.cron` | on · staggered 10-min (`0/10`, `3/10`, `6/10` — keep them apart) |
 | `expire-ready.threshold` · `end-stale-live.threshold` · `orphan-media.grace` | 60m · 60m · 15m |
 | `expire-ready.batch-size` · `batch-size` | 20 (round-trips LiveKit per candidate) · 100 |
+| `<job>.lock-at-most-for` · `lock-at-least-for` | 45m / 90m / 60m · 1m (ShedLock; see the lock bullet) |
 
 | Job | Candidate | Decides by | Acts via |
 |---|---|---|---|
@@ -86,8 +87,26 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   case this targets. A shorter TTL is not a substitute; it needs a refresh endpoint first.
 - **Never judge staleness by viewer count** — HLS viewers are not SFU participants. `started_at`, not `updated_at`.
 - **When in doubt, don't delete.** No DB row → log only; grace covers the create-then-save window.
-- Per-room work is a separate bean so `@Transactional` + row lock apply. **Single replica assumed** — add
-  ShedLock before scaling out.
+- Per-room work is a separate bean so `@Transactional` + row lock apply. **Multi-replica safe**: each job
+  holds its own ShedLock lock (`live-reconcile-<job>`, JDBC provider on `live_schema.shedlock`,
+  `ReconcileLockConfig`; `ShedLockTableGuard` refuses to boot if the migration has not run).
+  A loser skips silently and retries next cycle; `<job>.lock-at-most-for` is the
+  takeover delay after a holder dies, so it must exceed the job's worst round — ShedLock neither aborts nor
+  extends a running round, so too short a lease means a slow round keeps going unlocked while the next tick
+  starts a second one. `end-stale-live` is the **longest** job, not the shortest: it uses the shared
+  `batch-size` 100 and every ended room runs `PostCommitMediaCleanup`'s up-to-3 LiveKit calls synchronously
+  on the round thread. `orphan-media` has no batch bound at all, so no fixed lease is provably enough —
+  bounding that sweep is the real fix and is not in SPR-142. **Only `orphan-media`
+  actually needs it** — the other two decide, lock the row, and register cleanup inside the winning
+  transaction, so the *destructive* calls happen once regardless (the read sweeps still duplicate per
+  replica). `orphan-media` has no DB gate at all, and cleanup
+  ports swallow, so a duplicate round is invisible except as doubled `reconcileActed` counts — which
+  breaks the "same numbers repeating = nothing is being cleaned" reading.
+- **The lock table's time columns are `timestamp`, not `timestamptz`** — ShedLock writes *and* compares
+  `timezone('utc', CURRENT_TIMESTAMP)`, a zone-less value. In a `timestamptz` column that is resolved
+  against the session zone, which pgjdbc takes from each JVM's default — measured, the same instant lands
+  32400s apart from a UTC vs. a KST session, so replicas in different zones stop excluding each other.
+  `timestamp` has no such path. Don't "fix" it to match the rest of the schema.
 - **The room sweep applies no grace.** Only `Ended` rooms reach that point, and an `Ended` room can never
   have a legitimate SFU room (starting requires `Scheduled`). Grace would protect nothing while opening a
   hole: a seller re-joining recreates the room with a **fresh creation time**, so anyone reconnecting more
@@ -107,6 +126,12 @@ evaluates before autoconfiguration and would silently disable all metrics.
   a tx the transition may still roll back — `StartLiveService` saves products *after* the room.
 - **Round counters fire even on a 0-candidate round.** No record must mean "the scheduler is dead", not
   "nothing to do", or a dead job is indistinguishable from a quiet one.
+- **The distributed lock punched a hole in that rule.** `@SchedulerLock` wraps `run()` from the *outside*,
+  so a round that loses the lock — or one where the lock store itself throws — raises no round counter and
+  no domain log at all. Cluster-wide the totals still come to one round per tick, but a dead holder leaves
+  its job with **zero records for a whole lease**, which reads exactly like a dead scheduler. Fixing it
+  needs a counter around the lock, i.e. a new `LiveMetrics` port method; until then this is a known
+  blind spot, not an oversight.
 - **A round ends exactly one way: `completed` / `aborted` / `failed`** (`outcome` tag on
   `live.reconcile.round`). `aborted` is the guard folding the round on its own; `failed` is an exception
   escaping to the scheduler. Both look like "completed didn't rise" from outside but need opposite

@@ -47,8 +47,14 @@ subprojects {
         // 이름(*ApplicationTests)이 아니라 태그로 거르는 이유: 이름 규칙이면 그 이름을 쓰는
         // 새 테스트가 CI 에서 조용히 영구 미실행이 된다. 태그를 안 붙이면 CI 가 시끄럽게
         // 실패하고, 그때 붙이면 된다 — 실패 방향이 안전한 쪽이다.
+        //
+        // @Tag("docker") 는 Testcontainers 로 실제 컨테이너를 띄우는 테스트다(.gitlab/ci/build.yml 의
+        // build 잡은 image 만 있고 services 가 없어 Docker 데몬이 없다 — 그 잡이 외부 서비스를 붙이지
+        // 않는 이유는 같은 파일 상단에 적혀 있다). 여기 남는 사각지대가 크다: 락 경합 검증이 CI 에서
+        // 돌지 않으므로, 락이 깨지는 회귀는 로컬에서 이 테스트를 돌려야만 잡힌다. 러너에 dind 를
+        // 붙일 수 있게 되면 이 태그부터 제외 목록에서 빼는 게 맞다.
         if (System.getenv('CI')) {
-            useJUnitPlatform { excludeTags 'context' }
+            useJUnitPlatform { excludeTags 'context', 'docker' }
         }
     }
 
