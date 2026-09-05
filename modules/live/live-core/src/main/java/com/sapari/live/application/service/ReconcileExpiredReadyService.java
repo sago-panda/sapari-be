@@ -3,6 +3,7 @@ package com.sapari.live.application.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -13,6 +14,10 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.ExpiredReadyReconcilePolicy;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.application.port.PromotionTrigger;
+import com.sapari.live.application.port.ReconcileAction;
+import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveMediaException;
@@ -52,18 +57,46 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
     private final GoLiveByRtmpService goLiveByRtmpService;
     private final ExpiredReadyReconcilePolicy policy;
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
 
+    /**
+     * 회차를 감싸 예외를 <b>세고 다시 던진다</b>. 스케줄러가 잡아 로그를 남기는 구조는 그대로 두고
+     * (실패 처리 방식을 바꾸지 않는다) 밖에서 보이는 사실만 하나 늘린다 — 이게 없으면 매 회차
+     * 예외로 죽는 잡과 스케줄러가 아예 안 도는 상황이 지표상 똑같다.
+     */
     @Override
     public void reconcile() {
-        Instant threshold = timeProvider.now().minus(policy.threshold());
+        // 예외를 잡지 않는다 — 정상 종료에만 표시를 남기고, 없으면 실패로 센다. catch 로 세면
+        // Error 로 죽은 회차가 무기록이 되어(= 스케줄러가 안 돈 것과 같아 보임) 이 지표를 만든
+        // 이유가 사라지고, Throwable 을 잡으면 죽어가는 JVM 을 건드린다.
+        boolean completed = false;
+        try {
+            doReconcile();
+            completed = true;
+        } finally {
+            if (!completed) {
+                liveMetrics.reconcileRoundFailed(ReconcileJob.EXPIRE_READY);
+            }
+        }
+    }
+
+    private void doReconcile() {
+        Instant startedAt = timeProvider.now();
+        Instant threshold = startedAt.minus(policy.threshold());
         List<UUID> roomIds = liveRoomRepository.findExpiredReadyRoomIds(threshold, policy.batchSize());
         if (roomIds.isEmpty()) {
+            // 후보 0건도 완료 회차다 — 무기록으로 두면 스케줄러가 죽은 것과 구분되지 않는다.
+            liveMetrics.reconcileRoundCompleted(ReconcileJob.EXPIRE_READY, elapsed(startedAt));
             return;
         }
 
         int expired = 0;
         int promoted = 0;
         int skipped = 0;
+        int ingressMissing = 0;   // skipped 의 부분집합 — 오설정 신호라 따로 센다
+        // 집계는 finally 에서 내보낸다 — 루프 도중 예외로 빠져나가면 그때까지 실제로 만료·승격한
+        // 건수가 통째로 사라지고 failed 만 남는다. "죽기 전까지 N건은 처리했다" 가 사후 추적의 시작점이다.
+        try {
         for (UUID roomId : roomIds) {
             try {
                 // 처리 직전에 확인한다 — 조회가 실패하면 그 방은 만료하지 않고 다음 회차로 미룬다.
@@ -78,6 +111,9 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
                 // 보고 있거나 오설정. 여기서 만료로 넘기면 살아 있는 방송이 회차당 batch-size 만큼 끊긴다.
                 // "OBS 가 끝내 안 붙은 방"은 ingress 가 등록은 돼 있어(INACTIVE) 이 분기에 걸리지 않는다.
                 if (ingresses.isEmpty() && room.isRtmp()) {
+                    // 방 단위 판정이므로 회차 중단(aborted)이 아니라 별도 갈래로 센다. 여기서
+                    // reconcileRoundAborted 를 부르면 회차 하나에서 후보 수만큼 올라 회차 지표가 깨진다.
+                    ingressMissing++;
                     skipped++;
                     log.error("Ready 정리 스킵 — DB 는 ingress 배정을 아는데 LiveKit 목록이 빔. 오설정 의심. roomId={}",
                             roomId);
@@ -119,6 +155,15 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
                 log.info("Ready 정리 스킵 — 이미 처리된 방. roomId={}, 사유={}", roomId, e.getClass().getSimpleName());
             }
         }
+        } finally {
+            liveMetrics.reconcileActed(ReconcileJob.EXPIRE_READY, ReconcileAction.PROMOTED, promoted);
+            liveMetrics.reconcileActed(ReconcileJob.EXPIRE_READY, ReconcileAction.EXPIRED, expired);
+            liveMetrics.reconcileActed(
+                    ReconcileJob.EXPIRE_READY, ReconcileAction.SKIPPED, skipped - ingressMissing);
+            liveMetrics.reconcileActed(
+                    ReconcileJob.EXPIRE_READY, ReconcileAction.SKIPPED_INGRESS_MISSING, ingressMissing);
+        }
+        liveMetrics.reconcileRoundCompleted(ReconcileJob.EXPIRE_READY, elapsed(startedAt));
         log.info("고아 Ready 방 정리 완료. 후보={}, 만료={}, 승격={}, 스킵={}",
                 roomIds.size(), expired, promoted, skipped);
     }
@@ -132,13 +177,20 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
      * 매 회차 처리되지 못한다(head-of-line blocking). 만료 경로는 넓히지 않는다 — 거기서 DB 장애가
      * 나면 회차를 멈추는 게 맞다.
      *
+     * <p><b>알려진 지표 편차</b>: 승격 여부를 잠금 없는 재조회로 판정하므로, webhook 이 같은 순간에 먼저
+     * 전이시키면 여기서는 "승격됨"(→ {@code acted{promoted}})으로 세고 경로 태그는
+     * {@code rtmp.promotion{trigger=webhook}} 으로 오른다. 두 지표가 1건 어긋난다. <b>업무 동작은
+     * 정확하다</b> — 전이는 행 잠금 덕에 정확히 한 번만 일어난다. 없애려면 {@code goLiveByRtmp} 가 전이
+     * 여부를 반환해야 하는데, 그 시그니처 변경은 랑데부 계약(세 경로가 같은 진입점을 쓴다)을 건드리는
+     * 일이라 관측 편차 하나 때문에 치를 값이 아니다. 경합이 실제로 일어난 회차에만 생긴다.
+     *
      * @return 실제로 Live 로 전이했으면 1, 아니면 0
      */
     private int promote(UUID roomId, String ingressId) {
         try {
             // 전이 여부를 반환하지 않으므로(no-op 이어도 조용히 끝난다) 저장된 상태로 확인한다.
             // webhook 과 같은 진입점을 쓴다 — 대조를 건너뛰는 별도 경로를 두면 그쪽만 가드가 빠진다.
-            goLiveByRtmpService.goLiveByRtmp(roomId, ingressId);
+            goLiveByRtmpService.goLiveByRtmp(roomId, ingressId, PromotionTrigger.RECONCILE);
         } catch (RuntimeException e) {
             log.error("Ready 고착 방 승격 실패 — 다음 회차 재시도. roomId={}", roomId, e);
             return 0;
@@ -154,5 +206,9 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         }
         log.warn("Ready 고착 방이 송출 중 — 만료 대신 Live 로 승격. roomId={}", roomId);
         return 1;
+    }
+
+    private Duration elapsed(Instant startedAt) {
+        return Duration.between(startedAt, timeProvider.now());
     }
 }
