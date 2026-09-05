@@ -4,6 +4,7 @@ import java.util.UUID;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 /**
  * 강퇴 요청 본문 — <b>담기는 것이 둘뿐인 게 요점이다.</b>
@@ -20,6 +21,16 @@ public record KickUserRequest(
         UUID targetUserId,
 
         @NotBlank(message = "messageId는 필수입니다.")
+        @Size(max = MAX_MESSAGE_ID_LENGTH, message = "messageId가 너무 깁니다.")
         String messageId
 ) {
+
+    /**
+     * 입력 길이 상한. <b>형식 검증이 아니라 크기 방어다</b> — 형식이 맞는지는 조회 어댑터가 보고, 여기서는
+     * 메가바이트짜리 문자열이 그 아래까지 흘러가지 않게만 막는다.
+     *
+     * <p>저장소가 쓰는 id 길이(24)에 딱 맞추지 않는 것은 의도다. 웹 계층이 그 값을 알면 계약이 저장소
+     * 타입에 묶이고, 그건 {@code KickUserCommand}가 명시적으로 피한 것이다. 넉넉히 잡아도 남용은 막힌다.
+     */
+    private static final int MAX_MESSAGE_ID_LENGTH = 64;
 }

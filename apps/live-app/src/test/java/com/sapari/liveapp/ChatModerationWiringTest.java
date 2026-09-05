@@ -6,6 +6,8 @@ import java.security.KeyPairGenerator;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.Base64;
 
 import org.bson.UuidRepresentation;
@@ -18,6 +20,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.util.ClassUtils;
 
 import com.mongodb.MongoClientSettings;
 import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
@@ -153,27 +156,44 @@ class ChatModerationWiringTest {
         assertThat(builder.build().getUuidRepresentation()).isEqualTo(UuidRepresentation.STANDARD);
     }
 
+    /**
+     * 이 앱에 존재하는 chat 빈의 <b>전부</b>를 고정한다.
+     *
+     * <p>패키지 몇 개만 골라 보면 검사가 이름이 주장하는 것보다 좁아진다 — 걸러 낸 자리 밖에서 새면
+     * 초록인 채로 통과한다. 그래서 특정 패키지가 아니라 {@code com.sapari.chat} 전체를 세고, 이 앱이
+     * <b>일부러 등록한 것</b>과 정확히 같은지 본다.
+     *
+     * <p>목록에 없는 것이 하나라도 생기면 깨진다. 그게 의도다 — chat 빈이 이 앱에 새로 생기는 일은
+     * 스캔 제외가 풀렸거나 누군가 {@code @Bean}을 더한 것이고, 둘 다 사람이 한 번 봐야 하는 변화다.
+     */
     @Test
-    @DisplayName("⭐ 리액티브 chat 빈이 하나도 없다 — 있으면 이 앱이 채팅 팬아웃 노드가 된다")
-    void noReactiveChatBeansLeakedIn() {
-        // given: chat-core는 streaming-app과 공유돼 리액티브 어댑터가 @Repository를 달고 함께 산다.
-        //        그중 브로드캐스터는 생성자에서 Redis에 접속한다.
-        String[] leaked = Arrays.stream(context.getBeanDefinitionNames())
-                .filter(name -> {
-                    Class<?> type = context.getType(name);
-                    return type != null
-                            && type.getName().startsWith("com.sapari.chat.")
-                            && (type.getName().contains(".infrastructure.redis.")
-                                    || type.getName().contains(".application.handler."));
-                })
-                .toArray(String[]::new);
+    @DisplayName("⭐ 이 앱의 chat 빈은 일부러 등록한 것뿐이다 — 하나라도 더 있으면 스캔이 새고 있다")
+    void onlyDeliberatelyRegisteredChatBeansExist() {
+        // given: 리액티브 어댑터가 @Repository를 달고 같은 모듈에 살고, 그중 브로드캐스터는
+        //        생성자에서 Redis에 접속한다. 새어 들어오면 이 앱이 채팅 팬아웃 노드가 된다.
+        Set<String> expected = Set.of(
+                // ChatModerationBeansConfig 가 세우는 것
+                "ChatPermissionPolicy", "ChatKickRecorder", "KickUserService",
+                "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
+                "ChatMessageEvidenceMongoRepository",
+                "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",
+                "ChatKickEventRedisPublisher");
 
-        // when & then: 이 앱이 등록하는 chat Redis 어댑터는 전부 블로킹 쓰기 셋뿐이다
-        assertThat(leaked)
-                .as("리액티브 chat 빈이 스캔으로 들어왔다")
-                .allSatisfy(name -> assertThat(context.getType(name).getSimpleName())
-                        .isIn("ChatKickWriteRedisRepository",
-                                "ChatBanWriteRedisRepository",
-                                "ChatKickEventRedisPublisher"));
+        // when
+        Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())
+                .map(context::getType)
+                .filter(type -> type != null && type.getName().startsWith("com.sapari.chat."))
+                // Spring Data가 만드는 리포지토리 프록시는 인터페이스 이름으로 잡힌다 — 이 앱이
+                // @EnableJpaRepositories로 명시한 것이라 목록에 넣지 않고 여기서 걷어낸다.
+                .filter(type -> !type.isInterface())
+                // 프록시가 씌워진 빈은 이름이 ChatKickRecorder$$SpringCGLIB$$0 꼴이 된다.
+                // 원본 클래스로 되돌려 비교한다 — 프록시 유무는 이 테스트가 볼 것이 아니다(별도 테스트).
+                .map(type -> ClassUtils.getUserClass(type).getSimpleName())
+                .collect(Collectors.toSet());
+
+        // then
+        assertThat(actual)
+                .as("이 앱에 있어야 할 chat 빈과 실제가 다르다 — 스캔 제외가 풀렸거나 등록이 늘었다")
+                .isEqualTo(expected);
     }
 }

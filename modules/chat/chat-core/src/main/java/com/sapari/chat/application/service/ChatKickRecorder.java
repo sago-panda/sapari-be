@@ -72,6 +72,11 @@ public class ChatKickRecorder {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<ChatBan> record(ChatKickLog kickLog) {
         Instant now = kickLog.kickedAt();
+        // 유니크 제약이 여기서 잡히므로, 같은 방·같은 사람을 동시에 강퇴하면 두 번째 호출이 이 트랜잭션이
+        // 끝날 때까지 기다린다. 뒤 질의들을 앞으로 빼면 대기가 짧아지지만 그러려면 카운트를 삽입 전에 세고
+        // +1 해야 하고, 그 산수가 T-12(동시 강퇴 레이스)를 읽기 더 어렵게 만든다. 기다리는 쪽은 중복
+        // 강퇴(대개 두 번 누른 것)이고 대기는 이 트랜잭션의 질의 서너 개 길이라, 그 값에 정합성을 흐릴
+        // 이유가 없다고 봤다. 받아들인다.
         boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
 
         Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);

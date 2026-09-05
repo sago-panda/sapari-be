@@ -4,12 +4,13 @@ import java.util.UUID;
 
 import jakarta.validation.Valid;
 
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.chat.command.KickUserCommand;
@@ -30,7 +31,9 @@ import lombok.RequiredArgsConstructor;
  * <p><b>신원은 본문이 아니라 인증 주체에서 온다.</b> 강퇴자 id와 역할을 여기서 채우므로 요청 본문에는
  * 그 자리가 없다.
  *
- * <p>응답 본문이 없다. 성공은 204이고, 거부는 {@code ChatException}이 공통 처리기를 거쳐 나간다 —
+ * <p>응답 본문이 없다. 성공은 204이고 상태는 {@code @ResponseStatus}가 준다 — {@code ResponseEntity}를
+ * 상태 코드 때문에 쓰는 것은 이 저장소의 컨트롤러 규약 위반이다. 거부는 {@code ChatException}이 공통
+ * 처리기를 거쳐 나간다 —
  * 권한 없음은 403, 끝난 방과 증거 불일치는 400이다. 셋을 더 뭉갤 필요는 없다: 이 구분이 보이는 건
  * <b>이미 그 방을 강퇴할 수 있는 사람</b>뿐이고, 그 사람이 자기 방이 끝난 걸 아는 것은 유출이 아니다.
  */
@@ -42,12 +45,12 @@ public class ChatModerationController {
     private final KickUserUseCase kickUserUseCase;
 
     @PostMapping("/kick")
-    public ResponseEntity<Void> kick(@PathVariable UUID roomId,
-                                     @RequestBody @Valid KickUserRequest request,
-                                     @AuthenticationPrincipal LiveUserPrincipal principal) {
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void kick(@PathVariable UUID roomId,
+                     @RequestBody @Valid KickUserRequest request,
+                     @AuthenticationPrincipal LiveUserPrincipal principal) {
         kickUserUseCase.kick(new KickUserCommand(
                 roomId, principal.userId(), principal.role(),
                 request.targetUserId(), request.messageId()));
-        return ResponseEntity.noContent().build();
     }
 }
