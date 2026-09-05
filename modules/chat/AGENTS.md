@@ -216,8 +216,13 @@ server that has no code to reverse it, and that matches every other call this do
 expires rather than being deleted; a corrupted key is not self-healed). Permanent bans still exist as rows
 with a null expiry — an admin puts them there. An active ban is **mirrored, never stacked**,
 and the longest-lived one wins — picking a shorter row releases the mirror before the record. A duplicate
-kick does **not** re-count: it would let a seller extend a ban indefinitely by re-kicking. The cost is a hole
-— if the log commits and the ban write fails, the retry takes the duplicate path and skips escalation.
+kick does **not** re-count: it would let a seller extend a ban indefinitely by re-kicking.
+
+That used to cost a hole — a failed ban write after a committed log meant the retry took the duplicate path
+and skipped escalation. **The transaction closed it**: a failing ban INSERT rolls the log back with it, so
+the retry starts fresh. What can still fail outside the boundary is the Redis mirror, and a retry heals that
+because the active-ban lookup runs *before* the duplicate check and hands the caller the ban to re-mirror.
+That ordering is the whole self-healing story, so it is pinned by a test.
 
 ## Tests
 

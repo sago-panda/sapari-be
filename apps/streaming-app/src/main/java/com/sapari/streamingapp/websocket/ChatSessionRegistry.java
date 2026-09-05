@@ -192,8 +192,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 이메일이다. 방 주인은 자기 방에 묶이지만 관리자는 진행 중인 아무 방이나 들어갈 수 있어
         // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
         // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
+        // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
         if (session.role() == ChatRole.ADMIN) {
-            log.info("관리자 채팅 입장 — userId={} roomId={}", session.userId(), session.roomId());
+            log.info("관리자 채팅 입장 — sessionId={} userId={} roomId={}",
+                    sessionId, session.userId(), session.roomId());
         }
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).

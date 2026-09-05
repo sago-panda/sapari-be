@@ -13,7 +13,7 @@ public record ChatMessage(
         UUID roomId,
         UUID senderId,             // SYSTEM 메시지는 고정 시스템 UUID
         String senderNickname,     // 발신 시점 snapshot — 이후 닉네임 변경에 영향받지 않는다
-        String senderEmail,        // 판매자에게만 노출되는 발신자 이메일 — SYSTEM은 null (이메일은 불변이라 snapshot 아님)
+        String senderEmail,        // 방 주인·ADMIN에게만 노출 — SYSTEM은 null (이메일은 불변이라 snapshot 아님)
         ChatRole senderRole,
         ChatMessageType type,
         String originalMessage,

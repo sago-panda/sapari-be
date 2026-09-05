@@ -4,7 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -28,7 +35,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * "무엇을 쓸지"만 고치고 "누가 마지막에 쓰는지"는 그대로여서 레이스를 닫지 못했다. 그래서 여기서 재는
  * 것은 값이 아니라 <b>순서 독립</b>이다 — 어느 쪽이 나중에 도착해도 결과가 같아야 한다.
  *
- * <p>비교와 쓰기가 한 실행 안에 있는지는 목으로 검증되지 않아 컨테이너를 띄운다.
+ * <p>순차 호출은 <b>단조성만</b> 잰다 — 쪼갠 구현도 통과한다. 비교와 쓰기가 <b>한 실행 안</b>에 있는지는
+ * 같은 키에 동시에 써 봐야 갈린다. 마지막 테스트가 그 축이다.
  */
 @Testcontainers
 @DisplayName("ChatBanWriteRepository — 미러는 늘어나기만 한다")
@@ -108,15 +116,71 @@ class ChatBanWriteRedisRepositoryTest {
                 .isGreaterThan(MONTH.toMillis() - 2_000L);
     }
 
+    /**
+     * 위 테스트의 <b>대조군</b>이다 — 이 순서는 무조건 덮어쓰는 구현에서도 통과한다.
+     * 둘을 함께 두는 이유는 "어느 쪽이 먼저 와도 같다"를 눈으로 보이게 하기 위해서고,
+     * 실제로 판별하는 것은 긴 것 뒤에 짧은 것이 오는 쪽이다.
+     */
     @Test
-    @DisplayName("⭐ 반대 순서로 도착해도 결과가 같다 — 순서에 기대지 않는다는 것이 이 장치의 전부다")
-    void resultIsIndependentOfArrivalOrder() {
+    @DisplayName("짧은 것 먼저 와도 결과가 같다 (대조군 — 이 순서만으로는 판별되지 않는다)")
+    void longerBanAppliesOverAShorterOne() {
         // given & when: 짧은 것 먼저, 긴 것 나중
         ban(WEEK);
         ban(MONTH);
 
-        // then: 위 테스트와 같은 결과 — 어느 쪽이 먼저 와도 한 달이다
+        // then
         assertThat(ttlMillis()).isGreaterThan(MONTH.toMillis() - 2_000L);
+    }
+
+    /**
+     * ⭐ <b>비교와 쓰기가 한 실행 안에 있는가.</b>
+     *
+     * <p>위 테스트들은 순차 호출이라 <b>단조성만</b> 잰다 — 같은 의미를 두 라운드트립(`PTTL` 후 조건부
+     * `SET`)으로 쪼개도 전부 통과한다. 그러면 "Lua를 걷어내고 자바에서 단순화"하는 변경이 초록으로
+     * 지나가고, 그 순간 이번에 닫은 레이스가 말없이 다시 열린다.
+     *
+     * <p><b>매 라운드 새 키로 짧게 겹치는 것이 요점이다.</b> 한 키에 오래 두들기면 큰 값이 일찍 자리를
+     * 잡아 이후 작은 값이 전부 스스로 걸러진다 — 쪼갠 구현도 통과한다. 깨지는 창은 "작은 쪽이 큰 값을
+     * 보기 <b>전에</b> 읽고, 쓰기는 그 <b>뒤에</b> 도착"하는 시작 구간뿐이라, 그 구간을 여러 번 만든다.
+     */
+    @Test
+    @DisplayName("⭐ 동시에 써도 가장 긴 것이 남는다 — 비교와 쓰기가 한 실행 안에 있어야 성립한다")
+    void concurrentWritesKeepTheLongest() throws Exception {
+        // given
+        int rounds = 60;
+        int writersPerRound = 8;
+        Duration longest = Duration.ofDays(365);
+        Duration shortest = Duration.ofHours(12);
+
+        ExecutorService pool = Executors.newFixedThreadPool(writersPerRound);
+        try {
+            for (int round = 0; round < rounds; round++) {
+                // 라운드마다 새 키 — 겹침이 실제로 일어나는 시작 구간을 반복해서 만든다
+                userId = UUID.randomUUID();
+                CountDownLatch start = new CountDownLatch(1);
+                List<Future<?>> writers = new ArrayList<>();
+                for (int w = 0; w < writersPerRound; w++) {
+                    // 절반은 가장 긴 것, 절반은 가장 짧은 것 — 짧은 쪽이 이기면 최댓값이 깨진다
+                    Duration length = (w % 2 == 0) ? longest : shortest;
+                    writers.add(pool.submit(() -> {
+                        start.await();
+                        ban(length);
+                        return null;
+                    }));
+                }
+                start.countDown();
+                for (Future<?> f : writers) {
+                    f.get(30, TimeUnit.SECONDS);
+                }
+
+                // then: 읽기와 쓰기 사이에 남이 끼어들면 이 라운드에서 최댓값이 깨진다
+                assertThat(ttlMillis())
+                        .as("%d번째 라운드에서 짧은 쪽이 이겼다 — 비교와 쓰기가 쪼개져 있다", round)
+                        .isGreaterThan(longest.toMillis() - 5_000L);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     @Test

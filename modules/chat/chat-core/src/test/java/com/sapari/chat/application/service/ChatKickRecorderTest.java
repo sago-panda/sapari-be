@@ -120,10 +120,17 @@ class ChatKickRecorderTest {
     private ChatBanStateRepository bans;
     @Autowired
     private TransactionTemplate transactionTemplate;
+    @Autowired
+    private ChatBanJpaRepository banJpaRepository;
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
 
     private final UUID targetUserId = UUID.randomUUID();
+
+    /** 승격으로 생긴 밴을 지워 "걸렸다가 만료됐다"와 같은 상태를 만든다. 해제 경로가 아직 없어 직접 지운다. */
+    private void deleteAllBans() {
+        banJpaRepository.deleteAll();
+    }
 
     private ChatKickLog kick(UUID roomId, Instant kickedAt) {
         return new ChatKickLog(targetUserId, roomId, UUID.randomUUID(),
@@ -176,6 +183,63 @@ class ChatKickRecorderTest {
         // when & then: 3회를 불렀지만 임계에 닿지 않는다
         assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(2);
         assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
+    }
+
+    /**
+     * ⭐ 두 번째 가드({@code !firstKickInThisRoom})가 실제로 일하는 조합.
+     *
+     * <p>누적이 임계에 닿아 있고 활성 밴은 <b>없어야</b> 한다 — 그래야 "가드가 없으면 승격이 일어난다"가
+     * 성립한다. 활성 밴이 있으면 첫 가드가 먼저 걸려 두 번째가 관측되지 않고, 누적이 임계 미만이면
+     * 단계 자체가 안 나와 역시 관측되지 않는다. 그 둘이 4차·5차에서 이 가드를 살려 준 조합이었다.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 같은 방 재강퇴는 임계에 닿아 있어도 승격하지 않는다 — 재강퇴로 밴을 만들 수 없다")
+    void duplicateKickDoesNotEscalateEvenAtThreshold() {
+        // given: 다른 방 둘 + 이 방 하나 = 누적 3(임계). 밴이 걸렸다가 만료됐다고 두어 활성 밴은 없다
+        UUID room = UUID.randomUUID();
+        recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(room, NOW));
+        transactionTemplate.executeWithoutResult(status ->
+                bans.findActive(targetUserId, NOW).ifPresent(ban -> deleteAllBans()));
+
+        // when: 같은 방을 다시 강퇴한다 — 로그는 이미 있으므로 누적이 늘지 않는다
+        Optional<ChatBan> ban = recorder.record(kick(room, NOW));
+
+        // then: 가드가 없으면 여기서 누적 3을 세어 1주 밴이 생긴다
+        assertThat(ban)
+                .as("중복 강퇴가 승격했다 — 같은 사람을 반복해서 다시 강퇴하는 것만으로 밴이 걸린다")
+                .isEmpty();
+        assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
+    }
+
+    /**
+     * ⭐ 두 가드의 <b>순서</b>가 자가치유를 만든다.
+     *
+     * <p>활성 밴 확인이 중복 검사보다 <b>앞</b>이라, 미러 키가 사라진 사용자를 같은 방에서 다시 강퇴하면
+     * 그 밴이 돌아오고 호출자가 미러를 되살린다. 순서가 뒤집히면 중복 강퇴가 {@code empty}로 빠져
+     * <b>미러가 영영 복구되지 않는다</b> — 그 사용자는 밴이 정본에 살아 있는데도 어느 방에나 들어간다.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 활성 밴이 있으면 같은 방 재강퇴도 그 밴을 돌려준다 — 미러 복구 경로")
+    void duplicateKickStillReturnsActiveBanForMirrorRecovery() {
+        // given: 이 방에서 이미 강퇴됐고, 그와 별개로 활성 밴이 있다(미러 키만 유실된 상황)
+        UUID room = UUID.randomUUID();
+        recorder.record(kick(room, NOW));
+        Instant expiry = NOW.plus(Duration.ofDays(30));
+        transactionTemplate.executeWithoutResult(status -> bans.append(
+                new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
+
+        // when: 같은 방 재강퇴 — 로그는 no-op이다
+        Optional<ChatBan> ban = recorder.record(kick(room, NOW));
+
+        // then: 그래도 밴을 돌려줘야 호출자가 미러를 되살린다
+        assertThat(ban)
+                .as("중복 강퇴가 빈 값을 돌려줬다 — 미러가 사라진 사용자를 되살릴 경로가 없어진다")
+                .isPresent();
+        assertThat(ban.get().expiresAt()).isEqualTo(expiry);
     }
 
     @Test
