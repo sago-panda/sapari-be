@@ -226,7 +226,8 @@ kick does **not** re-count: it would let a seller extend a ban indefinitely by r
 
 That used to cost a hole — a failed ban write after a committed log meant the retry took the duplicate path
 and skipped escalation. **The transaction closed it**: a failing ban INSERT rolls the log back with it, so
-the retry starts fresh. What can still fail outside the boundary is the Redis mirror, and a retry heals that
+the retry starts fresh — pinned by a test that swaps in a throwing ban store and asserts the kick count is
+unchanged. What can still fail outside the boundary is the Redis mirror, and a retry heals that
 because the active-ban lookup runs *before* the duplicate check and hands the caller the ban to re-mirror.
 That ordering is the whole self-healing story, so it is pinned by a test.
 

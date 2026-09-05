@@ -1,6 +1,7 @@
 package com.sapari.chat.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,12 +20,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.data.domain.Limit;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -122,14 +126,22 @@ class ChatKickRecorderTest {
     private TransactionTemplate transactionTemplate;
     @Autowired
     private ChatBanJpaRepository banJpaRepository;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
 
     private final UUID targetUserId = UUID.randomUUID();
 
-    /** 승격으로 생긴 밴을 지워 "걸렸다가 만료됐다"와 같은 상태를 만든다. 해제 경로가 아직 없어 직접 지운다. */
-    private void deleteAllBans() {
-        banJpaRepository.deleteAll();
+    /**
+     * 이 사용자의 밴만 지워 "걸렸다가 만료됐다"와 같은 상태를 만든다. 해제 경로가 아직 없어 직접 지운다.
+     *
+     * <p>테이블 전체가 아니라 대상만 지우는 이유는 이 스위트가 {@code NOT_SUPPORTED}라 <b>롤백이 없어</b>
+     * 같은 DB를 다른 테스트와 공유하기 때문이다.
+     */
+    private void deleteBansOfTarget() {
+        banJpaRepository.deleteAll(banJpaRepository.findActive(
+                targetUserId, NOW.minus(java.time.Duration.ofDays(3650)), Limit.of(100)));
     }
 
     private ChatKickLog kick(UUID roomId, Instant kickedAt) {
@@ -186,6 +198,52 @@ class ChatKickRecorderTest {
     }
 
     /**
+     * ⭐ 밴 쓰기가 실패하면 <b>강퇴 로그도 함께 롤백된다.</b>
+     *
+     * <p>이 경계가 생기기 전에는 구멍이었다 — 로그는 커밋됐는데 밴이 실패하면 재시도가 중복 경로로 들어가
+     * 승격을 영영 건너뛰었다. 트랜잭션이 그걸 닫았고 문서도 그렇게 적었는데, <b>그 보장만 테스트가
+     * 없었다.</b> 전파를 {@code REQUIRED}로 되돌리거나 경계를 잃으면 여기서 드러난다.
+     *
+     * <p>밴 저장소를 던지는 것으로 갈아 끼워 재현한다 — 실제 실패를 만드는 다른 방법이 없다.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 밴 쓰기가 실패하면 강퇴 로그도 롤백된다 — 재시도가 처음부터 다시 한다")
+    void failedBanRollsBackTheKickLog() {
+        // given: 누적 2회. 다음 강퇴가 임계에 닿아 승격을 시도한다
+        recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
+        long before = kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)));
+        assertThat(before).isEqualTo(2);
+
+        // 밴 INSERT만 실패시키는 저장소로 같은 경계를 다시 만든다
+        ChatKickRecorder failing = new ChatKickRecorder(kickLogs, new ChatBanStateRepository() {
+            @Override
+            public Optional<ChatBan> findActive(UUID userId, Instant now) {
+                return bans.findActive(userId, now);
+            }
+
+            @Override
+            public void append(ChatBan ban) {
+                throw new IllegalStateException("밴 저장 실패");
+            }
+        });
+        // 경계는 템플릿으로 만든다 — 여기서 재는 것은 "두 쓰기가 한 트랜잭션인가"이고,
+        // 애너테이션이 프록시로 실제로 걸리는지는 ChatModerationWiringTest가 따로 지킨다.
+        TransactionTemplate newTx = new TransactionTemplate(transactionManager);
+        newTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        // when
+        assertThatThrownBy(() -> newTx.executeWithoutResult(status -> failing.record(kick(UUID.randomUUID(), NOW))))
+                .isInstanceOf(IllegalStateException.class);
+
+        // then: 강퇴 로그가 남아 있으면 재시도가 중복 경로로 들어가 승격을 영영 건너뛴다
+        assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+                .as("밴이 실패했는데 강퇴 로그가 커밋됐다 — 재시도가 승격을 건너뛴다")
+                .isEqualTo(before);
+    }
+
+    /**
      * ⭐ 두 번째 가드({@code !firstKickInThisRoom})가 실제로 일하는 조합.
      *
      * <p>누적이 임계에 닿아 있고 활성 밴은 <b>없어야</b> 한다 — 그래야 "가드가 없으면 승격이 일어난다"가
@@ -201,8 +259,12 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
         recorder.record(kick(UUID.randomUUID(), NOW));
         recorder.record(kick(room, NOW));
-        transactionTemplate.executeWithoutResult(status ->
-                bans.findActive(targetUserId, NOW).ifPresent(ban -> deleteAllBans()));
+        // 전제를 못 박는다 — 여기서 밴이 안 생겼다면 누적이 임계에 못 미쳤다는 뜻이고, 그러면 아래
+        // when 이 가드가 아니라 "단계가 안 나온다"를 재게 된다. 조용히 그렇게 퇴화한 적이 두 번 있다.
+        assertThat(bans.findActive(targetUserId, NOW))
+                .as("선행 강퇴가 임계에 닿지 않았다 — 이 테스트가 가드를 재지 못한다")
+                .isPresent();
+        transactionTemplate.executeWithoutResult(status -> deleteBansOfTarget());
 
         // when: 같은 방을 다시 강퇴한다 — 로그는 이미 있으므로 누적이 늘지 않는다
         Optional<ChatBan> ban = recorder.record(kick(room, NOW));
