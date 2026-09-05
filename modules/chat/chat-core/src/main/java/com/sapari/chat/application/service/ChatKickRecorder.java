@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.chat.domain.model.ChatBan;
@@ -13,6 +14,7 @@ import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 강퇴의 <b>DB 쓰기만</b> 한 트랜잭션에 담는 얇은 빈.
@@ -31,6 +33,7 @@ import lombok.RequiredArgsConstructor;
  *
  * <p>스테레오타입을 달지 않는다. 이 스택을 소유한 앱이 {@code @Bean}으로 등록한다.
  */
+@Slf4j
 @RequiredArgsConstructor
 public class ChatKickRecorder {
 
@@ -57,23 +60,35 @@ public class ChatKickRecorder {
      * <p>⚠️ 그 대가로 구멍이 하나 남는다 — 강퇴 로그는 커밋됐는데 밴 쓰기가 실패하면, 재시도는 중복
      * 경로로 들어가 승격을 건너뛴다. 반복 강퇴로 밴을 연장하는 쪽이 더 나쁘다고 보고 이 순서를 골랐다.
      *
+     * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      * @return 미러에 반영해야 할 밴(새로 건 것이든 이미 있던 것이든). 밴이 없으면 비어 있다
      */
-    @Transactional
-    public Optional<ChatBan> record(ChatKickLog log, Instant now) {
-        boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(log);
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Optional<ChatBan> record(ChatKickLog kickLog, Instant now) {
+        boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
 
-        Optional<ChatBan> active = banStateRepository.findActive(log.targetUserId(), now);
+        Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);
         if (active.isPresent()) {
             return active;
         }
         if (!firstKickInThisRoom) {
             return Optional.empty();
         }
-        return ChatBanTier.of(kickLogRepository.countSince(log.targetUserId(), now.minus(KICK_COUNT_WINDOW)))
+        long kickCount = kickLogRepository.countSince(kickLog.targetUserId(), now.minus(KICK_COUNT_WINDOW));
+        return ChatBanTier.of(kickCount)
                 .map(tier -> {
-                    ChatBan ban = ChatBan.escalated(log.targetUserId(), tier, now);
+                    ChatBan ban = ChatBan.escalated(kickLog.targetUserId(), tier, now);
                     banStateRepository.append(ban);
+                    // 사람이 누른 적 없는 제재라 흔적이 여기밖에 없다. 게다가 지금은 푸는 코드가 없어서
+                    // (해제는 행 삭제이고 그걸 하는 경로가 admin-app에 아직 없다) 남기지 않으면 "왜 못
+                    // 들어가느냐"는 물음에 chat_ban을 직접 조회해야만 답할 수 있다. 이 도메인이 fail-open
+                    // 한 건까지 남기면서 영구 제재를 안 남기는 건 앞뒤가 맞지 않는다.
+                    //
+                    // 여기가 "새로 걸었다"와 "이미 있었다"를 구분해 아는 유일한 자리다 — 그래서 반환 타입을
+                    // 쪼개지 않고도 그 구분이 기록에 남는다. 기존 밴 미러 갱신은 일상이라 남기지 않는다.
+                    log.info("자동 밴 승격 — userId={} 누적={}회 단계={} 만료={}",
+                            ban.userId(), kickCount, tier,
+                            ban.isPermanent() ? "없음(영구)" : ban.expiresAt());
                     return ban;
                 });
     }
