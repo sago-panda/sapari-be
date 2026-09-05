@@ -12,6 +12,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
@@ -40,14 +42,20 @@ public class GoLiveByRtmpService {
     private final LiveRoomRepository liveRoomRepository;
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
 
     /**
-     * ingressId 대조는 <b>모든 경로에서</b> 한다 — webhook 은 이벤트가 실어 온 값을, Ready 고착 정리 배치는
+     * {@code trigger} 는 <b>어느 경로가 이 방을 올렸는지</b>를 남기기 위한 것이다. 승격 결과는 어느 쪽이든
+     * Live 라 사후에 구분할 수 없는데, 판매자 체감은 즉시(webhook)와 최대 10분 지연(배치)으로 전혀 다르다.
+     * 호출자가 각자 지표를 남기는 대신 파라미터로 받는 이유는 새 진입점이 생겼을 때 컴파일러가 짚어주기
+     * 때문이다 — 빠뜨리면 그 경로만 조용히 통계에서 사라진다.
+     *
+     * <p>ingressId 대조는 <b>모든 경로에서</b> 한다 — webhook 은 이벤트가 실어 온 값을, Ready 고착 정리 배치는
      * {@code listRoomIngress} 로 확인한 값을 넘긴다. 대조를 건너뛰는 진입점을 따로 두면 그쪽만 가드가
      * 빠지고, 방이 인정하지 않은 ingress(경합 패자 잔존)가 방송을 시작시킨다.
      */
     @Transactional
-    public void goLiveByRtmp(UUID roomId, String eventIngressId) {
+    public void goLiveByRtmp(UUID roomId, String eventIngressId, PromotionTrigger trigger) {
         LiveRoom room = liveRoomRepository.findByIdForUpdate(roomId)
                 .orElseThrow(() -> new LiveNotFoundException(roomId.toString()));
 
@@ -82,6 +90,10 @@ public class GoLiveByRtmpService {
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송
 
         liveRoomRepository.save(liveRoom);
-        log.info("RTMP go-live 완료 — Ready→Live 전이. roomId={}", roomId);
+        // 커밋된 전이만 세도록 구현(MicrometerLiveMetrics)이 트랜잭션 경계를 본다 — 여기서 롤백되면
+        // 아래 두 건은 기록되지 않는다.
+        liveMetrics.roomTransitioned(room.status(), liveRoom.status());
+        liveMetrics.rtmpPromoted(trigger);
+        log.info("RTMP go-live 완료 — Ready→Live 전이. roomId={}, 경로={}", roomId, trigger);
     }
 }
