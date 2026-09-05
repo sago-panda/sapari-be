@@ -100,7 +100,13 @@ corruption split is not widened to them.
 original in plaintext because a privileged reader may be on a different pod. The masked view is the default
 and the privileged one is the exception — **never invert that**, or every new role leaks by omission.
 
-Privileged means **room owner or ADMIN**, and those are two different axes on purpose. Ownership is
+Privileged means **room owner or ADMIN** — a decision, not a default: moderators hold the same chat rights a
+seller does. What it accepts is that the email is never read by the moderation path and that an ADMIN, unlike
+an owner, is scoped to no room at all; the entry log (once per connection) is what answers "who looked, and
+when" in exchange. Splitting the two — original text without the email — is one enum constant away, which is
+why the axes are separate types rather than a boolean pair.
+
+Ownership and role are two different axes on purpose. Ownership is
 per-room: a SELLER visiting someone else's broadcast is a viewer and sees masked text — that split is why
 gating moved off `role == SELLER` in the first place. ADMIN is account-level and ignores ownership, which is
 what the permission model always said (`f(role, isRoomOwner)`); fan-out had only ever implemented the
