@@ -54,11 +54,15 @@ public class ChatModerationBeansConfig {
      * {@code org.bson.types.Binary}로 돌아온다. spring-data-mongodb에 그걸 UUID로 되돌리는 컨버터가 없어
      * 증거 문서 매핑이 실패한다.
      *
+     * <p><b>이름이 chat 쪽 빈과 달라야 한다.</b> 같은 이름이면 언젠가 스캔 제외가 풀렸을 때 정의가
+     * 겹쳐 부팅이 죽는다(빈 오버라이드는 기본이 꺼져 있다). 같은 일을 하는 두 빈이라 겹쳐도
+     * 무해할 것 같지만, 무해한 쪽은 중복 등록이 아니라 부팅 실패다.
+     *
      * <p>설정 파일이 아니라 코드로 고정하는 이유도 같다 — {@code application.yaml}은 저장소에 없어서,
      * yml에 맡기면 개발자 환경마다 다르고 클린 배포에서 조용히 빠진다.
      */
     @Bean
-    public MongoClientSettingsBuilderCustomizer chatUuidRepresentationCustomizer() {
+    public MongoClientSettingsBuilderCustomizer liveAppChatUuidRepresentationCustomizer() {
         return builder -> builder.uuidRepresentation(UuidRepresentation.STANDARD);
     }
 

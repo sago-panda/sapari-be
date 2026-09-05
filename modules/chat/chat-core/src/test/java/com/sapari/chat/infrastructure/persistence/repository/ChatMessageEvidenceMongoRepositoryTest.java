@@ -30,7 +30,13 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
  * 앞의 둘은 실제 문서 매핑이고, 마지막은 드라이버가 잘못된 id에 어떻게 반응하는지다.
  *
  * <p>UUID 인코딩을 운영과 같게(STANDARD) 맞춘다 — 다르면 {@code roomId}·{@code senderId}가 다른 바이트로
- * 저장돼 정합 검증이 이유 없이 어긋난다. 운영에서는 {@code ChatMongoConfig}가 같은 값을 고정한다.
+ * 저장돼 정합 검증이 이유 없이 어긋난다. <b>이 어댑터의 운영 호스트는 live-app이고 거기서 그 값을 고정하는
+ * 것은 {@code ChatModerationBeansConfig}다</b> — {@code ChatMongoConfig}는 그 앱의 컴포넌트 스캔에서
+ * 빠져 뜨지 않는다(쓰는 쪽인 streaming-app에서만 뜬다).
+ *
+ * <p>⚠️ 그래서 <b>여기서 손으로 세우는 이 한 줄이 위험하다.</b> 앱이 해야 할 배선을 테스트가 대신 해 주면
+ * 앱에서 그게 빠져도 이 테스트는 초록이다 — 실제로 그렇게 빠진 적이 있고, 그때 이 테스트는 통과했다.
+ * 앱 쪽 배선은 {@code ChatModerationWiringTest}가 따로 지킨다.
  */
 @Testcontainers
 @DisplayName("ChatMessageEvidenceRepository — 증거는 마스킹 전 원문이다")

@@ -81,6 +81,13 @@ class ChatModerationWiringTest {
         registry.add("livekit.hls.segment-duration", () -> 4);
 
         registry.add("management.server.port", () -> 0);
+
+        // ⚠️ 재조정 잡 셋을 끈다. 마스터 스위치가 matchIfMissing=true라 설정이 없으면 <b>켜진다</b> —
+        //    저장소에 application.yaml이 없으니 이 테스트에서는 부재가 곧 활성이다. 그대로 두면
+        //    컨텍스트가 크론과 함께 뜨고, 컨텍스트는 테스트 JVM 수명 동안 캐시되므로 10분 경계를 넘기면
+        //    실제로 발화한다. 그중 둘은 방송을 시작시키거나 켜진 방송을 끝낼 수 있다.
+        //    지금 안 터지는 건 자격증명이 가짜라서지 설계된 차단이 아니다.
+        registry.add("live.reconcile.enabled", () -> false);
     }
 
     /**

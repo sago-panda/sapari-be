@@ -20,9 +20,13 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
 /**
  * chat_messages용 Mongo 설정 — UUID 인코딩 + 인덱스 부트스트랩.
  *
- * <p>chat-core는 라이브러리라 reactive Mongo가 없는 소비처(live-app=blocking mongo)나
- * Redis 전용 테스트 컨텍스트에도 컴포넌트 스캔된다. 그래서 인덱스 생성은 {@code ObjectProvider}로
- * ReactiveMongoTemplate 존재 여부를 런타임에 판정해 없으면 건너뛴다(부팅 실패 방지).
+ * <p><b>이 클래스는 streaming-app에서만 뜬다.</b> 다른 소비처인 live-app은 {@code com.sapari.chat}을
+ * 컴포넌트 스캔에서 패키지째 빼기 때문이다. 그쪽은 여기 있는 것을 <b>스스로 다시 세워야 한다</b> —
+ * 실제로 UUID 설정이 함께 빠져 증거 문서의 UUID가 {@code Binary}로 돌아온 적이 있다.
+ * 여기에 무언가를 더한다면 그쪽에도 같은 것이 필요한지 확인할 것.
+ *
+ * <p>{@code ObjectProvider} 가드는 그래서 남아 있다 — Redis 전용 테스트 컨텍스트처럼 리액티브 Mongo가
+ * 없는 자리에서도 이 설정이 뜰 수 있고, 그때 인덱스 생성을 건너뛰어 부팅 실패를 막는다.
  */
 @Configuration
 public class ChatMongoConfig {
@@ -30,6 +34,7 @@ public class ChatMongoConfig {
     /**
      * roomId/senderId가 UUID 필드라 standard BSON binary 인코딩이 필요하다(미설정 시 드라이버가 인코딩 거부).
      * per-dev application.yml에 의존하지 않도록 코드로 고정한다 — yml 누락 시 "테스트 green/런타임 깨짐" 방지.
+     * <b>이 보호는 이 설정이 뜨는 앱에만 미친다.</b> live-app은 같은 커스터마이저를 자기 설정에 따로 둔다.
      */
     @Bean
     public MongoClientSettingsBuilderCustomizer chatUuidRepresentationCustomizer() {

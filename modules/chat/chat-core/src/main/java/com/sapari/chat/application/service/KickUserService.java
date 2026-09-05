@@ -104,7 +104,7 @@ public class KickUserService implements KickUserUseCase {
 
         // DB 쓰기는 여기서 끝난다. 이 호출이 반환됐다는 건 커밋이 확정됐다는 뜻이고, 그 다음에야
         // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
-        kickRecorder.record(log, log.kickedAt())
+        kickRecorder.record(log)
                 .ifPresent(ban -> banWriteRepository.ban(
                         command.targetUserId(), ban.expiresAt(), log.kickedAt()));
 

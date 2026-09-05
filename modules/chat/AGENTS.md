@@ -146,6 +146,11 @@ The 5-step handler writes the marker **first** (order sets the size of the re-en
 independent — a failed notification must not prevent sessions from closing. Log level is chosen by **what
 was lost** (control → ERROR, self-healing cleanup → WARN), not by exception type. The kick set is
 **expired, not deleted**: the waking signal cannot be verified, and deletion would be irreversible.
+⚠️ **That expiry is the only path that ever puts a TTL on `chat:kicked:`, and it hangs entirely on receiving
+`RoomEnded` — a Pub/Sub message with no persistence.** Lose one and that room's kick set stays forever.
+This mattered less while the write path was broken and the set was never created; now that kicks land, every
+lost end signal leaks a key. Room ids are UUIDs so nothing malfunctions — it is pure leak, and it belongs to
+live's delivery guarantee, not chat's.
 
 ## Kick & ban — every input is server-read
 
@@ -167,7 +172,11 @@ Idempotency is the DB constraint (`UNIQUE(user_id, live_room_id)` + `ON CONFLICT
 row count is the **ban-escalation trigger and nothing else** — treating `false` as an early return means a
 user whose enforcement cache was lost can never be kicked in that room again.
 
-**DB-first**: the log commit is confirmed before Redis and publish. Registration is `SADD` + `PERSIST` in one
+**DB-first**: the log commit is confirmed before Redis and publish. **What that accepts:** a crash between
+the commit and `register` leaves an audit row and possibly a ban with no enforcement — the kicked user is
+still in the room. There is no compensating job; the recovery path is the moderator kicking again, and that
+is safe because every step is idempotent. Saying so out loud matters: silence here reads as "this cannot
+happen" rather than "we chose to let it." Registration is `SADD` + `PERSIST` in one
 Lua call because `SADD` inherits a leftover expiry and the whole list would then vanish silently.
 
 ⚠️ **Both DB writes are `@Modifying` native INSERTs, and Spring Data gives those no ambient transaction.**

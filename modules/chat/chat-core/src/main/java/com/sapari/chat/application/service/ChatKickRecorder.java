@@ -57,14 +57,21 @@ public class ChatKickRecorder {
      * 늘지 않는다. 여기서 굳이 다시 세면 만료된 밴을 같은 카운트로 되살릴 수 있고, 그러면 판매자가 같은
      * 사람을 반복해서 "다시 강퇴"하는 것만으로 밴을 무한히 연장하게 된다.
      *
-     * <p>⚠️ 그 대가로 구멍이 하나 남는다 — 강퇴 로그는 커밋됐는데 밴 쓰기가 실패하면, 재시도는 중복
-     * 경로로 들어가 승격을 건너뛴다. 반복 강퇴로 밴을 연장하는 쪽이 더 나쁘다고 보고 이 순서를 골랐다.
+     * <p>중복 강퇴가 승격을 건너뛰는데도 <b>재시도가 밴을 잃지 않는다.</b> 경계가 생기면서 두 갈래가
+     * 모두 막혔기 때문이다 — DB 밴 INSERT가 실패하면 같은 트랜잭션이라 강퇴 로그도 함께 롤백되어 재시도가
+     * 처음부터 다시 하고, 경계 밖에서 실패할 수 있는 것은 Redis 미러뿐인데 재시도하면 {@code appendIfAbsent}가
+     * {@code false}여도 {@code findActive}가 커밋된 밴을 돌려주어 호출자가 미러를 다시 쓴다. 자가 치유된다.
+     *
+     * <p><b>시각은 인자로 받지 않는다.</b> 강퇴 로그가 이미 {@code kickedAt}을 들고 있고, 둘을 따로
+     * 받으면 갈릴 수 있다 — 갈리는 날 2년 누적 창과 밴 만료가 강퇴 시각과 어긋난다. 호출자가 늘
+     * 같은 값을 넘기므로 아무도 그 어긋남을 재현하지 못한다. 출처를 하나로 둔다.
      *
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      * @return 미러에 반영해야 할 밴(새로 건 것이든 이미 있던 것이든). 밴이 없으면 비어 있다
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Optional<ChatBan> record(ChatKickLog kickLog, Instant now) {
+    public Optional<ChatBan> record(ChatKickLog kickLog) {
+        Instant now = kickLog.kickedAt();
         boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
 
         Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);

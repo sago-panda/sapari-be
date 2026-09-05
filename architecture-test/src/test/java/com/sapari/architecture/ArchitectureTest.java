@@ -238,7 +238,7 @@ class ArchitectureTest {
         ArchRule rule = noClasses()
                 .that().resideInAPackage("com.sapari.streamingapp..")
                 .should().dependOnClassesThat()
-                        .haveNameMatching(".*\\.(KickUserUseCase|KickUserService|GetChatHistoryUseCase|GetChatHistoryService)")
+                        .haveNameMatching(".*\\.(KickUserUseCase|KickUserService|ChatKickRecorder|GetChatHistoryUseCase|GetChatHistoryService)")
                 .orShould().dependOnClassesThat()
                         .haveFullyQualifiedName("org.springframework.data.mongodb.core.MongoTemplate")
                 .as("streaming-app(WebFlux)은 블로킹 chat 유스케이스·블로킹 MongoTemplate을 호출하면 안 된다");

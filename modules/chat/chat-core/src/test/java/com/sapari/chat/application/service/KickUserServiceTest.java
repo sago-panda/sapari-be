@@ -131,14 +131,14 @@ class KickUserServiceTest {
         void writesInDbFirstOrder() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
 
             // then: 순서가 뒤집히면 롤백된 강퇴가 Redis에만 남는다
             InOrder order = inOrder(kickRecorder, kickWriteRepository, kickEventPublisher);
-            order.verify(kickRecorder).record(any(), any());
+            order.verify(kickRecorder).record(any());
             order.verify(kickWriteRepository).register(roomId, targetId);
             order.verify(kickEventPublisher).publishKicked(roomId, targetId);
         }
@@ -148,14 +148,14 @@ class KickUserServiceTest {
         void logCarriesServerReadEvidence() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
 
             // then
             ArgumentCaptor<ChatKickLog> captor = ArgumentCaptor.forClass(ChatKickLog.class);
-            verify(kickRecorder).record(captor.capture(), any());
+            verify(kickRecorder).record(captor.capture());
             ChatKickLog log = captor.getValue();
             assertThat(log.triggeringMessage()).isEqualTo("문제의 원문");
             assertThat(log.targetUserId()).isEqualTo(targetId);
@@ -169,7 +169,7 @@ class KickUserServiceTest {
         void duplicateStillRegistersAndPublishes() {
             // given: 이미 같은 (user, room) 로그가 있어 이번 INSERT는 no-op이다
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -185,7 +185,7 @@ class KickUserServiceTest {
             // given: 방 주인이 아닌 관리자
             UUID adminId = UUID.randomUUID();
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(command(adminId, "ADMIN"));
@@ -201,7 +201,7 @@ class KickUserServiceTest {
             // 판정에 끼어들 자리가 없고, 그게 필요한 동작이다 — REST가 막힌 뒤에도 채팅 세션은
             // 살아 있어 그 사람이 방에서 계속 말한다.
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -217,7 +217,7 @@ class KickUserServiceTest {
 
         /** 거부되면 쓰기 세 단계가 하나도 일어나지 않아야 한다. */
         private void assertNothingWritten() {
-            verify(kickRecorder, never()).record(any(), any());
+            verify(kickRecorder, never()).record(any());
             verify(kickWriteRepository, never()).register(any(), any());
             verify(kickEventPublisher, never()).publishKicked(any(), any());
         }
@@ -349,7 +349,7 @@ class KickUserServiceTest {
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
-            verify(kickRecorder, never()).record(any(), any());
+            verify(kickRecorder, never()).record(any());
         }
 
         @Test
@@ -362,7 +362,7 @@ class KickUserServiceTest {
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
-            verify(kickRecorder, never()).record(any(), any());
+            verify(kickRecorder, never()).record(any());
         }
 
         @Test
@@ -375,7 +375,7 @@ class KickUserServiceTest {
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
-            verify(kickRecorder, never()).record(any(), any());
+            verify(kickRecorder, never()).record(any());
         }
     }
 
@@ -393,7 +393,7 @@ class KickUserServiceTest {
         void noBanLeavesMirrorAlone() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
 
             // when
             service.kick(ownerKick());
@@ -408,7 +408,7 @@ class KickUserServiceTest {
             // given
             Instant expiry = NOW.plus(Duration.ofDays(7));
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.of(
+            given(kickRecorder.record(any())).willReturn(Optional.of(
                     new ChatBan(targetId, UUID.randomUUID(), expiry, NOW)));
 
             // when
@@ -423,7 +423,7 @@ class KickUserServiceTest {
         void permanentBanHasNoExpiry() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.of(
+            given(kickRecorder.record(any())).willReturn(Optional.of(
                     new ChatBan(targetId, UUID.randomUUID(), null, NOW)));
 
             // when
@@ -438,7 +438,7 @@ class KickUserServiceTest {
         void mirrorPrecedesEnforcement() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.of(
+            given(kickRecorder.record(any())).willReturn(Optional.of(
                     new ChatBan(targetId, UUID.randomUUID(), NOW.plus(Duration.ofDays(7)), NOW)));
 
             // when
@@ -447,7 +447,7 @@ class KickUserServiceTest {
             // then
             InOrder order = inOrder(kickRecorder, banWriteRepository,
                     kickWriteRepository, kickEventPublisher);
-            order.verify(kickRecorder).record(any(), any());
+            order.verify(kickRecorder).record(any());
             order.verify(banWriteRepository).ban(any(), any(), any());
             order.verify(kickWriteRepository).register(roomId, targetId);
             order.verify(kickEventPublisher).publishKicked(roomId, targetId);
@@ -463,7 +463,7 @@ class KickUserServiceTest {
         void recordFailureStopsTheRest() {
             // given
             givenHappyPath();
-            willThrow(new IllegalStateException("DB 장애")).given(kickRecorder).record(any(), any());
+            willThrow(new IllegalStateException("DB 장애")).given(kickRecorder).record(any());
 
             // when & then
             assertThatThrownBy(() -> service.kick(ownerKick()))
@@ -477,7 +477,7 @@ class KickUserServiceTest {
         void registerFailureStopsPublish() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any(), any())).willReturn(Optional.empty());
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
             willThrow(new IllegalStateException("Redis 장애"))
                     .given(kickWriteRepository).register(any(), any());
 

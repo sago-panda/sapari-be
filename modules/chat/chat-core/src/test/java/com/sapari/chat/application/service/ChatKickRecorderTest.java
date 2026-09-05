@@ -137,7 +137,7 @@ class ChatKickRecorderTest {
         // given: 호출자가 트랜잭션을 열지 않은, 실제 유스케이스와 같은 조건
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW), NOW);
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
 
         // then: 예외 없이 커밋됐고, 누적 1회는 임계 미만이라 밴은 없다
         assertThat(ban).isEmpty();
@@ -149,11 +149,11 @@ class ChatKickRecorderTest {
     @DisplayName("3회째에 1주 밴이 함께 커밋된다 — 로그와 밴이 같은 트랜잭션이다")
     void escalatesOnTheThirdKick() {
         // given: 서로 다른 방에서 두 번
-        recorder.record(kick(UUID.randomUUID(), NOW), NOW);
-        recorder.record(kick(UUID.randomUUID(), NOW), NOW);
+        recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW), NOW);
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
 
         // then
         assertThat(ban).isPresent();
@@ -167,9 +167,9 @@ class ChatKickRecorderTest {
     void duplicateKickDoesNotCount() {
         // given: 같은 방에서 두 번, 다른 방에서 한 번 = 실제 누적 2
         UUID room = UUID.randomUUID();
-        recorder.record(kick(room, NOW), NOW);
-        recorder.record(kick(room, NOW), NOW);
-        recorder.record(kick(UUID.randomUUID(), NOW), NOW);
+        recorder.record(kick(room, NOW));
+        recorder.record(kick(room, NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
 
         // when & then: 3회를 불렀지만 임계에 닿지 않는다
         assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(2);
@@ -188,7 +188,7 @@ class ChatKickRecorderTest {
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW), NOW);
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
 
         // then
         assertThat(ban).isPresent();
