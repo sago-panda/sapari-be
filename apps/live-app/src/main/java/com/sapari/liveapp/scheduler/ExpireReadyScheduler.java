@@ -9,6 +9,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import com.sapari.liveapp.config.ReconcileLockConfig;
+import com.sapari.liveapp.config.SchedulingConfig;
+
 import com.sapari.live.port.ReconcileExpiredReadyUseCase;
 
 /**
@@ -30,10 +33,10 @@ public class ExpireReadyScheduler {
      * <p>상한 근거: 후보 {@code expire-ready.batch-size} 20건 × (송출 조회 1 + 만료 시 커밋 후 정리 3)
      * = 80회 × {@code callTimeout} 15s ≈ 20분. 승격 경로는 후보당 1회뿐이라 더 짧다.
      */
-    @Scheduled(cron = "${live.reconcile.expire-ready.cron:0 0/10 * * * *}")
+    @Scheduled(cron = "${live.reconcile.expire-ready.cron:" + SchedulingConfig.EXPIRE_READY_CRON + "}")
     @SchedulerLock(name = "live-reconcile-expire-ready",
             lockAtMostFor = "${live.reconcile.expire-ready.lock-at-most-for:PT45M}",
-            lockAtLeastFor = "${live.reconcile.lock-at-least-for:PT1M}")
+            lockAtLeastFor = "${live.reconcile.lock-at-least-for:" + ReconcileLockConfig.LOCK_AT_LEAST_FOR + "}")
     public void run() {
         try {
             reconcileExpiredReadyUseCase.reconcile();

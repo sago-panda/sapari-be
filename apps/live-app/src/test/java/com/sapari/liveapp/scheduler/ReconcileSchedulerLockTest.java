@@ -119,7 +119,7 @@ class ReconcileSchedulerLockTest {
 
     @BeforeEach
     void clearLocks() {
-        jdbc.execute("DELETE FROM live_schema.shedlock");
+        jdbc.execute("DELETE FROM " + ReconcileLockConfig.LOCK_TABLE);
     }
 
     /**
@@ -144,11 +144,21 @@ class ReconcileSchedulerLockTest {
     }
 
     @Test
-    @DisplayName("부팅 가드의 조회가 실제 Postgres 에서 동작한다 — 마이그레이션이 만든 테이블을 찾는다")
-    void bootGuardFindsTheMigratedTable() {
-        // ShedLockTableGuardTest 는 판정만 본다(JdbcTemplate 모킹). to_regclass 문법과 스키마 한정
-        // 이름이 진짜로 통하는지는 여기서만 확인된다 — 이게 틀리면 마이그레이션이 맞아도 부팅이 막힌다.
+    @DisplayName("부팅 가드의 쓰기 프로브가 마이그레이션이 만든 테이블에 실제로 통한다")
+    void bootGuardWritesToTheMigratedTable() {
+        // ShedLockTableGuardTest 는 실패 방향만 본다(JdbcTemplate 모킹). upsert 문법과 네 컬럼이
+        // 진짜 스키마와 맞는지는 여기서만 확인된다 — 어긋나면 마이그레이션이 맞아도 부팅이 막힌다.
         assertThatCode(() -> new ShedLockTableGuard(jdbc)).doesNotThrowAnyException();
+
+        // 두 번째 부팅은 ON CONFLICT 갈래로 간다. INSERT 만 되고 UPDATE 권한이 없는 계정을
+        // 첫 부팅이 통과시키는 일이 없도록, 양쪽 경로를 모두 지난다.
+        assertThatCode(() -> new ShedLockTableGuard(jdbc)).doesNotThrowAnyException();
+
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM " + ReconcileLockConfig.LOCK_TABLE + " WHERE name = ?",
+                Integer.class, ShedLockTableGuard.BOOT_CHECK))
+                .as("예약 행은 하나만 남는다 — 부팅마다 쌓이면 안 된다")
+                .isEqualTo(1);
     }
 
     @Test
@@ -199,7 +209,7 @@ class ReconcileSchedulerLockTest {
             // 죽은 인스턴스가 놓고 간 락 — 해제되지 않은 채 만료만 기다린다.
             // 컨텍스트를 <b>먼저</b> 띄우고 심는다. 순서를 바꾸면 5초 리스가 컨텍스트 refresh(프록시
             // 생성 포함) 동안 만료될 수 있어, 느린 러너에서 첫 단언이 이유 없이 깨진다.
-            jdbc.update("INSERT INTO live_schema.shedlock(name, lock_until, locked_at, locked_by) "
+            jdbc.update("INSERT INTO " + ReconcileLockConfig.LOCK_TABLE + "(name, lock_until, locked_at, locked_by) "
                     + "VALUES (?, timezone('utc', CURRENT_TIMESTAMP) + interval '5 seconds', "
                     + "timezone('utc', CURRENT_TIMESTAMP), 'dead-instance')", LOCK_NAME);
 

@@ -28,13 +28,17 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
 
 - **Deployment prerequisite — the migration leads, live-app follows.** Since SPR-142 the reconcile
   schedulers take a ShedLock lock on `live_schema.shedlock`, created by `db/migration/live/V*__shedlock.sql`.
-  Roll out the migration **before** the app. `ShedLockTableGuard` **refuses to boot** when the table is
-  missing, so the failure is loud and at the right moment — same choice as `managementPortMustDiffer`.
+  Roll out the migration **before** the app. `ShedLockTableGuard` **refuses to boot** unless it can actually
+  *write* to the table (an upsert on a reserved row, not an existence check — a wrong column shape or a
+  role without `INSERT`/`UPDATE` passes existence and then fails every round), so the failure is loud and
+  at the right moment — same choice as `managementPortMustDiffer`.
   Without that guard the app would come up fine and only the three cleanup jobs would stop: every round
   throws, but from the ShedLock proxy **outside** each scheduler's `try/catch`, so the prepared domain
   message never appears and still-billing egress goes unreclaimed. The guard adds no new boot-time DB
   dependency (`ddl-auto: validate` already needs the DB); it covers what `validate` cannot, since the
-  lock table has no entity.
+  lock table has no entity. **This reaches local development too**: the `@Tag("context")` tests boot a real
+  context, so a developer whose local database predates this migration now fails at `contextLoads` — run
+  `migrate.sh` against the local DB, or set `live.reconcile.enabled=false` locally.
 
 How it runs:
 - **local:** `DB_URL=… DB_USER=… DB_PASSWORD=… ./infra/migration/migrate.sh` (needs Flyway CLI;
