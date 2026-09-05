@@ -20,6 +20,17 @@ public class SchedulingConfig {
     private static final int POOL_SIZE = 3;
 
     /**
+     * 잡별 기본 cron. <b>단일 출처다</b> — {@code @Scheduled} 와
+     * {@link ReconcileLockConfig#lockIntervalsMustFitInCron} 이 같은 값을 봐야 한다. 복제해 두면
+     * 스케줄러 쪽만 바꿨을 때 가드가 <b>낡은 기본값을 검증하고 조용히 통과</b>한다.
+     *
+     * <p>셋을 3분씩 어긋내 둔 것은 세 잡이 동시에 LiveKit 을 때리지 않게 하기 위해서다 — 정렬하지 말 것.
+     */
+    public static final String EXPIRE_READY_CRON = "0 0/10 * * * *";
+    public static final String END_STALE_LIVE_CRON = "0 3/10 * * * *";
+    public static final String ORPHAN_MEDIA_CRON = "0 6/10 * * * *";
+
+    /**
      * 기본 스케줄러는 스레드가 1개라 한 잡이 LiveKit 응답을 기다리는 동안 나머지가 밀린다
      * (호출마다 {@code callTimeout} 15s 가 걸려 있어도, 회차는 후보 수만큼 그게 반복된다).
      * yml 이 아니라 코드로 박는 건 {@code application*.yml} 이 추적되지 않아 환경마다 누락되기 때문이다.
@@ -37,6 +48,11 @@ public class SchedulingConfig {
         // 유예를 넘겨 죽은 파드는 락을 정상 반납하지 못하므로, 그 잡은 <b>리스가 만료될 때까지</b> 어느
         // 인스턴스에서도 돌지 않는다(end-stale-live 기준 최대 90분). 롤링 배포가 회차 중간에 걸릴 때마다
         // 재현된다. 값은 잡별 lock-at-most-for 이고 근거는 각 스케줄러 자바독에 있다.
+        //
+        // [SPR-145 로 이월] 정상 종료 시 락을 명시 반납하면 이 창이 닫힌다. 다만 <b>비정상 종료
+        // (SIGKILL·OOM·노드 사망)는 어떤 훅으로도 반납할 수 없어</b> 리스 만료가 유일한 수단이고,
+        // 그 리스가 긴 이유는 회차에 상한이 없어서다. 순서는 회차 상한이 먼저다 — 회차를 묶어 리스를
+        // 줄이면 두 종료 경로가 함께 짧아지고, 종료 훅은 그 위에 얹는 최적화가 된다.
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(30);
         return scheduler;

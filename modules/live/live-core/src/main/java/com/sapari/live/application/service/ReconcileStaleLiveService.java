@@ -86,6 +86,13 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
             return;
         }
 
+        // [SPR-144 로 이월] 이 스냅샷 하나로 아래 루프 전체를 판정한다. 회차가 길어지면(공용 batch-size
+        // 100 × 후보당 커밋 후 정리 최대 3회 × callTimeout 15s) 그 사이 재접속한 방이 목록에 없어
+        // 살아 있는 방송이 종료되고, 15분 뒤 고아 미디어 잡이 실제 ingress 까지 지운다.
+        // AGENTS.md 의 "판정은 방마다, 건드리기 직전에" 규칙과 어긋난다(expire-ready 는 지킨다) —
+        // 처방도 거기 적혀 있다: "Don't drop the guard; verify per room instead."
+        // SPR-142(분산 락)와는 무관한 기존 결함이라 정리 판정 로직 변경은 별도 티켓에서 한다.
+        //
         // 조회 실패는 예외로 올라온다 — 빈 목록으로 보이면 "모든 방이 죽었다"가 되어 전부 종료시킨다.
         Set<UUID> roomsWithActiveEgress = liveMediaManager.listAllEgress().stream()
                 .filter(EgressSummary::active)

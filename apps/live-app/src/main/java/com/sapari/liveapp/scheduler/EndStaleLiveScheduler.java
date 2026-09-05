@@ -9,6 +9,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import com.sapari.liveapp.config.ReconcileLockConfig;
+import com.sapari.liveapp.config.SchedulingConfig;
+
 import com.sapari.live.port.ReconcileStaleLiveUseCase;
 
 /**
@@ -36,12 +39,12 @@ public class EndStaleLiveScheduler {
      * ≈ 75분. "DB 전이뿐이라 짧다"는 오독이다 — 전이 뒤에 붙는 정리가 회차 시간의 대부분이다.
      *
      * <p>그 대가로 이 잡의 인계가 최대 90분 늦는다. 줄이려면 값이 아니라 <b>회차를 묶어야</b> 한다
-     * (이 잡 전용 {@code batch-size} 도입). 그건 처리량을 바꾸는 변경이라 이 티켓에서 하지 않았다.
+     * (이 잡 전용 {@code batch-size} 도입). 처리량을 바꾸는 변경이라 <b>[SPR-145 로 이월]</b> 했다.
      */
-    @Scheduled(cron = "${live.reconcile.end-stale-live.cron:0 3/10 * * * *}")
+    @Scheduled(cron = "${live.reconcile.end-stale-live.cron:" + SchedulingConfig.END_STALE_LIVE_CRON + "}")
     @SchedulerLock(name = "live-reconcile-end-stale-live",
             lockAtMostFor = "${live.reconcile.end-stale-live.lock-at-most-for:PT90M}",
-            lockAtLeastFor = "${live.reconcile.lock-at-least-for:PT1M}")
+            lockAtLeastFor = "${live.reconcile.lock-at-least-for:" + ReconcileLockConfig.LOCK_AT_LEAST_FOR + "}")
     public void run() {
         try {
             reconcileStaleLiveUseCase.reconcile();

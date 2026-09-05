@@ -105,11 +105,16 @@ live:
   # -------------------------------------------------------------------------
   reconcile:
     # 마스터 스위치 — off 면 @EnableScheduling·잡 빈·락 설정·부팅 가드가 전부 내려간다.
-    # on(기본) 이면 live_schema.shedlock 이 있어야 부팅된다(ShedLockTableGuard). 마이그레이션이 앱보다 먼저다.
+    # on(기본) 이면 live_schema.shedlock 에 쓸 수 있어야 부팅된다(ShedLockTableGuard — 존재가 아니라
+    # 쓰기를 본다: 컬럼 불일치·권한 부족도 여기서 걸린다). 마이그레이션이 앱보다 먼저다.
     enabled: ${LIVE_RECONCILE_ENABLED:true}
     batch-size: ${LIVE_RECONCILE_BATCH_SIZE:100}
     # 회차가 순식간에 끝나도 이만큼은 락을 쥔다. 두 인스턴스의 cron 발화가 지터로 수백 ms 어긋날 때
-    # 뒤에 온 쪽이 같은 회차를 한 번 더 도는 걸 막는다. cron 간격(10분)보다 짧게 유지할 것.
+    # 뒤에 온 쪽이 같은 회차를 한 번 더 도는 걸 막는다.
+    # ⚠️ 켜져 있는 잡의 최단 cron 주기의 절반을 넘으면 부팅이 실패한다(ReconcileLockConfig 의
+    #    lockIntervalsMustFitInCron). 권고가 아니라 강제다 — 넘기면 다음 회차가 아직 안 풀린 락에
+    #    막혀 로그도 지표도 없이 사라진다. 주기는 cron 을 하루치 전개한 최단 간격으로 잰다
+    #    (0/N 형태는 시 경계에서 간격이 줄어 첫 간격과 다르다).
     lock-at-least-for: ${LIVE_RECONCILE_LOCK_AT_LEAST_FOR:PT1M}
     # OBS 가 끝내 연결되지 않아 Ready 에 갇힌 방 → Ended (송출 중이면 대신 Live 로 승격)
     expire-ready:

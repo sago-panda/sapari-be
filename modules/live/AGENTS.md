@@ -90,8 +90,12 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
 - **When in doubt, don't delete.** No DB row → log only; grace covers the create-then-save window.
 - Per-room work is a separate bean so `@Transactional` + row lock apply. **Multi-replica safe**: each job
   holds its own ShedLock lock (`live-reconcile-<job>`, JDBC provider on `live_schema.shedlock`,
-  `ReconcileLockConfig`; `ShedLockTableGuard` refuses to boot if the migration has not run).
-  A loser skips silently and retries next cycle; `<job>.lock-at-most-for` is the
+  `ReconcileLockConfig`; `ShedLockTableGuard` refuses to boot unless it can write to that table).
+  A loser skips silently and retries next cycle. **Two boot guards refuse to start the app**, both
+  fail-closed like `managementPortMustDiffer`: `ShedLockTableGuard` (can it actually write to the lock
+  table) and `lockIntervalsMustFitInCron` (`lock-at-least-for` must stay within half the shortest cron
+  period of an enabled job — measured by expanding the cron over a day, since `0/N` gaps shrink at the
+  hour boundary; over that, a round is skipped with no log and no counter). `<job>.lock-at-most-for` is the
   takeover delay after a holder dies, so it must exceed the job's worst round — ShedLock neither aborts nor
   extends a running round, so too short a lease means a slow round keeps going unlocked while the next tick
   starts a second one. `end-stale-live` is the **longest** job, not the shortest: it uses the shared

@@ -9,6 +9,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import com.sapari.liveapp.config.ReconcileLockConfig;
+import com.sapari.liveapp.config.SchedulingConfig;
+
 import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 
 /**
@@ -32,12 +35,12 @@ public class OrphanMediaScheduler {
      * {@code callTimeout} 15s 기준 약 240회분이며, <b>장애 복구 직후처럼 고아가 쌓인 회차</b>
      * — 즉 이 잡이 가장 중요한 순간 — 에는 초과할 수 있다. 초과하면 락이 만료돼 다음 tick 의 다른
      * 인스턴스가 같은 스윕을 겹쳐 돌고, {@code reconcileActed} 가 배로 부풀어 이 잡의 판독법이 깨진다.
-     * 근본 해결은 회차에 상한을 두거나 루프 중 락을 연장하는 것이고, 둘 다 이 티켓 범위 밖이다.
+     * 근본 해결은 회차에 상한을 두거나 루프 중 락을 연장하는 것이고, 둘 다 <b>[SPR-145 로 이월]</b> 했다.
      */
-    @Scheduled(cron = "${live.reconcile.orphan-media.cron:0 6/10 * * * *}")
+    @Scheduled(cron = "${live.reconcile.orphan-media.cron:" + SchedulingConfig.ORPHAN_MEDIA_CRON + "}")
     @SchedulerLock(name = "live-reconcile-orphan-media",
             lockAtMostFor = "${live.reconcile.orphan-media.lock-at-most-for:PT60M}",
-            lockAtLeastFor = "${live.reconcile.lock-at-least-for:PT1M}")
+            lockAtLeastFor = "${live.reconcile.lock-at-least-for:" + ReconcileLockConfig.LOCK_AT_LEAST_FOR + "}")
     public void run() {
         try {
             reconcileOrphanMediaUseCase.reconcile();

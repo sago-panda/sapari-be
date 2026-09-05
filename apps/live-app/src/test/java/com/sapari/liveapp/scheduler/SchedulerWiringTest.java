@@ -2,6 +2,9 @@ package com.sapari.liveapp.scheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
 
@@ -17,6 +20,7 @@ import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.task.TaskSchedulingAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.TaskScheduler;
 
 import net.javacrumbs.shedlock.core.LockProvider;
@@ -28,6 +32,7 @@ import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 import com.sapari.live.port.ReconcileStaleLiveUseCase;
 import com.sapari.liveapp.config.ReconcileLockConfig;
 import com.sapari.liveapp.config.SchedulingConfig;
+import com.sapari.liveapp.config.ShedLockTableGuard;
 
 /**
  * 스케줄러 배선 — 잡을 끄는 스위치가 실제로 붙어 있는지 확인한다.
@@ -200,6 +205,46 @@ class SchedulerWiringTest {
          * <b>인스턴스 시계 오차만큼의 상호배제 구멍</b>으로 이어지는데 둘 다 컴파일은 통과한다.
          */
         @Test
+        @DisplayName("lock-at-least-for 가 cron 주기의 절반을 넘으면 부팅을 거부한다")
+        void refusesLockAtLeastForLongerThanHalfTheCronPeriod() {
+            // 주기 직전까지 허용하면 다음 tick 이 락을 잡을 창이 몇 분으로 줄어, tick 이 한 번만
+            // 밀려도 회차가 조용히 사라진다. 기본 cron 3종은 모두 10분 주기다.
+            runner.withPropertyValues("live.reconcile.lock-at-least-for=PT6M")
+                    .run(context -> assertThat(context).hasFailed());
+
+            runner.withPropertyValues("live.reconcile.lock-at-least-for=PT5M")
+                    .run(context -> assertThat(context).hasNotFailed());
+        }
+
+        /**
+         * {@code 0/N} 은 시 경계에서 간격이 줄어든다 — 첫 간격만 재면 이 설정이 통과하고
+         * 매시 한 회차만 조용히 사라진다. 가드가 막으려던 바로 그 상태라 여기서 고정한다.
+         */
+        @Test
+        @DisplayName("주기는 첫 간격이 아니라 최단 간격으로 잰다 — 0/7 은 시 경계에서 4분이다")
+        void periodIsTheShortestGapNotTheFirstOne() {
+            runner.withPropertyValues(
+                            "live.reconcile.orphan-media.cron=0 0/7 * * * *",  // 첫 간격 7분, 최단 4분
+                            "live.reconcile.lock-at-least-for=PT3M")           // 7분 기준이면 통과했을 값
+                    .run(context -> assertThat(context).hasFailed());
+
+            runner.withPropertyValues(
+                            "live.reconcile.orphan-media.cron=0 0/7 * * * *",
+                            "live.reconcile.lock-at-least-for=PT2M")
+                    .run(context -> assertThat(context).hasNotFailed());
+        }
+
+        @Test
+        @DisplayName("꺼 둔 잡의 cron 은 검사하지 않는다 — 없는 빈 때문에 부팅이 막히면 안 된다")
+        void ignoresCronOfDisabledJobs() {
+            runner.withPropertyValues(
+                            "live.reconcile.end-stale-live.enabled=false",
+                            "live.reconcile.end-stale-live.cron=0 * * * * *",  // 1분 주기지만 잡이 없다
+                            "live.reconcile.lock-at-least-for=PT5M")
+                    .run(context -> assertThat(context).hasNotFailed());
+        }
+
+        @Test
         @DisplayName("락 저장소를 live_schema.shedlock 에, DB 시계 기준으로 건다")
         void locksAgainstTheMigratedTableUsingDbTime() {
             JdbcTemplateLockProvider.Configuration configuration =
@@ -207,7 +252,7 @@ class SchedulerWiringTest {
 
             assertThat(configuration.getTableName())
                     .as("마이그레이션이 만든 테이블과 어긋나면 매 회차 BadSqlGrammarException 이다")
-                    .isEqualTo("live_schema.shedlock");
+                    .isEqualTo(ReconcileLockConfig.LOCK_TABLE);
             assertThat(configuration.getUseDbTime())
                     .as("DB 시계로 판정해야 인스턴스 시계 오차가 상호배제를 깨지 못한다")
                     .isTrue();
@@ -218,6 +263,26 @@ class SchedulerWiringTest {
         void masterSwitchAlsoRemovesLock() {
             runner.withPropertyValues("live.reconcile.enabled=false")
                     .run(context -> assertThat(context).doesNotHaveBean(ReconcileLockConfig.class));
+        }
+
+        /**
+         * 가드가 스위치를 안 보면 <b>정리 잡을 끈 환경까지 부팅을 막는다</b> — 락이 필요 없는데
+         * 마이그레이션을 요구하는 꼴이다. 잡·락 설정과 같은 스위치를 쓰는지 여기서 고정한다.
+         */
+        @Test
+        @DisplayName("마스터 스위치를 끄면 부팅 가드도 내려간다 — 잡이 없으면 락 테이블도 필요 없다")
+        void masterSwitchAlsoRemovesBootGuard() {
+            ApplicationContextRunner guardRunner = new ApplicationContextRunner()
+                    .withBean(JdbcTemplate.class, () -> {
+                        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+                        given(jdbcTemplate.update(anyString(), any(Object[].class))).willReturn(1);
+                        return jdbcTemplate;
+                    })
+                    .withUserConfiguration(ShedLockTableGuard.class);
+
+            guardRunner.run(context -> assertThat(context).hasSingleBean(ShedLockTableGuard.class));
+            guardRunner.withPropertyValues("live.reconcile.enabled=false")
+                    .run(context -> assertThat(context).doesNotHaveBean(ShedLockTableGuard.class));
         }
 
         /**
