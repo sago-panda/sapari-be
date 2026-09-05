@@ -159,6 +159,12 @@ This mattered less while the write path was broken and the set was never created
 lost end signal leaks a key. Room ids are UUIDs so nothing malfunctions — it is pure leak, and it belongs to
 live's delivery guarantee, not chat's.
 
+⚠️ **The signal can also arrive and then be undone.** Room-end sets the 24h expiry; a kick that lands in that
+window runs `SADD` + `PERSIST` and strips it, and the two callers sit on different pods so nothing orders
+them. `PERSIST` is not removable — it exists because `SADD` inherits a leftover expiry and the whole list
+would vanish silently. Two purposes push the same key in opposite directions, which is why recovery for this
+key belongs in one place rather than being patched at either end.
+
 ## Kick & ban — every input is server-read
 
 Evidence is fetched **by the server** from `messageId`; the command never carries the text (the kicker

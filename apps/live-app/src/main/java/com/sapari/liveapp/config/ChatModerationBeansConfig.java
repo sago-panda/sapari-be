@@ -124,13 +124,14 @@ public class ChatModerationBeansConfig {
     public KickUserUseCase kickUserUseCase(GetLiveRoomUseCase liveRoomReader,
                                            ChatMessageEvidenceRepository evidenceRepository,
                                            ChatKickRecorder kickRecorder,
+                                           ChatBanStateRepository banStateRepository,
                                            ChatBanWriteRepository banWriteRepository,
                                            ChatKickWriteRepository kickWriteRepository,
                                            ChatKickEventPublisher kickEventPublisher,
                                            ChatPermissionPolicy permissionPolicy,
                                            TimeProvider timeProvider) {
         return new KickUserService(liveRoomReader, evidenceRepository, kickRecorder,
-                banWriteRepository, kickWriteRepository, kickEventPublisher,
+                banStateRepository, banWriteRepository, kickWriteRepository, kickEventPublisher,
                 permissionPolicy, timeProvider);
     }
 }

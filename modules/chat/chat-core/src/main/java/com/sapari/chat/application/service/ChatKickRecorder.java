@@ -2,7 +2,6 @@ package com.sapari.chat.application.service;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
 
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,9 +48,12 @@ public class ChatKickRecorder {
     /**
      * 강퇴를 기록하고, 필요하면 밴으로 올린다. <b>Redis는 건드리지 않는다.</b>
      *
-     * <p><b>활성 밴이 있으면 새로 만들지 않는다.</b> 그래야 재시도가 밴을 겹쳐 쌓지 않는다. 그래도 그 밴을
-     * 돌려주는 이유는 호출자가 미러를 다시 맞출 수 있게 하기 위해서다 — 키가 사라졌던 사용자도 다음 강퇴에
-     * 자동으로 복구된다.
+     * <p><b>활성 밴이 있으면 새로 만들지 않는다.</b> 그래야 재시도가 밴을 겹쳐 쌓지 않는다.
+     *
+     * <p><b>무엇을 걸었는지 돌려주지 않는다.</b> 돌려주면 호출자가 그 값을 미러에 쓰게 되는데, 서로 다른
+     * 방에서 동시에 강퇴가 들어오면 각 호출자가 <b>자기가 만든 밴</b>을 쓰고 짧은 쪽이 마지막에 남을 수
+     * 있다. 집행은 미러가 하므로 그러면 밴이 정본보다 일찍 풀린다. 호출자는 커밋이 끝난 뒤 정본을 다시
+     * 읽어 가장 오래 가는 것을 비춘다.
      *
      * <p><b>중복 강퇴는 누적을 세지 않는다.</b> 같은 방 두 번째 강퇴는 정본에 행을 만들지 않으므로 누적도
      * 늘지 않는다. 여기서 굳이 다시 세면 만료된 밴을 같은 카운트로 되살릴 수 있고, 그러면 판매자가 같은
@@ -67,10 +69,9 @@ public class ChatKickRecorder {
      * 같은 값을 넘기므로 아무도 그 어긋남을 재현하지 못한다. 출처를 하나로 둔다.
      *
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
-     * @return 미러에 반영해야 할 밴(새로 건 것이든 이미 있던 것이든). 밴이 없으면 비어 있다
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Optional<ChatBan> record(ChatKickLog kickLog) {
+    public void record(ChatKickLog kickLog) {
         Instant now = kickLog.kickedAt();
         // 유니크 제약이 여기서 잡히므로, 같은 방·같은 사람을 동시에 강퇴하면 두 번째 호출이 이 트랜잭션이
         // 끝날 때까지 기다린다. 뒤 질의들을 앞으로 빼면 대기가 짧아지지만 그러려면 카운트를 삽입 전에 세고
@@ -79,16 +80,15 @@ public class ChatKickRecorder {
         // 이유가 없다고 봤다. 받아들인다.
         boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
 
-        Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);
-        if (active.isPresent()) {
-            return active;
+        if (banStateRepository.findActive(kickLog.targetUserId(), now).isPresent()) {
+            return;
         }
         if (!firstKickInThisRoom) {
-            return Optional.empty();
+            return;
         }
         long kickCount = kickLogRepository.countSince(kickLog.targetUserId(), now.minus(KICK_COUNT_WINDOW));
-        return ChatBanTier.of(kickCount)
-                .map(tier -> {
+        ChatBanTier.of(kickCount)
+                .ifPresent(tier -> {
                     ChatBan ban = ChatBan.escalated(kickLog.targetUserId(), tier, now);
                     banStateRepository.append(ban);
                     // 사람이 누른 적 없는 제재라 흔적이 여기밖에 없다. 게다가 지금은 푸는 코드가 없어서
@@ -100,7 +100,6 @@ public class ChatKickRecorder {
                     // 쪼개지 않고도 그 구분이 기록에 남는다. 기존 밴 미러 갱신은 일상이라 남기지 않는다.
                     log.info("자동 밴 승격 — userId={} 누적={}회 단계={} 만료={}",
                             ban.userId(), kickCount, tier, ban.expiresAt());
-                    return ban;
                 });
     }
 }

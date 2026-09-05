@@ -9,7 +9,6 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -137,10 +136,10 @@ class ChatKickRecorderTest {
         // given: 호출자가 트랜잭션을 열지 않은, 실제 유스케이스와 같은 조건
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
 
         // then: 예외 없이 커밋됐고, 누적 1회는 임계 미만이라 밴은 없다
-        assertThat(ban).isEmpty();
+        assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
         assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(1);
     }
 
@@ -153,12 +152,11 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
 
-        // then
-        assertThat(ban).isPresent();
-        assertThat(ban.get().expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
-        assertThat(bans.findActive(targetUserId, NOW)).isPresent();
+        // then: 정본에 1주 밴이 남는다 — 미러는 호출자가 이 값을 다시 읽어 쓴다
+        ChatBan active = bans.findActive(targetUserId, NOW).orElseThrow();
+        assertThat(active.expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
     }
 
     @Test
@@ -178,7 +176,7 @@ class ChatKickRecorderTest {
 
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    @DisplayName("이미 밴이 있으면 겹쳐 쌓지 않고 그 밴을 돌려준다 — 호출자가 미러를 다시 맞춘다")
+    @DisplayName("이미 밴이 있으면 겹쳐 쌓지 않는다 — 재시도가 밴을 늘리지 않는다")
     void existingBanIsReturnedNotStacked() {
         // given: 이미 활성 밴
         // ⚠️ append도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
@@ -188,10 +186,9 @@ class ChatKickRecorderTest {
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
+        recorder.record(kick(UUID.randomUUID(), NOW));
 
-        // then
-        assertThat(ban).isPresent();
-        assertThat(ban.get().expiresAt()).isEqualTo(expiry);
+        // then: 새로 쌓지 않았으므로 원래 밴 그대로다
+        assertThat(bans.findActive(targetUserId, NOW).orElseThrow().expiresAt()).isEqualTo(expiry);
     }
 }

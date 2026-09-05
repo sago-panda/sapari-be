@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
+import com.sapari.chat.application.protocol.ChatMessageVisibility;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.domain.model.ChatMessage;
@@ -22,9 +23,10 @@ import reactor.core.publisher.Mono;
  * chat:pubsub 구독자 — 다른 Pod(또는 같은 Pod)가 발행한 봉투를 받아 이 Pod의 로컬 세션에 렌더한다.
  *
  * <ul>
- *   <li><b>CHAT</b>: 방 로컬 세션에 fan-out. <b>방 주인(isRoomOwner) 세션만</b> senderEmail·원문(originalMessage)
- *       포함(toOwnerView), 그 외는 마스킹된 displayMessage만(toView). PII 게이팅은 와이어가 아니라 이 fan-out
- *       시점에 적용된다(봉투엔 평문 PII 잔존 — 방주인이 다른 Pod에 붙어 있을 수 있어 필요하다).
+ *   <li><b>CHAT</b>: 방 로컬 세션에 fan-out. <b>방 주인이거나 관리자인 세션만</b> senderEmail·원문
+ *       (originalMessage)을 받고, 그 외는 마스킹된 displayMessage만 받는다. PII 게이팅은 와이어가 아니라
+ *       이 fan-out 시점에 적용된다 — 봉투엔 평문 PII가 남아 있고, 그건 특권 수신자가 다른 Pod에 붙어
+ *       있을 수 있어서다.
  *   <li><b>KICK_EVENT</b>: 강퇴 당사자 세션엔 SYSTEM(KICKED) 후 WS close, 그 외 세션엔 KICK(userId).
  * </ul>
  *
@@ -73,10 +75,10 @@ public class ChatBroadcastSubscriber {
      * 세션 식별자를 영속 메시지까지 관통시켜야 해서 얻는 것보다 잃는 게 크다.
      */
     private Mono<Void> fanOutChat(UUID roomId, ChatMessage message) {
-        OutboundMessage moderatorView = OutboundMessage.chat(message, true, false);
-        OutboundMessage normalView = OutboundMessage.chat(message, false, false);
-        OutboundMessage moderatorSenderView = OutboundMessage.chat(message, true, true);
-        OutboundMessage senderView = OutboundMessage.chat(message, false, true);
+        OutboundMessage moderatorView = OutboundMessage.chat(message, ChatMessageVisibility.FULL, false);
+        OutboundMessage normalView = OutboundMessage.chat(message, ChatMessageVisibility.MASKED, false);
+        OutboundMessage moderatorSenderView = OutboundMessage.chat(message, ChatMessageVisibility.FULL, true);
+        OutboundMessage senderView = OutboundMessage.chat(message, ChatMessageVisibility.MASKED, true);
         return sessionManager.sendToRoomGated(roomId, session -> {
             boolean sender = session.userId().equals(message.senderId());
             return canModerate(session)

@@ -39,7 +39,7 @@ public record OutboundMessage(
         ChatRole senderRole,     // NORMAL/NOTICE (그 외 null)
         String senderEmail,      // 방 주인 또는 ADMIN 수신 세션 + NORMAL/NOTICE 시만 (그 외 null)
         String displayMessage,   // NORMAL/NOTICE (그 외 null)
-        String originalMessage,  // 방 주인 수신 세션만 — 강퇴 판단용 마스킹↔원문 토글 (그 외 null)
+        String originalMessage,  // senderEmail과 같은 조건 — 강퇴 판단용 마스킹↔원문 토글 (그 외 null)
         Instant createdAt,       // NORMAL/NOTICE/ACK (그 외 null)
         UUID userId,             // KICK: 강퇴 대상 userId (그 외 null)
         Long activeCount,        // ROOM_INFO (그 외 null)
@@ -69,19 +69,20 @@ public record OutboundMessage(
      * 채팅 메시지(NORMAL·NOTICE) 렌더분.
      *
      * <p>게이팅을 여기서 한다 — 필드 정의 바로 옆이라 어떤 값이 누구에게 가는지가 한눈에 맞춰진다.
-     * {@code privileged}일 때만 이메일·원문, {@code senderView}일 때만 {@code clientMsgId}
+     * {@code visibility}가 허용할 때만 이메일·원문, {@code senderView}일 때만 {@code clientMsgId}
      * (secure-by-default: 기본은 주지 않는 쪽이다).
      */
-    public static OutboundMessage chat(ChatMessage message, boolean privileged, boolean senderView) {
+    public static OutboundMessage chat(ChatMessage message, ChatMessageVisibility visibility,
+                                       boolean senderView) {
         return OutboundMessage.builder()
                 .type(typeName(message.type()))
                 .id(message.id())
                 .senderId(message.senderId())
                 .senderNickname(message.senderNickname())
                 .senderRole(message.senderRole())
-                .senderEmail(privileged ? message.senderEmail() : null)
+                .senderEmail(visibility.showsSenderEmail() ? message.senderEmail() : null)
                 .displayMessage(message.displayMessage())
-                .originalMessage(privileged ? message.originalMessage() : null)
+                .originalMessage(visibility.showsOriginalMessage() ? message.originalMessage() : null)
                 .createdAt(message.createdAt())
                 .clientMsgId(senderView ? message.clientMsgId() : null)
                 .build();

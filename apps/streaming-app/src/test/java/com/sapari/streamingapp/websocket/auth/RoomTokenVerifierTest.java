@@ -85,6 +85,39 @@ class RoomTokenVerifierTest {
                 .verifyComplete();
     }
 
+    /**
+     * ADMIN 룸 토큰이 세션이 되는 구간은 <b>SPR-143이 들어오기 전까지 한 번도 실행되지 않았다</b> —
+     * live가 입장에서 ADMIN을 매핑하지 않아 그런 토큰이 발급될 수 없었다. 이 검증기는 그 role을 처음부터
+     * 허용 목록에 갖고 있었지만 도달 불가였고, 그래서 이 앱 테스트에 {@code ADMIN}이 한 글자도 없었다.
+     *
+     * <p>지금은 관리자가 실제로 들어오고, 그 세션이 <b>원문·이메일을 받고 레이트리밋을 면제받으며 공지를
+     * 쓸 수 있다.</b> 그 출발점이 여기라 고정해 둔다.
+     */
+    @Test
+    @DisplayName("정상 — ADMIN owner=false: 관리자 세션이 만들어진다 (SPR-143으로 처음 도달)")
+    void valid_admin() {
+        // given: 관리자는 방을 소유하지 않는다 — owner=true 조합은 컴팩트 생성자가 거부한다
+        String token = sign(liveKeys.getPrivate(), "live", "chat", roomId, userId,
+                "ADMIN", false, "관리자닉", "admin@sapari.com", in60s());
+
+        // when & then
+        StepVerifier.create(verifier.verify(token, roomId))
+                .expectNextMatches(s -> s.role() == ChatRole.ADMIN && !s.isRoomOwner())
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("거부 — owner=true인데 role=ADMIN (소유자는 반드시 SELLER)")
+    void reject_admin_owner() {
+        // given: live의 owner 계산은 role과 무관해서(userId==sellerId) 이 조합이 발급될 수 있다.
+        //        그때 입장은 200인데 WS만 실패하므로, 여기서 거부되는 것이 진단의 유일한 단서다.
+        String token = sign(liveKeys.getPrivate(), "live", "chat", roomId, userId,
+                "ADMIN", true, "관리자닉", "admin@sapari.com", in60s());
+
+        // when & then
+        StepVerifier.create(verifier.verify(token, roomId)).verifyError();
+    }
+
     @Test
     @DisplayName("정상 — 게스트 GUEST: nickname/email null, owner=false")
     void valid_guest() {

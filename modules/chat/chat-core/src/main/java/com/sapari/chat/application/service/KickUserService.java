@@ -11,6 +11,7 @@ import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
@@ -46,6 +47,7 @@ public class KickUserService implements KickUserUseCase {
     private final GetLiveRoomUseCase liveRoomReader;
     private final ChatMessageEvidenceRepository evidenceRepository;
     private final ChatKickRecorder kickRecorder;
+    private final ChatBanStateRepository banStateRepository;
     private final ChatBanWriteRepository banWriteRepository;
     private final ChatKickWriteRepository kickWriteRepository;
     private final ChatKickEventPublisher kickEventPublisher;
@@ -104,7 +106,12 @@ public class KickUserService implements KickUserUseCase {
 
         // DB 쓰기는 여기서 끝난다. 이 호출이 반환됐다는 건 커밋이 확정됐다는 뜻이고, 그 다음에야
         // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
-        kickRecorder.record(log)
+        kickRecorder.record(log);
+
+        // 커밋이 끝난 뒤 정본을 다시 읽는다. 기록이 돌려준 값을 그대로 쓰면, 서로 다른 방에서 동시에
+        // 강퇴가 들어왔을 때 각자 자기가 만든 밴을 미러에 쓰고 짧은 쪽이 마지막에 남을 수 있다 —
+        // 집행은 미러가 하므로 밴이 정본보다 일찍 풀린다. 재조회는 가장 오래 가는 것을 준다.
+        banStateRepository.findActive(command.targetUserId(), log.kickedAt())
                 .ifPresent(ban -> banWriteRepository.ban(
                         command.targetUserId(), ban.expiresAt(), log.kickedAt()));
 

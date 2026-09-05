@@ -44,21 +44,23 @@ class ChatBanTierTest {
         }
     }
 
+    /**
+     * ⚠️ <b>단계의 존재와 만료의 존재를 따로 단언해야 한다.</b> {@code Optional.map}은 매퍼가 {@code null}을
+     * 돌려주면 결과를 {@code empty}로 접는다 — 그래서 만료를 먼저 꺼내 놓고 "값이 있으면 검사"하는 모양으로
+     * 쓰면, <b>영구 티어일수록 검사를 건너뛴다.</b> 이름이 주장하는 바로 그 경우에 공허해지는 것이다.
+     * 실제로 그렇게 썼다가 되돌림에서 드러났다: 영구 단계를 되살려도 이 테스트만 통과했다.
+     */
     @Test
     @DisplayName("⭐ 어떤 누적에도 자동 영구 밴은 나오지 않는다 — 푸는 코드가 없는 제재를 자동으로 걸지 않는다")
     void automaticEscalationNeverProducesAPermanentBan() {
         // given: 임계 최상단을 훌쩍 넘긴 값까지 훑는다
         for (long count = 0; count <= 1_000; count++) {
-            // when
-            Instant expiry = ChatBanTier.of(count).map(tier -> tier.expiresAt(NOW)).orElse(null);
-
-            // then: 밴이 생겼다면 반드시 만료가 있고, 1년을 넘지 않는다
-            if (expiry != null) {
-                assertThat(expiry)
-                        .as("누적 %d회에서 만료 없는 밴이 나왔다 — 되돌릴 수 없는 자동 제재다", count)
-                        .isNotNull()
-                        .isBeforeOrEqualTo(NOW.plus(Duration.ofDays(365)));
-            }
+            // when & then: 단계가 나왔다면 그 단계는 반드시 만료를 갖고, 1년을 넘지 않는다
+            long current = count;
+            ChatBanTier.of(count).ifPresent(tier -> assertThat(tier.expiresAt(NOW))
+                    .as("누적 %d회의 %s에 만료가 없다 — 되돌릴 수 없는 자동 제재다", current, tier)
+                    .isNotNull()
+                    .isBeforeOrEqualTo(NOW.plus(Duration.ofDays(365))));
         }
     }
 

@@ -55,7 +55,7 @@ class OutboundMessageSerializationTest {
                 .createdAt(Instant.parse("2026-09-04T00:00:00Z"))
                 .build();
         // 방주인도 발신자도 아닌 세션 — 이메일·원문·clientMsgId가 모두 빠지는 조합이다
-        return OutboundMessage.chat(message, false, false);
+        return OutboundMessage.chat(message, ChatMessageVisibility.MASKED, false);
     }
 
     @Test
