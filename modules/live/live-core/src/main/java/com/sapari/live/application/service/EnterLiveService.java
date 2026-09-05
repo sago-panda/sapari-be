@@ -73,7 +73,8 @@ public class EnterLiveService implements EnterLiveUseCase {
     }
 
     /**
-     * access token role(USER/SELLER/ADMIN) → chat ChatRole 매핑. ADMIN도 같은 인증 토큰과 입장 엔드포인트를 사용한다.
+     * access token role(USER/SELLER/ADMIN) → chat ChatRole 매핑.
+     * 인증된 입장 요청에 전달된 ADMIN role은 chat의 ADMIN role로 유지한다.
      * 게스트(GUEST)는 미인증 경로에서 처리하므로 이 메서드에 도달하지 않는다.
      * role이 null이거나 지원하지 않는 값이면 원본을 노출하지 않고 UnsupportedRoleException으로 실패시킨다(fail-closed).
      */
