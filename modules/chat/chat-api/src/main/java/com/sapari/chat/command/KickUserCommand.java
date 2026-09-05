@@ -3,8 +3,9 @@ package com.sapari.chat.command;
 import java.util.UUID;
 
 /**
- * 강퇴 명령 (live-app REST). 방 주인 여부는 서비스가 방을 로드해 roomOwnerId로 판정하므로
- * 커맨드는 강퇴자 신원만 담는다(세션 boolean을 신뢰하지 않음 — REST는 DB 로드 경로).
+ * 강퇴 명령 (live-app REST). <b>커맨드는 신원만 담는다 — 역할도 방 주인 여부도 담지 않는다.</b>
+ * 둘 다 서버가 직접 로드해 판정한다. 클라이언트가 보낸 역할을 믿으면 구매자가 자기를 ADMIN이라
+ * 적어 아무나 강퇴할 수 있다.
  *
  * <p><b>본문이 아니라 {@code messageId}를 받는다.</b> 강퇴 증거로 남길 원문은 서버가 그 id로 직접 읽어
  * 박는다 — 클라이언트가 본문을 실어 보내면 무엇 때문에 끊었는지를 강퇴한 쪽이 지어낼 수 있고, 그러면
@@ -17,7 +18,6 @@ import java.util.UUID;
 public record KickUserCommand(
         UUID roomId,
         UUID kickerId,
-        String kickerRole,
         UUID targetUserId,
         String messageId
 ) {
@@ -27,9 +27,6 @@ public record KickUserCommand(
         }
         if (kickerId == null) {
             throw new IllegalArgumentException("kickerId는 필수입니다.");
-        }
-        if (kickerRole == null || kickerRole.isBlank()) {
-            throw new IllegalArgumentException("kickerRole은 필수입니다.");
         }
         if (targetUserId == null) {
             throw new IllegalArgumentException("targetUserId는 필수입니다.");
