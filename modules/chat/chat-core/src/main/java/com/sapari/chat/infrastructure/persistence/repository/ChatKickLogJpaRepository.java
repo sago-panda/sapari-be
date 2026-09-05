@@ -42,4 +42,16 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
                        @Param("kickedByRole") String kickedByRole,
                        @Param("triggeringMessage") String triggeringMessage,
                        @Param("kickedAt") Instant kickedAt);
+
+    /**
+     * {@code since} 이후 이 사용자가 받은 강퇴 수 — 방을 가리지 않는다.
+     *
+     * <p>인덱스 {@code (user_id, kicked_at DESC)}가 그대로 쓰인다. 방 조건을 넣지 않는 것이 정책이다 —
+     * 밴은 플랫폼 단위라 여러 방을 옮겨 다니는 사용자도 같은 카운터에 쌓여야 한다.
+     */
+    @Query(value = """
+            SELECT COUNT(*) FROM live_schema.chat_kick_log
+             WHERE user_id = :userId AND kicked_at > :since
+            """, nativeQuery = true)
+    long countSince(@Param("userId") UUID userId, @Param("since") Instant since);
 }

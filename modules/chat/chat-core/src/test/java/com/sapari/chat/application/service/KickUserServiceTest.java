@@ -3,6 +3,7 @@ package com.sapari.chat.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.inOrder;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -31,9 +33,13 @@ import com.sapari.chat.command.KickUserCommand;
 import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatBanStateRepository;
+import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
@@ -73,6 +79,10 @@ class KickUserServiceTest {
     @Mock
     private ChatKickLogRepository kickLogRepository;
     @Mock
+    private ChatBanStateRepository banStateRepository;
+    @Mock
+    private ChatBanWriteRepository banWriteRepository;
+    @Mock
     private ChatKickWriteRepository kickWriteRepository;
     @Mock
     private ChatKickEventPublisher kickEventPublisher;
@@ -90,8 +100,8 @@ class KickUserServiceTest {
     void setUp() {
         service = new KickUserService(
                 liveRoomReader, userAccountReader, evidenceRepository, kickLogRepository,
-                kickWriteRepository, kickEventPublisher, new ChatPermissionPolicy(),
-                new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+                banStateRepository, banWriteRepository, kickWriteRepository, kickEventPublisher,
+                new ChatPermissionPolicy(), new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
     private KickUserCommand command(UUID kickerId) {
@@ -398,6 +408,153 @@ class KickUserServiceTest {
             assertThatThrownBy(() -> service.kick(command(sellerId)))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
             verify(kickLogRepository, never()).appendIfAbsent(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("밴 승격 — 누적 강퇴가 임계에 닿을 때")
+    class BanEscalation {
+
+        private void givenNoActiveBan() {
+            given(banStateRepository.findActive(targetId, NOW)).willReturn(Optional.empty());
+        }
+
+        private void givenKickCount(long count) {
+            given(kickLogRepository.countSince(eq(targetId), any())).willReturn(count);
+        }
+
+        @Test
+        @DisplayName("2회까지는 밴이 없다 — 방에서 나갈 뿐이다")
+        void belowThresholdDoesNotBan() {
+            // given
+            givenHappyPath();
+            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            givenNoActiveBan();
+            givenKickCount(2);
+
+            // when
+            service.kick(command(sellerId));
+
+            // then
+            verify(banStateRepository, never()).append(any());
+            verify(banWriteRepository, never()).ban(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("3회에서 1주 밴 — 정본과 미러에 같은 만료가 들어간다")
+        void thirdKickBansForAWeek() {
+            // given
+            givenHappyPath();
+            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            givenNoActiveBan();
+            givenKickCount(3);
+
+            // when
+            service.kick(command(sellerId));
+
+            // then
+            ArgumentCaptor<ChatBan> captor = ArgumentCaptor.forClass(ChatBan.class);
+            verify(banStateRepository).append(captor.capture());
+            ChatBan ban = captor.getValue();
+            assertThat(ban.userId()).isEqualTo(targetId);
+            assertThat(ban.bannedById()).isEqualTo(ChatConstants.SYSTEM_SENDER_ID);
+            assertThat(ban.expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
+            verify(banWriteRepository).ban(targetId, NOW.plus(Duration.ofDays(7)), NOW);
+        }
+
+        @Test
+        @DisplayName("12회부터는 영구 밴 — 만료를 두지 않는다")
+        void twelfthKickBansPermanently() {
+            // given
+            givenHappyPath();
+            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            givenNoActiveBan();
+            givenKickCount(12);
+
+            // when
+            service.kick(command(sellerId));
+
+            // then
+            ArgumentCaptor<ChatBan> captor = ArgumentCaptor.forClass(ChatBan.class);
+            verify(banStateRepository).append(captor.capture());
+            assertThat(captor.getValue().isPermanent()).isTrue();
+            verify(banWriteRepository).ban(targetId, null, NOW);
+        }
+
+        @Test
+        @DisplayName("⭐ 이미 밴이 걸려 있으면 새로 만들지 않고 미러만 맞춘다 — 재시도가 밴을 겹치지 않는다")
+        void activeBanIsMirroredNotStacked() {
+            // given: 만료가 남아 있는 밴
+            Instant existingExpiry = NOW.plus(Duration.ofDays(3));
+            givenHappyPath();
+            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            given(banStateRepository.findActive(targetId, NOW)).willReturn(
+                    Optional.of(new ChatBan(targetId, ChatConstants.SYSTEM_SENDER_ID,
+                            existingExpiry, NOW.minus(Duration.ofDays(4)))));
+
+            // when
+            service.kick(command(sellerId));
+
+            // then: 카운트를 세지도 않는다
+            verify(kickLogRepository, never()).countSince(any(), any());
+            verify(banStateRepository, never()).append(any());
+            verify(banWriteRepository).ban(targetId, existingExpiry, NOW);
+        }
+
+        @Test
+        @DisplayName("⭐ 중복 강퇴는 누적을 세지 않는다 — 재강퇴만으로 밴을 연장할 수 없다")
+        void duplicateKickDoesNotCount() {
+            // given: 같은 방 두 번째 강퇴라 정본에 행이 생기지 않았고, 활성 밴도 없다
+            givenHappyPath();
+            given(kickLogRepository.appendIfAbsent(any())).willReturn(false);
+            givenNoActiveBan();
+
+            // when
+            service.kick(command(sellerId));
+
+            // then
+            verify(kickLogRepository, never()).countSince(any(), any());
+            verify(banStateRepository, never()).append(any());
+            verify(banWriteRepository, never()).ban(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("밴은 명단 등록·발행보다 먼저다 — 정본이 확정된 뒤에 집행이 간다")
+        void banIsWrittenBeforeEnforcement() {
+            // given
+            givenHappyPath();
+            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            givenNoActiveBan();
+            givenKickCount(3);
+
+            // when
+            service.kick(command(sellerId));
+
+            // then
+            InOrder order = inOrder(banStateRepository, banWriteRepository,
+                    kickWriteRepository, kickEventPublisher);
+            order.verify(banStateRepository).append(any());
+            order.verify(banWriteRepository).ban(any(), any(), any());
+            order.verify(kickWriteRepository).register(roomId, targetId);
+            order.verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+
+        @Test
+        @DisplayName("누적 창은 2년이다 — 그보다 오래된 강퇴는 세지 않는다")
+        void countsOnlyTheLastTwoYears() {
+            // given
+            givenHappyPath();
+            given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
+            givenNoActiveBan();
+            givenKickCount(1);
+
+            // when
+            service.kick(command(sellerId));
+
+            // then
+            ArgumentCaptor<Instant> since = ArgumentCaptor.forClass(Instant.class);
+            verify(kickLogRepository).countSince(eq(targetId), since.capture());
+            assertThat(since.getValue()).isEqualTo(NOW.minus(Duration.ofDays(730)));
         }
     }
 

@@ -1,5 +1,8 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
+import java.time.Instant;
+import java.util.UUID;
+
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 
@@ -31,5 +34,10 @@ public class ChatKickLogRepositoryImpl implements ChatKickLogRepository {
                 log.kickedByRole().name(),
                 log.triggeringMessage(),
                 log.kickedAt()) > 0;
+    }
+
+    @Override
+    public long countSince(UUID userId, Instant since) {
+        return jpaRepository.countSince(userId, since);
     }
 }

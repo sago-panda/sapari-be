@@ -1,5 +1,8 @@
 package com.sapari.chat.domain.repository;
 
+import java.time.Instant;
+import java.util.UUID;
+
 import com.sapari.chat.domain.model.ChatKickLog;
 
 /**
@@ -31,4 +34,12 @@ public interface ChatKickLogRepository {
      * @return 실제로 기록됐으면 {@code true}, 이미 있어 아무것도 하지 않았으면 {@code false}
      */
     boolean appendIfAbsent(ChatKickLog log);
+
+    /**
+     * {@code since} 이후 이 사용자가 받은 강퇴 횟수 — 방을 가리지 않고 <b>전부</b> 센다.
+     *
+     * <p>밴은 판매자별이 아니라 플랫폼 단위다. 방마다 따로 세면 여러 방을 돌며 같은 짓을 하는 사용자가
+     * 어느 임계에도 닿지 않는다.
+     */
+    long countSince(UUID userId, Instant since);
 }
