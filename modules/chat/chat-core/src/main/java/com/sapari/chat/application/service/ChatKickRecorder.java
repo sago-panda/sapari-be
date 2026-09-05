@@ -94,8 +94,7 @@ public class ChatKickRecorder {
                     // 여기가 "새로 걸었다"와 "이미 있었다"를 구분해 아는 유일한 자리다 — 그래서 반환 타입을
                     // 쪼개지 않고도 그 구분이 기록에 남는다. 기존 밴 미러 갱신은 일상이라 남기지 않는다.
                     log.info("자동 밴 승격 — userId={} 누적={}회 단계={} 만료={}",
-                            ban.userId(), kickCount, tier,
-                            ban.isPermanent() ? "없음(영구)" : ban.expiresAt());
+                            ban.userId(), kickCount, tier, ban.expiresAt());
                     return ban;
                 });
     }

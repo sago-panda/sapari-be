@@ -418,9 +418,13 @@ class KickUserServiceTest {
             verify(banWriteRepository).ban(targetId, expiry, NOW);
         }
 
+        /**
+         * 자동 승격에는 영구가 없지만, 관리자가 손으로 넣은 영구 밴은 여전히 정본에 있을 수 있고
+         * {@code findActive}가 그걸 돌려준다. 미러는 그때도 만료 없이 써야 한다.
+         */
         @Test
-        @DisplayName("영구 밴은 만료 없이 비춘다")
-        void permanentBanHasNoExpiry() {
+        @DisplayName("사람이 건 영구 밴은 만료 없이 비춘다 — 자동 승격에는 영구가 없다")
+        void manualPermanentBanHasNoExpiry() {
             // given
             givenHappyPath();
             given(kickRecorder.record(any())).willReturn(Optional.of(

@@ -189,8 +189,12 @@ skips the proxy and the annotation silently does nothing. live's `RtmpIngressAss
 
 Escalation counts kicks **across rooms** on a 2-year window; per-seller counting lets a user who rotates
 rooms reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
-(3/6/9/12+) gives the same answer while kicks arrive one at a time, and differs only where the table is
-silent (window shrink, a concurrent kick skipping a threshold). An active ban is **mirrored, never stacked**,
+gives the same answer while kicks arrive one at a time, and differs only where the table is silent (window
+shrink, a concurrent kick skipping a threshold). **Automatic escalation stops at one year.** The doc's
+12-kick permanent ban was moved to a human's hands: nothing reversible-only-by-hand should be applied by a
+server that has no code to reverse it, and that matches every other call this domain has made (the kick set
+expires rather than being deleted; a corrupted key is not self-healed). Permanent bans still exist as rows
+with a null expiry — an admin puts them there. An active ban is **mirrored, never stacked**,
 and the longest-lived one wins — picking a shorter row releases the mirror before the record. A duplicate
 kick does **not** re-count: it would let a seller extend a ban indefinitely by re-kicking. The cost is a hole
 — if the log commits and the ban write fails, the retry takes the duplicate path and skips escalation.
