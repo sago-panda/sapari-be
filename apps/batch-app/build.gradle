@@ -16,6 +16,7 @@ bootJar {
     enabled = true
 }
 
+// architecture-test가 batchapp 클래스를 분석하려면 plain jar 필요 (bootJar는 BOOT-INF 구조라 분석 불가)
 jar{
-    enabled = false
+    enabled = true
 }

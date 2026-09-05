@@ -54,3 +54,7 @@ docker-compose.local.yml
 
 ### Hermes local workspace ###
 .hermes/
+
+# 하네스 스크립트가 공용 모듈을 import 하면서 생긴다
+__pycache__/
+*.pyc

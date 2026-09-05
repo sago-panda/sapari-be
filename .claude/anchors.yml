@@ -1,0 +1,134 @@
+# 변경 경로 -> 활성 점검 항목.
+#
+# 두 가지를 한다.
+#   켠다  변경이 Service 뿐이어도 인가·정합성 항목은 켜져야 한다. 리뷰어의 재량에 맡기면
+#         켜졌는지 확인할 방법이 없다.
+#   끈다  Flyway 를 안 건드린 MR 에 스키마 항목을, streaming-app 을 안 건드린 MR 에
+#         WebSocket 항목을 싣지 않는다. 무관한 항목은 토큰만 쓰는 것이 아니라 오탐을 만든다.
+#
+# 항목 정의는 .claude/reviewers.yml 이 가리키는 .claude/review/ 의 방법론 md 에 있다. 여기는
+# "언제 켜지는가"만 정한다. 한 파일이 여러 규칙에 걸리면 전부 적용한다(합집합).
+# 어떤 리뷰어를 띄울지도 여기서 나온다 — 활성 항목의 접두사를 소유한 리뷰어만 뜬다.
+#
+# 규칙 형태:
+#   trigger:  경로 글롭. 하나라도 맞으면 걸린다.
+#   content:  (선택) 정규식. 있으면 trigger 에 맞는 파일 본문에 하나라도 있어야 걸린다.
+#             동시성 구문처럼 경로에 드러나지 않는 것을 위한 것 — 경로만으로 걸면
+#             "서비스가 바뀌면 항상" 이 되어 매 MR 에 무의미한 보고가 붙는다.
+#   anchors:  diff 가 안 건드려도 리뷰어가 읽어야 하는 파일.
+#   activate: 켤 항목 ID.
+
+version: 1
+
+defaults:
+  # 앵커 파일을 읽지 못하면 통과시키지 않는다
+  unresolved_anchor: 증거부족
+  # on_no_match 절은 두지 않는다. always 가 그 역할을 하고, 실제로 always 의
+  # 부분집합이라 아무것도 추가하지 못하는 죽은 절이었다.
+  # 어떤 규칙도 안 걸리는 것 자체는 정상이다(문서만 고친 MR). 정말 막아야 하는 것은
+  # "글롭이 저장소 어디에도 안 맞는 상태" 이고, 그건 리뷰 시점이 아니라
+  # harness-check 의 글롭 유효성 검사가 빌드 시점에 잡는다.
+
+# 경로와 무관하게 항상 켜지는 항목.
+# 시크릿은 자바 파일에만 박히지 않는다 — CI yml, 스크립트, gradle 어디에나 들어간다.
+# 경로 규칙에 맡기면 규칙에 없는 확장자로 커밋하는 것만으로 검사를 피할 수 있다.
+always: [CONV-08, CONV-10, CONV-11, SEC-00, SEC-03]
+
+rules:
+  - trigger: ["**/src/main/java/**/*.java"]
+    activate: [CONV-04, CONV-07]
+
+  - trigger: ["**/controller/**/*Controller.java", "**/controller/**/dto/**/*.java"]
+    # DTO 는 컨트롤러의 계약이라 같은 항목으로 본다. DTO 만 바뀌는 MR 이
+    # 어디에도 안 걸리면 mass-assignment 검사가 발화하지 않는다.
+    # 예외 핸들러가 이미 만드는 에러 봉투를 컨트롤러가 또 만드는지(CONV-12) 보려면 그쪽을 읽어야 한다.
+    anchors: ["**/config/*SecurityConfig.java", "**/application/service/**/*.java", "**/*UseCase.java",
+              "**/exception/GlobalExceptionHandler.java", "apps/AGENTS.md"]
+    activate: [CONV-01, CONV-12, SEC-01, SEC-05]
+
+  - trigger: ["**/application/service/**/*.java"]
+    # 권한 모델을 봐야 소유권 검증 누락을 판정할 수 있다.
+    anchors: ["**/domain/**/*.java", "**/port/*.java", "**/config/*SecurityConfig.java",
+              "common/AGENTS.md"]
+    activate: [CONV-02, CONV-05, CONV-09, CONV-13, SEC-01, SEC-09, TRAP-01, TRAP-02]
+
+  - trigger: ["**/domain/**/*.java"]
+    activate: [CONV-03]
+
+  - trigger: ["**/infrastructure/persistence/**/*.java"]
+    # 스키마 판정은 대응 마이그레이션을 함께 봐야 한다. diff 에 없어도 읽는다.
+    anchors: ["db/migration/**/*.sql", "common/AGENTS.md"]
+    activate: [CONV-06, CONV-13, TRAP-03, TRAP-04]
+
+  - trigger: ["db/migration/**/*.sql"]
+    # 같은 도메인의 이전 마이그레이션 전체를 본다. 순서가 판정에 필요하다.
+    anchors: ["db/migration/**/*.sql", "**/infrastructure/persistence/entity/**/*.java"]
+    activate: [CONV-06]
+
+  - trigger: ["**/infrastructure/**/*Manager.java", "**/application/port/*Manager.java"]
+    anchors: ["**/application/service/**/*.java", "**/resources/application*.y*ml*"]
+    activate: [CONV-05, SEC-05, TRAP-01, TRAP-02, TRAP-06]
+
+  - trigger: ["**/infrastructure/**/redis/**/*.java", "**/*RedisRepository*.java"]
+    activate: [SEC-06, TRAP-06]
+
+  - trigger: ["apps/streaming-app/**/*.java"]
+    # dev 최근 100커밋 백테스트에서 0회 발화한 유일한 규칙이다. 오타가 아니라 코드가
+    # 아직 없는 것 — dev 의 streaming-app 은 부트 클래스와 Swagger 설정뿐이고, WS 작업은
+    # 미머지 브랜치에 있다. 그것이 들어오는 순간 켜져야 하므로 지우지 않는다.
+    activate: [SEC-07]
+
+  - trigger: ["**/*Properties.java", "**/resources/application*.y*ml*"]
+    # 한 프로파일만 보면 값의 차이를 알 수 없다. 전 프로파일을 함께 읽는다.
+    anchors: ["**/resources/application*.y*ml*"]
+    activate: [CONV-08, SEC-10, TRAP-05]
+
+  - trigger: ["**/*Event*.java", "**/*EventPublisher*.java"]
+    # 이벤트는 at-least-once 라 소비자 멱등성이 판정 대상이다. 지금은 발행 측만
+    # 있어서(live) 대부분 N/A 로 끝나지만, 소비자가 생기는 순간 켜져 있어야 한다.
+    # 소비자가 멱등한가(CONC-06)는 이벤트 파일에서 판정한다 — 메시지 리스너는 content 규칙이 잡는다.
+    activate: [SEC-08, CONV-04, CONC-06]
+
+  - trigger: ["**/scheduler/*.java"]
+    activate: [CONV-09, SEC-09, TRAP-02]
+
+  - trigger: ["**/auth/**/*.java", "**/*Jwt*.java", "**/*Token*.java", "**/*OAuth*.java"]
+    activate: [SEC-02, SEC-04, SEC-06]
+
+  - trigger: [".gitlab-ci.yml", ".gitlab/**", ".claude/**", "**/*.gradle", "**/Dockerfile*", "**/*.sh",
+              "gradle/wrapper/**", "gradlew*"]
+    # 리뷰 파이프라인과 리뷰어 정의 자신을 바꾸는 변경. 자바가 아니라는 이유로
+    # 기본 집합만 켜지면, 게이트를 무력화하는 변경이 가장 헐겁게 리뷰된다.
+    # (CI 파일은 러너에서 실행되므로 무인 코드와 같은 축으로 본다)
+    #
+    # gradle wrapper 를 함께 넣는 이유는 build.yml 상단이 그것을 RCE 벡터로 명시하기
+    # 때문이다. 배포판 URL 이 여기 있으므로 *.gradle 만 잡으면 정작 그 벡터를 놓친다.
+    #
+    # 주의: .claude/ 는 리뷰 잡이 기본 브랜치 것으로 되돌린 뒤 리뷰가 돈다. 즉 아래 두
+    # 앵커로 읽는 스크립트·앵커 파일은 'MR 의 것' 이 아니라 '현재 기준' 이다. MR 이 가드를
+    # 지웠어도 앵커로는 있는 것처럼 보인다 — 그 변경 자체는 mr.diff 에 있으므로 거기서 본다.
+    anchors: [".gitlab-ci.yml", ".gitlab/ci/*.yml", ".claude/scripts/*.sh", ".claude/anchors.yml",
+              "gradle/wrapper/gradle-wrapper.properties"]
+    activate: [CONV-09, SEC-09, SEC-05]
+
+  - trigger: ["**/src/main/java/**/*.java"]
+    # 동시성 리뷰어. 본문에 동시성 구문이 있을 때만 — 경로 규칙이면 매 MR 에 뜬다.
+    # 패턴은 저장소에 아직 없는 구문(@Async, synchronized …)도 미리 겨냥한다. harness-check 는
+    # 그 경우 경고만 한다(글롭과 달리 오타를 결정론적으로 가릴 수 없다).
+    content: ["@Async", "@Scheduled", "@Lock\b", "\bsynchronized\b", "ReentrantLock", "CompletableFuture",
+              "ExecutorService", "\bAtomic(Integer|Long|Boolean|Reference)\b", "ConcurrentHashMap",
+              "@Version", "ForUpdate", "LockModeType", "PESSIMISTIC", "setIfAbsent", "\bvolatile\b",
+              "@\w*Listener\b", "\bMessageListener\b",
+              "\w*(Kafka|Rabbit|Sqs|Jms|Sns)Template\b", "ApplicationEventPublisher", "convertAndSend", "publishEvent\(", "@Modifying", "@Retryable", "ShedLock"]
+    anchors: ["modules/live/AGENTS.md", "**/infrastructure/persistence/**/*Repository*.java"]
+    activate: [CONC-01, CONC-02, CONC-03, CONC-04, CONC-05, CONC-06, CONC-07]
+
+  - trigger: ["modules/live/**/*.java", "apps/live-app/**/*.java", "db/migration/live/*.sql"]
+    # 도메인 리뷰어(domain=live). 판정 근거가 전부 이 AGENTS.md 에 있으므로 반드시 동봉한다.
+    anchors: ["modules/live/AGENTS.md"]
+    activate: [LIVE-01, LIVE-02, LIVE-03, LIVE-04, LIVE-05, LIVE-06, LIVE-07]
+
+  - trigger: ["**/src/test/**/*.java"]
+    # 프로덕션 코드를 겨냥한 항목은 켜지 않는다. 테스트에 걸면 픽스처와
+    # 서술형 메서드명이 전부 지적으로 나온다.
+    activate: [CONV-07]
