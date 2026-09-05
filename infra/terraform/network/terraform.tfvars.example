@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars for local use. terraform.tfvars is gitignored.
+# Add every tester's current public IP as a /32. Never commit real addresses.
+allowed_client_cidrs = [
+  "203.0.113.10/32",
+]
+
+# Optional identifiers; defaults are shown.
+# environment = "live-validation"
+# additional_tags = {
+#   Owner      = "live-team"
+#   CostCenter = "validation"
+# }
+
