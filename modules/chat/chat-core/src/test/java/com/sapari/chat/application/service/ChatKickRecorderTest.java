@@ -198,13 +198,48 @@ class ChatKickRecorderTest {
     }
 
     /**
+     * ⭐ <b>바깥 트랜잭션이 있어도 이 기록은 독립으로 커밋된다.</b>
+     *
+     * <p>호출자는 "이 메서드가 반환되면 커밋이 확정됐다"에 기대어 그 다음에 Redis를 쓴다. 전파가
+     * {@code REQUIRED}면 그 성질이 <b>바깥에 트랜잭션이 없다는 우연</b>에 의존한다 — 위쪽 어디든
+     * {@code @Transactional}이 하나 붙는 순간 기록이 바깥에 합류해 반환 시점에 커밋하지 않고, 그러면
+     * Redis 쓰기와 발행이 커밋 <i>전</i>으로 들어간다. 막으려던 실패가 조용히 성립하는 것이다.
+     *
+     * <p>그래서 여기서는 <b>경계를 공급하지 않는다.</b> 바깥 트랜잭션을 열어 그 안에서 부른 뒤 바깥을
+     * 되돌린다 — {@code REQUIRES_NEW}면 이미 독립으로 커밋됐으니 기록이 살아남고, {@code REQUIRED}면
+     * 함께 되돌아가 사라진다. 그 차이가 곧 이 한 단어가 지키는 것이다.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 바깥 트랜잭션이 되돌아가도 기록은 남는다 — 반환 = 커밋 확정이 우연이 아니라 성질이다")
+    void recordCommitsIndependentlyOfAnOuterTransaction() {
+        // given: 호출자 위쪽에 트랜잭션이 하나 붙은 상황
+        TransactionTemplate outer = new TransactionTemplate(transactionManager);
+
+        // when: 그 안에서 기록하고, 바깥을 되돌린다
+        outer.executeWithoutResult(status -> {
+            recorder.record(kick(UUID.randomUUID(), NOW));
+            status.setRollbackOnly();
+        });
+
+        // then: 전파가 REQUIRED면 여기서 0이 된다 — 그러면 호출자가 이미 Redis를 쓴 뒤다
+        assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+                .as("바깥 롤백이 기록까지 되돌렸다 — 반환 시점에 커밋이 확정되지 않는다")
+                .isEqualTo(1);
+    }
+
+    /**
      * ⭐ 밴 쓰기가 실패하면 <b>강퇴 로그도 함께 롤백된다.</b>
      *
      * <p>이 경계가 생기기 전에는 구멍이었다 — 로그는 커밋됐는데 밴이 실패하면 재시도가 중복 경로로 들어가
      * 승격을 영영 건너뛰었다. 트랜잭션이 그걸 닫았고 문서도 그렇게 적었는데, <b>그 보장만 테스트가
-     * 없었다.</b> 전파를 {@code REQUIRED}로 되돌리거나 경계를 잃으면 여기서 드러난다.
+     * 없었다.</b>
      *
      * <p>밴 저장소를 던지는 것으로 갈아 끼워 재현한다 — 실제 실패를 만드는 다른 방법이 없다.
+     *
+     * <p>⚠️ <b>이 테스트는 전파를 재지 못한다.</b> 경계를 템플릿이 <b>공급</b>하기 때문이다 —
+     * {@code REQUIRED}면 기록이 그 트랜잭션에 합류할 뿐이라 두 쓰기는 여전히 한 트랜잭션이고 롤백도
+     * 그대로 일어난다. 전파는 {@code recordCommitsIndependentlyOfAnOuterTransaction}이 잰다.
      */
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)

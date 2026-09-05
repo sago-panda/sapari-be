@@ -206,6 +206,12 @@ skips the proxy and the annotation silently does nothing. live's `RtmpIngressAss
 **Unit tests cannot see this** — mocks never run the query and `@DataJpaTest` opens a transaction for you.
 `ChatKickRecorderTest` calls with `Propagation.NOT_SUPPORTED` to remove that help.
 
+The propagation is `REQUIRES_NEW`, and that word is load-bearing: under `REQUIRED` the "returned means
+committed" invariant silently degrades to "no caller above happened to open a transaction", and the moment
+one does, Redis and publish run *before* the commit. **A test that supplies its own boundary cannot see
+that** — the recorder just joins it and everything still looks right. The one that can opens an outer
+transaction, calls inside it, rolls the outer back, and asserts the log survived.
+
 The mirror write is **extend-only** (`PTTL` compare + `SET` in one `EVAL`). Concurrent kicks in different
 rooms each create their own ban and each write the mirror, so an unconditional `SET` lets whoever arrives
 last win — and a short TTL landing last releases a user weeks early, because **the mirror is what enforces**.
