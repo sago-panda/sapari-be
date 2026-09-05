@@ -13,7 +13,6 @@ import static org.mockito.Mockito.verify;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
@@ -47,13 +46,6 @@ import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 import com.sapari.global.time.TimeProvider;
-import com.sapari.user.model.ProviderType;
-import com.sapari.user.model.UserGender;
-import com.sapari.user.model.UserGrade;
-import com.sapari.user.model.UserRole;
-import com.sapari.user.model.UserStatus;
-import com.sapari.user.port.UserAccountUseCase;
-import com.sapari.user.view.UserView;
 
 /**
  * 강퇴 등록의 <b>순서</b>와 <b>어디서 멈추는가</b>를 고정한다.
@@ -72,8 +64,6 @@ class KickUserServiceTest {
 
     @Mock
     private GetLiveRoomUseCase liveRoomReader;
-    @Mock
-    private UserAccountUseCase userAccountReader;
     @Mock
     private ChatMessageEvidenceRepository evidenceRepository;
     @Mock
@@ -99,13 +89,19 @@ class KickUserServiceTest {
     @BeforeEach
     void setUp() {
         service = new KickUserService(
-                liveRoomReader, userAccountReader, evidenceRepository, kickLogRepository,
+                liveRoomReader, evidenceRepository, kickLogRepository,
                 banStateRepository, banWriteRepository, kickWriteRepository, kickEventPublisher,
                 new ChatPermissionPolicy(), new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
-    private KickUserCommand command(UUID kickerId) {
-        return new KickUserCommand(roomId, kickerId, targetId, messageId);
+    /** 인증 주체에서 오는 값(kickerId·kickerRole)은 컨트롤러가 채운다 — 요청 본문에는 자리가 없다. */
+    private KickUserCommand command(UUID kickerId, String platformRole) {
+        return new KickUserCommand(roomId, kickerId, platformRole, targetId, messageId);
+    }
+
+    /** 방 주인(판매자)이 강퇴하는, 가장 흔한 조합. */
+    private KickUserCommand ownerKick() {
+        return command(sellerId, "SELLER");
     }
 
     private void givenRoom(boolean live) {
@@ -113,27 +109,20 @@ class KickUserServiceTest {
                 .willReturn(Optional.of(new LiveRoomView(roomId, sellerId, live, NOW)));
     }
 
-    private void givenUser(UUID userId, UserRole role) {
-        givenUser(userId, role, UserStatus.ACTIVE);
-    }
-
-    private void givenUser(UUID userId, UserRole role, UserStatus status) {
-        given(userAccountReader.findById(userId)).willReturn(Optional.of(new UserView(
-                userId, role, status, "닉", NOW, "이름", LocalDate.of(1990, 1, 1),
-                UserGender.MALE, "01000000000", null, "u@example.com", UserGrade.BRONZE,
-                0, false, ProviderType.KAKAO, "pid", "u@example.com")));
-    }
-
     private void givenEvidence(UUID evidenceRoomId, UUID authorId) {
+        givenEvidence(evidenceRoomId, authorId, ChatRole.BUYER);
+    }
+
+    /** 대상의 역할은 증거 메시지가 들고 있다 — 발신 시점에 룸 토큰이 실어 준 값이다. */
+    private void givenEvidence(UUID evidenceRoomId, UUID authorId, ChatRole authorRole) {
         given(evidenceRepository.findEvidence(messageId))
-                .willReturn(Optional.of(new ChatMessageEvidence(evidenceRoomId, authorId, "문제의 원문")));
+                .willReturn(Optional.of(
+                        new ChatMessageEvidence(evidenceRoomId, authorId, authorRole, "문제의 원문")));
     }
 
     /** 방 주인이 자기 방에서 구매자를 강퇴하는, 전부 통과하는 조합. */
     private void givenHappyPath() {
         givenRoom(true);
-        givenUser(sellerId, UserRole.SELLER);
-        givenUser(targetId, UserRole.USER);
         givenEvidence(roomId, targetId);
     }
 
@@ -149,7 +138,7 @@ class KickUserServiceTest {
             given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then: 순서가 뒤집히면 롤백된 강퇴가 Redis에만 남는다
             InOrder order = inOrder(kickLogRepository, kickWriteRepository, kickEventPublisher);
@@ -166,7 +155,7 @@ class KickUserServiceTest {
             given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             ArgumentCaptor<ChatKickLog> captor = ArgumentCaptor.forClass(ChatKickLog.class);
@@ -187,7 +176,7 @@ class KickUserServiceTest {
             given(kickLogRepository.appendIfAbsent(any())).willReturn(false);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then: 집행 캐시가 유실된 사용자를 재강퇴로 복구할 수 있어야 한다
             verify(kickWriteRepository).register(roomId, targetId);
@@ -199,31 +188,27 @@ class KickUserServiceTest {
         void adminKicksInAnyRoom() {
             // given: 방 주인이 아닌 관리자
             UUID adminId = UUID.randomUUID();
-            givenRoom(true);
-            givenUser(adminId, UserRole.ADMIN);
-            givenUser(targetId, UserRole.USER);
-            givenEvidence(roomId, targetId);
+            givenHappyPath();
             given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
 
             // when
-            service.kick(command(adminId));
+            service.kick(command(adminId, "ADMIN"));
 
             // then
             verify(kickEventPublisher).publishKicked(roomId, targetId);
         }
 
         @Test
-        @DisplayName("탈퇴 유예 중인 대상도 강퇴된다 — REST만 막히고 채팅 세션은 살아 있기 때문이다")
+        @DisplayName("탈퇴 유예 중인 대상도 강퇴된다 — 계정 상태를 아예 묻지 않기 때문이다")
         void withdrawingTargetIsStillKickable() {
-            // given
-            givenRoom(true);
-            givenUser(sellerId, UserRole.SELLER);
-            givenUser(targetId, UserRole.USER, UserStatus.WITHDRAWING);
-            givenEvidence(roomId, targetId);
+            // given: 이 경로는 사용자 계정 저장소에 닿지 않는다. 그래서 탈퇴 유예라는 상태가
+            // 판정에 끼어들 자리가 없고, 그게 필요한 동작이다 — REST가 막힌 뒤에도 채팅 세션은
+            // 살아 있어 그 사람이 방에서 계속 말한다.
+            givenHappyPath();
             given(kickLogRepository.appendIfAbsent(any())).willReturn(true);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             verify(kickEventPublisher).publishKicked(roomId, targetId);
@@ -248,35 +233,31 @@ class KickUserServiceTest {
             given(liveRoomReader.findRoom(roomId)).willReturn(Optional.empty());
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatPermissionDeniedException.class);
             assertNothingWritten();
         }
 
         @Test
-        @DisplayName("없는 사용자도 권한 거부다 — 같은 이유로 사용자 id도 세지 못하게 한다")
-        void unknownUserIsDenied() {
+        @DisplayName("모르는 역할 이름은 거부한다 — 조용히 구매자로 접으면 원인이 안 드러난다")
+        void unknownRoleNameIsDenied() {
             // given
             givenRoom(true);
-            given(userAccountReader.findById(sellerId)).willReturn(Optional.empty());
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(command(sellerId, "MODERATOR")))
                     .isInstanceOf(ChatPermissionDeniedException.class);
             assertNothingWritten();
         }
 
         @Test
-        @DisplayName("구매자는 강퇴할 수 없다 — 역할은 서버가 읽으므로 클라가 올려 부를 수 없다")
+        @DisplayName("구매자는 강퇴할 수 없다 — 역할은 인증 주체에서 오므로 올려 부를 수 없다")
         void buyerCannotKick() {
-            // given: 커맨드에는 역할 자리가 없다. 이 값은 전적으로 user 도메인에서 온다
-            UUID buyerId = UUID.randomUUID();
+            // given: 요청 본문에는 역할 자리가 없다. 이 값은 서명된 토큰에서 온다
             givenRoom(true);
-            givenUser(buyerId, UserRole.USER);
-            givenUser(targetId, UserRole.USER);
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(buyerId)))
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "USER")))
                     .isInstanceOf(ChatPermissionDeniedException.class);
             assertNothingWritten();
         }
@@ -285,13 +266,23 @@ class KickUserServiceTest {
         @DisplayName("남의 방 판매자는 강퇴할 수 없다")
         void sellerCannotKickInAnotherRoom() {
             // given: 이 방의 주인은 sellerId다
-            UUID visitingSeller = UUID.randomUUID();
             givenRoom(true);
-            givenUser(visitingSeller, UserRole.SELLER);
-            givenUser(targetId, UserRole.USER);
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(visitingSeller)))
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "SELLER")))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("⭐ 관리자는 강퇴되지 않는다 — 대상 역할은 증거 메시지가 들고 있다")
+        void adminTargetIsProtected() {
+            // given: 방 주인이 관리자가 남긴 메시지로 강퇴를 건다
+            givenRoom(true);
+            givenEvidence(roomId, targetId, ChatRole.ADMIN);
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatPermissionDeniedException.class);
             assertNothingWritten();
         }
@@ -299,18 +290,14 @@ class KickUserServiceTest {
         @Test
         @DisplayName("자기 자신은 강퇴할 수 없다")
         void selfKickIsDenied() {
-            // given
+            // given: 대상이 곧 강퇴자다
             givenRoom(true);
-            givenUser(sellerId, UserRole.SELLER);
-            given(userAccountReader.findById(sellerId))
-                    .willReturn(Optional.of(new UserView(
-                            sellerId, UserRole.SELLER, UserStatus.ACTIVE, "닉", NOW, "이름",
-                            LocalDate.of(1990, 1, 1), UserGender.MALE, "01000000000", null,
-                            "u@example.com", UserGrade.BRONZE, 0, false,
-                            ProviderType.KAKAO, "pid", "u@example.com")));
+            given(evidenceRepository.findEvidence(messageId)).willReturn(Optional.of(
+                    new ChatMessageEvidence(roomId, sellerId, ChatRole.SELLER, "문제의 원문")));
 
-            // when & then: 대상이 곧 강퇴자다
-            assertThatThrownBy(() -> service.kick(new KickUserCommand(roomId, sellerId, sellerId, messageId)))
+            // when & then
+            assertThatThrownBy(() -> service.kick(
+                    new KickUserCommand(roomId, sellerId, "SELLER", sellerId, messageId)))
                     .isInstanceOf(ChatPermissionDeniedException.class);
             assertNothingWritten();
         }
@@ -320,26 +307,21 @@ class KickUserServiceTest {
         void endedRoomIsRejected() {
             // given
             givenRoom(false);
-            givenUser(sellerId, UserRole.SELLER);
-            givenUser(targetId, UserRole.USER);
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(LiveNotActiveException.class);
             assertNothingWritten();
         }
 
         @Test
-        @DisplayName("⭐ 권한 검사가 증거 조회보다 먼저다 — 아니면 messageId 존재 여부를 아무나 훑는다")
-        void permissionIsCheckedBeforeEvidenceLookup() {
-            // given: 권한 없는 호출자
-            UUID buyerId = UUID.randomUUID();
+        @DisplayName("⭐ 권한 없는 호출자는 증거 조회에 닿지 못한다 — messageId 존재를 훑지 못하게 한다")
+        void unauthorizedCallerNeverReachesEvidence() {
+            // given
             givenRoom(true);
-            givenUser(buyerId, UserRole.USER);
-            givenUser(targetId, UserRole.USER);
 
             // when
-            assertThatThrownBy(() -> service.kick(command(buyerId)))
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "USER")))
                     .isInstanceOf(ChatPermissionDeniedException.class);
 
             // then: 증거 저장소를 건드리지도 않았다
@@ -350,17 +332,13 @@ class KickUserServiceTest {
         @DisplayName("⭐ 끝난 방 검사도 권한 뒤다 — 아니면 권한 없는 호출자가 방이 켜졌는지 알아낸다")
         void livenessIsCheckedAfterPermission() {
             // given: 권한도 없고 방도 끝났다
-            UUID buyerId = UUID.randomUUID();
             givenRoom(false);
-            givenUser(buyerId, UserRole.USER);
-            givenUser(targetId, UserRole.USER);
 
             // when & then: 돌아오는 것은 '진행 중이 아님'이 아니라 '권한 없음'이어야 한다
-            assertThatThrownBy(() -> service.kick(command(buyerId)))
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "USER")))
                     .isInstanceOf(ChatPermissionDeniedException.class);
         }
     }
-
     @Nested
     @DisplayName("증거 정합")
     class Evidence {
@@ -370,12 +348,10 @@ class KickUserServiceTest {
         void missingEvidenceRejects() {
             // given
             givenRoom(true);
-            givenUser(sellerId, UserRole.SELLER);
-            givenUser(targetId, UserRole.USER);
             given(evidenceRepository.findEvidence(messageId)).willReturn(Optional.empty());
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
             verify(kickLogRepository, never()).appendIfAbsent(any());
         }
@@ -385,12 +361,10 @@ class KickUserServiceTest {
         void evidenceFromAnotherRoomRejects() {
             // given
             givenRoom(true);
-            givenUser(sellerId, UserRole.SELLER);
-            givenUser(targetId, UserRole.USER);
             givenEvidence(UUID.randomUUID(), targetId);
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
             verify(kickLogRepository, never()).appendIfAbsent(any());
         }
@@ -400,12 +374,10 @@ class KickUserServiceTest {
         void evidenceByAnotherAuthorRejects() {
             // given
             givenRoom(true);
-            givenUser(sellerId, UserRole.SELLER);
-            givenUser(targetId, UserRole.USER);
             givenEvidence(roomId, UUID.randomUUID());
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(ChatKickEvidenceMismatchException.class);
             verify(kickLogRepository, never()).appendIfAbsent(any());
         }
@@ -433,7 +405,7 @@ class KickUserServiceTest {
             givenKickCount(2);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             verify(banStateRepository, never()).append(any());
@@ -450,7 +422,7 @@ class KickUserServiceTest {
             givenKickCount(3);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             ArgumentCaptor<ChatBan> captor = ArgumentCaptor.forClass(ChatBan.class);
@@ -472,7 +444,7 @@ class KickUserServiceTest {
             givenKickCount(12);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             ArgumentCaptor<ChatBan> captor = ArgumentCaptor.forClass(ChatBan.class);
@@ -493,7 +465,7 @@ class KickUserServiceTest {
                             existingExpiry, NOW.minus(Duration.ofDays(4)))));
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then: 카운트를 세지도 않는다
             verify(kickLogRepository, never()).countSince(any(), any());
@@ -510,7 +482,7 @@ class KickUserServiceTest {
             givenNoActiveBan();
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             verify(kickLogRepository, never()).countSince(any(), any());
@@ -528,7 +500,7 @@ class KickUserServiceTest {
             givenKickCount(3);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             InOrder order = inOrder(banStateRepository, banWriteRepository,
@@ -549,7 +521,7 @@ class KickUserServiceTest {
             givenKickCount(1);
 
             // when
-            service.kick(command(sellerId));
+            service.kick(ownerKick());
 
             // then
             ArgumentCaptor<Instant> since = ArgumentCaptor.forClass(Instant.class);
@@ -570,7 +542,7 @@ class KickUserServiceTest {
             willThrow(new IllegalStateException("DB 장애")).given(kickLogRepository).appendIfAbsent(any());
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(IllegalStateException.class);
             verify(kickWriteRepository, never()).register(any(), any());
             verify(kickEventPublisher, never()).publishKicked(any(), any());
@@ -586,7 +558,7 @@ class KickUserServiceTest {
                     .given(kickWriteRepository).register(any(), any());
 
             // when & then
-            assertThatThrownBy(() -> service.kick(command(sellerId)))
+            assertThatThrownBy(() -> service.kick(ownerKick()))
                     .isInstanceOf(IllegalStateException.class);
             verify(kickEventPublisher, never()).publishKicked(any(), any());
         }

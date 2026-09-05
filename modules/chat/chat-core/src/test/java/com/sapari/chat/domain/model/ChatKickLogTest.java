@@ -32,7 +32,7 @@ class ChatKickLogTest {
     private final Instant kickedAt = Instant.parse("2026-09-02T00:00:00Z");
 
     private ChatMessageEvidence evidence(UUID room, UUID sender) {
-        return new ChatMessageEvidence(room, sender, "문제된 원문");
+        return new ChatMessageEvidence(room, sender, ChatRole.BUYER, "문제된 원문");
     }
 
     private ChatKickLog from(ChatMessageEvidence evidence) {

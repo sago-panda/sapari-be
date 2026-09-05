@@ -1,9 +1,9 @@
 dependencies {
     implementation(project(':modules:chat:chat-api'))
-    // 강퇴는 방 주인과 진행 여부를, 그리고 강퇴자·대상의 역할을 서버가 직접 확인해야 한다.
-    // 둘 다 남의 도메인 값이라 -api 포트로만 묻는다(-core 의존은 모듈 규칙 위반).
+    // 강퇴는 방 주인과 진행 여부를 서버가 직접 확인해야 한다. 남의 도메인 값이라 -api 포트로만 묻는다
+    // (-core 의존은 모듈 규칙 위반). 사용자 계정 도메인에는 닿지 않는다 — 역할은 인증 주체와 증거
+    // 메시지가 이미 들고 있고, 그걸 다시 물으면 호스트 앱이 계정 저장소 전체를 갖게 된다.
     implementation(project(':modules:live:live-api'))
-    implementation(project(':modules:user:user-api'))
     implementation(project(':common:core'))
     implementation(project(':common:global'))   // TimeProvider — SendChatService createdAt 스탬프(T7)
 

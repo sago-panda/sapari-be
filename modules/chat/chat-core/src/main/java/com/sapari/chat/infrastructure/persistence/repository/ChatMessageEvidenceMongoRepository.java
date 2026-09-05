@@ -6,6 +6,7 @@ import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.MongoTemplate;
 
 import com.sapari.chat.domain.model.ChatMessageEvidence;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
 import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
 
@@ -38,6 +39,7 @@ public class ChatMessageEvidenceMongoRepository implements ChatMessageEvidenceRe
         }
         return Optional.ofNullable(mongoTemplate.findById(messageId, ChatMessageDocument.class))
                 .map(document -> new ChatMessageEvidence(
-                        document.getRoomId(), document.getSenderId(), document.getOriginalMessage()));
+                        document.getRoomId(), document.getSenderId(),
+                        ChatRole.valueOf(document.getSenderRole()), document.getOriginalMessage()));
     }
 }
