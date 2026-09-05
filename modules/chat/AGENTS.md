@@ -1,9 +1,7 @@
 # chat — live chat domain
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
-✅ connect / send / fan-out / room-end. 🚧 kick (every piece exists, nothing wires them).
-🚧 ban gate — the read path is wired, but **nothing writes `chat:banned:`**, so it can never deny.
-Its writer is kick escalation, which is what is unwired.
+✅ connect / send / fan-out / room-end / kick + ban escalation (REST host: **live-app**).
 ⬜ history (VOD). Run `./gradlew :modules:chat:chat-core:test`.
 
 ## One module, two stacks — the rule that governs everything else
@@ -24,11 +22,17 @@ Its writer is kick escalation, which is what is unwired.
   `GetLiveRoomUseCase` bean) also scans `RoomTokenConfig`, whose `@Validated` properties require live's RS256
   **private signing key** and LiveKit credentials — so any other host would have to duplicate those secrets.
   There is no inter-app HTTP anywhere in this repo to route around it.
+- **The two apps exclude each other's half in opposite ways.** streaming-app scans `com.sapari.chat` and
+  relies on blocking adapters having no stereotype; live-app cannot do the mirror of that (the reactive
+  adapters *do* carry `@Repository`), so it drops `com.sapari.chat` from its component scan **by package
+  regex** and registers the blocking beans with `@Bean`. Excluding by class would rot — a new reactive
+  adapter would silently boot there, and one of them connects to Redis in its constructor.
+  `ChatScanExclusionTest` guards the filter without booting a context.
 - `mongodb-driver-sync` is **testImplementation only** — the blocking adapter compiles against
   `MongoTemplate` without it, and promoting it would hand the reactive app a sync driver.
 
 ArchUnit enforces the calling direction: streaming-app must not touch blocking Redis/Mongo templates or
-blocking chat use cases; the MVC apps must not touch reactive ones. **Rule ② matches class names by regex** —
+blocking chat use cases; live-app (MVC) must not touch reactive ones. **Rule ② matches class names by regex** —
 name a service something other than `KickUserService` and it silently guards nothing.
 
 ## Failure policy — everything opens, nothing closes
@@ -138,10 +142,22 @@ independent — a failed notification must not prevent sessions from closing. Lo
 was lost** (control → ERROR, self-healing cleanup → WARN), not by exception type. The kick set is
 **expired, not deleted**: the waking signal cannot be verified, and deletion would be irreversible.
 
-## Kick & ban — pieces are done, wiring is not
+## Kick & ban — every input is server-read
 
 Evidence is fetched **by the server** from `messageId`; the command never carries the text (the kicker
 would author their own evidence). `ChatKickLog.from` is the only place room·author consistency is checked.
+
+**No input to the permission decision comes from the request body.** Room owner and liveness come from
+`live-api`; the kicker's role from the authenticated principal; the target's role from the **evidence
+message** (`senderRole`, captured at send time from the live-signed room token). That last one is why this
+path does not depend on `user-api`: asking the account store would hand the host app `UserAccountUseCase`,
+which also carries withdrawal and nickname changes. The cost is that a user promoted after writing the
+message is judged by the old role — acceptable, since the message is what is being judged.
+
+**Order is security, not taste.** Permission before evidence lookup (otherwise the endpoint reports whether
+a `messageId` exists), and liveness after permission (otherwise it reports whether a room is live). Unknown
+room and unknown user both collapse into permission-denied for the same reason.
+
 Idempotency is the DB constraint (`UNIQUE(user_id, live_room_id)` + `ON CONFLICT DO NOTHING`); the affected
 row count is the **ban-escalation trigger and nothing else** — treating `false` as an early return means a
 user whose enforcement cache was lost can never be kicked in that room again.
@@ -149,9 +165,13 @@ user whose enforcement cache was lost can never be kicked in that room again.
 **DB-first**: the log commit is confirmed before Redis and publish. Registration is `SADD` + `PERSIST` in one
 Lua call because `SADD` inherits a leftover expiry and the whole list would then vanish silently.
 
-Gates left for the wiring commit: **room must be LIVE** (rejects the late registration that leaks a key),
-kicker↔room authorization from the authenticated principal (`kickerRole` in the command is client input),
-live-app `@EntityScan` + `mongodb-driver-sync` runtime + four `@Bean` registrations.
+Escalation counts kicks **across rooms** on a 2-year window; per-seller counting lets a user who rotates
+rooms reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
+(3/6/9/12+) gives the same answer while kicks arrive one at a time, and differs only where the table is
+silent (window shrink, a concurrent kick skipping a threshold). An active ban is **mirrored, never stacked**,
+and the longest-lived one wins — picking a shorter row releases the mirror before the record. A duplicate
+kick does **not** re-count: it would let a seller extend a ban indefinitely by re-kicking. The cost is a hole
+— if the log commits and the ban write fails, the retry takes the duplicate path and skips escalation.
 
 ## Tests
 
