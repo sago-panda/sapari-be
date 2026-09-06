@@ -43,6 +43,15 @@ public class ChatKickRecorder {
      */
     private static final Duration KICK_COUNT_WINDOW = Duration.ofDays(730);
 
+    /**
+     * 잠금 대기를 포함한 이 트랜잭션의 상한(초).
+     *
+     * <p>정상 보유 시간은 밀리초라 이 값은 정상 경로에 닿지 않는다. 같은 사람을 여러 방에서 동시에
+     * 강퇴하는 드문 순간의 줄서기만 끊는다 — 짧게 잡으면 그 정당한 대기가 실패하고, 길게 잡으면
+     * 커넥션을 쥔 줄이 길어진다. 5초는 그 사이에서 고른 값이지 측정된 값이 아니다.
+     */
+    private static final int LOCK_WAIT_SECONDS = 5;
+
     private final ChatKickLogRepository kickLogRepository;
     private final ChatBanStateRepository banStateRepository;
 
@@ -74,14 +83,22 @@ public class ChatKickRecorder {
      *
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = LOCK_WAIT_SECONDS)
     public Optional<ChatBan> record(ChatKickLog kickLog) {
         Instant now = kickLog.kickedAt();
-        // 유니크 제약이 여기서 잡히므로, 같은 방·같은 사람을 동시에 강퇴하면 두 번째 호출이 이 트랜잭션이
-        // 끝날 때까지 기다린다. 뒤 질의들을 앞으로 빼면 대기가 짧아지지만 그러려면 카운트를 삽입 전에 세고
-        // +1 해야 하고, 그 산수가 T-12(동시 강퇴 레이스)를 읽기 더 어렵게 만든다. 기다리는 쪽은 중복
-        // 강퇴(대개 두 번 누른 것)이고 대기는 이 트랜잭션의 질의 서너 개 길이라, 그 값에 정합성을 흐릴
-        // 이유가 없다고 봤다. 받아들인다.
+        // 이 트랜잭션은 잠금을 <b>둘</b> 잡는다. 여기 강퇴 로그의 (user, room) 유니크와, 아래 밴 쓰기의
+        // 사용자 단위 유니크다.
+        //
+        // 둘의 범위가 다르다. 강퇴 로그 쪽은 같은 방·같은 사람일 때만 부딪히므로 기다리는 쪽은 대개
+        // 두 번 누른 중복 강퇴다. 밴 쪽은 사용자 전역이라 <b>방이 달라도</b> 부딪힌다 — 서로 다른 방의
+        // 두 운영자가 같은 사람을 동시에 강퇴하면 한쪽이 기다린다. 그게 이 제약의 대가다.
+        //
+        // 대가를 받아들이는 근거: 밴 잠금은 이 메서드의 마지막 문장에서 잡히고 그 뒤에는 로그 한 줄과
+        // 커밋뿐이며, 경계 안에 외부 호출이 없다. 정상 보유 시간은 밀리초다.
+        //
+        // 그래도 상한을 건다. 상한이 없으면 병목이 생겼을 때 스레드가 DB 커넥션을 쥔 채 무한히 줄을
+        // 서고, 그 줄이 풀보다 길어지면 강퇴와 무관한 요청까지 굶는다. 상한이 있으면 실패가 '대기'가
+        // 아니라 '재시도할 수 있는 예외'가 된다.
         boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
 
         Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);
@@ -94,8 +111,8 @@ public class ChatKickRecorder {
         long kickCount = kickLogRepository.countSince(kickLog.targetUserId(), now.minus(KICK_COUNT_WINDOW));
         return ChatBanTier.of(kickCount)
                 .map(tier -> {
-                    ChatBan ban = ChatBan.escalated(kickLog.targetUserId(), tier, now);
-                    banStateRepository.extendOrCreate(ban);
+                    ChatBan ban = banStateRepository.extendOrCreate(
+                            ChatBan.escalated(kickLog.targetUserId(), tier, now));
                     // 사람이 누른 적 없는 제재라 흔적이 여기밖에 없다. 게다가 지금은 푸는 코드가 없어서
                     // (해제는 행 삭제이고 그걸 하는 경로가 admin-app에 아직 없다) 남기지 않으면 "왜 못
                     // 들어가느냐"는 물음에 chat_ban을 직접 조회해야만 답할 수 있다. 이 도메인이 fail-open

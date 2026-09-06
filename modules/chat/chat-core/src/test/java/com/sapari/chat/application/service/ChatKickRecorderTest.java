@@ -134,7 +134,7 @@ class ChatKickRecorderTest {
      */
     private void deleteBansOfTarget() {
         banJpaRepository.deleteAll(banJpaRepository.findActive(
-                targetUserId, NOW.minus(java.time.Duration.ofDays(3650)), Limit.of(100)));
+                targetUserId, NOW.minus(java.time.Duration.ofDays(3650))).stream().toList());
     }
 
     private ChatKickLog kick(UUID roomId, Instant kickedAt) {
@@ -252,7 +252,7 @@ class ChatKickRecorderTest {
             }
 
             @Override
-            public void extendOrCreate(ChatBan ban) {
+            public ChatBan extendOrCreate(ChatBan ban) {
                 throw new IllegalStateException("밴 저장 실패");
             }
         });
@@ -342,7 +342,7 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
         recorder.record(kick(UUID.randomUUID(), NOW));
 
-        // append도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
+        // extendOrCreate도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
         // 준비 코드라 직접 연다 — 이 테스트가 일부러 주변 트랜잭션을 걷어냈기 때문이다.
         Instant expiry = NOW.plus(Duration.ofDays(30));
         transactionTemplate.executeWithoutResult(status -> bans.extendOrCreate(

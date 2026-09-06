@@ -11,25 +11,22 @@
 -- 이 제약이 서면 정본이 미러(chat:banned:{userId}, 늘리기 전용)와 같은 규칙을 따른다. 지금까지는
 -- 미러만 단조였고 정본은 무제한 append 라 둘의 모양이 달랐다.
 
--- 기존 중복 정리 — 남길 것은 가장 오래 가는 밴이다(만료 없음이 가장 긴 만료).
--- 짧은 쪽을 남기면 밴이 정본보다 일찍 풀린다. 정렬은 조회 쿼리와 같은 순서를 쓴다.
-DELETE FROM live_schema.chat_ban
- WHERE id IN (
-     SELECT id
-       FROM (
-           SELECT id,
-                  row_number() OVER (
-                      PARTITION BY user_id
-                      ORDER BY expires_at DESC NULLS FIRST, created_at DESC, id
-                  ) AS rn
-             FROM live_schema.chat_ban
-       ) ranked
-      WHERE rn > 1
- );
+-- 중복이 있으면 이 인덱스 생성이 실패한다. 그게 의도다.
+--
+-- 처음에는 중복을 조용히 지우는 DELETE 를 함께 뒀는데 빼기로 했다. 그 문장은 전제(운영에 chat 데이터
+-- 없음 — origin/main·origin/dev 에 chat 파일 0개)가 맞으면 한 줄도 지나지 않는 죽은 코드이고, 틀리면
+-- 제재 기록을 사람 모르게 파괴한다. 둘 다 나쁜 쪽이다. 빼면 중복이 있을 때
+-- "Key (user_id)=(...) is duplicated" 로 배포가 멈추고 사람이 본다 — 이 도메인이 오염된 강퇴 키를
+-- 자가치유하지 않고, 되돌릴 코드 없는 제재를 서버가 걸지 않기로 한 것과 같은 판단이다.
+--
+-- CONCURRENTLY 를 쓰지 않는 것도 같은 전제 위에 있다. 빈 테이블이면 즉시 끝나고, 비어 있지 않다면
+-- 그건 위 전제가 깨진 상황이라 잠기는 편이 낫다.
 
 CREATE UNIQUE INDEX uk_chat_ban_user_id ON live_schema.chat_ban (user_id);
 
 -- (user_id, expires_at) 인덱스는 이 제약이 서면 쓸모가 없다 — 사용자당 행이 하나뿐이라 두 번째 열이
 -- 좁힐 것이 없고, 위 유니크 인덱스가 같은 조회를 그대로 받는다. 이 마이그레이션이 만들어 낸 잉여라
--- 여기서 함께 치운다. 이름은 V1 에서 무명으로 만들어 Postgres 기본 규칙이 붙인 것이다.
-DROP INDEX IF EXISTS live_schema.chat_ban_user_id_expires_at_idx;
+-- 여기서 함께 치운다. 이름은 V1 에서 무명으로 만들어 Postgres 기본 규칙이 붙인 것이고, 실제
+-- Postgres 16 에 V1 을 올려 확인했다. IF EXISTS 를 붙이지 않는 것은 그 가정이 깨지는 날 조용히
+-- 넘어가면 잉여 인덱스가 남은 것을 아무도 모르기 때문이다.
+DROP INDEX live_schema.chat_ban_user_id_expires_at_idx;

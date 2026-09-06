@@ -226,9 +226,21 @@ shrink, a concurrent kick skipping a threshold). **Automatic escalation stops at
 12-kick permanent ban was moved to a human's hands: nothing reversible-only-by-hand should be applied by a
 server that has no code to reverse it, and that matches every other call this domain has made (the kick set
 expires rather than being deleted; a corrupted key is not self-healed). Permanent bans still exist as rows
-with a null expiry — an admin puts them there. An active ban is **mirrored, never stacked**,
-and the longest-lived one wins — picking a shorter row releases the mirror before the record. A duplicate
+with a null expiry — an admin puts them there, and that write must now be an extend-or-create too: a plain
+INSERT for a user who already has a row is rejected with `23505`. A duplicate
 kick does **not** re-count: it would let a seller extend a ban indefinitely by re-kicking.
+
+**One row per user is a DB constraint** (`uk_chat_ban_user_id`), not a convention. Concurrent kicks from
+different rooms used to write two rows — READ COMMITTED hides each other's uncommitted row, so a transaction
+does not stop it; a constraint does. Two rows made un-ban half-work: deleting one leaves the other
+enforcing, and the screen says "released". **Both stores are now extend-only** — the record's write is
+`ON CONFLICT DO UPDATE` guarded by a longer expiry, matching the mirror's Lua. They are not the *same* rule
+(the record compares absolute instants, the mirror compares remaining TTL) but they converge on the same
+effective state, and where they differ the mirror is never shorter — the safe direction.
+
+The record can only be shortened by deleting the row, and **the mirror must be deleted in the same change**:
+enforcement reads `chat:banned:`, never the table. Order it record → mirror, like the kick path — a break in
+the middle leaves over-blocking rather than a ban that quietly stopped applying.
 
 That used to cost a hole — a failed ban write after a committed log meant the retry took the duplicate path
 and skipped escalation. **The transaction closed it**: a failing ban INSERT rolls the log back with it, so

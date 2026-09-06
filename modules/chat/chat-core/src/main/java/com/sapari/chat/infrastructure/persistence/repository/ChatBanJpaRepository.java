@@ -1,10 +1,9 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
 import java.time.Instant;
-import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
-import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -15,24 +14,23 @@ import com.sapari.chat.infrastructure.persistence.entity.ChatBanEntity;
 public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID> {
 
     /**
-     * 지금 유효한 밴을 만료가 먼 것부터 — 영구 밴이 가장 먼저 온다.
+     * 지금 유효한 밴. 만료가 없거나({@code expires_at IS NULL}) 아직 지나지 않은 행이다.
      *
-     * <p>사용자당 행은 <b>하나뿐이다</b>({@code uk_chat_ban_user_id}). 그래서 정렬은 결과를 가르지 않는다 —
-     * 그럼에도 남겨 두는 건 이 쿼리가 무엇을 고르려는 것인지가 제약에 기대지 않고 읽히게 하기 위해서다.
-     * 제약이 사라지면 여러 행이 되살아나는데, 그때 아무거나 집으면 미러 TTL이 실제보다 짧아져 밴이
-     * 일찍 풀린다.
+     * <p>결과는 <b>많아야 하나</b>다 — {@code uk_chat_ban_user_id}가 사용자당 한 행을 보장한다.
      *
-     * <p>{@code NULLS FIRST}는 Postgres의 {@code DESC} 기본값과 같아서 빼도 결과가 같다(되돌려 확인함).
-     * 그래도 적어 두는 건 "만료 없음 = 가장 먼 만료"가 이 쿼리의 의도이지 정렬 기본값에 얹힌 우연이
-     * 아니기 때문이다.
+     * <p>전에는 "가장 오래 가는 것"을 고르려고 {@code ORDER BY expires_at DESC NULLS FIRST}와
+     * {@code LIMIT 1}이 붙어 있었다. <b>뺐다.</b> 제약이 선 뒤로는 정렬이 결과를 가를 수 없어서 어떤
+     * 테스트도 그 정렬에 닿지 못하는데(뒤집어도 스위트가 전부 통과한다 — 리뷰어 실측), 그러면 "제약이
+     * 사라지는 날의 안전망"이라는 주장만 남고 그 주장을 지키는 것이 없다. 검증할 수 없는 방어는 방어가
+     * 아니라 다음 사람이 믿게 되는 문장이다. 제약을 되돌린다면 그 변경이 정렬과 그 정렬을 재는 테스트를
+     * 함께 가져와야 한다.
      */
     @Query(value = """
             SELECT * FROM live_schema.chat_ban
              WHERE user_id = :userId
                AND (expires_at IS NULL OR expires_at > :now)
-             ORDER BY expires_at DESC NULLS FIRST
             """, nativeQuery = true)
-    List<ChatBanEntity> findActive(@Param("userId") UUID userId, @Param("now") Instant now, Limit limit);
+    Optional<ChatBanEntity> findActive(@Param("userId") UUID userId, @Param("now") Instant now);
 
     /**
      * 밴을 <b>늘리는 방향으로만</b> 남긴다. {@code id}는 테이블 기본값이 만들고, {@code created_at}은
@@ -49,7 +47,13 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
      * 영구라서 가장 긴 만료이고, 그래서 어떤 값도 그것을 밀어내지 못한다.
      *
      * <p>⚠️ <b>이 쿼리로는 밴을 짧게 줄일 수 없다.</b> 관리자 감형은 행 DELETE 후 재삽입이어야 한다 —
-     * 사용자당 한 행이라 그 DELETE는 이제 남는 행 없이 완결된다(그것이 이 제약의 값어치다).
+     * 사용자당 한 행이라 그 DELETE는 <b>이 테이블 안에서는</b> 남는 행 없이 완결된다. 다만 집행은 이
+     * 테이블이 아니라 미러가 한다({@code EntryGate}·{@code SendChatService}가 {@code chat:banned:}만
+     * 본다). 정본만 지우면 화면에는 "해제됨"인데 사용자는 계속 못 들어오고, 정본이 비어 원인 추적은
+     * 오히려 더 어려워진다. <b>해제는 미러 삭제까지가 한 단위다.</b>
+     *
+     * <p><b>0행을 돌려줄 수 있다.</b> 이미 더 긴 밴이 있어 아무것도 바뀌지 않은 경우다 — 실패가 아니다.
+     * 호출자가 이 값을 무시하면 "DB에 없는 밴"을 걸었다고 기록하게 된다.
      */
     @Modifying
     @Query(value = """
@@ -63,8 +67,8 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
                AND (EXCLUDED.expires_at IS NULL
                     OR EXCLUDED.expires_at > existing.expires_at)
             """, nativeQuery = true)
-    void upsertExtending(@Param("userId") UUID userId,
-                         @Param("bannedById") UUID bannedById,
-                         @Param("expiresAt") Instant expiresAt,
-                         @Param("createdAt") Instant createdAt);
+    int upsertExtending(@Param("userId") UUID userId,
+                        @Param("bannedById") UUID bannedById,
+                        @Param("expiresAt") Instant expiresAt,
+                        @Param("createdAt") Instant createdAt);
 }

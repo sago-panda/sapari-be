@@ -33,6 +33,15 @@ import lombok.RequiredArgsConstructor;
  *
  * <p>⚠️ <b>이 포트로는 밴을 짧게 줄일 수 없다.</b> 관리자 감형 경로를 만들 때는 키 삭제 후 재설정이나
  * 별도 강제 쓰기가 <b>같은 변경에</b> 함께 와야 한다. 해제(행 삭제)도 미러 {@code DEL}이 함께 필요하다.
+ *
+ * <p><b>그때의 순서는 정본 → 미러다</b>(강퇴 경로와 같다). 중간에 끊기면 "정본은 풀렸는데 미러가 남아
+ * 있다" = 과다 차단으로 기울고, 반대 순서는 "정본은 막는데 미러가 풀렸다" = 밴이 조용히 무력화된
+ * 상태를 만든다. 둘 다 고장이지만 앞쪽이 눈에 띄고 뒤쪽은 안 띈다.
+ *
+ * <p>정본도 이제 늘리기 전용이라({@code uk_chat_ban_user_id} + {@code ON CONFLICT DO UPDATE}) 두
+ * 저장소가 같은 방향을 본다. 다만 규칙이 <b>같지는 않다</b> — 정본은 절대 시각을, 여기는 남은 TTL을
+ * 비교한다. 같은 만료를 두 번 쓰면 정본은 0행이고 미러는 갱신이라, 어긋날 때 미러가 더 길다.
+ * 그 방향이 안전한 쪽이다.
  */
 @RequiredArgsConstructor
 public class ChatBanWriteRedisRepository implements ChatBanWriteRepository {

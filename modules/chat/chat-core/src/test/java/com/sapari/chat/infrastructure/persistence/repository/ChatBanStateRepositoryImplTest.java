@@ -1,5 +1,10 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import org.springframework.data.domain.Limit;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.sapari.chat.infrastructure.persistence.entity.ChatBanEntity;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -50,7 +56,7 @@ import com.sapari.chat.domain.model.ChatRole;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Testcontainers
-@DisplayName("ChatBanStateRepository — 가장 오래 가는 밴을 고른다")
+@DisplayName("ChatBanStateRepository — 사용자당 한 행, 늘리기만 한다")
 class ChatBanStateRepositoryImplTest {
 
     @Container
@@ -126,8 +132,8 @@ class ChatBanStateRepositoryImplTest {
 
     @Test
     @DisplayName("⭐ 짧은 밴 뒤에 긴 밴이 오면 늘어난다 — 덮어쓰면 미러가 정본보다 일찍 풀린다")
-    void picksTheLongestLivingBan() {
-        // given: 자동 밴 위에 관리자가 더 긴 밴을 얹은 모양
+    void shorterBanIsExtendedByALongerOne() {
+        // given: 짧은 밴이 자리를 잡은 뒤 더 긴 밴이 온다
         Instant shortExpiry = NOW.plus(Duration.ofDays(3));
         Instant longExpiry = NOW.plus(Duration.ofDays(30));
         repository().extendOrCreate(new ChatBan(userId, SYSTEM, shortExpiry, NOW.minus(Duration.ofDays(4))));
@@ -139,7 +145,7 @@ class ChatBanStateRepositoryImplTest {
 
     @Test
     @DisplayName("⭐ 기한부 밴은 영구로 승격된다 — 만료 없음이 가장 긴 만료다")
-    void permanentOutranksAnyDatedBan() {
+    void datedBanIsPromotedToPermanent() {
         // given
         repository().extendOrCreate(new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(365)),
                 NOW.minus(Duration.ofDays(1))));
@@ -205,7 +211,9 @@ class ChatBanStateRepositoryImplTest {
         try {
             List<Future<?>> futures = new ArrayList<>();
             for (int i = 0; i < writers; i++) {
-                Instant expiry = (i % 2 == 0) ? longest : NOW.plus(Duration.ofHours(12));
+                // 긴 것은 하나뿐이다. 절반씩 두면 가드가 없어도 마지막 커밋이 이길 확률이 절반이라
+                // 단조 규칙 회귀를 이 테스트가 우연에 맡기게 된다.
+                Instant expiry = (i == 0) ? longest : NOW.plus(Duration.ofHours(12));
                 futures.add(pool.submit(() -> {
                     start.await();
                     // 경계를 스레드마다 따로 연다 — @Modifying 네이티브 쿼리는 경계 없이는 실행되지 않는다
@@ -220,18 +228,81 @@ class ChatBanStateRepositoryImplTest {
             }
 
             // then: 제약이 없으면 여기서 여덟 행이 남는다
-            assertThat(banJpaRepository.findActive(userId, NOW, Limit.of(writers)))
-                    .as("동시 강퇴가 밴 행을 여러 개 남겼다 — 해제가 행 하나를 지워도 나머지가 계속 막는다")
-                    .hasSize(1)
-                    .first()
+            assertThat(banJpaRepository.findActive(userId, NOW))
+                    .as("동시 강퇴 뒤 살아 있는 밴이 없다")
+                    .get()
                     .extracting(ChatBanEntity::getExpiresAt)
                     .as("살아남은 행이 가장 긴 밴이 아니다 — 짧은 쪽이 이기면 정본이 미러보다 먼저 풀린다")
                     .isEqualTo(longest);
         } finally {
             pool.shutdownNow();
-            // NOT_SUPPORTED라 롤백이 없다 — 커밋된 행을 직접 치운다
-            new TransactionTemplate(transactionManager).executeWithoutResult(status ->
-                    banJpaRepository.deleteAll(banJpaRepository.findActive(userId, NOW, Limit.of(writers))));
+            cleanUp();
+        }
+    }
+
+    /**
+     * ⭐ <b>T-12가 기대는 제약 자체를 잰다.</b>
+     *
+     * <p>다른 테스트들은 전부 {@code upsertExtending}을 지나는데, 그 쿼리의 {@code ON CONFLICT}는
+     * 유니크 인덱스가 없으면 <b>실행 자체가 안 된다</b>. 그래서 인덱스를 지우면 셋업이 죽을 뿐 어떤
+     * 단언도 "행이 둘이 됐다"를 말하지 못한다 — 처음엔 그걸 두고 "잴 수 없다"고 결론지었는데 틀렸다.
+     *
+     * <p>평문 INSERT는 {@code ON CONFLICT}를 쓰지 않아 그 결합에서 자유롭다. 인덱스가 있으면 두 번째가
+     * 거부되고, 없으면 그냥 들어간다 — 그 차이가 <b>이 테스트의 then에서</b> 갈린다.
+     *
+     * <p>리포지토리를 지나지 않고 JDBC로 쓰는 이유가 그것이다. 여기서 재는 것은 우리 쿼리가 아니라
+     * 스키마다.
+     */
+    @Test
+    @DisplayName("⭐ 사용자당 밴 행은 하나 — 평문 INSERT 두 번째가 제약에 막힌다")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void secondRowForSameUserIsRejectedByTheConstraint() throws Exception {
+        try (Connection connection = DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())) {
+            // given: 첫 행은 들어간다
+            insertPlain(connection, NOW.plus(Duration.ofDays(7)));
+
+            // when & then: 같은 사용자의 두 번째 행은 제약이 막는다.
+            // 막지 못하면 해제(행 DELETE)가 하나를 지워도 남은 행이 계속 그 사람을 막는다.
+            assertThatThrownBy(() -> insertPlain(connection, NOW.plus(Duration.ofDays(30))))
+                    .as("같은 사용자에 밴 행이 둘 들어갔다 — 해제가 반쪽이 된다")
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("uk_chat_ban_user_id");
+        } finally {
+            cleanUp();
+        }
+    }
+
+    private void insertPlain(Connection connection, Instant expiresAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO live_schema.chat_ban (user_id, banned_by_id, expires_at, created_at)
+                VALUES (?, ?, ?, ?)
+                """)) {
+            statement.setObject(1, userId);
+            statement.setObject(2, SYSTEM);
+            statement.setTimestamp(3, Timestamp.from(expiresAt));
+            statement.setTimestamp(4, Timestamp.from(NOW));
+            statement.executeUpdate();
+        }
+    }
+
+    /**
+     * NOT_SUPPORTED라 롤백이 없다 — 커밋된 행을 직접 치운다.
+     *
+     * <p><b>우리 쿼리를 지나지 않는다.</b> {@code findActive}는 결과가 하나라는 전제 위에 있어서, 제약이
+     * 없는 상태(= 이 스위트가 되돌림으로 만들어 내는 바로 그 상태)에서는 {@code NonUniqueResultException}
+     * 으로 죽는다. 정리가 {@code finally}에서 터지면 <b>그것이 단언 실패를 덮어써서</b>, 테스트는 빨간불인데
+     * 이유가 "제약이 막지 않았다"가 아니라 "정리가 실패했다"가 된다. 실제로 그렇게 나왔다.
+     *
+     * <p>그래서 행 수와 무관한 평문 DELETE를 쓴다.
+     */
+    private void cleanUp() throws SQLException {
+        try (Connection connection = DriverManager.getConnection(
+                        postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                PreparedStatement statement = connection.prepareStatement(
+                        "DELETE FROM live_schema.chat_ban WHERE user_id = ?")) {
+            statement.setObject(1, userId);
+            statement.executeUpdate();
         }
     }
 

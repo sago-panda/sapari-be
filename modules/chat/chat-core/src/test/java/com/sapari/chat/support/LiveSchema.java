@@ -20,10 +20,17 @@ import java.util.stream.Stream;
  * 규칙("전부, 순서대로")이 세 곳에 흩어져 있으면 네 번째 테스트가 또 한 파일만 읽는다.
  *
  * <p>정렬은 Flyway와 같은 기준이다 — {@code V}와 {@code __} 사이를 <b>수로</b> 비교한다. 문자열로
- * 비교하면 {@code V202609061437}이 {@code V1}보다 앞서서, 아직 없는 테이블에 인덱스를 만들려다 깨진다.
+ * 비교하면 {@code V10}이 {@code V9}보다 앞서서, 아직 없는 테이블에 인덱스를 만들려다 깨진다.
+ * (오늘의 두 파일 {@code V1}·{@code V202609061437}은 문자열로 비교해도 순서가 같아서, 이 정렬이
+ * 필요한 이유를 그 둘로는 보일 수 없다.)
  *
- * <p>Flyway 자체를 돌리지 않는 것은 이 모듈에 Flyway 의존이 없기 때문이다. 대신 같은 파일을 같은
- * 순서로 실행한다 — 검증 대상은 러너가 아니라 SQL이다.
+ * <p>이름이 {@code V<숫자>__} 꼴이 아니면 멈춘다. {@code infra/AGENTS.md}가 정한 규칙
+ * ({@code V<yyyyMMddHHmm>__})의 부분집합이라 새 제약은 아니지만, {@code R__}(반복 실행)이나 점 표기
+ * 버전을 쓰기 시작하면 여기가 먼저 깨진다는 뜻이다.
+ *
+ * <p>Flyway 자체를 돌리지 않는 것은 이 모듈에 Flyway 의존이 없기 때문이다. 대신 같은 파일을 정렬된
+ * 순서로 실행한다 — 검증 대상은 러너가 아니라 SQL이다. 운영의 {@code outOfOrder=true}(브랜치 병합으로
+ * 뒤늦게 도착한 버전도 적용)는 여기서 모델링하지 않는다.
  */
 public final class LiveSchema {
 
@@ -42,7 +49,9 @@ public final class LiveSchema {
     }
 
     private static List<Path> migrations() throws IOException {
-        try (Stream<Path> files = Files.list(repositoryRoot().resolve(MIGRATION_DIR))) {
+        // walk — Flyway의 filesystem 스캔이 재귀라, list(비재귀)로 두면 하위 폴더에 놓인 마이그레이션을
+        // 운영은 적용하고 여기서는 조용히 건너뛴다. 이 클래스가 없애려던 바로 그 실패 모양이다.
+        try (Stream<Path> files = Files.walk(repositoryRoot().resolve(MIGRATION_DIR))) {
             return files.filter(path -> path.getFileName().toString().endsWith(".sql"))
                     .sorted(Comparator.comparingLong(LiveSchema::version))
                     .toList();
