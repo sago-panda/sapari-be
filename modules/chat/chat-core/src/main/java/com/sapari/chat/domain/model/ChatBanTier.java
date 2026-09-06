@@ -26,7 +26,7 @@ public enum ChatBanTier {
 
     ONE_WEEK(3, Duration.ofDays(7)),
     ONE_MONTH(6, Duration.ofDays(30)),
-    /** 자동 제재의 상한. 설계 문서의 12 영구 밴은 <b>사람이 넣는 것</b>으로 옮겼다. */
+    /** 자동 제재의 상한. 설계 문서의 '강퇴 12회' 영구 밴은 <b>사람이 넣는 것</b>으로 옮겼다. */
     ONE_YEAR(9, Duration.ofDays(365));
 
     private final int threshold;

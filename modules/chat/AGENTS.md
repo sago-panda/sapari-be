@@ -96,6 +96,10 @@ corruption split is not widened to them.
 3. **`OutboundMessage` omits null fields** (`@JsonInclude(NON_NULL)`). It is an 8-type union, so over half
    is empty in any frame; the padding used to exceed the message body. Front-end contract: absent key, not
    `null` — `=== null` breaks, everything else does not.
+4. **`ChatAccountEvent`** (`application/protocol`) on `chat:account:events` — chat's own representation,
+   **not a cross-domain contract**: it lives in chat-core, so no other module can publish with it. The
+   receiver disables `FAIL_ON_UNKNOWN_PROPERTIES`; adding a field otherwise makes every older pod drop the
+   event mid-rollout and ban enforcement silently reverts fleet-wide.
 
 **PII gating happens at fan-out, not on the wire.** The envelope carries `senderEmail` and the unmasked
 original in plaintext because a privileged reader may be on a different pod. The masked view is the default
@@ -225,10 +229,22 @@ would let one seller reach the threshold alone: the log is unique per `(user, ro
 one kick in each makes three. Three broadcasts is an ordinary week, not a conspiracy, and that would hand
 every seller a platform-wide ban over anyone who chats in their rooms. Counting people makes the threshold
 mean **three independent judgements**. It costs nothing against the case the window exists for: a user who
-rotates rooms is kicked by different people anyway. Scoping per-seller is still wrong for the same reason as
+rotates rooms is kicked by different people anyway. **The opposite direction is open and has no backstop**:
+one seller kicking the same person across ten of their own broadcasts still counts as one, and nothing sits
+above that — there is no per-seller ban and no manual ban path. That is the price of this choice, not an
+oversight. Note also that the count is really *"three rooms whose **first** kicker differs"* — `ON CONFLICT
+DO NOTHING` keeps only the first kick per room, so a second, independent judgement in the same room never
+counts. Under-enforcing, and accepted. Scoping per-seller is still wrong for the same reason as
 before — it lets a rotating user reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
 gives the same answer while kicks arrive one at a time, and differs only where the table is silent (window
-shrink, a concurrent kick skipping a threshold). **Automatic escalation stops at one year.** The doc's
+shrink, a concurrent kick skipping a threshold). With people as the unit, **only the first rung is realistically reachable** — six or nine distinct
+moderators inside two years is rare, so the ladder effectively ends at one week. The numbers were kept
+deliberately; the ladder being sparse is the intended shape while no release path exists. **An `ADMIN` kick
+counts as one like any other.** That is a decision, not an omission: "one admin ⇒ instant ban" would be a
+manual ban wearing `banned_by_id = SYSTEM`, which erases who decided. Admin judgement belongs in a manual
+ban path, not in automatic escalation. ⚠️ `V1__init_live.sql`'s comment still describes the old unit
+(`3회→1주`, counting kicks) and is **checksum-locked** — this file is the current one.
+**Automatic escalation stops at one year.** The doc's
 12-kick permanent ban was moved to a human's hands: nothing reversible-only-by-hand should be applied by a
 server that has no code to reverse it, and that matches every other call this domain has made (the kick set
 expires rather than being deleted; a corrupted key is not self-healed). Permanent bans still exist as rows
@@ -300,9 +316,13 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   read at runtime through `user.dir`, so changing only a migration used to leave `test` UP-TO-DATE and a
   schema mutation appeared to break nothing (measured: 832ms green with the unique index deleted). The
   `inputs.dir` line in `build.gradle` closes it; if you move where the schema comes from, move that line too.
-- **A red test still has to say so.** `verifyComplete()` has no ceiling, so a regression that leaves a sink
-  open makes the test *hang* rather than fail — measured at 110s and still running. Use `verify(Duration)`
-  wherever completion is the assertion; "passing ≠ catching" has a twin in "failing ≠ telling".
+- **A red test still has to say so.** Every `StepVerifier` terminator without a ceiling —
+  `verifyComplete()`, `verify()`, `verifyError(...)` — waits forever for a signal that a regression may have
+  removed, so the test *hangs* instead of failing (measured: 110s and still running on a missing close, 2m34s
+  on a `thenCancel().verify()` whose `expectNext` never arrived). **Give every one of them
+  `verify(Duration)`.** The existing suite predates this rule and still has ~69 such call sites; new and
+  touched tests take the ceiling, and the rest is a cleanup of its own. "passing ≠ catching" has a twin in
+  "failing ≠ telling".
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the

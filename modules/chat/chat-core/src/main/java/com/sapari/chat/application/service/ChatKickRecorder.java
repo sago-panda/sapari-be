@@ -39,10 +39,10 @@ import lombok.extern.slf4j.Slf4j;
 public class ChatKickRecorder {
 
     /**
-     * 누적 강퇴를 세는 창. 2년이 지난 강퇴는 밴 판단에서 빠진다 — 제재는 지금의 행동에 걸어야지
+     * 확증을 세는 창. 2년이 지난 강퇴는 밴 판단에서 빠진다 — 제재는 지금의 행동에 걸어야지
      * 몇 해 전 기록으로 영구히 따라다니면 안 된다.
      */
-    private static final Duration KICK_COUNT_WINDOW = Duration.ofDays(730);
+    private static final Duration CONFIRMATION_WINDOW = Duration.ofDays(730);
 
     /**
      * 잠금 대기를 포함한 이 트랜잭션의 상한(초).
@@ -115,7 +115,7 @@ public class ChatKickRecorder {
             return Optional.empty();
         }
         long kickers = kickLogRepository.countDistinctKickersSince(
-                kickLog.targetUserId(), now.minus(KICK_COUNT_WINDOW));
+                kickLog.targetUserId(), now.minus(CONFIRMATION_WINDOW));
         return ChatBanTier.of(kickers)
                 .map(tier -> {
                     BanWrite write = banStateRepository.extendOrCreate(

@@ -337,7 +337,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> closeUserEverywhere(UUID userId) {
-        // 밴·탈퇴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
+        // 밴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newBudget();
             forEachSessionOf(userId, ls -> terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline()));
@@ -349,12 +349,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>방 색인을 못 쓴다</b> — 계정 조치는 방을 모른 채로 오고, {@code userId → 세션} 색인은 두지
      * 않았다. 두면 {@code register}/{@code unregister}마다 동기화 대상이 하나 늘고 그 어긋남이 조용한
-     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다. 12,000 세션 전체 스캔이 165µs다(실측).
+     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다. 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
      * 방 fan-out이 색인을 갖는 것은 <b>메시지마다</b> 돌기 때문이고, 이쪽은 시간당 몇 건이다.
      *
      * <p><b>비용을 폭발시키는 변수는 이벤트 빈도가 아니라 파드당 세션 수다.</b> 스캔은 선형이 아니다 —
      * 12,000에서 58µs인데 100,000에서 4.2ms로, 8.3배 입력에 70배 넘게 든다(캐시 미스). 시간당 한 건이어도
-     * 10만 세션이면 한 건이 스레드를 그만큼 잡는다. <b>파드당 3~5만 세션</b>이 다시 판단할 자리다.
+     * 10만 세션이면 한 건이 스레드를 그만큼 잡는다.
+     *
+     * <p>그리고 <b>이벤트 하나가 스캔을 두 번</b> 한다(사유 전송 + 종료). 위 수치는 1회분이므로 실제
+     * 비용은 그 두 배다 — 10만이면 8ms 남짓이다. <b>파드당 2~3만 세션</b>이 다시 판단할 자리다.
      *
      * <p>돌 때 밟는 것은 이벤트루프가 아니라 Redis pub/sub I/O 스레드다({@code listenToChannel}이 자기
      * 연결을 만든다). 시청자 커넥션이 멈추지는 않지만 한가한 스레드도 아니다 — 방 팬아웃과 커맨드 응답이
