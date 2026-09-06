@@ -838,4 +838,61 @@ public class LiveKitMediaManagerTest {
 
         assertThat(liveKitMediaManager.listAllEgress().get(0).active()).isFalse();
     }
+
+    @Test
+    @DisplayName("listRoomEgress: 방별 egress 상태와 시작 시각을 매핑한다")
+    void listRoomEgress_mapsStatusAndStartedAt() throws IOException {
+        EgressInfo active = EgressInfo.newBuilder()
+                .setEgressId("eg-1").setRoomName(roomId.toString())
+                .setStatus(EgressStatus.EGRESS_ACTIVE)
+                .setStartedAt(1_760_000_000_000_000_000L)
+                .build();
+        EgressInfo complete = EgressInfo.newBuilder()
+                .setEgressId("eg-2").setRoomName(roomId.toString())
+                .setStatus(EgressStatus.EGRESS_COMPLETE)
+                .build();
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(active, complete)));
+
+        assertThat(liveKitMediaManager.listRoomEgress(roomId))
+                .extracting(EgressSummary::egressId, EgressSummary::active)
+                .containsExactly(tuple("eg-1", true), tuple("eg-2", false));
+        assertThat(liveKitMediaManager.listRoomEgress(roomId).get(0).startedAt()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: 성공 응답이어도 null body는 예외로 올린다")
+    void listRoomEgress_nullBodyOnSuccess_throws() throws IOException {
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success((List<EgressInfo>) null));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomEgress(roomId));
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: 조회 실패는 예외로 올린다")
+    void listRoomEgress_throwsOnFailure() throws IOException {
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willThrow(new IOException("연결 실패"));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomEgress(roomId));
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: non-2xx 응답은 예외로 올린다")
+    void listRoomEgress_throwsOnHttpFailure() throws IOException {
+        Call<List<EgressInfo>> call = mock(Call.class);
+        @SuppressWarnings("unchecked")
+        Response<List<EgressInfo>> response = mock(Response.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(response);
+        given(response.isSuccessful()).willReturn(false);
+        given(response.code()).willReturn(401);
+        given(response.message()).willReturn("Unauthorized");
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomEgress(roomId));
+    }
 }

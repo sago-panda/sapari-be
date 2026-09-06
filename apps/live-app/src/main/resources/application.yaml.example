@@ -125,17 +125,16 @@ live:
       # 짧으면 느린 회차 도중 락이 만료돼 두 인스턴스가 겹친다(= 락을 건 이유가 사라진다).
       # 상한: 후보 20 × (송출 조회 1 + 커밋 후 정리 3) = 80회 × callTimeout 15s ≈ 20분.
       lock-at-most-for: ${LIVE_RECONCILE_EXPIRE_READY_LOCK_AT_MOST_FOR:PT45M}
-      # 이 잡만 후보마다 LiveKit 을 왕복한다(조회 1회 + 만료 시 커밋 후 정리 최대 3회). 공용값 100 을
-      # 그대로 쓰면 회차가 너무 길어져 다음 주기와 겹친다.
+      # 후보마다 LiveKit 조회와 만료·승격 처리가 이어진다. 공용값 100 을 그대로 쓰면
+      # 회차가 너무 길어져 다음 주기와 겹친다.
       batch-size: ${LIVE_RECONCILE_EXPIRE_READY_BATCH_SIZE:20}
     # 방송은 끝났는데 room_finished 유실로 Live 에 갇힌 방 → Ended
     end-stale-live:
       enabled: ${LIVE_RECONCILE_END_STALE_LIVE_ENABLED:true}
       threshold: ${LIVE_RECONCILE_STALE_LIVE_THRESHOLD:60m}
       cron: ${LIVE_RECONCILE_END_STALE_LIVE_CRON:0 3/10 * * * *}
-      # 셋 중 가장 길다. 이 잡만 공용 batch-size(100)를 쓰고, 종료된 방마다 커밋 후 미디어 정리가
-      # 회차 스레드에서 동기로 최대 3회 LiveKit 을 부른다 → 1 + 100×3 = 301회 × 15s ≈ 75분.
-      # 인계가 최대 90분 늦는 대가다. 줄이려면 이 값이 아니라 이 잡 전용 batch-size 로 회차를 묶을 것.
+      # 셋 중 가장 길다. 공용 batch-size(100) 후보마다 판정 1회와 종료 후 정리 최대 3회가 이어져
+      # 1 + 100×(1+3) = 401회 × 15s ≈ 100분. 전용 batch-size·락 상한 조정은 별도 작업이다.
       lock-at-most-for: ${LIVE_RECONCILE_END_STALE_LIVE_LOCK_AT_MOST_FOR:PT90M}
     # DB 정본과 어긋난 LiveKit ingress/egress/room 회수.
     # grace 는 생성 직후 정상 리소스를 지우지 않기 위한 유예라 0 이 될 수 없다.

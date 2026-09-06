@@ -40,6 +40,11 @@ public interface LiveMediaManager {
      * 한 회차가 살아 있는 방송을 전부 Ended 로 만든다.
      */
     List<IngressSummary> listRoomIngress(UUID roomId);
+    /**
+     * 이 방의 egress 전부. 종료 판정에 쓰므로 HTTP·전송 실패와 null body 는 예외다.
+     * egress 가 정상적으로 없는 방은 빈 목록으로 반환한다.
+     */
+    List<EgressSummary> listRoomEgress(UUID roomId);
     HlsEgressResult startHlsEgress(UUID roomId);
     /** 방의 HLS egress 를 <b>모두</b> 중단한다. 한 방송이 화질별로 여러 egress 를 띄우므로 단건 중단은 없다. */
     void stopHlsEgress(UUID roomId);

@@ -75,6 +75,11 @@ public class MeteredLiveMediaManager implements LiveMediaManager {
     }
 
     @Override
+    public List<EgressSummary> listRoomEgress(UUID roomId) {
+        return timed("listRoomEgress", () -> delegate.listRoomEgress(roomId));
+    }
+
+    @Override
     public HlsEgressResult startHlsEgress(UUID roomId) {
         return timed("startHlsEgress", () -> delegate.startHlsEgress(roomId));
     }

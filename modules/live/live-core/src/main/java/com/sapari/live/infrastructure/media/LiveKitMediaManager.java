@@ -581,6 +581,37 @@ public class LiveKitMediaManager implements LiveMediaManager {
         }
     }
 
+    @Override
+    public List<EgressSummary> listRoomEgress(UUID roomId) {
+        try {
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress(roomId.toString()).execute();
+
+            if (!response.isSuccessful()) {
+                log.error("LiveKit 방별 Egress 조회 실패: roomId={}, code={}, message={}",
+                        roomId, response.code(), response.message());
+                throw new LiveMediaException("방별 Egress 조회에 실패했습니다.");
+            }
+            if (response.body() == null) {
+                log.error("LiveKit 방별 Egress 조회 실패 — 성공 응답 본문 없음: roomId={}", roomId);
+                throw new LiveMediaException("방별 Egress 조회 응답 본문이 없습니다.");
+            }
+
+            return response.body().stream()
+                    .map(info -> new EgressSummary(
+                            info.getEgressId(),
+                            info.getRoomName(),
+                            isStoppable(info.getStatus()),
+                            toInstant(info.getStartedAt())
+                    ))
+                    .toList();
+        } catch (LiveMediaException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("LiveKit 방별 Egress 조회 실패: roomId={}", roomId, e);
+            throw new LiveMediaException("방별 Egress 조회 중 오류", e);
+        }
+    }
+
     /**
      * BUFFERING 도 송출로 본다 — OBS 가 순간 재접속하는 동안의 상태다. PUBLISHING 만 보면 그 찰나의 스냅샷
      * 하나가 "송출 안 함"이 되어 만료 배치의 파괴적 판단(ingress 삭제·SFU 방 닫기)에 그대로 들어간다.
