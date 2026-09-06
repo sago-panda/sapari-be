@@ -1,5 +1,6 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
+import org.springframework.dao.QueryTimeoutException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -287,6 +288,54 @@ class ChatBanStateRepositoryImplTest {
         }
     }
 
+    /**
+     * ⭐ <b>상한 초과가 실제로 어떤 타입으로 오는지</b>를 실 Postgres 경합으로 못 박는다.
+     *
+     * <p>번역({@code KickUserService})을 지키는 것이 목이 던지는 예외뿐이면, 그 목은 <b>우리가 믿는 타입</b>을
+     * 던진다. Spring이나 드라이버가 올라가며 실제 타입이 바뀌면 스위트는 초록인 채로 절반이 다시 500이
+     * 된다 — 리뷰어가 실측으로 확인해 줬지만 그 확인은 커밋에 남지 않는다.
+     *
+     * <p>여기서 재는 것은 잠금에 걸린 문이 취소되는 갈래다. 데드라인 갈래
+     * ({@code TransactionTimedOutException})는 문과 문 사이에서 나므로 이 하네스로는 만들 수 없고,
+     * {@code KickUserServiceTest}가 두 타입을 모두 번역하는지 따로 지킨다.
+     */
+    @Test
+    @DisplayName("⭐ 잠금에 걸려 상한을 넘으면 QueryTimeoutException이다 — 번역이 잡는 타입이 실제 타입인가")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void lockContentionSurfacesAsQueryTimeout() throws Exception {
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        // given: 다른 세션이 이 사용자의 밴 행을 쥔 채 커밋하지 않는다
+        Thread holder = new Thread(() -> {
+            try (Connection connection = DriverManager.getConnection(
+                    postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())) {
+                connection.setAutoCommit(false);
+                insertPlain(connection, NOW.plus(Duration.ofDays(7)));
+                holding.countDown();
+                release.await(30, TimeUnit.SECONDS);
+                connection.rollback();
+            } catch (Exception e) {
+                holding.countDown();
+            }
+        });
+        holder.start();
+        holding.await(30, TimeUnit.SECONDS);
+        try {
+            TransactionTemplate template = new TransactionTemplate(transactionManager);
+            template.setTimeout(1);
+
+            // when & then: 상한을 넘긴 쓰기가 어떤 타입으로 나오는가
+            assertThatThrownBy(() -> template.executeWithoutResult(status ->
+                    repository().extendOrCreate(new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(30)), NOW))))
+                    .as("번역이 잡는 타입과 실제로 나오는 타입이 갈렸다 — 갈리면 절반이 500으로 나간다")
+                    .isInstanceOf(QueryTimeoutException.class);
+        } finally {
+            release.countDown();
+            holder.join(30_000);
+            cleanUp();
+        }
+    }
+
     private void insertPlain(Connection connection, Instant expiresAt) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO live_schema.chat_ban (user_id, banned_by_id, expires_at, created_at)
@@ -304,7 +353,7 @@ class ChatBanStateRepositoryImplTest {
      * NOT_SUPPORTED라 롤백이 없다 — 커밋된 행을 직접 치운다.
      *
      * <p><b>우리 쿼리를 지나지 않는다.</b> {@code findActive}는 결과가 하나라는 전제 위에 있어서, 제약이
-     * 없는 상태(= 이 스위트가 되돌림으로 만들어 내는 바로 그 상태)에서는 {@code NonUniqueResultException}
+     * 없는 상태(= 이 스위트가 되돌림으로 만들어 내는 바로 그 상태)에서는 {@code IncorrectResultSizeDataAccessException(cause: NonUniqueResultException)}
      * 으로 죽는다. 정리가 {@code finally}에서 터지면 <b>그것이 단언 실패를 덮어써서</b>, 테스트는 빨간불인데
      * 이유가 "제약이 막지 않았다"가 아니라 "정리가 실패했다"가 된다. 실제로 그렇게 나왔다.
      *

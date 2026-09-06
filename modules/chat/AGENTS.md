@@ -245,8 +245,12 @@ enforcing, and the screen says "released". **Both stores are now extend-only** �
 effective state, and where they differ the mirror is never shorter — the safe direction.
 
 The record can only be shortened by deleting the row, and **the mirror must be deleted in the same change**:
-enforcement reads `chat:banned:`, never the table. Order it record → mirror, like the kick path — a break in
-the middle leaves over-blocking rather than a ban that quietly stopped applying.
+enforcement reads `chat:banned:`, never the table. Order it record → mirror — a break in the middle leaves
+over-blocking, while mirror-first can *resurrect* the ban (a surviving row is picked up by the next kick and
+re-written to the mirror). And **never gate the mirror delete on the row still existing**: after a
+record-first break the row is already gone, so a retry that stops at "no ban to release" never reaches the
+mirror. The whole release command must be safe to run again — deleting an absent key is a no-op. Over-blocking
+only heals by itself for dated bans; a permanent one is mirrored without a TTL and stays until a human acts.
 
 That used to cost a hole — a failed ban write after a committed log meant the retry took the duplicate path
 and skipped escalation. **The transaction closed it**: a failing ban INSERT rolls the log back with it, so

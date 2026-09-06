@@ -27,6 +27,7 @@ import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 강퇴 등록 — 증거를 박제하고, 명단에 올리고, 모든 Pod에 알린다.
@@ -46,6 +47,7 @@ import lombok.RequiredArgsConstructor;
  * <p><b>사용자 계정 저장소에는 닿지 않는다.</b> 역할을 지금 다시 물으려면 이 경로를 얹은 앱이 계정 도메인
  * 전체를 갖게 되고, 그러면 방송 앱이 계정을 고칠 수 있게 된다. 강퇴 하나가 치를 값이 아니다.
  */
+@Slf4j
 @RequiredArgsConstructor
 public class KickUserService implements KickUserUseCase {
 
@@ -97,7 +99,7 @@ public class KickUserService implements KickUserUseCase {
         ChatMessageEvidence evidence = evidenceRepository.findEvidence(command.messageId())
                 .orElseThrow(() -> new ChatKickEvidenceMismatchException(
                         "증거 메시지가 없다 — roomId=" + command.roomId()));
-        ChatKickLog log = ChatKickLog.from(evidence, command.roomId(), command.targetUserId(),
+        ChatKickLog kickLog = ChatKickLog.from(evidence, command.roomId(), command.targetUserId(),
                 command.kickerId(), kickerRole, timeProvider.now());
 
         // 대상의 역할은 증거 메시지가 들고 있다. 관리자를 끊지 못하게 하는 데에만 쓰이고, 그 값은
@@ -112,8 +114,8 @@ public class KickUserService implements KickUserUseCase {
         // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
         // 돌려받은 밴을 그대로 비춘다. 동시 강퇴에서 이 값이 가장 긴 것이 아닐 수 있지만, 미러 쓰기가
         // 늘리기 전용이라 짧은 쪽이 긴 것을 덮지 못한다 — 순서 문제를 순서와 무관한 쓰기로 닫는다.
-        record(log).ifPresent(ban -> banWriteRepository.ban(
-                command.targetUserId(), ban.expiresAt(), log.kickedAt()));
+        record(kickLog).ifPresent(ban -> banWriteRepository.ban(
+                command.targetUserId(), ban.expiresAt(), kickLog.kickedAt()));
 
         kickWriteRepository.register(command.roomId(), command.targetUserId());
         kickEventPublisher.publishKicked(command.roomId(), command.targetUserId());
@@ -141,17 +143,32 @@ public class KickUserService implements KickUserUseCase {
      * 나오므로 프록시 안에서는 못 잡는다"고 적혀 있었는데 <b>사실이 아니다.</b> 두 갈래 모두 본문 안에서
      * 나므로 {@link ChatKickRecorder} 안에서도 잡을 수 있다.
      *
+     * <p>⚠️ <b>이 두 타입은 Spring Data 프록시를 지나기 때문에 나온다.</b> 같은 쓰기를 손수 만든
+     * {@code EntityManager} 구현으로 옮기면 {@code jakarta.persistence.QueryTimeoutException}이 나와 이
+     * catch를 그대로 빠져나가 500이 된다(실측). 오늘은 두 쓰기가 모두 Spring Data 리포지토리를 지나므로
+     * 성립하지만, 어댑터를 손수 만든 구현으로 바꾸는 변경은 <b>이 catch를 함께 봐야 한다</b> — 안 보면
+     * 아무 테스트도 빨개지지 않는다.
+     *
      * <p>그럼에도 바깥에 두는 이유는 둘이다. ① 이 타임아웃은 특정 저장소가 아니라 트랜잭션의 성질이라
      * 강퇴 로그 쓰기에서도 밴 쓰기에서도 나온다 — 어느 한 어댑터에 두면 다른 쪽이 새고, 양쪽에 두면 같은
      * 판단이 두 벌이 된다. ② 여기서 잡는다는 것은 트랜잭션이 <b>이미 되감긴 뒤</b>라는 뜻이라, 취소된
      * 트랜잭션 위에서 무언가를 더 하려는 코드가 자라지 않는다.
      */
-    private Optional<ChatBan> record(ChatKickLog log) {
+    private Optional<ChatBan> record(ChatKickLog kickLog) {   // 이름이 log가 아닌 것은 로거 필드와 겹쳐서다
         try {
-            return kickRecorder.record(log);
+            return kickRecorder.record(kickLog);
         } catch (QueryTimeoutException | TransactionTimedOutException e) {
+            // 원인을 여기서 한 번 남긴다. 이 예외는 4xx라 전역 핸들러가 warn 갈래로 보내는데, 그 줄은
+            // 코드와 메시지만 찍고 throwable을 넘기지 않는다 — 즉 여기서 안 남기면 원래 예외의 타입도
+            // 스택도 어디에도 남지 않는다.
+            //
+            // 그러면 "동시 강퇴가 겹쳤다"(정상)와 "DB가 느려져 문 하나가 상한을 넘었다"(고장)를 운영자가
+            // 구별할 수단이 없다. 두 상황이 같은 타입으로 오기 때문이다. 5xx를 피한 이유는 정상 혼잡이
+            // 알림을 울리지 않게 하려는 것이었는데, 원인까지 지우면 울려야 할 쪽도 조용해진다.
+            log.warn("강퇴 기록이 상한을 넘었다 — 경합이면 정상이고, 반복되면 DB가 느려진 것이다."
+                    + " targetUserId={}", kickLog.targetUserId(), e);
             throw new ChatKickContendedException(
-                    "강퇴 기록이 잠금 대기 상한을 넘었다 — targetUserId=" + log.targetUserId(), e);
+                    "강퇴 기록이 잠금 대기 상한을 넘었다 — targetUserId=" + kickLog.targetUserId(), e);
         }
     }
 

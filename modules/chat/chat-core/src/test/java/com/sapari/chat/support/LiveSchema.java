@@ -28,6 +28,11 @@ import java.util.stream.Stream;
  * ({@code V<yyyyMMddHHmm>__})의 부분집합이라 새 제약은 아니지만, {@code R__}(반복 실행)이나 점 표기
  * 버전을 쓰기 시작하면 여기가 먼저 깨진다는 뜻이다.
  *
+ * <p>⚠️ <b>파일 하나를 한 번의 {@code execute}로 보낸다</b> — 여러 문이 한 요청에 실리면 Postgres가 암묵
+ * 트랜잭션 블록으로 다루므로, live가 앞으로 자기 마이그레이션에 {@code CREATE INDEX CONCURRENTLY}를 쓰면
+ * {@code cannot run inside a transaction block}으로 <b>chat의 테스트가 깨진다</b>(실측). 운영 Flyway가 그
+ * 문장을 받아 주는지와 무관하게 여기서 먼저 막히므로, 그때는 이 실행을 문 단위로 쪼개야 한다.
+ *
  * <p>Flyway 자체를 돌리지 않는 것은 이 모듈에 Flyway 의존이 없기 때문이다. 대신 같은 파일을 정렬된
  * 순서로 실행한다 — 검증 대상은 러너가 아니라 SQL이다. 운영의 {@code outOfOrder=true}(브랜치 병합으로
  * 뒤늦게 도착한 버전도 적용)는 여기서 모델링하지 않는다.

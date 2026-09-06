@@ -3,8 +3,6 @@ package com.sapari.chat.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
@@ -97,16 +95,6 @@ class ChatKickRecorderTest {
     @BeforeAll
     static void applyRealSchema() throws Exception {
         LiveSchema.applyTo(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
-    }
-
-    private static Path repositoryRoot() {
-        Path here = Path.of(System.getProperty("user.dir")).toAbsolutePath();
-        for (Path candidate = here; candidate != null; candidate = candidate.getParent()) {
-            if (Files.exists(candidate.resolve("settings.gradle"))) {
-                return candidate;
-            }
-        }
-        throw new IllegalStateException("저장소 루트를 찾지 못했다 — 시작 위치=" + here);
     }
 
     @Autowired
