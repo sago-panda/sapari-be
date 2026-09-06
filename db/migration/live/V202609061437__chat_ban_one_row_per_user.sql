@@ -26,6 +26,19 @@
 -- 인덱스 생성과 삭제를 함께 하므로 둘이 한 트랜잭션으로 묶여야 한다 — 중간에 실패해 새 인덱스는 없고
 -- 옛 인덱스만 사라진 상태로 남으면, 그때부터는 조용히 느려지기만 한다.
 
+-- 이 문장이 실패했을 때(Key (user_id)=(...) is duplicated) 사람이 할 일:
+--   1) 무엇이 겹쳤는지 본다
+--        SELECT user_id, count(*), array_agg(expires_at ORDER BY expires_at DESC NULLS FIRST)
+--          FROM live_schema.chat_ban GROUP BY user_id HAVING count(*) > 1;
+--   2) 남길 것은 가장 오래 가는 밴이다 — 만료 없음(NULL)이 가장 긴 만료다.
+--      짧은 쪽을 남기면 그 사람의 밴이 정본보다 일찍 풀린다.
+--        DELETE FROM live_schema.chat_ban WHERE id IN (
+--            SELECT id FROM (SELECT id, row_number() OVER (PARTITION BY user_id
+--                     ORDER BY expires_at DESC NULLS FIRST, created_at DESC, id) rn
+--                FROM live_schema.chat_ban) t WHERE rn > 1);
+--   3) 다시 적용한다. 실패한 마이그레이션은 통째로 롤백되고 이력에 남지 않으므로 repair 가 필요 없다
+--      (Postgres 는 DDL 도 트랜잭셔널 — 실 Flyway 컨테이너로 확인).
+-- 위 DELETE 를 마이그레이션에 넣지 않는 이유는 파일 첫머리에 있다. 판단이 필요한 삭제는 사람이 한다.
 CREATE UNIQUE INDEX uk_chat_ban_user_id ON live_schema.chat_ban (user_id);
 
 -- (user_id, expires_at) 인덱스는 이 제약이 서면 쓸모가 없다 — 사용자당 행이 하나뿐이라 두 번째 열이

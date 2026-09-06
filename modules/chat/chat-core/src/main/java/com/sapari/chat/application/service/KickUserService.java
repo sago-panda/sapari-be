@@ -127,15 +127,24 @@ public class KickUserService implements KickUserUseCase {
      * 쪽이 새고, 양쪽에 두면 같은 판단이 두 벌이 된다. 경계를 여는 {@link ChatKickRecorder} 바로 바깥이
      * 그 판단이 한 번만 서는 자리다.
      *
-     * <p><b>프록시 안에서는 잡을 수 없는 갈래가 있다.</b> 상한 초과는 두 모양으로 나온다 — DB가 문을
-     * 취소하면 {@link QueryTimeoutException}이고, 남은 수명이 이미 0 이하라 다음 문을 세우지도 못하면
-     * {@link TransactionTimedOutException}이다(Spring의 {@code ResourceHolderSupport}가 문마다 데드라인을
-     * 검사한다 — 바이트코드로 확인했다). 뒤쪽은 커밋 시점에도 나올 수 있는데 커밋은 본문이 반환된 <i>뒤에</i>
-     * 프록시가 수행하므로, {@link ChatKickRecorder} 안에 try/catch를 두면 그 갈래가 그대로 빠져나간다.
-     * 프록시 바깥인 이 자리가 둘을 다 받는 유일한 지점이다.
+     * <p><b>상한 초과는 두 모양으로 나온다.</b> DB가 문을 취소하면 {@link QueryTimeoutException}이고,
+     * 남은 수명이 이미 0 이하라 다음 문을 세우지도 못하면 {@link TransactionTimedOutException}이다
+     * (Spring의 {@code ResourceHolderSupport}가 문마다 데드라인을 검사한다). 둘의 공통 조상은
+     * {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다 — 실제로 그렇게
+     * 썼다가 잡혔다. 프로브가 앞쪽 갈래만 만들어 냈고 catch가 그 프로브 크기에 맞춰졌다.
      *
-     * <p>둘의 공통 조상은 {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다.
-     * 실제로 그렇게 썼다가 잡혔다 — 프로브가 앞쪽 갈래만 만들어 냈고 catch가 그 프로브 크기에 맞춰졌다.
+     * <p><b>상한은 문 하나가 아니라 트랜잭션 전체에 걸린다.</b> 4초짜리 문 둘을 5초 상한에 넣으면 첫
+     * 문은 완주하고 둘째가 남은 1초에 끊긴다(실측).
+     *
+     * <p>⚠️ <b>커밋은 데드라인을 검사하지 않는다.</b> 데드라인을 넘긴 뒤 질의 없이 커밋만 남으면 그대로
+     * 성공한다(실측 — 2초 상한에 4초를 흘려보내고 커밋했으나 예외 없음). 한때 이 자리에 "커밋 시점에도
+     * 나오므로 프록시 안에서는 못 잡는다"고 적혀 있었는데 <b>사실이 아니다.</b> 두 갈래 모두 본문 안에서
+     * 나므로 {@link ChatKickRecorder} 안에서도 잡을 수 있다.
+     *
+     * <p>그럼에도 바깥에 두는 이유는 둘이다. ① 이 타임아웃은 특정 저장소가 아니라 트랜잭션의 성질이라
+     * 강퇴 로그 쓰기에서도 밴 쓰기에서도 나온다 — 어느 한 어댑터에 두면 다른 쪽이 새고, 양쪽에 두면 같은
+     * 판단이 두 벌이 된다. ② 여기서 잡는다는 것은 트랜잭션이 <b>이미 되감긴 뒤</b>라는 뜻이라, 취소된
+     * 트랜잭션 위에서 무언가를 더 하려는 코드가 자라지 않는다.
      */
     private Optional<ChatBan> record(ChatKickLog log) {
         try {

@@ -17,7 +17,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.data.domain.Limit;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -37,6 +36,7 @@ import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanStateRepositoryImpl;
@@ -191,6 +191,29 @@ class ChatKickRecorderTest {
     }
 
     /**
+     * 상한이 <b>있다</b>는 것만 잰다. 값이 맞는지가 아니라 사라지지 않았는지다.
+     *
+     * <p>실제 대기를 만들어 재려면 잠금을 쥔 상대를 세우고 상한만큼 기다려야 해서 스위트가 그만큼 느려지는데,
+     * 여기서 막고 싶은 회귀는 "값이 조금 틀림"이 아니라 <b>애너테이션에서 사라짐</b>이다. 사라지면 실패
+     * 모드가 예외에서 무한 대기로 조용히 돌아가고, 그때는 아무 테스트도 빨개지지 않는다.
+     * propagation은 {@code recordCommitsIndependentlyOfAnOuterTransaction}이 동작으로 지킨다.
+     */
+    @Test
+    @DisplayName("기록 트랜잭션에 대기 상한이 걸려 있다 — 없으면 커넥션을 쥔 채 무한히 줄을 선다")
+    void recordDeclaresALockWaitCeiling() throws Exception {
+        // when
+        Transactional annotation = ChatKickRecorder.class
+                .getMethod("record", ChatKickLog.class)
+                .getAnnotation(Transactional.class);
+
+        // then
+        assertThat(annotation).isNotNull();
+        assertThat(annotation.timeout())
+                .as("대기 상한이 없다 — 병목이 생기면 실패가 예외가 아니라 무한 대기가 된다")
+                .isPositive();
+    }
+
+    /**
      * ⭐ <b>바깥 트랜잭션이 있어도 이 기록은 독립으로 커밋된다.</b>
      *
      * <p>호출자는 "이 메서드가 반환되면 커밋이 확정됐다"에 기대어 그 다음에 Redis를 쓴다. 전파가
@@ -252,7 +275,7 @@ class ChatKickRecorderTest {
             }
 
             @Override
-            public ChatBan extendOrCreate(ChatBan ban) {
+            public BanWrite extendOrCreate(ChatBan ban) {
                 throw new IllegalStateException("밴 저장 실패");
             }
         });

@@ -226,8 +226,14 @@ shrink, a concurrent kick skipping a threshold). **Automatic escalation stops at
 12-kick permanent ban was moved to a human's hands: nothing reversible-only-by-hand should be applied by a
 server that has no code to reverse it, and that matches every other call this domain has made (the kick set
 expires rather than being deleted; a corrupted key is not self-healed). Permanent bans still exist as rows
-with a null expiry — an admin puts them there, and that write must now be an extend-or-create too: a plain
-INSERT for a user who already has a row is rejected with `23505`. A duplicate
+with a null expiry — an admin puts them there — but **not through `extendOrCreate`**. That path overwrites
+`banned_by_id` and `created_at` whenever a longer expiry arrives, so a later automatic escalation would
+replace the admin's identity with `SYSTEM` and the admin's action would exist nowhere (`chat_kick_log`
+records kicks, not manual bans). Only a permanent manual ban is safe today, protected by the
+`existing.expires_at IS NOT NULL` guard; a dated one is not. A manual-ban path needs its own write —
+and the decision about preserving the previous issuer (a history row, or leaving those two columns
+alone on conflict) belongs to **that** change, before any manual ban exists to lose. A plain `INSERT`
+for a user who already has a row is rejected with `23505`, so it cannot be that write either. A duplicate
 kick does **not** re-count: it would let a seller extend a ban indefinitely by re-kicking.
 
 **One row per user is a DB constraint** (`uk_chat_ban_user_id`), not a convention. Concurrent kicks from
@@ -264,9 +270,10 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
 - Schema for JPA tests is applied from the **real Flyway files** — all of them, in version order
   (`support.LiveSchema`). A second copy drifts while staying green, and reading only `V1` leaves every
   later migration untested while the suite stays green.
-- **`.sql` is not an input to the Gradle test task.** Changing only a migration leaves `test` UP-TO-DATE,
-  so a schema mutation appears to break nothing. Judge one only under `--rerun-tasks`; without it the
-  green is meaningless, not reassuring.
+- **`db/migration/live` is declared an input of `:chat-core:test`.** It is not one by default — the SQL is
+  read at runtime through `user.dir`, so changing only a migration used to leave `test` UP-TO-DATE and a
+  schema mutation appeared to break nothing (measured: 832ms green with the unique index deleted). The
+  `inputs.dir` line in `build.gradle` closes it; if you move where the schema comes from, move that line too.
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the

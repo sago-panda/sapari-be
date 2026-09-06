@@ -54,6 +54,13 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
      *
      * <p><b>0행을 돌려줄 수 있다.</b> 이미 더 긴 밴이 있어 아무것도 바뀌지 않은 경우다 — 실패가 아니다.
      * 호출자가 이 값을 무시하면 "DB에 없는 밴"을 걸었다고 기록하게 된다.
+     *
+     * <p>⚠️ <b>수동 밴은 이 쿼리를 타면 안 된다.</b> 충돌 시 {@code banned_by_id}와 {@code created_at}까지
+     * 덮으므로, 관리자가 건 기한부 밴 위에 자동 승격이 한 번 오면 발급자가 {@code SYSTEM}으로 바뀌고 그
+     * 관리자 조치는 어디에도 남지 않는다({@code chat_kick_log}는 강퇴만 남긴다). 영구 밴만
+     * {@code existing.expires_at IS NOT NULL} 가드가 지킨다. 관리자 경로를 만들 때 그 보존 결정
+     * (이력 행을 두거나, 충돌 시 그 두 열을 건드리지 않거나)을 <b>같은 변경에</b> 함께 내려야 한다 —
+     * 잃을 밴이 생긴 뒤에 정하면 이미 덮인 것은 복구되지 않는다.
      */
     @Modifying
     @Query(value = """

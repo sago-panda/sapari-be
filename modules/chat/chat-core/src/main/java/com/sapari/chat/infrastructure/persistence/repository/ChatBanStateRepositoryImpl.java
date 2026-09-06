@@ -6,6 +6,7 @@ import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.infrastructure.persistence.entity.ChatBanEntity;
 
 import lombok.RequiredArgsConstructor;
@@ -27,11 +28,11 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
     }
 
     @Override
-    public ChatBan extendOrCreate(ChatBan ban) {
+    public BanWrite extendOrCreate(ChatBan ban) {
         int changed = jpaRepository.upsertExtending(
                 ban.userId(), ban.bannedById(), ban.expiresAt(), ban.createdAt());
         if (changed > 0) {
-            return ban;
+            return new BanWrite(ban, true);
         }
         // 0행 = 이미 더 긴 밴이 있어 아무것도 바뀌지 않았다. 그 밴을 읽어 돌려준다 — 이 호출이 만든
         // 값을 그대로 돌려주면 호출자가 정본에 없는 만료를 기록하고 미러에 싣는다. 왕복이 하나 늘지만
@@ -42,6 +43,7 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
         // 도달하면 그 전제 중 하나가 깨진 것이므로 방어 코드를 얹지 말고 여기를 다시 읽을 것.
         return jpaRepository.findActive(ban.userId(), ban.createdAt())
                 .map(ChatBanStateRepositoryImpl::toDomain)
+                .map(existing -> new BanWrite(existing, false))
                 .orElseThrow(() -> new IllegalStateException(
                         "도달 불가 — 0행인데 활성 밴이 없다. 티어 길이가 양수라는 전제가 깨졌다 userId="
                                 + ban.userId()));

@@ -11,6 +11,7 @@ import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatBanTier;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -116,18 +117,25 @@ public class ChatKickRecorder {
         long kickCount = kickLogRepository.countSince(kickLog.targetUserId(), now.minus(KICK_COUNT_WINDOW));
         return ChatBanTier.of(kickCount)
                 .map(tier -> {
-                    ChatBan ban = banStateRepository.extendOrCreate(
+                    BanWrite write = banStateRepository.extendOrCreate(
                             ChatBan.escalated(kickLog.targetUserId(), tier, now));
                     // 사람이 누른 적 없는 제재라 흔적이 여기밖에 없다. 게다가 지금은 푸는 코드가 없어서
                     // (해제는 행 삭제이고 그걸 하는 경로가 admin-app에 아직 없다) 남기지 않으면 "왜 못
                     // 들어가느냐"는 물음에 chat_ban을 직접 조회해야만 답할 수 있다. 이 도메인이 fail-open
                     // 한 건까지 남기면서 영구 제재를 안 남기는 건 앞뒤가 맞지 않는다.
                     //
-                    // 여기가 "새로 걸었다"와 "이미 있었다"를 구분해 아는 유일한 자리다 — 그래서 반환 타입을
-                    // 쪼개지 않고도 그 구분이 기록에 남는다. 기존 밴 미러 갱신은 일상이라 남기지 않는다.
-                    log.info("자동 밴 승격 — userId={} 누적={}회 단계={} 만료={}",
-                            ban.userId(), kickCount, tier, ban.expiresAt());
-                    return ban;
+                    // 두 경우를 갈라 적는다. 안 갈랐을 때는 동시 강퇴에서 남의 트랜잭션이 건 만료가 이
+                    // 호출의 단계와 나란히 찍혀, 단계와 만료가 서로 맞지 않는 기록이 됐다 —
+                    // "단계=ONE_WEEK 만료=<1년 뒤>" 같은 줄이다. 게다가 아무 행도 쓰지 않은 요청이
+                    // "승격"으로 남았다.
+                    if (write.applied()) {
+                        log.info("자동 밴 승격 — userId={} 누적={}회 단계={} 만료={}",
+                                kickLog.targetUserId(), kickCount, tier, write.effective().expiresAt());
+                    } else {
+                        log.info("자동 밴 승격 생략 — 이미 더 긴 밴이 있다 userId={} 누적={}회 이 단계={} 남은 만료={}",
+                                kickLog.targetUserId(), kickCount, tier, write.effective().expiresAt());
+                    }
+                    return write.effective();
                 });
     }
 }

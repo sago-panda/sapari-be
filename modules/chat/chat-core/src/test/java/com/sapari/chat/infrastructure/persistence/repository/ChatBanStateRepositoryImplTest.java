@@ -5,7 +5,6 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
-import org.springframework.data.domain.Limit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -40,15 +39,19 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.sapari.chat.support.LiveSchema;
 import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
 
 /**
  * 밴 정본 조회가 <b>SQL이 만드는 보장</b>에 기대는 부분을 실제 Postgres에서 고정한다.
  *
- * <p>목으로는 검증되는 것이 없는 자리가 둘이다. 하나는 {@code expires_at IS NULL}을 "만료 없음"이 아니라
- * "가장 먼 만료"로 취급하는 정렬({@code NULLS FIRST})이고, 다른 하나는 누적 강퇴를 세는 창의 경계다.
- * 둘 다 틀리면 밴이 조용히 일찍 풀리거나 아예 걸리지 않는다.
+ * <p>목으로는 검증되는 것이 없는 자리가 셋이다. 사용자당 한 행을 세우는 <b>유니크 제약</b>,
+ * 만료를 늘리는 방향으로만 반영하는 <b>upsert 가드</b>, 그리고 누적 강퇴를 세는 <b>창의 경계</b>다.
+ * 셋 중 어느 것이 틀려도 밴이 조용히 일찍 풀리거나 아예 걸리지 않는다.
+ *
+ * <p>{@code expires_at IS NULL}을 "가장 먼 만료"로 다루는 것은 이제 정렬이 아니라 upsert 가드가 지킨다 —
+ * 조회 쪽 정렬은 제약이 서면서 결과를 가르지 못하게 되어 뺐다.
  *
  * <p>스키마는 운영과 같은 Flyway 파일을 그대로 실행해 만든다. 테스트에 DDL을 다시 적으면 두 벌이 되고,
  * 어긋나는 순간 초록인 채로 어긋난다. {@code ddl-auto=validate}가 엔티티 매핑까지 대조한다.
@@ -163,7 +166,13 @@ class ChatBanStateRepositoryImplTest {
         repository().extendOrCreate(new ChatBan(userId, SYSTEM, month, NOW));
 
         // when: 일주일짜리가 뒤에 도착한다
-        repository().extendOrCreate(new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW));
+        BanWrite write = repository().extendOrCreate(
+                new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW));
+
+        // then: 바꾼 것이 없다고 알리고, 실제로 남아 있는 밴(한 달)을 돌려준다.
+        // 이 호출이 건 짧은 값을 돌려주면 호출자가 정본에 없는 만료를 미러에 싣는다.
+        assertThat(write.applied()).isFalse();
+        assertThat(write.effective().expiresAt()).isEqualTo(month);
 
         // then: 한 달이 그대로 남는다. 줄어들면 그 사람은 23일 일찍 돌아온다
         assertThat(repository().findActive(userId, NOW))
@@ -179,9 +188,12 @@ class ChatBanStateRepositoryImplTest {
         repository().extendOrCreate(new ChatBan(userId, SYSTEM, null, NOW));
 
         // when
-        repository().extendOrCreate(new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(30)), NOW));
+        BanWrite write = repository().extendOrCreate(
+                new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(30)), NOW));
 
-        // then
+        // then: 영구를 이길 수 없으므로 바꾼 것이 없고, 돌려주는 것도 영구다
+        assertThat(write.applied()).isFalse();
+        assertThat(write.effective().expiresAt()).isNull();
         assertThat(repository().findActive(userId, NOW))
                 .get()
                 .extracting(ChatBan::expiresAt)
@@ -227,7 +239,9 @@ class ChatBanStateRepositoryImplTest {
                 future.get(30, TimeUnit.SECONDS);
             }
 
-            // then: 제약이 없으면 여기서 여덟 행이 남는다
+            // then: 살아남은 하나가 가장 긴 것인지 본다. 행 수 자체는 여기서 관측되지 않는다 —
+            // 제약이 없으면 upsert의 ON CONFLICT가 먼저 죽어 이 단언에 닿지 못한다.
+            // "사용자당 한 행"을 결정적으로 재는 것은 평문 INSERT 테스트 쪽이다.
             assertThat(banJpaRepository.findActive(userId, NOW))
                     .as("동시 강퇴 뒤 살아 있는 밴이 없다")
                     .get()
