@@ -1,5 +1,10 @@
 package com.sapari.chat.application.service;
 
+import org.springframework.transaction.TransactionTimedOutException;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.ParameterizedTest;
+import java.util.stream.Stream;
 import com.sapari.chat.domain.exception.ChatKickContendedException;
 import org.springframework.dao.QueryTimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,6 +93,15 @@ class KickUserServiceTest {
                 liveRoomReader, evidenceRepository, kickRecorder, banWriteRepository,
                 kickWriteRepository, kickEventPublisher, new ChatPermissionPolicy(),
                 new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+    }
+
+    /** 상한 초과가 드러나는 두 모양. 하나만 잡으면 나머지가 500으로 새어 나간다. */
+    static Stream<Arguments> timeoutShapes() {
+        return Stream.of(
+                Arguments.of("문이 취소됨",
+                        new QueryTimeoutException("canceling statement due to user request")),
+                Arguments.of("남은 수명이 0 — 다음 문을 세우지 못함",
+                        new TransactionTimedOutException("Transaction timed out: deadline was ...")));
     }
 
     /** 인증 주체에서 오는 값(kickerId·kickerRole)은 컨트롤러가 채운다 — 요청 본문에는 자리가 없다. */
@@ -215,13 +229,19 @@ class KickUserServiceTest {
     @DisplayName("혼잡 — 고장과 갈라 놓는다")
     class Contention {
 
-        @Test
+        /**
+         * 상한 초과는 <b>두 모양</b>으로 나온다. DB가 문을 취소하면 {@code QueryTimeoutException}이고,
+         * 남은 수명이 0 이하라 다음 문을 세우지도 못하면 {@code TransactionTimedOutException}이다.
+         * 공통 조상이 {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다 —
+         * 실제로 그렇게 썼다가 잡혔고, 그래서 둘을 모두 여기에 건다.
+         */
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("com.sapari.chat.application.service.KickUserServiceTest#timeoutShapes")
         @DisplayName("⭐ 잠금 대기가 상한을 넘으면 재시도 가능한 도메인 예외가 된다 — 인프라 예외 그대로면 500이다")
-        void lockTimeoutBecomesARetryableDomainError() {
+        void lockTimeoutBecomesARetryableDomainError(String shape, RuntimeException thrown) {
             // given: 다른 방의 강퇴가 같은 사용자의 밴 행을 쥐고 있어 이 트랜잭션이 상한을 넘겼다
             givenHappyPath();
-            given(kickRecorder.record(any()))
-                    .willThrow(new QueryTimeoutException("canceling statement due to user request"));
+            given(kickRecorder.record(any())).willThrow(thrown);
 
             // when & then: 번역하지 않으면 전역 핸들러의 마지막 그물에 걸려 500 + Unhandled exception 로그가 된다.
             // 재시도하면 성공하는 실패에 "서버가 고장났다"고 답하는 셈이고, 정상적인 동시 강퇴가 알림을 울린다.

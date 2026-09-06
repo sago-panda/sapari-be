@@ -21,6 +21,10 @@
 --
 -- CONCURRENTLY 를 쓰지 않는 것도 같은 전제 위에 있다. 빈 테이블이면 즉시 끝나고, 비어 있지 않다면
 -- 그건 위 전제가 깨진 상황이라 잠기는 편이 낫다.
+--
+-- 게다가 여기서는 쓸 수도 없다. CREATE INDEX CONCURRENTLY 는 트랜잭션 안에서 돌지 못하는데, 이 파일은
+-- 인덱스 생성과 삭제를 함께 하므로 둘이 한 트랜잭션으로 묶여야 한다 — 중간에 실패해 새 인덱스는 없고
+-- 옛 인덱스만 사라진 상태로 남으면, 그때부터는 조용히 느려지기만 한다.
 
 CREATE UNIQUE INDEX uk_chat_ban_user_id ON live_schema.chat_ban (user_id);
 

@@ -5,6 +5,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.transaction.TransactionTimedOutException;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.command.KickUserCommand;
@@ -126,13 +127,20 @@ public class KickUserService implements KickUserUseCase {
      * 쪽이 새고, 양쪽에 두면 같은 판단이 두 벌이 된다. 경계를 여는 {@link ChatKickRecorder} 바로 바깥이
      * 그 판단이 한 번만 서는 자리다.
      *
-     * <p>여기서 잡는다는 것은 <b>트랜잭션이 이미 되감긴 뒤</b>라는 뜻이기도 하다. 안에서 잡으면 실패한
-     * 트랜잭션 위에서 무언가를 더 할 수 있게 되는데, 취소된 트랜잭션에서는 어떤 질의도 나가지 않는다.
+     * <p><b>프록시 안에서는 잡을 수 없는 갈래가 있다.</b> 상한 초과는 두 모양으로 나온다 — DB가 문을
+     * 취소하면 {@link QueryTimeoutException}이고, 남은 수명이 이미 0 이하라 다음 문을 세우지도 못하면
+     * {@link TransactionTimedOutException}이다(Spring의 {@code ResourceHolderSupport}가 문마다 데드라인을
+     * 검사한다 — 바이트코드로 확인했다). 뒤쪽은 커밋 시점에도 나올 수 있는데 커밋은 본문이 반환된 <i>뒤에</i>
+     * 프록시가 수행하므로, {@link ChatKickRecorder} 안에 try/catch를 두면 그 갈래가 그대로 빠져나간다.
+     * 프록시 바깥인 이 자리가 둘을 다 받는 유일한 지점이다.
+     *
+     * <p>둘의 공통 조상은 {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다.
+     * 실제로 그렇게 썼다가 잡혔다 — 프로브가 앞쪽 갈래만 만들어 냈고 catch가 그 프로브 크기에 맞춰졌다.
      */
     private Optional<ChatBan> record(ChatKickLog log) {
         try {
             return kickRecorder.record(log);
-        } catch (QueryTimeoutException e) {
+        } catch (QueryTimeoutException | TransactionTimedOutException e) {
             throw new ChatKickContendedException(
                     "강퇴 기록이 잠금 대기 상한을 넘었다 — targetUserId=" + log.targetUserId(), e);
         }

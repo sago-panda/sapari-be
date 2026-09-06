@@ -261,7 +261,12 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
 - Any `@SpringBootTest` on chat-core boots `RedisChatBroadcaster`, which connects in its constructor
   (`autoConnect(0)`, deliberate — it removes the pre-subscribe loss race). **Such tests need a Redis container**
   even when they test something else.
-- Schema for JPA tests is applied from the **real Flyway file**; a second copy drifts while staying green.
+- Schema for JPA tests is applied from the **real Flyway files** — all of them, in version order
+  (`support.LiveSchema`). A second copy drifts while staying green, and reading only `V1` leaves every
+  later migration untested while the suite stays green.
+- **`.sql` is not an input to the Gradle test task.** Changing only a migration leaves `test` UP-TO-DATE,
+  so a schema mutation appears to break nothing. Judge one only under `--rerun-tasks`; without it the
+  green is meaningless, not reassuring.
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the
