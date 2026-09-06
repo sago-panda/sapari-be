@@ -7,6 +7,7 @@ import java.util.UUID;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.transaction.TransactionTimedOutException;
 
+import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.command.KickUserCommand;
 import com.sapari.chat.domain.exception.ChatKickContendedException;
@@ -57,6 +58,7 @@ public class KickUserService implements KickUserUseCase {
     private final ChatBanWriteRepository banWriteRepository;
     private final ChatKickWriteRepository kickWriteRepository;
     private final ChatKickEventPublisher kickEventPublisher;
+    private final ChatAccountEventPublisher accountEventPublisher;
     private final ChatPermissionPolicy permissionPolicy;
     private final TimeProvider timeProvider;
 
@@ -114,10 +116,17 @@ public class KickUserService implements KickUserUseCase {
         // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
         // 돌려받은 밴을 그대로 비춘다. 동시 강퇴에서 이 값이 가장 긴 것이 아닐 수 있지만, 미러 쓰기가
         // 늘리기 전용이라 짧은 쪽이 긴 것을 덮지 못한다 — 순서 문제를 순서와 무관한 쓰기로 닫는다.
-        record(kickLog).ifPresent(ban -> banWriteRepository.ban(
-                command.targetUserId(), ban.expiresAt(), kickLog.kickedAt()));
+        record(kickLog).ifPresent(ban -> {
+            banWriteRepository.ban(command.targetUserId(), ban.expiresAt(), kickLog.kickedAt());
+            // 밴이 새로 걸렸든 이미 있던 것이든 알린다. 이미 있던 경우를 건너뛰면, 그 밴보다 먼저 열려
+            // 어떤 이유로든 안 닫힌 세션이 영영 남는다 — 다시 알리면 다음 강퇴가 그걸 치운다.
+            // 미러 쓰기가 두 경우 모두에서 도는 것과 같은 이유다.
+            accountEventPublisher.publishBanned(command.targetUserId());
+        });
 
         kickWriteRepository.register(command.roomId(), command.targetUserId());
+        // 강퇴 발행이 계정 발행보다 뒤에 온다. 계정 쪽이 이 방 세션까지 이미 닫았을 수 있지만, 이 발행이
+        // 하는 일은 그것만이 아니다 — 같은 방의 <b>다른</b> 사람들에게 누가 나갔는지 알린다.
         kickEventPublisher.publishKicked(command.roomId(), command.targetUserId());
     }
 

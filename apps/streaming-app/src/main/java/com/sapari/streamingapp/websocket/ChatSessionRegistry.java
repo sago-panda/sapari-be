@@ -328,6 +328,41 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     @Override
+    public Mono<Void> sendToUserEverywhere(UUID userId, OutboundMessage message) {
+        return Mono.fromRunnable(() -> {
+            FanOutBudget budget = newBudget();
+            forEachSessionOf(userId, ls -> emit(ls, message, budget));
+        });
+    }
+
+    @Override
+    public Mono<Void> closeUserEverywhere(UUID userId) {
+        // 밴·탈퇴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
+        return Mono.fromRunnable(() -> {
+            FanOutBudget budget = newBudget();
+            forEachSessionOf(userId, ls -> terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline()));
+        });
+    }
+
+    /**
+     * 이 Pod에서 그 사람의 세션을 전부 훑는다.
+     *
+     * <p><b>방 색인을 못 쓴다</b> — 계정 조치는 방을 모른 채로 오고, {@code userId → 세션} 색인은 두지
+     * 않았다. 두면 {@code register}/{@code unregister}마다 동기화 대상이 하나 늘고 그 어긋남이 조용한
+     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다. 12,000 세션 전체 스캔이 165µs다(실측).
+     * 방 fan-out이 색인을 갖는 것은 <b>메시지마다</b> 돌기 때문이고, 이쪽은 시간당 몇 건이다.
+     *
+     * <p>그 전제가 바뀌면 — 계정 조치가 초당 여러 건이 되면 — 색인을 두는 것이 맞다.
+     */
+    private void forEachSessionOf(UUID userId, Consumer<LocalSession> action) {
+        for (LocalSession ls : local.values()) {
+            if (ls.session().userId().equals(userId)) {
+                action.accept(ls);
+            }
+        }
+    }
+
+    @Override
     public Mono<Void> closeAll(UUID roomId) {
         // 방 종료는 정상 종료(1000). 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다.
         return Mono.fromRunnable(() -> {

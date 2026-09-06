@@ -177,7 +177,7 @@ class ChatModerationWiringTest {
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",
-                "ChatKickEventRedisPublisher");
+                "ChatKickEventRedisPublisher", "ChatAccountEventRedisPublisher");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())

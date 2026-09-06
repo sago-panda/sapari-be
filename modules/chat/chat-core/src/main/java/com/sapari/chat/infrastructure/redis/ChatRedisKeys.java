@@ -62,4 +62,14 @@ final class ChatRedisKeys {
     static String pubsubPattern() {
         return PUBSUB_PREFIX + "*";
     }
+
+    /**
+     * 계정 단위 조치 채널 — 방이 아니라 사람에 대한 신호가 여기로 간다.
+     *
+     * <p><b>{@link #PUBSUB_PREFIX} 아래에 두면 안 된다.</b> 방 채널 구독이 그 접두 뒤를 {@code UUID}로
+     * 파싱하므로, 이름이 그 밑에 있으면 전 Pod가 이벤트마다 파싱 실패를 찍고 봉투를 버린다.
+     */
+    static String accountEvents() {
+        return "chat:account:events";
+    }
 }

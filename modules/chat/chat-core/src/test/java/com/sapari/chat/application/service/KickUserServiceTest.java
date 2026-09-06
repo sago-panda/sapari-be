@@ -33,6 +33,7 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.command.KickUserCommand;
 import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
@@ -78,6 +79,9 @@ class KickUserServiceTest {
     @Mock
     private ChatKickEventPublisher kickEventPublisher;
 
+    @Mock
+    private ChatAccountEventPublisher accountEventPublisher;
+
     private KickUserService service;
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
@@ -91,7 +95,7 @@ class KickUserServiceTest {
     void setUp() {
         service = new KickUserService(
                 liveRoomReader, evidenceRepository, kickRecorder, banWriteRepository,
-                kickWriteRepository, kickEventPublisher, new ChatPermissionPolicy(),
+                kickWriteRepository, kickEventPublisher, accountEventPublisher, new ChatPermissionPolicy(),
                 new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 

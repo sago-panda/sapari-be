@@ -157,6 +157,45 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("⭐ closeUserEverywhere — 다른 방에 열려 있는 같은 사람의 세션도 끊는다")
+    void close_user_everywhere_reaches_other_rooms() {
+        // given: 한 사람이 두 방에 동시에 접속해 있다. 밴이 걸릴 때 다른 방 세션이 정확히 이 상태다.
+        UUID otherRoom = UUID.randomUUID();
+        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s2", session(otherRoom, userId)).block();
+
+        // when & then: 방을 모르는 채로 끊어도 둘 다 닫힌다.
+        // 방 색인으로 찾으면 강퇴가 일어난 방 하나만 닫히고 나머지는 살아남는다 — 그게 이 메서드가 없앤 상태다.
+        //
+        // 상한을 준다. 안 주면 닫히지 않은 세션에서 이 테스트가 <b>영원히 기다린다</b> — 회귀가 빨간불이
+        // 아니라 멈춤으로 나타나고, 그건 회귀를 알려 주지 않는 것과 같다(되돌림 확인에서 실제로 겪었다).
+        StepVerifier.create(registry.outbound("s2"))
+                .then(() -> registry.closeUserEverywhere(userId).block())
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
+        StepVerifier.create(registry.outbound("s1"))
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
+    }
+
+    @Test
+    @DisplayName("closeUserEverywhere — 남의 세션은 건드리지 않는다")
+    void close_user_everywhere_spares_other_users() {
+        // given
+        UUID bystander = UUID.randomUUID();
+        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s2", session(roomId, bystander)).block();
+
+        // when
+        registry.closeUserEverywhere(userId).block();
+
+        // then: 옆 사람의 채널은 살아 있다 — 완료됐다면 방 전체를 끊은 것이다
+        StepVerifier.create(registry.outbound("s2"))
+                .expectTimeout(java.time.Duration.ofMillis(200))
+                .verify();
+    }
+
+    @Test
     @DisplayName("등록 — Redis 명부 등재가 실패해도 접속은 성립한다(전달은 로컬 자료구조로 돈다)")
     void register_survives_redis_failure() {
         // given
