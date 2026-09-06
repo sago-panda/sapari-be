@@ -5,9 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
@@ -35,6 +32,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.sapari.chat.support.LiveSchema;
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
@@ -98,12 +96,7 @@ class ChatKickRecorderTest {
 
     @BeforeAll
     static void applyRealSchema() throws Exception {
-        String ddl = Files.readString(repositoryRoot().resolve("db/migration/live/V1__init_live.sql"));
-        try (Connection connection = DriverManager.getConnection(
-                        postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
-                Statement statement = connection.createStatement()) {
-            statement.execute(ddl);
-        }
+        LiveSchema.applyTo(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     private static Path repositoryRoot() {
@@ -259,7 +252,7 @@ class ChatKickRecorderTest {
             }
 
             @Override
-            public void append(ChatBan ban) {
+            public void extendOrCreate(ChatBan ban) {
                 throw new IllegalStateException("밴 저장 실패");
             }
         });
@@ -326,7 +319,7 @@ class ChatKickRecorderTest {
         UUID room = UUID.randomUUID();
         recorder.record(kick(room, NOW));
         Instant expiry = NOW.plus(Duration.ofDays(30));
-        transactionTemplate.executeWithoutResult(status -> bans.append(
+        transactionTemplate.executeWithoutResult(status -> bans.extendOrCreate(
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when: 같은 방 재강퇴 — 로그는 no-op이다
@@ -352,7 +345,7 @@ class ChatKickRecorderTest {
         // append도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
         // 준비 코드라 직접 연다 — 이 테스트가 일부러 주변 트랜잭션을 걷어냈기 때문이다.
         Instant expiry = NOW.plus(Duration.ofDays(30));
-        transactionTemplate.executeWithoutResult(status -> bans.append(
+        transactionTemplate.executeWithoutResult(status -> bans.extendOrCreate(
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when: 3회째 — 가드가 없으면 여기서 1주 밴이 새로 생기고 그것이 반환된다

@@ -95,7 +95,7 @@ public class ChatKickRecorder {
         return ChatBanTier.of(kickCount)
                 .map(tier -> {
                     ChatBan ban = ChatBan.escalated(kickLog.targetUserId(), tier, now);
-                    banStateRepository.append(ban);
+                    banStateRepository.extendOrCreate(ban);
                     // 사람이 누른 적 없는 제재라 흔적이 여기밖에 없다. 게다가 지금은 푸는 코드가 없어서
                     // (해제는 행 삭제이고 그걸 하는 경로가 admin-app에 아직 없다) 남기지 않으면 "왜 못
                     // 들어가느냐"는 물음에 chat_ban을 직접 조회해야만 답할 수 있다. 이 도메인이 fail-open

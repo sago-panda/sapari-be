@@ -32,8 +32,8 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
     }
 
     @Override
-    public void append(ChatBan ban) {
-        jpaRepository.insert(ban.userId(), ban.bannedById(), ban.expiresAt(), ban.createdAt());
+    public void extendOrCreate(ChatBan ban) {
+        jpaRepository.upsertExtending(ban.userId(), ban.bannedById(), ban.expiresAt(), ban.createdAt());
     }
 
     private static ChatBan toDomain(ChatBanEntity entity) {
