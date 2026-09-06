@@ -1,13 +1,18 @@
 package com.sapari.chat.application.service;
 
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
+
+import org.springframework.dao.QueryTimeoutException;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.command.KickUserCommand;
+import com.sapari.chat.domain.exception.ChatKickContendedException;
 import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
@@ -106,12 +111,31 @@ public class KickUserService implements KickUserUseCase {
         // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
         // 돌려받은 밴을 그대로 비춘다. 동시 강퇴에서 이 값이 가장 긴 것이 아닐 수 있지만, 미러 쓰기가
         // 늘리기 전용이라 짧은 쪽이 긴 것을 덮지 못한다 — 순서 문제를 순서와 무관한 쓰기로 닫는다.
-        kickRecorder.record(log)
-                .ifPresent(ban -> banWriteRepository.ban(
-                        command.targetUserId(), ban.expiresAt(), log.kickedAt()));
+        record(log).ifPresent(ban -> banWriteRepository.ban(
+                command.targetUserId(), ban.expiresAt(), log.kickedAt()));
 
         kickWriteRepository.register(command.roomId(), command.targetUserId());
         kickEventPublisher.publishKicked(command.roomId(), command.targetUserId());
+    }
+
+    /**
+     * 기록을 남기고, 잠금 대기가 상한을 넘으면 도메인 예외로 바꿔 던진다.
+     *
+     * <p>번역을 어댑터가 아니라 여기서 하는 이유: 이 타임아웃은 특정 저장소의 성질이 아니라 <b>트랜잭션의
+     * 성질</b>이다. 강퇴 로그 쓰기에서도 밴 쓰기에서도 같은 예외가 나오므로 어느 한 어댑터에 두면 다른
+     * 쪽이 새고, 양쪽에 두면 같은 판단이 두 벌이 된다. 경계를 여는 {@link ChatKickRecorder} 바로 바깥이
+     * 그 판단이 한 번만 서는 자리다.
+     *
+     * <p>여기서 잡는다는 것은 <b>트랜잭션이 이미 되감긴 뒤</b>라는 뜻이기도 하다. 안에서 잡으면 실패한
+     * 트랜잭션 위에서 무언가를 더 할 수 있게 되는데, 취소된 트랜잭션에서는 어떤 질의도 나가지 않는다.
+     */
+    private Optional<ChatBan> record(ChatKickLog log) {
+        try {
+            return kickRecorder.record(log);
+        } catch (QueryTimeoutException e) {
+            throw new ChatKickContendedException(
+                    "강퇴 기록이 잠금 대기 상한을 넘었다 — targetUserId=" + log.targetUserId(), e);
+        }
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.sapari.chat.application.service;
 
+import com.sapari.chat.domain.exception.ChatKickContendedException;
+import org.springframework.dao.QueryTimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -206,6 +208,31 @@ class KickUserServiceTest {
 
             // then
             verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+    }
+
+    @Nested
+    @DisplayName("혼잡 — 고장과 갈라 놓는다")
+    class Contention {
+
+        @Test
+        @DisplayName("⭐ 잠금 대기가 상한을 넘으면 재시도 가능한 도메인 예외가 된다 — 인프라 예외 그대로면 500이다")
+        void lockTimeoutBecomesARetryableDomainError() {
+            // given: 다른 방의 강퇴가 같은 사용자의 밴 행을 쥐고 있어 이 트랜잭션이 상한을 넘겼다
+            givenHappyPath();
+            given(kickRecorder.record(any()))
+                    .willThrow(new QueryTimeoutException("canceling statement due to user request"));
+
+            // when & then: 번역하지 않으면 전역 핸들러의 마지막 그물에 걸려 500 + Unhandled exception 로그가 된다.
+            // 재시도하면 성공하는 실패에 "서버가 고장났다"고 답하는 셈이고, 정상적인 동시 강퇴가 알림을 울린다.
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatKickContendedException.class)
+                    .extracting(e -> ((ChatKickContendedException) e).getErrorCode().getStatus())
+                    .isEqualTo(409);
+
+            // then: 기록이 안 남았으므로 명단 등록도 발행도 하지 않는다
+            verify(kickWriteRepository, never()).register(any(), any());
+            verify(kickEventPublisher, never()).publishKicked(any(), any());
         }
     }
 
