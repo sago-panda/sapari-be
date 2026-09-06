@@ -44,14 +44,23 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
                        @Param("kickedAt") Instant kickedAt);
 
     /**
-     * {@code since} 이후 이 사용자가 받은 강퇴 수 — 방을 가리지 않는다.
+     * {@code since} 이후 이 사용자를 강퇴한 <b>서로 다른 사람의 수</b> — 강퇴 횟수가 아니다.
      *
-     * <p>인덱스 {@code (user_id, kicked_at DESC)}가 그대로 쓰인다. 방 조건을 넣지 않는 것이 정책이다 —
-     * 밴은 플랫폼 단위라 여러 방을 옮겨 다니는 사용자도 같은 카운터에 쌓여야 한다.
+     * <p><b>왜 행이 아니라 사람인가.</b> 유니크 제약이 {@code (user_id, live_room_id)}라 행은 방 단위로
+     * 쌓인다. 행을 세면 <b>한 판매자가 혼자 임계에 닿는다</b> — 방송을 세 번 하고 매번 같은 사람을 한 번씩
+     * 강퇴하면 3행이다. 방송 3회는 공모가 아니라 평범한 업무이고, 그러면 판매자 하나가 자기 방에서
+     * 채팅한 누구에게든 플랫폼 전역 밴을 걸 수 있다.
+     *
+     * <p>사람을 세면 임계가 <b>확증</b>을 요구한다 — "독립된 운영자 셋이 같은 사람을 문제로 판단했다".
+     * 그게 플랫폼 단위 제재에 필요한 근거이고, 정본이 "전 판매자 합산"이라고 적은 것과도 맞는다.
+     * 남의 방 여럿을 돌며 문제를 일으키는 판매자는 강퇴자가 여럿이라 그대로 잡힌다.
+     *
+     * <p>방 조건은 여전히 넣지 않는다 — 밴은 판매자별이 아니라 플랫폼 단위라, 방을 옮겨 다녀도 같은
+     * 카운터에 쌓여야 한다. 인덱스 {@code (user_id, kicked_at DESC)}가 그대로 쓰인다.
      */
     @Query(value = """
-            SELECT COUNT(*) FROM live_schema.chat_kick_log
+            SELECT COUNT(DISTINCT kicked_by_id) FROM live_schema.chat_kick_log
              WHERE user_id = :userId AND kicked_at > :since
             """, nativeQuery = true)
-    long countSince(@Param("userId") UUID userId, @Param("since") Instant since);
+    long countDistinctKickersSince(@Param("userId") UUID userId, @Param("since") Instant since);
 }

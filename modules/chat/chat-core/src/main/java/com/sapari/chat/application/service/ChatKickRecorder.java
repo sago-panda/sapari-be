@@ -114,8 +114,9 @@ public class ChatKickRecorder {
         if (!firstKickInThisRoom) {
             return Optional.empty();
         }
-        long kickCount = kickLogRepository.countSince(kickLog.targetUserId(), now.minus(KICK_COUNT_WINDOW));
-        return ChatBanTier.of(kickCount)
+        long kickers = kickLogRepository.countDistinctKickersSince(
+                kickLog.targetUserId(), now.minus(KICK_COUNT_WINDOW));
+        return ChatBanTier.of(kickers)
                 .map(tier -> {
                     BanWrite write = banStateRepository.extendOrCreate(
                             ChatBan.escalated(kickLog.targetUserId(), tier, now));
@@ -129,11 +130,11 @@ public class ChatKickRecorder {
                     // "단계=ONE_WEEK 만료=<1년 뒤>" 같은 줄이다. 게다가 아무 행도 쓰지 않은 요청이
                     // "승격"으로 남았다.
                     if (write.applied()) {
-                        log.info("자동 밴 승격 — userId={} 누적={}회 단계={} 만료={}",
-                                kickLog.targetUserId(), kickCount, tier, write.effective().expiresAt());
+                        log.info("자동 밴 승격 — userId={} 확증={}명 단계={} 만료={}",
+                                kickLog.targetUserId(), kickers, tier, write.effective().expiresAt());
                     } else {
-                        log.info("자동 밴 승격 생략 — 이미 더 긴 밴이 있다 userId={} 누적={}회 이 단계={} 남은 만료={}",
-                                kickLog.targetUserId(), kickCount, tier, write.effective().expiresAt());
+                        log.info("자동 밴 승격 생략 — 이미 더 긴 밴이 있다 userId={} 확증={}명 이 단계={} 남은 만료={}",
+                                kickLog.targetUserId(), kickers, tier, write.effective().expiresAt());
                     }
                     return write.effective();
                 });

@@ -220,8 +220,13 @@ Re-reading the record for the longest ban was tried and only narrows it: it fixe
 *who writes last*. Ordering problems need order-independent writes. The cost is that this port can no longer
 shorten a ban — an admin reprieve needs `DEL` + set, in the same change that adds it.
 
-Escalation counts kicks **across rooms** on a 2-year window; per-seller counting lets a user who rotates
-rooms reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
+Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Counting rows
+would let one seller reach the threshold alone: the log is unique per `(user, room)`, so three broadcasts and
+one kick in each makes three. Three broadcasts is an ordinary week, not a conspiracy, and that would hand
+every seller a platform-wide ban over anyone who chats in their rooms. Counting people makes the threshold
+mean **three independent judgements**. It costs nothing against the case the window exists for: a user who
+rotates rooms is kicked by different people anyway. Scoping per-seller is still wrong for the same reason as
+before — it lets a rotating user reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
 gives the same answer while kicks arrive one at a time, and differs only where the table is silent (window
 shrink, a concurrent kick skipping a threshold). **Automatic escalation stops at one year.** The doc's
 12-kick permanent ban was moved to a human's hands: nothing reversible-only-by-hand should be applied by a

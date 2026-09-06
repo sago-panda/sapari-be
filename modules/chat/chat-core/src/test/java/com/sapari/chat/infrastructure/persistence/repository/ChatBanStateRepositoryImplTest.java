@@ -391,7 +391,7 @@ class ChatBanStateRepositoryImplTest {
         kickLogs.appendIfAbsent(kick(since.minus(Duration.ofDays(1))));
 
         // when & then: 방이 셋으로 갈려 있어도 사람 기준으로 합산된다
-        assertThat(kickLogs.countSince(userId, since)).isEqualTo(2);
+        assertThat(kickLogs.countDistinctKickersSince(userId, since)).isEqualTo(2);
     }
 
     private ChatKickLog kick(Instant kickedAt) {
