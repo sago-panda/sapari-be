@@ -83,8 +83,8 @@ public record LiveReconcileProperties(
 
     /**
      * @param threshold 이만큼 Ready 에 머문 방은 만료시킨다. EndStaleLive 와 달리 이 시간이 곧 판정이다
-     * @param batchSize 공용 {@code batch-size} 를 쓰지 않고 따로 두는 이유는 <b>이 잡만 후보마다 LiveKit 을
-     *                  왕복</b>하기 때문이다. 왕복은 후보당 1회가 아니다 — 조회 1회에 더해 처리까지 따라온다:
+     * @param batchSize 공용 {@code batch-size} 를 쓰지 않고 따로 두는 이유는 후보마다 LiveKit 조회에 더해
+     *                  처리 호출이 많이 따라오기 때문이다. 왕복은 후보당 1회가 아니다:
      *                  만료는 {@code stopHlsEgress}(목록 + 화질 3건 중단) + {@code deleteIngress}(목록 + 삭제)
      *                  + {@code closeRoom} 으로 <b>최대 8회</b>, 승격은 {@code startHlsEgress} 3회다.
      *                  그 정리가 {@code afterCommit} 이라 같은 스케줄러 스레드에서 동기로 돈다.

@@ -300,7 +300,7 @@ class SchedulerWiringTest {
                     ExpireReadyScheduler.class,
                     Map.entry("live-reconcile-expire-ready", Duration.ofMinutes(45)),
                     EndStaleLiveScheduler.class,
-                    Map.entry("live-reconcile-end-stale-live", Duration.ofMinutes(90)),
+                    Map.entry("live-reconcile-end-stale-live", Duration.ofMinutes(120)),
                     OrphanMediaScheduler.class,
                     Map.entry("live-reconcile-orphan-media", Duration.ofMinutes(60)));
 

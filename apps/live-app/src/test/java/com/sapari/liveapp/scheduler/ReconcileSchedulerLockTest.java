@@ -377,6 +377,11 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
+        public List<EgressSummary> listRoomEgress(UUID roomId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public HlsEgressResult startHlsEgress(UUID roomId) {
             throw new UnsupportedOperationException();
         }

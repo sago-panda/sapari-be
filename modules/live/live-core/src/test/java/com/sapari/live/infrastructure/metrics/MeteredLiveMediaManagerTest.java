@@ -73,6 +73,19 @@ class MeteredLiveMediaManagerTest {
         assertThat(metered.publishingIngressIdsOrEmpty(UUID.randomUUID())).isEmpty();
     }
 
+    @Test
+    @DisplayName("방별 egress 조회 실패는 삼키지 않고 실패 지표와 함께 그대로 던진다")
+    void roomEgressFailure_isCountedAndRethrown() {
+        UUID roomId = UUID.randomUUID();
+        willThrow(new LiveMediaException("조회 실패")).given(delegate).listRoomEgress(roomId);
+
+        assertThatThrownBy(() -> metered.listRoomEgress(roomId))
+                .isInstanceOf(LiveMediaException.class);
+        assertThat(registry.get("live.media.call")
+                .tag("op", "listRoomEgress").tag("result", "failure")
+                .timer().count()).isEqualTo(1);
+    }
+
     private static UUID any() {
         return org.mockito.ArgumentMatchers.any();
     }

@@ -94,10 +94,40 @@ class ReconcileStaleLiveServiceTest {
     }
 
     @Test
+    @DisplayName("회차 스냅샷 뒤 재연결해 활성 egress 가 생긴 방은 종료하지 않는다")
+    void egressStartedAfterRoundSnapshot_isKept() {
+        givenCandidates(roomId);
+        given(liveMediaManager.listAllEgress())
+                .willReturn(List.of(new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
+        given(liveMediaManager.listRoomEgress(roomId))
+                .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), true, STARTED)));
+
+        service.reconcile();
+
+        then(endStaleLiveUseCase).should(never()).endStale(any(EndStaleLiveCommand.class));
+    }
+
+    @Test
+    @DisplayName("전역 스냅샷에는 활성인데 방별 egress가 비면 불일치로 보고 종료를 미룬다")
+    void activeInRoundSnapshotButMissingPerRoom_isKeptForNextRound() {
+        givenCandidates(roomId);
+        given(liveMediaManager.listAllEgress())
+                .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), true, STARTED)));
+
+        service.reconcile();
+
+        then(endStaleLiveUseCase).should(never()).endStale(any(EndStaleLiveCommand.class));
+        assertThat(liveMetrics.acted)
+                .contains("SKIPPED_EGRESS_SNAPSHOT_MISMATCH=1", "ENDED=0");
+    }
+
+    @Test
     @DisplayName("활성 egress 가 있으면 오래됐어도 종료하지 않는다 — 정상적으로 긴 방송이다")
     void staleWithActiveEgress_isKept() {
         givenCandidates(roomId);
         given(liveMediaManager.listAllEgress())
+                .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), true, STARTED)));
+        given(liveMediaManager.listRoomEgress(roomId))
                 .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), true, STARTED)));
 
         service.reconcile();
@@ -111,6 +141,8 @@ class ReconcileStaleLiveServiceTest {
         givenCandidates(roomId);
         given(liveMediaManager.listAllEgress())
                 .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), false, STARTED), new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
+        given(liveMediaManager.listRoomEgress(roomId))
+                .willReturn(List.of(new EgressSummary("eg-1", roomId.toString(), false, STARTED)));
 
         service.reconcile();
 
@@ -186,6 +218,39 @@ class ReconcileStaleLiveServiceTest {
         service.reconcile();
 
         then(endStaleLiveUseCase).should(times(1)).endStale(new EndStaleLiveCommand(other));
+    }
+
+    @Test
+    @DisplayName("한 방의 egress 조회가 실패해도 그 방만 미루고 나머지 후보를 계속 처리한다")
+    void roomEgressLookupFailure_skipsRoomAndContinues() {
+        UUID other = UUID.randomUUID();
+        givenCandidates(roomId, other);
+        given(liveMediaManager.listAllEgress())
+                .willReturn(List.of(new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
+        given(liveMediaManager.listRoomEgress(roomId)).willThrow(new LiveMediaException("조회 실패"));
+
+        service.reconcile();
+
+        then(endStaleLiveUseCase).should(never()).endStale(new EndStaleLiveCommand(roomId));
+        then(endStaleLiveUseCase).should(times(1)).endStale(new EndStaleLiveCommand(other));
+        assertThat(liveMetrics.acted)
+                .contains("SKIPPED_EGRESS_LOOKUP_FAILED=1", "SKIPPED=0", "ENDED=1");
+    }
+
+    @Test
+    @DisplayName("방 종료 중 LiveMediaException은 조회 실패 스킵으로 숨기지 않고 회차 실패로 올린다")
+    void endFailure_isNotCountedAsEgressLookupFailure() {
+        givenCandidates(roomId);
+        given(liveMediaManager.listAllEgress())
+                .willReturn(List.of(new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
+        willThrow(new LiveMediaException("종료 실패"))
+                .given(endStaleLiveUseCase).endStale(new EndStaleLiveCommand(roomId));
+
+        assertThatThrownBy(service::reconcile).isInstanceOf(LiveMediaException.class);
+
+        assertThat(liveMetrics.acted)
+                .contains("SKIPPED_EGRESS_LOOKUP_FAILED=0", "SKIPPED=0", "ENDED=0");
+        assertThat(liveMetrics.failedRounds).containsExactly(ReconcileJob.END_STALE_LIVE);
     }
 
     @Test
