@@ -1,5 +1,8 @@
 package com.sapari.streamingapp;
 
+import com.sapari.chat.application.port.ChatAccountEventSource;
+import com.sapari.chat.application.handler.ChatAccountEventHandler;
+import org.springframework.context.ApplicationContext;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.DisplayName;
@@ -45,12 +48,25 @@ class StreamingAppApplicationTest {
     @Autowired
     private ReactiveMongoTemplate reactiveMongoTemplate;
 
+    @Autowired
+    private ApplicationContext context;
+
     @Test
     @DisplayName("컨텍스트가 로드되고 리액티브 Redis·Mongo 템플릿 빈이 준비된다")
     void contextLoadsWithReactiveTemplates() {
         // when & then
         assertThat(reactiveStringRedisTemplate).isNotNull();
         assertThat(reactiveMongoTemplate).isNotNull();
+    }
+
+    @Test
+    @DisplayName("⭐ 계정 조치 구독이 이 앱에 산다 — 없으면 밴이 조용히 아무 세션도 못 끊는다")
+    void accountEventConsumerIsWired() {
+        // when & then: 이 둘은 @Component 하나로만 붙어 있다. 스테레오타입이 떨어지거나 스캔 범위가
+        // 좁아지면 컨텍스트는 멀쩡히 뜨고 빌드도 초록인데, 밴 이벤트를 아무도 안 받는다 —
+        // 기능이 통째로 no-op이 되는데 실패하는 것이 하나도 없다(실제로 그 상태였다).
+        assertThat(context.getBean(ChatAccountEventSource.class)).isNotNull();
+        assertThat(context.getBean(ChatAccountEventHandler.class)).isNotNull();
     }
 
     @Test

@@ -79,13 +79,14 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
+| `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
 
 `live:room:ended` is **live's channel** — subscribed, never written, and deliberately not in `ChatRedisKeys`.
 
 Only the kick SET is exposed to WRONGTYPE (`SISMEMBER` type-checks). `SET`/`EXISTS` keys are not, so the
 corruption split is not widened to them.
 
-## Wire contracts — three, and all three fail silently when broken
+## Wire contracts — four, and all four fail silently when broken
 
 1. **`ChatEnvelope`** (`application/protocol`, not infrastructure — the port returns it). Both the reactive
    broadcaster and the blocking kick publisher serialize the **real type**; hand-built JSON was the old
@@ -135,7 +136,7 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   close. Contention means another thread held the lock → drop that message, keep the session. Merging them
   makes load shed healthy viewers, whose reconnects raise load further.
 - Close codes: **1000** room ended (normal *and* the late-discovery path — identical on purpose),
-  **1008** entry denial / kick, **1013** buffer overflow. 1013 rather than 1000 exists to stop instant reconnect.
+  **1008** entry denial / kick / account-level ban, **1013** buffer overflow. 1013 rather than 1000 exists to stop instant reconnect.
 - Terminate signals **both** channels: sink `complete` (drains the buffer so a just-sent SYSTEM arrives) and
   a control sink (the escape when the client never reads). First reason wins; a later kick cannot overwrite it.
 - Fan-out budgets are **per operation, not per session** — the loop runs on the pod's shared Redis subscriber
@@ -244,6 +245,22 @@ enforcing, and the screen says "released". **Both stores are now extend-only** �
 (the record compares absolute instants, the mirror compares remaining TTL) but they converge on the same
 effective state, and where they differ the mirror is never shorter — the safe direction.
 
+**A ban reaches sessions that never speak — but only if the pod was listening.** The entry gate stops new
+connections and `SendChatService` re-checks on every frame, so a banned user is blocked the moment they
+*talk*. A session that sits silent in another room used to survive indefinitely; `chat:account:events` now
+closes it. What remains open is narrow and worth knowing: Pub/Sub is not durable, so a pod whose
+subscription was down at publish time never sees the event, and a silent session on that pod stays until it
+speaks, the room ends, or the next kick republishes. **Widening `EntryGate`'s 30-second recheck window does
+not help** — that window only runs on the send path, and anyone sending is already caught. Closing it needs a
+periodic per-pod sweep, priced against session count. The order there is a contract: **reason first, then
+close** (a closed sink drops the frame, leaving a 1008 with no explanation), and **a failed reason must not
+stop the close** — a notification is worth less than a banned user staying connected.
+
+**The envelope is chat's own, not a cross-domain contract.** `ChatAccountEvent` lives in chat-core, so no
+other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). When withdrawal
+(T-11) needs the same effect, follow `live:room:ended`: the publisher owns the wire shape and chat adapts it
+in an adapter. That costs one more channel and subscription and buys keeping the type inside this module.
+
 The record can only be shortened by deleting the row, and **the mirror must be deleted in the same change**:
 enforcement reads `chat:banned:`, never the table. Order it record → mirror — a break in the middle leaves
 over-blocking, while mirror-first can *resurrect* the ban (a surviving row is picked up by the next kick and
@@ -278,6 +295,9 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   read at runtime through `user.dir`, so changing only a migration used to leave `test` UP-TO-DATE and a
   schema mutation appeared to break nothing (measured: 832ms green with the unique index deleted). The
   `inputs.dir` line in `build.gradle` closes it; if you move where the schema comes from, move that line too.
+- **A red test still has to say so.** `verifyComplete()` has no ceiling, so a regression that leaves a sink
+  open makes the test *hang* rather than fail — measured at 110s and still running. Use `verify(Duration)`
+  wherever completion is the assertion; "passing ≠ catching" has a twin in "failing ≠ telling".
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the

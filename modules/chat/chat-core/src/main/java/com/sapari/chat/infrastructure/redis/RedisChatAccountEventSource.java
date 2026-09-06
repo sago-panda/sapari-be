@@ -5,6 +5,7 @@ import java.time.Duration;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sapari.chat.application.port.ChatAccountEventSource;
 import com.sapari.chat.application.protocol.ChatAccountEvent;
@@ -32,7 +33,13 @@ import reactor.util.retry.Retry;
 @Component
 public class RedisChatAccountEventSource implements ChatAccountEventSource {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    /**
+     * 모르는 필드에 죽지 않는다. 봉투에 필드가 하나 늘면 롤링 배포 중 구버전 Pod가 <b>전부</b> 이벤트를
+     * 버리고, 밴 집행이 함대 전체에서 조용히 되돌아간다. 형제 리더 둘도 같은 선택을 했다 —
+     * 방 종료 소스는 필요한 필드만 뽑고, WS 핸들러는 이 설정을 명시로 끈다.
+     */
+    private final ObjectMapper objectMapper = new ObjectMapper()
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     private final Flux<ChatAccountEvent> shared;
 
     public RedisChatAccountEventSource(ReactiveStringRedisTemplate redis) {
@@ -49,7 +56,8 @@ public class RedisChatAccountEventSource implements ChatAccountEventSource {
         return shared;
     }
 
-    private Mono<ChatAccountEvent> parse(String payload) {
+    /** 깨진 봉투 skip·구독 생존을 단위로 재기 위해 package-private — 레퍼런스({@code RedisLiveRoomEndedSource})와 같다. */
+    Mono<ChatAccountEvent> parse(String payload) {
         try {
             return Mono.just(objectMapper.readValue(payload, ChatAccountEvent.class));
         } catch (Exception e) {

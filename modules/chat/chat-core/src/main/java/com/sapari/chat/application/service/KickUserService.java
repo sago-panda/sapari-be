@@ -116,18 +116,28 @@ public class KickUserService implements KickUserUseCase {
         // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
         // 돌려받은 밴을 그대로 비춘다. 동시 강퇴에서 이 값이 가장 긴 것이 아닐 수 있지만, 미러 쓰기가
         // 늘리기 전용이라 짧은 쪽이 긴 것을 덮지 못한다 — 순서 문제를 순서와 무관한 쓰기로 닫는다.
-        record(kickLog).ifPresent(ban -> {
-            banWriteRepository.ban(command.targetUserId(), ban.expiresAt(), kickLog.kickedAt());
-            // 밴이 새로 걸렸든 이미 있던 것이든 알린다. 이미 있던 경우를 건너뛰면, 그 밴보다 먼저 열려
-            // 어떤 이유로든 안 닫힌 세션이 영영 남는다 — 다시 알리면 다음 강퇴가 그걸 치운다.
-            // 미러 쓰기가 두 경우 모두에서 도는 것과 같은 이유다.
-            accountEventPublisher.publishBanned(command.targetUserId());
-        });
+        Optional<ChatBan> ban = record(kickLog);
+        ban.ifPresent(it -> banWriteRepository.ban(
+                command.targetUserId(), it.expiresAt(), kickLog.kickedAt()));
 
         kickWriteRepository.register(command.roomId(), command.targetUserId());
-        // 강퇴 발행이 계정 발행보다 뒤에 온다. 계정 쪽이 이 방 세션까지 이미 닫았을 수 있지만, 이 발행이
-        // 하는 일은 그것만이 아니다 — 같은 방의 <b>다른</b> 사람들에게 누가 나갔는지 알린다.
         kickEventPublisher.publishKicked(command.roomId(), command.targetUserId());
+
+        // 두 발행의 순서는 당사자가 무엇을 볼지 정하지 못한다 — 채널이 다르면 연결도 다르고, 수신·처리
+        // 순서는 레이스다. 그래도 안전한 이유는 둘 다 안전하고 최종 상태가 같아서다: 종료 사유는 먼저
+        // 확정된 것이 이기고(compareAndSet), 닫힌 sink로의 전송은 조용히 버려진다. 밴이 함께 걸린
+        // 강퇴는 당사자에게 KICKED 대신 BANNED로 렌더될 수 있고, 그게 더 정확한 값이다
+        // ("다른 방으로 가면 되는가"가 두 코드를 가르는 기준이다).
+        //
+        // 계정 발행은 <b>맨 뒤다.</b> 앞에 두면 이 발행이 실패할 때 그 뒤 문장이 통째로 건너뛰어지는데,
+        // 그중 하나가 강퇴 명단 등록이다 — PUBLISH만 실패하는 일시 장애 중에 강퇴가 들어오면 그 방의
+        // 강퇴가 아예 성립하지 않고, 밴이 만료되면 그 사람은 강퇴당한 적 없는 사람으로 돌아온다.
+        // 이 발행이 하는 일은 "조용히 앉아 있는 세션을 지금 끊는 것"이라 주 집행보다 뒤에 서야 한다.
+        //
+        // 밴이 새로 걸렸든 이미 있던 것이든 알린다. 이미 있던 경우를 건너뛰면, 그 밴보다 먼저 열려
+        // 어떤 이유로든 안 닫힌 세션이 영영 남는다 — 다시 알리면 다음 강퇴가 그걸 치운다.
+        // 미러 쓰기가 두 경우 모두에서 도는 것과 같은 이유다.
+        ban.ifPresent(it -> accountEventPublisher.publishBanned(command.targetUserId()));
     }
 
     /**

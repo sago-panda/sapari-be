@@ -111,7 +111,8 @@ class ChatSessionRegistryTest {
         // when & then
         StepVerifier.create(registry.getActiveCount(roomId))
                 .expectNext(5L)
-                .verifyComplete();
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
     }
 
     @Test
@@ -126,7 +127,8 @@ class ChatSessionRegistryTest {
         // 제거 후 outbound("s1")은 빈 Flux(즉시 완료)
 
         // when & then
-        StepVerifier.create(registry.outbound("s1")).verifyComplete();
+        StepVerifier.create(registry.outbound("s1")).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
     }
 
     @Test
@@ -138,7 +140,8 @@ class ChatSessionRegistryTest {
         // when & then
         StepVerifier.create(registry.outbound("s1"))
                 .then(() -> registry.closeAll(roomId).block())
-                .verifyComplete();
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
     }
 
     @Test
@@ -150,7 +153,8 @@ class ChatSessionRegistryTest {
         // when
         StepVerifier.create(registry.outbound("s1"))
                 .then(() -> registry.closeUser(roomId, userId).block())
-                .verifyComplete();
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
 
         // then
         assertThat(registry.outbound("unknown")).isNotNull();
@@ -202,7 +206,8 @@ class ChatSessionRegistryTest {
         given(sessionRepository.add(any(), any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
 
         // when & then
-        StepVerifier.create(registry.register("s1", session(roomId, userId))).verifyComplete();
+        StepVerifier.create(registry.register("s1", session(roomId, userId))).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
 
         // 명부 등재와 무관하게 방 fan-out은 로컬 인덱스로 도달한다
         StepVerifier.create(registry.outbound("s1"))
@@ -220,11 +225,13 @@ class ChatSessionRegistryTest {
         given(sessionRepository.remove(any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
 
         // when
-        StepVerifier.create(registry.unregister(roomId, "s1")).verifyComplete();
+        StepVerifier.create(registry.unregister(roomId, "s1")).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
 
         // then
         // 로컬 정리는 Redis와 무관하게 끝나 있어야 한다
-        StepVerifier.create(registry.outbound("s1")).verifyComplete();
+        StepVerifier.create(registry.outbound("s1")).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
         assertThat(registry.trackedRoomCount()).isZero();
     }
 
@@ -248,7 +255,8 @@ class ChatSessionRegistryTest {
         // then: 그럼에도 제어 신호는 발화하고, 종료 사유가 1008로 남는다
         StepVerifier.create(registry.terminationSignal("s1"))
                 .expectNext(CloseStatus.POLICY_VIOLATION)
-                .verifyComplete();
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
         assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.POLICY_VIOLATION);
     }
 
@@ -267,7 +275,8 @@ class ChatSessionRegistryTest {
         // when & then
         StepVerifier.create(registry.terminationSignal("s1"))
                 .expectNext(CloseStatus.NORMAL)
-                .verifyComplete();
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
     }
 
     @Test
@@ -406,7 +415,8 @@ class ChatSessionRegistryTest {
                 })
                 .thenRequest(Long.MAX_VALUE)   // 실제로는 session.send()가 request한다
                 .expectNextCount(ChatSessionRegistry.OUTBOUND_BUFFER_SIZE)
-                .verifyComplete();
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
 
         // then: 사유는 1013 — 정상 종료(1000)면 프론트가 곧장 다시 붙어 같은 상황을 반복한다
         assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.SERVICE_OVERLOAD);
@@ -529,8 +539,10 @@ class ChatSessionRegistryTest {
         given(sessionRepository.count(roomId)).willReturn(Mono.just(42L));
 
         // when: 같은 방에 연달아 두 번 묻는다
-        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(42L).verifyComplete();
-        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(42L).verifyComplete();
+        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(42L).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
+        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(42L).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
 
         // then
         then(sessionRepository).should(times(1)).count(roomId);
@@ -547,7 +559,8 @@ class ChatSessionRegistryTest {
 
         // when & then: 첫 번째는 실패하고, 두 번째는 다시 물어서 값을 얻는다
         StepVerifier.create(registry.getActiveCount(roomId)).verifyError(RuntimeException.class);
-        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(7L).verifyComplete();
+        StepVerifier.create(registry.getActiveCount(roomId)).expectNext(7L).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
     }
 
     @Test
@@ -599,14 +612,16 @@ class ChatSessionRegistryTest {
         UUID room = UUID.randomUUID();
         given(sessionRepository.count(room)).willReturn(Mono.just(1L), Mono.just(9L));
         registry.register("s1", session(room, UUID.randomUUID())).block();
-        StepVerifier.create(registry.getActiveCount(room)).expectNext(1L).verifyComplete();
+        StepVerifier.create(registry.getActiveCount(room)).expectNext(1L).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
         registry.unregister(room, "s1").block();
 
         // when: 같은 방에 다시 들어온다
         registry.register("s2", session(room, UUID.randomUUID())).block();
 
         // then: 캐시가 남아 있으면 이전 값이 나오고, 방송이 끝난 방의 항목이 계속 쌓인다
-        StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).verifyComplete();
+        StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
         then(sessionRepository).should(times(2)).count(room);
     }
 
@@ -632,7 +647,8 @@ class ChatSessionRegistryTest {
         assertThat(registry.shouldRecheckRoomAlive(gone)).isFalse();
         assertThat(registry.isRoomKnownEnded(gone)).isFalse();
         assertThat(registry.isTerminating(gone)).isFalse();
-        StepVerifier.create(registry.outbound(gone)).verifyComplete();   // 빈 스트림이어야 한다
+        StepVerifier.create(registry.outbound(gone)).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));   // 빈 스트림이어야 한다
     }
 
     @Test
@@ -692,7 +708,8 @@ class ChatSessionRegistryTest {
         // then: 실제로 종료됐고, 정상 종료 경로(closeAll)와 같은 코드여야 와이어에서 구분되지 않는다
         assertThat(registry.isTerminating("s1")).isTrue();
         assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
-        StepVerifier.create(registry.terminationSignal("s1")).expectNext(CloseStatus.NORMAL).verifyComplete();
+        StepVerifier.create(registry.terminationSignal("s1")).expectNext(CloseStatus.NORMAL).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
     }
 
     @Test
@@ -712,11 +729,13 @@ class ChatSessionRegistryTest {
                     registry.unregister(room, "s1").block();   // 조회 응답 전에 방이 빈다
                 }))
                 .expectNext(5L)
-                .verifyComplete();
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
 
         // then: 그 방에 다시 들어오면 캐시가 아니라 Redis를 봐야 한다.
         // 고아 항목이 남았다면 아래가 9가 아니라 5로 나온다.
         registry.register("s2", session(room, UUID.randomUUID())).block();
-        StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).verifyComplete();
+        StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).expectComplete()
+                .verify(java.time.Duration.ofSeconds(5));
     }
 }

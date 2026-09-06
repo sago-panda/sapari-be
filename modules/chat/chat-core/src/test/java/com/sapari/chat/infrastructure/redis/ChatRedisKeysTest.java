@@ -98,4 +98,17 @@ class ChatRedisKeysTest {
         assertThat(ChatRedisKeys.roomEnded(roomId)).isNotEqualTo(ChatRedisKeys.roomEnded(otherRoom));
         assertThat(ChatRedisKeys.pubsub(roomId)).isNotEqualTo(ChatRedisKeys.pubsub(otherRoom));
     }
+
+    @Test
+    @DisplayName("⭐ 계정 채널은 방 패턴에 걸리지 않는다 — 걸리면 전 Pod가 이벤트마다 파싱 실패를 찍는다")
+    void accountChannelIsOutsideTheRoomPattern() {
+        // given: 방 구독은 chat:pubsub:* 패턴이고, 접미를 UUID로 파싱한다
+        String pattern = ChatRedisKeys.pubsubPattern();
+
+        // when & then: 계정 채널이 그 패턴 아래 있으면 방 구독이 이 이벤트까지 받아 파싱에 실패한다
+        assertThat(ChatRedisKeys.accountEvents()).isEqualTo("chat:account:events");
+        assertThat(ChatRedisKeys.accountEvents())
+                .as("계정 채널이 방 패턴에 걸린다 — 채널 이름을 바꾸거나 패턴을 좁혀야 한다")
+                .doesNotStartWith(pattern.substring(0, pattern.length() - 1));
+    }
 }

@@ -86,6 +86,8 @@ class KickUserServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
 
+    private static final UUID SYSTEM = UUID.fromString("00000000-0000-0000-0000-000000000001");
+
     private final UUID roomId = UUID.randomUUID();
     private final UUID sellerId = UUID.randomUUID();
     private final UUID targetId = UUID.randomUUID();
@@ -226,6 +228,59 @@ class KickUserServiceTest {
 
             // then
             verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+    }
+
+    @Nested
+    @DisplayName("계정 발행 — 조용한 세션을 끊는 신호")
+    class AccountEvent {
+
+        @Test
+        @DisplayName("⭐ 밴이 걸리면 계정 이벤트를 발행한다 — 없으면 다른 방의 조용한 세션이 그대로 남는다")
+        void publishesWhenABanIsInEffect() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(accountEventPublisher).publishBanned(targetId);
+        }
+
+        @Test
+        @DisplayName("밴이 없으면 발행하지 않는다 — 임계 미달 강퇴까지 전 Pod를 훑게 하지 않는다")
+        void doesNotPublishWithoutABan() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(accountEventPublisher, never()).publishBanned(any());
+        }
+
+        @Test
+        @DisplayName("⭐ 계정 발행이 강퇴 명단 등록보다 뒤다 — 앞에 두면 발행 실패가 강퇴 집행을 통째로 건너뛴다")
+        void publishesAfterTheEnforcingWrites() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then: PUBLISH만 실패하는 일시 장애 중에도 명단 등록은 이미 끝나 있어야 한다.
+            // 순서가 뒤집히면 그 방의 강퇴가 성립하지 않고, 밴이 만료되면 강퇴당한 적 없는 사람으로 돌아온다.
+            InOrder order = inOrder(kickWriteRepository, kickEventPublisher, accountEventPublisher);
+            order.verify(kickWriteRepository).register(roomId, targetId);
+            order.verify(kickEventPublisher).publishKicked(roomId, targetId);
+            order.verify(accountEventPublisher).publishBanned(targetId);
         }
     }
 

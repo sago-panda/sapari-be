@@ -352,7 +352,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다. 12,000 세션 전체 스캔이 165µs다(실측).
      * 방 fan-out이 색인을 갖는 것은 <b>메시지마다</b> 돌기 때문이고, 이쪽은 시간당 몇 건이다.
      *
-     * <p>그 전제가 바뀌면 — 계정 조치가 초당 여러 건이 되면 — 색인을 두는 것이 맞다.
+     * <p><b>비용을 폭발시키는 변수는 이벤트 빈도가 아니라 파드당 세션 수다.</b> 스캔은 선형이 아니다 —
+     * 12,000에서 58µs인데 100,000에서 4.2ms로, 8.3배 입력에 70배 넘게 든다(캐시 미스). 시간당 한 건이어도
+     * 10만 세션이면 한 건이 스레드를 그만큼 잡는다. <b>파드당 3~5만 세션</b>이 다시 판단할 자리다.
+     *
+     * <p>돌 때 밟는 것은 이벤트루프가 아니라 Redis pub/sub I/O 스레드다({@code listenToChannel}이 자기
+     * 연결을 만든다). 시청자 커넥션이 멈추지는 않지만 한가한 스레드도 아니다 — 방 팬아웃과 커맨드 응답이
+     * 같은 곳에 얹힌다.
      */
     private void forEachSessionOf(UUID userId, Consumer<LocalSession> action) {
         for (LocalSession ls : local.values()) {
