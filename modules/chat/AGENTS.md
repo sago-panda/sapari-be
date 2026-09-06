@@ -277,6 +277,19 @@ periodic per-pod sweep, priced against session count. The order there is a contr
 close** (a closed sink drops the frame, leaving a 1008 with no explanation), and **a failed reason must not
 stop the close** — a notification is worth less than a banned user staying connected.
 
+**An ADMIN entering someone else's room is logged, and that is all it is.** Moderators read the unmasked
+text and sender emails in any room, and nothing recorded that the privilege had been used — a seller asking
+"who looked at my room" had no answer. The line fires where the *session* is admitted, not where the token is
+issued: a token that never connects saw nothing. It carries `adminId` and `roomId` and deliberately nothing
+else — an audit records the access, not a copy of what was read, and the room's owner is not on the token
+(`owner` is a boolean) so naming them would cost a live lookup on every entry. ⚠️ **This is a trail, not an
+audit record**: retention, search and integrity all live in log shipping, which this repo does not configure.
+A real audit store is a separate change that builds the store *and* the way to query it — `chat_kick_log`
+sits in Postgres with no read path, which is what "a store is not an audit" looks like. The own-room branch
+is currently unreachable (`ChatSession` rejects `ADMIN` with `isRoomOwner`), kept because it is policy rather
+than defence: it becomes correct the day that invariant is resolved, and a test pins the invariant so the two
+move together.
+
 **The envelope is chat's own, not a cross-domain contract.** `ChatAccountEvent` lives in chat-core, so no
 other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). When withdrawal
 (T-11) needs the same effect, follow `live:room:ended`: the publisher owns the wire shape and chat adapts it
