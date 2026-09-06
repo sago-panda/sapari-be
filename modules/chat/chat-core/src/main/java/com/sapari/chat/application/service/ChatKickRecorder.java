@@ -81,6 +81,11 @@ public class ChatKickRecorder {
      * 받으면 갈릴 수 있다 — 갈리는 날 2년 누적 창과 밴 만료가 강퇴 시각과 어긋난다. 호출자가 늘
      * 같은 값을 넘기므로 아무도 그 어긋남을 재현하지 못한다. 출처를 하나로 둔다.
      *
+     * <p><b>이 트랜잭션이 잠그는 자원과 순서: {@code chat_kick_log(user, room)} → {@code chat_ban(user)}.</b>
+     * 지금 데드락이 없는 것은 {@code chat_ban}에 쓰는 경로가 이 메서드 하나뿐이라 <b>모든 트랜잭션이 같은
+     * 순서로 잠그기 때문</b>이지, 잠금이 적어서가 아니다. 자원이 하나 더 늘면 그 순서를 지키거나 사이클이
+     * 없음을 따로 보여야 한다 — 어긴 것을 알아채는 시점은 운영에서 {@code 40P01}이 뜰 때다.
+     *
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = LOCK_WAIT_SECONDS)
