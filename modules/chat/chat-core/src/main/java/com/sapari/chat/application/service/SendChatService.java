@@ -16,11 +16,13 @@ import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatBanRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatMessageRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
@@ -58,6 +60,7 @@ public class SendChatService implements SendChatUseCase {
     private final ChatPermissionPolicy permissionPolicy;
     private final ProfanityFilter profanityFilter;
     private final ChatKickRepository kickRepository;
+    private final ChatBanRepository banRepository;
     private final RateLimiter rateLimiter;
     private final ChatMessageRepository chatMessageRepository;
     private final ChatBroadcaster broadcaster;
@@ -66,9 +69,11 @@ public class SendChatService implements SendChatUseCase {
     // 열화 경로 관측 — 통과시키되 규모와 시작 시점은 남긴다.
     private final AtomicLong kickedFailOpenCount = new AtomicLong();
     private final AtomicLong kickStoreCorruptedCount = new AtomicLong();
+    private final AtomicLong bannedFailOpenCount = new AtomicLong();
     private final AtomicLong publishFailureCount = new AtomicLong();
     private final AtomicReference<Instant> lastKickedFailOpenLog = new AtomicReference<>(Instant.EPOCH);
     private final AtomicReference<Instant> lastKickStoreCorruptedLog = new AtomicReference<>(Instant.EPOCH);
+    private final AtomicReference<Instant> lastBannedFailOpenLog = new AtomicReference<>(Instant.EPOCH);
     private final AtomicReference<Instant> lastPublishFailureLog = new AtomicReference<>(Instant.EPOCH);
 
     /**
@@ -98,6 +103,22 @@ public class SendChatService implements SendChatUseCase {
         if (shouldLog(lastKickedFailOpenLog)) {
             log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
                     count, roomId, err);
+        }
+    }
+
+    /**
+     * 밴 조회 실패를 기록한다. 강퇴와 카운터·스로틀을 나누는 이유는 위와 같다 — 함께 세면 먼저 찍은 쪽이
+     * 다른 쪽의 첫 발생을 덮는다.
+     *
+     * <p>roomId를 남기지 않는 것은 의도다. 밴은 계정 단위라 어느 방에서 조회했는지가 진단에 쓰이지 않고,
+     * userId는 로그에 싣지 않는다. 여기서 필요한 것은 "밴 집행이 언제부터 몇 건이나 열렸는가" 하나다.
+     *
+     * <p>{@link #recordKickedFailOpen}과 같은 제약을 받는다 — <b>던질 수 있는 호출을 넣지 마라.</b>
+     */
+    private void recordBannedFailOpen(Throwable err) {
+        long count = bannedFailOpenCount.incrementAndGet();
+        if (shouldLog(lastBannedFailOpenLog)) {
+            log.error("밴 조회 실패 — fail-open으로 전송 허용(누적 {}건)", count, err);
         }
     }
 
@@ -154,17 +175,39 @@ public class SendChatService implements SendChatUseCase {
             return Mono.error(new ChatPermissionDeniedException("해당 메시지를 보낼 권한이 없습니다."));
         }
 
-        // 4) kicked — Redis 1회 SISMEMBER. 에러는 fail-open(전송 허용, L13) — 어댑터는 error 전파, 매핑은 여기.
-        // 통과시키되 흔적은 남긴다 — 이 경로가 열린 구간은 강퇴가 무력화된 구간이라, 시작 시점과 규모를
+        // 4) kicked·banned — 에러는 둘 다 fail-open(전송 허용) — 어댑터는 error 전파, 매핑은 여기.
+        // 통과시키되 흔적은 남긴다 — 이 경로가 열린 구간은 집행이 무력화된 구간이라, 시작 시점과 규모를
         // 남겨야 사후에 "언제 몇 건이 우회했는가"를 짚을 수 있다.
-        return kickRepository.isKicked(command.roomId(), command.senderId())
+        //
+        // 밴을 여기서도 보는 이유: 입장 게이트는 <b>새 접속만</b> 막는다. 한 사람이 여러 방에 동시 접속한
+        // 상태에서 한 방의 강퇴로 밴이 걸리면, 그 방 세션만 닫히고 나머지 방 세션은 그대로 살아 계속
+        // 발화한다 — "어느 방에도 참여할 수 없다"는 밴의 정의와 어긋난다. 이 검사가 그 세션을 첫 발화에서
+        // 끊는다(전송 계층이 사유를 보낸 뒤 세션을 닫는다).
+        //
+        // zip 으로 <b>동시에</b> 띄운다. 이어 붙이면 메시지마다 왕복이 하나 더 늘고, 그 비용은 방 크기에
+        // 비례해 커진다. 두 조회는 서로의 결과를 쓰지 않으므로 순서를 지킬 이유가 없다.
+        Mono<Boolean> kickedCheck = kickRepository.isKicked(command.roomId(), command.senderId())
                 .onErrorResume(err -> {
                     recordKickedFailOpen(command.roomId(), err);
                     return Mono.just(false);
+                });
+        Mono<Boolean> bannedCheck = banRepository.isBanned(command.senderId())
+                .onErrorResume(err -> {
+                    recordBannedFailOpen(err);
+                    return Mono.just(false);
+                });
+        return Mono.zip(kickedCheck, bannedCheck)
+                // 강퇴를 먼저 본다. 둘 다 걸린 사람에게는 이 방에서 끊긴 사유가 더 구체적이고,
+                // 어느 쪽이든 전송 계층의 처리(사유 프레임 + 세션 종료)는 같다.
+                .flatMap(checks -> {
+                    if (checks.getT1()) {
+                        return Mono.<Void>error(new UserKickedException("강퇴되어 메시지를 보낼 수 없습니다."));
+                    }
+                    if (checks.getT2()) {
+                        return Mono.<Void>error(new UserBannedException("이용이 제한되어 메시지를 보낼 수 없습니다."));
+                    }
+                    return enforceRateLimit(role, command.isRoomOwner(), command.senderId());   // 5) rate limit
                 })
-                .flatMap(kicked -> kicked
-                        ? Mono.<Void>error(new UserKickedException("강퇴되어 메시지를 보낼 수 없습니다."))
-                        : enforceRateLimit(role, command.isRoomOwner(), command.senderId()))   // 5) rate limit
                 .then(Mono.defer(() -> persistAndPublish(command, role, type, content)));  // 6) 욕설필터·저장·발행
     }
 

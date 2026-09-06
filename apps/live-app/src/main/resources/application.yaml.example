@@ -50,7 +50,10 @@ spring:
   #    그대로 적으면 값이 바인딩되지 않아 조용히 localhost:27017 로 붙는다.
   #    (redis 쪽 접두 spring.data.redis 는 바뀌지 않았다 — 둘이 달라 보이는 게 정상이다)
   mongodb:
-    uri: ${MONGODB_URI:mongodb://localhost:27017/sapari}   # REQUIRED (운영)
+    # 기본값을 비워 둔다. 채워 두면 환경변수가 빠졌을 때 로컬의 빈 Mongo 로 조용히 뜨고,
+    # 그러면 강퇴 증거 조회가 항상 empty 라 모든 강퇴가 400 인데 헬스체크는 정상으로 보인다.
+    # 비워 두면 ConnectionString 이 IllegalArgumentException 을 던져 부팅에서 죽는다(실측).
+    uri: ${MONGODB_URI:}                     # REQUIRED (운영)
 
 server:
   port: ${SERVER_PORT:8081}                  # api-app(8080)과 동시 실행되도록 분리

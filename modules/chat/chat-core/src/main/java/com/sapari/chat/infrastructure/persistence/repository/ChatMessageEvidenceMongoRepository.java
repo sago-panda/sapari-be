@@ -40,6 +40,23 @@ public class ChatMessageEvidenceMongoRepository implements ChatMessageEvidenceRe
         return Optional.ofNullable(mongoTemplate.findById(messageId, ChatMessageDocument.class))
                 .map(document -> new ChatMessageEvidence(
                         document.getRoomId(), document.getSenderId(),
-                        ChatRole.valueOf(document.getSenderRole()), document.getOriginalMessage()));
+                        senderRole(document), document.getOriginalMessage()));
+    }
+
+    /**
+     * 저장된 역할 문자열을 도메인 역할로. 모르는 값은 <b>요청의 잘못이 아니라 저장 데이터의 잘못</b>이다.
+     *
+     * <p>이 값은 발신 시점에 live가 서명한 룸 토큰에서 와 그대로 박제된 것이라, 여기서 어긋났다면 역할
+     * 열거가 바뀌었거나 문서가 손상된 것이다. {@code valueOf}가 그대로 터지면 "No enum constant ..."만
+     * 남아 무엇이 깨졌는지 로그에서 읽히지 않으므로, 무엇을 읽다가 어긋났는지를 붙여 다시 던진다.
+     * 상태코드는 그대로 500이고 그게 맞다 — 고칠 쪽은 요청자가 아니라 서버다.
+     */
+    private ChatRole senderRole(ChatMessageDocument document) {
+        try {
+            return ChatRole.valueOf(document.getSenderRole());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException(
+                    "증거 메시지의 역할 값을 해석할 수 없다 — messageId=" + document.getId(), e);
+        }
     }
 }

@@ -27,6 +27,7 @@ import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatSession;
@@ -255,7 +256,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     if (e instanceof ChatRateLimitException rle) {
                         registry.recordRateLimited(sid, rle.getRetryAfterSeconds());
                     }
-                    if (e instanceof UserKickedException) {
+                    // 밴도 같은 처리를 받는다 — 사유를 실어 보내고 반드시 닫는다. 밴은 계정 전체라
+                    // 이 세션이 살아 있을 이유가 강퇴보다 더 없고, 안 닫으면 프레임마다 밴 조회를 태운다.
+                    if (e instanceof UserKickedException || e instanceof UserBannedException) {
                         // 여기까지 왔다 = 이 Pod가 강퇴 신호를 못 받았다(받았으면 이미 닫혀 위에서 걸린다).
                         // 방금 권위 있게 확인했으니 닫는다 — 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다.
                         //
@@ -381,6 +384,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         }
         if (e instanceof UserKickedException) {
             return "KICKED";
+        }
+        // 밴을 KICKED로 뭉뚱그리지 않는다 — 강퇴는 이 방 하나이고 밴은 계정 전체라, 클라이언트가
+        // "다른 방으로 가면 된다"를 안내해도 되는지가 갈린다.
+        if (e instanceof UserBannedException) {
+            return "BANNED";
         }
         if (e instanceof IllegalArgumentException) {
             return "VALIDATION";

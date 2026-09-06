@@ -30,6 +30,10 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
+    // 인가 규칙을 컨텍스트 전체를 띄우지 않고 검사하기 위한 둘. 전체 부팅 테스트는 클론에
+    // application*.yaml 이 없어 CI 에서 제외되므로, 그쪽에 기대면 규칙 회귀를 파이프라인이 못 잡는다.
+    testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
+    testImplementation 'org.springframework.security:spring-security-test'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

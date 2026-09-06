@@ -41,10 +41,13 @@ public final class ChatPermissionPolicy {
      *   <li>SELLER: 자기 방(kickerId == roomOwnerId)에서 ADMIN을 제외한 모든 참가자 강퇴 — 방문 SELLER도 내 방에선 시청자(isRoomOwner=false)이므로 강퇴 대상. ADMIN만 보호(플랫폼 운영자 ≥ 방주인).
      *   <li>그 외(BUYER·GUEST): 권한 없음.
      * </ul>
-     * <p>없는 UUID와 비회원(GUEST)은 호출 서비스의 사용자 조회가 비어 돌아와 먼저 거부되므로 이 정책에
-     * 도달하지 않는다. <b>탈퇴 유예 상태는 다르다</b> — 조회에 상태 필터가 없어 회원 역할 그대로 도달하고,
-     * 그건 의도다. 탈퇴를 신청하면 REST는 전부 막히지만 이미 열려 있는 채팅 세션은 끊기지 않아, 플랫폼에서
-     * 로그아웃된 사람이 방에서 계속 말하는 상태가 실제로 생긴다. 강퇴가 가장 필요한 순간이라 막지 않는다.
+     * <p>없는 UUID와 비회원(GUEST)은 이 정책에 도달하지 않는다. 다만 그것을 막는 것은 사용자 조회가
+     * 아니라 <b>증거 메시지 조회</b>다 — 호출 서비스가 강퇴 근거 메시지를 찾아 그 작성자가 강퇴 대상과
+     * 같은지 확인하는데, 없는 사용자는 남긴 메시지가 없고 GUEST는 애초에 발화할 수 없어 어느 쪽도
+     * 증거가 맞아떨어지지 않는다. <b>탈퇴 유예 상태는 다르다</b> — 증거는 메시지를 남긴 시점의 사실이라
+     * 계정의 현재 상태를 보지 않고, 그건 의도다. 탈퇴를 신청하면 REST는 전부 막히지만 이미 열려 있는
+     * 채팅 세션은 끊기지 않아, 플랫폼에서 로그아웃된 사람이 방에서 계속 말하는 상태가 실제로 생긴다.
+     * 강퇴가 가장 필요한 순간이라 막지 않는다.
      */
     public boolean canKick(ChatRole kickerRole, UUID kickerId, UUID roomOwnerId,
                            ChatRole targetRole, UUID targetUserId) {

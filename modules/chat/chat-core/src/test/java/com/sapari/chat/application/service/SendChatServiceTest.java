@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.BDDMockito.willAnswer;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
@@ -38,10 +39,12 @@ import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatBanRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatMessageRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
@@ -56,6 +59,9 @@ class SendChatServiceTest {
 
     @Mock
     private ChatKickRepository kickRepository;
+
+    @Mock
+    private ChatBanRepository banRepository;
 
     @Mock
     private RateLimiter rateLimiter;
@@ -78,8 +84,11 @@ class SendChatServiceTest {
         service = new SendChatService(
                 new ChatPermissionPolicy(),
                 new ProfanityFilter(Set.of("욕설"), Set.of()),
-                kickRepository, rateLimiter, chatMessageRepository, broadcaster,
+                kickRepository, banRepository, rateLimiter, chatMessageRepository, broadcaster,
                 new TimeProvider(Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC)));
+        // 기본은 "밴 아님". 강퇴와 밴 조회는 zip으로 함께 뜨므로 강퇴 검사에 닿는 모든 테스트가 이걸
+        // 부르지만, 그 앞(권한·검증)에서 끝나는 테스트는 부르지 않는다 — 그래서 lenient다.
+        lenient().when(banRepository.isBanned(any())).thenReturn(Mono.just(false));
     }
 
     private SendChatCommand command(String role, boolean isRoomOwner, boolean isRoomAlive,
@@ -221,6 +230,60 @@ class SendChatServiceTest {
         // then
         then(rateLimiter).should(never()).tryAcquire(any());
         then(chatMessageRepository).should(never()).save(any());
+    }
+
+    @Test
+    @DisplayName("⭐ 밴된 사람은 다른 방에서도 발화하지 못한다 — 입장 게이트는 새 접속만 막는다")
+    void banned_user_rejected_even_in_another_room() {
+        // given: 이 방에서는 강퇴된 적이 없다. 밴만 걸려 있다 —
+        // 밴이 걸릴 때 다른 방에 열려 있던 세션이 정확히 이 상태다.
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(banRepository.isBanned(senderId)).willReturn(Mono.just(true));
+        // 아래 셋은 밴이 막으면 닿지 않는다. 그럼에도 깔아 두는 이유는 되돌림 확인 때문이다 —
+        // 밴 분기를 지웠을 때 하류가 비어 있으면 NPE로 죽어, 실패 메시지가 "밴이 집행되지 않았다"가
+        // 아니라 "무언가 null이다"가 된다. 깔아 두면 그때 전송이 실제로 성립해, 이 테스트가 무엇을
+        // 지키는지가 실패 메시지에 그대로 드러난다.
+        lenient().when(rateLimiter.tryAcquire(any())).thenReturn(Mono.just(new RateLimitResult(true, 0)));
+        lenient().when(chatMessageRepository.save(any())).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+        lenient().when(broadcaster.publish(any(), any())).thenReturn(Mono.empty());
+
+        // when
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .expectError(UserBannedException.class)
+                .verify();
+
+        // then: 강퇴와 같은 자리에서 끊긴다 — 레이트리밋도 저장도 태우지 않는다
+        then(rateLimiter).should(never()).tryAcquire(any());
+        then(chatMessageRepository).should(never()).save(any());
+    }
+
+    @Test
+    @DisplayName("강퇴와 밴이 겹치면 강퇴로 알린다 — 이 방에서 끊긴 사유가 더 구체적이다")
+    void kicked_wins_over_banned() {
+        // given
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(true));
+        given(banRepository.isBanned(senderId)).willReturn(Mono.just(true));
+
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .expectError(UserKickedException.class)
+                .verify();
+    }
+
+    @Test
+    @DisplayName("밴 조회 Redis 에러 → fail-open(전송 허용) — 강퇴 조회와 같은 가용성 정책")
+    void banned_redis_error_fails_open() {
+        // given
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(banRepository.isBanned(senderId)).willReturn(Mono.error(new RuntimeException("redis down")));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        given(chatMessageRepository.save(any())).willAnswer(inv -> Mono.just(inv.getArgument(0)));
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
+
+        // when & then: 밴 조회가 죽었다고 채팅 전체가 멈추지는 않는다
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .expectNextCount(1)
+                .verifyComplete();
     }
 
     @Test

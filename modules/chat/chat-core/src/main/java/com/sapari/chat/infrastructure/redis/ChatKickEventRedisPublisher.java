@@ -4,6 +4,7 @@ import java.util.UUID;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.application.protocol.ChatEnvelope;
@@ -45,7 +46,7 @@ public class ChatKickEventRedisPublisher implements ChatKickEventPublisher {
     private String serialize(UUID kickedUserId) {
         try {
             return objectMapper.writeValueAsString(new ChatEnvelope.KickEvent(kickedUserId));
-        } catch (Exception e) {
+        } catch (JsonProcessingException e) {
             // 평탄한 record라 실제로는 도달하지 않는다. 도달했다면 봉투 계약이 바뀐 것이므로 조용히 넘기면 안 된다.
             throw new IllegalStateException("강퇴 봉투 직렬화 실패 roomId 무관 — 봉투 계약을 확인할 것", e);
         }
