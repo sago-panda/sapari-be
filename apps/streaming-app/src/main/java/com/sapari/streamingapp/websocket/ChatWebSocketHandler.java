@@ -30,7 +30,6 @@ import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatConstants;
-import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.chat.view.ChatMessageView;
@@ -145,39 +144,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
         return verifier.verify(token, roomId)
                 .flatMap(session1 -> entryGate.verify(session1).thenReturn(session1))
-                .doOnNext(ChatWebSocketHandler::auditPrivilegedEntry)
                 .flatMap(chatSession -> runSession(session, chatSession))
                 .onErrorResume(EntryDeniedException.class, e -> denyAndClose(session, e.reason()))
                 .onErrorResume(WebSocketAuthException.class, e -> session.close(CloseStatus.POLICY_VIOLATION));
-    }
-
-    /**
-     * 관리자가 <b>남의 방</b>에 들어온 사실을 남긴다.
-     *
-     * <p>관리자는 방 소유와 무관하게 어느 방에서든 마스킹 전 원문과 발신자 이메일을 받는다. 그 특권을
-     * 쓴 흔적이 지금 어디에도 없어서, "누가 언제 이 방을 들여다봤는가"에 답할 수단이 없다. 판매자가
-     * 물어도 답할 수 없고, 오남용이 있어도 드러나지 않는다.
-     *
-     * <p><b>토큰 발급이 아니라 세션이 성립하는 자리에 둔다.</b> 토큰만 받고 붙지 않는 경우가 있고,
-     * 남겨야 할 사실은 "권한을 받았다"가 아니라 "실제로 봤다"다. 게이트를 통과한 뒤라 거절된 시도는
-     * 여기 오지 않는다.
-     *
-     * <p><b>남기는 것은 누가·어디뿐이다.</b> 세션이 닉네임과 이메일도 들고 있지만 싣지 않는다 —
-     * 감사는 접근 사실을 남기는 것이지 관리자가 본 것을 복제하는 게 아니고, 복제하면 로그가 그 자체로
-     * 개인정보 사본이 된다. 방 주인이 누구인지({@code sellerId})도 넣지 않는다: 룸 토큰이 싣는 것은
-     * {@code owner} 불리언이라 chat은 그 값을 모르고, 알려면 입장마다 live 조회가 하나 더 붙는다.
-     * 사후에 {@code roomId}로 답할 수 있는 값에 그 비용을 내지 않는다.
-     *
-     * <p>⚠️ <b>이건 사후 추적이지 감사 기록이 아니다.</b> 보존 기간·검색·무결성이 전부 로그 수집 설정에
-     * 달려 있고 이 저장소에 그 설정이 없다. 진짜 감사 저장소가 필요해지면 그건 이 줄을 고치는 일이
-     * 아니라 저장소와 조회 경로를 함께 만드는 별건이다 — {@code chat_kick_log}가 Postgres에 있는데도
-     * 조회 경로가 없다는 사실이 "저장소를 만들면 감사가 된다"가 아님을 보여 준다.
-     */
-    private static void auditPrivilegedEntry(ChatSession chatSession) {
-        // 자기 방에 들어온 관리자는 그냥 방 주인이다 — 특권을 쓴 것이 아니라 자기 것을 본 것이다.
-        if (chatSession.role() == ChatRole.ADMIN && !chatSession.isRoomOwner()) {
-            log.info("관리자 입장 — adminId={} roomId={}", chatSession.userId(), chatSession.roomId());
-        }
     }
 
     private Mono<Void> runSession(WebSocketSession session, ChatSession chatSession) {

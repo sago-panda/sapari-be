@@ -105,10 +105,10 @@ class ChatRedisKeysTest {
         // given: 방 구독은 chat:pubsub:* 패턴이고, 접미를 UUID로 파싱한다
         String pattern = ChatRedisKeys.pubsubPattern();
 
-        // when & then: 계정 채널이 그 패턴 아래 있으면 방 구독이 이 이벤트까지 받아 파싱에 실패한다
-        assertThat(ChatRedisKeys.accountEvents()).isEqualTo("chat:account:events");
+        // when & then: 접두 관계만 본다. 값을 리터럴로 먼저 못 박으면 이름을 옮기는 되돌림에서 그쪽이
+        // 먼저 죽어, 함정을 설명하는 아래 단언이 도달조차 못 하고 장식이 된다.
         assertThat(ChatRedisKeys.accountEvents())
-                .as("계정 채널이 방 패턴에 걸린다 — 채널 이름을 바꾸거나 패턴을 좁혀야 한다")
+                .as("계정 채널이 방 패턴에 걸린다 — 방 구독이 접미를 UUID로 파싱해 전 Pod가 실패 로그를 찍는다")
                 .doesNotStartWith(pattern.substring(0, pattern.length() - 1));
     }
 }

@@ -277,18 +277,24 @@ periodic per-pod sweep, priced against session count. The order there is a contr
 close** (a closed sink drops the frame, leaving a 1008 with no explanation), and **a failed reason must not
 stop the close** — a notification is worth less than a banned user staying connected.
 
-**An ADMIN entering someone else's room is logged, and that is all it is.** Moderators read the unmasked
-text and sender emails in any room, and nothing recorded that the privilege had been used — a seller asking
-"who looked at my room" had no answer. The line fires where the *session* is admitted, not where the token is
-issued: a token that never connects saw nothing. It carries `adminId` and `roomId` and deliberately nothing
-else — an audit records the access, not a copy of what was read, and the room's owner is not on the token
-(`owner` is a boolean) so naming them would cost a live lookup on every entry. ⚠️ **This is a trail, not an
-audit record**: retention, search and integrity all live in log shipping, which this repo does not configure.
-A real audit store is a separate change that builds the store *and* the way to query it — `chat_kick_log`
-sits in Postgres with no read path, which is what "a store is not an audit" looks like. The own-room branch
-is currently unreachable (`ChatSession` rejects `ADMIN` with `isRoomOwner`), kept because it is policy rather
-than defence: it becomes correct the day that invariant is resolved, and a test pins the invariant so the two
-move together.
+**An ADMIN entering someone else's room is logged, and that is all it is.** *(The design doc specifies no
+admin-entry audit; chat chose this shape. If §6 ever regulates one, compare against the choices below rather
+than assuming this predates it.)* The line lives in
+`ChatSessionRegistry.register` — where the *session* is admitted, not where the token is issued (a token that
+never connects saw nothing) — and carries `sessionId`, `adminId`, `roomId` so it joins this file's close and
+drop lines. Deliberately nothing else: an audit records the access, **not a copy of what was read**, and the
+room's owner is not on the token (`owner` is a boolean) so naming them would cost a live lookup on every
+entry, for a value `roomId` already answers after the fact. The check is `role == ADMIN` alone because
+`ChatSession` rejects `ADMIN` with `isRoomOwner`, so "someone else's room" is already implied — a test pins
+that invariant, so if live and chat ever settle the `ADMIN + owner` combination the audit condition gets
+looked at with it.
+
+⚠️ **This is a trail, not an audit record.** Retention, search and integrity all live in log shipping, which
+this repo does not configure. And it answers *that* an admin entered, never *what they saw* — a room with no
+messages and one that streamed ten thousand emails to them produce the identical line. Per-message logging
+was rejected on fan-out cost, so that gap is a choice, not an oversight: a real audit needs a store **and** a
+way for a person to query it. `chat_kick_log` shows the difference — it is read by escalation, but nothing
+lets a human ask it anything, which is what "a store is not an audit" looks like.
 
 **The envelope is chat's own, not a cross-domain contract.** `ChatAccountEvent` lives in chat-core, so no
 other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). When withdrawal
@@ -333,8 +339,9 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   `verifyComplete()`, `verify()`, `verifyError(...)` — waits forever for a signal that a regression may have
   removed, so the test *hangs* instead of failing (measured: 110s and still running on a missing close, 2m34s
   on a `thenCancel().verify()` whose `expectNext` never arrived). **Give every one of them
-  `verify(Duration)`.** The existing suite predates this rule and still has ~69 such call sites; new and
-  touched tests take the ceiling, and the rest is a cleanup of its own. "passing ≠ catching" has a twin in
+  `verify(Duration)`.** The existing suite predates this rule and still has **~116** such call sites
+  (`verifyComplete()` 69 · bare `verify()` ~45 · `verifyError(...)` ~2); new and touched tests take the
+  ceiling, and the rest is a cleanup of its own. "passing ≠ catching" has a twin in
   "failing ≠ telling".
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a

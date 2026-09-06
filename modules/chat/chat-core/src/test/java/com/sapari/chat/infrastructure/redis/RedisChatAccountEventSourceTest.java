@@ -94,6 +94,44 @@ class RedisChatAccountEventSourceTest {
                 .verify(java.time.Duration.ofSeconds(5));
     }
 
+    /**
+     * ⭐ <b>끊긴 뒤 다시 붙어 이벤트를 전달하는지.</b>
+     *
+     * <p>{@code retryWhen}은 {@code listenToChannel}을 다시 부르는 것이 아니라 <b>같은 Flux에 재구독</b>한다.
+     * 그래서 "메서드가 두 번 불렸나"로는 관측되지 않고, 구독마다 다르게 반응하는 소스가 필요하다.
+     *
+     * <p>이게 없으면 {@code retryWhen}을 통째로 지워도 아무것도 안 깨진다 — 그 순간 이 Pod는 첫 연결
+     * 끊김 이후 재시작까지 모든 계정 조치를 놓친다. 첫 백오프가 1초라 이 테스트는 그만큼 느리다.
+     */
+    @Test
+    @DisplayName("⭐ 끊긴 뒤 다시 붙어 전달한다 — 없으면 첫 끊김 이후 이 Pod가 재시작까지 모든 조치를 놓친다")
+    void resubscribesAndKeepsDelivering() {
+        // given: 첫 구독은 끊기고, 재구독부터는 정상 이벤트가 온다
+        UUID userId = UUID.randomUUID();
+        java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+        Flux<org.springframework.data.redis.connection.ReactiveSubscription.Message<String, String>> flaky =
+                Flux.defer(() -> attempts.getAndIncrement() == 0
+                        ? Flux.error(new IllegalStateException("연결 끊김"))
+                        : Flux.just(message("{\"kind\":\"BANNED\",\"userId\":\"" + userId + "\"}")));
+        org.mockito.BDDMockito.willReturn(flaky)
+                .given(redis).listenToChannel(org.mockito.ArgumentMatchers.anyString());
+
+        // when & then: 재시도가 없으면 첫 에러에서 끝나고 이 단언은 상한에 걸린다
+        StepVerifier.create(new RedisChatAccountEventSource(redis).events().next())
+                .expectNext(new ChatAccountEvent.Banned(userId))
+                .expectComplete()
+                .verify(java.time.Duration.ofSeconds(15));
+    }
+
+    @SuppressWarnings("unchecked")
+    private org.springframework.data.redis.connection.ReactiveSubscription.Message<String, String>
+            message(String payload) {
+        var msg = org.mockito.Mockito.mock(
+                org.springframework.data.redis.connection.ReactiveSubscription.Message.class);
+        org.mockito.BDDMockito.given(msg.getMessage()).willReturn(payload);
+        return msg;
+    }
+
     @Test
     @DisplayName("채널 이름이 계정 채널이다 — 어긋나면 아무도 받지 못한다")
     void subscribesToTheAccountChannel() {

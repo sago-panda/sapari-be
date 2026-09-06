@@ -68,12 +68,17 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
      * <p>방 조건은 여전히 넣지 않는다 — 밴은 판매자별이 아니라 플랫폼 단위라, 방을 옮겨 다녀도 같은
      * 카운터에 쌓여야 한다.
      *
-     * <p><b>인덱스는 쓰이되 한 단계 내려간다</b>(실측). {@code (user_id, kicked_at DESC)}에
-     * {@code kicked_by_id}가 없어 Index Only Scan이 Index Scan + 매칭 행당 힙 fetch가 된다 — 1만 행이면
-     * buffers 67 → 10,023, 0.97ms → 3.7ms다. Seq Scan으로 떨어지지는 않는다. 지금 고치지 않는 것은 행 수가
-     * 구조적으로 유계이기 때문이다: 활성 밴이 있으면 이 쿼리에 도달조차 하지 않고, 밴 걸린 사용자는
-     * 게이트에 막혀 더 강퇴당하지 못한다. 그 전제가 깨지면 {@code INCLUDE (kicked_by_id)}가 답이다
-     * (실측: buffers 10,023 → 79, 인덱스 크기는 오히려 감소).
+     * <p><b>인덱스는 쓰이되 한 단계 내려간다.</b> {@code (user_id, kicked_at DESC)}에
+     * {@code kicked_by_id}가 없어 Index Only Scan이 못 되고 매칭 행마다 힙을 봐야 한다. 얼마나 비싼지는
+     * <b>선택도에 달렸고 계획도 안정적이지 않다</b> — 리뷰 실측에서 plain Index Scan과 Bitmap Heap Scan이
+     * 데이터 모양에 따라 갈렸고, 후자는 힙 페이지 수로 상한이 걸린다. 그래서 여기 숫자를 못 박지 않는다.
+     *
+     * <p>지금 고치지 않는 근거는 성능 수치가 아니라 <b>행 수가 구조적으로 유계</b>라는 것이다: 활성 밴이
+     * 있으면 이 쿼리에 도달조차 하지 않고, 밴 걸린 사용자는 게이트에 막혀 더 강퇴당하지 못한다.
+     *
+     * <p>그 전제가 깨지면 {@code INCLUDE (kicked_by_id)}가 힙 접근을 없앤다. <b>공짜가 아니다</b> —
+     * uuid 16바이트가 리프마다 붙고 {@code INCLUDE} 인덱스는 중복 제거 대상도 아니라 인덱스가 10~45%
+     * 커진다(실측). 한때 이 자리에 "인덱스 크기는 오히려 감소"라고 적혀 있었는데 사실이 아니었다.
      */
     @Query(value = """
             SELECT COUNT(DISTINCT kicked_by_id) FROM live_schema.chat_kick_log
