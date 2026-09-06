@@ -86,7 +86,7 @@ class PrivilegedEntryAuditTest {
         assertThat(messages())
                 .as("관리자 입장이 어디에도 남지 않는다")
                 .anySatisfy(message -> assertThat(message)
-                        .contains("관리자 채팅 입장")
+                        .contains("특권 뷰 입장")
                         .contains("s1")
                         .contains(ADMIN.toString())
                         .contains(ROOM.toString()));
@@ -98,7 +98,10 @@ class PrivilegedEntryAuditTest {
         // when
         registry.register("s1", new ChatSession(ROOM, ADMIN, ChatRole.ADMIN, NICKNAME, EMAIL, false)).block();
 
-        // then: 실으면 로그가 그 자체로 개인정보 사본이 된다
+        // then: 실으면 로그가 그 자체로 개인정보 사본이 된다.
+        // 빈 리스트에 allSatisfy는 항상 참이라, 줄이 남았다는 전제를 먼저 세운다 — 안 그러면 로그를
+        // 통째로 지워도 이 테스트가 통과한다.
+        assertThat(messages()).isNotEmpty();
         assertThat(messages()).allSatisfy(message ->
                 assertThat(message).doesNotContain(EMAIL).doesNotContain(NICKNAME));
     }
@@ -111,7 +114,7 @@ class PrivilegedEntryAuditTest {
         registry.register("s2", new ChatSession(ROOM, UUID.randomUUID(), ChatRole.BUYER, NICKNAME, EMAIL, false)).block();
 
         // then
-        assertThat(messages()).noneMatch(message -> message.contains("관리자 채팅 입장"));
+        assertThat(messages()).noneMatch(message -> message.contains("특권 뷰 입장"));
     }
 
     /**

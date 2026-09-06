@@ -288,8 +288,11 @@ entry, for a value `roomId` already answers after the fact. **Fan-out and audit 
 `ChatPermissionPolicy.seesUnmaskedContent(role, isRoomOwner)` decides who reads the original, and
 `usesPrivilegedViewInSomeoneElsesRoom(...)` is that plus "not their own room". They used to be written out
 by hand in two modules, which meant a new role granted the privileged view could reach fan-out without
-reaching the audit — **more exposure, less trace**, and silently. A parameterised test walks every role ×
-ownership pair and asserts the two stay in step, so a new role is checked the day it is added. The policy
+reaching the audit — **more exposure, less trace**, and silently. The two cannot drift because there is one function; what a
+parameterised test adds is a **table written independently of the policy** — deriving the expectation from
+the policy makes the assertion a tautology that survives opening the original to everyone (it did, once).
+Widening the privileged view is caught by `PrivilegedEntryAuditTest.ordinaryEntriesAreNotRecorded`, which is
+the actual tripwire. The policy
 returns a boolean rather than `ChatMessageVisibility`: that enum lives in `application`, and domain may not
 depend on it (ArchUnit enforces this). `ChatSession` also rejects `ADMIN` with `isRoomOwner`, so the
 own-room half is unreachable today — a test pins that invariant so it gets looked at with the audit
@@ -345,8 +348,8 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   `verifyComplete()`, `verify()`, `verifyError(...)` — waits forever for a signal that a regression may have
   removed, so the test *hangs* instead of failing (measured: 110s and still running on a missing close, 2m34s
   on a `thenCancel().verify()` whose `expectNext` never arrived). **Give every one of them
-  `verify(Duration)`.** The existing suite predates this rule and still has **~116** such call sites
-  (`verifyComplete()` 69 · bare `verify()` ~45 · `verifyError(...)` ~2); new and touched tests take the
+  `verify(Duration)`.** The existing suite predates this rule and still has **~121** such call sites
+  (`verifyComplete()` 69 · bare `verify()` ~50 · `verifyError(...)` 2); new and touched tests take the
   ceiling, and the rest is a cleanup of its own. "passing ≠ catching" has a twin in
   "failing ≠ telling".
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production

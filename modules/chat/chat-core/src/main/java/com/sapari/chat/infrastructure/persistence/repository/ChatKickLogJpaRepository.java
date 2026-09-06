@@ -77,8 +77,8 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
      * 있으면 이 쿼리에 도달조차 하지 않고, 밴 걸린 사용자는 게이트에 막혀 더 강퇴당하지 못한다.
      *
      * <p>그 전제가 깨지면 {@code INCLUDE (kicked_by_id)}가 힙 접근을 없앤다. <b>공짜가 아니다</b> —
-     * uuid 16바이트가 리프마다 붙고 {@code INCLUDE} 인덱스는 중복 제거 대상도 아니라 인덱스가 10~45%
-     * 커진다(실측). 한때 이 자리에 "인덱스 크기는 오히려 감소"라고 적혀 있었는데 사실이 아니었다.
+     * 리프 튜플에 uuid 16바이트가 붙는 만큼 <b>인덱스가 약 45% 커진다</b>(실측, 여러 데이터 모양에서
+     * 42~45%). 한때 이 자리에 "인덱스 크기는 오히려 감소"라고 적혀 있었는데 사실이 아니었다.
      */
     @Query(value = """
             SELECT COUNT(DISTINCT kicked_by_id) FROM live_schema.chat_kick_log

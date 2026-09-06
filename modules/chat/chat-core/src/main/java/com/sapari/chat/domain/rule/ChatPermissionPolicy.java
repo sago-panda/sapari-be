@@ -82,7 +82,12 @@ public final class ChatPermissionPolicy {
      *
      * <p>노출 수준 enum({@code ChatMessageVisibility})을 돌려주지 않는 것은 그 타입이 application 계층에
      * 살기 때문이다 — 도메인이 그쪽을 의존하면 계층 규칙을 어긴다(ArchUnit이 잡는다). 판단은 여기서 하고,
-     * 그 판단을 와이어 표현으로 옮기는 것은 그 표현이 사는 곳의 몫이다.
+     * 그 판단을 와이어 표현으로 옮기는 것은 그 표현이 사는 곳의 몫이다. 도메인 소유의 등급 타입을 새로
+     * 두는 길도 있으나(원문/이메일을 따로 여는 축이 열린다) 지금은 불리언으로 충분하다.
+     *
+     * <p>정적 메서드로 두지 않는 것은 <b>이 클래스의 기존 규약</b> 때문이다 — 이미 인스턴스 빈으로 주입돼
+     * 쓰이므로 정적을 섞으면 한 클래스에 호출 규약이 둘이 된다. 도메인에 정적 순수 함수를 두는 선례는
+     * 따로 있다({@code ChatBanTier.of}).
      */
     public boolean seesUnmaskedContent(ChatRole role, boolean isRoomOwner) {
         return isRoomOwner || role == ChatRole.ADMIN;

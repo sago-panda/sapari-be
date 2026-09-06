@@ -17,7 +17,6 @@ import org.springframework.web.reactive.socket.CloseStatus;
 
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.OutboundMessage;
-import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
@@ -202,9 +201,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
         // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
         // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
+        // 문구가 '관리자'가 아닌 것은 판정이 역할을 가리지 않기 때문이다 — 특권 뷰가 넓어지는 날
+        // 감사가 자동으로 따라오는 것이 이 설계의 값인데, 그때 비-관리자를 관리자로 기록하면 안 된다.
+        // 그래서 role을 값으로 싣는다(오늘은 언제나 ADMIN이다).
         if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(session.role(), session.isRoomOwner())) {
-            log.info("관리자 채팅 입장 — sessionId={} userId={} roomId={}",
-                    sessionId, session.userId(), session.roomId());
+            log.info("특권 뷰 입장 — role={} sessionId={} userId={} roomId={}",
+                    session.role(), sessionId, session.userId(), session.roomId());
         }
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
