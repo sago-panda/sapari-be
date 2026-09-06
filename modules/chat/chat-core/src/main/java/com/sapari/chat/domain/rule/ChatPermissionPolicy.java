@@ -64,4 +64,40 @@ public final class ChatPermissionPolicy {
     private boolean isMember(ChatRole role) {
         return role == ChatRole.BUYER || role == ChatRole.SELLER || role == ChatRole.ADMIN;
     }
+
+    /**
+     * 이 세션이 마스킹 전 원문과 발신자 이메일을 받는가.
+     *
+     * <p><b>왜 여기인가.</b> 이 판정은 팬아웃(무엇을 보낼지)과 감사(특권을 썼는가) 두 곳에서 필요한데,
+     * 전에는 각자 {@code isRoomOwner || role == ADMIN}을 손으로 적고 있었다. 두 모듈에 따로 있으면 특권
+     * 뷰를 받는 역할이 하나 늘 때 한쪽만 따라간다 — 그리고 뒤처지는 쪽이 감사다. <b>원문과 이메일은 받는데
+     * 흔적은 안 남는</b> 방향이라, 조용하고 나쁜 쪽으로 갈린다.
+     *
+     * <p>두 축이 갈라져 있는 것은 의도다. 소유는 방 단위이고(남의 방에 온 판매자는 시청자다) ADMIN은
+     * 계정 단위라 소유를 묻지 않는다. 모더레이터가 원문을 봐야 하는 이유는 방 주인과 같다 — 무엇이
+     * 오갔는지 못 보면 무엇을 끊을지 판단할 수 없다.
+     *
+     * <p><b>기본은 마스킹이고 이것이 참인 경우가 예외다.</b> 방향을 뒤집으면(기본을 원문으로 두면) 새
+     * 역할이 늘 때마다 빠뜨림으로 노출된다.
+     *
+     * <p>노출 수준 enum({@code ChatMessageVisibility})을 돌려주지 않는 것은 그 타입이 application 계층에
+     * 살기 때문이다 — 도메인이 그쪽을 의존하면 계층 규칙을 어긴다(ArchUnit이 잡는다). 판단은 여기서 하고,
+     * 그 판단을 와이어 표현으로 옮기는 것은 그 표현이 사는 곳의 몫이다.
+     */
+    public boolean seesUnmaskedContent(ChatRole role, boolean isRoomOwner) {
+        return isRoomOwner || role == ChatRole.ADMIN;
+    }
+
+    /**
+     * 이 세션이 <b>남의 방에서</b> 특권 뷰를 쓰고 있는가 — 감사에 남길 대상인지의 판정.
+     *
+     * <p>{@link #seesUnmaskedContent}와 한 자리에 두는 이유가 이것이다. 특권 뷰를 받는 역할이 늘면 이 판정도
+     * 함께 참이 되어, 노출과 흔적이 갈리지 않는다.
+     *
+     * <p>자기 방을 보는 것은 특권 사용이 아니다. 오늘 그 조합은 만들어지지 않지만({@code ChatSession}이
+     * {@code ADMIN + isRoomOwner}를 거부한다) 그 불변식이 풀리는 날 이 조건이 곧바로 옳은 동작이 된다.
+     */
+    public boolean usesPrivilegedViewInSomeoneElsesRoom(ChatRole role, boolean isRoomOwner) {
+        return seesUnmaskedContent(role, isRoomOwner) && !isRoomOwner;
+    }
 }

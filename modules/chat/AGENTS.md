@@ -284,10 +284,16 @@ than assuming this predates it.)* The line lives in
 never connects saw nothing) — and carries `sessionId`, `adminId`, `roomId` so it joins this file's close and
 drop lines. Deliberately nothing else: an audit records the access, **not a copy of what was read**, and the
 room's owner is not on the token (`owner` is a boolean) so naming them would cost a live lookup on every
-entry, for a value `roomId` already answers after the fact. The check is `role == ADMIN` alone because
-`ChatSession` rejects `ADMIN` with `isRoomOwner`, so "someone else's room" is already implied — a test pins
-that invariant, so if live and chat ever settle the `ADMIN + owner` combination the audit condition gets
-looked at with it.
+entry, for a value `roomId` already answers after the fact. **Fan-out and audit ask the same question through one function.**
+`ChatPermissionPolicy.seesUnmaskedContent(role, isRoomOwner)` decides who reads the original, and
+`usesPrivilegedViewInSomeoneElsesRoom(...)` is that plus "not their own room". They used to be written out
+by hand in two modules, which meant a new role granted the privileged view could reach fan-out without
+reaching the audit — **more exposure, less trace**, and silently. A parameterised test walks every role ×
+ownership pair and asserts the two stay in step, so a new role is checked the day it is added. The policy
+returns a boolean rather than `ChatMessageVisibility`: that enum lives in `application`, and domain may not
+depend on it (ArchUnit enforces this). `ChatSession` also rejects `ADMIN` with `isRoomOwner`, so the
+own-room half is unreachable today — a test pins that invariant so it gets looked at with the audit
+condition if live and chat ever settle that combination.
 
 ⚠️ **This is a trail, not an audit record.** Retention, search and integrity all live in log shipping, which
 this repo does not configure. And it answers *that* an admin entered, never *what they saw* — a room with no

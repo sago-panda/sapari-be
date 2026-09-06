@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
@@ -44,7 +45,7 @@ class ChatSessionRegistryTest {
         sessionRepository = mock(ChatSessionRepository.class);
         given(sessionRepository.add(any(), any(), any())).willReturn(Mono.empty());
         given(sessionRepository.remove(any(), any())).willReturn(Mono.empty());
-        registry = new ChatSessionRegistry(sessionRepository);
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy());
     }
 
     private ChatSession session(UUID room, UUID user) {

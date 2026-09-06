@@ -20,6 +20,7 @@ import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -87,6 +88,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private static final long DROP_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
 
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
+
+    /**
+     * 감사 판정을 손으로 적지 않기 위해 받는다.
+     *
+     * <p>"특권 뷰를 쓰는가"는 팬아웃도 묻는 질문이라, 두 곳에 각자 적으면 특권 뷰를 받는 역할이 늘 때
+     * 한쪽만 따라간다. 뒤처지는 쪽이 감사이고, 그러면 노출은 늘고 흔적은 주는 방향으로 갈린다.
+     */
+    private final ChatPermissionPolicy permissionPolicy;
 
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
     private final Map<String, LocalSession> local = new ConcurrentHashMap<>();
@@ -193,7 +202,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
         // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
         // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
-        if (session.role() == ChatRole.ADMIN) {
+        if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(session.role(), session.isRoomOwner())) {
             log.info("관리자 채팅 입장 — sessionId={} userId={} roomId={}",
                     sessionId, session.userId(), session.roomId());
         }

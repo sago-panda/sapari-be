@@ -1,5 +1,7 @@
 package com.sapari.chat.application.handler;
 
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+import org.mockito.Spy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -42,6 +44,13 @@ class ChatBroadcastSubscriberTest {
 
     @Mock
     private ChatSessionManager sessionManager;
+
+    /**
+     * 순수 정책은 가짜로 바꾸지 않는다 — 목으로 두면 노출 판정이 검증 대상에서 빠지고, 이 테스트가
+     * 지키려는 것이 정확히 그 판정이다. {@code @Spy}라 실제 구현이 그대로 돈다.
+     */
+    @Spy
+    private ChatPermissionPolicy permissionPolicy = new ChatPermissionPolicy();
 
     @InjectMocks
     private ChatBroadcastSubscriber subscriber;
