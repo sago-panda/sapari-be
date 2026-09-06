@@ -51,7 +51,7 @@ as clean.
   Name the item and the path you could not open.
 
 ## Enforced by ArchUnit — do NOT re-report
-The build already fails on all 16 rules in `architecture-test/.../ArchitectureTest.java`, and the MR
+The build already fails on all 19 rules in `architecture-test/.../ArchitectureTest.java`, and the MR
 pipeline runs them (`.gitlab/ci/build.yml`) — a violation here blocks the merge without you.
 
 1. domain exception not extending `BusinessException` — `domain_exceptions_extend_BusinessException`
@@ -70,6 +70,9 @@ pipeline runs them (`.gitlab/ci/build.yml`) — a violation here blocks the merg
 14. time not obtained from `TimeProvider` — `time_must_come_from_time_provider`
 15. application → infrastructure — `application_must_not_depend_on_infrastructure`
 16. domain / application → `io.micrometer` (관측은 포트 경유) — `domain_and_application_must_not_depend_on_metrics_library`
+17. `streaming-app` → blocking chat use cases / blocking `MongoTemplate` — `streaming_app_must_not_call_blocking_chat_use_cases`
+18. `live-app` → reactive chat use cases — `live_app_must_not_call_reactive_chat_use_cases`
+19. `OutboundMessage` built outside its type factories (positional-arg slip = PII leak) — `outbound_message_must_be_built_through_factories`
 
 A one-line heads-up is fine only for a genuinely new pattern it can't guard. **This list is checked
 against the test file in CI** — if they diverge, the build fails, so fix the list rather than working

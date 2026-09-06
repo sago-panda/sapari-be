@@ -22,7 +22,7 @@ import com.sapari.chat.application.port.RateLimitResult;
 import reactor.core.publisher.Mono;
 
 /**
- * 3초 fixed window 검증. TC 번호는 RateLimiter 표(§12.1).
+ * 3초 fixed window 검증. TC 번호는 설계 문서 검증 계획의 RateLimiter 표를 따른다.
  * TTL 경과류(TC#2·#7)는 Redis EXPIRE 직접 조작으로 실시간 대기 없이 검증한다(flaky 방지).
  */
 @Testcontainers

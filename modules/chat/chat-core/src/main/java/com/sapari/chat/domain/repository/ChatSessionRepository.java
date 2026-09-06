@@ -5,7 +5,7 @@ import java.util.UUID;
 import reactor.core.publisher.Mono;
 
 /**
- * 크로스 Pod 세션 집계 포트 — Redis HASH(room:{roomId}:sessions) 어댑터.
+ * 크로스 Pod 세션 집계 포트 — Redis HASH({@code chat:room:{roomId}:sessions}) 어댑터.
  * 실제 WS 채널 보유는 로컬 메모리 레지스트리가 맡고, 여기선 sessionId→userId 매핑만 둔다.
  */
 public interface ChatSessionRepository {

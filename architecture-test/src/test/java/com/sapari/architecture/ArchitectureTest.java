@@ -5,6 +5,7 @@ import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
@@ -237,7 +238,7 @@ class ArchitectureTest {
         ArchRule rule = noClasses()
                 .that().resideInAPackage("com.sapari.streamingapp..")
                 .should().dependOnClassesThat()
-                        .haveNameMatching(".*\\.(KickUserUseCase|KickUserService|GetChatHistoryUseCase|GetChatHistoryService)")
+                        .haveNameMatching(".*\\.(KickUserUseCase|KickUserService|ChatKickRecorder|GetChatHistoryUseCase|GetChatHistoryService)")
                 .orShould().dependOnClassesThat()
                         .haveFullyQualifiedName("org.springframework.data.mongodb.core.MongoTemplate")
                 .as("streaming-app(WebFlux)은 블로킹 chat 유스케이스·블로킹 MongoTemplate을 호출하면 안 된다");
@@ -246,13 +247,42 @@ class ArchitectureTest {
     }
 
     // MVC 앱이 Mono/Flux를 반환하는 유스케이스를 호출하면 결국 .block()을 강요당한다.
+    // 강퇴 REST가 얹히는 MVC 앱은 live-app이다. api-app은 chat 의존이 0건이라 대상에 넣지 않는다 —
+    // 넣으면 그쪽 클래스가 항상 존재해서, live-app이 클래스패스에서 빠져도 빈 검사가 드러나지 않는다.
     @Test
-    void api_app_must_not_call_reactive_chat_use_cases() {
+    void live_app_must_not_call_reactive_chat_use_cases() {
         ArchRule rule = noClasses()
-                .that().resideInAPackage("com.sapari.apiapp..")
+                .that().resideInAPackage("com.sapari.liveapp..")
                 .should().dependOnClassesThat()
                         .haveNameMatching(".*\\.(SendChatUseCase|SendChatService)")
-                .as("api-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+                .as("live-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // OutboundMessage는 여덟 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 위치 인자로 지으면
+    // 한 칸 밀린 실수가 컴파일도 타입 검사도 통과한다 — 하필 senderEmail 바로 뒤가 displayMessage라,
+    // 그 실수는 발신자 이메일을 본문 자리에 넣어 방 전원에게 뿌린다.
+    //
+    // 밖에서는 타입별 정적 팩토리로만 짓는다. 팩토리 안에서 위치 인자를 안 쓰게 하는 것은 빌더가
+    // 맡고, 그 빌더는 package 접근이라 컴파일러가 이미 막는다 — 그래서 이 규칙은 생성자만 본다.
+    //
+    // 대상에서 빼는 것은 OutboundMessage와 그 중첩 클래스뿐이다. 빌더는 Lombok이 만든 중첩 클래스라
+    // FQN이 다르고(OutboundMessage$OutboundMessageBuilder), 이름 하나만 비교하면 자기 빌더를 자기
+    // 규칙이 잡는다(실제로 그랬다). 그렇다고 접두로 비교하면 같은 패키지의 OutboundMessageFactory 같은
+    // 이름까지 조용히 면제된다 — 중첩 구분자 '$'까지 붙여 정확히 중첩만 뺀다.
+    @Test
+    void outbound_message_must_be_built_through_factories() {
+        String outbound = "com.sapari.chat.application.protocol.OutboundMessage";
+
+        ArchRule rule = noClasses()
+                .that(DescribedPredicate.describe("OutboundMessage와 그 중첩 클래스가 아닌",
+                        javaClass -> !javaClass.getName().equals(outbound)
+                                && !javaClass.getName().startsWith(outbound + "$")))
+                .should().callConstructorWhere(DescribedPredicate.describe(
+                        "OutboundMessage 생성자",
+                        target -> target.getTargetOwner().getName().equals(outbound)))
+                .as("OutboundMessage는 타입별 정적 팩토리로만 생성해야 한다(위치 인자 밀림 = PII 유출)");
 
         rule.check(SAPARI);
     }

@@ -18,6 +18,8 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
+
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -51,7 +53,7 @@ class ChatKickRedisRepositoryTest {
     @DisplayName("kicked SET 멤버면 true (재접속 차단 판정)")
     void member_of_kicked_set_is_true() {
         // given
-        redisTemplate.opsForSet().add("kicked:" + roomId, userId.toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + roomId, userId.toString()).block();
 
         // when & then
         assertThat(repository.isKicked(roomId, userId).block()).isTrue();
@@ -61,7 +63,7 @@ class ChatKickRedisRepositoryTest {
     @DisplayName("SET에 없는 userId는 false")
     void non_member_is_false() {
         // given
-        redisTemplate.opsForSet().add("kicked:" + roomId, UUID.randomUUID().toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + roomId, UUID.randomUUID().toString()).block();
 
         // when & then
         assertThat(repository.isKicked(roomId, userId).block()).isFalse();
@@ -84,15 +86,53 @@ class ChatKickRedisRepositoryTest {
         ReactiveSetOperations<String, String> setOps = Mockito.mock(ReactiveSetOperations.class);
         BDDMockito.given(broken.opsForSet()).willReturn(setOps);
         // 실제 인자값 그대로 스텁 — isMember(K,Object)/(K,Object...) 오버로드 모호성 회피
-        BDDMockito.given(setOps.isMember("kicked:" + roomId, userId.toString()))
+        BDDMockito.given(setOps.isMember("chat:kicked:" + roomId, userId.toString()))
                 .willReturn(Mono.error(new RuntimeException("connection refused")));
 
         // 타임아웃 있는 verify — 계약 위반(error 미전파) 시 무한 hang 대신 빠르게 실패
 
         // when & then
         StepVerifier.create(new ChatKickRedisRepository(broken).isKicked(roomId, userId))
-                .expectError(RuntimeException.class)
+                .expectErrorSatisfies(e -> assertThat(e)
+                        .isInstanceOf(RuntimeException.class)
+                        // 낫는 실패까지 오염으로 번역하면 갈라놓은 의미가 사라진다 — 소비처가 "사람이 와야
+                        // 낫는다"고 로그하지만 실제로는 다음 요청에 복구되는 상황이 섞인다
+                        .isNotInstanceOf(KickStoreCorruptedException.class))
                 .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    @DisplayName("키가 SET이 아니면 KickStoreCorruptedException — 재시도로 낫는 실패와 타입부터 갈라 놓는다")
+    void wrongType_isTranslatedToCorrupted() {
+        // given: 다른 무언가가 같은 이름을 String으로 먼저 차지한 상태
+        UUID room = UUID.randomUUID();
+        String key = "chat:kicked:" + room;
+        redisTemplate.opsForValue().set(key, "남의 값").block();
+
+        // when & then: 어느 키를 사람이 치워야 하는지가 예외에 실려 나온다
+        StepVerifier.create(repository.isKicked(room, userId))
+                .expectErrorSatisfies(e -> assertThat(e)
+                        .isInstanceOf(KickStoreCorruptedException.class)
+                        .extracting(err -> ((KickStoreCorruptedException) err).getKey())
+                        .isEqualTo(key))
+                .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    @DisplayName("오염된 키에도 종료 회수는 걸린다 — EXPIRE는 타입을 보지 않아 피해가 '그 방 + 24h'로 유계다")
+    void expireAfterRoomEnded_appliesToPollutedKey() {
+        // given: 강퇴 조회가 이미 불가능해진 방
+        UUID room = UUID.randomUUID();
+        String key = "chat:kicked:" + room;
+        redisTemplate.opsForValue().set(key, "남의 값").block();
+
+        // when
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
+
+        // then: 오염이 영구히 남지는 않는다. 이 단언이 깨지면 방송이 끝나도 그 키가 그대로 남아
+        // 같은 roomId가 다시 쓰일 때까지 회수되지 않는다는 뜻이다
+        Duration ttl = redisTemplate.getExpire(key).block();
+        assertThat(ttl).isNotNull().isBetween(Duration.ofHours(23), Duration.ofHours(24));
     }
 
     @Test
@@ -101,14 +141,14 @@ class ChatKickRedisRepositoryTest {
         // given: 강퇴 명단이 있는 방
         UUID room = UUID.randomUUID();
         UUID kicked = UUID.randomUUID();
-        redisTemplate.opsForSet().add("kicked:" + room, kicked.toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + room, kicked.toString()).block();
 
         // when
         StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
 
         // then: DEL로 되돌아가면 멤버십이 사라져 이 단언이 깨진다
         StepVerifier.create(repository.isKicked(room, kicked)).expectNext(true).verifyComplete();
-        Duration ttl = redisTemplate.getExpire("kicked:" + room).block();
+        Duration ttl = redisTemplate.getExpire("chat:kicked:" + room).block();
         assertThat(ttl).isNotNull().isBetween(Duration.ofHours(23), Duration.ofHours(24));
     }
 
@@ -120,6 +160,6 @@ class ChatKickRedisRepositoryTest {
 
         // when & then
         StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
-        StepVerifier.create(redisTemplate.hasKey("kicked:" + room)).expectNext(false).verifyComplete();
+        StepVerifier.create(redisTemplate.hasKey("chat:kicked:" + room)).expectNext(false).verifyComplete();
     }
 }

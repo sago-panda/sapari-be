@@ -46,7 +46,7 @@ class ChatSessionRedisRepositoryAtomicityTest {
         ArgumentCaptor<List<Object>> args = ArgumentCaptor.forClass(List.class);
         then(redis).should(times(1)).execute(any(RedisScript.class), keys.capture(), args.capture());
 
-        assertThat(keys.getValue()).containsExactly("room:" + roomId + ":sessions");
+        assertThat(keys.getValue()).containsExactly("chat:room:" + roomId + ":sessions");
         // TTL이 인자에 실려 같은 호출로 나가는지 — 두 번의 왕복으로 나뉘면 그 사이가 빈다
         assertThat(args.getValue()).containsExactly("s1", userId.toString(), "86400");
     }

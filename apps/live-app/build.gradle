@@ -3,6 +3,12 @@ dependencies {
     implementation(project(":modules:live:live-api"))
     implementation(project(":modules:live:live-core"))
 
+    // 강퇴 REST. chat-core 는 리액티브 스타터를 함께 끌고 오는데(streaming-app 과 한 모듈을 공유한다),
+    // 이 앱은 그 스택을 쓰지 않는다 — LiveAppApplication 이 com.sapari.chat 을 스캔에서 빼고
+    // ChatModerationBeansConfig 가 블로킹 조각만 골라 등록한다.
+    implementation(project(":modules:chat:chat-api"))
+    implementation(project(":modules:chat:chat-core"))
+
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-security'
@@ -12,12 +18,22 @@ dependencies {
     // 프로메테우스 스크레이프 엔드포인트. runtimeOnly — 코드가 직접 참조하지 않는다.
     runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
+    // 강퇴 경로가 쓰는 블로킹 템플릿(MongoTemplate·StringRedisTemplate)을 이 앱이 직접 세운다.
+    // chat-core 는 리액티브 스타터만 갖고 있고 그마저 implementation 이라 여기로 넘어오지 않는다 —
+    // 그 모듈의 다른 소비자(streaming-app)가 동기 드라이버를 물려받지 않게 하려는 의도된 경계다.
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+
     runtimeOnly 'org.postgresql:postgresql'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
+    // 인가 규칙을 컨텍스트 전체를 띄우지 않고 검사하기 위한 둘. 전체 부팅 테스트는 클론에
+    // application*.yaml 이 없어 CI 에서 제외되므로, 그쪽에 기대면 규칙 회귀를 파이프라인이 못 잡는다.
+    testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
+    testImplementation 'org.springframework.security:spring-security-test'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

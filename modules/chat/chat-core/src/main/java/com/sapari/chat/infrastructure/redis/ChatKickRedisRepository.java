@@ -6,14 +6,17 @@ import java.util.UUID;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 /**
- * kicked:{roomId} SET 어댑터 — 멤버십 조회(SISMEMBER)와 방 종료 시 만료 부여(EXPIRE).
- * 강퇴 등록(SADD)은 api-app(KickUserService) 책임이라 여기 두지 않는다.
+ * chat:kicked:{roomId} SET <b>읽기</b> 어댑터 — 멤버십 조회(SISMEMBER)와 방 종료 시 만료 부여(EXPIRE).
+ * 리액티브라 소비처가 streaming-app이다. 등록은 블로킹인 {@link ChatKickWriteRedisRepository}가 맡고,
+ * 같은 패키지에 두어 {@link ChatRedisKeys}와 {@link RedisWrongType}을 함께 쓴다 — 읽는 쪽과 쓰는 쪽이
+ * 다른 키를 보거나 같은 실패를 다르게 분류하면 그 어긋남은 조용하다.
  */
 @Repository
 @RequiredArgsConstructor
@@ -23,8 +26,12 @@ public class ChatKickRedisRepository implements ChatKickRepository {
 
     @Override
     public Mono<Boolean> isKicked(UUID roomId, UUID userId) {
+        String key = ChatRedisKeys.kicked(roomId);
         return redisTemplate.opsForSet()
-                .isMember(ChatRedisKeys.kicked(roomId), userId.toString());
+                .isMember(key, userId.toString())
+                // 일시 장애는 그대로 흘려보낸다 — 소비처의 fail-open 정책은 바뀌지 않는다.
+                // 낫지 않는 쪽만 타입으로 갈라, 소비처가 "곧 복구될 실패"와 섞어 로그하지 않게 한다.
+                .onErrorMap(RedisWrongType::matches, e -> new KickStoreCorruptedException(key, e));
     }
 
     /**

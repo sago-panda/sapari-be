@@ -25,7 +25,7 @@ import reactor.util.retry.Retry;
 /**
  * {@link ChatBroadcaster} 구현 — chat:pubsub:{roomId} 채널로 CHAT 봉투 발행/구독 (Pod 간 중계).
  *
- * <p><b>구독 모델 = 패턴 구독(a)</b> (정본 §8.2, 2026-06-26): 시작 시 {@code chat:pubsub:*}를 1회 패턴 구독해
+ * <p><b>구독 모델 = 패턴 구독</b> (2026-06-26 확정): 시작 시 {@code chat:pubsub:*}를 1회 패턴 구독해
  * <b>상시 가동 hot 스트림</b>으로 둔다. {@link #subscribe(UUID)}는 그 공유 스트림을 roomId로 필터링할 뿐이라,
  * 방별 lazy 구독(b)이 갖는 <i>구독 활성 전 메시지 유실 레이스</i>와 ref-count lifecycle 버그가 원천적으로 없다.
  * 비용(모든 방 메시지 수신)은 <b>채널명에서 roomId만 먼저 추출</b>(역직렬화 없이)하고, 실제 구독 중인 방만

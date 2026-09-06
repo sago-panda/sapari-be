@@ -5,13 +5,20 @@ import java.util.UUID;
 import reactor.core.publisher.Mono;
 
 /**
- * 강퇴 SET(kicked:{roomId}) 포트 — 멤버십 검사와 방 단위 정리.
- * 강퇴 등록(SADD)은 api-app(blocking) 책임이라 여기 두지 않는다.
+ * 강퇴 SET({@code chat:kicked:{roomId}}) <b>읽기</b> 포트 — 멤버십 검사와 방 단위 정리.
+ * 리액티브(streaming-app)다. 등록은 블로킹 스택의 {@link ChatKickWriteRepository}가 맡는다 —
+ * 같은 키를 두 스택이 나눠 쓰지만 키 문자열은 어댑터 패키지의 단일 소스가 계속 쥐고 있다.
  *
  * <p><b>어댑터 계약</b>: Redis 장애 시 {@code false}로 흡수하지 말고 <b>error를 전파</b>한다.
  * {@code false}(=비강퇴)로 삼키면 소비처가 "확실히 비강퇴"와 "조회 불가"를 구분할 수 없다.
  * <p><b>소비처(send 경로) 정책은 fail-open</b>: error는 전송 허용({@code onErrorReturn(false)})으로 매핑한다.
  * 가용성 우선(채팅 전면 불능이 강퇴자 일시 도배보다 더 나쁜 결과)이며, Redis 복구 후 다음 전송부터 정상 체크가 재개된다.
+ *
+ * <p><b>"복구 후 재개"가 성립하지 않는 실패가 하나 있다.</b> 키가 SET이 아닌 타입으로 존재하면 조회는
+ * Redis가 멀쩡해도 계속 실패한다 — 재시도는 멱등이지만 영원히 성공하지 않는다. 그 경우만
+ * {@link com.sapari.chat.domain.exception.KickStoreCorruptedException}으로 갈라서 던지니, 소비처는
+ * fail-open을 유지하되 <b>일시 장애와 같은 통에 담아 로그하지 말 것</b>. 같이 담으면 "그 방의 강퇴가
+ * 사람이 오기 전까지 계속 꺼져 있다"는 사실이 곧 복구될 장애의 로그에 묻힌다.
  */
 public interface ChatKickRepository {
 
@@ -28,10 +35,10 @@ public interface ChatKickRepository {
      * 그 자리에서 사라지지만, 만료로 두면 유예 시간 안에 알아챌 여지가 남는다. 누수를 막는다는 목적은
      * 그대로 달성되고, 없는 키에 걸어도 무동작이라 비용도 같다.
      *
-     * <p>이 키는 재접속을 빠르게 막기 위한 <b>집행 캐시</b>로 설계됐다. 정본이 될 강퇴 로그 테이블은
-     * 스키마에만 있고 <b>읽고 쓰는 코드가 아직 없다</b> — 즉 지금 이 SET이 사라지면 되살릴 근거도 없다.
-     * "만료라서 복구 가능"은 강퇴 기능(SADD + 로그 적재)이 붙은 뒤에야 성립한다.
-     * 지금은 등록하는 쪽이 없어 실제로 쌓이지도 않는다.
+     * <p>이 키는 재접속을 빠르게 막기 위한 <b>집행 캐시</b>이고, 정본은 강퇴 로그 테이블
+     * ({@code ChatKickLogRepository})이다. 그 테이블에 쓰는 코드는 생겼으므로 사라진 명단을 되살릴
+     * <i>근거</i>는 이제 있다. 다만 <b>실제로 되살리는 코드는 아직 없다</b> — 정본을 읽어 이 SET을 다시
+     * 채우는 경로가 없어서, "만료라서 복구 가능"은 여전히 사람이 손으로 할 때만 성립한다.
      *
      * <p>없는 키에 만료를 걸어도 정상 동작이라 어느 Pod가 몇 번 불러도 안전하다.
      */

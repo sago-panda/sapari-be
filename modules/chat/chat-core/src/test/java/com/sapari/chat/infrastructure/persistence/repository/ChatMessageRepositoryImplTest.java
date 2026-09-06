@@ -17,6 +17,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -31,16 +32,36 @@ import reactor.test.StepVerifier;
 
 /**
  * 실제 MongoDB(TestContainers)로 저장·dedup·역순 페이징을 검증한다.
- * TC 번호는 GetChatHistoryService 표(§12.1) 중 repository 책임 항목.
+ * TC 번호는 설계 문서 검증 계획의 GetChatHistoryService 표 중 repository 책임 항목을 따른다.
  * (Boot 4는 @DataMongoTest 슬라이스가 없어 @SpringBootTest 사용 — chat-core 컨텍스트는 어댑터뿐이라 작다)
  */
-@SpringBootTest  // UUID 인코딩은 ChatMongoConfig의 MongoClientSettingsBuilderCustomizer가 STANDARD로 고정
+// UUID 인코딩은 ChatMongoConfig의 MongoClientSettingsBuilderCustomizer가 STANDARD로 고정.
+// DataSource 자동설정은 끈다 — 강퇴 로그 때문에 모듈에 JPA가 들어오면서 이 Mongo 테스트까지 관계형 DB를
+// 요구하게 됐다. 여기는 Postgres를 쓰지 않으므로 컨테이너를 늘리는 대신 자동설정을 잘라낸다.
+// (Hibernate·트랜잭션 자동설정은 DataSource 빈에 조건이 걸려 있어 함께 꺼진다)
+@SpringBootTest(properties =
+        "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
 @Testcontainers
 class ChatMessageRepositoryImplTest {
 
     @Container
     @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+
+    /**
+     * 이 테스트가 Redis를 쓰지는 않는다. 그런데 부트 컨텍스트에 {@code RedisChatBroadcaster}가 함께 올라오고,
+     * 그 어댑터는 <b>생성자에서 곧장 구독을 연다</b>({@code autoConnect(0)}) — 구독 활성 전 메시지를 흘리지
+     * 않으려는 설계라, 컨테이너가 없으면 빈 생성 단계에서 접속 실패로 컨텍스트 전체가 못 뜬다.
+     *
+     * <p>어댑터를 늦게 붙게 고치는 쪽이 아니라 컨테이너를 하나 더 띄우는 쪽을 택한다. 즉시 연결이
+     * 그 어댑터가 유실 레이스를 없앤 방법 자체라, 테스트 편의로 되돌리면 운영에서 잃는 것이 생긴다.
+     *
+     * <p>{@code @ServiceConnection}에 이름을 준 이유: 이미지 이름만으로 종류를 알아내는 대상이
+     * {@code GenericContainer}에는 없다.
+     */
+    @Container
+    @ServiceConnection(name = "redis")
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
     @Autowired
     private ChatMessageRepositoryImpl repository;

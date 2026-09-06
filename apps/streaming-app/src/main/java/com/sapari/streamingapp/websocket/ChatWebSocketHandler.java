@@ -27,6 +27,7 @@ import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatSession;
@@ -56,8 +57,6 @@ import reactor.core.publisher.SignalType;
  */
 @Slf4j
 public class ChatWebSocketHandler implements WebSocketHandler {
-
-    private static final String SYSTEM_NICKNAME = "SYSTEM";
 
     /** 룸 토큰을 실어 나르는 서브프로토콜 이름. 클라는 ["bearer", <token>] 두 개를 제시한다. */
     private static final String TOKEN_SUBPROTOCOL = "bearer";
@@ -247,7 +246,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // SET NX·잔여 TTL)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
         long retryAfter = registry.rateLimitRetryAfterSeconds(sid);
         if (retryAfter > 0) {
-            return respondRejected(sid, rateLimited(retryAfter, clientMsgId));
+            return respondRejected(sid, OutboundMessage.rateLimit(retryAfter, clientMsgId));
         }
         // 방이 아직 살아있는지 게이트에 맡긴다 — 간격 안이면 Redis에 가지 않고 곧장 true다.
         return entryGate.isRoomAlive(sid, chatSession)
@@ -257,7 +256,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     if (e instanceof ChatRateLimitException rle) {
                         registry.recordRateLimited(sid, rle.getRetryAfterSeconds());
                     }
-                    if (e instanceof UserKickedException) {
+                    // 밴도 같은 처리를 받는다 — 사유를 실어 보내고 반드시 닫는다. 밴은 계정 전체라
+                    // 이 세션이 살아 있을 이유가 강퇴보다 더 없고, 안 닫으면 프레임마다 밴 조회를 태운다.
+                    if (e instanceof UserKickedException || e instanceof UserBannedException) {
                         // 여기까지 왔다 = 이 Pod가 강퇴 신호를 못 받았다(받았으면 이미 닫혀 위에서 걸린다).
                         // 방금 권위 있게 확인했으니 닫는다 — 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다.
                         //
@@ -305,7 +306,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * 파싱 불가 프레임에 ERROR로 답한다. clientMsgId는 알 수 없어 싣지 못한다.
      */
     private Mono<Void> rejectMalformed(String sid) {
-        return respondRejected(sid, error("VALIDATION", null));
+        return respondRejected(sid, OutboundMessage.error("VALIDATION", null));
     }
 
     /**
@@ -358,8 +359,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     OutboundMessage toAck(ChatMessageView view, String clientMsgId) {
-        return new OutboundMessage("ACK", null, view.id(), null, null, null, null, null, null,
-                view.createdAt(), null, null, null, clientMsgId, null);
+        return OutboundMessage.ack(view.id(), view.createdAt(), clientMsgId);
     }
 
     /** 거부 응답에 되돌려 실을 만큼만 남긴다. 계약 상한(64자)을 넘는 값은 어차피 거부된다. */
@@ -368,22 +368,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return clientMsgId == null || clientMsgId.length() <= max ? clientMsgId : clientMsgId.substring(0, max);
     }
 
-    /** 레이트리밋 응답 — 서비스가 준 것이든 로컬 창에서 만든 것이든 같은 모양이어야 한다. */
-    private OutboundMessage rateLimited(long retryAfterSeconds, String clientMsgId) {
-        return new OutboundMessage("RATE_LIMIT", null, null, null, null, null, null, null, null,
-                null, null, null, retryAfterSeconds, clientMsgId, null);
-    }
-
     OutboundMessage toError(Throwable e, String clientMsgId) {
         if (e instanceof ChatRateLimitException rle) {
-            return rateLimited(rle.getRetryAfterSeconds(), clientMsgId);
+            return OutboundMessage.rateLimit(rle.getRetryAfterSeconds(), clientMsgId);
         }
-        return error(errorCode(e), clientMsgId);
-    }
-
-    private OutboundMessage error(String code, String clientMsgId) {
-        return new OutboundMessage("ERROR", code, null, null, null, null, null, null, null,
-                null, null, null, null, clientMsgId, null);
+        return OutboundMessage.error(errorCode(e), clientMsgId);
     }
 
     private String errorCode(Throwable e) {
@@ -395,6 +384,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         }
         if (e instanceof UserKickedException) {
             return "KICKED";
+        }
+        // 밴을 KICKED로 뭉뚱그리지 않는다 — 강퇴는 이 방 하나이고 밴은 계정 전체라, 클라이언트가
+        // "다른 방으로 가면 된다"를 안내해도 되는지가 갈린다.
+        if (e instanceof UserBannedException) {
+            return "BANNED";
         }
         if (e instanceof IllegalArgumentException) {
             return "VALIDATION";
@@ -419,8 +413,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     /** activeCount가 null이면 "알 수 없음" — 조회 실패 시 0 같은 거짓값 대신 비워 보낸다. */
     OutboundMessage roomInfo(Long activeCount, boolean isRoomOwner) {
-        return new OutboundMessage("ROOM_INFO", null, null, null, null, null, null, null, null,
-                null, null, activeCount, null, null, isRoomOwner);
+        return OutboundMessage.roomInfo(activeCount, isRoomOwner);
     }
 
     // ── 구독 ref-count ──
@@ -455,9 +448,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     private Mono<Void> denyAndClose(WebSocketSession session, EntryDeniedException.Reason reason) {
-        OutboundMessage system = new OutboundMessage("SYSTEM", systemCode(reason), null,
-                ChatConstants.SYSTEM_SENDER_ID, SYSTEM_NICKNAME, null, null, null, null,
-                null, null, null, null, null, null);
+        OutboundMessage system = OutboundMessage.system(systemCode(reason));
         // 사유가 무엇이든 1008이다. 접속 중 방이 끝난 경우(terminateRoomEnded)는 1000인데 여기만 1008인 게
         // 비대칭으로 보이지만, 그쪽은 "성립해 있던 세션의 정상 종료"고 이쪽은 "세션이 성립하지 못한 거부"다.
         // 프론트 계약도 1008을 강퇴·밴과 함께 "입장 거부"로 묶어두고 있고, 무엇 때문인지는 함께 보낸
@@ -467,11 +458,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     /** 거부 사유를 클라가 렌더할 code로. switch 식이라 Reason이 늘면 컴파일이 막는다(조용한 오매핑 방지). */
-    private String systemCode(EntryDeniedException.Reason reason) {
+    private SystemMessageCode systemCode(EntryDeniedException.Reason reason) {
         return switch (reason) {
-            case KICKED -> SystemMessageCode.KICKED.name();
-            case BANNED -> SystemMessageCode.BANNED.name();
-            case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED.name();
+            case KICKED -> SystemMessageCode.KICKED;
+            case BANNED -> SystemMessageCode.BANNED;
+            case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED;
         };
     }
 

@@ -3,7 +3,7 @@ package com.sapari.chat.command;
 import java.util.UUID;
 
 /**
- * 채팅 이력 조회 입력 (api-app REST).
+ * 채팅 이력 조회 입력 (live-app REST).
  *
  * <p>requesterId는 senderEmail 노출 게이팅(요청자 == 방 주인일 때만 이메일 포함)에 쓰인다.
  * beforeId(커서)와 playbackPositionMs(VOD 위치)는 상호 배타 — 둘 다 지정 시 예외.

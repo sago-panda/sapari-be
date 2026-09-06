@@ -1,0 +1,42 @@
+# streaming-app 설정 템플릿.
+#
+# application*.yml 은 .gitignore 대상이라 저장소에 없다 — 그래서 "어떤 키가 필요한지"를 아는 방법이
+# 이 파일뿐이다. 키를 추가·삭제하면 여기도 같이 고칠 것.
+#
+# 사용법: cp application.yml.example application.yml 후 아래 값을 채운다.
+#
+# ⚠️ 표기 규칙
+#   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다.
+#   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
+#
+# ⚠️ 이 파일에 실제 자격증명을 넣지 말 것. 전부 자리표시자다.
+#
+# ⚠️ 이 앱은 관계형 DB를 쓰지 않는다(DB-free). chat-core가 강퇴 로그 때문에 JPA를 의존해 스타터가
+#    전이로 올라오지만, StreamingAppApplication이 DataSource 자동설정을 잘라낸다. datasource 키를
+#    여기 추가하지 말 것 — 넣는 순간 이 앱이 관계형 DB에 묶인다.
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}          # optional (로컬 기본값)
+      port: ${REDIS_PORT:6379}               # optional
+
+  # ⚠️ 접두가 spring.data.mongodb 가 아니라 spring.mongodb 다.
+  #    Boot 4.0.0에서 spring.data.mongodb.* 가 제거됐고(replacement: spring.mongodb.*),
+  #    옛 이름으로 적으면 값이 바인딩되지 않아 MONGODB_URI를 넣어도 조용히 무시되고
+  #    기본값 localhost:27017 로 붙는다. 그 상태로 뜨면 인덱스 생성 러너가 타임아웃으로 죽는다.
+  #    (redis 쪽 접두 spring.data.redis 는 바뀌지 않았다 — 둘이 달라 보이는 게 정상이다)
+  mongodb:
+    uri: ${MONGODB_URI:mongodb://localhost:27017/sapari}   # REQUIRED (운영)
+
+# 룸 토큰 검증용 live 공개키. live가 개인키로 서명하고 이 앱은 공개키로 검증만 한다.
+# 값은 live에서 받아 env로 주입한다(Base64 SPKI, PEM 헤더 없이 본문만).
+chat:
+  room-token:
+    public-key: ${CHAT_ROOMTOKEN_PUBLICKEY:}               # REQUIRED (운영)
+
+  # 욕설 사전. 비워 두면 마스킹이 전혀 일어나지 않는다(pass-through).
+  # 정본은 live_schema.chat_filter_word 테이블이지만 이 앱은 DB-free라 로더가 아직 없다.
+  profanity:
+    words: ${CHAT_PROFANITY_WORDS:}                        # optional (CSV)
+    whitelist: ${CHAT_PROFANITY_WHITELIST:}                # optional (CSV)

@@ -28,7 +28,7 @@ class ChatRedisKeysTest {
     void sessions() {
         // when & then
         assertThat(ChatRedisKeys.sessions(roomId))
-                .isEqualTo("room:11111111-1111-1111-1111-111111111111:sessions");
+                .isEqualTo("chat:room:11111111-1111-1111-1111-111111111111:sessions");
     }
 
     @Test
@@ -36,7 +36,7 @@ class ChatRedisKeysTest {
     void kicked() {
         // when & then
         assertThat(ChatRedisKeys.kicked(roomId))
-                .isEqualTo("kicked:11111111-1111-1111-1111-111111111111");
+                .isEqualTo("chat:kicked:11111111-1111-1111-1111-111111111111");
     }
 
     @Test
@@ -44,7 +44,7 @@ class ChatRedisKeysTest {
     void roomEnded() {
         // when & then
         assertThat(ChatRedisKeys.roomEnded(roomId))
-                .isEqualTo("room:11111111-1111-1111-1111-111111111111:ended");
+                .isEqualTo("chat:room:11111111-1111-1111-1111-111111111111:ended");
     }
 
     @Test
@@ -77,7 +77,7 @@ class ChatRedisKeysTest {
     @Test
     @DisplayName("같은 방의 서로 다른 키가 겹치지 않는다 — 겹치면 WRONGTYPE으로 그 방 기능 하나가 죽는다")
     void keysDoNotCollide() {
-        // when & then: room:{id}:sessions(HASH)와 room:{id}:ended(String)는 접두가 같아서
+        // when & then: chat:room:{id}:sessions(HASH)와 chat:room:{id}:ended(String)는 접두가 같아서
         // 접미가 사라지는 순간 타입이 충돌한다. 그때 나는 건 조회 실패가 아니라 영구 에러다.
         assertThat(ChatRedisKeys.sessions(roomId))
                 .isNotEqualTo(ChatRedisKeys.roomEnded(roomId))

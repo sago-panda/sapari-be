@@ -13,7 +13,10 @@ import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
- * room:{roomId}:ended 마커 어댑터 — 종료 사실 기록(SET)·조회(EXISTS).
+ * chat:room:{roomId}:ended 마커 어댑터 — 종료 사실 기록(SET)·조회(EXISTS).
+ *
+ * <p>이 키는 강퇴 SET과 달리 타입 충돌에 노출되지 않는다 — SET은 기존 타입을 덮어쓰고 EXISTS는 타입을
+ * 보지 않아, 남이 같은 이름을 먼저 써도 WRONGTYPE이 나지 않는다.
  */
 @Slf4j
 @Repository

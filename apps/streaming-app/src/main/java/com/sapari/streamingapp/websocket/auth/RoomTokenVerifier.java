@@ -64,7 +64,7 @@ public class RoomTokenVerifier {
         Claims claims = parser.parseSignedClaims(token).getPayload();   // 서명·iss 검증 + exp가 있으면 만료 검증
 
         // exp 존재 강제 — jjwt는 exp가 *있을 때만* 만료를 검사한다. blacklist를 제거한 모델에서 짧은 TTL(exp)이
-        // 유일한 폐기 백스톱이라(정본 §563·§565), exp 부재 토큰은 영구 입장권이 되므로 거부한다.
+        // 유일한 폐기 백스톱이라, exp 부재 토큰은 영구 입장권이 되므로 거부한다.
         if (claims.getExpiration() == null) {
             throw new WebSocketAuthException("exp 누락");
         }

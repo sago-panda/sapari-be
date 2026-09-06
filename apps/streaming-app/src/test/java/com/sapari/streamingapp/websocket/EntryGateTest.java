@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
@@ -12,9 +13,17 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
+import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
+import com.sapari.chat.domain.repository.ChatBanRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
@@ -25,6 +34,7 @@ class EntryGateTest {
 
     private ChatKickRepository kickRepository;
     private ChatRoomEndedRepository roomEndedRepository;
+    private ChatBanRepository banRepository;
     private ChatSessionRegistry registry;
     private EntryGate gate;
 
@@ -35,13 +45,19 @@ class EntryGateTest {
     void setUp() {
         kickRepository = mock(ChatKickRepository.class);
         roomEndedRepository = mock(ChatRoomEndedRepository.class);
+        banRepository = mock(ChatBanRepository.class);
         registry = mock(ChatSessionRegistry.class);
-        gate = new EntryGate(kickRepository, roomEndedRepository, registry);
+        gate = new EntryGate(kickRepository, roomEndedRepository, banRepository, registry);
     }
 
     /** 방이 살아있다는 전제 — 종료 검사를 통과시킨다. */
     private void givenRoomAlive() {
         given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.just(false));
+    }
+
+    /** 밴이 아니라는 전제 — 강퇴 검사만 보고 싶을 때 뒤 단계를 열어 둔다. */
+    private void givenNotBanned() {
+        given(banRepository.isBanned(userId)).willReturn(Mono.just(false));
     }
 
     private ChatSession member() {
@@ -53,6 +69,7 @@ class EntryGateTest {
     void not_kicked_passes() {
         // given
         givenRoomAlive();
+        givenNotBanned();
         given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
 
         // when & then
@@ -78,11 +95,102 @@ class EntryGateTest {
     void redis_error_fails_open() {
         // given
         givenRoomAlive();
+        givenNotBanned();
         given(kickRepository.isKicked(roomId, userId))
                 .willReturn(Mono.error(new RuntimeException("redis down")));
 
         // when & then
         StepVerifier.create(gate.verify(member())).verifyComplete();
+    }
+
+    @Test
+    @DisplayName("키 타입 충돌도 fail-open이지만 WARN이 아니라 ERROR — 이 게이트는 사람이 올 때까지 계속 열려 있다")
+    void kickStoreCorrupted_failsOpenWithErrorLevel() {
+        // given: Redis가 되살아나도 낫지 않는 실패
+        givenRoomAlive();
+        givenNotBanned();
+        String key = "chat:kicked:" + roomId;
+        given(kickRepository.isKicked(roomId, userId))
+                .willReturn(Mono.error(new KickStoreCorruptedException(key, new RuntimeException("WRONGTYPE"))));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(EntryGate.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        // when: 가용성 우선 — 입장은 그대로 허용한다
+        try {
+            StepVerifier.create(gate.verify(member())).verifyComplete();
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        // then: 곧 복구될 장애(WARN)와 등급이 갈린다. 분기를 지우면 WARN 한 줄만 남아 이 단언이 깨진다
+        assertThat(appender.list)
+                .anySatisfy(event -> {
+                    assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+                    assertThat(event.getFormattedMessage())
+                            .contains("재시도로 낫지 않으니")
+                            .contains(key);
+                });
+    }
+
+    @Test
+    @DisplayName("밴이면 거부 — 방과 무관하게 어디도 못 들어온다")
+    void banned_denied() {
+        // given: 이 방에서 강퇴된 적은 없다. 밴은 방이 아니라 사람에게 걸린다
+        givenRoomAlive();
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+        given(banRepository.isBanned(userId)).willReturn(Mono.just(true));
+
+        // when & then
+        StepVerifier.create(gate.verify(member()))
+                .expectErrorMatches(e -> e instanceof EntryDeniedException ed
+                        && ed.reason() == EntryDeniedException.Reason.BANNED)
+                .verify();
+    }
+
+    @Test
+    @DisplayName("게스트 → 밴 검사도 건너뛴다 — 접속마다 id가 새로 나 명단이 의미 없다")
+    void guest_skips_ban_check() {
+        // given
+        givenRoomAlive();
+        ChatSession guest = new ChatSession(roomId, userId, ChatRole.GUEST, null, null, false);
+
+        // when
+        StepVerifier.create(gate.verify(guest)).verifyComplete();
+
+        // then
+        then(banRepository).should(never()).isBanned(any());
+    }
+
+    @Test
+    @DisplayName("밴 조회 Redis 에러 → fail-open(입장 허용) — 종료·강퇴와 같은 저울질")
+    void ban_lookup_error_fails_open() {
+        // given: Redis가 죽었다고 정상 사용자 전원이 채팅을 잃는 쪽을 택하지 않는다
+        givenRoomAlive();
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+        given(banRepository.isBanned(userId)).willReturn(Mono.error(new RuntimeException("redis down")));
+
+        // when & then
+        StepVerifier.create(gate.verify(member())).verifyComplete();
+    }
+
+    @Test
+    @DisplayName("강퇴로 이미 거부되면 밴은 묻지 않는다 — 앞에서 걸리면 왕복이 줄어든다")
+    void kicked_denial_skips_ban_lookup() {
+        // given
+        givenRoomAlive();
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(true));
+
+        // when
+        StepVerifier.create(gate.verify(member()))
+                .expectErrorMatches(e -> e instanceof EntryDeniedException ed
+                        && ed.reason() == EntryDeniedException.Reason.KICKED)
+                .verify();
+
+        // then
+        then(banRepository).should(never()).isBanned(any());
     }
 
     @Test
@@ -136,6 +244,7 @@ class EntryGateTest {
         given(roomEndedRepository.isEnded(roomId))
                 .willReturn(Mono.error(new RuntimeException("redis down")));
         given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+        givenNotBanned();
 
         // when & then
         StepVerifier.create(gate.verify(member())).verifyComplete();

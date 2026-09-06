@@ -7,11 +7,12 @@ import org.springframework.stereotype.Component;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
+import com.sapari.chat.application.protocol.ChatMessageVisibility;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
-import com.sapari.chat.domain.model.ChatConstants;
 import com.sapari.chat.domain.model.ChatMessage;
-import com.sapari.chat.domain.model.ChatMessageType;
+import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.model.ChatSession;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,9 +23,10 @@ import reactor.core.publisher.Mono;
  * chat:pubsub 구독자 — 다른 Pod(또는 같은 Pod)가 발행한 봉투를 받아 이 Pod의 로컬 세션에 렌더한다.
  *
  * <ul>
- *   <li><b>CHAT</b>: 방 로컬 세션에 fan-out. <b>방 주인(isRoomOwner) 세션만</b> senderEmail·원문(originalMessage)
- *       포함(toOwnerView), 그 외는 마스킹된 displayMessage만(toView). PII 게이팅은 와이어가 아니라 이 fan-out
- *       시점에 적용된다(봉투엔 평문 PII 잔존 — 크로스 Pod 방주인 렌더에 필요, §8.2).
+ *   <li><b>CHAT</b>: 방 로컬 세션에 fan-out. <b>방 주인이거나 관리자인 세션만</b> senderEmail·원문
+ *       (originalMessage)을 받고, 그 외는 마스킹된 displayMessage만 받는다. PII 게이팅은 와이어가 아니라
+ *       이 fan-out 시점에 적용된다 — 봉투엔 평문 PII가 남아 있고, 그건 특권 수신자가 다른 Pod에 붙어
+ *       있을 수 있어서다.
  *   <li><b>KICK_EVENT</b>: 강퇴 당사자 세션엔 SYSTEM(KICKED) 후 WS close, 그 외 세션엔 KICK(userId).
  * </ul>
  *
@@ -35,8 +37,6 @@ import reactor.core.publisher.Mono;
 @Component
 @RequiredArgsConstructor
 public class ChatBroadcastSubscriber {
-
-    private static final String SYSTEM_NICKNAME = "SYSTEM";
 
     private final ChatBroadcaster broadcaster;
     private final ChatSessionManager sessionManager;
@@ -75,71 +75,40 @@ public class ChatBroadcastSubscriber {
      * 세션 식별자를 영속 메시지까지 관통시켜야 해서 얻는 것보다 잃는 게 크다.
      */
     private Mono<Void> fanOutChat(UUID roomId, ChatMessage message) {
-        OutboundMessage ownerView = toOutbound(message, true, false);
-        OutboundMessage normalView = toOutbound(message, false, false);
-        OutboundMessage ownerSenderView = toOutbound(message, true, true);
-        OutboundMessage senderView = toOutbound(message, false, true);
+        OutboundMessage moderatorView = OutboundMessage.chat(message, ChatMessageVisibility.FULL, false);
+        OutboundMessage normalView = OutboundMessage.chat(message, ChatMessageVisibility.MASKED, false);
+        OutboundMessage moderatorSenderView = OutboundMessage.chat(message, ChatMessageVisibility.FULL, true);
+        OutboundMessage senderView = OutboundMessage.chat(message, ChatMessageVisibility.MASKED, true);
         return sessionManager.sendToRoomGated(roomId, session -> {
             boolean sender = session.userId().equals(message.senderId());
-            return session.isRoomOwner()
-                    ? (sender ? ownerSenderView : ownerView)
+            return canModerate(session)
+                    ? (sender ? moderatorSenderView : moderatorView)
                     : (sender ? senderView : normalView);
         });
     }
 
+    /**
+     * 원문과 발신자 이메일을 받을 자격이 있는 세션인가.
+     *
+     * <p><b>방 주인이거나 관리자다.</b> 소유는 방 단위 권한이고 ADMIN은 그와 무관한 계정 권한이라 두 축이
+     * 따로 선다 — 남의 방에 시청자로 들어온 SELLER는 여기 해당하지 않는다(그게 소유 기반 게이팅을 도입한
+     * 이유다). 관리자를 포함하는 것은 그 결정을 되돌리는 게 아니라, 처음부터 함께 적혀 있었으나 구현되지
+     * 않았던 절반이다.
+     *
+     * <p><b>기본은 여전히 마스킹이다.</b> 이 메서드가 참을 돌려주는 경우만 예외이고, 그 방향을 뒤집으면
+     * (기본을 원문으로 두고 예외를 마스킹으로 두면) 새 역할이 늘 때마다 조용히 노출된다.
+     */
+    private boolean canModerate(ChatSession session) {
+        return session.isRoomOwner() || session.role() == ChatRole.ADMIN;
+    }
+
     private Mono<Void> fanOutKick(UUID roomId, UUID kickedUserId) {
-        OutboundMessage kicked = kickedSystem();
-        OutboundMessage kickNotice = kickNotice(kickedUserId);
+        OutboundMessage kicked = OutboundMessage.system(SystemMessageCode.KICKED);
+        OutboundMessage kickNotice = OutboundMessage.kick(kickedUserId);
         // 당사자엔 KICKED, 그 외엔 KICK 전송 → 그 다음 당사자 세션 close(KICKED가 close보다 먼저 도착하도록 순서 보장)
         return sessionManager.sendToRoomGated(roomId,
                         session -> session.userId().equals(kickedUserId) ? kicked : kickNotice)
                 .then(sessionManager.closeUser(roomId, kickedUserId));
     }
 
-    /**
-     * ChatMessage → 렌더용 OutboundMessage.
-     * ownerView일 때만 senderEmail·원문 포함, senderView일 때만 clientMsgId 포함(secure-by-default).
-     */
-    private OutboundMessage toOutbound(ChatMessage m, boolean ownerView, boolean senderView) {
-        return new OutboundMessage(
-                typeName(m.type()),                       // NORMAL | NOTICE
-                null,                                     // code
-                m.id(),                                   // MongoDB ObjectId
-                m.senderId(),
-                m.senderNickname(),
-                m.senderRole(),
-                ownerView ? m.senderEmail() : null,       // PII — 방주인만
-                m.displayMessage(),
-                ownerView ? m.originalMessage() : null,   // 원문 — 방주인만(강퇴 판단)
-                m.createdAt(),
-                null,                                     // userId — KICK 전용
-                null,                                     // activeCount — ROOM_INFO 전용
-                null,                                     // retryAfterSeconds — RATE_LIMIT 전용
-                senderView ? m.clientMsgId() : null,       // 보낸 사람에게만 — 자기 낙관적 버블과 짝짓는 키
-                null                                      // isRoomOwner — ROOM_INFO 전용
-        );
-    }
-
-    private String typeName(ChatMessageType type) {
-        return switch (type) {
-            case ChatMessageType.Normal n -> "NORMAL";
-            case ChatMessageType.Notice no -> "NOTICE";
-            case ChatMessageType.System s -> "SYSTEM";   // 와이어엔 안 옴 — sealed 전수성 방어
-        };
-    }
-
-    /** 강퇴 당사자에게 보내는 SYSTEM(KICKED). */
-    private OutboundMessage kickedSystem() {
-        return new OutboundMessage(
-                "SYSTEM", SystemMessageCode.KICKED.name(), null,
-                ChatConstants.SYSTEM_SENDER_ID, SYSTEM_NICKNAME, null,
-                null, null, null, null, null, null, null, null, null);
-    }
-
-    /** 그 외 세션에게 보내는 KICK(userId) — 프론트가 해당 userId 메시지 숨김. */
-    private OutboundMessage kickNotice(UUID kickedUserId) {
-        return new OutboundMessage(
-                "KICK", null, null, null, null, null,
-                null, null, null, null, kickedUserId, null, null, null, null);
-    }
 }

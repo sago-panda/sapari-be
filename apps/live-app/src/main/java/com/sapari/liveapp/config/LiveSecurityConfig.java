@@ -180,6 +180,12 @@ public class LiveSecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/webhooks/livekit").permitAll()
                         // 시청(조회)은 공개
                         .requestMatchers(HttpMethod.GET, "/api/v1/lives/**").permitAll()
+                        // 채팅 강퇴는 판매자와 관리자 둘 다 — 관리자는 남의 방도 통제한다.
+                        // 아래 판매자 전용 규칙보다 먼저 와야 한다(먼저 맞는 규칙이 이긴다).
+                        // 실제 판정은 여기서 끝나지 않는다: 자기 방인지, 방이 진행 중인지, 대상이
+                        // 관리자는 아닌지는 KickUserService 가 본다. 이 줄은 그 앞의 거친 관문이다.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/lives/*/chat/kick")
+                                .hasAnyRole("SELLER", "ADMIN")
                         // 생성/시작/종료 등 변경은 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

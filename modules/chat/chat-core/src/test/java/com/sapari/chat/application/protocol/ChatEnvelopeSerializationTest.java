@@ -18,7 +18,7 @@ import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 
 /**
- * ChatEnvelope 직렬화 계약 — api-app(손수 JSON 발행)과 streaming-app(역직렬화)이 타입을 공유하지 않으므로
+ * ChatEnvelope 직렬화 계약 — live-app(손수 JSON 발행)과 streaming-app(역직렬화)이 타입을 공유하지 않으므로
  * 이 계약이 깨지면 KICK_EVENT가 전 Pod에서 조용히 유실된다. 계약을 테스트로 고정한다.
  */
 class ChatEnvelopeSerializationTest {
@@ -48,7 +48,7 @@ class ChatEnvelopeSerializationTest {
     }
 
     @Test
-    @DisplayName("KickEvent 역직렬화 — api-app이 손수 만든 JSON 문자열을 ChatEnvelope로 복원한다(round-trip)")
+    @DisplayName("KickEvent 역직렬화 — live-app이 손수 만든 JSON 문자열을 ChatEnvelope로 복원한다(round-trip)")
     void kickEvent_deserializes_from_hand_written_json() throws Exception {
         // given
         UUID userId = UUID.fromString("22222222-2222-2222-2222-222222222222");

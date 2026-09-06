@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import lombok.extern.slf4j.Slf4j;
+
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.domain.rule.ProfanityFilter;
 import com.sapari.global.time.TimeProvider;
@@ -18,6 +20,7 @@ import com.sapari.global.time.TimeProvider;
  * (ChatPermissionPolicy·ProfanityFilter는 @Component가 아닌 순수 클래스, TimeProvider는 com.sapari.global 패키지라
  * streaming-app 스캔 밖 → 여기서 명시 @Bean.)
  */
+@Slf4j
 @Configuration
 public class ChatBeansConfig {
 
@@ -45,7 +48,16 @@ public class ChatBeansConfig {
     public ProfanityFilter profanityFilter(
             @Value("${chat.profanity.words:}") String words,
             @Value("${chat.profanity.whitelist:}") String whitelist) {
-        return new ProfanityFilter(toSet(words), toSet(whitelist));
+        Set<String> profanity = toSet(words);
+        if (profanity.isEmpty()) {
+            // 빈 사전은 조용한 pass-through다 — 필터가 붙어 있는데 아무것도 가리지 않는다. 그 상태로 뜨면
+            // 마스킹본과 원문이 같은 값이 되고, 그 둘을 가르는 것으로 서 있는 것들(두 필드 저장, 방주인
+            // 전용 원문 토글, 팬아웃 4분기)이 전부 차이 없는 값을 나른다. 기능이 꺼진 것을 배포 뒤에
+            // 알아채면 이미 그 기간의 이력이 남으므로, 부팅 시점에 시끄럽게 알린다.
+            log.warn("욕설 사전이 비어 있다 — 마스킹이 전혀 걸리지 않는다(displayMessage == originalMessage). "
+                    + "chat.profanity.words 를 주입하거나, 사전 로더가 붙기 전까지 이 상태가 의도인지 확인할 것");
+        }
+        return new ProfanityFilter(profanity, toSet(whitelist));
     }
 
     private Set<String> toSet(String csv) {
