@@ -72,4 +72,15 @@ final class ChatRedisKeys {
     static String accountEvents() {
         return "chat:account:events";
     }
+
+    /**
+     * 계정 이벤트 재발행 억제 키 — 존재하면 최근에 이미 알렸다는 뜻이다.
+     *
+     * <p>발행은 밴이 새로 걸렸든 이미 있던 것이든 나간다(그게 유일한 회수 경로다). 그래서 이미 밴된
+     * 대상을 반복 강퇴하면 호출마다 전 Pod가 로컬 세션을 훑는다 — 호출 횟수가 곧 함대 전체 스캔
+     * 횟수가 되고, 그 엔드포인트에는 레이트리밋이 없다.
+     */
+    static String accountEventDebounce(UUID userId) {
+        return "chat:account:pub:" + userId;
+    }
 }

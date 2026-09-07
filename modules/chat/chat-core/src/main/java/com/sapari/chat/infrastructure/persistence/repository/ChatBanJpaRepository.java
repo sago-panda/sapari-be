@@ -62,7 +62,10 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
      * (이력 행을 두거나, 충돌 시 그 두 열을 건드리지 않거나)을 <b>같은 변경에</b> 함께 내려야 한다 —
      * 잃을 밴이 생긴 뒤에 정하면 이미 덮인 것은 복구되지 않는다.
      */
-    @Modifying
+    // clearAutomatically — 네이티브 쿼리라 영속성 컨텍스트가 이 갱신을 모른다. 0행 분기에서 같은
+    // 컨텍스트로 다시 읽으면 1차 캐시의 갱신 전 값이 돌아올 수 있다. 오늘은 호출자가 먼저 읽어
+    // 있으면 여기까지 오지 않아 도달하지 않지만, 그 전제가 깨지는 순간 조용히 틀린 만료를 미러에 싣는다.
+    @Modifying(clearAutomatically = true)
     @Query(value = """
             INSERT INTO live_schema.chat_ban AS existing (user_id, banned_by_id, expires_at, created_at)
             VALUES (:userId, :bannedById, :expiresAt, :createdAt)

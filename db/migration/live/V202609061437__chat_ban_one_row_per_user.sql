@@ -1,5 +1,10 @@
 -- 사용자당 밴 행을 하나로 못 박는다.
 --
+-- ⚠️ V1__init_live.sql 의 자동 escalation 주석(3회→1주 … 12회+→영구)은 낡았다. 세는 단위가 강퇴
+--    횟수가 아니라 '서로 다른 강퇴자 수' 이고(COUNT(DISTINCT kicked_by_id)) 자동 영구 밴은 폐지돼
+--    상한이 1년이다. V1 은 체크섬이 잠겨 고칠 수 없으므로 여기에 적는다 —
+--    현재 규약은 modules/chat/AGENTS.md 와 ChatKickLogJpaRepository.countDistinctKickersSince 다.
+--
 -- 왜: 서로 다른 방에서 같은 사람을 동시에 강퇴하면 두 호출이 각각 "활성 밴 없음"을 읽고 각각 INSERT 한다
 -- (READ COMMITTED 라 서로의 미커밋 행이 보이지 않는다). 트랜잭션을 열어도 막히지 않는다 — 막는 것은
 -- 격리 수준이 아니라 제약이다.

@@ -1,5 +1,6 @@
 package com.sapari.chat.infrastructure.redis;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,6 +24,15 @@ import com.sapari.chat.application.protocol.ChatAccountEvent;
  */
 public class ChatAccountEventRedisPublisher implements ChatAccountEventPublisher {
 
+    /**
+     * 재발행 억제 창. 회수는 다음 강퇴가 하므로 이보다 긴 간격의 반복은 그대로 통과한다 —
+     * 이 값이 막는 것은 "지금 막 알린 것을 또 알리는" 연타뿐이다. 측정해서 고른 값이 아니다.
+     */
+    private static final Duration DEBOUNCE_WINDOW = Duration.ofSeconds(10);
+
+    /** 값은 읽히지 않는다. 존재만이 의미다. */
+    private static final String PRESENT = "1";
+
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -30,8 +40,27 @@ public class ChatAccountEventRedisPublisher implements ChatAccountEventPublisher
         this.redisTemplate = redisTemplate;
     }
 
+    /**
+     * 같은 사용자에 대해 <b>창 안에서 한 번만</b> 내보낸다.
+     *
+     * <p>발행 자체는 밴이 새로 걸렸든 이미 있던 것이든 일어나야 한다 — 이벤트를 놓친 Pod의 조용한
+     * 세션을 회수하는 경로가 그것뿐이다. 그런데 그러면 <b>이미 밴된 대상을 반복 강퇴하는 것만으로</b>
+     * 호출 횟수가 그대로 함대 전체 스캔 횟수가 된다. 이벤트 하나가 모든 Pod에서 로컬 세션을 두 번
+     * 훑고(사유 전송 + 종료), 이 엔드포인트에는 레이트리밋이 없다.
+     *
+     * <p>창을 두면 둘을 다 얻는다. 회수는 <b>다음 강퇴</b>가 하므로 창보다 긴 간격이면 그대로 살아 있고,
+     * 창 안의 반복은 첫 건이 이미 하고 있는 일이라 더 알릴 것이 없다.
+     *
+     * <p>{@code SET NX EX}라 판정과 예약이 한 번에 일어난다. 읽고 쓰면 동시 강퇴 둘이 같이 통과한다 —
+     * 정확히 이 어댑터가 줄이려는 상황이 두 배로 일어난다.
+     */
     @Override
     public void publishBanned(UUID userId) {
+        Boolean firstInWindow = redisTemplate.opsForValue()
+                .setIfAbsent(ChatRedisKeys.accountEventDebounce(userId), PRESENT, DEBOUNCE_WINDOW);
+        if (!Boolean.TRUE.equals(firstInWindow)) {
+            return;
+        }
         redisTemplate.convertAndSend(ChatRedisKeys.accountEvents(), serialize(new ChatAccountEvent.Banned(userId)));
     }
 

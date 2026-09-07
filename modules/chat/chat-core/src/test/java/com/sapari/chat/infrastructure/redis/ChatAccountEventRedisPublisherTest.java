@@ -37,13 +37,28 @@ class ChatAccountEventRedisPublisherTest {
     @Captor
     private ArgumentCaptor<String> payloadCaptor;
 
+    @Mock
+    private org.springframework.data.redis.core.ValueOperations<String, String> valueOperations;
+
     private final UUID userId = UUID.randomUUID();
+
+    /**
+     * 창을 통과시킨다. 이 파일이 재는 것은 <b>채널 이름과 봉투 바이트</b>이고, 창의 동작(SET NX EX)은
+     * 목으로는 드러나지 않아 실제 Redis로 따로 잰다({@code ChatAccountEventDebounceTest}).
+     */
+    private ChatAccountEventRedisPublisher publisher() {
+        org.mockito.BDDMockito.given(redisTemplate.opsForValue()).willReturn(valueOperations);
+        org.mockito.BDDMockito.given(valueOperations.setIfAbsent(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(java.time.Duration.class))).willReturn(true);
+        return new ChatAccountEventRedisPublisher(redisTemplate);
+    }
 
     @Test
     @DisplayName("⭐ 계정 채널로 나간다 — chat:pubsub 아래로 가면 전 Pod가 파싱 실패로 버린다")
     void publishesToTheAccountChannel() {
         // when
-        new ChatAccountEventRedisPublisher(redisTemplate).publishBanned(userId);
+        publisher().publishBanned(userId);
 
         // then
         then(redisTemplate).should().convertAndSend(channelCaptor.capture(), payloadCaptor.capture());
@@ -54,7 +69,7 @@ class ChatAccountEventRedisPublisherTest {
     @DisplayName("⭐ 수신 측이 같은 값으로 복원한다 — 필드명 한 글자가 틀리면 봉투가 조용히 사라진다")
     void roundTripsThroughTheReceiversMapper() throws Exception {
         // given
-        new ChatAccountEventRedisPublisher(redisTemplate).publishBanned(userId);
+        publisher().publishBanned(userId);
         then(redisTemplate).should().convertAndSend(channelCaptor.capture(), payloadCaptor.capture());
 
         // when: 수신 측과 같은 설정(기본 매퍼)으로 되돌린다
@@ -69,7 +84,7 @@ class ChatAccountEventRedisPublisherTest {
     @DisplayName("봉투에 실리는 것은 종류와 사용자뿐이다 — 필드가 늘면 그 자체가 롤링 배포 사건이다")
     void carriesOnlyKindAndUser() throws Exception {
         // given
-        new ChatAccountEventRedisPublisher(redisTemplate).publishBanned(userId);
+        publisher().publishBanned(userId);
         then(redisTemplate).should().convertAndSend(channelCaptor.capture(), payloadCaptor.capture());
 
         // when
