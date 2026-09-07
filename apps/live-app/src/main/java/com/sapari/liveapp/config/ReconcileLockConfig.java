@@ -82,7 +82,7 @@ import org.springframework.scheduling.support.CronExpression;
 // 기본값은 세 잡의 명시값 중 <b>가장 긴</b> 것에 맞춘다. 이 값이 실제로 쓰이는 건 lockAtMostFor 를
 // 빠뜨린 잡이 생겼을 때뿐인데, 그때 짧으면 회차가 리스를 넘겨 조용히 겹치고(= 락을 건 이유가 사라진다)
 // 길면 인계만 늦는다. 실수의 대가가 작은 쪽으로 기울인다. 빠뜨림 자체는 SchedulerWiringTest 가 잡는다.
-@EnableSchedulerLock(defaultLockAtMostFor = "PT90M")
+@EnableSchedulerLock(defaultLockAtMostFor = "PT120M")
 @ConditionalOnProperty(prefix = "live.reconcile", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class ReconcileLockConfig {
 

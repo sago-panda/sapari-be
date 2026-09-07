@@ -27,6 +27,13 @@ public enum ReconcileAction {
      */
     SKIPPED_INGRESS_MISSING,
     /**
+     * 방별 egress 조회 실패로 종료 판정을 미룸.
+     * 정상 상태 경합인 {@link #SKIPPED} 와 분리해 LiveKit 장애가 정상 잡음에 묻히지 않게 한다.
+     */
+    SKIPPED_EGRESS_LOOKUP_FAILED,
+    /** 전역 스냅샷에는 활성이었으나 직전 방별 목록이 비어 판정 불일치로 미룸 */
+    SKIPPED_EGRESS_SNAPSHOT_MISMATCH,
+    /**
      * 고아 ingress 삭제를 <b>요청</b>했다.
      *
      * <p>아래 셋은 이름이 전부 {@code _REQUESTED} 다. 정리 포트는 결과를 돌려주지 않기 때문이다 —
