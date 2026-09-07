@@ -63,6 +63,12 @@ public record SellerSignupRequest(
         @Pattern(regexp = "^(INDIVIDUAL|CORPORATE)$", message = "사업자 유형이 올바르지 않습니다.")
         String businessType
 ) {
+    /** 로그·디버그 출력에 비밀번호와 개인정보가 포함되지 않도록 고정 문자열만 반환한다. */
+    @Override
+    public String toString() {
+        return "SellerSignupRequest[REDACTED]";
+    }
+
     /**
      * 필수 약관 거부/누락은 요청 검증에서 4xx로 차단하고, 선택 약관은 명시적 거부도 command에 전달한다.
      */
