@@ -1,6 +1,7 @@
 package com.sapari.customer.application.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -58,6 +59,7 @@ import com.sapari.user.view.PreparedProfileImage;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class CustomerAuthService implements CustomerAuthUseCase {
 
     private static final Duration NICKNAME_CHANGE_INTERVAL = Duration.ofDays(30);
@@ -446,6 +448,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     /**
      * 이번 요청이 생성한 사용자만 식별자 대조 후 보상 삭제한다.
      * 보상 실패는 원래 실패 원인을 보존하기 위해 suppressed exception으로 연결한다.
+     * 보상 실패 시 수동 확인할 사용자 식별자와 예외 종류를 오류 로그로 남긴다.
      */
     private void rollbackSocialCustomerRegistration(
             UserView savedUser,
@@ -462,6 +465,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
             ));
         } catch (RuntimeException rollbackException) {
             originalException.addSuppressed(rollbackException);
+            // 예외 메시지에는 DB 값 등 민감정보가 포함될 수 있어 원문과 요청 정보는 기록하지 않는다.
+            log.error("SOCIAL_SIGNUP_ROLLBACK_FAILED stage=registration_rollback userId={} originalFailureType={} rollbackFailureType={}",
+                    savedUser.userId(), originalException.getClass().getName(), rollbackException.getClass().getName());
         }
     }
 

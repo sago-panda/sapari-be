@@ -14,6 +14,12 @@ import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -508,6 +514,44 @@ class CustomerAuthServiceTest {
         verify(socialSignupRepository, never()).delete(SIGNUP_SID);
         verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
         verifyNoInteractions(refreshTokenStore);
+    }
+
+    /** 보상 실패 로그에서 정리 대상은 식별하되 예외 메시지와 가입 인증 정보는 노출하지 않는다. */
+    @Test
+    @DisplayName("가입 보상 실패는 안전한 식별 로그를 남기고 원래 오류와 보상 오류를 보존한다")
+    void completeSocialSignupLogsRollbackFailureWithoutSensitiveDetails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        RuntimeException originalFailure = new IllegalStateException("secret-original-message");
+        RuntimeException rollbackFailure = new IllegalArgumentException("secret-rollback-message");
+        doThrow(originalFailure).when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(any());
+        doThrow(rollbackFailure).when(userAccountUseCase).rollbackSocialCustomerRegistration(any());
+
+        Logger logger = (Logger) LoggerFactory.getLogger(CustomerAuthService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                    .isSameAs(originalFailure)
+                    .satisfies(error -> assertThat(error.getSuppressed()).containsExactly(rollbackFailure));
+            assertThat(appender.list).filteredOn(event -> event.getLevel() == Level.ERROR)
+                    .singleElement().satisfies(event -> {
+                        assertThat(event.getFormattedMessage())
+                                .contains("SOCIAL_SIGNUP_ROLLBACK_FAILED", userId.toString(),
+                                        "IllegalStateException", "IllegalArgumentException")
+                                .doesNotContain(SIGNUP_SID, EMAIL, "01012345678",
+                                        "secret-original-message", "secret-rollback-message");
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     @Test
