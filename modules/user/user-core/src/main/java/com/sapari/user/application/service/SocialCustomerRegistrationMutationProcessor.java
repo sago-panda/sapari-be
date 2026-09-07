@@ -26,7 +26,7 @@ public class SocialCustomerRegistrationMutationProcessor {
     /** 저장된 가입 식별자가 모두 일치할 때만 약관 증적과 사용자를 삭제하고 정리할 이미지 key를 반환한다. */
     @Transactional
     public String rollback(SocialCustomerRegistrationRollbackCommand command) {
-        User user = userRepository.findById(command.userId())
+        User user = userRepository.findByIdForUpdate(command.userId())
                 .orElseThrow(() -> new IllegalStateException("registration user not found"));
         // 다른 사용자 삭제를 막는 마지막 방어선으로 이번 가입의 role/provider/providerId/email을 모두 대조한다.
         if (user.role() != UserRole.USER

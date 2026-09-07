@@ -1,4 +1,6 @@
 dependencies {
+    testImplementation(project(':modules:user:user-api'))
+    testCompileOnly 'org.mapstruct:mapstruct:1.5.5.Final'
     implementation project(':common:web')
     implementation project(':common:auth')
     implementation(project(":modules:customer:customer-api"))

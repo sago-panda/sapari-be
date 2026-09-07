@@ -45,7 +45,7 @@ class ProfileImageMutationProcessorTest {
         String oldKey = user.profileImageKey();
         String newKey = "users/%s/profile/new-image.png".formatted(userId);
         ProfileImageMutationProcessor processor = new ProfileImageMutationProcessor(userRepository);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // when
@@ -67,7 +67,7 @@ class ProfileImageMutationProcessorTest {
         User user = activeCustomer(userId);
         String oldKey = user.profileImageKey();
         ProfileImageMutationProcessor processor = new ProfileImageMutationProcessor(userRepository);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // when
@@ -87,7 +87,7 @@ class ProfileImageMutationProcessorTest {
         // given
         UUID userId = UUID.randomUUID();
         ProfileImageMutationProcessor processor = new ProfileImageMutationProcessor(userRepository);
-        when(userRepository.findById(userId)).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.empty());
 
         // when, then
         assertThatThrownBy(() -> processor.replaceProfileImageKey(userId, "users/%s/profile/new.png".formatted(userId)))
@@ -102,7 +102,7 @@ class ProfileImageMutationProcessorTest {
         // given
         UUID userId = UUID.randomUUID();
         ProfileImageMutationProcessor processor = new ProfileImageMutationProcessor(userRepository);
-        when(userRepository.findById(userId)).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.empty());
 
         // when, then
         assertThatThrownBy(() -> processor.removeProfileImageKey(userId))

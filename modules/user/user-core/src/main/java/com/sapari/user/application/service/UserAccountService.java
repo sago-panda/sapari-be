@@ -2,6 +2,7 @@ package com.sapari.user.application.service;
 
 import lombok.RequiredArgsConstructor;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -9,6 +10,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
@@ -23,6 +25,9 @@ import com.sapari.user.application.dto.ProfileImageStoreCommand;
 import com.sapari.user.application.dto.StoredProfileImage;
 import com.sapari.user.application.port.ProfileImageStorage;
 import com.sapari.user.domain.model.Terms;
+import com.sapari.user.domain.exception.UserException;
+import com.sapari.user.domain.exception.UserErrorCode;
+import com.sapari.user.exception.NicknameChangeRestrictedException;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.model.UserTermsAgreement;
 import com.sapari.user.domain.model.WithdrawnUserRetention;
@@ -36,6 +41,7 @@ import com.sapari.user.application.port.ProfileImageUrlResolver;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.TermsType;
 import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.view.UserView;
@@ -215,12 +221,23 @@ public class UserAccountService implements UserAccountUseCase {
         return userRepository.existsByNickname(nickname);
     }
 
+    /** 최신 사용자 상태를 잠금으로 읽고 호출자의 변경 간격을 검사한 뒤 닉네임을 저장한다. */
     @Override
     @Transactional
-    public UserView changeNickname(UUID userId, String nickname) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
-        User updated = user.updateNickname(nickname, timeProvider.now());
+    public UserView changeNickname(UUID userId, String nickname, Duration changeInterval) {
+        if (changeInterval == null || changeInterval.isNegative() || changeInterval.isZero()) {
+            throw new IllegalArgumentException("닉네임 변경 간격은 양수여야 합니다.");
+        }
+        User user = findUserForUpdate(userId);
+        if (!user.isActive()) {
+            throw new UserException(UserErrorCode.USER_NOT_ACTIVE);
+        }
+        Instant now = timeProvider.now();
+        // 잠금 전에 두 요청이 모두 검증을 통과했어도 두 번째 변경은 최신 시각으로 거부한다.
+        if (now.isBefore(user.nicknameChangedAt().plus(changeInterval))) {
+            throw new NicknameChangeRestrictedException();
+        }
+        User updated = user.updateNickname(nickname, now);
         return toView(userRepository.save(updated));
     }
 
@@ -306,14 +323,26 @@ public class UserAccountService implements UserAccountUseCase {
     @Override
     @Transactional
     public UserView requestWithdrawal(UUID userId) {
+        User user = findUserForUpdate(userId);
+        if (user.status() == UserStatus.WITHDRAWING) {
+            // 세션 폐기 실패 후 재요청해도 최초 탈퇴 유예 시작 시각을 연장하지 않는다.
+            return toView(user);
+        }
         Instant now = timeProvider.now();
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
-
         createRetentionIfAbsent(user, now);
 
         User updated = user.requestWithdrawal(now);
         return toView(userRepository.save(updated));
+    }
+
+    /** 잠금 충돌은 사용자 부재와 구분하여 재시도 가능한 일시 장애로 노출한다. */
+    private User findUserForUpdate(UUID userId) {
+        try {
+            return userRepository.findByIdForUpdate(userId)
+                    .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
+        } catch (PessimisticLockingFailureException e) {
+            throw new UserException(UserErrorCode.USER_MUTATION_BUSY, e);
+        }
     }
 
     /**

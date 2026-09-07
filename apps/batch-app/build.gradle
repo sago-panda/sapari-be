@@ -1,4 +1,5 @@
 dependencies {
+    implementation(project(':modules:user:user-api'))
     implementation 'org.springframework.boot:spring-boot-starter-batch'
     implementation(project(':modules:user:user-core'))
     implementation(project(':modules:seller:seller-core'))

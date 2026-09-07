@@ -10,6 +10,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.util.StringUtils;
 
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
@@ -40,6 +41,7 @@ import com.sapari.seller.view.SellerNicknameUpdateResult;
 import com.sapari.seller.view.SellerSignupResult;
 import com.sapari.seller.view.SellerTokenReissueResult;
 import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.exception.NicknameChangeRestrictedException;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
@@ -178,8 +180,9 @@ public class SellerAuthService implements SellerAuthUseCase {
         sellerJwtTokenAdapter.revokeSession(command.accessToken());
     }
 
+    /** 탈퇴 DB 변경을 커밋한 뒤 세션을 폐기한다. 폐기 실패의 재요청은 최초 탈퇴 시각을 유지한다. */
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void requestWithdrawal(String accessToken) {
         JwtTokenLifecycle.AccessSession accessSession =
                 sellerJwtTokenAdapter.requireAccessToken(accessToken);
@@ -199,8 +202,9 @@ public class SellerAuthService implements SellerAuthUseCase {
         return sellerViewMapper.toMeView(seller, sellerProfile);
     }
 
+    /** DB 변경을 먼저 커밋해 잠금을 해제한 뒤 토큰을 교체한다. 토큰 실패 시 재발급/재로그인이 필요하다. */
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
         JwtTokenLifecycle.AccessSession accessSession =
                 sellerJwtTokenAdapter.requireAccessToken(command.accessToken());
@@ -212,11 +216,15 @@ public class SellerAuthService implements SellerAuthUseCase {
         validateNicknameChangeAllowed(seller, now);
 
         try {
-            UserView savedSeller = userAccountUseCase.changeNickname(accessSession.userId(), command.nickname());
+            UserView savedSeller = userAccountUseCase.changeNickname(
+                    accessSession.userId(), command.nickname(), NICKNAME_CHANGE_INTERVAL);
             SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
             String accessToken = sellerJwtTokenAdapter.replaceAccessTokenForNickname(accessSession, savedSeller);
 
             return sellerViewMapper.toNicknameUpdateResult(savedSeller, sellerProfile, accessToken);
+        } catch (NicknameChangeRestrictedException e) {
+            // 사전 검사 이후 경합으로 변경된 시각도 기존 도메인의 제한 응답으로 변환한다.
+            throw new SellerException(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED, e);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }

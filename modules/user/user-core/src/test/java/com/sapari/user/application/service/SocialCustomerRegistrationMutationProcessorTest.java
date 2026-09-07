@@ -45,7 +45,7 @@ class SocialCustomerRegistrationMutationProcessorTest {
         UUID userId = UUID.randomUUID();
         String profileImageKey = "users/%s/profile/signup.png".formatted(userId);
         SocialCustomerRegistrationRollbackCommand command = command(userId);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(
                 customer(userId).updateProfileImageKey(profileImageKey)));
         SocialCustomerRegistrationMutationProcessor processor =
                 new SocialCustomerRegistrationMutationProcessor(userRepository, userTermsAgreementRepository);
@@ -63,7 +63,7 @@ class SocialCustomerRegistrationMutationProcessorTest {
     void rollbackReturnsNullWhenRegistrationHasNoProfileImage() {
         UUID userId = UUID.randomUUID();
         SocialCustomerRegistrationRollbackCommand command = command(userId);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(customer(userId)));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(customer(userId)));
         SocialCustomerRegistrationMutationProcessor processor =
                 new SocialCustomerRegistrationMutationProcessor(userRepository, userTermsAgreementRepository);
 
@@ -79,7 +79,7 @@ class SocialCustomerRegistrationMutationProcessorTest {
     void rollbackRejectsMismatchedIdentity() {
         UUID userId = UUID.randomUUID();
         SocialCustomerRegistrationRollbackCommand command = command(userId);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(
                 customer(userId).toBuilder().providerId("different-provider-id").build()));
         SocialCustomerRegistrationMutationProcessor processor =
                 new SocialCustomerRegistrationMutationProcessor(userRepository, userTermsAgreementRepository);

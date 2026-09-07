@@ -26,7 +26,9 @@ public enum UserErrorCode implements ErrorCode {
     PROFILE_IMAGE_TOO_LARGE(400, "USER-115", "프로필 이미지 파일 크기가 허용 범위를 초과했습니다."),
     PROFILE_IMAGE_UNSUPPORTED_TYPE(400, "USER-116", "지원하지 않는 프로필 이미지 형식입니다."),
     PROFILE_IMAGE_INVALID_CONTENT(400, "USER-117", "프로필 이미지 파일 내용이 올바르지 않습니다."),
-    PROFILE_IMAGE_STORAGE_UNAVAILABLE(503, "USER-118", "프로필 이미지 저장이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.");
+    PROFILE_IMAGE_STORAGE_UNAVAILABLE(503, "USER-118", "프로필 이미지 저장이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."),
+    USER_NOT_ACTIVE(409, "USER-119", "현재 계정 상태에서는 정보를 변경할 수 없습니다."),
+    USER_MUTATION_BUSY(503, "USER-120", "다른 계정 변경이 진행 중입니다. 잠시 후 다시 시도해 주세요.");
 
     private final int status;
     private final String code;

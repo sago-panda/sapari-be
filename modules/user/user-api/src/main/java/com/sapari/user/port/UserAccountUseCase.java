@@ -1,5 +1,6 @@
 package com.sapari.user.port;
 
+import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,7 +17,7 @@ import com.sapari.user.view.PreparedProfileImage;
 /**
  * 공유 식별자(User) 접근 포트. user-core가 구현하고 customer/seller는 이 계약에만 의존한다.
  * 역할별 도메인 규칙(닉네임 변경 제한·역할 검증 등)은 호출자(customer/seller)가 보유하고,
- * 이 포트는 영속성·조회·생성·매핑만 책임진다.
+ * 이 포트는 영속성·조회·생성·매핑과 전달된 변경 정책의 잠금 후 재검증을 책임진다.
  */
 public interface UserAccountUseCase {
 
@@ -49,7 +50,11 @@ public interface UserAccountUseCase {
 
     boolean existsByNickname(String nickname);
 
-    UserView changeNickname(UUID userId, String nickname);
+    /**
+     * 호출자가 정한 변경 간격을 잠금 획득 후 최신 사용자 시각으로 재검증하고 변경한다.
+     * @throws com.sapari.user.exception.NicknameChangeRestrictedException 변경 간격이 지나지 않은 경우
+     */
+    UserView changeNickname(UUID userId, String nickname, Duration changeInterval);
 
     /**
      * 인증된 사용자의 프로필 이미지를 검증·저장하고 DB에는 새 object key만 반영한다.

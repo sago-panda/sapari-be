@@ -434,7 +434,7 @@ class UserAccountServiceTest {
         Instant now = Instant.parse("2026-06-15T09:40:00Z");
         User user = activeCustomer(userId);
         when(timeProvider.now()).thenReturn(now);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(withdrawnUserRetentionRepository.existsByOriginalUserId(userId)).thenReturn(false);
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -474,7 +474,7 @@ class UserAccountServiceTest {
         Instant now = Instant.parse("2026-06-15T09:40:00Z");
         User user = activeCustomer(userId);
         when(timeProvider.now()).thenReturn(now);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(withdrawnUserRetentionRepository.existsByOriginalUserId(userId)).thenReturn(true);
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -570,4 +570,3 @@ class UserAccountServiceTest {
                 .build();
     }
 }
-

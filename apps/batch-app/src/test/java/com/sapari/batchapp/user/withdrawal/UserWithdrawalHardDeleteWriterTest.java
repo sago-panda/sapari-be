@@ -1,6 +1,11 @@
 package com.sapari.batchapp.user.withdrawal;
 
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
+import java.util.Optional;
+import com.sapari.user.domain.model.User;
+import com.sapari.user.model.UserStatus;
 
 import java.util.List;
 import java.util.UUID;
@@ -35,6 +40,8 @@ class UserWithdrawalHardDeleteWriterTest {
     void writeDeletesUserOwnedDataBeforeUserRow() throws Exception {
         // given
         UUID userId = UUID.randomUUID();
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(
+                User.builder().userId(userId).status(UserStatus.WITHDRAWING).build()));
         UserWithdrawalHardDeleteWriter writer = new UserWithdrawalHardDeleteWriter(
                 localCredentialRepository,
                 sellerProfileRepository,
@@ -46,8 +53,21 @@ class UserWithdrawalHardDeleteWriterTest {
 
         // then
         InOrder inOrder = inOrder(localCredentialRepository, sellerProfileRepository, userRepository);
+        inOrder.verify(userRepository).findByIdForUpdate(userId);
         inOrder.verify(localCredentialRepository).deleteByUserId(userId);
         inOrder.verify(sellerProfileRepository).deleteByUserId(userId);
         inOrder.verify(userRepository).deleteById(userId);
+    }
+
+    /** reader 이후 활성 상태로 바뀐 사용자는 하위 데이터까지 보존한다. */
+    @Test
+    void skipsUserNoLongerWithdrawing() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(userRepository.findByIdForUpdate(id)).thenReturn(Optional.of(
+                User.builder().userId(id).status(UserStatus.ACTIVE).build()));
+        new UserWithdrawalHardDeleteWriter(localCredentialRepository, sellerProfileRepository, userRepository)
+                .write(new Chunk<>(List.of(id)));
+        verifyNoInteractions(localCredentialRepository, sellerProfileRepository);
+        org.mockito.Mockito.verify(userRepository, org.mockito.Mockito.never()).deleteById(id);
     }
 }

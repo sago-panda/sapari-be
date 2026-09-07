@@ -10,6 +10,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -44,6 +45,7 @@ import com.sapari.customer.view.SocialLoginTokenResult;
 import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.exception.NicknameChangeRestrictedException;
 import com.sapari.user.command.ProfileImagePrepareCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
@@ -226,9 +228,10 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     /**
      * Access Token을 검증해 고객 계정을 탈퇴 유예 상태로 전환하고 모든 refresh/access 세션을 폐기한다.
+     * DB 커밋 후 세션을 폐기하며, 폐기 실패의 재요청은 최초 탈퇴 시각을 유지한다.
      */
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void requestWithdrawal(String accessToken) {
         JwtTokenLifecycle.AccessSession accessSession =
                 customerJwtTokenAdapter.requireAccessToken(accessToken);
@@ -263,8 +266,9 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         return customerViewMapper.toMeView(findCustomer(userId));
     }
 
+    /** DB 변경을 먼저 커밋해 잠금을 해제한 뒤 토큰을 교체한다. 토큰 실패 시 재발급/재로그인이 필요하다. */
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CustomerNicknameUpdateResult updateNickname(CustomerNicknameUpdateCommand command) {
         JwtTokenLifecycle.AccessSession accessSession =
                 customerJwtTokenAdapter.requireAccessToken(command.accessToken());
@@ -276,10 +280,14 @@ public class CustomerAuthService implements CustomerAuthUseCase {
         validateNicknameChangeAllowed(customer, now);
 
         try {
-            UserView savedCustomer = userAccountUseCase.changeNickname(accessSession.userId(), command.nickname());
+            UserView savedCustomer = userAccountUseCase.changeNickname(
+                    accessSession.userId(), command.nickname(), NICKNAME_CHANGE_INTERVAL);
             String accessToken = customerJwtTokenAdapter.replaceAccessTokenForNickname(accessSession, savedCustomer);
 
             return customerViewMapper.toNicknameUpdateResult(savedCustomer, accessToken);
+        } catch (NicknameChangeRestrictedException e) {
+            // 사전 검사 이후 경합으로 변경된 시각도 기존 도메인의 제한 응답으로 변환한다.
+            throw new CustomerException(CustomerErrorCode.NICKNAME_CHANGE_RESTRICTED, e);
         } catch (DataIntegrityViolationException e) {
             throw new CustomerException(CustomerErrorCode.DUPLICATED_NICKNAME, e);
         }

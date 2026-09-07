@@ -5,12 +5,15 @@ import lombok.RequiredArgsConstructor;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.user.application.dto.ProfileImageChangeResult;
 import com.sapari.user.application.dto.ProfileImageRemoveResult;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.repository.UserRepository;
+import com.sapari.user.domain.exception.UserException;
+import com.sapari.user.domain.exception.UserErrorCode;
 
 /**
  * 프로필 이미지 object key의 DB 변경만 짧은 트랜잭션으로 처리한다.
@@ -27,8 +30,7 @@ public class ProfileImageMutationProcessor {
      */
     @Transactional
     public ProfileImageChangeResult replaceProfileImageKey(UUID userId, String newProfileImageKey) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
+        User user = findActiveUserForUpdate(userId);
 
         String oldProfileImageKey = user.profileImageKey();
         User savedUser = userRepository.save(user.updateProfileImageKey(newProfileImageKey));
@@ -41,12 +43,27 @@ public class ProfileImageMutationProcessor {
      */
     @Transactional
     public ProfileImageRemoveResult removeProfileImageKey(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
+        User user = findActiveUserForUpdate(userId);
 
         String oldProfileImageKey = user.profileImageKey();
         User savedUser = userRepository.save(user.removeProfileImage());
 
         return new ProfileImageRemoveResult(savedUser, oldProfileImageKey);
+    }
+
+    /** 인증 후 탈퇴·정지와 경합할 수 있으므로 잠금 획득 후 활성 상태를 다시 검사한다. */
+    private User findActiveUserForUpdate(UUID userId) {
+        User user;
+        try {
+            user = userRepository.findByIdForUpdate(userId)
+                    .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
+        } catch (PessimisticLockingFailureException e) {
+            // 저장소 보상은 호출자가 수행하고 클라이언트에는 재시도 가능한 충돌임을 알린다.
+            throw new UserException(UserErrorCode.USER_MUTATION_BUSY, e);
+        }
+        if (!user.isActive()) {
+            throw new UserException(UserErrorCode.USER_NOT_ACTIVE);
+        }
+        return user;
     }
 }

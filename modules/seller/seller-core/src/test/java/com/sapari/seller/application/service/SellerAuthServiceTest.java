@@ -831,7 +831,7 @@ class SellerAuthServiceTest {
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
         when(sellerProfileRepository.findByUserId(userId)).thenReturn(Optional.of(sellerProfile(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
-        when(userAccountUseCase.changeNickname(userId, "updated"))
+        when(userAccountUseCase.changeNickname(userId, "updated", Duration.ofDays(30)))
                 .thenReturn(sellerView(userId, "updated", passwordChangedAt()));
 
         // when
@@ -856,7 +856,7 @@ class SellerAuthServiceTest {
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
         verify(userAccountUseCase).existsByNickname("updated");
-        verify(userAccountUseCase).changeNickname(userId, "updated");
+        verify(userAccountUseCase).changeNickname(userId, "updated", Duration.ofDays(30));
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
         verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
         verifyNoInteractions(sessionRevocationStore);
@@ -882,7 +882,7 @@ class SellerAuthServiceTest {
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED)
                 );
         verify(userAccountUseCase).existsByNickname("updated");
-        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class), any(Duration.class));
     }
 
     @Test
@@ -904,7 +904,7 @@ class SellerAuthServiceTest {
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_NICKNAME)
                 );
         verify(userAccountUseCase).existsByNickname("seller");
-        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class), any(Duration.class));
     }
 
     @Test
@@ -927,6 +927,21 @@ class SellerAuthServiceTest {
                 );
     }
 
+    /** 잠금 전 검증 이후 발생한 변경 간격 위반도 기존 도메인 응답으로 변환한다. */
+    @Test
+    void mapsNicknameRestrictionAfterLock() {
+        UUID id = UUID.randomUUID();
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(id, UserRole.SELLER.name()));
+        when(userAccountUseCase.findById(id)).thenReturn(Optional.of(sellerView(id)));
+        when(userAccountUseCase.changeNickname(id, "updated", Duration.ofDays(30)))
+                .thenThrow(new com.sapari.user.exception.NicknameChangeRestrictedException());
+
+        assertThatThrownBy(() -> sellerAuthService.updateNickname(new SellerNicknameUpdateCommand("updated", token)))
+                .isInstanceOfSatisfying(SellerException.class, e ->
+                        assertThat(e.getErrorCode()).isEqualTo(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
     @Test
     @DisplayName("저장 중 닉네임 unique 충돌이 발생하면 닉네임 중복으로 실패한다")
     void updateNicknameThrowsExceptionWhenNicknameSaveConflicts() {
@@ -939,7 +954,7 @@ class SellerAuthServiceTest {
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
-        when(userAccountUseCase.changeNickname(userId, "updated"))
+        when(userAccountUseCase.changeNickname(userId, "updated", Duration.ofDays(30)))
                 .thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
