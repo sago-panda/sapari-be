@@ -270,8 +270,8 @@ class UserAccountServiceTest {
     }
 
     @Test
-    @DisplayName("준비된 프로필 이미지는 재검증 없이 저장하고 새 key를 반영한다")
-    void changePreparedProfileImageStoresWithoutRevalidation() {
+    @DisplayName("준비된 프로필 이미지도 재검증 결과를 저장하고 새 key를 반영한다")
+    void changePreparedProfileImageStoresRevalidatedContent() {
         UUID userId = UUID.randomUUID();
         User user = activeCustomer(userId);
         String oldKey = user.profileImageKey();
@@ -279,6 +279,8 @@ class UserAccountServiceTest {
         PreparedProfileImage image = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
         ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(
                 userId, image.normalizedExtension(), image.contentType(), image.content());
+        when(profileImageUploadValidator.validate(userId, "prepared.png", "image/png", image.content()))
+                .thenReturn(storeCommand);
         when(profileImageStorage.store(storeCommand)).thenReturn(new StoredProfileImage(newKey, "image/png", 3));
         when(profileImageMutationProcessor.replaceProfileImageKey(userId, newKey))
                 .thenReturn(new ProfileImageChangeResult(user.updateProfileImageKey(newKey), oldKey));
@@ -286,7 +288,7 @@ class UserAccountServiceTest {
         UserView result = userAccountService.changePreparedProfileImage(userId, image);
 
         assertThat(result.profileImageUrl()).isEqualTo("https://cdn.example/" + newKey);
-        verifyNoInteractions(profileImageUploadValidator);
+        verify(profileImageUploadValidator).validate(userId, "prepared.png", "image/png", image.content());
         verify(profileImageStorage).store(storeCommand);
     }
 

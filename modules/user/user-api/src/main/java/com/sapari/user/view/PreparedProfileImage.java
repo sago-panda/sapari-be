@@ -9,4 +9,19 @@ public record PreparedProfileImage(
         String contentType,
         byte[] content
 ) {
+    /** 정규화된 저장 형식을 검증하고 이미지 바이트의 소유권을 분리한다. */
+    public PreparedProfileImage {
+        boolean supported = ("png".equals(normalizedExtension) && "image/png".equals(contentType))
+                || ("jpg".equals(normalizedExtension) && "image/jpeg".equals(contentType));
+        if (!supported || content == null || content.length == 0) {
+            throw new IllegalArgumentException("정규화된 이미지 형식과 비어 있지 않은 내용이 필요합니다.");
+        }
+        content = content.clone();
+    }
+
+    /** 검증 이후 호출자가 내부 이미지 바이트를 변경하지 못하도록 복사본을 반환한다. */
+    @Override
+    public byte[] content() {
+        return content.clone();
+    }
 }

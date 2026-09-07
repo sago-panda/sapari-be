@@ -261,12 +261,13 @@ public class UserAccountService implements UserAccountUseCase {
         );
     }
 
-    /** 준비된 이미지를 저장하고 DB key를 교체하며 실패 지점에 맞춰 신규 또는 기존 object를 정리한다. */
+    /** 공개 전달 타입의 바이트를 재검증한 뒤 저장하고 DB 실패 시 신규 object를 보상한다. */
     @Override
     public UserView changePreparedProfileImage(UUID userId, PreparedProfileImage image) {
-        ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(
+        // public record는 검증기를 거치지 않고도 생성할 수 있으므로 타입명만 신뢰하지 않는다.
+        ProfileImageStoreCommand storeCommand = profileImageUploadValidator.validate(
                 userId,
-                image.normalizedExtension(),
+                "prepared." + image.normalizedExtension(),
                 image.contentType(),
                 image.content()
         );
