@@ -16,6 +16,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.infrastructure.config.LiveReconcileProperties;
+import org.springframework.boot.convert.DurationStyle;
+import org.springframework.core.env.Environment;
 import org.springframework.scheduling.support.CronExpression;
 
 /**
@@ -40,17 +44,24 @@ import org.springframework.scheduling.support.CronExpression;
  * <p><b>락 유지 시간</b>({@code live.reconcile.<job>.lock-at-most-for}) 은 곧 <b>락 보유 인스턴스가
  * 죽었을 때의 인계 지연</b>이다. ShedLock 은 실행 중인 회차를 중단시키지도 리스를 연장하지도 않으므로,
  * 회차가 이 값을 넘기면 락이 만료된 채로 계속 돌고 다음 tick 의 다른 인스턴스가 같은 회차를 겹쳐 돈다
- * — 즉 <b>짧게 주면 락을 건 이유가 사라진다</b>. 그래서 잡의 최악 실행 시간보다 길게 잡는다(잡별 근거는
- * 각 스케줄러). 프로퍼티로 뺀 건 인계 테스트가 이 값을 초 단위로 줄여야 하기 때문이다.
+ * — 즉 <b>짧게 주면 락을 건 이유가 사라진다</b>.
+ *
+ * <p><b>인과가 뒤집혔다</b>: 예전에는 "잡의 최악 실행 시간"을 추정해 그보다 길게 리스를 잡았다. 그
+ * 추정이 성립하지 않는다는 게 드러나(후보당 왕복 수가 방의 리소스 수에 비례해 설정으로 늘어난다)
+ * 이제는 <b>리스가 회차 예산의 원천</b>이다 — {@code roundBudget = lock-at-most-for × 4/5} 이고 회차는
+ * 그 예산에서 멈춘다({@code LiveReconcileProperties}). 즉 이 값을 정하는 건 "얼마나 걸릴까"가 아니라
+ * <b>"인계를 얼마나 늦춰도 되는가"</b>이고, 처리량은 거기서 따라온다.
+ *
+ * <p>프로퍼티로 뺀 건 인계 테스트가 이 값을 초 단위로 줄여야 하기 때문이다.
  *
  * <p>{@code live.reconcile.lock-at-least-for} 는 회차가 순식간에 끝났을 때를 막는다. 두 인스턴스의
  * cron 발화가 지터로 수백 ms 어긋나면 먼저 돈 쪽이 이미 락을 놓은 뒤라 뒤에 온 쪽이 같은 회차를 한 번
  * 더 돈다. <b>cron 간격보다 짧게 유지할 것</b> — 주기를 이 값 아래로 내리면 회차를 조용히 건너뛴다.
  *
- * <p><b>관측 사각지대</b>(도입으로 새로 생겼다): {@code @SchedulerLock} 은 {@code run()} <b>바깥</b>을
- * 감싸므로, 락을 못 잡은 회차는 {@code reconcileRound*} 카운터를 하나도 올리지 않는다. 레플리카 합산은
- * 회차당 1이라 정상이지만, 락 홀더가 죽어 행이 남으면 그 잡은 유지 시간만큼 <b>기록이 0</b>이 되어
- * "스케줄러가 죽었다"와 구분되지 않는다.
+ * <p>{@code @SchedulerLock} 은 {@code run()} 바깥을 감싸므로 회차 지표만으로는 락 경합과 죽은
+ * 스케줄러를 구분할 수 없다. {@link TrackingLockProvider} 가 획득·스킵·실패를
+ * {@code live.reconcile.lock} 으로 따로 기록한다({@code shutdown} 은 종료 중 새 회차를 막은 결과다).
+ * <b>실행 중인 회차의 락을 대신 반납하지는 않는다</b> — 이유는 {@link TrackingLockProvider} 클래스 주석.
  *
  * <p>락 저장소 장애는 <b>조용하지 않다</b>. {@code throwUnexpectedException} 기본값이 {@code false} 라
  * "장애가 전부 빈 값으로 수렴한다"고 읽기 쉬운데, 실제로 부딪히는 두 경우는 모두 예외로 올라온다
@@ -64,11 +75,8 @@ import org.springframework.scheduling.support.CronExpression;
  * 삼켜지는 건 {@code DuplicateKey}·{@code ConcurrencyFailure}·{@code DataIntegrityViolation} 처럼
  * <b>경합에 가까운</b> 종류뿐이고, 그건 빈 값(= 다음 회차 재시도)으로 처리하는 게 맞다.
  *
- * <p>다만 <b>어느 쪽이든 {@code reconcileRoundFailed} 는 오르지 않는다.</b> 프록시가 유스케이스 바깥이라
- * 예외가 스케줄러의 {@code catch} 에도 닿지 않아, 준비해 둔 도메인 문구 대신 Spring 기본 핸들러 로그만
- * 남는다(로그는 남으므로 "무기록"은 아니다). 지표까지 메우려면 락 결과를 세는 {@code LiveMetrics} 포트
- * 메서드가 필요하고, 그건 <b>[SPR-145 로 이월]</b> 했다(리스를 줄이면 사각지대의 길이도 함께 줄어
- * 같은 티켓에서 다루는 게 맞다).
+ * <p>이 예외는 프록시가 유스케이스 바깥에서 던져 {@code reconcileRoundFailed} 대신 락 결과
+ * {@code failed} 로 기록된다. 원래 예외는 그대로 전파돼 Spring 기본 핸들러 로그도 남는다.
  *
  * <p>{@code .withThrowUnexpectedException(true)} 는 켜지 않았다. 위 두 경우가 이미 던지므로 남는 건
  * 경합성 예외뿐이고, 그걸 던지게 하면 정상 경합까지 스택트레이스가 되어 <b>진짜 장애 로그가 묻힌다</b>.
@@ -82,7 +90,7 @@ import org.springframework.scheduling.support.CronExpression;
 // 기본값은 세 잡의 명시값 중 <b>가장 긴</b> 것에 맞춘다. 이 값이 실제로 쓰이는 건 lockAtMostFor 를
 // 빠뜨린 잡이 생겼을 때뿐인데, 그때 짧으면 회차가 리스를 넘겨 조용히 겹치고(= 락을 건 이유가 사라진다)
 // 길면 인계만 늦는다. 실수의 대가가 작은 쪽으로 기울인다. 빠뜨림 자체는 SchedulerWiringTest 가 잡는다.
-@EnableSchedulerLock(defaultLockAtMostFor = "PT90M")
+@EnableSchedulerLock(defaultLockAtMostFor = "PT50M")
 @ConditionalOnProperty(prefix = "live.reconcile", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class ReconcileLockConfig {
 
@@ -95,6 +103,12 @@ public class ReconcileLockConfig {
 
     /** {@code lock-at-least-for} 기본값. {@code @SchedulerLock} 과 이 가드가 같은 값을 봐야 한다. */
     public static final String LOCK_AT_LEAST_FOR = "PT1M";
+
+    /** 잡별 리스 기본값. {@code @SchedulerLock} placeholder 와 같은 상수를 본다. */
+    private static final Map<String, String> DEFAULT_LEASES = Map.of(
+            "expire-ready", LiveReconcileProperties.ExpireReady.DEFAULT_LOCK_AT_MOST_FOR,
+            "end-stale-live", LiveReconcileProperties.EndStaleLive.DEFAULT_LOCK_AT_MOST_FOR,
+            "orphan-media", LiveReconcileProperties.OrphanMedia.DEFAULT_LOCK_AT_MOST_FOR);
 
     /** cron 전개 상한. 하루치를 보기 전에 끝나는 게 정상이고, 이건 극단값 방어다. */
     private static final int MAX_CRON_EXPANSIONS = 5000;
@@ -133,9 +147,14 @@ public class ReconcileLockConfig {
             @Value("${live.reconcile.orphan-media.enabled:true}") boolean orphanMediaEnabled) {
 
         // 문자열로 받아 직접 파싱한다 — Duration 파라미터로 두면 변환 서비스가 있는 컨텍스트에서만
-        // 도는 빈이 되어, 배선 테스트가 이 가드를 확인하지 못한다. 형식은 @SchedulerLock 이 요구하는
-        // 것과 같은 ISO-8601 로 못박는다(둘이 갈리면 같은 값을 두 형식으로 쓰게 된다).
-        Duration lockAtLeastFor = parseDuration(lockAtLeastForValue);
+        // 도는 빈이 되어, 배선 테스트가 이 가드를 확인하지 못한다.
+        //
+        // ISO-8601 만 받으면 안 된다: @SchedulerLock 은 ShedLock 의 StringToDurationConverter 를 쓰고
+        // 그쪽은 "1m" 같은 짧은 형식도 받는다. 여기서 Duration.parse 만 쓰면 ShedLock 이 정상 처리하는
+        // 값에 부팅이 막힌다 — 같은 yaml 이 threshold: 60m, grace: 15m 로 이미 짧은 형식을 쓰고 있어
+        // 운영자가 그렇게 적는 게 자연스럽다. DurationStyle 은 두 형식을 모두 받아 ShedLock 과 같은
+        // 값 집합을 커버한다.
+        Duration lockAtLeastFor = parseDuration("live.reconcile.lock-at-least-for", lockAtLeastForValue);
 
         Map<String, String> crons = new LinkedHashMap<>();
         if (expireReadyEnabled) {
@@ -162,13 +181,13 @@ public class ReconcileLockConfig {
         return new LockIntervalGuard();
     }
 
-    private static Duration parseDuration(String value) {
+    private static Duration parseDuration(String key, String value) {
         try {
-            return Duration.parse(value.trim());
-        } catch (java.time.format.DateTimeParseException e) {
+            return DurationStyle.detectAndParse(value.trim());
+        } catch (IllegalArgumentException e) {
             throw new IllegalStateException(
-                    "live.reconcile.lock-at-least-for 가 ISO-8601 기간이 아니다 — 값=" + value
-                            + " (예: PT1M, PT30S). @SchedulerLock 과 같은 형식을 쓴다.", e);
+                    key + " 를 기간으로 읽을 수 없다 — 값=" + value
+                            + " (예: PT1M, 1m, 30s). @SchedulerLock 이 받는 형식과 같다.", e);
         }
     }
 
@@ -211,13 +230,73 @@ public class ReconcileLockConfig {
         return shortest;
     }
 
+    /**
+     * 잡별 {@code lock-at-most-for} 가 그 잡의 cron 주기보다 짧으면 <b>부팅을 실패시킨다</b>.
+     *
+     * <p>리스가 주기보다 짧으면 다음 tick 이 늘 만료된 락을 보게 되어 상호배제가 사실상 없어진다 —
+     * 파괴적 스윕이 레플리카 수만큼 겹쳐 도는데, 정리 포트가 실패를 삼켜 예외로도 드러나지 않고
+     * {@code reconcileActed} 집계만 배로 부푼다. 그게 이 잡의 유일한 판독법을 무너뜨린다.
+     *
+     * <p>하한을 임의의 상수로 두지 않고 <b>주기에서 끌어오는</b> 이유는 {@link #lockIntervalsMustFitInCron}
+     * 과 같다 — 의미 있는 하한은 "이 잡이 얼마나 자주 도는가" 에서만 나온다. 회차 예산이 리스의 4/5
+     * 이므로 이 하한은 예산의 하한이기도 하다.
+     */
+    @Bean
+    public LeaseGuard leasesMustOutlastTheirCronPeriod(
+            Environment environment,
+            @Value("${live.reconcile.expire-ready.cron:" + SchedulingConfig.EXPIRE_READY_CRON + "}")
+            String expireReadyCron,
+            @Value("${live.reconcile.end-stale-live.cron:" + SchedulingConfig.END_STALE_LIVE_CRON + "}")
+            String endStaleLiveCron,
+            @Value("${live.reconcile.orphan-media.cron:" + SchedulingConfig.ORPHAN_MEDIA_CRON + "}")
+            String orphanMediaCron,
+            @Value("${live.reconcile.expire-ready.enabled:true}") boolean expireReadyEnabled,
+            @Value("${live.reconcile.end-stale-live.enabled:true}") boolean endStaleLiveEnabled,
+            @Value("${live.reconcile.orphan-media.enabled:true}") boolean orphanMediaEnabled) {
+
+        Map<String, String> crons = new LinkedHashMap<>();
+        if (expireReadyEnabled) {
+            crons.put("expire-ready", expireReadyCron);
+        }
+        if (endStaleLiveEnabled) {
+            crons.put("end-stale-live", endStaleLiveCron);
+        }
+        if (orphanMediaEnabled) {
+            crons.put("orphan-media", orphanMediaCron);
+        }
+
+        crons.forEach((job, cron) -> {
+            String key = "live.reconcile." + job + ".lock-at-most-for";
+            // 미설정이면 잡별 기본 상수로 <b>같은 비교를 태운다</b>. 건너뛰면 안 된다 — cron 은 같은
+            // 메서드가 설정에서 읽으므로, 리스는 기본값(20m)인데 cron 만 0 0/30 으로 늘린 배포가
+            // 이 가드가 막으려던 상태 그대로 부팅한다.
+            String configured = environment.getProperty(key);
+            Duration lease = parseDuration(key,
+                    configured != null ? configured : DEFAULT_LEASES.get(job));
+            Duration period = shortestPeriod(job, cron);
+            if (lease.compareTo(period) < 0) {
+                throw new IllegalStateException(
+                        key + "(" + lease + ") 가 " + job + " 의 최단 실행 주기(" + period
+                                + ")보다 짧다 — 다음 tick 이 늘 만료된 락을 보게 되어 상호배제가"
+                                + " 사라진다(파괴적 스윕이 레플리카 수만큼 겹쳐 돈다).");
+            }
+        });
+        return new LeaseGuard();
+    }
+
     /** 부팅 시점에만 의미가 있는 표식. {@code LiveSecurityConfig.ManagementPortGuard} 와 같은 모양이다. */
     public static final class LockIntervalGuard {
     }
 
+    /** 부팅 시점에만 의미가 있는 표식. */
+    public static final class LeaseGuard {
+    }
+
+
     @Bean
-    public LockProvider lockProvider(DataSource dataSource) {
-        return new JdbcTemplateLockProvider(lockConfiguration(dataSource));
+    public TrackingLockProvider lockProvider(DataSource dataSource, LiveMetrics liveMetrics) {
+        LockProvider jdbc = new JdbcTemplateLockProvider(lockConfiguration(dataSource));
+        return new TrackingLockProvider(jdbc, liveMetrics);
     }
 
     /**

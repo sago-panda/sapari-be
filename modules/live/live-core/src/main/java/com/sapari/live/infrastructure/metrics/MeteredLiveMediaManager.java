@@ -88,6 +88,14 @@ public class MeteredLiveMediaManager implements LiveMediaManager {
     }
 
     @Override
+    public void stopEgress(UUID roomId, String egressId) {
+        timed("stopEgress", () -> {
+            delegate.stopEgress(roomId, egressId);
+            return null;
+        });
+    }
+
+    @Override
     public void deleteIngress(UUID roomId) {
         timed("deleteIngressByRoom", () -> {
             delegate.deleteIngress(roomId);
@@ -120,6 +128,11 @@ public class MeteredLiveMediaManager implements LiveMediaManager {
     @Override
     public List<IngressSummary> listAllIngress() {
         return timed("listAllIngress", delegate::listAllIngress);
+    }
+
+    @Override
+    public List<EgressSummary> listRoomEgress(UUID roomId) {
+        return timed("listRoomEgress", () -> delegate.listRoomEgress(roomId));
     }
 
     @Override

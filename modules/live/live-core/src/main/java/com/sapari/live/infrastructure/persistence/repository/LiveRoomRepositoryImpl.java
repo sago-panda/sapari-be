@@ -86,11 +86,23 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
                 .toList();
     }
 
+    /**
+     * 호출자(고아 정리)는 LiveKit 전수 목록에서 id 를 만든다 — 개수를 우리가 정하지 않으므로 장애
+     * 복구 직후에는 수천 개가 한 번에 올 수 있다. 회차 예산은 <b>루프</b>를 끊을 뿐 이 쿼리 하나는
+     * 못 끊으므로, 바인드 파라미터 수를 여기서 묶는다.
+     */
+    private static final int ID_CHUNK_SIZE = 500;
+
     @Override
     public List<LiveRoom> findAllByIds(Set<UUID> ids){
-        return liveRoomJpaRepository.findAllById(ids)
-                .stream().map(liveRoomMapper::toDomain)
-                .toList();
+        List<UUID> all = List.copyOf(ids);
+        List<LiveRoom> rooms = new java.util.ArrayList<>(all.size());
+        for (int from = 0; from < all.size(); from += ID_CHUNK_SIZE) {
+            rooms.addAll(liveRoomJpaRepository.findAllById(all.subList(from, Math.min(from + ID_CHUNK_SIZE, all.size())))
+                    .stream().map(liveRoomMapper::toDomain)
+                    .toList());
+        }
+        return rooms;
     }
 
     @Override

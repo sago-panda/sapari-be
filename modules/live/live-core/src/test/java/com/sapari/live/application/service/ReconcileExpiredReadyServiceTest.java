@@ -76,7 +76,28 @@ class ReconcileExpiredReadyServiceTest {
     void setup() {
         service = new ReconcileExpiredReadyService(
                 liveRoomRepository, liveMediaManager, expireOrphanLiveUseCase, goLiveByRtmpService,
-                new ExpiredReadyReconcilePolicy(THRESHOLD, 100), timeProvider, liveMetrics);
+                new ExpiredReadyReconcilePolicy(THRESHOLD, 100, java.time.Duration.ofMinutes(40)), timeProvider, liveMetrics);
+    }
+
+    @Test
+    @DisplayName("회차 예산을 넘기면 남은 후보를 다음 회차로 넘긴다 — end-stale-live 와 같은 장치다")
+    void roundBudgetExhausted_stopsMidRound() {
+        // 이 잡도 PostCommitMediaCleanup 을 공유해 후보당 왕복 수가 방의 화질·ingress 수에 비례한다.
+        // batch-size 만으로는 회차가 lock-at-most-for(기본 50분) 안에 있다는 보장이 없다.
+        ReconcileExpiredReadyService budgeted = new ReconcileExpiredReadyService(
+                liveRoomRepository, liveMediaManager, expireOrphanLiveUseCase, goLiveByRtmpService,
+                new ExpiredReadyReconcilePolicy(THRESHOLD, 100, java.time.Duration.ofMinutes(1)),
+                timeProvider, liveMetrics);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        givenCandidates(first, second);
+        // 시작 → 첫 후보 직전(예산 내) → 그 뒤로는 예산 초과
+        given(timeProvider.now()).willReturn(NOW, NOW, NOW.plus(java.time.Duration.ofMinutes(5)));
+
+        budgeted.reconcile();
+
+        then(expireOrphanLiveUseCase).should(times(1)).expire(any());
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted).contains("ROUND_BUDGET_EXHAUSTED=1");
     }
 
     /** 후보만 있고 송출 중인 방은 없는 기본 상태. */

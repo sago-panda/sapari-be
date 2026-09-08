@@ -67,12 +67,19 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public SfuRoomResult createRoom(UUID roomId){
         try{
-            Room room = roomServiceClient.createRoom(
+            Response<Room> response = roomServiceClient.createRoom(
                     roomId.toString(),
                     EMPTY_TIMEOUT,
                     MAX_PARTICIPANTS
-            ).execute().body();
+            ).execute();
 
+            if (!response.isSuccessful() || response.body() == null) {
+                log.error("LiveKit 룸 생성 실패: roomId={}, code={}, message={}",
+                        roomId, response.code(), response.message());
+                throw new LiveMediaException("SFU 룸 생성 실패: " + roomId);
+            }
+
+            Room room = response.body();
             log.info("LiveKit 룸 생성 완료: roomId={}", roomId);
             return new SfuRoomResult(room.getName(), room.getMaxParticipants(), true);
         } catch (IOException e){
@@ -149,10 +156,15 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public List<String> publishingIngressIdsOrEmpty(UUID roomId){
         try {
-            List<IngressInfo> ingresses = ingressServiceClient.listIngress(roomId.toString()).execute().body();
-            if (ingresses == null) {
+            Response<List<IngressInfo>> response = ingressServiceClient.listIngress(roomId.toString()).execute();
+            if (!response.isSuccessful() || response.body() == null) {
+                // 빈 목록으로 수렴시키는 <b>실패 방향은 그대로 둔다</b>(포트 계약) — 다만 401/403/5xx 는
+                // 예외도 안 나고 로그도 없어 오설정을 진단할 수단이 아예 없었다. 신호만 남긴다.
+                log.warn("RTMP ingress 송출 조회 실패 — 비활성으로 간주: roomId={}, code={}",
+                        roomId, response.code());
                 return List.of();
             }
+            List<IngressInfo> ingresses = response.body();
             return ingresses.stream()
                     .filter(this::isPublishing)
                     .map(IngressInfo::getIngressId)
@@ -368,21 +380,30 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public void stopHlsEgress(UUID roomId){
         try {
-            List<EgressInfo> egresses = egressServiceClient.listEgress(roomId.toString()).execute().body();
-            if (egresses == null || egresses.isEmpty()) {
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress(roomId.toString()).execute();
+            if (!response.isSuccessful() || response.body() == null) {
+                log.error("HLS Egress 목록 조회 실패 — 고아 egress 가능, 수동/배치 복구 필요: roomId={}, code={}",
+                        roomId, response.code());
+                return;
+            }
+            List<EgressInfo> egresses = response.body();
+            if (egresses.isEmpty()) {
                 log.info("중단할 egress 없음: roomId={}", roomId);
                 return;
             }
-            for (EgressInfo egress : egresses) {
-                if (isStoppable(egress.getStatus())) {
-                    safeStopEgress(roomId, egress.getEgressId());
-                }
-            }
+            egresses.stream()
+                    .filter(egress -> isStoppable(egress.getStatus()))
+                    .forEach(egress -> safeStopEgress(roomId, egress.getEgressId()));
         } catch (Exception e) {
             // listEgress 자체 실패 → 이 방의 egress가 하나도 정리되지 않아 전부 고아가 됨(비용 누수).
             // 종료 트랜잭션은 막지 않되(UX), 알람이 잡도록 error로 올린다. 복구는 reconciliation 배치의 몫.
             log.error("HLS Egress 일괄 중단 실패 — 고아 egress 가능, 수동/배치 복구 필요: roomId={}", roomId, e);
         }
+    }
+
+    @Override
+    public void stopEgress(UUID roomId, String egressId) {
+        safeStopEgress(roomId, egressId);
     }
 
     private boolean isStoppable(EgressStatus status){
@@ -393,7 +414,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
 
     private void safeStopEgress(UUID roomId, String egressId){
         try {
-            egressServiceClient.stopEgress(egressId).execute();
+            Response<EgressInfo> response = egressServiceClient.stopEgress(egressId).execute();
+            if (!response.isSuccessful()) {
+                log.warn("HLS Egress 중단 실패 (이미 중단됐을 수 있음): roomId={}, egressId={}, code={}",
+                        roomId, egressId, response.code());
+                return;
+            }
             log.info("HLS Egress 중단: roomId={}, egressId={}", roomId, egressId);
         } catch (Exception e) {
             log.warn("HLS Egress 중단 실패 (이미 중단됐을 수 있음): roomId={}, egressId={}", roomId, egressId, e);
@@ -420,9 +446,10 @@ public class LiveKitMediaManager implements LiveMediaManager {
                 log.info("삭제할 ingress 없음: roomId={}", roomId);
                 return;
             }
-            for (IngressInfo ingress : ingresses) {
-                safeDeleteIngress(roomId, ingress.getIngressId());
-            }
+            // 상한을 두지 않는다 — 하나라도 남으면 OBS 자동 재접속이 닫힌 SFU 방을 되살린다
+            // (AGENTS "a survivor lets OBS re-create the room"). 잔재 회수를 고아 정리 잡으로
+            // 미루면 그 사이 좀비 방이 산다.
+            ingresses.forEach(ingress -> safeDeleteIngress(roomId, ingress.getIngressId()));
         } catch (Exception e) {
             // listIngress 자체 실패 → 이 방의 ingress가 정리되지 않아 고아가 됨. 알람이 잡도록 error로 올린다.
             log.error("RTMP Ingress 일괄 삭제 실패 — 고아 ingress 가능, 수동/배치 복구 필요: roomId={}", roomId, e);
@@ -458,7 +485,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public void closeRoom(String sfuRoomId){
         try{
-            roomServiceClient.deleteRoom(sfuRoomId).execute();
+            Response<Void> response = roomServiceClient.deleteRoom(sfuRoomId).execute();
+            if (!response.isSuccessful()) {
+                log.warn("LiveKit 룸 삭제 실패 (이미 삭제됐을 수 있음): sfuRoomId={}, code={}",
+                        sfuRoomId, response.code());
+                return;
+            }
             log.info("LiveKit 룸 삭제: sfuRoomId={}", sfuRoomId);
         }catch (Exception e){
             log.warn("LiveKit 룸 삭제 실패 (이미 삭제됐을 수 있음): sfuRoomId={}", sfuRoomId, e);
@@ -546,9 +578,55 @@ public class LiveKitMediaManager implements LiveMediaManager {
     }
 
     /**
-     * LiveKit 전체 egress 목록 조회 — orphan live 정리 전용
+     * 이 방의 egress 목록 — 방치 Live 종료의 <b>방별 재판정</b> 전용. 포트 javadoc 참고.
      *
-     *  <p>{@link #listAllIngress()}와 같은 이유로 실패를 삼키지 않는다.
+     * <p>{@link #listRoomIngress(UUID)} 와 같은 규칙을 쓴다: 비-2xx 는 예외, <b>성공 응답의 null body 는
+     * "내용 없음"</b>이다. 둘을 합쳐 예외로 올리면 egress 가 아예 없는 방마다 회차가 죽는데, 그 방이
+     * 바로 이 잡의 <b>후보 전형</b>(송출이 끝나 egress 가 없는데 Live 에 갇힌 방)이라 잡이 통째로
+     * 무동작이 된다. 실패 신호는 상태 코드가 이미 다 준다.
+     *
+     * <p>{@link #listAllEgress()} 가 null body 를 실패로 세는 것과 갈리는 이유: 그쪽은 전역 스윕이라
+     * 빈 결과가 "클러스터 전체에 송출 없음"으로 읽히고, 그 오독은 후보 전량을 끊는다. 여기서는 방
+     * 하나의 이야기이고 판정도 방 하나에만 미친다.
+     */
+    @Override
+    public List<EgressSummary> listRoomEgress(UUID roomId){
+        try{
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress(roomId.toString()).execute();
+
+            if(!response.isSuccessful()){
+                log.error("LiveKit Egress 방 조회 실패: roomId={}, code={}, message={}",
+                        roomId, response.code(), response.message());
+                throw new LiveMediaException("Egress 방 조회에 실패했습니다: " + roomId);
+            }
+            if (response.body() == null) {
+                return List.of();
+            }
+
+            return response.body().stream()
+                    .map(info -> new EgressSummary(
+                            info.getEgressId(),
+                            info.getRoomName(),
+                            isStoppable(info.getStatus()),
+                            toInstant(info.getStartedAt())
+                    ))
+                    .toList();
+
+        }catch (LiveMediaException e){
+            throw e;
+        }catch (Exception e){
+            // 빈 목록으로 수렴시키면 "송출 없음 → 종료해라"가 된다. 실패는 실패로 올린다.
+            log.error("LiveKit Egress 방 조회 통신 오류: roomId={}", roomId, e);
+            throw new LiveMediaException("Egress 방 조회 중 통신 오류: " + roomId, e);
+        }
+    }
+
+    /**
+     * LiveKit 전체 egress 목록 조회 — 고아 미디어 정리와 오설정 가드 전용.
+     *
+     * <p>{@link #listAllIngress()} 와 같은 이유로 실패를 삼키지 않는다. null body 도 실패로 센다 —
+     * 전역 스윕에서 빈 결과는 "클러스터 전체에 송출 없음"으로 읽히고, 그 오독은 후보 전량을 끊는다
+     * (방 단위인 {@link #listRoomEgress(UUID)} 는 반대로 "내용 없음"으로 본다).
      */
     @Override
     public List<EgressSummary> listAllEgress(){

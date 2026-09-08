@@ -17,6 +17,7 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public final List<ReconcileJob> completedRounds = new ArrayList<>();
     public final List<ReconcileAbortReason> abortedRounds = new ArrayList<>();
     public final List<ReconcileJob> failedRounds = new ArrayList<>();
+    public final List<String> lockResults = new ArrayList<>();
     public final List<String> acted = new ArrayList<>();
     public final List<String> transitions = new ArrayList<>();
     public final List<PromotionTrigger> promotions = new ArrayList<>();
@@ -35,6 +36,11 @@ public class RecordingLiveMetrics implements LiveMetrics {
     @Override
     public void reconcileRoundFailed(ReconcileJob job) {
         failedRounds.add(job);
+    }
+
+    @Override
+    public void reconcileLockResult(ReconcileJob job, ReconcileLockResult result) {
+        lockResults.add(job + "=" + result);
     }
 
     @Override
