@@ -52,6 +52,12 @@ public class ObjectStorageProfileImageStorage implements ProfileImageStorage {
      */
     @Override
     public void deleteQuietly(String profileImageKey) {
+        deleteQuietly(profileImageKey, "PROFILE_IMAGE_CLEANUP");
+    }
+
+    /** 삭제 경로를 고정 식별자로 기록하고 실패가 주 작업이나 다음 사진 정리를 막지 않게 한다. */
+    @Override
+    public void deleteQuietly(String profileImageKey, String cleanupReason) {
         if (profileImageKey == null || profileImageKey.isBlank()) {
             // 기존 이미지가 없는 사용자는 삭제 보상 작업도 만들지 않는다.
             return;
@@ -59,7 +65,9 @@ public class ObjectStorageProfileImageStorage implements ProfileImageStorage {
         try {
             objectStorageClient.delete(profileImageKey);
         } catch (RuntimeException e) {
-            log.warn("프로필 이미지 object 삭제 실패: key={}, exceptionType={}",
+            // 요청·예외 원문 대신 내부 경로와 대상 키만 남겨 수동 정리를 지원한다.
+            log.warn("프로필 이미지 object 삭제 실패: reason={}, key={}, exceptionType={}",
+                    cleanupReason,
                     profileImageKey,
                     e.getClass().getSimpleName());
         }

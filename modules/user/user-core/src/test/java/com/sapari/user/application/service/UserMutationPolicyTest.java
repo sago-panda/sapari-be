@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
@@ -28,14 +29,14 @@ class UserMutationPolicyTest {
     @Test
     void nicknameRechecksLatestChangeTime() {
         User user = user();
-        var current = new java.util.concurrent.atomic.AtomicReference<>(user);
+        AtomicReference<User> current = new AtomicReference<>(user);
         UserRepository repository = mock(UserRepository.class);
         when(repository.findByIdForUpdate(user.userId())).thenAnswer(call -> Optional.of(current.get()));
         when(repository.save(any(User.class))).thenAnswer(call -> {
             current.set(call.getArgument(0));
             return current.get();
         });
-        var service = new UserAccountService(repository, null, null, null, null, null, null, null, null,
+        UserAccountService service = new UserAccountService(repository, null, null, null, null, null, null, null, null,
                 key -> key, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
         service.changeNickname(user.userId(), "first", java.time.Duration.ofDays(30));
         assertThatThrownBy(() -> service.changeNickname(user.userId(), "second", java.time.Duration.ofDays(30)))
@@ -59,7 +60,7 @@ class UserMutationPolicyTest {
         Instant original = NOW.minusSeconds(60);
         User user = user().requestWithdrawal(original);
         UserRepository repository = repository(user);
-        var service = new UserAccountService(repository, mock(WithdrawnUserRetentionRepository.class), null, null,
+        UserAccountService service = new UserAccountService(repository, mock(WithdrawnUserRetentionRepository.class), null, null,
                 new com.sapari.user.application.support.WithdrawnUserRetentionMasker(), null, null, null, null,
                 key -> key, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
         assertThat(service.requestWithdrawal(user.userId()).status()).isEqualTo(UserStatus.WITHDRAWING);

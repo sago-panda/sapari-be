@@ -57,8 +57,8 @@ class UserMutationTransactionBoundaryTest {
             when(connection.getAutoCommit()).thenReturn(true);
             return connection;
         });
-        var manager = new DataSourceTransactionManager(source);
-        var transaction = new TransactionTemplate(manager);
+        DataSourceTransactionManager manager = new DataSourceTransactionManager(source);
+        TransactionTemplate transaction = new TransactionTemplate(manager);
         AtomicBoolean committed = new AtomicBoolean();
         AtomicBoolean externalCalled = new AtomicBoolean();
         IllegalStateException failure = new IllegalStateException("external unavailable");
@@ -101,7 +101,7 @@ class UserMutationTransactionBoundaryTest {
             doAnswer(external).when(jwt).revokeAllSessions(id);
             SellerProfileRepository profiles = mock(SellerProfileRepository.class);
             when(profiles.findByUserId(id)).thenReturn(Optional.of(mock(SellerProfile.class)));
-            var target = new SellerAuthService(users, null, profiles, null, null, null, null,
+            SellerAuthService target = new SellerAuthService(users, null, profiles, null, null, null, null,
                     jwt, time, mock(SellerViewMapper.class));
             SellerAuthService proxy = proxy(target, manager);
             operation = withdrawal ? () -> proxy.requestWithdrawal("access")
@@ -111,7 +111,7 @@ class UserMutationTransactionBoundaryTest {
             when(jwt.requireAccessToken("access")).thenReturn(session);
             when(jwt.replaceAccessTokenForNickname(any(), any())).thenAnswer(external);
             doAnswer(external).when(jwt).revokeAllSessions(id);
-            var target = new CustomerAuthService(null, null, users, jwt, time, null,
+            CustomerAuthService target = new CustomerAuthService(null, null, users, jwt, time, null,
                     mock(CustomerViewMapper.class), null, null, null);
             CustomerAuthService proxy = proxy(target, manager);
             operation = withdrawal ? () -> proxy.requestWithdrawal("access")

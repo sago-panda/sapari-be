@@ -4,6 +4,7 @@ dependencies {
     implementation(project(':modules:user:user-core'))
     implementation(project(':modules:seller:seller-core'))
     implementation(project(':storage:db-core'))
+    implementation(project(':storage:object-storage'))
     implementation(project(':common:global'))
     runtimeOnly 'org.postgresql:postgresql'
 

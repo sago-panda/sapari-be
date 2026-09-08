@@ -20,4 +20,9 @@ public interface ProfileImageStorage {
      * 고아 object는 운영 정리 대상으로 남길 수 있으므로 호출자는 삭제 실패를 사용자 요청 실패로 바꾸지 않는다.
      */
     void deleteQuietly(String profileImageKey);
+
+    /** 삭제 실패 로그에 내부 작업 경로를 포함해 best-effort 정리한다. */
+    default void deleteQuietly(String profileImageKey, String cleanupReason) {
+        deleteQuietly(profileImageKey);
+    }
 }

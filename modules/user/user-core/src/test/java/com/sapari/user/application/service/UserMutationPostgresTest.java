@@ -33,6 +33,8 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.sapari.user.application.support.WithdrawnUserRetentionMasker;
+import com.sapari.user.application.dto.ProfileImageChangeResult;
+import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
 import com.sapari.user.infrastructure.persistence.mapper.UserMapperImpl;
@@ -59,7 +61,7 @@ class UserMutationPostgresTest {
     void imageReplacementReadsLatestKey() throws Exception {
         UUID id = seedUser();
         raceImageUpdate(id, userId -> {
-            var result = images.replaceProfileImageKey(userId, "image-c");
+            ProfileImageChangeResult result = images.replaceProfileImageKey(userId, "image-c");
             assertThat(result.oldProfileImageKey()).isEqualTo("image-b");
         });
         assertThat(users.findById(id).orElseThrow().profileImageKey()).isEqualTo("image-c");
@@ -71,7 +73,7 @@ class UserMutationPostgresTest {
         UUID id = seedUser();
         raceImageUpdate(id, userId -> accounts.changeNickname(userId,
                 "new" + userId.toString().substring(0, 6), java.time.Duration.ofDays(30)));
-        var user = users.findById(id).orElseThrow();
+        User user = users.findById(id).orElseThrow();
         assertThat(user.profileImageKey()).isEqualTo("image-b");
         assertThat(user.nickname()).startsWith("new");
     }
@@ -81,7 +83,7 @@ class UserMutationPostgresTest {
     void withdrawalPreservesConcurrentImage() throws Exception {
         UUID id = seedUser();
         raceImageUpdate(id, accounts::requestWithdrawal);
-        var user = users.findById(id).orElseThrow();
+        User user = users.findById(id).orElseThrow();
         assertThat(user.profileImageKey()).isEqualTo("image-b");
         assertThat(user.status()).isEqualTo(UserStatus.WITHDRAWING);
     }
@@ -127,7 +129,7 @@ class UserMutationPostgresTest {
             new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
                 assertThat(users.findById(id).orElseThrow().profileImageKey()).isEqualTo("image-a");
                 awaitResult(executor.submit(() -> images.replaceProfileImageKey(id, "image-b")));
-                var result = images.replaceProfileImageKey(id, "image-c");
+                ProfileImageChangeResult result = images.replaceProfileImageKey(id, "image-c");
                 assertThat(result.oldProfileImageKey()).isEqualTo("image-b");
             });
         }
@@ -233,7 +235,7 @@ class UserMutationPostgresTest {
             if (!url.endsWith("/lock_test")) {
                 throw new IllegalArgumentException("전용 lock_test DB만 사용할 수 있습니다.");
             }
-            var source = new DriverManagerDataSource(url, "lock_test", "local-test-only");
+            DriverManagerDataSource source = new DriverManagerDataSource(url, "lock_test", "local-test-only");
             JdbcTemplate jdbc = new JdbcTemplate(source);
             if (jdbc.queryForObject("select to_regclass('user_schema.users') is not null", Boolean.class)) {
                 throw new IllegalStateException("기존 users 테이블이 있는 DB에서는 실행하지 않습니다.");
@@ -245,7 +247,7 @@ class UserMutationPostgresTest {
         /** 테스트 전용 DB에 실제 entity 매핑을 생성하고 컨텍스트 종료 시 정리한다. */
         @Bean
         LocalContainerEntityManagerFactoryBean entityManagerFactory(DataSource source) {
-            var factory = new LocalContainerEntityManagerFactoryBean();
+            LocalContainerEntityManagerFactoryBean factory = new LocalContainerEntityManagerFactoryBean();
             factory.setDataSource(source);
             factory.setPackagesToScan("com.sapari.user.infrastructure.persistence.entity");
             factory.setJpaVendorAdapter(new HibernateJpaVendorAdapter());
