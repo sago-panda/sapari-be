@@ -8,10 +8,10 @@ import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
 import com.sapari.chat.application.protocol.ChatMessageVisibility;
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.domain.model.ChatMessage;
-import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 
 import lombok.RequiredArgsConstructor;
@@ -40,6 +40,7 @@ public class ChatBroadcastSubscriber {
 
     private final ChatBroadcaster broadcaster;
     private final ChatSessionManager sessionManager;
+    private final ChatPermissionPolicy permissionPolicy;
 
     /** 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수. */
     public Disposable subscribeRoom(UUID roomId) {
@@ -90,16 +91,12 @@ public class ChatBroadcastSubscriber {
     /**
      * 원문과 발신자 이메일을 받을 자격이 있는 세션인가.
      *
-     * <p><b>방 주인이거나 관리자다.</b> 소유는 방 단위 권한이고 ADMIN은 그와 무관한 계정 권한이라 두 축이
-     * 따로 선다 — 남의 방에 시청자로 들어온 SELLER는 여기 해당하지 않는다(그게 소유 기반 게이팅을 도입한
-     * 이유다). 관리자를 포함하는 것은 그 결정을 되돌리는 게 아니라, 처음부터 함께 적혀 있었으나 구현되지
-     * 않았던 절반이다.
-     *
-     * <p><b>기본은 여전히 마스킹이다.</b> 이 메서드가 참을 돌려주는 경우만 예외이고, 그 방향을 뒤집으면
-     * (기본을 원문으로 두고 예외를 마스킹으로 두면) 새 역할이 늘 때마다 조용히 노출된다.
+     * <p><b>판정을 여기서 하지 않는다.</b> 같은 질문을 감사 쪽에서도 물어서, 각자 적어 두면 특권 뷰를
+     * 받는 역할이 하나 늘 때 한쪽만 따라간다 — 뒤처지는 쪽이 감사라 원문과 이메일은 받는데 흔적은 안
+     * 남는 방향으로 갈린다. 정책이 한 자리에서 답한다.
      */
     private boolean canModerate(ChatSession session) {
-        return session.isRoomOwner() || session.role() == ChatRole.ADMIN;
+        return permissionPolicy.seesUnmaskedContent(session.role(), session.isRoomOwner());
     }
 
     private Mono<Void> fanOutKick(UUID roomId, UUID kickedUserId) {

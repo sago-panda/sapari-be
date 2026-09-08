@@ -2,11 +2,6 @@ package com.sapari.chat.infrastructure.persistence.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.Statement;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -23,6 +18,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.sapari.chat.support.LiveSchema;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
@@ -62,24 +58,9 @@ class ChatKickLogRepositoryImplTest {
 
     @BeforeAll
     static void applyRealSchema() throws Exception {
-        String ddl = Files.readString(repositoryRoot().resolve("db/migration/live/V1__init_live.sql"));
-        try (Connection connection = DriverManager.getConnection(
-                        postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
-                Statement statement = connection.createStatement()) {
-            statement.execute(ddl);
-        }
+        LiveSchema.applyTo(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
-    /** 테스트 작업 디렉터리는 모듈이라 저장소 루트까지 올라간다 — settings.gradle이 그 표지다. */
-    private static Path repositoryRoot() {
-        Path here = Path.of(System.getProperty("user.dir")).toAbsolutePath();
-        for (Path candidate = here; candidate != null; candidate = candidate.getParent()) {
-            if (Files.exists(candidate.resolve("settings.gradle"))) {
-                return candidate;
-            }
-        }
-        throw new IllegalStateException("저장소 루트를 찾지 못했다 — 시작 위치=" + here);
-    }
 
     @Autowired
     private ChatKickLogJpaRepository jpaRepository;

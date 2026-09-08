@@ -3,11 +3,6 @@ package com.sapari.chat.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
@@ -20,7 +15,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.data.domain.Limit;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -35,10 +29,12 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.sapari.chat.support.LiveSchema;
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanStateRepositoryImpl;
@@ -98,22 +94,7 @@ class ChatKickRecorderTest {
 
     @BeforeAll
     static void applyRealSchema() throws Exception {
-        String ddl = Files.readString(repositoryRoot().resolve("db/migration/live/V1__init_live.sql"));
-        try (Connection connection = DriverManager.getConnection(
-                        postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
-                Statement statement = connection.createStatement()) {
-            statement.execute(ddl);
-        }
-    }
-
-    private static Path repositoryRoot() {
-        Path here = Path.of(System.getProperty("user.dir")).toAbsolutePath();
-        for (Path candidate = here; candidate != null; candidate = candidate.getParent()) {
-            if (Files.exists(candidate.resolve("settings.gradle"))) {
-                return candidate;
-            }
-        }
-        throw new IllegalStateException("저장소 루트를 찾지 못했다 — 시작 위치=" + here);
+        LiveSchema.applyTo(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @Autowired
@@ -141,12 +122,46 @@ class ChatKickRecorderTest {
      */
     private void deleteBansOfTarget() {
         banJpaRepository.deleteAll(banJpaRepository.findActive(
-                targetUserId, NOW.minus(java.time.Duration.ofDays(3650)), Limit.of(100)));
+                targetUserId, NOW.minus(java.time.Duration.ofDays(3650))).stream().toList());
     }
 
     private ChatKickLog kick(UUID roomId, Instant kickedAt) {
-        return new ChatKickLog(targetUserId, roomId, UUID.randomUUID(),
+        return kick(roomId, UUID.randomUUID(), kickedAt);
+    }
+
+    /** 강퇴자를 지정한다 — 임계가 세는 것이 '횟수'가 아니라 '사람'이라 그 축을 재려면 필요하다. */
+    private ChatKickLog kick(UUID roomId, UUID kickedById, Instant kickedAt) {
+        return new ChatKickLog(targetUserId, roomId, kickedById,
                 ChatRole.SELLER, "문제된 원문", kickedAt);
+    }
+
+    /**
+     * ⭐ <b>한 사람이 혼자 임계에 닿을 수 없다.</b>
+     *
+     * <p>강퇴 로그는 방 단위로 쌓인다({@code UNIQUE(user_id, live_room_id)}). 그래서 행을 세면 판매자
+     * 하나가 방송을 세 번 하고 매번 같은 사람을 강퇴하는 것만으로 3이 된다 — 방송 3회는 공모가 아니라
+     * 평범한 업무이고, 그러면 판매자 하나가 자기 방에서 채팅한 누구에게든 플랫폼 전역 밴을 걸 수 있다.
+     *
+     * <p>사람을 세면 임계가 <b>서로 독립된 판단</b>을 요구한다. 이 테스트가 그 축을 잡는다.
+     */
+    @Test
+    @DisplayName("⭐ 같은 사람이 방을 옮겨 가며 세 번 강퇴해도 밴이 아니다 — 임계는 횟수가 아니라 확증이다")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void oneKickerCannotReachTheThresholdAlone() {
+        // given: 판매자 하나가 자기 방송 셋에서 같은 사람을 강퇴한다
+        UUID sameSeller = UUID.randomUUID();
+
+        // when
+        recorder.record(kick(UUID.randomUUID(), sameSeller, NOW));
+        recorder.record(kick(UUID.randomUUID(), sameSeller, NOW));
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), sameSeller, NOW));
+
+        // then: 행은 셋이지만 확증한 사람은 하나다
+        assertThat(ban).isEmpty();
+        assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
+        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+                .as("한 사람의 반복 강퇴가 확증으로 세어졌다 — 판매자 하나가 전역 밴 권한을 갖는다")
+                .isEqualTo(1);
     }
 
     @Test
@@ -161,7 +176,7 @@ class ChatKickRecorderTest {
         // then: 예외 없이 커밋됐고, 누적 1회는 임계 미만이라 밴은 없다
         assertThat(ban).isEmpty();
         assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
-        assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(1);
+        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(1);
     }
 
     @Test
@@ -193,8 +208,31 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
 
         // when & then: 3회를 불렀지만 임계에 닿지 않는다
-        assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(2);
+        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(2);
         assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
+    }
+
+    /**
+     * 상한이 <b>있다</b>는 것만 잰다. 값이 맞는지가 아니라 사라지지 않았는지다.
+     *
+     * <p>실제 대기를 만들어 재려면 잠금을 쥔 상대를 세우고 상한만큼 기다려야 해서 스위트가 그만큼 느려지는데,
+     * 여기서 막고 싶은 회귀는 "값이 조금 틀림"이 아니라 <b>애너테이션에서 사라짐</b>이다. 사라지면 실패
+     * 모드가 예외에서 무한 대기로 조용히 돌아가고, 그때는 아무 테스트도 빨개지지 않는다.
+     * propagation은 {@code recordCommitsIndependentlyOfAnOuterTransaction}이 동작으로 지킨다.
+     */
+    @Test
+    @DisplayName("기록 트랜잭션에 대기 상한이 걸려 있다 — 없으면 커넥션을 쥔 채 무한히 줄을 선다")
+    void recordDeclaresALockWaitCeiling() throws Exception {
+        // when
+        Transactional annotation = ChatKickRecorder.class
+                .getMethod("record", ChatKickLog.class)
+                .getAnnotation(Transactional.class);
+
+        // then
+        assertThat(annotation).isNotNull();
+        assertThat(annotation.timeout())
+                .as("대기 상한이 없다 — 병목이 생기면 실패가 예외가 아니라 무한 대기가 된다")
+                .isPositive();
     }
 
     /**
@@ -223,7 +261,7 @@ class ChatKickRecorderTest {
         });
 
         // then: 전파가 REQUIRED면 여기서 0이 된다 — 그러면 호출자가 이미 Redis를 쓴 뒤다
-        assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
                 .as("바깥 롤백이 기록까지 되돌렸다 — 반환 시점에 커밋이 확정되지 않는다")
                 .isEqualTo(1);
     }
@@ -248,7 +286,7 @@ class ChatKickRecorderTest {
         // given: 누적 2회. 다음 강퇴가 임계에 닿아 승격을 시도한다
         recorder.record(kick(UUID.randomUUID(), NOW));
         recorder.record(kick(UUID.randomUUID(), NOW));
-        long before = kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730)));
+        long before = kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)));
         assertThat(before).isEqualTo(2);
 
         // 밴 INSERT만 실패시키는 저장소로 같은 경계를 다시 만든다
@@ -259,7 +297,7 @@ class ChatKickRecorderTest {
             }
 
             @Override
-            public void append(ChatBan ban) {
+            public BanWrite extendOrCreate(ChatBan ban) {
                 throw new IllegalStateException("밴 저장 실패");
             }
         });
@@ -273,7 +311,7 @@ class ChatKickRecorderTest {
                 .isInstanceOf(IllegalStateException.class);
 
         // then: 강퇴 로그가 남아 있으면 재시도가 중복 경로로 들어가 승격을 영영 건너뛴다
-        assertThat(kickLogs.countSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
                 .as("밴이 실패했는데 강퇴 로그가 커밋됐다 — 재시도가 승격을 건너뛴다")
                 .isEqualTo(before);
     }
@@ -326,7 +364,7 @@ class ChatKickRecorderTest {
         UUID room = UUID.randomUUID();
         recorder.record(kick(room, NOW));
         Instant expiry = NOW.plus(Duration.ofDays(30));
-        transactionTemplate.executeWithoutResult(status -> bans.append(
+        transactionTemplate.executeWithoutResult(status -> bans.extendOrCreate(
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when: 같은 방 재강퇴 — 로그는 no-op이다
@@ -349,10 +387,10 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
         recorder.record(kick(UUID.randomUUID(), NOW));
 
-        // append도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
+        // extendOrCreate도 @Modifying이라 경계가 필요하다. 운영에서는 recorder가 열어 주지만 여기서는
         // 준비 코드라 직접 연다 — 이 테스트가 일부러 주변 트랜잭션을 걷어냈기 때문이다.
         Instant expiry = NOW.plus(Duration.ofDays(30));
-        transactionTemplate.executeWithoutResult(status -> bans.append(
+        transactionTemplate.executeWithoutResult(status -> bans.extendOrCreate(
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when: 3회째 — 가드가 없으면 여기서 1주 밴이 새로 생기고 그것이 반환된다

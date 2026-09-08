@@ -22,6 +22,8 @@ import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogJpaRepos
 import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatMessageEvidenceMongoRepository;
 import com.sapari.chat.infrastructure.redis.ChatBanWriteRedisRepository;
+import com.sapari.chat.application.port.ChatAccountEventPublisher;
+import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
@@ -111,6 +113,15 @@ public class ChatModerationBeansConfig {
     }
 
     /**
+     * 계정 조치 발행. 강퇴 발행과 채널이 다르다 — 강퇴는 방 채널이라 그 방 세션만 닿고, 밴은 계정 전체라
+     * 방을 모르는 채로 모든 Pod에 닿아야 한다. 받는 쪽은 streaming-app의 {@code ChatAccountEventHandler}다.
+     */
+    @Bean
+    public ChatAccountEventPublisher chatAccountEventPublisher(StringRedisTemplate redisTemplate) {
+        return new ChatAccountEventRedisPublisher(redisTemplate);
+    }
+
+    /**
      * 강퇴의 DB 쓰기를 감싸는 트랜잭션 빈. {@code @Transactional}이 프록시로 걸리려면 별도 빈이어야 한다 —
      * 같은 클래스 안의 메서드로 두면 자기 호출이라 프록시를 타지 않고, 붙여 놓고 안 걸리는 상태가 된다.
      */
@@ -127,10 +138,11 @@ public class ChatModerationBeansConfig {
                                            ChatBanWriteRepository banWriteRepository,
                                            ChatKickWriteRepository kickWriteRepository,
                                            ChatKickEventPublisher kickEventPublisher,
+                                           ChatAccountEventPublisher accountEventPublisher,
                                            ChatPermissionPolicy permissionPolicy,
                                            TimeProvider timeProvider) {
         return new KickUserService(liveRoomReader, evidenceRepository, kickRecorder,
                 banWriteRepository, kickWriteRepository, kickEventPublisher,
-                permissionPolicy, timeProvider);
+                accountEventPublisher, permissionPolicy, timeProvider);
     }
 }

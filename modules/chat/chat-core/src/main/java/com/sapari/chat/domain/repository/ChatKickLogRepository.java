@@ -36,10 +36,14 @@ public interface ChatKickLogRepository {
     boolean appendIfAbsent(ChatKickLog log);
 
     /**
-     * {@code since} 이후 이 사용자가 받은 강퇴 횟수 — 방을 가리지 않고 <b>전부</b> 센다.
+     * {@code since} 이후 이 사용자를 강퇴한 <b>서로 다른 사람의 수</b>.
      *
-     * <p>밴은 판매자별이 아니라 플랫폼 단위다. 방마다 따로 세면 여러 방을 돌며 같은 짓을 하는 사용자가
-     * 어느 임계에도 닿지 않는다.
+     * <p>강퇴 횟수가 아니다. 횟수를 세면 한 사람이 혼자 임계에 닿아 플랫폼 전역 밴을 걸 수 있다 —
+     * 로그가 방 단위로 쌓이므로 방송을 세 번 하는 것만으로 3이 된다. 사람을 세면 임계가
+     * <b>서로 독립된 판단 N건</b>을 요구한다.
+     *
+     * <p>방은 가리지 않는다 — 밴은 판매자별이 아니라 플랫폼 단위라, 여러 방을 돌며 같은 짓을 하는
+     * 사용자도 같은 카운터에 쌓여야 한다.
      */
-    long countSince(UUID userId, Instant since);
+    long countDistinctKickersSince(UUID userId, Instant since);
 }

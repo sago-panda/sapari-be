@@ -1,5 +1,6 @@
 package com.sapari.architecture;
 
+import java.util.List;
 import com.tngtech.archunit.core.domain.Dependency;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
@@ -232,13 +233,40 @@ class ArchitectureTest {
     // 아래 두 규칙은 지금 검사 대상 클래스가 없어도(강퇴·이력은 미구현) 그대로 둔다. 잘못 배선하는 순간
     // 실패하는 게 목적이지, 지금 뭔가를 잡는 게 목적이 아니다.
 
+    /**
+     * streaming-app이 닿으면 안 되는 블로킹 chat 타입들. <b>한 줄에 하나씩 둔다.</b>
+     *
+     * <p>정규식 한 줄에 파이프로 늘어놓으면 두 브랜치가 각각 이름을 더할 때 반드시 같은 줄에서 충돌한다.
+     * 이 목록은 chat이 블로킹 경로를 하나 만들 때마다 늘어나는 것이 정상이라, 그 비용이 계속 든다.
+     * 줄을 나누면 추가가 append가 되어 서로 다른 브랜치의 추가가 자동으로 합쳐진다.
+     */
+    private static final List<String> BLOCKING_CHAT_TYPES = List.of(
+            "KickUserUseCase",
+            "KickUserService",
+            "ChatKickRecorder",
+            "ChatAccountEventPublisher",
+            "GetChatHistoryUseCase",
+            "GetChatHistoryService");
+
+    /** reactive chat 타입들 — MVC 앱(live-app)이 닿으면 결국 {@code .block()}을 강요당한다. 위와 같은 이유로 한 줄에 하나씩. */
+    private static final List<String> REACTIVE_CHAT_TYPES = List.of(
+            "SendChatUseCase",
+            "SendChatService",
+            "ChatAccountEventSource",
+            "ChatAccountEventHandler");
+
+    /** 단순 이름 목록을 FQN 매칭 정규식으로. 이름에 정규식 메타문자가 없다는 전제이고, 실제로 자바 식별자뿐이다. */
+    private static String endingWithAnyOf(List<String> simpleNames) {
+        return ".*\\.(" + String.join("|", simpleNames) + ")";
+    }
+
     // WebFlux 앱이 blocking 유스케이스를 호출하면 Netty 이벤트루프가 그 시간만큼 멈춘다.
     @Test
     void streaming_app_must_not_call_blocking_chat_use_cases() {
         ArchRule rule = noClasses()
                 .that().resideInAPackage("com.sapari.streamingapp..")
                 .should().dependOnClassesThat()
-                        .haveNameMatching(".*\\.(KickUserUseCase|KickUserService|ChatKickRecorder|GetChatHistoryUseCase|GetChatHistoryService)")
+                        .haveNameMatching(endingWithAnyOf(BLOCKING_CHAT_TYPES))
                 .orShould().dependOnClassesThat()
                         .haveFullyQualifiedName("org.springframework.data.mongodb.core.MongoTemplate")
                 .as("streaming-app(WebFlux)은 블로킹 chat 유스케이스·블로킹 MongoTemplate을 호출하면 안 된다");
@@ -254,7 +282,7 @@ class ArchitectureTest {
         ArchRule rule = noClasses()
                 .that().resideInAPackage("com.sapari.liveapp..")
                 .should().dependOnClassesThat()
-                        .haveNameMatching(".*\\.(SendChatUseCase|SendChatService)")
+                        .haveNameMatching(endingWithAnyOf(REACTIVE_CHAT_TYPES))
                 .as("live-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
 
         rule.check(SAPARI);

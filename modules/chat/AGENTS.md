@@ -79,13 +79,14 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
+| `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
 
 `live:room:ended` is **live's channel** — subscribed, never written, and deliberately not in `ChatRedisKeys`.
 
 Only the kick SET is exposed to WRONGTYPE (`SISMEMBER` type-checks). `SET`/`EXISTS` keys are not, so the
 corruption split is not widened to them.
 
-## Wire contracts — three, and all three fail silently when broken
+## Wire contracts — four, and all four fail silently when broken
 
 1. **`ChatEnvelope`** (`application/protocol`, not infrastructure — the port returns it). Both the reactive
    broadcaster and the blocking kick publisher serialize the **real type**; hand-built JSON was the old
@@ -95,6 +96,10 @@ corruption split is not widened to them.
 3. **`OutboundMessage` omits null fields** (`@JsonInclude(NON_NULL)`). It is an 8-type union, so over half
    is empty in any frame; the padding used to exceed the message body. Front-end contract: absent key, not
    `null` — `=== null` breaks, everything else does not.
+4. **`ChatAccountEvent`** (`application/protocol`) on `chat:account:events` — chat's own representation,
+   **not a cross-domain contract**: it lives in chat-core, so no other module can publish with it. The
+   receiver disables `FAIL_ON_UNKNOWN_PROPERTIES`; adding a field otherwise makes every older pod drop the
+   event mid-rollout and ban enforcement silently reverts fleet-wide.
 
 **PII gating happens at fan-out, not on the wire.** The envelope carries `senderEmail` and the unmasked
 original in plaintext because a privileged reader may be on a different pod. The masked view is the default
@@ -135,7 +140,7 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   close. Contention means another thread held the lock → drop that message, keep the session. Merging them
   makes load shed healthy viewers, whose reconnects raise load further.
 - Close codes: **1000** room ended (normal *and* the late-discovery path — identical on purpose),
-  **1008** entry denial / kick, **1013** buffer overflow. 1013 rather than 1000 exists to stop instant reconnect.
+  **1008** entry denial / kick / account-level ban, **1013** buffer overflow. 1013 rather than 1000 exists to stop instant reconnect.
 - Terminate signals **both** channels: sink `complete` (drains the buffer so a just-sent SYSTEM arrives) and
   a control sink (the escape when the client never reads). First reason wins; a later kick cannot overwrite it.
 - Fan-out budgets are **per operation, not per session** — the loop runs on the pod's shared Redis subscriber
@@ -219,16 +224,99 @@ Re-reading the record for the longest ban was tried and only narrows it: it fixe
 *who writes last*. Ordering problems need order-independent writes. The cost is that this port can no longer
 shorten a ban — an admin reprieve needs `DEL` + set, in the same change that adds it.
 
-Escalation counts kicks **across rooms** on a 2-year window; per-seller counting lets a user who rotates
-rooms reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
+Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Counting rows
+would let one seller reach the threshold alone: the log is unique per `(user, room)`, so three broadcasts and
+one kick in each makes three. Three broadcasts is an ordinary week, not a conspiracy, and that would hand
+every seller a platform-wide ban over anyone who chats in their rooms. Counting people makes the threshold
+mean **three independent judgements**. It costs nothing against the case the window exists for: a user who
+rotates rooms is kicked by different people anyway. **The opposite direction is open and has no backstop**:
+one seller kicking the same person across ten of their own broadcasts still counts as one, and nothing sits
+above that — there is no per-seller ban and no manual ban path. That is the price of this choice, not an
+oversight. Note also that the count is really *"three rooms whose **first** kicker differs"* — `ON CONFLICT
+DO NOTHING` keeps only the first kick per room, so a second, independent judgement in the same room never
+counts. Under-enforcing, and accepted. Scoping per-seller is still wrong for the same reason as
+before — it lets a rotating user reach no threshold at all. Thresholds are read as **at-or-above**, not exact — the design doc's table
 gives the same answer while kicks arrive one at a time, and differs only where the table is silent (window
-shrink, a concurrent kick skipping a threshold). **Automatic escalation stops at one year.** The doc's
+shrink, a concurrent kick skipping a threshold). With people as the unit, **only the first rung is realistically reachable** — six or nine distinct
+moderators inside two years is rare, so the ladder effectively ends at one week. The numbers were kept
+deliberately; the ladder being sparse is the intended shape while no release path exists. **An `ADMIN` kick
+counts as one like any other.** That is a decision, not an omission: "one admin ⇒ instant ban" would be a
+manual ban wearing `banned_by_id = SYSTEM`, which erases who decided. Admin judgement belongs in a manual
+ban path, not in automatic escalation. ⚠️ `V1__init_live.sql`'s comment still describes the old unit
+(`3회→1주`, counting kicks) and is **checksum-locked** — this file is the current one.
+**Automatic escalation stops at one year.** The doc's
 12-kick permanent ban was moved to a human's hands: nothing reversible-only-by-hand should be applied by a
 server that has no code to reverse it, and that matches every other call this domain has made (the kick set
 expires rather than being deleted; a corrupted key is not self-healed). Permanent bans still exist as rows
-with a null expiry — an admin puts them there. An active ban is **mirrored, never stacked**,
-and the longest-lived one wins — picking a shorter row releases the mirror before the record. A duplicate
+with a null expiry — an admin puts them there — but **not through `extendOrCreate`**. That path overwrites
+`banned_by_id` and `created_at` whenever a longer expiry arrives, so a later automatic escalation would
+replace the admin's identity with `SYSTEM` and the admin's action would exist nowhere (`chat_kick_log`
+records kicks, not manual bans). Only a permanent manual ban is safe today, protected by the
+`existing.expires_at IS NOT NULL` guard; a dated one is not. A manual-ban path needs its own write —
+and the decision about preserving the previous issuer (a history row, or leaving those two columns
+alone on conflict) belongs to **that** change, before any manual ban exists to lose. A plain `INSERT`
+for a user who already has a row is rejected with `23505`, so it cannot be that write either. A duplicate
 kick does **not** re-count: it would let a seller extend a ban indefinitely by re-kicking.
+
+**One row per user is a DB constraint** (`uk_chat_ban_user_id`), not a convention. Concurrent kicks from
+different rooms used to write two rows — READ COMMITTED hides each other's uncommitted row, so a transaction
+does not stop it; a constraint does. Two rows made un-ban half-work: deleting one leaves the other
+enforcing, and the screen says "released". **Both stores are now extend-only** — the record's write is
+`ON CONFLICT DO UPDATE` guarded by a longer expiry, matching the mirror's Lua. They are not the *same* rule
+(the record compares absolute instants, the mirror compares remaining TTL) but they converge on the same
+effective state, and where they differ the mirror is never shorter — the safe direction.
+
+**A ban reaches sessions that never speak — but only if the pod was listening.** The entry gate stops new
+connections and `SendChatService` re-checks on every frame, so a banned user is blocked the moment they
+*talk*. A session that sits silent in another room used to survive indefinitely; `chat:account:events` now
+closes it. What remains open is narrow and worth knowing: Pub/Sub is not durable, so a pod whose
+subscription was down at publish time never sees the event, and a silent session on that pod stays until it
+speaks, the room ends, or the next kick republishes. **Widening `EntryGate`'s 30-second recheck window does
+not help** — that window only runs on the send path, and anyone sending is already caught. Closing it needs a
+periodic per-pod sweep, priced against session count. The order there is a contract: **reason first, then
+close** (a closed sink drops the frame, leaving a 1008 with no explanation), and **a failed reason must not
+stop the close** — a notification is worth less than a banned user staying connected.
+
+**An ADMIN entering someone else's room is logged, and that is all it is.** *(The design doc specifies no
+admin-entry audit; chat chose this shape. If §6 ever regulates one, compare against the choices below rather
+than assuming this predates it.)* The line lives in
+`ChatSessionRegistry.register` — where the *session* is admitted, not where the token is issued (a token that
+never connects saw nothing) — and carries `sessionId`, `adminId`, `roomId` so it joins this file's close and
+drop lines. Deliberately nothing else: an audit records the access, **not a copy of what was read**, and the
+room's owner is not on the token (`owner` is a boolean) so naming them would cost a live lookup on every
+entry, for a value `roomId` already answers after the fact. **Fan-out and audit ask the same question through one function.**
+`ChatPermissionPolicy.seesUnmaskedContent(role, isRoomOwner)` decides who reads the original, and
+`usesPrivilegedViewInSomeoneElsesRoom(...)` is that plus "not their own room". They used to be written out
+by hand in two modules, which meant a new role granted the privileged view could reach fan-out without
+reaching the audit — **more exposure, less trace**, and silently. The two cannot drift because there is one function; what a
+parameterised test adds is a **table written independently of the policy** — deriving the expectation from
+the policy makes the assertion a tautology that survives opening the original to everyone (it did, once).
+Widening the privileged view is caught by `PrivilegedEntryAuditTest.ordinaryEntriesAreNotRecorded`, which is
+the actual tripwire. The policy
+returns a boolean rather than `ChatMessageVisibility`: that enum lives in `application`, and domain may not
+depend on it (ArchUnit enforces this). `ChatSession` also rejects `ADMIN` with `isRoomOwner`, so the
+own-room half is unreachable today — a test pins that invariant so it gets looked at with the audit
+condition if live and chat ever settle that combination.
+
+⚠️ **This is a trail, not an audit record.** Retention, search and integrity all live in log shipping, which
+this repo does not configure. And it answers *that* an admin entered, never *what they saw* — a room with no
+messages and one that streamed ten thousand emails to them produce the identical line. Per-message logging
+was rejected on fan-out cost, so that gap is a choice, not an oversight: a real audit needs a store **and** a
+way for a person to query it. `chat_kick_log` shows the difference — it is read by escalation, but nothing
+lets a human ask it anything, which is what "a store is not an audit" looks like.
+
+**The envelope is chat's own, not a cross-domain contract.** `ChatAccountEvent` lives in chat-core, so no
+other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). When withdrawal
+(T-11) needs the same effect, follow `live:room:ended`: the publisher owns the wire shape and chat adapts it
+in an adapter. That costs one more channel and subscription and buys keeping the type inside this module.
+
+The record can only be shortened by deleting the row, and **the mirror must be deleted in the same change**:
+enforcement reads `chat:banned:`, never the table. Order it record → mirror — a break in the middle leaves
+over-blocking, while mirror-first can *resurrect* the ban (a surviving row is picked up by the next kick and
+re-written to the mirror). And **never gate the mirror delete on the row still existing**: after a
+record-first break the row is already gone, so a retry that stops at "no ban to release" never reaches the
+mirror. The whole release command must be safe to run again — deleting an absent key is a no-op. Over-blocking
+only heals by itself for dated bans; a permanent one is mirrored without a TTL and stays until a human acts.
 
 That used to cost a hole — a failed ban write after a committed log meant the retry took the duplicate path
 and skipped escalation. **The transaction closed it**: a failing ban INSERT rolls the log back with it, so
@@ -249,7 +337,21 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
 - Any `@SpringBootTest` on chat-core boots `RedisChatBroadcaster`, which connects in its constructor
   (`autoConnect(0)`, deliberate — it removes the pre-subscribe loss race). **Such tests need a Redis container**
   even when they test something else.
-- Schema for JPA tests is applied from the **real Flyway file**; a second copy drifts while staying green.
+- Schema for JPA tests is applied from the **real Flyway files** — all of them, in version order
+  (`support.LiveSchema`). A second copy drifts while staying green, and reading only `V1` leaves every
+  later migration untested while the suite stays green.
+- **`db/migration/live` is declared an input of `:chat-core:test`.** It is not one by default — the SQL is
+  read at runtime through `user.dir`, so changing only a migration used to leave `test` UP-TO-DATE and a
+  schema mutation appeared to break nothing (measured: 832ms green with the unique index deleted). The
+  `inputs.dir` line in `build.gradle` closes it; if you move where the schema comes from, move that line too.
+- **A red test still has to say so.** Every `StepVerifier` terminator without a ceiling —
+  `verifyComplete()`, `verify()`, `verifyError(...)` — waits forever for a signal that a regression may have
+  removed, so the test *hangs* instead of failing (measured: 110s and still running on a missing close, 2m34s
+  on a `thenCancel().verify()` whose `expectNext` never arrived). **Give every one of them
+  `verify(Duration)`.** The existing suite predates this rule and still has **~121** such call sites
+  (`verifyComplete()` 69 · bare `verify()` ~50 · `verifyError(...)` 2); new and touched tests take the
+  ceiling, and the rest is a cleanup of its own. "passing ≠ catching" has a twin in
+  "failing ≠ telling".
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the

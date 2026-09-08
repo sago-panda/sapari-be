@@ -1,5 +1,12 @@
 package com.sapari.chat.application.service;
 
+import org.springframework.transaction.TransactionTimedOutException;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.ParameterizedTest;
+import java.util.stream.Stream;
+import com.sapari.chat.domain.exception.ChatKickContendedException;
+import org.springframework.dao.QueryTimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -26,6 +33,7 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.command.KickUserCommand;
 import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
@@ -71,9 +79,14 @@ class KickUserServiceTest {
     @Mock
     private ChatKickEventPublisher kickEventPublisher;
 
+    @Mock
+    private ChatAccountEventPublisher accountEventPublisher;
+
     private KickUserService service;
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
+
+    private static final UUID SYSTEM = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     private final UUID roomId = UUID.randomUUID();
     private final UUID sellerId = UUID.randomUUID();
@@ -84,8 +97,17 @@ class KickUserServiceTest {
     void setUp() {
         service = new KickUserService(
                 liveRoomReader, evidenceRepository, kickRecorder, banWriteRepository,
-                kickWriteRepository, kickEventPublisher, new ChatPermissionPolicy(),
+                kickWriteRepository, kickEventPublisher, accountEventPublisher, new ChatPermissionPolicy(),
                 new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+    }
+
+    /** 상한 초과가 드러나는 두 모양. 하나만 잡으면 나머지가 500으로 새어 나간다. */
+    static Stream<Arguments> timeoutShapes() {
+        return Stream.of(
+                Arguments.of("문이 취소됨",
+                        new QueryTimeoutException("canceling statement due to user request")),
+                Arguments.of("남은 수명이 0 — 다음 문을 세우지 못함",
+                        new TransactionTimedOutException("Transaction timed out: deadline was ...")));
     }
 
     /** 인증 주체에서 오는 값(kickerId·kickerRole)은 컨트롤러가 채운다 — 요청 본문에는 자리가 없다. */
@@ -206,6 +228,90 @@ class KickUserServiceTest {
 
             // then
             verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+    }
+
+    @Nested
+    @DisplayName("계정 발행 — 조용한 세션을 끊는 신호")
+    class AccountEvent {
+
+        @Test
+        @DisplayName("⭐ 밴이 걸리면 계정 이벤트를 발행한다 — 없으면 다른 방의 조용한 세션이 그대로 남는다")
+        void publishesWhenABanIsInEffect() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(accountEventPublisher).publishBanned(targetId);
+        }
+
+        @Test
+        @DisplayName("밴이 없으면 발행하지 않는다 — 임계 미달 강퇴까지 전 Pod를 훑게 하지 않는다")
+        void doesNotPublishWithoutABan() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(accountEventPublisher, never()).publishBanned(any());
+        }
+
+        @Test
+        @DisplayName("⭐ 계정 발행이 강퇴 명단 등록보다 뒤다 — 앞에 두면 발행 실패가 강퇴 집행을 통째로 건너뛴다")
+        void publishesAfterTheEnforcingWrites() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then: PUBLISH만 실패하는 일시 장애 중에도 명단 등록은 이미 끝나 있어야 한다.
+            // 순서가 뒤집히면 그 방의 강퇴가 성립하지 않고, 밴이 만료되면 강퇴당한 적 없는 사람으로 돌아온다.
+            InOrder order = inOrder(kickWriteRepository, kickEventPublisher, accountEventPublisher);
+            order.verify(kickWriteRepository).register(roomId, targetId);
+            order.verify(kickEventPublisher).publishKicked(roomId, targetId);
+            order.verify(accountEventPublisher).publishBanned(targetId);
+        }
+    }
+
+    @Nested
+    @DisplayName("혼잡 — 고장과 갈라 놓는다")
+    class Contention {
+
+        /**
+         * 상한 초과는 <b>두 모양</b>으로 나온다. DB가 문을 취소하면 {@code QueryTimeoutException}이고,
+         * 남은 수명이 0 이하라 다음 문을 세우지도 못하면 {@code TransactionTimedOutException}이다.
+         * 공통 조상이 {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다 —
+         * 실제로 그렇게 썼다가 잡혔고, 그래서 둘을 모두 여기에 건다.
+         */
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("com.sapari.chat.application.service.KickUserServiceTest#timeoutShapes")
+        @DisplayName("⭐ 잠금 대기가 상한을 넘으면 재시도 가능한 도메인 예외가 된다 — 인프라 예외 그대로면 500이다")
+        void lockTimeoutBecomesARetryableDomainError(String shape, RuntimeException thrown) {
+            // given: 다른 방의 강퇴가 같은 사용자의 밴 행을 쥐고 있어 이 트랜잭션이 상한을 넘겼다
+            givenHappyPath();
+            given(kickRecorder.record(any())).willThrow(thrown);
+
+            // when & then: 번역하지 않으면 전역 핸들러의 마지막 그물에 걸려 500 + Unhandled exception 로그가 된다.
+            // 재시도하면 성공하는 실패에 "서버가 고장났다"고 답하는 셈이고, 정상적인 동시 강퇴가 알림을 울린다.
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatKickContendedException.class)
+                    .extracting(e -> ((ChatKickContendedException) e).getErrorCode().getStatus())
+                    .isEqualTo(409);
+
+            // then: 기록이 안 남았으므로 명단 등록도 발행도 하지 않는다
+            verify(kickWriteRepository, never()).register(any(), any());
+            verify(kickEventPublisher, never()).publishKicked(any(), any());
         }
     }
 

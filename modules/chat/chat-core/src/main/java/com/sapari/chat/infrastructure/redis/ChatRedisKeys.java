@@ -62,4 +62,25 @@ final class ChatRedisKeys {
     static String pubsubPattern() {
         return PUBSUB_PREFIX + "*";
     }
+
+    /**
+     * 계정 단위 조치 채널 — 방이 아니라 사람에 대한 신호가 여기로 간다.
+     *
+     * <p><b>{@link #PUBSUB_PREFIX} 아래에 두면 안 된다.</b> 방 채널 구독이 그 접두 뒤를 {@code UUID}로
+     * 파싱하므로, 이름이 그 밑에 있으면 전 Pod가 이벤트마다 파싱 실패를 찍고 봉투를 버린다.
+     */
+    static String accountEvents() {
+        return "chat:account:events";
+    }
+
+    /**
+     * 계정 이벤트 재발행 억제 키 — 존재하면 최근에 이미 알렸다는 뜻이다.
+     *
+     * <p>발행은 밴이 새로 걸렸든 이미 있던 것이든 나간다(그게 유일한 회수 경로다). 그래서 이미 밴된
+     * 대상을 반복 강퇴하면 호출마다 전 Pod가 로컬 세션을 훑는다 — 호출 횟수가 곧 함대 전체 스캔
+     * 횟수가 되고, 그 엔드포인트에는 레이트리밋이 없다.
+     */
+    static String accountEventDebounce(UUID userId) {
+        return "chat:account:pub:" + userId;
+    }
 }

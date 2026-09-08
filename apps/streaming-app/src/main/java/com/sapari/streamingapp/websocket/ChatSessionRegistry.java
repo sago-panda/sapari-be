@@ -17,9 +17,9 @@ import org.springframework.web.reactive.socket.CloseStatus;
 
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.OutboundMessage;
-import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -87,6 +87,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private static final long DROP_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
 
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
+
+    /**
+     * 감사 판정을 손으로 적지 않기 위해 받는다.
+     *
+     * <p>"특권 뷰를 쓰는가"는 팬아웃도 묻는 질문이라, 두 곳에 각자 적으면 특권 뷰를 받는 역할이 늘 때
+     * 한쪽만 따라간다. 뒤처지는 쪽이 감사이고, 그러면 노출은 늘고 흔적은 주는 방향으로 갈린다.
+     */
+    private final ChatPermissionPolicy permissionPolicy;
 
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
     private final Map<String, LocalSession> local = new ConcurrentHashMap<>();
@@ -193,9 +201,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
         // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
         // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
-        if (session.role() == ChatRole.ADMIN) {
-            log.info("관리자 채팅 입장 — sessionId={} userId={} roomId={}",
-                    sessionId, session.userId(), session.roomId());
+        // 문구가 '관리자'가 아닌 것은 판정이 역할을 가리지 않기 때문이다 — 특권 뷰가 넓어지는 날
+        // 감사가 자동으로 따라오는 것이 이 설계의 값인데, 그때 비-관리자를 관리자로 기록하면 안 된다.
+        // 그래서 role을 값으로 싣는다(오늘은 언제나 ADMIN이다).
+        if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(session.role(), session.isRoomOwner())) {
+            log.info("특권 뷰 입장 — role={} sessionId={} userId={} roomId={}",
+                    session.role(), sessionId, session.userId(), session.roomId());
         }
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
@@ -325,6 +336,50 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 }
             });
         });
+    }
+
+    @Override
+    public Mono<Void> sendToUserEverywhere(UUID userId, OutboundMessage message) {
+        return Mono.fromRunnable(() -> {
+            FanOutBudget budget = newBudget();
+            forEachSessionOf(userId, ls -> emit(ls, message, budget));
+        });
+    }
+
+    @Override
+    public Mono<Void> closeUserEverywhere(UUID userId) {
+        // 밴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
+        return Mono.fromRunnable(() -> {
+            FanOutBudget budget = newBudget();
+            forEachSessionOf(userId, ls -> terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline()));
+        });
+    }
+
+    /**
+     * 이 Pod에서 그 사람의 세션을 전부 훑는다.
+     *
+     * <p><b>방 색인을 못 쓴다</b> — 계정 조치는 방을 모른 채로 오고, {@code userId → 세션} 색인은 두지
+     * 않았다. 두면 {@code register}/{@code unregister}마다 동기화 대상이 하나 늘고 그 어긋남이 조용한
+     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다. 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
+     * 방 fan-out이 색인을 갖는 것은 <b>메시지마다</b> 돌기 때문이고, 이쪽은 시간당 몇 건이다.
+     *
+     * <p><b>비용을 폭발시키는 변수는 이벤트 빈도가 아니라 파드당 세션 수다.</b> 스캔은 선형이 아니다 —
+     * 12,000에서 58µs인데 100,000에서 4.2ms로, 8.3배 입력에 70배 넘게 든다(캐시 미스). 시간당 한 건이어도
+     * 10만 세션이면 한 건이 스레드를 그만큼 잡는다.
+     *
+     * <p>그리고 <b>이벤트 하나가 스캔을 두 번</b> 한다(사유 전송 + 종료). 위 수치는 1회분이므로 실제
+     * 비용은 그 두 배다 — 10만이면 8ms 남짓이다. <b>파드당 2~3만 세션</b>이 다시 판단할 자리다.
+     *
+     * <p>돌 때 밟는 것은 이벤트루프가 아니라 Redis pub/sub I/O 스레드다({@code listenToChannel}이 자기
+     * 연결을 만든다). 시청자 커넥션이 멈추지는 않지만 한가한 스레드도 아니다 — 방 팬아웃과 커맨드 응답이
+     * 같은 곳에 얹힌다.
+     */
+    private void forEachSessionOf(UUID userId, Consumer<LocalSession> action) {
+        for (LocalSession ls : local.values()) {
+            if (ls.session().userId().equals(userId)) {
+                action.accept(ls);
+            }
+        }
     }
 
     @Override

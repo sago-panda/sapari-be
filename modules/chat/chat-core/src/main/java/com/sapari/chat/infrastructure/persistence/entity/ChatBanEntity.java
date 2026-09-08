@@ -11,13 +11,20 @@ import jakarta.persistence.Table;
 import lombok.Getter;
 
 /**
- * {@code live_schema.chat_ban} 매핑 — 읽기와 네이티브 INSERT에만 쓴다.
+ * {@code live_schema.chat_ban} 매핑 — 읽기와 네이티브 쓰기에만 쓴다.
  *
- * <p>기반 엔티티를 상속하지 않는다. 이 테이블에는 {@code updated_at}이 없고, 행을 고치는 경로도 없다 —
- * 밴 해제는 갱신이 아니라 삭제다. 공통 기반을 붙이면 없는 열을 요구하게 된다.
+ * <p>기반 엔티티를 상속하지 않는다. 이 테이블에는 {@code updated_at}이 없어서다. 공통 기반을 붙이면
+ * 없는 열을 요구하게 된다.
  *
- * <p>모든 열이 {@code updatable = false}다. 밴은 만들거나 지우는 것이지 고치는 것이 아니라는 걸
- * 매핑에서부터 못 박는다.
+ * <p><b>모든 열의 {@code updatable = false}는 JPA 경로에만 걸린다.</b> 사용자당 한 행 제약이 서면서
+ * 쓰기가 {@code ON CONFLICT DO UPDATE}가 됐고, 그 경로는 더 긴 밴이 올 때 {@code expires_at}·
+ * {@code banned_by_id}·{@code created_at} 세 열을 실제로 갱신한다. 네이티브라 이 매핑을 지나지 않고
+ * {@code ddl-auto=validate}도 {@code updatable}을 보지 않아, 둘이 어긋나도 아무것도 깨지지 않는다 —
+ * 그래서 여기 적어 둔다.
+ *
+ * <p>그럼에도 {@code updatable = false}를 남기는 것은 <b>JPA로는 고치지 않는다</b>가 여전히 계약이기
+ * 때문이다. 만료를 늘리는 경로는 하나(그 네이티브 쿼리)여야 하고, 엔티티에 setter가 생겨 두 번째
+ * 경로가 열리면 단조 규칙이 그쪽에서 조용히 깨진다.
  */
 @Getter
 @Entity
