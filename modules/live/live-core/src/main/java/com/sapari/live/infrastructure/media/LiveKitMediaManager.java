@@ -578,55 +578,11 @@ public class LiveKitMediaManager implements LiveMediaManager {
     }
 
     /**
-     * 이 방의 egress 목록 — 방치 Live 종료의 <b>방별 재판정</b> 전용. 포트 javadoc 참고.
-     *
-     * <p>{@link #listRoomIngress(UUID)} 와 같은 규칙을 쓴다: 비-2xx 는 예외, <b>성공 응답의 null body 는
-     * "내용 없음"</b>이다. 둘을 합쳐 예외로 올리면 egress 가 아예 없는 방마다 회차가 죽는데, 그 방이
-     * 바로 이 잡의 <b>후보 전형</b>(송출이 끝나 egress 가 없는데 Live 에 갇힌 방)이라 잡이 통째로
-     * 무동작이 된다. 실패 신호는 상태 코드가 이미 다 준다.
-     *
-     * <p>{@link #listAllEgress()} 가 null body 를 실패로 세는 것과 갈리는 이유: 그쪽은 전역 스윕이라
-     * 빈 결과가 "클러스터 전체에 송출 없음"으로 읽히고, 그 오독은 후보 전량을 끊는다. 여기서는 방
-     * 하나의 이야기이고 판정도 방 하나에만 미친다.
-     */
-    @Override
-    public List<EgressSummary> listRoomEgress(UUID roomId){
-        try{
-            Response<List<EgressInfo>> response = egressServiceClient.listEgress(roomId.toString()).execute();
-
-            if(!response.isSuccessful()){
-                log.error("LiveKit Egress 방 조회 실패: roomId={}, code={}, message={}",
-                        roomId, response.code(), response.message());
-                throw new LiveMediaException("Egress 방 조회에 실패했습니다: " + roomId);
-            }
-            if (response.body() == null) {
-                return List.of();
-            }
-
-            return response.body().stream()
-                    .map(info -> new EgressSummary(
-                            info.getEgressId(),
-                            info.getRoomName(),
-                            isStoppable(info.getStatus()),
-                            toInstant(info.getStartedAt())
-                    ))
-                    .toList();
-
-        }catch (LiveMediaException e){
-            throw e;
-        }catch (Exception e){
-            // 빈 목록으로 수렴시키면 "송출 없음 → 종료해라"가 된다. 실패는 실패로 올린다.
-            log.error("LiveKit Egress 방 조회 통신 오류: roomId={}", roomId, e);
-            throw new LiveMediaException("Egress 방 조회 중 통신 오류: " + roomId, e);
-        }
-    }
-
-    /**
      * LiveKit 전체 egress 목록 조회 — 고아 미디어 정리와 오설정 가드 전용.
      *
      * <p>{@link #listAllIngress()} 와 같은 이유로 실패를 삼키지 않는다. null body 도 실패로 센다 —
-     * 전역 스윕에서 빈 결과는 "클러스터 전체에 송출 없음"으로 읽히고, 그 오독은 후보 전량을 끊는다
-     * (방 단위인 {@link #listRoomEgress(UUID)} 는 반대로 "내용 없음"으로 본다).
+     * 전역 스윕에서 빈 결과는 "클러스터 전체에 송출 없음"으로 읽히고, 그 오독은 후보 전량을 끊는다.
+     * 방 단위인 {@link #listRoomEgress(UUID)} 도 같은 규칙이다.
      */
     @Override
     public List<EgressSummary> listAllEgress(){
@@ -656,6 +612,41 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // 위와 같은 이유 — IOException 밖의 실패도 도메인 예외로 번역한다.
             log.error("LiveKit Egress 전체 조회 실패", e);
             throw new LiveMediaException("Egress 전체 조회 중 오류", e);
+        }
+    }
+
+    @Override
+    public List<EgressSummary> listRoomEgress(UUID roomId) {
+        try {
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress(roomId.toString()).execute();
+
+            if (!response.isSuccessful()) {
+                log.error("LiveKit 방별 Egress 조회 실패: roomId={}, code={}, message={}",
+                        roomId, response.code(), response.message());
+                throw new LiveMediaException("방별 Egress 조회에 실패했습니다.");
+            }
+            if (response.body() == null) {
+                log.error("LiveKit 방별 Egress 조회 실패 — 성공 응답 본문 없음: roomId={}", roomId);
+                throw new LiveMediaException("방별 Egress 조회 응답 본문이 없습니다.");
+            }
+            if (response.body().stream().anyMatch(info -> !roomId.toString().equals(info.getRoomName()))) {
+                log.error("LiveKit 방별 Egress 조회 실패 — 다른 방 응답 포함: roomId={}", roomId);
+                throw new LiveMediaException("방별 Egress 조회 응답에 다른 방이 포함됐습니다.");
+            }
+
+            return response.body().stream()
+                    .map(info -> new EgressSummary(
+                            info.getEgressId(),
+                            info.getRoomName(),
+                            isStoppable(info.getStatus()),
+                            toInstant(info.getStartedAt())
+                    ))
+                    .toList();
+        } catch (LiveMediaException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("LiveKit 방별 Egress 조회 실패: roomId={}", roomId, e);
+            throw new LiveMediaException("방별 Egress 조회 중 오류", e);
         }
     }
 

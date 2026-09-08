@@ -1,42 +1,88 @@
 package com.sapari.common.securityjwt.jwt;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.context.annotation.Configuration;
 
+@ExtendWith(OutputCaptureExtension.class)
 class JwtPropertiesTest {
 
-    private static final String SECRET = "0123456789abcdef0123456789abcdef";
+    private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withUserConfiguration(JwtPropertiesConfig.class);
 
-    /**
-     * 이 값이면 임의 사용자의 토큰을 위조할 수 있다. 바인딩 검증이 걸리면 Spring 이 이 객체를
-     * 로그에 그대로 싣기 때문에, 마스킹이 없으면 부팅 실패 한 번으로 평문이 남는다.
-     */
-    /**
-     * 실제 유출 경로는 {@code toString()} 이 아니었다 — {@code @Size} 위반은 필드 단위 FieldError 로
-     * 보고되고 그 포맷이 {@code rejected value [...]} 로 값을 그대로 싣는다. 그래서 길이 검사를
-     * 컴팩트 생성자로 옮겼고, 이 테스트가 그 사실을 고정한다.
-     */
     @Test
-    @DisplayName("짧은 키를 거부하되 예외 메시지에 값을 싣지 않는다")
-    void shortSecret_isRejectedWithoutEchoingTheValue() {
-        String shortSecret = "REAL-HMAC-KEY-TOO-SHORT";
+    @DisplayName("toString은 JWT 비밀키를 마스킹한다")
+    void toString_masksSecret() {
+        String secret = "01234567890123456789012345678901";
+        JwtProperties properties = new JwtProperties("sapari", secret, 900L, 1_209_600L);
 
-        assertThatThrownBy(() -> new JwtProperties("sapari", shortSecret, 900L, 1_209_600L))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageNotContaining(shortSecret);
+        assertThat(properties.toString())
+                .doesNotContain(secret)
+                .contains("secret=***");
     }
 
     @Test
-    @DisplayName("toString 은 HMAC 서명키를 노출하지 않는다")
-    void toString_masksTheSigningSecret() {
-        JwtProperties properties = new JwtProperties("sapari", SECRET, 900L, 1_209_600L);
+    @DisplayName("바인딩 검증 실패 예외는 거부된 JWT 비밀키를 노출하지 않는다")
+    void bindingValidationFailure_doesNotExposeRejectedSecret() {
+        String rejectedSecret = "short-secret";
 
-        assertThat(properties.toString())
-                .doesNotContain(SECRET)
-                .contains("secret=***")
-                .contains("issuer=sapari");
+        contextRunner.withPropertyValues(
+                        "jwt.issuer=sapari",
+                        "jwt.secret=" + rejectedSecret,
+                        "jwt.access-token-expiration-seconds=900",
+                        "jwt.refresh-token-expiration-seconds=1209600")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(failureMessages(context.getStartupFailure()))
+                            .doesNotContain(rejectedSecret);
+                });
+    }
+
+    @Test
+    @DisplayName("실제 부팅 실패 진단 로그는 거부된 JWT 비밀키를 노출하지 않는다")
+    void bootFailureAnalysis_doesNotExposeRejectedSecret(CapturedOutput output) {
+        String rejectedSecret = "short-secret";
+        SpringApplication application = new SpringApplication(JwtPropertiesConfig.class);
+        application.setWebApplicationType(WebApplicationType.NONE);
+        application.setLogStartupInfo(false);
+
+        try {
+            application.run(
+                    "--jwt.issuer=sapari",
+                    "--jwt.secret=" + rejectedSecret,
+                    "--jwt.access-token-expiration-seconds=900",
+                    "--jwt.refresh-token-expiration-seconds=1209600");
+        } catch (RuntimeException ignored) {
+            // 실제 Spring Boot FailureAnalyzer가 출력한 진단 블록을 아래에서 검증한다.
+        }
+
+        assertThat(output.getAll())
+                .contains("APPLICATION FAILED TO START")
+                .doesNotContain(rejectedSecret);
+    }
+
+    private String failureMessages(Throwable failure) {
+        StringBuilder messages = new StringBuilder();
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            messages.append(current).append('\n');
+            for (Throwable suppressed : current.getSuppressed()) {
+                messages.append(suppressed).append('\n');
+            }
+        }
+        return messages.toString();
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(JwtProperties.class)
+    static class JwtPropertiesConfig {
     }
 }

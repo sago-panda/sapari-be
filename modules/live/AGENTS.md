@@ -31,11 +31,11 @@ All LiveKit through `LiveMediaManager`. Never touch the SDK from a service.
 - Cleanup swallows (`deleteIngress`, `stopHlsEgress`, `stopEgress`, `closeRoom`) — leftovers are reconciliation's job.
 - Global sweeps throw (`listAllIngress`, `listAllEgress`, `listAllRooms`); a misconfigured client answers
   `200 + []`, so **null body = failure** here.
-- Per-room: `listRoomIngress` and `listRoomEgress` throw (they feed deletion and the *irreversible* end-stale
-  verdict), `publishingIngressIdsOrEmpty` returns empty on failure (feeds go-live only). **Null body = empty**
-  — rooms legitimately have no ingress and no egress, and treating that as failure would skip exactly the
-  rooms each job targets. `listRoomEgress` exists because the round-start `listAllEgress` snapshot is up to a
-  whole budget stale; judging a live broadcast on it kills reconnected rooms.
+- Per-room: `listRoomIngress` and `listRoomEgress` throw on HTTP/transport failure (feed destructive decisions);
+  `publishingIngressIdsOrEmpty` returns empty on failure (feeds go-live only). A null ingress body is empty,
+  but a null egress body is failure — no egress is represented by `[]`, and this answer can end a broadcast.
+  `listRoomEgress` exists because the round-start `listAllEgress` snapshot is up to a whole round budget
+  stale; judging a live broadcast on it kills rooms that reconnected mid-round.
 
 **Start-side media calls sit inside `@Transactional` on purpose** — reviewers must not flag them; `egressId`
 has to commit with the room. The row lock is held across media I/O, bounded by `callTimeout` 15s per call.
@@ -84,6 +84,8 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
 - **A global sweep returning zero is not evidence.** `end-stale-live` aborts the round when the whole cluster
   reports no active egress. Cost: an idle cluster never gets swept — accepted, the other direction cuts live
   broadcasts. Don't drop the guard; verify per room instead.
+- If the global snapshot marks a candidate active but its per-room list is empty, skip it for this round and
+  record `SKIPPED_EGRESS_SNAPSHOT_MISMATCH`; partial routing/permission failures must not end a broadcast.
 - **`BUFFERING` counts as publishing** — that is a reconnecting OBS.
 - **A publishing ingress is spared only while the room acknowledges it** — unacknowledged ones are reclaimed
   mid-publish. Waiting for `Ended` instead would deadlock: only this job can get the room there.
@@ -196,6 +198,8 @@ evaluates before autoconfiguration and would silently disable all metrics.
   `aborted + completed = rounds`. `expire-ready`'s "LiveKit doesn't know this room's ingress" is therefore
   `ReconcileAction.SKIPPED_INGRESS_MISSING`, split out of plain `SKIPPED` so the misconfiguration signal
   isn't buried under routine skips.
+- Per-room egress lookup failures use `SKIPPED_EGRESS_LOOKUP_FAILED`, not plain `SKIPPED`, so LiveKit
+  degradation is not buried under routine state-race skips. They do not abort the round; later candidates continue.
 - **`orphan-media` deliberately has no abort guard.** All three lists empty is the normal state on a quiet
   night; counting it as `aborted` would alarm daily until someone mutes the alarm. It owns the
   `live.livekit.egress.rooms` gauge instead — it sweeps unconditionally every round, so a misconfigured

@@ -27,14 +27,16 @@ public enum ReconcileAction {
      */
     SKIPPED_INGRESS_MISSING,
     /**
-     * 만지기 직전 방별 재확인(egress 조회)이 실패해 종료하지 않고 넘겼다.
+     * 방별 egress 조회 실패로 종료 판정을 미룸.
      *
      * <p>{@link #SKIPPED} 에서 갈라놓은 이유는 {@link #SKIPPED_INGRESS_MISSING} 과 같다 — 그쪽에는
      * "이미 판매자가 종료한 방" 같은 정상 스킵이 섞여 늘 0 이 아니다. 섞으면 <b>방별 호출만 지속
      * 실패해 종료가 0건인 상태</b>가 평범한 루틴 스킵으로 보인다. 회차는 completed 로 남으므로
      * 이 갈래가 없으면 밖에서 구분할 방법이 없다.
      */
-    SKIPPED_EGRESS_CHECK_FAILED,
+    SKIPPED_EGRESS_LOOKUP_FAILED,
+    /** 전역 스냅샷에는 활성이었으나 직전 방별 목록이 비어 판정 불일치로 미룸 */
+    SKIPPED_EGRESS_SNAPSHOT_MISMATCH,
     /**
      * 고아 ingress 삭제를 <b>요청</b>했다.
      *

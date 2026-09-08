@@ -94,6 +94,24 @@ class EnterLiveServiceTest {
     }
 
     @Test
+    @DisplayName("관리자(ADMIN)가 입장하면 owner=false, role=ADMIN으로 발급한다")
+    void issuesAdminToken_whenAdmin() {
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+        given(roomTokenIssuer.issue(org.mockito.ArgumentMatchers.any())).willReturn("signed-token");
+
+        EnterLiveCommand command = new EnterLiveCommand(
+                roomId, UUID.randomUUID(), "ADMIN", "관리자", "admin@sapari.com");
+        enterLiveService.enter(command);
+
+        ArgumentCaptor<RoomTokenClaims> captor = ArgumentCaptor.forClass(RoomTokenClaims.class);
+        verify(roomTokenIssuer).issue(captor.capture());
+        RoomTokenClaims claims = captor.getValue();
+
+        assertThat(claims.owner()).isFalse();
+        assertThat(claims.role()).isEqualTo("ADMIN");
+    }
+
+    @Test
     @DisplayName("미인증(게스트) 입장은 에페메랄 GUEST 토큰(owner=false, 에페메랄 userId)을 발급한다")
     void issuesGuestToken_whenUnauthenticated() {
         given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
@@ -149,11 +167,11 @@ class EnterLiveServiceTest {
     void rejects_whenUnsupportedRole() {
         given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
 
-        EnterLiveCommand command = new EnterLiveCommand(roomId, UUID.randomUUID(), "ADMIN", "닉", "e@e.com");
+        EnterLiveCommand command = new EnterLiveCommand(roomId, UUID.randomUUID(), "UNKNOWN", "닉", "e@e.com");
 
         assertThatThrownBy(() -> enterLiveService.enter(command))
                 .isInstanceOf(UnsupportedRoleException.class)
-                .hasMessageNotContaining("ADMIN");
+                .hasMessageNotContaining("UNKNOWN");
         verify(roomTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any());
     }
 

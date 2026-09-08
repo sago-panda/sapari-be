@@ -379,8 +379,11 @@ class ReconcileSchedulerLockTest {
 
         @Override
         public List<EgressSummary> listRoomEgress(UUID roomId) {
-            // 방별 재확인. 이 테스트가 보는 건 락 경합이지 판정이 아니라, 전역 목록과 같은 답을 준다.
-            return List.of(new EgressSummary("eg-1", roomId.toString(), true, OLD));
+            // 방별 재확인(만지기 직전 판정). 전역 목록은 공집합 가드를 통과시키려고 활성 egress 를
+            // 주지만, 여기서 활성으로 답하면 방이 spared 되어 종료가 일어나지 않는다 — 이 테스트가
+            // 재는 건 락 인계이므로 종료까지 도달해야 한다. 빈 목록은 전역/방별 불일치 스킵에
+            // 걸리므로, "등록은 됐지만 이미 멈춘" egress 를 준다.
+            return List.of(new EgressSummary("eg-1", roomId.toString(), false, OLD));
         }
 
         @Override
