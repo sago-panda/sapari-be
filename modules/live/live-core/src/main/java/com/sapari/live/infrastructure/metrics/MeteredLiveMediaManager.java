@@ -93,6 +93,14 @@ public class MeteredLiveMediaManager implements LiveMediaManager {
     }
 
     @Override
+    public void stopEgress(UUID roomId, String egressId) {
+        timed("stopEgress", () -> {
+            delegate.stopEgress(roomId, egressId);
+            return null;
+        });
+    }
+
+    @Override
     public void deleteIngress(UUID roomId) {
         timed("deleteIngressByRoom", () -> {
             delegate.deleteIngress(roomId);

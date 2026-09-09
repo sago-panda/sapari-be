@@ -12,6 +12,8 @@ import org.springframework.stereotype.Component;
 import com.sapari.liveapp.config.ReconcileLockConfig;
 import com.sapari.liveapp.config.SchedulingConfig;
 
+import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.infrastructure.config.LiveReconcileProperties;
 import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 
 /**
@@ -21,6 +23,11 @@ import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 @Slf4j
 @Component
 @RequiredArgsConstructor
+/*
+ * 이 스위치는 <b>빈 등록 조건</b>이지 런타임 토글이 아니다 — 끄려면 롤링 재시작이 필요하고, 이미
+ * 도는 회차는 멈추지 않는다(최대 회차 예산만큼 더 돈다). 사고 대응 절차에서 이걸 "즉시 정지"로
+ * 기대하면 안 된다: live_room.status 를 대량으로 건드리기 <b>전에</b> 재시작을 끝내 둘 것.
+ */
 @ConditionalOnProperty(name = {"live.reconcile.enabled", "live.reconcile.orphan-media.enabled"},
         havingValue = "true", matchIfMissing = true)
 public class OrphanMediaScheduler {
@@ -30,18 +37,17 @@ public class OrphanMediaScheduler {
     /**
      * 잡별 락. 유지 시간의 의미와 {@code lock-at-least-for} 는 {@link com.sapari.liveapp.config.ReconcileLockConfig} 참고.
      *
-     * <p><b>이 잡에는 "최악보다 길게"를 만족하는 고정값이 없다.</b> 배치 개념이 없어 LiveKit 목록
-     * 전체를 순회하며 건당 삭제/중단을 부르므로 회차 길이가 리소스 수에 비례한다. {@code PT60M} 은
-     * {@code callTimeout} 15s 기준 약 240회분이며, <b>장애 복구 직후처럼 고아가 쌓인 회차</b>
-     * — 즉 이 잡이 가장 중요한 순간 — 에는 초과할 수 있다. 초과하면 락이 만료돼 다음 tick 의 다른
-     * 인스턴스가 같은 스윕을 겹쳐 돌고, {@code reconcileActed} 가 배로 부풀어 이 잡의 판독법이 깨진다.
-     * 근본 해결은 회차에 상한을 두거나 루프 중 락을 연장하는 것이고, 둘 다 <b>[SPR-145 로 이월]</b> 했다.
-     * 만료 시 벌어지는 일은 {@link ReconcileLockConfig#LOCK_AT_MOST_FOR_ORPHAN_MEDIA} 에 적었다.
+     * <p>목록 조회 3회 뒤 <b>방 단위로</b> 순회한다 — 한 방의 ingress 삭제 → egress 중단 → 방 닫기를
+     * 한자리에서 그 순서로 처리한다(하나라도 남기고 방을 닫으면 OBS 가 방을 되살린다). 종류별 개수
+     * 상한은 없다; 방당 왕복 수가 그 방의 리소스 수에 비례해 고정이 아니라 개수로는 회차를 묶을 수
+     * 없기 때문이다. 정지 규칙은 리스에서 파생한 {@code roundBudget}(기본 20분의 4/5 = 16분) 하나뿐이고,
+     * 마감에 걸린 방은 <b>닫지 않은 채</b> 다음 회차로 넘긴다. 락 연장은 적체가 클수록 죽은 인스턴스
+     * 판정도 늦추므로 쓰지 않는다.
      */
     @Scheduled(cron = "${live.reconcile.orphan-media.cron:" + SchedulingConfig.ORPHAN_MEDIA_CRON + "}")
-    @SchedulerLock(name = "live-reconcile-orphan-media",
+    @SchedulerLock(name = ReconcileJob.Locks.ORPHAN_MEDIA,
             lockAtMostFor = "${live.reconcile.orphan-media.lock-at-most-for:"
-                    + ReconcileLockConfig.LOCK_AT_MOST_FOR_ORPHAN_MEDIA + "}",
+                    + LiveReconcileProperties.OrphanMedia.DEFAULT_LOCK_AT_MOST_FOR + "}",
             lockAtLeastFor = "${live.reconcile.lock-at-least-for:" + ReconcileLockConfig.LOCK_AT_LEAST_FOR + "}")
     public void run() {
         try {

@@ -25,6 +25,8 @@ import java.util.stream.Stream;
 
 import javax.sql.DataSource;
 
+import net.javacrumbs.shedlock.core.LockConfiguration;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,6 +52,7 @@ import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.application.port.ReconcileLockResult;
 import com.sapari.live.application.port.RoomSummary;
 import com.sapari.live.application.port.SfuRoomResult;
 import com.sapari.live.application.service.ReconcileOrphanMediaService;
@@ -59,7 +62,9 @@ import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 import com.sapari.liveapp.config.ReconcileLockConfig;
+import com.sapari.liveapp.config.SchedulingConfig;
 import com.sapari.liveapp.config.ShedLockTableGuard;
+import com.sapari.liveapp.config.TrackingLockProvider;
 
 /**
  * 정리 스케줄러 분산 락 — <b>레플리카 2대에서 외부 정리가 정확히 한 번만 나가는가</b>.
@@ -182,7 +187,7 @@ class ReconcileSchedulerLockTest {
     }
 
     @Test
-    @DisplayName("락을 못 잡은 인스턴스는 조용히 넘어간다 — 예외도, 회차 기록도 남기지 않는다")
+    @DisplayName("락을 못 잡은 인스턴스는 회차 대신 skipped 락 지표를 남긴다")
     void loserSkipsSilently() throws Exception {
         CountingMediaManager livekit = new CountingMediaManager();
         CountingMetrics metrics = new CountingMetrics();
@@ -195,6 +200,8 @@ class ReconcileSchedulerLockTest {
         assertThat(livekit.roundsEntered()).isEqualTo(1);
         assertThat(metrics.completedRounds()).isEqualTo(1);
         assertThat(metrics.failedRounds()).isZero();
+        assertThat(metrics.acquiredLocks()).isEqualTo(1);
+        assertThat(metrics.skippedLocks()).isEqualTo(1);
     }
 
     @Test
@@ -225,6 +232,39 @@ class ReconcileSchedulerLockTest {
                     .as("유예가 지나면 살아 있는 인스턴스가 이어받는다")
                     .isEqualTo(1);
         }
+    }
+
+    /**
+     * 한때 정상 종료 시 남은 락을 명시 반납했지만, 그 경로는 도달하지 않았다 — ShedLock 이 태스크
+     * {@code finally} 에서 항상 unlock 하므로 "종료 대기가 끝난 시점"에 남는 락이 없다. 도달하게
+     * 만들려면 <b>아직 돌고 있는</b> 회차의 락을 뺏어야 하고, 그건 이 락이 지키려던 상호배제를 깬다.
+     * 그래서 인계는 리스 만료가 맡는다. 이 테스트는 그 사실을 고정한다.
+     */
+    @Test
+    @DisplayName("정상 종료는 남의 락을 대신 내리지 않는다 — 인계는 lock-at-most-for 만료가 맡는다")
+    void normalShutdownLeavesLockToLeaseExpiry() {
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+        context.registerBean(DataSource.class, () -> dataSource);
+        context.registerBean(LiveMetrics.class, () -> LiveMetrics.NOOP);
+        context.register(ReconcileLockConfig.class, SchedulingConfig.class);
+        context.refresh();
+
+        TrackingLockProvider provider = context.getBean(TrackingLockProvider.class);
+        assertThat(provider.lock(new LockConfiguration(
+                Instant.now(), LOCK_NAME, Duration.ofMinutes(15), Duration.ofMinutes(1)))).isPresent();
+        assertThat(jdbc.queryForObject(
+                "SELECT lock_until > timezone('utc', CURRENT_TIMESTAMP) FROM "
+                        + ReconcileLockConfig.LOCK_TABLE + " WHERE name = ?",
+                Boolean.class, LOCK_NAME)).isTrue();
+
+        context.close();
+
+        assertThat(jdbc.queryForObject(
+                "SELECT EXTRACT(EPOCH FROM (lock_until - timezone('utc', CURRENT_TIMESTAMP))) FROM "
+                        + ReconcileLockConfig.LOCK_TABLE + " WHERE name = ?",
+                Double.class, LOCK_NAME))
+                .as("컨텍스트가 닫혀도 리스는 그대로다 — 회차가 아직 도는지 밖에서는 알 수 없다")
+                .isBetween(14 * 60.0, 15 * 60.0);
     }
 
     /** 인스턴스 2개를 만들어 같은 잡을 동시에 진입시킨다. */
@@ -265,6 +305,7 @@ class ReconcileSchedulerLockTest {
                 .addFirst(new MapPropertySource("test", properties));
         context.registerBean(PropertySourcesPlaceholderConfigurer.class);
         context.registerBean(DataSource.class, () -> dataSource);
+        context.registerBean(LiveMetrics.class, () -> metrics);
         context.registerBean(ReconcileOrphanMediaUseCase.class, () -> reconcileService(livekit, metrics));
         if (locked) {
             context.register(ReconcileLockConfig.class);
@@ -278,7 +319,7 @@ class ReconcileSchedulerLockTest {
         return new ReconcileOrphanMediaService(
                 livekit,
                 new SingleRoomRepository(endedRoom()),
-                new OrphanMediaReconcilePolicy(Duration.ofMinutes(15)),
+                new OrphanMediaReconcilePolicy(Duration.ofMinutes(15), Duration.ofMinutes(16)),
                 new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)),
                 metrics);
     }
@@ -337,7 +378,21 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
+        public List<EgressSummary> listRoomEgress(UUID roomId) {
+            // 방별 재확인(만지기 직전 판정). 전역 목록은 공집합 가드를 통과시키려고 활성 egress 를
+            // 주지만, 여기서 활성으로 답하면 방이 spared 되어 종료가 일어나지 않는다 — 이 테스트가
+            // 재는 건 락 인계이므로 종료까지 도달해야 한다. 빈 목록은 전역/방별 불일치 스킵에
+            // 걸리므로, "등록은 됐지만 이미 멈춘" egress 를 준다.
+            return List.of(new EgressSummary("eg-1", roomId.toString(), false, OLD));
+        }
+
+        @Override
         public void stopHlsEgress(UUID roomId) {
+            stopCalls.incrementAndGet();
+        }
+
+        @Override
+        public void stopEgress(UUID roomId, String egressId) {
             stopCalls.incrementAndGet();
         }
 
@@ -377,11 +432,6 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
-        public List<EgressSummary> listRoomEgress(UUID roomId) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
         public HlsEgressResult startHlsEgress(UUID roomId) {
             throw new UnsupportedOperationException();
         }
@@ -416,6 +466,8 @@ class ReconcileSchedulerLockTest {
 
         private final AtomicInteger completed = new AtomicInteger();
         private final AtomicInteger failed = new AtomicInteger();
+        private final AtomicInteger acquiredLocks = new AtomicInteger();
+        private final AtomicInteger skippedLocks = new AtomicInteger();
 
         int completedRounds() {
             return completed.get();
@@ -423,6 +475,14 @@ class ReconcileSchedulerLockTest {
 
         int failedRounds() {
             return failed.get();
+        }
+
+        int acquiredLocks() {
+            return acquiredLocks.get();
+        }
+
+        int skippedLocks() {
+            return skippedLocks.get();
         }
 
         @Override
@@ -433,6 +493,16 @@ class ReconcileSchedulerLockTest {
         @Override
         public void reconcileRoundFailed(ReconcileJob job) {
             failed.incrementAndGet();
+        }
+
+        @Override
+        public void reconcileLockResult(ReconcileJob job, ReconcileLockResult result) {
+            if (result == ReconcileLockResult.ACQUIRED) {
+                acquiredLocks.incrementAndGet();
+            }
+            if (result == ReconcileLockResult.SKIPPED) {
+                skippedLocks.incrementAndGet();
+            }
         }
 
         /** 나머지는 이 테스트의 관심사가 아니다 — 잡이 부르므로 구현만 비워 둔다. */

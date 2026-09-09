@@ -28,12 +28,14 @@ All LiveKit through `LiveMediaManager`. Never touch the SDK from a service.
 
 **An answer that can destroy a broadcast fails loud; one that only withholds a promotion fails quiet.**
 
-- Cleanup swallows (`deleteIngress`, `stopHlsEgress`, `closeRoom`) — leftovers are reconciliation's job.
+- Cleanup swallows (`deleteIngress`, `stopHlsEgress`, `stopEgress`, `closeRoom`) — leftovers are reconciliation's job.
 - Global sweeps throw (`listAllIngress`, `listAllEgress`, `listAllRooms`); a misconfigured client answers
   `200 + []`, so **null body = failure** here.
 - Per-room: `listRoomIngress` and `listRoomEgress` throw on HTTP/transport failure (feed destructive decisions);
   `publishingIngressIdsOrEmpty` returns empty on failure (feeds go-live only). A null ingress body is empty,
   but a null egress body is failure — no egress is represented by `[]`, and this answer can end a broadcast.
+  `listRoomEgress` exists because the round-start `listAllEgress` snapshot is up to a whole round budget
+  stale; judging a live broadcast on it kills rooms that reconnected mid-round.
 
 **Start-side media calls sit inside `@Transactional` on purpose** — reviewers must not flag them; `egressId`
 has to commit with the room. The row lock is held across media I/O, bounded by `callTimeout` 15s per call.
@@ -66,15 +68,16 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
 |---|---|
 | `enabled` | on — master switch; drops `@EnableScheduling`, the job beans and the lock config |
 | `<job>.enabled` · `<job>.cron` | on · staggered 10-min (`0/10`, `3/10`, `6/10` — keep them apart) |
+| | the 3-min stagger only separates *short* rounds; budgets are 40m/20m/16m, so a backlogged round overlaps the other jobs and the pool has 3 threads on purpose |
 | `expire-ready.threshold` · `end-stale-live.threshold` · `orphan-media.grace` | 60m · 60m · 15m |
-| `expire-ready.batch-size` · `batch-size` | 20 (heavier per-candidate LiveKit work) · 100 (end-stale-live tuning is separate) |
-| `<job>.lock-at-most-for` · `lock-at-least-for` | 45m / 120m / 60m · 1m (ShedLock; see the lock bullet) |
+| `<job>.batch-size` | 20 / 10 · **orphan-media has none** (removed key; refuses to boot) |
+| `<job>.lock-at-most-for` · `lock-at-least-for` | 50m / 25m / 20m · 1m (ShedLock; see the lock bullet) |
 
 | Job | Candidate | Decides by | Acts via |
 |---|---|---|---|
 | `ReconcileExpiredReadyService` | `READY`, old `updated_at` | is **this room's** ingress publishing? | `goLiveByRtmp`, else `ExpireOrphanLiveUseCase` |
 | `ReconcileStaleLiveService` | `LIVE`, old **`started_at`** | no active egress in LiveKit | `EndStaleLiveUseCase` (publishes `RoomEnded`) |
-| `ReconcileOrphanMediaService` | every LiveKit ingress/egress/room | mismatch against DB | delete by id / stop / `closeRoom` |
+| `ReconcileOrphanMediaService` | every LiveKit room (its ingress/egress/SFU room) | mismatch against DB | delete by id / stop / `closeRoom` |
 
 - Judge **per room, right before touching it** — a once-per-round snapshot expires rooms that reconnected.
 - Expire-ready has **three** outcomes: promote / expire / **leave alone** (publishing, but not this room's).
@@ -83,8 +86,6 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   broadcasts. Don't drop the guard; verify per room instead.
 - If the global snapshot marks a candidate active but its per-room list is empty, skip it for this round and
   record `SKIPPED_EGRESS_SNAPSHOT_MISMATCH`; partial routing/permission failures must not end a broadcast.
-- `end-stale-live` deliberately keeps the shared batch-size in this change. Per-room verification is the
-  correctness guard; introducing and tuning a dedicated batch setting is separate work.
 - **`BUFFERING` counts as publishing** — that is a reconnecting OBS.
 - **A publishing ingress is spared only while the room acknowledges it** — unacknowledged ones are reclaimed
   mid-publish. Waiting for `Ended` instead would deadlock: only this job can get the room there.
@@ -96,22 +97,61 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
 - Per-room work is a separate bean so `@Transactional` + row lock apply. **Multi-replica safe**: each job
   holds its own ShedLock lock (`live-reconcile-<job>`, JDBC provider on `live_schema.shedlock`,
   `ReconcileLockConfig`; `ShedLockTableGuard` refuses to boot unless it can write to that table).
-  A loser skips silently and retries next cycle. **Two boot guards refuse to start the app**, both
+  A loser skips silently and retries next cycle. **Four boot guards refuse to start the app**, all
   fail-closed like `managementPortMustDiffer`: `ShedLockTableGuard` (can it actually write to the lock
-  table) and `lockIntervalsMustFitInCron` (`lock-at-least-for` must stay within half the shortest cron
+  table), `legacyBatchSizeMustNotBeConfigured` (removed keys — `live.reconcile.batch-size` and
+  `live.reconcile.orphan-media.batch-size` — must be gone from every deployed yaml/env before upgrading,
+  or the app will not start), `leasesMustOutlastTheirCronPeriod` (a lease shorter than the tick interval
+  means every tick finds it expired) and `lockIntervalsMustFitInCron` (`lock-at-least-for` must stay within half the shortest cron
   period of an enabled job — measured by expanding the cron over a day, since `0/N` gaps shrink at the
   hour boundary; over that, a round is skipped with no log and no counter). `<job>.lock-at-most-for` is the
   takeover delay after a holder dies, so it must exceed the job's worst round — ShedLock neither aborts nor
   extends a running round, so too short a lease means a slow round keeps going unlocked while the next tick
-  starts a second one. `end-stale-live` is the **longest** job, not the shortest: it uses the shared
-  `batch-size` 100 and every ended room runs `PostCommitMediaCleanup` synchronously on the round thread.
-  **Count HTTP round trips, not port calls** — `stopHlsEgress` and `deleteIngress(roomId)` are room-wide, so
-  each re-lists inside; one cleanup set is **up to 8 calls**, not 3. Leases cover a *slow* LiveKit, not one
-  where every call burns the full `callTimeout` (that worst case is ~225m for `end-stale-live`, and a lease
-  that long would mean four hours of no cleanup after a pod dies — the wrong trade). Bounding the round is
-  the real fix (SPR-145); the derivation lives in `ReconcileLockConfig`. Only `expire-ready` covers its own
-  worst case (`PT60M` vs. 45m); `end-stale-live` deliberately does not, and `orphan-media` cannot — it has
-  no batch bound, so no fixed lease is provable. **Only `orphan-media`
+  starts a second one. Bounding a round by **candidate count** only works while the per-candidate
+  fan-out is fixed, and it is fixed for none of the three: two go through `PostCommitMediaCleanup`, whose
+  `stopHlsEgress`/`deleteIngress` fan out over the room's renditions and ingresses, and orphan-media stops
+  *every* orphan egress of a room it selects. All three therefore bound the round by the **clock**:
+  `roundBudget` = 4/5 of that job's own `lock-at-most-for` (25m→20m, 50m→40m, 20m→16m), and the candidate
+  loop stops there, deferring the rest. It reports `ROUND_BUDGET_EXHAUSTED` (job tag says which), deliberately **not** folded
+  into `*_BATCH_SATURATED` — one says *slow*, the other says *many*, and the fixes are opposite. The deadline
+  is only checked *between* candidates (a synchronous OkHttp call can't be cancelled), so it limits new
+  candidates but does **not** prove `lease ≥ budget + one candidate's fan-out`: a room's resource count has no
+  code-level upper bound. A pathological room can therefore outlive its lease after the deadline; this design
+  accepts that residual duplicate-cleanup risk to finish normal cleanup rather than leaving cost-bearing media
+  behind. The lease default lives in **one** place per job (`LiveReconcileProperties.<Job>.DEFAULT_LOCK_AT_MOST_FOR`,
+  concatenated into the `@SchedulerLock` placeholder) because the budget is derived from it: re-inline the
+  literal in the scheduler and a lowered lease leaves the budget longer than the lease it was meant to fit
+  inside. For orphan-media,
+  `ORPHAN_ROOM_CANDIDATE` exposes the true backlog in **rooms** (it judges against the full LiveKit lists)
+  and there is no saturation counter — the round has no count cap. `STALE_LIVE_CANDIDATE` is capped at
+  `batch-size + 1`: enough to decide saturation, not a backlog gauge, and `STALE_LIVE_BATCH_SATURATED` is 1
+  only when candidates remain after that cap.
+  **`orphan-media` iterates by room, not by resource kind.** One room's ingress deletes → egress stops →
+  `closeRoom` happen together, in that order, so AGENTS' "delete ingress room-wide before `closeRoom`" is
+  structurally guaranteed instead of hoped for; a room whose cleanup the deadline cut short is left **open**
+  for the next round. Per-kind `batch-size` and window rotation are gone with that split — they were what
+  made "this room's ingress deferred, this room closed" expressible, and every window-starvation bug came
+  from layering a window over the candidate ordering. The only stopping rule is `roundBudget` — which **does** cap
+  the round, so tail starvation is still possible while the backlog exceeds what one round's budget gets
+  through, and the candidate order is deterministic (`Ended` → `updated_at` → roomId). Rotation was dropped
+  anyway because it cannot fix that: it reorders who waits, it does not raise throughput, and layering a
+  window over the ordering is where every window-starvation bug came from. The signal to act on is
+  `ORPHAN_ROOM_CANDIDATE` not falling across rounds — a persistently failing cleanup, or a budget too small
+  for the backlog. Raise `lock-at-most-for` (the budget is 4/5 of it) rather than reintroducing a window.
+  `live.reconcile.orphan-media.batch-size` is a **removed key that refuses to boot**, like
+  `live.reconcile.batch-size`. Dropping the count cap also means the round's blast radius is bounded by the
+  clock alone: a bad bulk UPDATE that marks many rooms `Ended` would have ~16 minutes of unrestricted
+  deletion. That is accepted — a count cap could not tell a real backlog from a bad UPDATE either, and it
+  cost the ordering invariant — so the compensating control is meant to be an alert on a
+  spike in `SFU_ROOM_CLOSE_REQUESTED` / `INGRESS_DELETE_REQUESTED` rather than a cap. **That alert is not
+  registered yet** — only the metrics exist (`reconcile.acted{job,action}`), and this repo holds no alert
+  rules, so the rule lives wherever monitoring is configured. Until it does, the only real control is
+  operational: before touching `live_room.status` in bulk, disable the job
+  (`LIVE_RECONCILE_ORPHAN_MEDIA_ENABLED=false`). **That switch is `@ConditionalOnProperty`, i.e. bean
+  registration — it needs a rolling restart and does not stop a round already running.** Plan the restart
+  before the UPDATE, not after noticing one. End-stale-live remains FIFO and exposes `STALE_LIVE_CANDIDATE` plus
+  `STALE_LIVE_BATCH_SATURATED`; it does not inherit the orphan rotation guarantee. Lease
+  extension is avoided because it postpones takeover from a dead holder. **Only `orphan-media`
   actually needs it** — the other two decide, lock the row, and register cleanup inside the winning
   transaction, so the *destructive* calls happen once regardless (the read sweeps still duplicate per
   replica). `orphan-media` has no DB gate at all, and cleanup
@@ -142,11 +182,14 @@ evaluates before autoconfiguration and would silently disable all metrics.
 - **Round counters fire even on a 0-candidate round.** No record must mean "the scheduler is dead", not
   "nothing to do", or a dead job is indistinguishable from a quiet one.
 - **The distributed lock punched a hole in that rule.** `@SchedulerLock` wraps `run()` from the *outside*,
-  so a round that loses the lock — or one where the lock store itself throws — raises no round counter and
-  no domain log at all. Cluster-wide the totals still come to one round per tick, but a dead holder leaves
-  its job with **zero records for a whole lease**, which reads exactly like a dead scheduler. Fixing it
-  needs a counter around the lock, i.e. a new `LiveMetrics` port method; until then this is a known
-  blind spot, not an oversight.
+  so a round that loses the lock — or one where the lock store itself throws — raises no round counter.
+  `live.reconcile.lock{job,result=acquired|skipped|shutdown|failed}` records that outer result instead. A normal
+  shutdown waits 30s and then **releases nothing** — a round that finished has already unlocked itself in
+  ShedLock's own `finally`, and taking the lock off one that is *still running* is exactly the mutual
+  exclusion this lock exists for. `shutdownNow()` is merely an interrupt request and synchronous HTTP calls
+  need not honor it, so a still-running round keeps its lock and hands over only when the 20m/25m/50m lease
+  expires. Abnormal death follows the same
+  lease-expiry path.
 - **A round ends exactly one way: `completed` / `aborted` / `failed`** (`outcome` tag on
   `live.reconcile.round`). `aborted` is the guard folding the round on its own; `failed` is an exception
   escaping to the scheduler. Both look like "completed didn't rise" from outside but need opposite

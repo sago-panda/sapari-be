@@ -79,14 +79,25 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         Instant startedAt = timeProvider.now();
         Instant threshold = startedAt.minus(policy.threshold());
 
-        List<UUID> candidates = liveRoomRepository.findStaleLiveRoomIds(threshold, policy.batchSize());
-        if (candidates.isEmpty()) {
+        List<UUID> observedCandidates = liveRoomRepository.findStaleLiveRoomIds(threshold, policy.batchSize() + 1);
+        liveMetrics.reconcileActed(
+                ReconcileJob.END_STALE_LIVE, ReconcileAction.STALE_LIVE_CANDIDATE, observedCandidates.size());
+        liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.STALE_LIVE_BATCH_SATURATED,
+                observedCandidates.size() > policy.batchSize() ? 1 : 0);
+        if (observedCandidates.isEmpty()) {
             // 후보 0건도 완료 회차다 — 기록하지 않으면 "할 일이 없던 회차" 와 "잡이 아예 안 돈 회차" 가
             // 똑같이 무기록이 되어, 스케줄러가 죽은 걸 알아챌 방법이 사라진다.
             liveMetrics.reconcileRoundCompleted(ReconcileJob.END_STALE_LIVE, elapsed(startedAt));
             return;
         }
+        List<UUID> candidates = observedCandidates.stream().limit(policy.batchSize()).toList();
 
+        // 이 전역 목록은 <b>판정에 쓰지 않는다</b>. 오설정 가드(아래 공집합 검사)와 게이지 전용이다.
+        // 예전에는 이 스냅샷 하나로 루프 전체를 판정했는데, 회차가 예산만큼(최대 20분) 길어지면 그
+        // 사이 재접속해 송출을 재개한 방이 목록에 없어 <b>살아 있는 방송이 종료</b>되고, 15분 뒤 고아
+        // 미디어 잡이 그 Ended 방의 실제 송출 ingress 까지 지웠다. AGENTS "판정은 방마다, 건드리기
+        // 직전에" 가 그 처방이고, 실제 판정은 아래 루프에서 listRoomEgress 로 방마다 다시 한다.
+        //
         // 조회 실패는 예외로 올라온다 — 빈 목록으로 보이면 "모든 방이 죽었다"가 되어 전부 종료시킨다.
         Set<UUID> roomsWithActiveEgress = liveMediaManager.listAllEgress().stream()
                 .filter(EgressSummary::active)
@@ -116,10 +127,26 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         int egressLookupFailed = 0;
         int egressSnapshotMismatch = 0;
         int spared = 0;
+        // 후보 수가 아니라 <b>시계</b>로도 회차를 끊는다. 후보당 왕복 수는 방의 화질 수에 비례해
+        // 유한하지 않으므로(PostCommitMediaCleanup → stopHlsEgress 는 방의 egress 를 전부 끊는다),
+        // batch-size 만으로는 회차가 리스 안에 있다는 보장이 안 된다. 리스를 넘긴 회차는 락이
+        // 만료된 채 계속 돌고 다음 tick 의 다른 레플리카가 같은 회차를 겹쳐 돈다.
+        // 마감은 후보 사이에서만 본다 — 진행 중인 OkHttp 동기 호출은 끊을 수단이 없다.
+        Instant deadline = startedAt.plus(policy.roundBudget());
+        boolean budgetExhausted = false;
         // 집계는 finally 에서 — 루프 도중 예외로 빠지면 이미 종료시킨 방 수가 기록되지 않는다.
         // 이 잡은 살아 있는 방송을 끄는 잡이라, "죽기 전까지 몇 건을 껐나" 가 특히 중요하다.
         try {
         for (UUID roomId : candidates) {
+            if (!timeProvider.now().isBefore(deadline)) {
+                // 남은 후보는 다음 회차가 가져간다. batch-size 포화와 <b>따로</b> 센다 — 처방이 다르다.
+                budgetExhausted = true;
+                log.warn("방치 Live 정리 회차 예산 소진 — 남은 후보는 다음 회차로. 예산={}, 종료={}, 남음={}",
+                        policy.roundBudget(), ended,
+                        candidates.size() - ended - spared - skipped
+                                - egressLookupFailed - egressSnapshotMismatch);
+                break;
+            }
             List<EgressSummary> roomEgresses;
             try {
                 // 회차 시작 목록은 공집합 가드일 뿐 판정 스냅샷이 아니다. 후보를 건드리기 직전에 다시 봐야
@@ -166,9 +193,12 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
                     ReconcileJob.END_STALE_LIVE,
                     ReconcileAction.SKIPPED_EGRESS_SNAPSHOT_MISMATCH,
                     egressSnapshotMismatch);
+            liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE,
+                    ReconcileAction.ROUND_BUDGET_EXHAUSTED, budgetExhausted ? 1 : 0);
         }
         liveMetrics.reconcileRoundCompleted(ReconcileJob.END_STALE_LIVE, elapsed(startedAt));
-        log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 송출중스킵={}, 이미처리={}, 조회실패={}, 조회불일치={}, 가드활성egress방수={}",
+        log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 송출중스킵={}, 이미처리={}, 조회실패={},"
+                        + " 조회불일치={}, 가드활성egress방수={}",
                 candidates.size(), ended, spared, skipped, egressLookupFailed, egressSnapshotMismatch,
                 roomsWithActiveEgress.size());
     }
