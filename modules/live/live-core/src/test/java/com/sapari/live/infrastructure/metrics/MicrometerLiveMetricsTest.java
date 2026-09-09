@@ -15,6 +15,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
+import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.application.port.ReconcileLockResult;
 import com.sapari.live.domain.model.LiveStatus;
 
 /**
@@ -84,6 +86,17 @@ class MicrometerLiveMetricsTest {
 
         assertThat(registry.find("live.room.transition").counter()).isNull();
         assertThat(registry.find("live.rtmp.promotion").counter()).isNull();
+    }
+
+    @Test
+    @DisplayName("락 획득 결과를 잡과 결과별로 센다")
+    void lockResult_isRecordedByJobAndResult() {
+        metrics.reconcileLockResult(ReconcileJob.ORPHAN_MEDIA, ReconcileLockResult.SKIPPED);
+
+        assertThat(registry.find("live.reconcile.lock")
+                .tag("job", "orphan_media")
+                .tag("result", "skipped")
+                .counter().count()).isEqualTo(1);
     }
 
     /** 커밋 훅만 실행한다(스프링이 커밋 후에 하는 일과 같은 순서). */

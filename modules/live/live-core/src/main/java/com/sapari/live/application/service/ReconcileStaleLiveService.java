@@ -23,6 +23,7 @@ import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.StaleLiveReconcilePolicy;
 import com.sapari.live.command.EndStaleLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.EndStaleLiveUseCase;
@@ -78,14 +79,25 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         Instant startedAt = timeProvider.now();
         Instant threshold = startedAt.minus(policy.threshold());
 
-        List<UUID> candidates = liveRoomRepository.findStaleLiveRoomIds(threshold, policy.batchSize());
-        if (candidates.isEmpty()) {
+        List<UUID> observedCandidates = liveRoomRepository.findStaleLiveRoomIds(threshold, policy.batchSize() + 1);
+        liveMetrics.reconcileActed(
+                ReconcileJob.END_STALE_LIVE, ReconcileAction.STALE_LIVE_CANDIDATE, observedCandidates.size());
+        liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.STALE_LIVE_BATCH_SATURATED,
+                observedCandidates.size() > policy.batchSize() ? 1 : 0);
+        if (observedCandidates.isEmpty()) {
             // 후보 0건도 완료 회차다 — 기록하지 않으면 "할 일이 없던 회차" 와 "잡이 아예 안 돈 회차" 가
             // 똑같이 무기록이 되어, 스케줄러가 죽은 걸 알아챌 방법이 사라진다.
             liveMetrics.reconcileRoundCompleted(ReconcileJob.END_STALE_LIVE, elapsed(startedAt));
             return;
         }
+        List<UUID> candidates = observedCandidates.stream().limit(policy.batchSize()).toList();
 
+        // 이 전역 목록은 <b>판정에 쓰지 않는다</b>. 오설정 가드(아래 공집합 검사)와 게이지 전용이다.
+        // 예전에는 이 스냅샷 하나로 루프 전체를 판정했는데, 회차가 예산만큼(최대 20분) 길어지면 그
+        // 사이 재접속해 송출을 재개한 방이 목록에 없어 <b>살아 있는 방송이 종료</b>되고, 15분 뒤 고아
+        // 미디어 잡이 그 Ended 방의 실제 송출 ingress 까지 지웠다. AGENTS "판정은 방마다, 건드리기
+        // 직전에" 가 그 처방이고, 실제 판정은 아래 루프에서 listRoomEgress 로 방마다 다시 한다.
+        //
         // 조회 실패는 예외로 올라온다 — 빈 목록으로 보이면 "모든 방이 죽었다"가 되어 전부 종료시킨다.
         Set<UUID> roomsWithActiveEgress = liveMediaManager.listAllEgress().stream()
                 .filter(EgressSummary::active)
@@ -98,6 +110,8 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         // Ended 방들의 실제 송출 ingress 를 지운다(그 잡은 Ended 면 publishing 이어도 지우는 게 옳다).
         // 후보가 있는데 활성 egress 가 하나도 없는 건 정상 운영에서 나올 수 있는 조합이 아니므로 회차를 접는다.
         // 오설정이면 다음 회차에도 같은 답이 오니 미루는 비용이 없고, 진짜로 전부 죽었어도 다음 회차가 줍는다.
+        // 이 값은 개별 방의 종료 판정 근거가 아니라, 공집합 가드가 어떤 클러스터 관측치에서
+        // 통과하거나 중단됐는지 되짚는 수단이다. 개별 판정은 루프 안의 방별 최신 조회가 맡는다.
         liveMetrics.liveKitActiveEgressRooms(roomsWithActiveEgress.size());
 
         if (roomsWithActiveEgress.isEmpty()) {
@@ -110,12 +124,51 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
 
         int ended = 0;
         int skipped = 0;
+        int egressLookupFailed = 0;
+        int egressSnapshotMismatch = 0;
         int spared = 0;
+        // 후보 수가 아니라 <b>시계</b>로도 회차를 끊는다. 후보당 왕복 수는 방의 화질 수에 비례해
+        // 유한하지 않으므로(PostCommitMediaCleanup → stopHlsEgress 는 방의 egress 를 전부 끊는다),
+        // batch-size 만으로는 회차가 리스 안에 있다는 보장이 안 된다. 리스를 넘긴 회차는 락이
+        // 만료된 채 계속 돌고 다음 tick 의 다른 레플리카가 같은 회차를 겹쳐 돈다.
+        // 마감은 후보 사이에서만 본다 — 진행 중인 OkHttp 동기 호출은 끊을 수단이 없다.
+        Instant deadline = startedAt.plus(policy.roundBudget());
+        boolean budgetExhausted = false;
         // 집계는 finally 에서 — 루프 도중 예외로 빠지면 이미 종료시킨 방 수가 기록되지 않는다.
         // 이 잡은 살아 있는 방송을 끄는 잡이라, "죽기 전까지 몇 건을 껐나" 가 특히 중요하다.
         try {
         for (UUID roomId : candidates) {
-            if (roomsWithActiveEgress.contains(roomId)) {
+            if (!timeProvider.now().isBefore(deadline)) {
+                // 남은 후보는 다음 회차가 가져간다. batch-size 포화와 <b>따로</b> 센다 — 처방이 다르다.
+                budgetExhausted = true;
+                log.warn("방치 Live 정리 회차 예산 소진 — 남은 후보는 다음 회차로. 예산={}, 종료={}, 남음={}",
+                        policy.roundBudget(), ended,
+                        candidates.size() - ended - spared - skipped
+                                - egressLookupFailed - egressSnapshotMismatch);
+                break;
+            }
+            List<EgressSummary> roomEgresses;
+            try {
+                // 회차 시작 목록은 공집합 가드일 뿐 판정 스냅샷이 아니다. 후보를 건드리기 직전에 다시 봐야
+                // 긴 회차 도중 재연결해 egress 가 살아난 방송을 오래된 목록으로 종료하지 않는다.
+                roomEgresses = liveMediaManager.listRoomEgress(roomId);
+            } catch (LiveMediaException e) {
+                // 이 방만 다음 회차로 미룬다. started_at ASC 선두 방의 조회 실패가 재현되더라도 뒤 후보는
+                // 계속 처리한다. 전역 조회 실패는 루프 전에 그대로 전파되므로 회차 장애 지표도 유지된다.
+                egressLookupFailed++;
+                log.warn("방치 Live 종료 스킵 — 송출 여부 조회 실패. roomId={}, errorType={}, message={}",
+                        roomId, e.getClass().getSimpleName(), e.getMessage());
+                continue;
+            }
+            // 전역 목록에는 이 방의 활성 egress 가 있었는데 방별 목록만 비면 부분 권한·라우팅 오설정이나
+            // 일시적 불일치일 수 있다. 실제 종료 직후여도 다음 회차가 다시 줍는 비용만 내고 이번에는 건드리지 않는다.
+            if (roomsWithActiveEgress.contains(roomId) && roomEgresses.isEmpty()) {
+                egressSnapshotMismatch++;
+                log.warn("방치 Live 종료 스킵 — 전역/방별 egress 조회 불일치. roomId={}", roomId);
+                continue;
+            }
+            boolean hasActiveEgress = roomEgresses.stream().anyMatch(EgressSummary::active);
+            if (hasActiveEgress) {
                 spared++;
                 continue; // 송출이 살아 있다 — 오래됐을 뿐 정상 방송
             }
@@ -128,17 +181,26 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
                 log.info("방치 Live 종료 스킵 — 이미 처리된 방. roomId={}, 사유={}", roomId, e.getClass().getSimpleName());
             }
         }
-        // 활성 egress 총계를 함께 남긴다 — 이 잡의 오판(멀쩡한 방송을 Ended 로)은 15분 뒤 고아 미디어 잡이
-        // 실제 송출을 끊는 체인으로 이어지므로, 사후에 "그 회차의 egress 목록이 비정상적으로 비었는가"를
-        // 되짚을 수단이 필요하다. roomId 만으로는 판정 근거가 남지 않는다.
         } finally {
             liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.ENDED, ended);
             liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.SPARED, spared);
             liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.SKIPPED, skipped);
+            liveMetrics.reconcileActed(
+                    ReconcileJob.END_STALE_LIVE,
+                    ReconcileAction.SKIPPED_EGRESS_LOOKUP_FAILED,
+                    egressLookupFailed);
+            liveMetrics.reconcileActed(
+                    ReconcileJob.END_STALE_LIVE,
+                    ReconcileAction.SKIPPED_EGRESS_SNAPSHOT_MISMATCH,
+                    egressSnapshotMismatch);
+            liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE,
+                    ReconcileAction.ROUND_BUDGET_EXHAUSTED, budgetExhausted ? 1 : 0);
         }
         liveMetrics.reconcileRoundCompleted(ReconcileJob.END_STALE_LIVE, elapsed(startedAt));
-        log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 송출중스킵={}, 이미처리={}, 활성egress총계={}",
-                candidates.size(), ended, spared, skipped, roomsWithActiveEgress.size());
+        log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 송출중스킵={}, 이미처리={}, 조회실패={},"
+                        + " 조회불일치={}, 가드활성egress방수={}",
+                candidates.size(), ended, spared, skipped, egressLookupFailed, egressSnapshotMismatch,
+                roomsWithActiveEgress.size());
     }
 
     private Duration elapsed(Instant startedAt) {

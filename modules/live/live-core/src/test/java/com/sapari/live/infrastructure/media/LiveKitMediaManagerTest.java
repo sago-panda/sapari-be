@@ -103,6 +103,17 @@ public class LiveKitMediaManagerTest {
         roomId = UUID.randomUUID();
     }
 
+    @Test
+    @DisplayName("SFU Room 생성 비-2xx는 raw NPE 대신 LiveMediaException으로 번역한다")
+    void createRoom_httpFailureTranslated() throws IOException {
+        Call<Room> call = mock(Call.class);
+        given(roomServiceClient.createRoom(roomId.toString(), 300, 1000)).willReturn(call);
+        given(call.execute()).willReturn(Response.error(500,
+                okhttp3.ResponseBody.create("failure", okhttp3.MediaType.get("text/plain"))));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.createRoom(roomId));
+    }
+
     @RepeatedTest(value = 10)
     @DisplayName("HLS Egress 시작: 업로더 미배선이면 기본 화질(720p) 1개만 인코딩하고 720p를 서빙한다")
     void startHlsEgress_singleRendition_whenNoPublisher() throws IOException {
@@ -394,6 +405,39 @@ public class LiveKitMediaManagerTest {
         assertDoesNotThrow(() -> liveKitMediaManager.stopHlsEgress(roomId));
     }
 
+    @Test
+    @DisplayName("HLS Egress 목록 HTTP 실패를 빈 목록으로 오독하지 않는다")
+    void stopHlsEgress_listHttpFailureDoesNotStop() throws IOException {
+        Call<List<EgressInfo>> listCall = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(Response.error(500,
+                okhttp3.ResponseBody.create("failure", okhttp3.MediaType.get("text/plain"))));
+
+        assertDoesNotThrow(() -> liveKitMediaManager.stopHlsEgress(roomId));
+
+        then(egressServiceClient).should(never()).stopEgress(anyString());
+    }
+
+    @Test
+    @DisplayName("HLS Egress 중단 비-2xx를 성공으로 처리하지 않는다")
+    void stopHlsEgress_stopHttpFailureHandled() throws IOException {
+        EgressInfo active = EgressInfo.newBuilder()
+                .setEgressId(egressId)
+                .setStatus(EgressStatus.EGRESS_ACTIVE)
+                .build();
+        Call<List<EgressInfo>> listCall = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(Response.success(List.of(active)));
+        Call<EgressInfo> stopCall = mock(Call.class);
+        given(egressServiceClient.stopEgress(egressId)).willReturn(stopCall);
+        given(stopCall.execute()).willReturn(Response.error(500,
+                okhttp3.ResponseBody.create("failure", okhttp3.MediaType.get("text/plain"))));
+
+        assertDoesNotThrow(() -> liveKitMediaManager.stopHlsEgress(roomId));
+
+        then(stopCall).should().execute();
+    }
+
     @RepeatedTest(value = 10)
     @DisplayName("SFU Room 삭제 성공: RoomClient의 deleteRoom이 정상 호출된다")
     void closeRoom_Success() throws IOException {
@@ -402,6 +446,7 @@ public class LiveKitMediaManagerTest {
         Call mockCall = mock(Call.class);
 
         given(roomServiceClient.deleteRoom(sfuRoomId)).willReturn(mockCall);
+        given(mockCall.execute()).willReturn(Response.success(null));
 
         // when
         liveKitMediaManager.closeRoom(sfuRoomId);
@@ -422,6 +467,19 @@ public class LiveKitMediaManagerTest {
 
         // when & then
         assertDoesNotThrow(() -> liveKitMediaManager.closeRoom(sfuRoomId));
+    }
+
+    @Test
+    @DisplayName("SFU Room 삭제 5xx 응답도 성공으로 오인하지 않고 best-effort 로 종료한다")
+    void closeRoom_ErrorResponseHandled() throws IOException {
+        String sfuRoomId = "sfu-room-456";
+        Call mockCall = mock(Call.class);
+        given(roomServiceClient.deleteRoom(sfuRoomId)).willReturn(mockCall);
+        given(mockCall.execute()).willReturn(Response.error(500,
+                okhttp3.ResponseBody.create("", okhttp3.MediaType.get("text/plain"))));
+
+        assertDoesNotThrow(() -> liveKitMediaManager.closeRoom(sfuRoomId));
+        then(mockCall).should(times(1)).execute();
     }
 
     @Test
@@ -543,6 +601,58 @@ public class LiveKitMediaManagerTest {
 
         then(ingressServiceClient).should().deleteIngress("ingress-1");
         then(ingressServiceClient).should().deleteIngress("ingress-2");
+    }
+
+    /**
+     * 신설 포트. 방 단위 {@code stopHlsEgress} 와 달리 <b>지목한 하나만</b> 끊는다 — 고아 정리는
+     * 회차 시작 스냅샷으로 판정하므로, 방 단위 API 를 쓰면 그 사이 재시작된 새 방송까지 끊는다.
+     */
+    @Test
+    @DisplayName("stopEgress: 지목한 egress 하나만 중단하고, 목록 조회를 하지 않는다")
+    void stopEgress_stopsOnlyTheNamedOne() throws IOException {
+        Call<EgressInfo> stopCall = mock(Call.class);
+        given(egressServiceClient.stopEgress("eg-target")).willReturn(stopCall);
+        given(stopCall.execute()).willReturn(Response.success(EgressInfo.getDefaultInstance()));
+
+        liveKitMediaManager.stopEgress(roomId, "eg-target");
+
+        then(egressServiceClient).should().stopEgress("eg-target");
+        then(egressServiceClient).should(never()).listEgress(anyString());
+    }
+
+    @Test
+    @DisplayName("stopEgress: 비-2xx 여도 예외를 던지지 않는다 (정리 계열 best-effort — 다음 회차가 재시도)")
+    void stopEgress_swallowsHttpFailure() throws IOException {
+        Call<EgressInfo> stopCall = mock(Call.class);
+        Response failed = mock(Response.class);
+        given(failed.isSuccessful()).willReturn(false);
+        given(egressServiceClient.stopEgress("eg-target")).willReturn(stopCall);
+        given(stopCall.execute()).willReturn(failed);
+
+        assertDoesNotThrow(() -> liveKitMediaManager.stopEgress(roomId, "eg-target"));
+    }
+
+    @Test
+    @DisplayName("deleteIngress: ingress 가 3건이어도 상한 없이 전부 삭제한다 (생존자 하나가 좀비 방을 만든다)")
+    void deleteIngress_deletesEveryIngress_noCap() throws IOException {
+        List<IngressInfo> ingresses = List.of(
+                IngressInfo.newBuilder().setIngressId("ingress-1").build(),
+                IngressInfo.newBuilder().setIngressId("ingress-2").build(),
+                IngressInfo.newBuilder().setIngressId("ingress-3").build());
+        Call<List<IngressInfo>> listCall = mock(Call.class);
+        given(ingressServiceClient.listIngress(roomId.toString())).willReturn(listCall);
+        given(listCall.execute()).willReturn(Response.success(ingresses));
+        Call<IngressInfo> deleteCall = mock(Call.class);
+        given(ingressServiceClient.deleteIngress(anyString())).willReturn(deleteCall);
+        given(deleteCall.execute()).willReturn(Response.success(IngressInfo.getDefaultInstance()));
+
+        liveKitMediaManager.deleteIngress(roomId);
+
+        // 종료 정리는 closeRoom 직전의 유일한 회수 경로다 — 하나라도 남으면 OBS 자동 재접속이
+        // 닫은 SFU 방을 되살린다. 상한을 두면 이 테스트가 깨진다.
+        then(ingressServiceClient).should().deleteIngress("ingress-1");
+        then(ingressServiceClient).should().deleteIngress("ingress-2");
+        then(ingressServiceClient).should().deleteIngress("ingress-3");
     }
 
     @Test
@@ -837,5 +947,77 @@ public class LiveKitMediaManagerTest {
         given(call.execute()).willReturn(Response.success(List.of(ending)));
 
         assertThat(liveKitMediaManager.listAllEgress().get(0).active()).isFalse();
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: 방별 egress 상태와 시작 시각을 매핑한다")
+    void listRoomEgress_mapsStatusAndStartedAt() throws IOException {
+        EgressInfo active = EgressInfo.newBuilder()
+                .setEgressId("eg-1").setRoomName(roomId.toString())
+                .setStatus(EgressStatus.EGRESS_ACTIVE)
+                .setStartedAt(1_760_000_000_000_000_000L)
+                .build();
+        EgressInfo complete = EgressInfo.newBuilder()
+                .setEgressId("eg-2").setRoomName(roomId.toString())
+                .setStatus(EgressStatus.EGRESS_COMPLETE)
+                .build();
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(active, complete)));
+
+        assertThat(liveKitMediaManager.listRoomEgress(roomId))
+                .extracting(EgressSummary::egressId, EgressSummary::active)
+                .containsExactly(tuple("eg-1", true), tuple("eg-2", false));
+        assertThat(liveKitMediaManager.listRoomEgress(roomId).get(0).startedAt()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: SDK가 다른 방의 egress를 반환하면 예외로 올린다")
+    void listRoomEgress_otherRoomInResponse_throws() throws IOException {
+        EgressInfo otherRoom = EgressInfo.newBuilder()
+                .setEgressId("eg-other")
+                .setRoomName(UUID.randomUUID().toString())
+                .setStatus(EgressStatus.EGRESS_ACTIVE)
+                .build();
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success(List.of(otherRoom)));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomEgress(roomId));
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: 성공 응답이어도 null body는 예외로 올린다")
+    void listRoomEgress_nullBodyOnSuccess_throws() throws IOException {
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(Response.success((List<EgressInfo>) null));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomEgress(roomId));
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: 조회 실패는 예외로 올린다")
+    void listRoomEgress_throwsOnFailure() throws IOException {
+        Call<List<EgressInfo>> call = mock(Call.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willThrow(new IOException("연결 실패"));
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomEgress(roomId));
+    }
+
+    @Test
+    @DisplayName("listRoomEgress: non-2xx 응답은 예외로 올린다")
+    void listRoomEgress_throwsOnHttpFailure() throws IOException {
+        Call<List<EgressInfo>> call = mock(Call.class);
+        @SuppressWarnings("unchecked")
+        Response<List<EgressInfo>> response = mock(Response.class);
+        given(egressServiceClient.listEgress(roomId.toString())).willReturn(call);
+        given(call.execute()).willReturn(response);
+        given(response.isSuccessful()).willReturn(false);
+        given(response.code()).willReturn(401);
+        given(response.message()).willReturn("Unauthorized");
+
+        assertThrows(LiveMediaException.class, () -> liveKitMediaManager.listRoomEgress(roomId));
     }
 }
