@@ -182,13 +182,18 @@ public class ReconcileLockConfig {
     }
 
     private static Duration parseDuration(String key, String value) {
+        Duration parsed;
         try {
-            return DurationStyle.detectAndParse(value.trim());
+            parsed = DurationStyle.detectAndParse(value.trim());
         } catch (IllegalArgumentException e) {
             throw new IllegalStateException(
                     key + " 를 기간으로 읽을 수 없다 — 값=" + value
                             + " (예: PT1M, 1m, 30s). @SchedulerLock 이 받는 형식과 같다.", e);
         }
+        if (parsed.isNegative()) {
+            throw new IllegalStateException(key + " 는 음수일 수 없다 — 값=" + value);
+        }
+        return parsed;
     }
 
     /** cron 을 하루치 전개해 <b>가장 짧은</b> 실행 간격을 찾는다. 첫 간격이 최소라는 보장이 없다. */
@@ -244,6 +249,7 @@ public class ReconcileLockConfig {
     @Bean
     public LeaseGuard leasesMustOutlastTheirCronPeriod(
             Environment environment,
+            @Value("${live.reconcile.lock-at-least-for:" + LOCK_AT_LEAST_FOR + "}") String lockAtLeastForValue,
             @Value("${live.reconcile.expire-ready.cron:" + SchedulingConfig.EXPIRE_READY_CRON + "}")
             String expireReadyCron,
             @Value("${live.reconcile.end-stale-live.cron:" + SchedulingConfig.END_STALE_LIVE_CRON + "}")
@@ -265,6 +271,7 @@ public class ReconcileLockConfig {
             crons.put("orphan-media", orphanMediaCron);
         }
 
+        Duration lockAtLeastFor = parseDuration("live.reconcile.lock-at-least-for", lockAtLeastForValue);
         crons.forEach((job, cron) -> {
             String key = "live.reconcile." + job + ".lock-at-most-for";
             // 미설정이면 잡별 기본 상수로 <b>같은 비교를 태운다</b>. 건너뛰면 안 된다 — cron 은 같은
@@ -273,6 +280,11 @@ public class ReconcileLockConfig {
             String configured = environment.getProperty(key);
             Duration lease = parseDuration(key,
                     configured != null ? configured : DEFAULT_LEASES.get(job));
+            if (lease.compareTo(lockAtLeastFor) <= 0) {
+                throw new IllegalStateException(
+                        key + "(" + lease + ") 가 lock-at-least-for(" + lockAtLeastFor
+                                + ") 이하이다 — 회차가 끝나기도 전에 락이 만료될 수 있다.");
+            }
             Duration period = shortestPeriod(job, cron);
             if (lease.compareTo(period) < 0) {
                 throw new IllegalStateException(

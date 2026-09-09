@@ -286,6 +286,22 @@ class SchedulerWiringTest {
         }
 
         @Test
+        @DisplayName("lock-at-most-for 가 lock-at-least-for 이하면 부팅을 거부한다")
+        void refusesLeaseNoLongerThanMinimumHold() {
+            runner.withPropertyValues(
+                            "live.reconcile.lock-at-least-for=PT2M",
+                            "live.reconcile.orphan-media.lock-at-most-for=PT2M")
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("음수 lock-at-least-for 는 부팅을 거부한다")
+        void refusesNegativeMinimumHold() {
+            runner.withPropertyValues("live.reconcile.lock-at-least-for=-1m")
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
         @DisplayName("꺼 둔 잡의 cron 은 검사하지 않는다 — 없는 빈 때문에 부팅이 막히면 안 된다")
         void ignoresCronOfDisabledJobs() {
             runner.withPropertyValues(
