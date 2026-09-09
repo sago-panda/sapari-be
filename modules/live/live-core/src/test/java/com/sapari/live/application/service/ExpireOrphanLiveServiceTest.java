@@ -20,6 +20,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -27,6 +28,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
@@ -54,6 +56,9 @@ class ExpireOrphanLiveServiceTest {
 
     @Mock
     private TimeProvider timeProvider;
+
+    @Spy
+    private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
     @InjectMocks
     private ExpireOrphanLiveService expireOrphanLiveService;
@@ -118,6 +123,10 @@ class ExpireOrphanLiveServiceTest {
         then(liveRoomRepository).should(times(1)).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ended.class);
         assertThat(captor.getValue().updatedAt()).isEqualTo(now);
+    
+        // 만료는 종료와 도착점이 같아도 출발점이 다르다 — 합쳐 세면 깔때기에서 어디서 빠졌는지 못 읽는다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).hasSize(1);
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions.get(0)).endsWith("->Ended");
     }
 
     @Test

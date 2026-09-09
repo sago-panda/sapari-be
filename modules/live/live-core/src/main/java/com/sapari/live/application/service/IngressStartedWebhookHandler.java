@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import com.sapari.live.application.port.LiveWebhookEvent;
 import com.sapari.live.application.port.LiveWebhookHandler;
+import com.sapari.live.application.port.PromotionTrigger;
 
 /**
  * {@code ingress_started} webhook → RTMP go-live 전이 트리거. OBS 가 ingress 에 연결되면 LiveKit 이 이 이벤트를
@@ -38,7 +39,7 @@ public class IngressStartedWebhookHandler implements LiveWebhookHandler {
         if (roomId == null) {
             return;
         }
-        goLiveByRtmpService.goLiveByRtmp(roomId, event.ingressId());
+        goLiveByRtmpService.goLiveByRtmp(roomId, event.ingressId(), PromotionTrigger.WEBHOOK);
     }
 
     private UUID parseRoomId(String roomName) {

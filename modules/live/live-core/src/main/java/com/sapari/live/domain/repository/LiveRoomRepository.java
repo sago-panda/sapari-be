@@ -54,4 +54,12 @@ public interface LiveRoomRepository {
      * 방 상태는 건드리지 않으므로 직렬화할 전이가 없다.
      */
     List<LiveRoom> findAllByIds(Set<UUID> ids);
+
+    /**
+     * 지금 LIVE 상태인 방 수. 관측 게이지 전용이라 목록이 아니라 개수만 센다.
+     *
+     * <p>도메인 판단에 쓰지 말 것 — 스냅샷이라 읽는 순간 이미 과거이고, 정리 잡처럼 방을 건드리는
+     * 결정은 방마다 잠금 재조회로 판정해야 한다.
+     */
+    long countLiveRooms();
 }

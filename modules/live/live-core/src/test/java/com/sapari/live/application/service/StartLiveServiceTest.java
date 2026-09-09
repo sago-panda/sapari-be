@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.Spy;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -31,6 +32,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.PromotionTrigger;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
@@ -60,6 +63,11 @@ public class StartLiveServiceTest {
 
     @Mock
     private TimeProvider timeProvider;
+
+    // 목이 아니라 기록 대역을 쓴다 — 검증 대상이 "몇 번 불렸나" 가 아니라 "어떤 갈래로 세었나" 라
+    // verify 나열보다 결과 목록 단언이 읽힌다.
+    @Spy
+    private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
     @InjectMocks
     private StartLiveService startLiveService;
@@ -314,6 +322,10 @@ public class StartLiveServiceTest {
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
         verify(liveRoomRepository).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ready.class);
+
+        // 아직 승격이 아니다 — 전이는 한 건, 승격 계측은 없어야 한다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Scheduled->Ready");
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).isEmpty();
     }
 
     @Test
@@ -341,6 +353,12 @@ public class StartLiveServiceTest {
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
         verify(liveRoomRepository).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Live.class);
+
+        // 랑데부는 한 트랜잭션에서 두 전이가 일어난다. 합쳐 세면 깔때기에서 Ready 에 멈춘 방과
+        // 구분되지 않으므로 반드시 두 건으로 갈라야 한다. 승격 경로도 SELLER_START 여야 한다 —
+        // WEBHOOK 으로 새면 "OBS 연결 즉시 시작" 통계가 부풀고 랑데부 지연이 보이지 않는다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Scheduled->Ready", "Ready->Live");
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).containsExactly(PromotionTrigger.SELLER_START);
     }
 
     @Test

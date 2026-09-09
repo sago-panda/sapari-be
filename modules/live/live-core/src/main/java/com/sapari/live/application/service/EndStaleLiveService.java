@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.command.EndStaleLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
@@ -39,6 +40,7 @@ public class EndStaleLiveService implements EndStaleLiveUseCase {
     private final LiveMediaManager liveMediaManager;
     private final LiveEventPublisher liveEventPublisher;
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
 
     @Override
     @Transactional
@@ -54,6 +56,7 @@ public class EndStaleLiveService implements EndStaleLiveUseCase {
         LiveRoom endedRoom = room.endLive(endedAt);
 
         liveRoomRepository.save(endedRoom);
+        liveMetrics.roomTransitioned(room.status(), endedRoom.status());
 
         // 등록 순서 = 실행 순서. 미디어를 먼저 걷고 나서 chat 에 알린다.
         PostCommitMediaCleanup.register(liveMediaManager, room);

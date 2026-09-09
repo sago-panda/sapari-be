@@ -14,6 +14,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.command.StartLiveCommand.ProductEntry;
 import com.sapari.live.domain.exception.BroadcastStartException;
@@ -36,6 +38,7 @@ public class StartLiveService implements StartLiveUseCase {
     private final LiveProductRepository liveProductRepository;
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
 
     @Override
     @Transactional
@@ -75,6 +78,7 @@ public class StartLiveService implements StartLiveUseCase {
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송
 
         liveRoomRepository.save(updatedRoom);
+        liveMetrics.roomTransitioned(room.status(), updatedRoom.status());
         return updatedRoom.toStartLiveResult(sfuToken, liveMediaManager.getSfuUrl());
     }
 
@@ -99,12 +103,18 @@ public class StartLiveService implements StartLiveUseCase {
             StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl());
             LiveRoom liveRoom = armed.goLiveFromReady(streamInfo, timeProvider.now());
             liveRoomRepository.save(liveRoom);
+            // arm 과 승격이 한 트랜잭션에서 일어난 랑데부다. 두 전이를 각각 세야 깔때기(Scheduled→Ready→Live)
+            // 의 단계별 이탈이 보인다 — 합쳐 세면 Ready 에서 멈춘 방과 구분되지 않는다.
+            liveMetrics.roomTransitioned(room.status(), armed.status());
+            liveMetrics.roomTransitioned(armed.status(), liveRoom.status());
+            liveMetrics.rtmpPromoted(PromotionTrigger.SELLER_START);
             log.info("RTMP 방송 시작 — 시작 시점 ingress 활성 확인, 즉시 Live 전이. roomId={}", command.roomId());
             // RTMP는 셀러 토큰을 쓰지 않는다(ingress push). sfuToken/sfuUrl 은 미사용이라 null.
             return new StartLiveView(liveRoom.id().toString(), null, liveRoom.hlsUrl(), null);
         }
 
         liveRoomRepository.save(armed);
+        liveMetrics.roomTransitioned(room.status(), armed.status());
         log.info("RTMP 방송 시작 — OBS 미연결, 시작 대기(Ready)로 저장. roomId={}", command.roomId());
         return new StartLiveView(armed.id().toString(), null, null, null);
     }

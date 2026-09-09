@@ -3,6 +3,7 @@ package com.sapari.live.application.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -20,7 +21,10 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
+import com.sapari.live.application.port.ReconcileAction;
+import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.RoomSummary;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -47,20 +51,67 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
     private final LiveRoomRepository liveRoomRepository;
     private final OrphanMediaReconcilePolicy policy;
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
 
+    /**
+     * 회차를 감싸 예외를 <b>세고 다시 던진다</b>. 스케줄러가 잡아 로그를 남기는 구조는 그대로 두고
+     * (실패 처리 방식을 바꾸지 않는다) 밖에서 보이는 사실만 하나 늘린다 — 이게 없으면 매 회차
+     * 예외로 죽는 잡과 스케줄러가 아예 안 도는 상황이 지표상 똑같다.
+     */
     @Override
     public void reconcile() {
-        Instant threshold = timeProvider.now().minus(policy.grace());
+        // 예외를 잡지 않는다 — 정상 종료에만 표시를 남기고, 없으면 실패로 센다. catch 로 세면
+        // Error 로 죽은 회차가 무기록이 되어(= 스케줄러가 안 돈 것과 같아 보임) 이 지표를 만든
+        // 이유가 사라지고, Throwable 을 잡으면 죽어가는 JVM 을 건드린다.
+        boolean completed = false;
+        try {
+            doReconcile();
+            completed = true;
+        } finally {
+            if (!completed) {
+                liveMetrics.reconcileRoundFailed(ReconcileJob.ORPHAN_MEDIA);
+            }
+        }
+    }
+
+    private void doReconcile() {
+        Instant startedAt = timeProvider.now();
+        Instant threshold = startedAt.minus(policy.grace());
 
         // 조회 실패는 예외로 올라온다(빈 목록이면 "고아 없음"으로 오독되므로).
         List<IngressSummary> ingresses = liveMediaManager.listAllIngress();
         List<EgressSummary> egresses = liveMediaManager.listAllEgress();
+
+        // 게이지 갱신을 이 잡이 맡는 이유: 방치 Live 잡도 같은 값을 관측하지만 <b>후보가 있을 때만</b>
+        // 거기까지 간다. 방치된 방은 평소 0건이라 그 경로는 대개 조기 반환하고, 게이지는 -1 이나 낡은
+        // 값에 고정된 채 live.room.active 옆에 그려져 <b>없는 괴리를 있는 것처럼</b> 보이게 한다.
+        // 이 잡은 조건 없이 매 회차 전수 조회를 하므로 갱신이 보장된다.
+        //
+        // 이 잡에 "전 목록이 비었다" 중단 가드를 두지 않는 것도 여기서 메운다. 세 목록이 모두 비는 건
+        // 방송이 없는 새벽에 매일 일어나는 정상 상태라 그걸 aborted 로 세면 알람이 매일 울리고,
+        // 사람이 알람을 끄고, 진짜 오설정 때도 안 보게 된다. 대신 오설정이면 이 게이지가 0 으로
+        // 떨어지고 DB 쪽 live.room.active 는 그대로라, 괴리가 그래프에 그대로 남는다.
+        // 단위는 <b>방 수</b>다. egress 레코드 수를 세면 안 된다 — 한 방송이 화질별로 여러 egress 를
+        // 띄우므로(AGENTS "stopHlsEgress 는 방 단위 일괄") 레코드 수는 방 수의 배수가 되고, 그러면
+        // 방 수 단위인 live.room.active 와 나란히 못 놓는다. 방치 Live 잡도 같은 방식으로 센다.
+        liveMetrics.liveKitActiveEgressRooms((int) egresses.stream()
+                .filter(EgressSummary::active)
+                .map(egress -> LiveKitRoomNames.parseRoomId(egress.roomName()))
+                .filter(Objects::nonNull)
+                .distinct()
+                .count());
+
         reconcileMedia(ingresses, egresses, threshold);
 
         // 방 스윕은 뒤에, 그리고 조회도 여기서 한다 — 앞에서 같이 조회하면 방 조회 하나가 실패했을 때
         // 이미 받아둔 ingress/egress 조차 처리하지 못하고 회차가 죽는다. 그쪽이 과금이 이어지는 방향이라
         // 먼저 끝내둔다. 방 조회 실패는 그대로 올려 회차를 실패로 남긴다(빈 목록으로 삼키면 안 되므로).
         reconcileSfuRooms(liveMediaManager.listAllRooms(), threshold);
+
+        // 세 스윕을 모두 마친 뒤에만 완료로 센다 — 중간에 예외로 빠지면 완료 카운터가 오르지 않고,
+        // "돌기는 도는데 늘 중간에 죽는" 상태가 completed 와 스케줄 주기의 차이로 드러난다.
+        liveMetrics.reconcileRoundCompleted(ReconcileJob.ORPHAN_MEDIA,
+                Duration.between(startedAt, timeProvider.now()));
     }
 
     private void reconcileMedia(
@@ -93,6 +144,9 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
      */
     private void reconcileRooms(List<RoomSummary> sfuRooms, Map<UUID, LiveRoom> rooms, Instant threshold) {
         int closed = 0;
+        // 집계는 finally 로 — 스윕 도중 예외로 빠지면 그때까지 요청한 건수가 통째로 사라진다.
+        // 다른 두 정리 잡과 같은 이유·같은 모양이다.
+        try {
         for (RoomSummary sfuRoom : sfuRooms) {
             UUID roomId = LiveKitRoomNames.parseRoomId(sfuRoom.roomName());
             if (roomId == null) {
@@ -116,6 +170,10 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
             log.warn("종료된 방의 SFU 방 회수 — 판매자 토큰 재입장 또는 종료 정리 실패. roomId={}, 참가자={}, 방 생성={}",
                     roomId, sfuRoom.participants(), sfuRoom.createdAt());
         }
+        } finally {
+            liveMetrics.reconcileActed(
+                    ReconcileJob.ORPHAN_MEDIA, ReconcileAction.SFU_ROOM_CLOSE_REQUESTED, closed);
+        }
         log.info("고아 SFU 방 정리 완료. 전체={}, 닫음={}", sfuRooms.size(), closed);
     }
 
@@ -135,6 +193,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
 
     private void reconcileIngresses(List<IngressSummary> ingresses, Map<UUID, LiveRoom> rooms, Instant threshold) {
         int deleted = 0;
+        try {
         for (IngressSummary ingress : ingresses) {
             UUID roomId = LiveKitRoomNames.parseRoomId(ingress.roomName());
             if (roomId == null) {
@@ -177,6 +236,10 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
             liveMediaManager.deleteIngress(roomId, ingress.ingressId());
             deleted++;
         }
+        } finally {
+            liveMetrics.reconcileActed(
+                    ReconcileJob.ORPHAN_MEDIA, ReconcileAction.INGRESS_DELETE_REQUESTED, deleted);
+        }
         log.info("고아 ingress 정리 완료. 전체={}, 삭제={}", ingresses.size(), deleted);
     }
 
@@ -216,8 +279,20 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
             }
             roomsToStop.add(roomId);
         }
-        roomsToStop.forEach(liveMediaManager::stopHlsEgress);
-        log.info("고아 egress 정리 완료. 전체={}, 중단한 방={}", egresses.size(), roomsToStop.size());
+        // 형제 스윕(ingress/room)과 같이 <b>실제로 요청한 건수</b>를 센다. 대상 수(roomsToStop.size())를
+        // 쓰면 중간에 예외로 빠졌을 때 요청조차 안 한 방까지 계상돼, "같은 수치가 반복되면 안 치워지는
+        // 중" 이라는 판독법이 흐려진다.
+        int requested = 0;
+        try {
+            for (UUID roomId : roomsToStop) {
+                liveMediaManager.stopHlsEgress(roomId);
+                requested++;
+            }
+        } finally {
+            liveMetrics.reconcileActed(
+                    ReconcileJob.ORPHAN_MEDIA, ReconcileAction.EGRESS_STOP_REQUESTED, requested);
+        }
+        log.info("고아 egress 정리 완료. 전체={}, 중단 요청={}", egresses.size(), requested);
     }
 
 }

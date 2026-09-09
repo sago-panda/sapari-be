@@ -50,8 +50,17 @@ def logical_lines(path):
 
 
 def items(line):
-    """'key: [a, b]' 에서 목록 원소를 뽑는다."""
-    return [x.strip().strip('"') for x in line[line.index("[") + 1:line.rindex("]")].split(",") if x.strip()]
+    """'key: [a, b]' 에서 목록 원소를 뽑는다.
+
+    따옴표가 있으면 따옴표 단위로 뽑는다. 쉼표로만 쪼개면 정규식 속 쉼표({1,3})에서
+    패턴이 두 조각이 되어, harness-check(따옴표 기준)는 통과하고 리뷰 시점에는 조용히
+    안 켜진다 — 두 파서가 같은 원소를 봐야 한다.
+    """
+    import re
+    body = line[line.index("[") + 1:line.rindex("]")]
+    if '"' in body:
+        return re.findall(r'"([^"]+)"', body)
+    return [x.strip() for x in body.split(",") if x.strip()]
 
 
 def glob_to_regex(glob):
@@ -59,3 +68,48 @@ def glob_to_regex(glob):
     import re
     return (re.escape(glob).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*")
             .replace(r"\*", "[^/]*").replace(r"\?", "[^/]"))
+
+
+REVIEWERS_FILE = ".claude/reviewers.yml"
+COMMON_FILE = ".claude/review/common.md"
+
+
+def reviewers(path=REVIEWERS_FILE):
+    """reviewers.yml 을 읽어 리뷰어 목록을 돌려준다.
+
+    각 원소: name, prefixes(도메인 접두사 포함), methodology, domains, files(방법론 + 도메인 체크리스트).
+    도메인 리뷰어는 접두사가 도메인명 대문자, 체크리스트가 .claude/review/domains/<domain>.md 다.
+    """
+    out, cur = [], None
+    for line in logical_lines(path):
+        s = line.strip()
+        if s.startswith("- name:"):
+            cur = {"name": s.split(":", 1)[1].strip(), "prefixes": [], "domains": [], "methodology": None}
+            out.append(cur)
+        elif cur is None:
+            continue
+        elif s.startswith("prefixes:"):
+            cur["prefixes"] = items(s)
+        elif s.startswith("domains:"):
+            cur["domains"] = items(s)
+        elif s.startswith("methodology:"):
+            cur["methodology"] = s.split(":", 1)[1].strip()
+    for r in out:
+        if not r["methodology"]:
+            raise ValueError(f"{path}: {r['name']} 에 methodology 가 없다")
+        r["prefixes"] = r["prefixes"] + [d.upper() for d in r["domains"]]
+        if not r["prefixes"]:
+            raise ValueError(f"{path}: {r['name']} 에 prefixes 도 domains 도 없다")
+        r["files"] = [r["methodology"]] + [f".claude/review/domains/{d}.md" for d in r["domains"]]
+    seen = {}
+    for r in out:
+        for p in r["prefixes"]:
+            if p in seen:
+                raise ValueError(f"{path}: 접두사 {p} 를 {seen[p]} 와 {r['name']} 이 함께 소유한다")
+            seen[p] = r["name"]
+    return out
+
+
+def prefix_owner(revs):
+    """접두사 -> 리뷰어 원소."""
+    return {p: r for r in revs for p in r["prefixes"]}

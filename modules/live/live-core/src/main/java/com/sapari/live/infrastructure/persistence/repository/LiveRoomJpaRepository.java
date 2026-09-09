@@ -74,4 +74,7 @@ public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUI
      */
     List<LiveRoomEntity> findByLiveStatusAndStartedAtBeforeOrderByStartedAtAsc(
             LiveRoomStatus liveStatus, Instant threshold, Limit limit);
+
+    /** 활성 방 수 게이지용. 인덱스가 있는 상태 컬럼 하나짜리 집계다. */
+    long countByLiveStatus(LiveRoomStatus liveStatus);
 }

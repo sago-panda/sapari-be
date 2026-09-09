@@ -45,4 +45,4 @@ Run: `./gradlew :modules:customer:customer-core:test`.
   sensitive endpoint MUST be added there. Source of truth = `ApiSecurityConfig`.
 - **Intentional:** `login` / refresh return the access token (body / `Authorization`) and the refresh
   token (cookie) — by design, **not** a token leak.
-- Full attack surface: `.claude/agents/security-reviewer.md` (OAuth, token lifecycle, PII, authz).
+- Full attack surface: `.claude/review/security-reviewer-methodology.md` (OAuth, token lifecycle, PII, authz).

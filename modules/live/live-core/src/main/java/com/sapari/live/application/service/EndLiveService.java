@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
@@ -30,6 +31,7 @@ public class EndLiveService implements EndLiveUseCase {
     private final LiveMediaManager liveMediaManager;
     private final LiveEventPublisher liveEventPublisher;
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
 
     @Override
     @Transactional
@@ -46,6 +48,7 @@ public class EndLiveService implements EndLiveUseCase {
         LiveRoom endedRoom = room.endLive(endedAt);
 
         liveRoomRepository.save(endedRoom);
+        liveMetrics.roomTransitioned(room.status(), endedRoom.status());
 
         // save 뒤에 등록한다 — 트랜잭션 밖 호출이면 register 가 즉시 정리해 버리므로, 앞에 두면
         // save 가 실패했을 때 멀쩡한 방의 미디어만 파괴된다(다른 두 호출자와 순서도 맞춘다).

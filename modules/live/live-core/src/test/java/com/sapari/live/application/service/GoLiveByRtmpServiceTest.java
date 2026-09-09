@@ -19,12 +19,15 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.PromotionTrigger;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.domain.exception.BroadcastStartException;
@@ -44,6 +47,9 @@ class GoLiveByRtmpServiceTest {
     private LiveMediaManager liveMediaManager;
     @Mock
     private TimeProvider timeProvider;
+
+    @Spy
+    private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
     @InjectMocks
     private GoLiveByRtmpService goLiveByRtmpService;
@@ -77,6 +83,25 @@ class GoLiveByRtmpServiceTest {
                 .sample();
     }
 
+    /** 승격 가능한 상태(Ready + RTMP + 방이 인정하는 ingress)를 세팅한다. */
+    private void givenPromotableRoom() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
+        given(liveMediaManager.startHlsEgress(roomId))
+                .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8"));
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
+    }
+
+    /** 이미 Live 라 전이 대상이 아닌 방. */
+    private void givenNonPromotableRoom() {
+        LiveRoom live = room(new LiveStatus.Live(Instant.parse("2026-06-10T10:00:00Z"),
+                        "sfu-1", "egress-1", "http://hls/index.m3u8"),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(live));
+    }
+
     @Test
     @DisplayName("Ready+RTMP 방: egress 시작하고 Live 로 전이·저장한다")
     void goesLive_whenReadyRtmp() {
@@ -88,7 +113,7 @@ class GoLiveByRtmpServiceTest {
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1");
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
 
         verify(liveMediaManager).startHlsEgress(roomId);
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
@@ -103,7 +128,7 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(scheduled));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1");
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
@@ -116,7 +141,7 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(live));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1");
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
@@ -127,7 +152,7 @@ class GoLiveByRtmpServiceTest {
     void throws_whenRoomNotFound() {
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.empty());
 
-        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1"))
+        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK))
                 .isInstanceOf(LiveNotFoundException.class)
                 .hasMessageContaining(roomId.toString());
     }
@@ -139,7 +164,7 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-LOSER");
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-LOSER", PromotionTrigger.WEBHOOK);
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
@@ -152,8 +177,8 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
 
-        goLiveByRtmpService.goLiveByRtmp(roomId, null);
-        goLiveByRtmpService.goLiveByRtmp(roomId, "  ");
+        goLiveByRtmpService.goLiveByRtmp(roomId, null, PromotionTrigger.WEBHOOK);
+        goLiveByRtmpService.goLiveByRtmp(roomId, "  ", PromotionTrigger.WEBHOOK);
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
@@ -168,10 +193,45 @@ class GoLiveByRtmpServiceTest {
         // tx 없이 호출되는 회귀 상황 재현 (setup 의 initSynchronization 을 되돌림)
         TransactionSynchronizationManager.clearSynchronization();
 
-        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1"))
+        assertThatThrownBy(() -> goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK))
                 .isInstanceOf(BroadcastStartException.class)
                 .hasMessageContaining("트랜잭션 동기화 비활성");
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("webhook 으로 승격하면 trigger=WEBHOOK 으로 센다 — 경로를 나눠 세는 것이 이 인자의 존재 이유다")
+    void promotedByWebhook_isTaggedWebhook() {
+        givenPromotableRoom();
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
+
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions)
+                .containsExactly(PromotionTrigger.WEBHOOK);
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions)
+                .containsExactly("Ready->Live");
+    }
+
+    @Test
+    @DisplayName("정리 잡으로 승격하면 trigger=RECONCILE 로 센다 — 이 값이 늘면 실시간 감지가 새는 것이다")
+    void promotedByReconcile_isTaggedReconcile() {
+        givenPromotableRoom();
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.RECONCILE);
+
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions)
+                .containsExactly(PromotionTrigger.RECONCILE);
+    }
+
+    @Test
+    @DisplayName("전이 대상이 아니면 승격도 전이도 세지 않는다")
+    void notPromotable_countsNothing() {
+        givenNonPromotableRoom();
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
+
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).isEmpty();
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).isEmpty();
     }
 }

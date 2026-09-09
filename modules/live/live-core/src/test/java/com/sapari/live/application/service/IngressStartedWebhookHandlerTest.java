@@ -10,6 +10,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.LiveWebhookEvent;
 
 class IngressStartedWebhookHandlerTest {
@@ -33,7 +34,7 @@ class IngressStartedWebhookHandlerTest {
 
         handler.handle(event);
 
-        then(goLiveByRtmpService).should().goLiveByRtmp(roomId, "ing-1");
+        then(goLiveByRtmpService).should().goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
     }
 
     @Test
@@ -43,7 +44,7 @@ class IngressStartedWebhookHandlerTest {
 
         handler.handle(event);
 
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -53,6 +54,6 @@ class IngressStartedWebhookHandlerTest {
 
         handler.handle(event);
 
-        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        then(goLiveByRtmpService).should(never()).goLiveByRtmp(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# sapari-reviewer 방법론 md 의 "Enforced by ArchUnit" 목록이 실제 규칙과 맞는지 검사한다.
+# 리뷰어 공통 방법론(common.md)의 "Enforced by ArchUnit" 목록이 실제 규칙과 맞는지 검사한다.
 #
 # 목록이 낡으면 두 방향으로 새는데, 둘 다 조용히 샌다.
 #   짧으면 -> 리뷰어가 이미 강제되는 규칙을 모르고 중복 지적한다
@@ -15,7 +15,8 @@ exec python3 - <<'PY'
 import re, sys
 
 TEST_FILE = "architecture-test/src/test/java/com/sapari/architecture/ArchitectureTest.java"
-DOC_FILE = ".claude/rules/sapari-reviewer-methodology.md"
+sys.path.insert(0, ".claude/scripts")
+from anchorlib import COMMON_FILE as DOC_FILE
 
 # @Test 바로 다음에 오는 메서드명
 src = open(TEST_FILE, encoding="utf-8").read()
