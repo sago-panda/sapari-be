@@ -16,7 +16,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.springframework.stereotype.Service;
 
@@ -174,8 +173,8 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
 
     /**
      * 방 하나를 한자리에서 처리한다. <b>순서를 바꾸지 말 것</b>: ingress 삭제 → egress 중단 → 방 닫기.
-     * {@code PostCommitMediaCleanup} 의 종료 정리와 같은 순서이고 같은 이유다 — ingress 가 남은 채
-     * 방을 닫으면 OBS 자동 재접속이 방을 되살린다.
+     * {@code PostCommitMediaCleanup} 와 마찬가지로 ingress 를 방 닫기보다 먼저 처리한다 — ingress 가
+     * 남은 채 방을 닫으면 OBS 자동 재접속이 방을 되살린다.
      */
     private void reconcileByRoom(List<IngressSummary> ingresses, List<EgressSummary> egresses,
             List<RoomSummary> sfuRooms, Instant threshold, Instant deadline) {
@@ -206,6 +205,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
         int ingressDeletes = 0;
         int egressStops = 0;
         int roomCloses = 0;
+        int roomsVisited = 0;
         int roomsHandled = 0;
         boolean budgetExhausted = false;
         // 집계는 finally 로 — 스윕 도중 예외로 빠지면 그때까지 요청한 건수가 통째로 사라진다.
@@ -213,10 +213,11 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
             for (UUID roomId : candidates) {
                 if (!timeProvider.now().isBefore(deadline)) {
                     budgetExhausted = true;
-                    log.warn("고아 미디어 정리 예산 소진 — 남은 방은 다음 회차로. 처리한 방={}, 남은 방={}",
-                            roomsHandled, candidates.size() - roomsHandled);
+                    log.warn("고아 미디어 정리 예산 소진 — 남은 방은 다음 회차로. 방문한 방={}, 남은 방={}",
+                            roomsVisited, candidates.size() - roomsVisited);
                     break;
                 }
+                roomsVisited++;
                 // <b>만지기 직전에</b> 방을 다시 읽는다(AGENTS "per room, right before touching it").
                 // Ended 는 종단 상태라 되돌아오지 않으므로 스냅샷을 그대로 믿는다 — 그 방만 조회를 아낀다.
                 LiveRoom snapshot = snapshots.get(roomId);
@@ -227,13 +228,14 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                 }
                 RoomResources resources = byRoom.get(roomId);
 
-                // 마감에 걸려 이 방의 정리를 다 못 끝냈다는 표시. 걸리면 방을 닫지 않는다(아래 3).
-                boolean cleanupPending = false;
+                // 이 방을 아직 닫을 수 없다는 표시. 마감으로 미완료인 경우와 삭제 확인 실패는 모두 방을
+                // 열어 둬야 하지만, 회차 전체를 멈춰야 하는 것은 전자뿐이다.
+                boolean roomCleanupIncomplete = false;
 
                 // 1) ingress — 방이 인정하지 않는 것 전부. 개수 상한은 두지 않는다(하나라도 남기고
                 //    방을 닫으면 그 생존자가 방을 되살린다). 대신 <b>마감</b>은 여기서도 본다 —
-                //    경합 패자가 쌓인 방은 ingress 가 수십 건일 수 있고, 그때 이 루프만 무제한이면
-                //    "리스 ≥ 예산 + 방 하나의 fan-out" 보장이 이름뿐이 된다.
+                //    경합 패자가 쌓인 방은 ingress 가 수십 건일 수 있다. 이 루프도 마감에서 끊어야
+                //    한 방이 회차 예산을 끝없이 넘기는 일을 줄일 수 있다(리스 내 완료의 절대 보장은 없다).
                 int deletedHere = 0;
                 for (IngressSummary ingress : resources.ingresses()) {
                     if (!ingressGraceElapsed(current, threshold)
@@ -242,7 +244,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                     }
                     if (!timeProvider.now().isBefore(deadline)) {
                         budgetExhausted = true;
-                        cleanupPending = true;
+                        roomCleanupIncomplete = true;
                         log.warn("고아 미디어 정리 예산 소진(ingress 처리 중) — 남은 ingress 는 다음 회차로."
                                 + " roomId={}, 이번에 삭제={}", roomId, deletedHere);
                         break;
@@ -260,7 +262,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                 //    자신이 언제 시작했는지를 들고 있어 그 판정이 직접 가능하다. 방 기준으로 걸면
                 //    Scheduled/Ready 에서 updated_at 이 계속 갱신되는 방의 고아 egress 가 영영 회수되지
                 //    않고 과금만 이어진다(예전 종류별 스윕도 여기에는 유예를 걸지 않았다).
-                if (!cleanupPending && !(current.status() instanceof LiveStatus.Live)) {
+                if (!roomCleanupIncomplete && !(current.status() instanceof LiveStatus.Live)) {
                     for (EgressSummary egress : resources.egresses()) {
                         if (!isOrphanEgress(egress, threshold)) {
                             continue;
@@ -270,7 +272,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                         // 미루고 남은 egress 는 다음 회차 전수 조회에 그대로 다시 잡힌다.
                         if (!timeProvider.now().isBefore(deadline)) {
                             budgetExhausted = true;
-                            cleanupPending = true;
+                            roomCleanupIncomplete = true;
                             log.warn("고아 미디어 정리 예산 소진(egress 처리 중) — 남은 egress 는 다음 회차로."
                                     + " roomId={}", roomId);
                             break;
@@ -296,30 +298,30 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                 // 이라 최대 30s 인데, 리스 여유는 리스의 1/5 뿐이고 그 여유가 얼마인지는 설정에 달렸다
                 // (lock-at-most-for=PT10M 이면 2분). "리스 ≥ 예산 + 방 하나의 fan-out" 을 어디서도
                 // 강제하지 못하므로, 강제 대신 여기서 멈춘다 — 남은 방은 다음 회차가 가져간다.
-                if (!cleanupPending && resources.hasSfuRoom()
+                if (!roomCleanupIncomplete && resources.hasSfuRoom()
                         && current.status() instanceof LiveStatus.Ended
                         && !timeProvider.now().isBefore(deadline)) {
                     budgetExhausted = true;
-                    cleanupPending = true;
+                    roomCleanupIncomplete = true;
                     log.warn("고아 미디어 정리 예산 소진(방 닫기 직전) — 이 방은 다음 회차로. roomId={}", roomId);
                 }
 
-                if (!cleanupPending && resources.hasSfuRoom()
+                if (!roomCleanupIncomplete && resources.hasSfuRoom()
                         && current.status() instanceof LiveStatus.Ended) {
                     try {
                         List<IngressSummary> survivors = liveMediaManager.listRoomIngress(roomId);
                         if (!survivors.isEmpty()) {
-                            cleanupPending = true;
+                            roomCleanupIncomplete = true;
                             log.warn("ingress 삭제가 반영되지 않았다 — 방을 닫지 않고 다음 회차로."
                                     + " roomId={}, 잔존={}", roomId, survivors.size());
                         }
                     } catch (RuntimeException e) {
-                        cleanupPending = true;
+                        roomCleanupIncomplete = true;
                         log.warn("ingress 잔존 확인 실패 — 방을 닫지 않고 다음 회차로. roomId={}", roomId, e);
                     }
                 }
 
-                if (resources.hasSfuRoom() && current.status() instanceof LiveStatus.Ended && !cleanupPending) {
+                if (resources.hasSfuRoom() && current.status() instanceof LiveStatus.Ended && !roomCleanupIncomplete) {
                     // <b>유예를 두지 않는다.</b> Ended 방에 정당한 SFU 방은 존재할 수 없다(시작은
                     // Scheduled 에서만 하고 그 시점의 DB 는 Ended 가 아니다). 유예는 보호하는 게 없으면서
                     // 구멍을 만든다: 판매자가 토큰으로 재입장하면 방이 새 생성 시각으로 다시 생기므로,
@@ -331,12 +333,15 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                                     + " roomId={}, 참가자={}, ingress 삭제={}",
                             roomId, resources.participants(), deletedHere);
                 }
-                if (cleanupPending) {
-                    // 예산에 걸려 이 방의 정리를 다 못 끝냈다 — "처리함" 으로 세면 완료 로그의
-                    // 처리/남음 숫자가 실제와 어긋난다.
+                if (budgetExhausted) {
+                    // 회차 마감만 뒤 후보까지 미룬다. 삭제가 조용히 실패했거나 확인이 실패한 방은 열어
+                    // 두되, 다음 후보의 정리는 계속한다 — 결정적 정렬에서 고장 난 선두가 꼬리를 굶기면
+                    // 안 된다.
                     break;
                 }
-                roomsHandled++;
+                if (!roomCleanupIncomplete) {
+                    roomsHandled++;
+                }
             }
         } finally {
             liveMetrics.reconcileActed(
@@ -350,8 +355,8 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
             liveMetrics.reconcileActed(ReconcileJob.ORPHAN_MEDIA,
                     ReconcileAction.ROUND_BUDGET_EXHAUSTED, budgetExhausted ? 1 : 0);
         }
-        log.info("고아 미디어 정리 완료. 후보 방={}, 처리={}, ingress 삭제={}, egress 중단={}, 방 닫음={}",
-                candidates.size(), roomsHandled, ingressDeletes, egressStops, roomCloses);
+        log.info("고아 미디어 정리 완료. 후보 방={}, 방문={}, 완료={}, ingress 삭제={}, egress 중단={}, 방 닫음={}",
+                candidates.size(), roomsVisited, roomsHandled, ingressDeletes, egressStops, roomCloses);
     }
 
     /** LiveKit 의 세 목록을 방 단위로 접는다. 우리 이름 규칙이 아닌 리소스는 남의 것일 수 있어 버린다. */

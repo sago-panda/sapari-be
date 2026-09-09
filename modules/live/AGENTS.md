@@ -114,9 +114,11 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   `roundBudget` = 4/5 of that job's own `lock-at-most-for` (25m→20m, 50m→40m, 20m→16m), and the candidate
   loop stops there, deferring the rest. It reports `ROUND_BUDGET_EXHAUSTED` (job tag says which), deliberately **not** folded
   into `*_BATCH_SATURATED` — one says *slow*, the other says *many*, and the fixes are opposite. The deadline
-  is only checked *between* candidates (a synchronous OkHttp call can't be cancelled), so the guarantee is
-  `lease ≥ budget + one candidate's fan-out` — bounded by one room's resource count rather than by the whole
-  round. The lease default lives in **one** place per job (`LiveReconcileProperties.<Job>.DEFAULT_LOCK_AT_MOST_FOR`,
+  is only checked *between* candidates (a synchronous OkHttp call can't be cancelled), so it limits new
+  candidates but does **not** prove `lease ≥ budget + one candidate's fan-out`: a room's resource count has no
+  code-level upper bound. A pathological room can therefore outlive its lease after the deadline; this design
+  accepts that residual duplicate-cleanup risk to finish normal cleanup rather than leaving cost-bearing media
+  behind. The lease default lives in **one** place per job (`LiveReconcileProperties.<Job>.DEFAULT_LOCK_AT_MOST_FOR`,
   concatenated into the `@SchedulerLock` placeholder) because the budget is derived from it: re-inline the
   literal in the scheduler and a lowered lease leaves the budget longer than the lease it was meant to fit
   inside. For orphan-media,

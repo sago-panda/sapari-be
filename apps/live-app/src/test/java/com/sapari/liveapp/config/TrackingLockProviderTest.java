@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verify;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -18,6 +17,7 @@ import net.javacrumbs.shedlock.core.LockProvider;
 import net.javacrumbs.shedlock.core.SimpleLock;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.ReconcileJob;
@@ -33,6 +33,20 @@ class TrackingLockProviderTest {
 
         // 아직 돌고 있는 회차에는 중단 신호만 — 락은 lock-at-most-for 만료가 인계한다.
         verify(executor).shutdownNow();
+    }
+
+    @Test
+    void schedulerResolvesLockProviderAtShutdownAfterBeanRegistration() {
+        DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
+        SchedulingConfig.ReconcileTaskScheduler scheduler = new SchedulingConfig.ReconcileTaskScheduler(
+                beanFactory.getBeanProvider(TrackingLockProvider.class));
+        TrackingLockProvider lockProvider = mock(TrackingLockProvider.class);
+        beanFactory.registerSingleton("lockProvider", lockProvider);
+        scheduler.initialize();
+
+        scheduler.shutdown();
+
+        verify(lockProvider).beginShutdown();
     }
 
     private static final LockConfiguration CONFIG = new LockConfiguration(

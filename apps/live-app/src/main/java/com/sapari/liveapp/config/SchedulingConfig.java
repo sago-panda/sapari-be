@@ -44,12 +44,13 @@ public class SchedulingConfig {
      */
     @Bean
     public TaskScheduler taskScheduler(ObjectProvider<TrackingLockProvider> lockProvider) {
-        ThreadPoolTaskScheduler scheduler = new ReconcileTaskScheduler(lockProvider.getIfAvailable());
+        ThreadPoolTaskScheduler scheduler = new ReconcileTaskScheduler(lockProvider);
         scheduler.setPoolSize(POOL_SIZE);
         scheduler.setThreadNamePrefix("live-reconcile-");
         // 종료 시 진행 중인 회차를 기다린다 — 미디어 정리 도중에 끊기면 고아가 그대로 남는다.
-        // 다만 보장은 아니다: 한 회차가 배치 크기 × (조회 + 정리) 왕복이고 각 호출이 최대 callTimeout 15s
-        // 라 30초를 쉽게 넘는다. 파드 종료 유예(기본 30s)도 그쯤이다.
+        // 다만 보장은 아니다: expire-ready/end-stale-live 는 후보별 호출을 반복하고 orphan-media 는
+        // roundBudget 안에서 방별 리소스 수만큼 호출한다. 각 호출은 최대 callTimeout 15s 라 30초를 쉽게
+        // 넘는다. 파드 종료 유예(기본 30s)도 그쯤이다.
         //
         // 정상 종료로 끝난 회차의 락은 ShedLock 이 태스크 finally 에서 스스로 반납한다. 시간이 끝났다고
         // shutdownNow 를 호출해도 OkHttp 동기 execute 는 interrupt 로 취소된다는 보장이 없어 회차는 계속
@@ -62,19 +63,27 @@ public class SchedulingConfig {
     }
 
     static final class ReconcileTaskScheduler extends ThreadPoolTaskScheduler {
-        private final TrackingLockProvider lockProvider;
+        private final ObjectProvider<TrackingLockProvider> lockProvider;
 
-        private ReconcileTaskScheduler(TrackingLockProvider lockProvider) {
+        ReconcileTaskScheduler(ObjectProvider<TrackingLockProvider> lockProvider) {
             this.lockProvider = lockProvider;
         }
 
         @Override
         public void shutdown() {
-            if (lockProvider != null) {
-                lockProvider.beginShutdown();
+            try {
+                // 빈 생성 순서 때문에 taskScheduler 생성 시점에 아직 provider가 없을 수 있다. 종료 시점에
+                // 조회해야 등록이 끝난 뒤의 실제 provider로 새 락 획득을 막는다.
+                lockProvider.ifAvailable(TrackingLockProvider::beginShutdown);
+            } finally {
+                // 종료 중 provider 조회가 실패해도 executor 종료는 반드시 진행한다. 예외는 삼키지 않아
+                // 컨테이너가 원인을 기록하게 한다.
+                try {
+                    super.shutdown();
+                } finally {
+                    finishShutdown(getScheduledExecutor());
+                }
             }
-            super.shutdown();
-            finishShutdown(getScheduledExecutor());
         }
 
         static void finishShutdown(ScheduledExecutorService executor) {

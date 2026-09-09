@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -96,7 +97,7 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     @Override
     public List<LiveRoom> findAllByIds(Set<UUID> ids){
         List<UUID> all = List.copyOf(ids);
-        List<LiveRoom> rooms = new java.util.ArrayList<>(all.size());
+        List<LiveRoom> rooms = new ArrayList<>(all.size());
         for (int from = 0; from < all.size(); from += ID_CHUNK_SIZE) {
             rooms.addAll(liveRoomJpaRepository.findAllById(all.subList(from, Math.min(from + ID_CHUNK_SIZE, all.size())))
                     .stream().map(liveRoomMapper::toDomain)

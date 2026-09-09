@@ -155,6 +155,61 @@ class ReconcileOrphanMediaServiceTest {
     }
 
     @Test
+    @DisplayName("삭제 확인이 실패한 방은 열어 두되 다음 종료 방의 정리를 막지 않는다")
+    void failedRoomCleanup_doesNotStarveFollowingCandidate() {
+        UUID broken = new UUID(0, 1);
+        UUID healthy = new UUID(0, 2);
+        givenLiveKit(
+                List.of(
+                        new IngressSummary("ing-broken", broken.toString(), false),
+                        new IngressSummary("ing-healthy", healthy.toString(), false)),
+                List.of(),
+                List.of(
+                        new RoomSummary(broken.toString(), 0, OLD),
+                        new RoomSummary(healthy.toString(), 0, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(broken, healthy))).willReturn(List.of(
+                room(broken, ended(), new LiveStreamType.Rtmp("broken"), OLD),
+                room(healthy, ended(), new LiveStreamType.Rtmp("healthy"), OLD)));
+        given(liveMediaManager.listRoomIngress(broken))
+                .willReturn(List.of(new IngressSummary("ing-broken", broken.toString(), false)));
+        given(liveMediaManager.listRoomIngress(healthy)).willReturn(List.of());
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(broken.toString());
+        then(liveMediaManager).should().closeRoom(healthy.toString());
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted)
+                .contains("ROUND_BUDGET_EXHAUSTED=0");
+    }
+
+    @Test
+    @DisplayName("ingress 잔존 확인이 실패한 방도 다음 종료 방의 정리를 막지 않는다")
+    void survivorCheckFailure_doesNotStarveFollowingCandidate() {
+        UUID broken = new UUID(0, 1);
+        UUID healthy = new UUID(0, 2);
+        givenLiveKit(
+                List.of(
+                        new IngressSummary("ing-broken", broken.toString(), false),
+                        new IngressSummary("ing-healthy", healthy.toString(), false)),
+                List.of(),
+                List.of(
+                        new RoomSummary(broken.toString(), 0, OLD),
+                        new RoomSummary(healthy.toString(), 0, OLD)));
+        given(liveRoomRepository.findAllByIds(Set.of(broken, healthy))).willReturn(List.of(
+                room(broken, ended(), new LiveStreamType.Rtmp("broken"), OLD),
+                room(healthy, ended(), new LiveStreamType.Rtmp("healthy"), OLD)));
+        given(liveMediaManager.listRoomIngress(broken)).willThrow(new LiveMediaException("조회 실패"));
+        given(liveMediaManager.listRoomIngress(healthy)).willReturn(List.of());
+
+        service.reconcile();
+
+        then(liveMediaManager).should(never()).closeRoom(broken.toString());
+        then(liveMediaManager).should().closeRoom(healthy.toString());
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted)
+                .contains("ROUND_BUDGET_EXHAUSTED=0");
+    }
+
+    @Test
     @DisplayName("잔존이 없으면 그대로 방을 닫는다 — 확인이 정상 경로를 막지 않는다")
     void noSurvivors_closesTheRoom() {
         givenLiveKit(List.of(new IngressSummary("ing-1", roomId.toString(), false)),
