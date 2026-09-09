@@ -89,9 +89,11 @@ public record LiveReconcileProperties(
      *                  + {@code closeRoom} 으로 <b>최대 8회</b>, 승격은 {@code startHlsEgress} 3회다.
      *                  그 정리가 {@code afterCommit} 이라 같은 스케줄러 스레드에서 동기로 돈다.
      *                  <p>다만 {@code callTimeout} 15s 는 <b>타임아웃이지 지연이 아니다</b> — 정상 지연에서는
-     *                  20건이 수십 초로 끝난다. 최악 20분은 LiveKit 이 모든 호출에서 멎어야 나오는 값이고,
-     *                  그 상황이면 batch-size 를 뭘로 잡든 이미 고장이다. 20 은 "공용값 100 보다 회차가
-     *                  짧아야 한다"는 정도의 근거이지 최악을 주기 안에 넣는 값이 아니다.
+     *                  20건이 수십 초로 끝난다. 위 8회 기준으로 계산한 최악 45분(20 × 9 × 15s)은 LiveKit 이
+     *                  모든 호출에서 멎어야 나오는 값이고, 그 상황이면 batch-size 를 뭘로 잡든 이미 고장이다.
+     *                  20 은 "공용값 100 보다 회차가 짧아야 한다"는 정도의 근거이지 최악을 주기 안에 넣는
+     *                  값이 아니다. 그 최악을 락 유지 시간이 덮는지는 별개 판단이며
+     *                  {@code ReconcileLockConfig.LOCK_AT_MOST_FOR_*} 에 적혀 있다.
      */
     public record ExpireReady(
         Duration threshold,

@@ -104,9 +104,14 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   takeover delay after a holder dies, so it must exceed the job's worst round — ShedLock neither aborts nor
   extends a running round, so too short a lease means a slow round keeps going unlocked while the next tick
   starts a second one. `end-stale-live` is the **longest** job, not the shortest: it uses the shared
-  `batch-size` 100 and every ended room runs `PostCommitMediaCleanup`'s up-to-3 LiveKit calls synchronously
-  on the round thread. `orphan-media` has no batch bound at all, so no fixed lease is provably enough —
-  bounding that sweep is the real fix and is not in SPR-142. **Only `orphan-media`
+  `batch-size` 100 and every ended room runs `PostCommitMediaCleanup` synchronously on the round thread.
+  **Count HTTP round trips, not port calls** — `stopHlsEgress` and `deleteIngress(roomId)` are room-wide, so
+  each re-lists inside; one cleanup set is **up to 8 calls**, not 3. Leases cover a *slow* LiveKit, not one
+  where every call burns the full `callTimeout` (that worst case is ~225m for `end-stale-live`, and a lease
+  that long would mean four hours of no cleanup after a pod dies — the wrong trade). Bounding the round is
+  the real fix (SPR-145); the derivation lives in `ReconcileLockConfig`. Only `expire-ready` covers its own
+  worst case (`PT60M` vs. 45m); `end-stale-live` deliberately does not, and `orphan-media` cannot — it has
+  no batch bound, so no fixed lease is provable. **Only `orphan-media`
   actually needs it** — the other two decide, lock the row, and register cleanup inside the winning
   transaction, so the *destructive* calls happen once regardless (the read sweeps still duplicate per
   replica). `orphan-media` has no DB gate at all, and cleanup

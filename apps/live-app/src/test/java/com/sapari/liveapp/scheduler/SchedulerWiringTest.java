@@ -234,6 +234,58 @@ class SchedulerWiringTest {
                     .run(context -> assertThat(context).hasNotFailed());
         }
 
+        /**
+         * lock-at-most-for 는 {@code @SchedulerLock} 이 문자열로 들고 있다가 회차마다 해석한다.
+         * 부팅에서 안 보면 형식 오류가 <b>매 회차 프록시 바깥 예외</b>로 나타나 잡만 조용히 멈춘다.
+         */
+        @Test
+        @DisplayName("lock-at-most-for 가 ISO-8601 이 아니면 부팅을 거부한다")
+        void refusesMalformedLockAtMostFor() {
+            runner.withPropertyValues("live.reconcile.orphan-media.lock-at-most-for=60m")
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("lock-at-most-for 가 lock-at-least-for 이하면 부팅을 거부한다 — 회차 전에 만료된다")
+        void refusesLeaseShorterThanTheMinimumHold() {
+            runner.withPropertyValues(
+                            "live.reconcile.lock-at-least-for=PT2M",
+                            "live.reconcile.orphan-media.lock-at-most-for=PT2M")
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("lock-at-least-for 가 ISO-8601 이 아니면 부팅을 거부한다")
+        void refusesMalformedLockAtLeastFor() {
+            runner.withPropertyValues("live.reconcile.lock-at-least-for=1m")
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        /**
+         * {@code Duration.parse} 는 음수를 받는다. 음수 최소 보유는 모든 비교를 통과하면서 지터 방어만
+         * 조용히 무력화한다 — 부팅은 되고 증상은 "가끔 회차가 두 번 돈다" 로만 나타난다.
+         */
+        @Test
+        @DisplayName("음수 lock-at-least-for 는 부팅을 거부한다")
+        void refusesNegativeLockAtLeastFor() {
+            runner.withPropertyValues("live.reconcile.lock-at-least-for=PT-5M")
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        @Test
+        @DisplayName("lock-at-least-for=PT0S 는 허용한다 — 최소 보유를 두지 않는 건 정당한 선택이다")
+        void allowsZeroLockAtLeastFor() {
+            runner.withPropertyValues("live.reconcile.lock-at-least-for=PT0S")
+                    .run(context -> assertThat(context).hasNotFailed());
+        }
+
+        @Test
+        @DisplayName("한 번도 실행되지 않는 cron 은 부팅을 거부한다 — 잡이 영영 안 도는 걸 알 방법이 없다")
+        void refusesCronThatNeverFires() {
+            runner.withPropertyValues("live.reconcile.orphan-media.cron=0 0 0 30 2 *")  // 2월 30일
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
         @Test
         @DisplayName("꺼 둔 잡의 cron 은 검사하지 않는다 — 없는 빈 때문에 부팅이 막히면 안 된다")
         void ignoresCronOfDisabledJobs() {
@@ -298,7 +350,7 @@ class SchedulerWiringTest {
             // 잡의 최악 실행 시간 근거는 각 스케줄러 자바독에 있다.
             Map<Class<?>, Map.Entry<String, Duration>> expected = Map.of(
                     ExpireReadyScheduler.class,
-                    Map.entry("live-reconcile-expire-ready", Duration.ofMinutes(45)),
+                    Map.entry("live-reconcile-expire-ready", Duration.ofMinutes(60)),
                     EndStaleLiveScheduler.class,
                     Map.entry("live-reconcile-end-stale-live", Duration.ofMinutes(120)),
                     OrphanMediaScheduler.class,

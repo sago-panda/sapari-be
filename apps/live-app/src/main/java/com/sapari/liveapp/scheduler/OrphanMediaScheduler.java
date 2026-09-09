@@ -36,10 +36,12 @@ public class OrphanMediaScheduler {
      * — 즉 이 잡이 가장 중요한 순간 — 에는 초과할 수 있다. 초과하면 락이 만료돼 다음 tick 의 다른
      * 인스턴스가 같은 스윕을 겹쳐 돌고, {@code reconcileActed} 가 배로 부풀어 이 잡의 판독법이 깨진다.
      * 근본 해결은 회차에 상한을 두거나 루프 중 락을 연장하는 것이고, 둘 다 <b>[SPR-145 로 이월]</b> 했다.
+     * 만료 시 벌어지는 일은 {@link ReconcileLockConfig#LOCK_AT_MOST_FOR_ORPHAN_MEDIA} 에 적었다.
      */
     @Scheduled(cron = "${live.reconcile.orphan-media.cron:" + SchedulingConfig.ORPHAN_MEDIA_CRON + "}")
     @SchedulerLock(name = "live-reconcile-orphan-media",
-            lockAtMostFor = "${live.reconcile.orphan-media.lock-at-most-for:PT60M}",
+            lockAtMostFor = "${live.reconcile.orphan-media.lock-at-most-for:"
+                    + ReconcileLockConfig.LOCK_AT_MOST_FOR_ORPHAN_MEDIA + "}",
             lockAtLeastFor = "${live.reconcile.lock-at-least-for:" + ReconcileLockConfig.LOCK_AT_LEAST_FOR + "}")
     public void run() {
         try {

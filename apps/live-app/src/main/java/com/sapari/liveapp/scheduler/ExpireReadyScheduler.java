@@ -30,12 +30,17 @@ public class ExpireReadyScheduler {
     /**
      * 잡별 락. 유지 시간의 의미와 {@code lock-at-least-for} 는 {@link com.sapari.liveapp.config.ReconcileLockConfig} 참고.
      *
-     * <p>상한 근거: 후보 {@code expire-ready.batch-size} 20건 × (송출 조회 1 + 만료 시 커밋 후 정리 3)
-     * = 80회 × {@code callTimeout} 15s ≈ 20분. 승격 경로는 후보당 1회뿐이라 더 짧다.
+     * <p>절대 최악(모든 호출이 {@code callTimeout} 15s 를 다 쓰는 경우) = 후보
+     * {@code expire-ready.batch-size} 20 × (송출 조회 1 + 만료 시 커밋 후 정리 <b>HTTP 8회</b>)
+     * = 180회 × 15s ≈ 45분. 승격 경로는 {@code startHlsEgress} 3회라 더 짧다.
+     *
+     * <p>세 잡 중 <b>유일하게 절대 최악을 덮는</b> 잡이다 — 45분 + 여유로 {@code PT60M}. 세는 법과
+     * 값 규칙은 {@link ReconcileLockConfig#LOCK_AT_MOST_FOR_EXPIRE_READY} 에 한 번만 적었다.
      */
     @Scheduled(cron = "${live.reconcile.expire-ready.cron:" + SchedulingConfig.EXPIRE_READY_CRON + "}")
     @SchedulerLock(name = "live-reconcile-expire-ready",
-            lockAtMostFor = "${live.reconcile.expire-ready.lock-at-most-for:PT45M}",
+            lockAtMostFor = "${live.reconcile.expire-ready.lock-at-most-for:"
+                    + ReconcileLockConfig.LOCK_AT_MOST_FOR_EXPIRE_READY + "}",
             lockAtLeastFor = "${live.reconcile.lock-at-least-for:" + ReconcileLockConfig.LOCK_AT_LEAST_FOR + "}")
     public void run() {
         try {
