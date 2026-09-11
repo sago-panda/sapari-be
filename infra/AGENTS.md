@@ -78,6 +78,87 @@ How it runs:
   enforced from here. Until they exist, metrics are only as private as the cluster's default networking,
   and the `live.room.active` gauge's 5-second cache is the only thing bounding DB load from scrapes.
 
+## LiveKit media workers (measured, SPR-147)
+
+Against `livekit-server` 1.8 + `egress` 1.9 + `ingress` 1.4 (`docker-compose.local.example.yml`).
+**Each claim below is tagged**: *(measured)* was reproduced locally in SPR-147; *(docs)* comes from
+LiveKit's documentation and config sample and has **not** been verified here.
+
+- *(docs)* **Signalling (7880) may sit behind a load balancer** — official guidance, not just tolerated:
+  *"any client could connect to any backend instance, regardless of the room they are in."*
+  A participant that lands on the wrong node is **not** redirected; that node becomes a signalling
+  bridge and proxies to the node hosting the room. **Redis is what makes this work** — without it
+  LiveKit is not distributed at all.
+- *(docs)* **TCP 7881 must NOT be behind a LB or TLS** — it has to be exposed on the node itself.
+- *(docs)* **UDP: prefer the port range (50000-60000) over the 7882 single-port mux.** The range is
+  LiveKit's own default and its config sample recommends *"a range of ports greater or equal to
+  the number of vCPUs"*; each participant uses two ports. The two settings are mutually exclusive.
+  → **C-2's security group can drop the 7882/udp mux rule and keep only the range.** The mux's
+  concurrent-participant ceiling is not documented anywhere — don't quote a number for it.
+- *(docs)* k8s constrains this further: host networking is required, so **one LiveKit pod per node**, and
+  private/serverless clusters are unsupported (extra NAT layers break WebRTC).
+
+### Egress credentials — D7 result *(measured)*: the worker DOES use the AWS default chain
+
+Omitting `access_key`/`secret` from the egress request body **works**: upload succeeded in 12s with
+credentials supplied only through the worker's environment. Negative control confirms it is really
+the chain and not an open bucket — with the env vars removed the same request fails with
+`no EC2 IMDS role found ... ec2imds: GetMetadata`.
+
+- **IRSA on EKS is therefore viable**, but this is a *local* proof (environment variables). The
+  instance-profile/IRSA link is still unverified on real EKS.
+- ⚠️ When reproducing on EC2, set `http_put_response_hop_limit = 2` on the instance metadata
+  options. Without it the chain fails inside the container and you conclude "IRSA impossible" — wrongly.
+- The app still sends static keys (`LiveKitProperties.S3` keeps both fields required). Making them
+  optional needs an explicit credential-mode setting first — blank keys must not be able to mean
+  "chain mode" by accident, because the app boots fine and the broadcast goes `Live` while only the
+  upload fails asynchronously; the only recovery is `end-stale-live` at its 60m threshold.
+
+### /dev/shm is NOT the resource to size for egress *(measured)*
+
+The widely-cited "container `/dev/shm` defaults to 64MB and Chrome dies" **does not reproduce here**.
+`egress` 1.9 launches Chrome with `disable-dev-shm-usage`, so at `shm_size: 64mb` with 8 publishers
+at 720p it ran 6 minutes with **zero bytes** used in `/dev/shm` (19 Chrome processes live).
+
+→ In k8s, **do not** reach for `emptyDir{medium: Memory}` for this. Chrome puts its shared memory on
+the container filesystem (`/tmp`), so the limit that actually matters is **`ephemeral-storage`**.
+Keep a generous `shm_size`/emptyDir only as insurance against LiveKit dropping that flag.
+
+### HLS playlists: `playlist.m3u8` is the archive, not a by-product *(measured)*
+
+An egress writes two manifests per rendition and they are **not** interchangeable. Measured on a
+220-segment broadcast that ended cleanly (`EGRESS_COMPLETE`):
+
+| key | after the broadcast ends | role |
+|---|---|---|
+| `{rendition}/index.m3u8` | references the **last 5** segments | live sliding window |
+| `{rendition}/playlist.m3u8` | `EXT-X-PLAYLIST-TYPE:EVENT`, references **all 220** | the archive / VOD |
+
+- **Any S3 lifecycle rule must keep `playlist.m3u8` for as long as the segments it lists.** Expiring it
+  early leaves the segments orphaned and makes replay impossible — there is no rule in this repo yet,
+  so whoever writes it needs this constraint.
+- Known gap (**SPR-148**): `LiveRoom.endLive` stores `streamInfo.hlsUrl()` into `hlsArchiveUrl`, and that URL is the
+  *live* manifest, so the replay column points at a ~10-second window. **Both modes are affected** —
+  with ABR off it is the 720p `index.m3u8`, and with ABR on it is `master.m3u8`, whose variants come
+  from `MasterPlaylistGenerator` → `HlsRendition.variantPlaylistPath()`, i.e. the live manifests again.
+  A fix therefore needs an archive URL carried out of `startHlsEgress` **and**, for ABR, a second
+  master listing the `playlist.m3u8` variants. The segments are already in S3, so this is recoverable
+  later **as long as `playlist.m3u8` outlives them**.
+- SPR-148 owns the exposure side too, because both pull on the same URL in opposite directions: the
+  archive is unreadable by the legitimate viewer, yet would be readable by anyone holding a playback
+  URL once a CDN fronts the bucket (`index.m3u8` → `playlist.m3u8` is a one-word edit). Serving it
+  from the same unsigned prefix fixes the first and worsens the second, so the archive moves to its
+  own `archive/` prefix behind a permission check + presigned URL. **Measured 2026-09-11: the bucket
+  is fully locked (all four public-access blocks on, no bucket policy, direct HTTP 403) and no
+  CloudFront distribution exists yet** — not a live hole. **SPR-148 must land before a CDN fronts this
+  bucket**: once a playback URL is reachable, moving the archive is a migration instead of a choice,
+  and any URL already handed out keeps working against the old prefix.
+
+### Timing budget *(measured)*
+
+`egress start` → first segment in S3: **12-15s** (720p single rendition, 2s segments). Useful when
+budgeting the one paid verification window.
+
 ## Manifests & Pipeline
 
 - Infra manifests and pipeline details live in the infra repo.
