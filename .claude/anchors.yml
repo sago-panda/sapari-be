@@ -124,8 +124,9 @@ rules:
     activate: [CONC-01, CONC-02, CONC-03, CONC-04, CONC-05, CONC-06, CONC-07]
 
   - trigger: ["modules/live/**/*.java", "apps/live-app/**/*.java", "db/migration/live/*.sql"]
-    # 도메인 리뷰어(domain=live). 판정 근거가 전부 이 AGENTS.md 에 있으므로 반드시 동봉한다.
-    anchors: ["modules/live/AGENTS.md"]
+    # 도메인 리뷰어(domain=live). 판정 근거를 동봉한다 — 대부분은 modules/live/AGENTS.md 에 있고,
+    # LIVE-08 의 통제 측(CDN 선행·playlist.m3u8 라이프사이클)만 infra/AGENTS.md 에 있다.
+    anchors: ["modules/live/AGENTS.md", "infra/AGENTS.md"]
     activate: [LIVE-01, LIVE-02, LIVE-03, LIVE-04, LIVE-05, LIVE-06, LIVE-07, LIVE-08]
 
   - trigger: ["**/src/test/**/*.java"]

@@ -21,7 +21,7 @@ services:
       POSTGRES_DB: sapari
       POSTGRES_USER: sapari
       POSTGRES_PASSWORD: sapari      # 로컬 더미 — 실제 시크릿 아님
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - sapari-pg:/var/lib/postgresql/data
 
@@ -35,7 +35,8 @@ services:
 
   mongo:                             # 채팅 메시지 전용 (chat_messages)
     image: mongo:7
-    ports: ["27017:27017"]
+    # 인증 설정이 없어 붙으면 곧바로 읽고 쓸 수 있다 — postgres·redis 와 같은 이유로 루프백에만 게시한다.
+    ports: ["127.0.0.1:27017:27017"]
     volumes:
       - sapari-mongo:/data/db
 

@@ -40,8 +40,16 @@ enum HlsRendition {
         return (long) (videoBitrateKbps + audioBitrateKbps) * 1000;
     }
 
+    /**
+     * 시청자가 받는 라이브(슬라이딩 윈도우) 플레이리스트 파일명.
+     *
+     * <p>egress 요청의 {@code live_playlist_name} 과 {@link #variantPlaylistPath()} 가 같은 파일을
+     * 가리켜야 하므로 양쪽이 이 상수를 공유한다 — 한쪽만 바꾸면 master 가 없는 파일을 참조한다.
+     */
+    static final String LIVE_PLAYLIST_NAME = "index.m3u8";
+
     /** master.m3u8 위치({roomId}/master.m3u8) 기준 변형 플레이리스트 상대 경로. */
     String variantPlaylistPath() {
-        return pathSegment + "/index.m3u8";
+        return pathSegment + "/" + LIVE_PLAYLIST_NAME;
     }
 }

@@ -93,7 +93,10 @@ LiveKit's documentation and config sample and has **not** been verified here.
 - *(docs)* **UDP: prefer the port range (50000-60000) over the 7882 single-port mux.** The range is
   LiveKit's own default and its config sample recommends *"a range of ports greater or equal to
   the number of vCPUs"*; each participant uses two ports. The two settings are mutually exclusive.
-  → **C-2's security group can drop the 7882/udp mux rule and keep only the range.** The mux's
+  → **The LiveKit node's security group can drop the 7882/udp mux rule and keep only the range** —
+  **in that order: open the range first, then drop the mux rule.** Dropping it while only the mux is
+  open fails every WebRTC connection (the local compose keeps the mux and notes the same constraint).
+  The rule itself lives in the infra repo, not here — see *Not done yet in this repo*. The mux's
   concurrent-participant ceiling is not documented anywhere — don't quote a number for it.
 - *(docs)* k8s constrains this further: host networking is required, so **one LiveKit pod per node**, and
   private/serverless clusters are unsupported (extra NAT layers break WebRTC).

@@ -327,7 +327,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
                 .setProtocol(SegmentedFileProtocol.HLS_PROTOCOL)
                 .setFilenamePrefix(renditionPath + "segment_")
                 .setPlaylistName(renditionPath + "playlist.m3u8")
-                .setLivePlaylistName(renditionPath + "index.m3u8")
+                .setLivePlaylistName(renditionPath + HlsRendition.LIVE_PLAYLIST_NAME)
                 .setSegmentDuration(segmentDuration)
                 .setS3(s3Upload)
                 .build();
