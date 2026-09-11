@@ -126,7 +126,7 @@ rules:
   - trigger: ["modules/live/**/*.java", "apps/live-app/**/*.java", "db/migration/live/*.sql"]
     # 도메인 리뷰어(domain=live). 판정 근거가 전부 이 AGENTS.md 에 있으므로 반드시 동봉한다.
     anchors: ["modules/live/AGENTS.md"]
-    activate: [LIVE-01, LIVE-02, LIVE-03, LIVE-04, LIVE-05, LIVE-06, LIVE-07]
+    activate: [LIVE-01, LIVE-02, LIVE-03, LIVE-04, LIVE-05, LIVE-06, LIVE-07, LIVE-08]
 
   - trigger: ["**/src/test/**/*.java"]
     # 프로덕션 코드를 겨냥한 항목은 켜지 않는다. 테스트에 걸면 픽스처와

@@ -41,5 +41,17 @@
   room existence); `LiveRoomMapper.updateEntityFromDomain` no longer writing `scheduledAt` out of the
   status (a re-save wipes it). Hibernate emits `for no key update` — that is the lock, not its absence.
 
+- `LIVE-08` **Egress artifact URL contract: produced, consumed, and controlled together** (§Media ports) —
+  an HLS artifact has three sides and a change that moves one without the others is the finding. Produced:
+  `playlist_name` / `live_playlist_name` / `filename_prefix` in `startRenditionEgress` (they must differ —
+  equal names stop every broadcast from starting). Consumed: `HlsRendition.variantPlaylistPath()`,
+  `MasterPlaylistGenerator`, and `LiveRoom.endLive`'s `hlsArchiveUrl` — an artifact written with no reader,
+  or `hlsArchiveUrl` pointing at the live sliding window instead of the EVENT playlist, is the finding.
+  Controlled: live and archive manifests sharing one unsigned viewer prefix hands anyone with a play URL a
+  permanent copy by swapping one filename. **Known gap SPR-148** covers the consume + control sides; while
+  it is open, the finding is anything that makes it irreversible — a CDN fronting the bucket, or an S3
+  lifecycle rule expiring `playlist.m3u8` before the segments it lists. Those two ordering constraints live
+  only in `infra/AGENTS.md` prose, so check them by hand.
+
 Catch-all: none. A live-specific problem no item covers is reported under the closest item with a note
 that the checklist is missing it.
