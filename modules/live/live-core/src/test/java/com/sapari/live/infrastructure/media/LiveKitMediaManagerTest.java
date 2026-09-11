@@ -140,10 +140,19 @@ public class LiveKitMediaManagerTest {
         HlsEgressResult result = liveKitMediaManager.startHlsEgress(roomId);
 
         // then: 비기본 화질(1080p·360p)은 스킵 → 720p 1개만 시작(낭비 방지 가드)
+        ArgumentCaptor<SegmentedFileOutput> captor = ArgumentCaptor.forClass(SegmentedFileOutput.class);
         then(egressServiceClient).should(times(1)).startRoomCompositeEgress(
-                anyString(), any(SegmentedFileOutput.class), anyString(),
+                anyString(), captor.capture(), anyString(),
                 nullable(EncodingOptionsPreset.class), nullable(EncodingOptions.class),
                 anyBoolean(), anyBoolean(), anyString(), any(AudioMixing.class));
+
+        // ABR 경로와 같은 이름 규칙이 여기에도 걸려야 한다 — 두 이름이 같으면 LiveKit 이 요청을 거부하고,
+        // 업로더 미배선(= 현재 운영 상태)이 바로 이 경로라 여기가 안 막히면 방송이 시작되지 않는다.
+        SegmentedFileOutput output = captor.getValue();
+        String base = liveKitProperties.s3().keyPrefix() + roomId + "/720p/";
+        assertThat(output.getLivePlaylistName()).isEqualTo(base + "index.m3u8");
+        assertThat(output.getPlaylistName()).isEqualTo(base + "playlist.m3u8");
+        assertThat(output.getPlaylistName()).isNotEqualTo(output.getLivePlaylistName());
         assertThat(result.egressId()).isEqualTo(mockEgressInfo.getEgressId());
         assertThat(result.hlsUrl()).contains(liveKitProperties.hls().cdnBaseUrl());
         assertThat(result.hlsUrl()).contains("720p");
@@ -151,7 +160,7 @@ public class LiveKitMediaManagerTest {
     }
 
     @Test
-    @DisplayName("HLS Egress 시작(ABR): 화질별 경로를 filename_prefix·playlist_name 모두에 담는다(안전 형태)")
+    @DisplayName("HLS Egress 시작(ABR): 화질별 경로를 filename_prefix·playlist_name 모두에 담고, live/VOD 플레이리스트 이름을 분리한다")
     void startHlsEgress_buildsPerRenditionPaths_whenAbr() throws IOException {
         UUID roomId = UUID.randomUUID();
         EgressInfo info = EgressInfo.newBuilder().setEgressId("eg").build();
@@ -188,12 +197,12 @@ public class LiveKitMediaManagerTest {
         String base = liveKitProperties.s3().keyPrefix() + roomId + "/"; // "live/{roomId}/"
         List<SegmentedFileOutput> outputs = captor.getAllValues();
 
-        // playlist_name·live_playlist_name = 화질별 디렉터리 + index.m3u8
+        // playlist_name 은 live_playlist_name 과 달라야 한다 — 같으면 LiveKit 이 invalid_argument 로 거부한다.
         assertThat(outputs).extracting(SegmentedFileOutput::getPlaylistName)
                 .containsExactlyInAnyOrder(
-                        base + "1080p/index.m3u8",
-                        base + "720p/index.m3u8",
-                        base + "360p/index.m3u8");
+                        base + "1080p/playlist.m3u8",
+                        base + "720p/playlist.m3u8",
+                        base + "360p/playlist.m3u8");
         assertThat(outputs).extracting(SegmentedFileOutput::getLivePlaylistName)
                 .containsExactlyInAnyOrder(
                         base + "1080p/index.m3u8",

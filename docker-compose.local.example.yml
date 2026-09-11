@@ -6,6 +6,14 @@
 #
 # 실제 파일(docker-compose.local.yml)은 .gitignore — 개인별로 포트/버전 조정해 쓰세요.
 # ※ 통합/단위 테스트의 Redis·Mongo는 TestContainers가 자체 기동 → 이 compose와 별개.
+
+# 로컬 더미 자격증명 — 실제 시크릿 아님. livekit/egress/ingress 세 서비스가 같은 값을 써야 워커가
+# SFU 에 등록된다. 아래 세 곳에 literal 로 반복되는데, YAML 앵커로는 묶을 수 없다 — 세 값 모두
+# *_CONFIG 블록 스칼라(|) 안이라 앵커가 해석되지 않고 "*lk_secret" 이라는 문자열이 그대로 나간다.
+# 키를 바꾸려면 livekit(keys) · egress(api_secret) · ingress(api_secret) 셋을 함께 고칠 것.
+# secret 은 32자 이상으로 둔다 — 짧으면 livekit-server 가 config.go 의 ValidateKeys 에서
+# "secret is too short, should be at least 32 characters" 를 ERROR 로 남긴다. 다만 실측(SPR-147)상
+# 기동을 막지는 않고 API 도 정상 동작하므로, 짧은 키로 바꿔두면 조용히 통과한다.
 services:
   postgres:                          # 메인 RDB (live_rooms, chat_kick_log 등)
     image: postgres:16
@@ -13,28 +21,139 @@ services:
       POSTGRES_DB: sapari
       POSTGRES_USER: sapari
       POSTGRES_PASSWORD: sapari      # 로컬 더미 — 실제 시크릿 아님
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - sapari-pg:/var/lib/postgresql/data
 
   redis:                             # 단일 노드 (운영은 Cluster HA — 로컬은 단일로 충분)
     image: redis:7
-    ports: ["6379:6379"]
+    # 이 Redis 는 캐시가 아니라 egress·ingress 잡 디스패치 채널이기도 하다 — 잡 요청 본문에
+    # S3 자격증명이 실려 오간다. 인증이 없으므로 0.0.0.0 이면 같은 LAN 에서 큐를 읽거나 잡을 주입할 수 있다.
+    # 아래 livekit/ingress 포트와 같은 이유로 루프백에만 게시한다.
+    ports: ["127.0.0.1:6379:6379"]
+    networks: [media, default]
 
   mongo:                             # 채팅 메시지 전용 (chat_messages)
     image: mongo:7
-    ports: ["27017:27017"]
+    # 인증 설정이 없어 붙으면 곧바로 읽고 쓸 수 있다 — postgres·redis 와 같은 이유로 루프백에만 게시한다.
+    ports: ["127.0.0.1:27017:27017"]
     volumes:
       - sapari-mongo:/data/db
 
-  livekit:                           # SFU (WebRTC) — --dev 모드: 기본 키 devkey/secret
-    image: livekit/livekit-server
-    command: --dev --bind 0.0.0.0 --node-ip 127.0.0.1
+  livekit:                           # SFU (WebRTC)
+    # --dev 를 쓰지 않는다: egress·ingress 워커는 Redis 를 통해 SFU 와 만나는데
+    # --dev 는 Redis 를 붙이지 않아 워커가 영원히 미등록 상태로 남는다.
+    image: livekit/livekit-server:v1.8
+    environment:   # livekit 은 LIVEKIT_CONFIG, 워커는 *_CONFIG_BODY 환경변수를 그대로 설정으로 읽는다 (파일 마운트 불필요)
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: 7881
+          # 로컬은 단일 포트 mux 로 둔다 — SFU 가 한 대뿐이고 참가자도 한 자릿수라 성능 제약이 없으며,
+          # compose 에서 포트 1개만 매핑하면 되기 때문. 운영은 반대다: infra/AGENTS.md 의
+          # UDP 절 권고대로 port_range_start/end(50000-60000)를 쓴다. 둘은 상호배타적이라
+          # 운영 SG 에서 mux 규칙만 지우고 레인지를 열지 않으면 WebRTC 연결이 전부 실패한다.
+          udp_port: 7882
+          # 컨테이너 안에서 공인 IP 를 조회하면 엉뚱한 주소를 광고해 egress 의 크롬이
+          # 미디어를 못 받는다. compose 고정 IP 를 그대로 광고한다.
+          #
+          # ⚠️ 이 주소는 호스트에서 도달하지 않는다(Docker Desktop 은 bridge 서브넷으로 라우팅이 없다.
+          #    macOS 실측: 호스트 → 172.28.0.10:7880 연결 실패). 그래도 로컬 개발이 되는 이유는
+          #    브라우저가 127.0.0.1:7881 로 게시된 TCP 폴백으로 붙기 때문이다 — 호스트에서 publish 해
+          #    egress 가 45초에 19세그먼트(15MB)를 받아내는 것까지 확인했다.
+          #    즉 "방은 열리는데 화면이 안 뜬다"면 7881 매핑부터 볼 것. UDP 직결은 로컬에선 애초에 안 쓴다.
+          use_external_ip: false
+          node_ip: 172.28.0.10
+        redis:
+          address: redis:6379
+        keys:
+          devkey: devsecretdevsecretdevsecretdevsecret
+    # 루프백에만 게시한다 — 아래 키가 저장소에 박힌 고정값이라 0.0.0.0 이면 같은 LAN 의 누구나
+    # 방 publish 토큰을 발급할 수 있다. 다른 기기(예: 별도 PC 의 OBS)에서 붙여야 하면 그때만 풀 것.
+    # ⚠️ 풀 때는 이 키를 먼저 바꿀 것. 파일 상단 주석대로 세 서비스를 함께 고쳐야 한다.
     ports:
-      - "7880:7880"                  # HTTP/WebSocket signaling
-      - "7881:7881"                  # RTC over TCP
-      - "7882:7882/udp"              # RTC over UDP
+      - "127.0.0.1:7880:7880"        # HTTP/WebSocket signaling
+      - "127.0.0.1:7881:7881"        # RTC over TCP
+      - "127.0.0.1:7882:7882/udp"    # RTC over UDP (mux)
+    depends_on: [redis]
+    networks:
+      media:
+        ipv4_address: 172.28.0.10
+
+  egress:                            # HLS Egress 워커 (헤드리스 크롬으로 방 화면 렌더링 → S3)
+    image: livekit/egress:v1.9
+    # 보험으로 남긴다. 널리 알려진 "컨테이너 기본 /dev/shm 64MB → 크롬이 죽는다" 는
+    # <이 버전에서는 재현되지 않는다>. SPR-147 에서 실측한 내용:
+    #
+    #   egress v1.9 는 chrome 을 disable-dev-shm-usage 플래그로 띄운다
+    #   (바이너리의 launchChrome 근처에 문자열이 박혀 있다). 그래서 shm_size 를 64MB 로
+    #   줄이고 참가자 8명 720p 로 6분을 돌려도 죽지 않고, /dev/shm 사용량은 내내 0바이트였다.
+    #
+    # ⚠️ 그래서 쿠버네티스에서 조여야 할 자원도 emptyDir(medium: Memory) 가 아니다.
+    #    크롬이 공유 메모리를 /dev/shm 대신 컨테이너 파일시스템(/tmp)에 쓰므로,
+    #    실제로 마를 수 있는 쪽은 <ephemeral-storage> 다. 파드에 그 limit 을 걸 것.
+    #    이 값은 LiveKit 이 위 플래그를 떼는 날을 대비한 보험으로만 남긴다.
+    shm_size: 2gb
+    # cap_add: [SYS_ADMIN] 는 넣지 않는다. 흔히 권장되지만 SYS_ADMIN 은 사실상 루트 등가이고,
+    # 이 컨테이너는 원격 방 화면을 렌더링하는 헤드리스 크롬을 돌린다 — 렌더러 취약점이 곧 컨테이너 탈출이 된다.
+    # SPR-147 실측: egress 1.9 는 이 권한 없이도 참가자 4명 720p 90초를 정상 처리했다(크롬은 --no-sandbox 로 뜬다).
+    # 크롬 샌드박스가 seccomp 와 충돌하는 환경을 만나면, SYS_ADMIN 대신 범위가 좁은
+    # security_opt: ["seccomp:unconfined"] 를 먼저 시도할 것. k8s 로 옮길 때도 이 권한을 들고 가지 말 것.
+    environment:
+      EGRESS_CONFIG_BODY: |
+        redis:
+          address: redis:6379
+        api_key: devkey
+        api_secret: devsecretdevsecretdevsecretdevsecret
+        ws_url: ws://172.28.0.10:7880
+        insecure: true
+        health_port: 9091
+      # S3 업로드 자격증명은 egress 요청 본문(S3Upload)으로 온다 — 앱이 보내므로 여기서는 불필요.
+      #
+      # 아래 두 줄은 주석으로 둔다. 빈 문자열을 "설정됨"으로 볼지 "미설정"으로 볼지는 AWS SDK 에
+      # 달려 있어, 빈 값으로 두면 체인 동작이 바뀔 수 있다. 실제 키를 예제 파일에 넣지도 말 것.
+      #
+      # SPR-147 / D7 확인 결과: 이 두 줄을 실제 키로 채우고 요청 본문의 access_key·secret 을
+      # 생략하면 업로드가 성공한다(워커가 AWS 기본 자격증명 체인을 탄다). 비우면
+      # "no EC2 IMDS role found" 로 실패 — 체인을 타는 것이 맞다는 음성 대조까지 확인.
+      # 앱 쪽 키 필드 선택화는 별도 티켓(설정 모드 명시 설계 필요).
+      # AWS_ACCESS_KEY_ID: "..."
+      # AWS_SECRET_ACCESS_KEY: "..."
+      AWS_REGION: ap-northeast-2
+    depends_on: [redis, livekit]
+    networks: [media]
+
+  ingress:                           # RTMP/WHIP 인제스트 워커 (OBS → 방)
+    image: livekit/ingress:v1.4
+    environment:
+      INGRESS_CONFIG_BODY: |
+        redis:
+          address: redis:6379
+        api_key: devkey
+        api_secret: devsecretdevsecretdevsecretdevsecret
+        ws_url: ws://172.28.0.10:7880
+        rtmp_port: 1935
+        whip_port: 8085
+        http_relay_port: 9090
+        health_port: 9092
+        # 기본값이 0 이라 "max cost 0.0" 으로 뜨고 어떤 입력도 수락하지 않는다.
+        cpu_cost:
+          rtmp_cpu_cost: 2
+          whip_cpu_cost: 2
+    ports:
+      - "127.0.0.1:1935:1935"        # RTMP  (같은 PC 의 OBS 용 — 위 livekit 주석과 같은 이유)
+      - "127.0.0.1:8085:8085"        # WHIP
+    depends_on: [redis, livekit]
+    networks: [media]
 
 volumes:
   sapari-pg:
   sapari-mongo:
+
+networks:
+  media:                             # egress·ingress 가 SFU 의 고정 IP(172.28.0.10)를 광고받으려면 고정 서브넷이 필요하다
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

@@ -37,6 +37,14 @@ All LiveKit through `LiveMediaManager`. Never touch the SDK from a service.
   `listRoomEgress` exists because the round-start `listAllEgress` snapshot is up to a whole round budget
   stale; judging a live broadcast on it kills rooms that reconnected mid-round.
 
+**`playlist_name` and `live_playlist_name` must differ.** LiveKit rejects the egress request outright
+(`invalid_argument: live_playlist_name cannot be identical to playlist_name`), so making them equal stops
+every broadcast from starting — not just replay. They are also not interchangeable: `index.m3u8`
+(live) is a sliding window that holds only the last few segments once the broadcast ends, while
+`playlist.m3u8` (`EXT-X-PLAYLIST-TYPE:EVENT`) lists the whole broadcast and is what replay needs.
+`HlsRendition.variantPlaylistPath()` and `MasterPlaylistGenerator` both point at the live one.
+`LiveRoom.endLive` currently stores that live URL into `hlsArchiveUrl` — known gap **SPR-148**, see `infra/AGENTS.md`.
+
 **Start-side media calls sit inside `@Transactional` on purpose** — reviewers must not flag them; `egressId`
 has to commit with the room. The row lock is held across media I/O, bounded by `callTimeout` 15s per call.
 **End-side cleanup runs after commit** (`PostCommitMediaCleanup`), safe only because the orphan-media job
