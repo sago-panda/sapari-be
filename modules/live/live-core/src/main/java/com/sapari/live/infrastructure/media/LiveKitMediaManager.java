@@ -57,7 +57,8 @@ public class LiveKitMediaManager implements LiveMediaManager {
     private static final int EMPTY_TIMEOUT = 300;
     private static final int MAX_PARTICIPANTS = 1000;
     private static final String LAYOUT = "speaker-dark";
-    // master.m3u8 업로드 도입 전까지 서빙하는 대표 화질 (이 화질의 변형 m3u8을 직접 재생)
+    // 업로더 미등록(= ABR 불가)이거나 master 업로드가 실패했을 때 강등해서 서빙하는 대표 화질.
+    // 업로더가 있으면 publishMaster 가 master.m3u8 을 게시하고 그 URL 을 쓴다.
     private static final HlsRendition DEFAULT_RENDITION = HlsRendition.P720;
     private final EgressServiceClient egressServiceClient;
     private final IngressServiceClient ingressServiceClient;
@@ -158,7 +159,7 @@ public class LiveKitMediaManager implements LiveMediaManager {
         try {
             Response<List<IngressInfo>> response = ingressServiceClient.listIngress(roomId.toString()).execute();
             if (!response.isSuccessful() || response.body() == null) {
-                // 빈 목록으로 수렴시키는 <b>실패 방향은 그대로 둔다</b>(포트 계약) — 다만 401/403/5xx 는
+                // 빈 목록으로 수렴시키는 실패 방향은 그대로 둔다(포트 계약) — 다만 401/403/5xx 는
                 // 예외도 안 나고 로그도 없어 오설정을 진단할 수단이 아예 없었다. 신호만 남긴다.
                 log.warn("RTMP ingress 송출 조회 실패 — 비활성으로 간주: roomId={}, code={}",
                         roomId, response.code());
@@ -208,7 +209,8 @@ public class LiveKitMediaManager implements LiveMediaManager {
 
     /**
      * HLS Egress 시작 — 1080p/720p/360p 세 화질을 각각 독립 egress로 띄운다.
-     * 방송 -> (화질별) S3 경로 -> CDN. 화질을 묶는 master.m3u8(ABR) 생성은 별도 작업.
+     * 방송 -> (화질별) S3 경로 -> CDN. 화질을 묶는 master.m3u8 은 {@link #publishMaster} 가 게시하며,
+     * 업로더 빈이 없으면 비기본 화질을 아예 시작하지 않고 720p 단일로 강등한다.
      */
     @Override
     public HlsEgressResult startHlsEgress(UUID roomId){
@@ -306,14 +308,25 @@ public class LiveKitMediaManager implements LiveMediaManager {
             UUID roomId, S3Upload s3Upload, String renditionPath,
             EncodingOptionsPreset preset, EncodingOptions customOptions, int segmentDuration) {
 
-        // 안전 형태: filename_prefix·playlist_name 모두에 화질 경로를 포함한다.
-        // LiveKit egress가 StorageDir을 playlist_name 디렉터리에서 유도하든(같은 디렉터리는 dedupe) 두 필드를
-        // 독립으로 보든, 어느 해석에서도 세그먼트·인덱스가 동일하게 {basePath}{rendition}/ 아래에 떨어져 안전하다.
-        // (bare "segment_"는 한 해석에서만 동작 → egress 통합 테스트로 확정 전까지 이 형태 유지.)
+        // filename_prefix·playlist_name·live_playlist_name 세 필드 모두에 화질 경로를 포함한다.
+        // SPR-147 로컬 egress 실측: 세 필드가 서로 독립으로 해석되어 세그먼트와 두 플레이리스트가
+        // 모두 {basePath}{rendition}/ 아래에 함께 떨어진다.
+        //
+        // playlist_name 과 live_playlist_name 은 서로 달라야 한다 — 같으면 LiveKit 이
+        // "live_playlist_name cannot be identical to playlist_name" 으로 요청을 거부한다(invalid_argument).
+        // 시청자가 받는 것은 슬라이딩 윈도우인 live 쪽이라 그쪽이 index.m3u8 이고
+        // ({@link HlsRendition#variantPlaylistPath()} 가 가리키는 경로), 전체(VOD) 목록은 playlist.m3u8 로 둔다.
+        // 두 파일의 역할이 다르다 — SPR-147 에서 실측(220 세그먼트 방송, EGRESS_COMPLETE):
+        //   index.m3u8    종료 후 마지막 5개만 참조 (슬라이딩 윈도우). 다시보기로는 못 쓴다.
+        //   playlist.m3u8 EXT-X-PLAYLIST-TYPE:EVENT + 전체 220개 참조. 이쪽이 아카이브다.
+        //
+        // ⚠️ playlist.m3u8 을 라이프사이클로 지우면 다시보기가 영구히 불가능해진다. 세그먼트와 수명을 같이 둘 것.
+        // ⚠️ 현재 LiveRoom.endLive 가 hlsArchiveUrl 에 넣는 것은 hlsUrl(= index.m3u8)이라
+        //    다시보기 컬럼이 실시간 창을 가리킨다. 아카이브 URL 을 따로 전달하는 것은 SPR-148.
         SegmentedFileOutput hlsOutput = SegmentedFileOutput.newBuilder()
                 .setProtocol(SegmentedFileProtocol.HLS_PROTOCOL)
                 .setFilenamePrefix(renditionPath + "segment_")
-                .setPlaylistName(renditionPath + "index.m3u8")
+                .setPlaylistName(renditionPath + "playlist.m3u8")
                 .setLivePlaylistName(renditionPath + "index.m3u8")
                 .setSegmentDuration(segmentDuration)
                 .setS3(s3Upload)
