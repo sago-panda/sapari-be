@@ -61,8 +61,19 @@ class GetLiveReplayServiceTest {
         assertThatThrownBy(() -> service.getReplay(roomId)).isInstanceOf(LiveReplayNotFoundException.class);
     }
 
+    @Test
+    void nonPublicVodIsNotFound() {
+        // is_vod_public=false 인 방은 아카이브가 멀쩡해도 내보내지 않는다.
+        given(repository.findById(roomId)).willReturn(Optional.of(
+                LiveRoom.builder().id(roomId).vodPublic(false)
+                        .status(new LiveStatus.Ended(NOW, NOW.plusSeconds(440), "https://cdn/live/720p/playlist.m3u8"))
+                        .build()));
+
+        assertThatThrownBy(() -> service.getReplay(roomId)).isInstanceOf(LiveReplayNotFoundException.class);
+    }
+
     private void givenRoom(LiveStatus status) {
         given(repository.findById(roomId)).willReturn(Optional.of(
-                LiveRoom.builder().id(roomId).status(status).build()));
+                LiveRoom.builder().id(roomId).vodPublic(true).status(status).build()));
     }
 }

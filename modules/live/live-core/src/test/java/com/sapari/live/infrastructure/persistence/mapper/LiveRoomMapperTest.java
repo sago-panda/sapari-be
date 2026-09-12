@@ -27,6 +27,24 @@ class LiveRoomMapperTest {
 
     private final LiveRoomMapper mapper = Mappers.getMapper(LiveRoomMapper.class);
 
+    @Test
+    void vodPublicIsCarriedToDomainAndNeverWrittenBack() {
+        Instant now = Instant.parse("2026-09-11T00:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder().liveStatus(LiveRoomStatus.ENDED)
+                .startedAt(now).endedAt(now.plusSeconds(440)).sfuRoomId("sfu")
+                .hlsUrl("https://cdn/720p/index.m3u8").hlsArchiveUrl("https://cdn/720p/playlist.m3u8").build();
+
+        // DB 기본값(true)이 도메인까지 올라온다 — 조회 게이트가 이 값을 본다.
+        assertThat(entity.isVodPublic()).isTrue();
+        assertThat(mapper.toDomain(entity).vodPublic()).isTrue();
+
+        // 쓰기 경로는 이 컬럼을 건드리지 않는다. 엔티티 빌더에 필드가 없고 update 경로도 mutator 를 쓰지 않는다 —
+        // 이 단언이 깨지면 앱이 방별 공개 설정을 덮어쓰기 시작했다는 뜻이다.
+        mapper.updateEntityFromDomain(entity, mapper.toDomain(entity));
+        assertThat(entity.isVodPublic()).isTrue();
+        assertThat(mapper.toEntity(mapper.toDomain(entity)).isVodPublic()).isTrue();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"https://cdn/720p/index.m3u8", "https://cdn/master.m3u8",
             "https://cdn/master.m3u8?v=1", "https://cdn/renamed-live.m3u8"})

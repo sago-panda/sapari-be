@@ -21,6 +21,9 @@ public record LiveRoom(
         StreamInfo streamInfo,
         LiveStreamType streamType,
         LiveStatus status,
+        // 방별 다시보기 공개 스위치(live_rooms.is_vod_public, DB 기본 true). 읽기 전용이다 —
+        // 엔티티 빌더에 이 필드가 없고 update 경로도 건드리지 않으므로 앱이 값을 덮어쓸 수 없다.
+        boolean vodPublic,
         Instant scheduledAt,
         Instant createdAt,
         Instant updatedAt
@@ -54,6 +57,7 @@ public record LiveRoom(
                 .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
                 .streamType(new LiveStreamType.WebRtc())
+                .vodPublic(true)
                 .scheduledAt(scheduledAt)
                 .createdAt(now)
                 .updatedAt(now)
