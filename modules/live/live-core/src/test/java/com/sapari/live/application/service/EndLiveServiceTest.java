@@ -102,7 +102,7 @@ public class EndLiveServiceTest {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
 
         LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
-        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8", null);
 
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
@@ -145,7 +145,7 @@ public class EndLiveServiceTest {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
 
         LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
-        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8", null);
 
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
@@ -177,7 +177,7 @@ public class EndLiveServiceTest {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
 
         LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
-        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls.example.com/index.m3u8", null);
 
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
@@ -248,7 +248,7 @@ public class EndLiveServiceTest {
     void mediaCleanup_deferredUntilAfterCommit() {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
         LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls/1");
-        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1", null);
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId).set("sellerId", sellerId)
                 .set("status", liveStatus).set("streamInfo", streamInfo)
@@ -273,7 +273,7 @@ public class EndLiveServiceTest {
 
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
         LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls/1");
-        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1", null);
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId).set("sellerId", sellerId)
                 .set("status", liveStatus).set("streamInfo", streamInfo)
@@ -291,7 +291,7 @@ public class EndLiveServiceTest {
     void mediaCleanupFailure_isSwallowed() {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
         LiveStatus.Live liveStatus = new LiveStatus.Live(Instant.now(), "sfu-room-id", "egress-id", "http://hls/1");
-        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1");
+        StreamInfo streamInfo = StreamInfo.of("sfu-room-id", "egress-id", "http://hls/1", null);
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId).set("sellerId", sellerId)
                 .set("status", liveStatus).set("streamInfo", streamInfo)
@@ -312,7 +312,7 @@ public class EndLiveServiceTest {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
         Instant endedAt = Instant.parse("2026-07-03T00:00:00Z");
         LiveStatus.Live liveStatus = new LiveStatus.Live(endedAt, "sfu", "eg", "http://hls/index.m3u8");
-        StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8", null);
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId).set("sellerId", sellerId)
                 .set("status", liveStatus).set("streamInfo", streamInfo)
@@ -335,7 +335,7 @@ public class EndLiveServiceTest {
         EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
         Instant endedAt = Instant.parse("2026-07-03T00:00:00Z");
         LiveStatus.Live liveStatus = new LiveStatus.Live(endedAt, "sfu", "eg", "http://hls/index.m3u8");
-        StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8");
+        StreamInfo streamInfo = StreamInfo.of("sfu", "eg", "http://hls/index.m3u8", null);
         LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId).set("sellerId", sellerId)
                 .set("status", liveStatus).set("streamInfo", streamInfo)

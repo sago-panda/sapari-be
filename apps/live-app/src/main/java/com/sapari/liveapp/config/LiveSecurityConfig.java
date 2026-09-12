@@ -178,9 +178,12 @@ public class LiveSecurityConfig {
                         // 여는 대신 도달 자체를 끊는다. 되돌리려면 인그레스 제한을 먼저 만들 것.
                         // LiveKit webhook — Spring Security가 아니라 본문 서명(LiveKit JWT)으로 인증하므로 열어둔다.
                         .requestMatchers(HttpMethod.POST, "/webhooks/livekit").permitAll()
-                        // 시청(조회)은 공개
-                        .requestMatchers(HttpMethod.GET, "/api/v1/lives/**").permitAll()
-                        // 생성/시작/종료 등 변경은 판매자 전용
+                        // 공개 조회를 명시한다. 이후 추가되는 GET은 자동 공개하지 않는다.
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/lives/rooms",
+                                "/api/v1/lives/rooms/{roomId}",
+                                "/api/v1/lives/rooms/{roomId}/replay").permitAll()
+                        // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()
                 )

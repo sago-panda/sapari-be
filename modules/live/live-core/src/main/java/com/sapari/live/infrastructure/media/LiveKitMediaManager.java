@@ -251,13 +251,14 @@ public class LiveKitMediaManager implements LiveMediaManager {
             }
 
             // 업로더가 있으면 master.m3u8 게시 후 master URL, 없으면(또는 업로드 실패) 기본 화질 variant 직접 서빙.
-            String hlsUrl = publishMaster(publisher, hls, basePath, roomId, startedEgressIds, defaultEgressId);
-            UrlValidator.validateHlsUrl(hlsUrl);
+            HlsEgressResult result = publishMaster(publisher, hls, basePath, roomId, startedEgressIds, defaultEgressId);
+            UrlValidator.validateHlsUrl(result.hlsUrl());
+            UrlValidator.validateHlsUrl(result.hlsArchiveUrl());
             log.info("HLS Egress 시작: roomId={}, abrEnabled={}, defaultEgressId={}, hlsUrl={}",
-                    roomId, abrEnabled, defaultEgressId, hlsUrl);
+                    roomId, abrEnabled, defaultEgressId, result.hlsUrl());
 
             // egressId 는 대표(720p) 1건만 보존 — 중단은 room 기준 일괄 처리(stopHlsEgress)라 전 화질 ID 저장 불필요.
-            return new HlsEgressResult(defaultEgressId, hlsUrl);
+            return result;
         } catch (RuntimeException e) {
             // 일부 화질만 시작된 상태에서 실패 → 추적한 egressId를 직접 중단(전파 지연 회피) 후, listEgress로 누락분 보강.
             log.error("HLS Egress 다중 화질 시작 실패 → 시작분 {}건 보상 중단: roomId={}", startedEgressIds.size(), roomId, e);
@@ -276,20 +277,25 @@ public class LiveKitMediaManager implements LiveMediaManager {
      * 업로더 미등록(링크 전)이거나 업로드 실패 시 기본 화질 variant URL로 강등한다(방송은 정상, ABR만 비활성).
      * 업로드 실패 시에는 어차피 참조되지 않을 비기본 화질 egress를 중단해 잔여 비용(3배 인코딩)을 막는다.
      */
-    private String publishMaster(MasterPlaylistPublisher publisher, LiveKitProperties.Hls hls, String basePath,
+    private HlsEgressResult publishMaster(MasterPlaylistPublisher publisher, LiveKitProperties.Hls hls, String basePath,
                                  UUID roomId, List<String> startedEgressIds, String defaultEgressId) {
         if (publisher != null) {
             try {
                 String masterKey = basePath + "master.m3u8";
+                String archiveMasterKey = basePath + "archive-master.m3u8";
+                publisher.publish(archiveMasterKey, MasterPlaylistGenerator.generateArchive());
                 publisher.publish(masterKey, MasterPlaylistGenerator.generate());
-                return hls.cdnBaseUrl() + "/" + masterKey;
+                return new HlsEgressResult(defaultEgressId, hls.cdnBaseUrl() + "/" + masterKey,
+                        hls.cdnBaseUrl() + "/" + archiveMasterKey);
             } catch (RuntimeException e) {
                 // master 업로드 실패 → ABR 불가. 참조되지 않을 비기본 화질 egress를 중단하고 720p로 강등(방송은 정상).
                 log.warn("master.m3u8 업로드 실패 → 비기본 화질 egress 중단 + 720p 강등: basePath={}", basePath, e);
                 stopNonDefaultEgresses(roomId, startedEgressIds, defaultEgressId);
             }
         }
-        return hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.variantPlaylistPath();
+        return new HlsEgressResult(defaultEgressId,
+                hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.variantPlaylistPath(),
+                hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.archivePlaylistPath());
     }
 
     /** 기본 화질을 제외한 시작분 egress를 best-effort 중단(업로드 실패로 ABR 강등 시 잔여 비용 차단). */
@@ -321,12 +327,11 @@ public class LiveKitMediaManager implements LiveMediaManager {
         //   playlist.m3u8 EXT-X-PLAYLIST-TYPE:EVENT + 전체 220개 참조. 이쪽이 아카이브다.
         //
         // ⚠️ playlist.m3u8 을 라이프사이클로 지우면 다시보기가 영구히 불가능해진다. 세그먼트와 수명을 같이 둘 것.
-        // ⚠️ 현재 LiveRoom.endLive 가 hlsArchiveUrl 에 넣는 것은 hlsUrl(= index.m3u8)이라
-        //    다시보기 컬럼이 실시간 창을 가리킨다. 아카이브 URL 을 따로 전달하는 것은 SPR-148.
+        // 아카이브 URL 은 HlsEgressResult → StreamInfo 로 별도 전달하며 endLive 가 보존한다.
         SegmentedFileOutput hlsOutput = SegmentedFileOutput.newBuilder()
                 .setProtocol(SegmentedFileProtocol.HLS_PROTOCOL)
                 .setFilenamePrefix(renditionPath + "segment_")
-                .setPlaylistName(renditionPath + "playlist.m3u8")
+                .setPlaylistName(renditionPath + HlsRendition.ARCHIVE_PLAYLIST_NAME)
                 .setLivePlaylistName(renditionPath + HlsRendition.LIVE_PLAYLIST_NAME)
                 .setSegmentDuration(segmentDuration)
                 .setS3(s3Upload)

@@ -84,7 +84,7 @@ public class GoLiveByRtmpService {
         // 보상 훅은 egress 시작 바로 다음 줄에 등록 — 이 사이에 실패 가능한 코드를 끼워넣지 말 것
         EgressRollbackCompensation.register(liveMediaManager, roomId, egressResult.egressId());
 
-        StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl());
+        StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl(), egressResult.hlsArchiveUrl());
         LiveRoom liveRoom = room.goLiveFromReady(streamInfo, timeProvider.now());
 
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송

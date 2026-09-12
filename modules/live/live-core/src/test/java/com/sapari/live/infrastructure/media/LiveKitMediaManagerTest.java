@@ -42,6 +42,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -153,6 +155,8 @@ public class LiveKitMediaManagerTest {
         assertThat(output.getLivePlaylistName()).isEqualTo(base + "index.m3u8");
         assertThat(output.getPlaylistName()).isEqualTo(base + "playlist.m3u8");
         assertThat(output.getPlaylistName()).isNotEqualTo(output.getLivePlaylistName());
+        assertThat(result.hlsUrl()).isEqualTo(liveKitProperties.hls().cdnBaseUrl() + "/" + output.getLivePlaylistName());
+        assertThat(result.hlsArchiveUrl()).isEqualTo(liveKitProperties.hls().cdnBaseUrl() + "/" + output.getPlaylistName());
         assertThat(result.egressId()).isEqualTo(mockEgressInfo.getEgressId());
         assertThat(result.hlsUrl()).contains(liveKitProperties.hls().cdnBaseUrl());
         assertThat(result.hlsUrl()).contains("720p");
@@ -243,14 +247,18 @@ public class LiveKitMediaManagerTest {
         String base = liveKitProperties.s3().keyPrefix() + roomId + "/"; // "live/{roomId}/"
         // master.m3u8(3화질 목차)을 같은 경로에 게시
         then(publisher).should().publish(eq(base + "master.m3u8"), contains("#EXT-X-STREAM-INF"));
+        then(publisher).should().publish(eq(base + "archive-master.m3u8"), eq(MasterPlaylistGenerator.generateArchive()));
+        assertThat(result.hlsArchiveUrl())
+                .isEqualTo(liveKitProperties.hls().cdnBaseUrl() + "/" + base + "archive-master.m3u8");
         // 서빙 URL이 master로 전환됨
         assertThat(result.hlsUrl())
                 .isEqualTo(liveKitProperties.hls().cdnBaseUrl() + "/" + base + "master.m3u8");
     }
 
-    @Test
+    @ParameterizedTest
+    @ValueSource(strings = {"archive-master.m3u8", "master.m3u8"})
     @DisplayName("HLS Egress 시작: master 업로드 실패 시 예외 없이 720p 강등 + 비기본 화질 egress 중단(잔여 비용 차단)")
-    void startHlsEgress_fallsBackTo720p_andStopsExtraEgress_whenMasterUploadFails() throws IOException {
+    void startHlsEgress_fallsBackTo720p_andStopsExtraEgress_whenMasterUploadFails(String failedMaster) throws IOException {
         UUID roomId = UUID.randomUUID();
 
         // 화질별 distinct egressId (시작 순서: 1080p → 720p(기본) → 360p)
@@ -274,7 +282,7 @@ public class LiveKitMediaManagerTest {
         MasterPlaylistPublisher publisher = mock(MasterPlaylistPublisher.class);
         given(masterPlaylistPublisher.getIfAvailable()).willReturn(publisher);
         willThrow(new RuntimeException("object storage 다운"))
-                .given(publisher).publish(anyString(), anyString());
+                .given(publisher).publish(eq(liveKitProperties.s3().keyPrefix() + roomId + "/" + failedMaster), anyString());
 
         // 비기본 화질(1080p, 360p) 중단 stub
         Call stop1080 = mock(Call.class);
@@ -286,6 +294,8 @@ public class LiveKitMediaManagerTest {
         HlsEgressResult result = liveKitMediaManager.startHlsEgress(roomId);
 
         // then: master 대신 기본 화질(720p) variant로 강등
+        assertThat(result.hlsArchiveUrl()).isEqualTo(liveKitProperties.hls().cdnBaseUrl() + "/"
+                + liveKitProperties.s3().keyPrefix() + roomId + "/720p/playlist.m3u8");
         assertThat(result.hlsUrl()).contains("720p");
         assertThat(result.hlsUrl()).doesNotContain("master.m3u8");
         // 참조되지 않을 비기본 화질 egress는 중단, 기본(720p)은 유지

@@ -52,7 +52,7 @@ class EnterLiveServiceTest {
                         sellerId, "타이틀", "설명", "판매자닉", "http://thumb", now, now)
                 .toBuilder().id(roomId).build();
         // Live 상태로 전이 + hlsUrl 세팅
-        liveRoom = scheduled.startLive(StreamInfo.of("sfu-room", "egress-1", "http://cdn/master.m3u8"), now);
+        liveRoom = scheduled.startLive(StreamInfo.of("sfu-room", "egress-1", "http://cdn/master.m3u8", null), now);
     }
 
     @Test
