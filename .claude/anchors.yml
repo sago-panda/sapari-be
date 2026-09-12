@@ -125,7 +125,8 @@ rules:
 
   - trigger: ["modules/live/**/*.java", "apps/live-app/**/*.java", "db/migration/live/*.sql"]
     # 도메인 리뷰어(domain=live). 판정 근거를 동봉한다 — 대부분은 modules/live/AGENTS.md 에 있고,
-    # LIVE-08 의 통제 측(CDN 선행·playlist.m3u8 라이프사이클)만 infra/AGENTS.md 에 있다.
+    # LIVE-08 의 인프라 측(playlist.m3u8 라이프사이클, egress 산출물 URL 계약, 백필 절차)만 infra/AGENTS.md 에 있다.
+    # (SPR-148 이 다시보기를 전면 공개로 정하면서 "CDN 선행" 조건은 LIVE-08 에서 빠졌다.)
     anchors: ["modules/live/AGENTS.md", "infra/AGENTS.md"]
     activate: [LIVE-01, LIVE-02, LIVE-03, LIVE-04, LIVE-05, LIVE-06, LIVE-07, LIVE-08]
 

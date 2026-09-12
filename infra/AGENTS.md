@@ -140,22 +140,103 @@ An egress writes two manifests per rendition and they are **not** interchangeabl
 - **Any S3 lifecycle rule must keep `playlist.m3u8` for as long as the segments it lists.** Expiring it
   early leaves the segments orphaned and makes replay impossible — there is no rule in this repo yet,
   so whoever writes it needs this constraint.
-- Known gap (**SPR-148**): `LiveRoom.endLive` stores `streamInfo.hlsUrl()` into `hlsArchiveUrl`, and that URL is the
-  *live* manifest, so the replay column points at a ~10-second window. **Both modes are affected** —
-  with ABR off it is the 720p `index.m3u8`, and with ABR on it is `master.m3u8`, whose variants come
-  from `MasterPlaylistGenerator` → `HlsRendition.variantPlaylistPath()`, i.e. the live manifests again.
-  A fix therefore needs an archive URL carried out of `startHlsEgress` **and**, for ABR, a second
-  master listing the `playlist.m3u8` variants. The segments are already in S3, so this is recoverable
-  later **as long as `playlist.m3u8` outlives them**.
-- SPR-148 owns the exposure side too, because both pull on the same URL in opposite directions: the
-  archive is unreadable by the legitimate viewer, yet would be readable by anyone holding a playback
-  URL once a CDN fronts the bucket (`index.m3u8` → `playlist.m3u8` is a one-word edit). Serving it
-  from the same unsigned prefix fixes the first and worsens the second, so the archive moves to its
-  own `archive/` prefix behind a permission check + presigned URL. **Measured 2026-09-11: the bucket
-  is fully locked (all four public-access blocks on, no bucket policy, direct HTTP 403) and no
-  CloudFront distribution exists yet** — not a live hole. **SPR-148 must land before a CDN fronts this
-  bucket**: once a playback URL is reachable, moving the archive is a migration instead of a choice,
-  and any URL already handed out keeps working against the old prefix.
+- **SPR-148 URL contract:** `startHlsEgress` returns separate live/archive URLs; `hls_archive_url`
+  retains the archive URL across start, reload and end. Production (no `MasterPlaylistPublisher` bean)
+  uses `720p/playlist.m3u8`; future ABR uses `archive-master.m3u8` listing each rendition's EVENT playlist.
+  Existing rows are not automatically rewritten: verify the stored object's EVENT playlist and all
+  referenced segments before correcting that row's URL. A legacy `master.m3u8` needs a published archive
+  master or a verified 720p EVENT URL; a filename-only master replacement cannot create the missing object.
+- **Replay is fully public (SPR-148 decision).** Shared unsigned prefixes are intentional; no permission
+  check, presigned URL or archive prefix is required. A public origin is allowed, and the previous
+  requirement to settle archive placement before CloudFront is removed. The SPR-147 measurement (public
+  access blocked, direct HTTP 403, no CloudFront distribution) is historical; URL correctness alone does
+  not make an unchanged private bucket publicly playable. Public delivery remains infrastructure work.
+  Before enabling replay in the client, verify anonymous GET of the API-returned manifest and every
+  referenced variant/segment through the configured delivery URL. API 200 alone is not a rollout check.
+  Knowing a live URL can reveal the full archive by changing the filename, and viewers can keep downloaded
+  copies. This is an accepted consequence of the ticket's explicit full-public replay requirement, not a
+  technical claim that the old threat disappeared. Revoking already downloaded copies is not supported.
+- **SPR-148 replay backfill is re-run until it reports completion; one pass is never enough.** Rooms live
+  across the deploy only become ENDED after `max_duration_seconds` (default 7200), so a single pass
+  misses them. `infra/replay-backfill/backfill-archive-url.sh` reads only — it verifies EVENT/ENDLIST and
+  every listed segment and emits per-row SQL for passing rows; a human applies it with `psql -f`
+  (never `psql -1`, which would hold row locks for the whole file). Its exit code is the completion
+  condition: `11` SQL was generated but nothing is fixed yet — apply it and run again (this takes priority: skipped rows,
+  leftover backlog and unfinished rooms are all reported alongside it and carry to the next round, so never
+  discard the SQL because more work remains); `10` nothing was generated and another pass is still needed
+  (skipped rows, backlog past this round's `BATCH_SIZE`, or deploy-boundary rooms not yet ENDED);
+  `1` failed input validation or preflight — it checks required inputs, the table/columns and that
+  `CDN_BASE_URL` is reachable (the root's HTTP policy does not determine the objects' policy) rather than
+  reporting an empty result as success (a psql failure in a later query exits with psql's own code, and
+  `--self-test` failure exits `12`); `14` an actual manifest/segment redirects or a segment Range response
+  exceeds the size cap — fix its delivery configuration,
+  do not advance the cursor or follow redirects blindly. Some SQL may already have been generated;
+  review it separately. `13` this round is done but rows remain stuck before the cursor — **not**
+  complete, and deliberately distinct from `0` so that pushing the cursor to the end cannot read as success; `0` only when nothing was generated, no candidates remain, no deploy-boundary room
+  is still running **and** nothing is stuck before the cursor. "Unfinished" means rooms still LIVE that started **before** `DEPLOY_TS` — which is the moment the **last
+  pre-SPR-148 replica went down**, not when the rollout began; an old replica can start a broadcast mid-rollout
+  and those rooms would fall outside an earlier boundary. Scheduled rooms are excluded (they will be written
+  correctly), and suspended rooms are reported separately rather than counted, since nothing ends them
+  automatically and one of them would make the condition unreachable. Both the unfinished count and the
+  candidate count are taken again after the verification loop; the suspended report is refreshed between
+  them, so a LIVE→SUSPENDED transition is not silently omitted. Rows that appeared during a long round are
+  not missed. Both populations are in scope: `hls_archive_url IS NULL`
+  (deploy boundary) and `hls_archive_url = hls_url` (legacy copies); fixing one hides the other. ENDED rows
+  with no `hls_url` at all cannot be derived and are only reported, never guessed. A row whose archive is permanently unverifiable would otherwise block the head of every round, so a round that
+  made no progress prints the last `ended_at` it examined; pass it back as `AFTER_ENDED_AT` to advance past the
+  stuck block. Those rows are listed by id and counted separately as stuck-before-cursor; if only those
+  remain, the exit is `13`, never `0`. Clearing them is manual work.
+  Playlists are capped at 1MB on fetch. At 7200 one-second segments, filenames plus EXTINF alone take
+  about 225KB; PROGRAM-DATE-TIME and other tags add more. The cap is an operational limit, not a
+  sevenfold size guarantee; exceeding it is a
+  permanent failure, not a transient one. Run `--self-test` for the pure logic (derivation, escaping, exit-code selection, playlist verification via a
+  stubbed curl, literal drift against the Java sources) without a database. A copied standalone script
+  warns that the three Java comparisons were not run; its passing logic tests are not complete deployment
+  verification. Run the matching repository version's self-test before copying it to a bastion. Run
+  `infra/replay-backfill/integration-test.sh` for the rest: it starts PostgreSQL with the real `live` migration
+  and a local HTTP origin bound to loopback, seeds the row shapes that matter (legacy copy, NULL archive,
+  `-master` URL, missing segment, room live across the boundary, and the three report-only populations) and
+  asserts the generated SQL, the exit code of every round, the conditional-UPDATE guard refusing a row that
+  changed after generation, cursor round-tripping, both failure origins — a dead server (curl 7) and a 5xx origin, which are classified
+  differently — and a room that transitions to ENDED between the two post-loop counts, which is the case the
+  order of those counts exists to close. The integration test's psql wrapper inserts that delay;
+  production rejects the removed `BACKFILL_PAUSE_*` variables before producing SQL. Negative assertions are gated on the round having finished cleanly,
+  because "the row is absent" is also true when the script died. Every defect found in this tool so far sat in that layer, not
+  in the pure logic.
+  Segment checks use a bounded Range GET and require MPEG-TS sync bytes at offsets 0, 188 and 376,
+  rejecting ordinary HTML soft-404 responses. Origins ignoring Range are capped at 1MB; larger responses
+  are delivery configuration errors (`14`), not missing media and never a reason to advance the cursor.
+  This is a format sanity check, not proof of complete or correct media.
+  Existence of a key is not verification, and at least one row must decode to EOS in a real player before
+  sign-off. Segment lines are required to be bare filenames — a deliberate allowlist, since anything else lets the object
+  being verified choose the verifier's next request. The retained SPR-147 artifact was inspected again
+  on 2026-09-12: a URI line is exactly `segment__00000.ts`, consistent with the bare-filename policy.
+  Unsupported URI forms fail verification; advancing past such rows produces `13`, never completion `0`.
+  A `0` exit covers the tool's candidate population only. Before removing legacy hiding, also resolve or
+  explicitly account for every report-only population (suspended, no live URL, no ended_at); a suspended
+  legacy room may end later. Only after that review, a `0` exit **and** complete retirement of pre-SPR-148 writers may the legacy-hiding
+  mapping (`LiveRoomMapper.archiveUrl`, the Ended branch of `applyStatusFields`) be removed, and that
+  removal must update `modules/live/AGENTS.md`, the mapper comment, the
+  `copiedLiveUrlIsUnavailableUntilBackfilled` test name and `.claude/review/domains/live.md` LIVE-08 in the
+  same commit.
+
+- A failed second master upload may leave the first master object behind. The returned/persisted URLs
+  fall back to 720p; never choose an orphan master merely because its key exists during manual recovery.
+  Validate every variant and its complete segment list. Publisher registration must include its specified
+  timeout tests and an operational orphan-object policy; this ticket adds neither an adapter nor deletion
+  calls inside the start transaction. Reversing upload order cannot make two object writes atomic.
+
+### SPR-148 recovery verification (2026-09-11)
+
+- Existing SPR-147 media: room `727682db-4f95-4dc8-835f-556b8f428ec1`, `720p/` rendition.
+  Downloaded original S3 objects: `index.m3u8` contains 5 segments / 10s (sequence 215), while
+  `playlist.m3u8` contains EVENT + ENDLIST and all 220 segments / 440s (sequence 0).
+  All referenced segments downloaded; GStreamer `playbin` decoded the unchanged EVENT playlist
+  with audio/video fakesinks through EOS, exit 0, without ERROR/WARNING. No re-encoding is needed.
+- This proves media recovery by choosing the EVENT URL, **not a completed row/API recovery**:
+  the available SPR-147 local PostgreSQL has no live table, so no existing row was changed.
+  Anonymous HTTP to the S3 EVENT object still returned **403**. Verify a real Ended row and public
+  delivery before calling the end-to-end recovery complete; do not change bucket policy as part of this ticket.
 
 ### Timing budget *(measured)*
 

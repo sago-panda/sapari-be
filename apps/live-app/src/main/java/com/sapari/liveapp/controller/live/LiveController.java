@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.sapari.liveapp.controller.live.dto.StartBroadcastRequest;
 import com.sapari.liveapp.controller.live.dto.CreateRoomRequest;
 import com.sapari.liveapp.security.LiveUserPrincipal;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;
@@ -30,12 +31,14 @@ import com.sapari.live.port.CreateLiveUseCase;
 import com.sapari.live.port.EndLiveUseCase;
 import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.port.GetLiveUseCase;
+import com.sapari.live.port.GetLiveReplayUseCase;
 import com.sapari.live.port.PrepareIngressUseCase;
 import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.EnterLiveView;
 import com.sapari.live.view.GetLiveView;
 import com.sapari.live.view.IngressCredentialView;
+import com.sapari.live.view.ReplayView;
 import com.sapari.live.view.StartLiveView;
 
 @RestController
@@ -48,6 +51,7 @@ public class LiveController {
     private final EnterLiveUseCase enterLiveUseCase;
     private final EndLiveUseCase endLiveUseCase;
     private final GetLiveUseCase getLiveUseCase;
+    private final GetLiveReplayUseCase getLiveReplayUseCase;
     private final PrepareIngressUseCase prepareIngressUseCase;
 
     @PostMapping("/rooms")
@@ -100,6 +104,11 @@ public class LiveController {
     @GetMapping("/rooms")
     public ResponseEntity<GetLiveView> getRooms() {
         return ResponseEntity.ok(getLiveUseCase.getRooms(GetLiveCommand.defaultMain()));
+    }
+
+    @GetMapping("/rooms/{roomId}/replay")
+    public ResponseEnvelope<ReplayView> getReplay(@PathVariable UUID roomId) {
+        return ResponseEnvelope.success(getLiveReplayUseCase.getReplay(roomId));
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/end")

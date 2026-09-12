@@ -86,7 +86,7 @@ class EndStaleLiveServiceTest {
                 .title("제목")
                 .sellerNickname("닉네임")
                 .status(new LiveStatus.Live(STARTED, "sfu-1", "eg-1", "https://hls/1"))
-                .streamInfo(StreamInfo.of("sfu-1", "eg-1", "https://hls/1"))
+                .streamInfo(StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null))
                 .streamType(streamType)
                 .build();
     }

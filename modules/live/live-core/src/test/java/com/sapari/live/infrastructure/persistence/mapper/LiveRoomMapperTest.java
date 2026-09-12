@@ -7,6 +7,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mapstruct.factory.Mappers;
 
 import com.sapari.live.domain.model.LiveRoom;
@@ -24,6 +26,102 @@ import com.sapari.live.infrastructure.persistence.entity.StreamType;
 class LiveRoomMapperTest {
 
     private final LiveRoomMapper mapper = Mappers.getMapper(LiveRoomMapper.class);
+
+    @ParameterizedTest
+    @ValueSource(strings = {"https://cdn/720p/index.m3u8", "https://cdn/master.m3u8",
+            "https://cdn/master.m3u8?v=1", "https://cdn/renamed-live.m3u8"})
+    void copiedLiveUrlIsUnavailableUntilBackfilled(String liveUrl) {
+        Instant now = Instant.parse("2026-09-11T00:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder().liveStatus(LiveRoomStatus.ENDED)
+                .startedAt(now).endedAt(now.plusSeconds(440)).sfuRoomId("sfu")
+                .hlsUrl(liveUrl).hlsArchiveUrl(liveUrl).build();
+        LiveRoom legacy = mapper.toDomain(entity);
+
+        assertThat(legacy.streamInfo().hlsArchiveUrl()).isEqualTo(liveUrl);
+        assertThat(((LiveStatus.Ended) legacy.status()).hlsArchiveUrl()).isNull();
+        mapper.updateEntityFromDomain(entity, legacy);
+        assertThat(entity.getHlsArchiveUrl()).isEqualTo(liveUrl); // 조회는 DB 값을 바꾸지 않는다.
+
+        String archive = "https://cdn/replays/renamed-event.m3u8?v=2";
+        entity.updateHlsArchiveUrl(archive); // 검증된 아카이브로 백필한 행을 다시 읽는다.
+        assertThat(((LiveStatus.Ended) mapper.toDomain(entity).status()).hlsArchiveUrl()).isEqualTo(archive);
+        assertThat(entity.getHlsUrl()).isEqualTo(liveUrl);
+    }
+
+    @Test
+    void legacyArchiveIsFilteredWithoutSfuRoomId() {
+        LiveRoomEntity entity = LiveRoomEntity.builder().liveStatus(LiveRoomStatus.ENDED)
+                .endedAt(Instant.parse("2026-09-11T00:00:00Z"))
+                .hlsUrl("https://cdn/master.m3u8").hlsArchiveUrl("https://cdn/master.m3u8").build();
+        assertThat(((LiveStatus.Ended) mapper.toDomain(entity).status()).hlsArchiveUrl()).isNull();
+        mapper.updateEntityFromDomain(entity, mapper.toDomain(entity));
+        assertThat(entity.getHlsArchiveUrl()).isEqualTo("https://cdn/master.m3u8");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"LIVE", "SUSPENDED", "READY"})
+    void legacyArchiveSurvivesTransitionAndRepeatedSave(String state) {
+        Instant now = Instant.parse("2026-09-11T00:00:00Z");
+        String liveUrl = "https://cdn/master.m3u8?v=1";
+        LiveRoomEntity entity = LiveRoomEntity.builder().liveStatus(LiveRoomStatus.valueOf(state))
+                .scheduledAt(now).startedAt(now).suspendedAt(now).suspendedReason("중단")
+                .sfuRoomId("sfu").hlsUrl(liveUrl).hlsArchiveUrl(liveUrl).build();
+        LiveRoom loaded = mapper.toDomain(entity);
+        assertThat(loaded.streamInfo().hlsArchiveUrl()).isEqualTo(liveUrl);
+        LiveRoom ended = loaded.canExpire() ? loaded.expire(now.plusSeconds(440)) : loaded.endLive(now.plusSeconds(440));
+        mapper.updateEntityFromDomain(entity, ended);
+        mapper.updateEntityFromDomain(entity, mapper.toDomain(entity));
+        assertThat(entity.getHlsArchiveUrl()).isEqualTo(liveUrl);
+        assertThat(entity.getHlsUrl()).isEqualTo(liveUrl);
+        assertThat(entity.getLiveStatus()).isEqualTo(LiveRoomStatus.ENDED);
+        assertThat(((LiveStatus.Ended) mapper.toDomain(entity).status()).hlsArchiveUrl()).isNull();
+    }
+
+    @Test
+    void nullArchiveStillClearsNonLegacyValue() {
+        Instant now = Instant.parse("2026-09-11T00:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder().liveStatus(LiveRoomStatus.ENDED)
+                .endedAt(now).hlsUrl("https://cdn/index.m3u8")
+                .hlsArchiveUrl("https://cdn/playlist.m3u8").build();
+        LiveRoom cleared = mapper.toDomain(entity).toBuilder().status(new LiveStatus.Ended(null, now, null)).build();
+        mapper.updateEntityFromDomain(entity, cleared);
+        assertThat(entity.getHlsArchiveUrl()).isNull();
+    }
+
+    @Test
+    void archiveSurvivesInsertReloadEndAndUpdate() {
+        Instant now = Instant.parse("2026-09-11T00:00:00Z");
+        StreamInfo stream = StreamInfo.of("sfu", "egress", "https://cdn/720p/index.m3u8",
+                "https://cdn/720p/playlist.m3u8");
+        LiveRoom room = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now, now)
+                .startLive(stream, now);
+        LiveRoomEntity entity = mapper.toEntity(room);
+        assertThat(entity.getHlsArchiveUrl()).isEqualTo(stream.hlsArchiveUrl());
+        LiveRoom reloaded = mapper.toDomain(entity);
+        assertThat(reloaded.streamInfo()).isEqualTo(stream);
+        mapper.updateEntityFromDomain(entity, reloaded.endLive(now.plusSeconds(440)));
+        LiveStatus.Ended ended = (LiveStatus.Ended) mapper.toDomain(entity).status();
+        assertThat(ended.hlsArchiveUrl()).isEqualTo(stream.hlsArchiveUrl());
+        assertThat(entity.getHlsUrl()).isEqualTo(stream.hlsUrl());
+    }
+
+    @Test
+    void archiveSurvivesStartUpdateReloadAndSuspendedEnd() {
+        Instant now = Instant.parse("2026-09-11T00:00:00Z");
+        LiveRoom scheduled = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now, now);
+        LiveRoomEntity entity = mapper.toEntity(scheduled);
+        StreamInfo stream = StreamInfo.of("sfu", "egress", "https://cdn/master.m3u8",
+                "https://cdn/archive-master.m3u8");
+        mapper.updateEntityFromDomain(entity, scheduled.startLive(stream, now));
+        LiveRoom suspended = mapper.toDomain(entity).toBuilder()
+                .status(new LiveStatus.Suspended(now, now.plusSeconds(100), "중단")).build();
+        mapper.updateEntityFromDomain(entity, suspended);
+        LiveRoom ended = mapper.toDomain(entity).endLive(now.plusSeconds(440));
+        mapper.updateEntityFromDomain(entity, ended);
+        assertThat(((LiveStatus.Ended) mapper.toDomain(entity).status()).hlsArchiveUrl())
+                .isEqualTo(stream.hlsArchiveUrl());
+        assertThat(entity.getHlsUrl()).isEqualTo(stream.hlsUrl());
+    }
 
     @Test
     @DisplayName("toDomain — SCHEDULED: 상태는 Scheduled, top-level scheduledAt 은 비운다")
@@ -74,8 +172,7 @@ class LiveRoomMapperTest {
     @Test
     @DisplayName("toDomain — ENDED: archive 는 hls_archive_url 에서 읽는다 (hls_url 은 방송 중 URL)")
     void toDomain_ended_readsArchiveColumn() {
-        // 두 컬럼을 일부러 다른 값으로 둔다 — 지금은 endLive 가 같은 값을 복사해 넣어서
-        // 값이 같으면 어느 컬럼을 읽든 테스트가 통과해 버린다.
+        // 두 컬럼을 일부러 다른 값으로 둔다 — 값이 같으면 잘못된 컬럼을 읽어도 통과한다.
         LiveRoomEntity entity = LiveRoomEntity.builder()
                 .sellerId(UUID.randomUUID())
                 .title("제목")
@@ -159,7 +256,7 @@ class LiveRoomMapperTest {
 
         LiveRoom restored = mapper.toDomain(mapper.toEntity(room));
 
-        assertThat(restored.streamInfo()).isEqualTo(StreamInfo.of("sfu-1", "eg-1", "https://hls/1"));
+        assertThat(restored.streamInfo()).isEqualTo(StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null));
     }
 
     @Test

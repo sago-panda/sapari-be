@@ -63,7 +63,7 @@ public record LiveRoom(
     public LiveRoom withSfuRoomId(String sfuRoomId) {
         //streamInfo 정보 없는 경우 sfuRoomId만 추가, 그 외에는 기존 값 복사하고 sfuRoomId만 교체
         StreamInfo updated = (this.streamInfo == null) ?
-                StreamInfo.ofSfuRoomId(sfuRoomId) : StreamInfo.of(sfuRoomId, this.streamInfo.egressId(), this.streamInfo.hlsUrl());
+                StreamInfo.ofSfuRoomId(sfuRoomId) : StreamInfo.of(sfuRoomId, this.streamInfo.egressId(), this.streamInfo.hlsUrl(), this.streamInfo.hlsArchiveUrl());
         return toBuilder()
                 .streamInfo(updated)
                 .build();
@@ -134,7 +134,7 @@ public record LiveRoom(
             default -> throw new IllegalStateException("예상치 못한 상태: " + this.status);
         };
 
-        String hlsArchiveUrl = (streamInfo != null) ? streamInfo.hlsUrl() : null;
+        String hlsArchiveUrl = (streamInfo != null) ? streamInfo.hlsArchiveUrl() : null;
         var endedStatus = new LiveStatus.Ended(startedAt, now, hlsArchiveUrl);
 
         return toBuilder()

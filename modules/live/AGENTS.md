@@ -42,11 +42,31 @@ All LiveKit through `LiveMediaManager`. Never touch the SDK from a service.
 every broadcast from starting — not just replay. They are also not interchangeable: `index.m3u8`
 (live) is a sliding window that holds only the last few segments once the broadcast ends, while
 `playlist.m3u8` (`EXT-X-PLAYLIST-TYPE:EVENT`) lists the whole broadcast and is what replay needs.
-`HlsRendition.variantPlaylistPath()` and `MasterPlaylistGenerator` both point at the live one.
-`LiveRoom.endLive` currently stores that live URL into `hlsArchiveUrl` — known gap **SPR-148**, see `infra/AGENTS.md`.
+`HlsRendition.variantPlaylistPath()` and `MasterPlaylistGenerator.generate()` keep pointing at the live one.
+The separate archive path travels via `HlsEgressResult` → `StreamInfo` → `LiveRoom.endLive`;
+`hls_archive_url` preserves it from start through DB reload. ABR uses `archive-master.m3u8`, generated
+with `generateArchive()`, whose variants are EVENT playlists. No publisher bean exists yet, so production
+uses the 720p `playlist.m3u8` directly. Both masters must publish successfully or both URLs fall back to 720p.
+
+**Replay is public**, with no signature, ownership check, or separate prefix. `GetLiveReplayUseCase`
+serves `GET /api/v1/lives/rooms/{roomId}/replay`, separately from the authorization-only `GetLiveRoomUseCase`.
+Persistence presents Ended legacy rows with `hls_archive_url = hls_url` as having no replay: the old end
+path copied that exact value. `StreamInfo` retains the raw value for transitions; saving an Ended row
+must preserve an existing equal-column value when the mapped archive is null. This exception is only
+for legacy copies, not a general ban on writing null. This mapping uses no filename allowlist and preserves distinct
+archive URLs verbatim, including query strings. It does not prove an arbitrary stored URL's media contents.
+Remove it only after verified backfill of those rows (including rows ended by old app replicas) and complete
+retirement of pre-SPR-148 writers. Do not auto-replace filenames or invent URLs for pre-upgrade live rooms.
+Non-Ended rooms and Ended rooms without an archive return **404 LIVE-007**: the replay resource does not
+exist, even if the room does. Ended is a DB state, not an egress completion guarantee; the last segments
+and ENDLIST may still be finalizing immediately after end. S3 retention must keep the EVENT playlist
+at least as long as its segments — see `infra/AGENTS.md`.
 
 **Start-side media calls sit inside `@Transactional` on purpose** — reviewers must not flag them; `egressId`
-has to commit with the room. The row lock is held across media I/O, bounded by `callTimeout` 15s per call.
+has to commit with the room. LiveKit I/O is bounded by its client's `callTimeout` 15s per call.
+That client does not bound `MasterPlaylistPublisher`: its future adapter must enforce a 15s total-call
+timeout including retries and prove it with delayed-storage tests before registration. No publisher bean
+exists today. Two sequential master publishes can consume up to 30s; 15s is not a whole-start budget.
 **End-side cleanup runs after commit** (`PostCommitMediaCleanup`), safe only because the orphan-media job
 reclaims crash leftovers.
 

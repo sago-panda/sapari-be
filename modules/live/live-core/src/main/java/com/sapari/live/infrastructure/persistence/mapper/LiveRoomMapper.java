@@ -45,6 +45,9 @@ public interface LiveRoomMapper {
     default LiveRoomEntity toEntity(LiveRoom room) {
         LiveRoomEntity entity = toEntityBase(room);
         applyStatusOnInsert(room, entity);
+        if (room.streamInfo() != null && !(room.status() instanceof Ended)) {
+            entity.updateHlsArchiveUrl(room.streamInfo().hlsArchiveUrl());
+        }
         applyStreamType(entity, room);
         return entity;
     }
@@ -60,7 +63,14 @@ public interface LiveRoomMapper {
         if (sfuRoomId == null || sfuRoomId.isBlank()) {
             return null;
         }
-        return StreamInfo.of(sfuRoomId, entity.getEgressId(), entity.getHlsUrl());
+        // 전이·저장에 쓰이는 송출 정보는 원본을 보존한다. 레거시 숨김은 Ended 조회에만 적용한다.
+        return StreamInfo.of(sfuRoomId, entity.getEgressId(), entity.getHlsUrl(), entity.getHlsArchiveUrl());
+    }
+
+    /** SPR-148 이전에 라이브 URL을 그대로 복사한 행은 백필 전까지 아카이브 없는 방으로 읽는다. */
+    private String archiveUrl(LiveRoomEntity entity) {
+        String archive = entity.getHlsArchiveUrl();
+        return archive != null && archive.equals(entity.getHlsUrl()) ? null : archive;
     }
 
     /** MapStruct가 평면 필드만 채운다. scheduledAt 은 상태에서 세팅하므로 무시. */
@@ -86,6 +96,11 @@ public interface LiveRoomMapper {
         applyScheduledAt(entity, room.status());
 
         if (room.streamInfo() != null) {
+            // insert 경로와 같은 가드 — Ended 는 아래 applyStatusFields 가 상태의 아카이브 URL 로 쓴다.
+            // 호출 순서에만 기대면 줄을 옮기는 순간 Ended 방의 아카이브 URL 이 조용히 라이브 URL 로 덮인다.
+            if (!(room.status() instanceof Ended)) {
+                entity.updateHlsArchiveUrl(room.streamInfo().hlsArchiveUrl());
+            }
             entity.updateStreamInfo(
                     room.streamInfo().sfuRoomId(),
                     room.streamInfo().egressId(),
@@ -106,10 +121,9 @@ public interface LiveRoomMapper {
             case LIVE -> new Live(
                     entity.getStartedAt(), entity.getSfuRoomId(), entity.getEgressId(), entity.getHlsUrl());
             // archive 는 hls_archive_url 에서 읽는다 — applyEnded 가 쓰는 컬럼이다.
-            // hls_url(방송 중 재생 URL)을 읽으면 지금은 endLive 가 같은 값을 복사해 우연히 맞지만,
-            // VOD 전용 URL 이 생기는 순간 다시보기가 만료된 실시간 URL 을 가리키게 된다.
+            // hls_url 은 실시간 슬라이딩 윈도우라 다시보기에 사용하지 않는다.
             case ENDED -> new Ended(
-                    entity.getStartedAt(), entity.getEndedAt(), entity.getHlsArchiveUrl());
+                    entity.getStartedAt(), entity.getEndedAt(), archiveUrl(entity));
             case SUSPENDED -> new Suspended(
                     entity.getStartedAt(), entity.getSuspendedAt(), entity.getSuspendedReason());
         };
@@ -164,7 +178,15 @@ public interface LiveRoomMapper {
             case Scheduled s -> { }
             case Ready r -> { }
             case Live l -> entity.applyLive(l.startedAt(), l.sfuRoomId(), l.egressId(), l.hlsUrl());
-            case Ended e -> entity.applyEnded(e.endedAt(), e.hlsArchiveUrl());
+            case Ended e -> {
+                // toStatus가 숨긴 레거시 값을 되저장하면서 지우지 않는다. 정상 URL의 null 갱신은 허용한다.
+                String archive = e.hlsArchiveUrl();
+                if (archive == null && entity.getHlsArchiveUrl() != null
+                        && entity.getHlsArchiveUrl().equals(entity.getHlsUrl())) {
+                    archive = entity.getHlsArchiveUrl();
+                }
+                entity.applyEnded(e.endedAt(), archive);
+            }
             case Suspended s -> entity.applySuspended(s.suspendedAt(), s.reason());
         }
     }
