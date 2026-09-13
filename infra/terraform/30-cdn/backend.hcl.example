@@ -1,0 +1,6 @@
+# backend.hcl 로 복사한 뒤: terraform init -backend-config=backend.hcl
+bucket       = "sapari-tfstate-000000000000-apne2"
+key          = "30-cdn/terraform.tfstate"
+region       = "ap-northeast-2"
+encrypt      = true
+use_lockfile = true
