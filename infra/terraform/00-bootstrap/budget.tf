@@ -51,6 +51,20 @@ resource "aws_budgets_budget" "monthly" {
     subscriber_sns_topic_arns = [aws_sns_topic.budget_alerts.arn]
   }
 
+  # 조기 경보. 위 두 알림은 둘 다 늦다 - ACTUAL 100% 는 이미 나간 돈이고,
+  # 단기 기동이라 추세가 안 잡혀 FORECASTED 는 부정확하다.
+  #
+  # 시간당 $0.62 라 $4 는 약 6.5시간 기동 지점이다(월 한도 16시간의 40%).
+  # 30%($3, 5시간)면 한 번 제대로 테스트할 때마다 울려서 무뎌지고,
+  # 50%($5, 8시간)면 이미 절반을 넘긴 뒤다.
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 40
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.budget_alerts.arn]
+  }
+
   notification {
     comparison_operator = "GREATER_THAN"
     threshold           = 150
