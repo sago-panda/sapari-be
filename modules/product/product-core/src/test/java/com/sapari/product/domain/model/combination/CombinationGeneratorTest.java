@@ -9,6 +9,7 @@ import com.sapari.product.domain.exception.TooManyCombinationsException;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.IntStream;
@@ -116,12 +117,26 @@ class CombinationGeneratorTest {
         }
 
         @Test
-        @DisplayName("옵션 타입이 없으면 빈 조합 목록을 반환한다 (옵션 없는 단일 상품)")
-        void noOptionTypesYieldsEmpty() {
-            List<ProductOptionCombination> result = CombinationGenerator.generate(
-                    PRODUCT_ID, BASE_PRICE, List.of(), List.of(), List.of(), 0, NOW);
+        @DisplayName("옵션 타입이 없으면(null·빈 목록) 기본 조합 1개 — 키 DEFAULT, 옵션값 없음, 가격=basePrice, 재고=defaultStock")
+        void noOptionTypesYieldsSingleDefaultCombination() {
+            for (List<ProductOptionTypeModel> none : Arrays.asList(null, List.<ProductOptionTypeModel>of())) {
+                List<ProductOptionCombination> result = CombinationGenerator.generate(
+                        PRODUCT_ID, BASE_PRICE, none, List.of(), List.of(), 7, NOW);
 
-            assertThat(result).isEmpty();
+                assertThat(result).singleElement().satisfies(c -> {
+                    assertThat(c.id()).isNull();
+                    assertThat(c.productId()).isEqualTo(PRODUCT_ID);
+                    assertThat(c.combinationKey().value()).isEqualTo(CombinationKey.DEFAULT);
+                    assertThat(c.optionValueIds()).isEmpty();
+                    assertThat(c.price()).isEqualTo(BASE_PRICE);
+                    assertThat(c.originalPrice()).isNull();
+                    assertThat(c.sku()).isNull();
+                    assertThat(c.stock().stock()).isEqualTo(7);
+                    assertThat(c.stock().reservedStock()).isZero();
+                    assertThat(c.isAvailable()).isTrue();
+                    assertThat(c.createdAt()).isEqualTo(NOW);
+                });
+            }
         }
     }
 

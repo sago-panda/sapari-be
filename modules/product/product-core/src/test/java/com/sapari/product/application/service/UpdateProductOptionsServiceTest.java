@@ -188,15 +188,20 @@ class UpdateProductOptionsServiceTest {
         }
 
         @Test
-        @DisplayName("옵션을 비우면 기존 조합은 벌크 단종하고 새 조합 saveAll은 호출하지 않는다 (옵션 없는 단일 상품)")
-        void emptyOptionsRetiresAllAndCreatesNone() {
+        @DisplayName("옵션을 비우면 기존 조합은 벌크 단종하고 기본 조합 1개(재고=defaultStock)를 새로 저장한다 (단일 상품 전환)")
+        void emptyOptionsRetiresAllAndCreatesDefaultCombination() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
             given(productRepository.save(any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
 
             service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50, EXPECTED_VERSION, null, null, null));
 
             then(combinationRepository).should().discontinueAllByProductId(PRODUCT_ID, LATER);
-            then(combinationRepository).should(never()).saveAll(any());
+            assertThat(captureSavedAll()).singleElement().satisfies(c -> {
+                assertThat(c.combinationKey().value()).isEqualTo(CombinationKey.DEFAULT);
+                assertThat(c.optionValueIds()).isEmpty();
+                assertThat(c.price()).isEqualTo(10_000);
+                assertThat(c.stock().stock()).isEqualTo(50);
+            });
         }
     }
 

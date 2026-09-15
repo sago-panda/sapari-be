@@ -36,7 +36,8 @@ public interface ProductOptionCombinationRepository {
     /**
      * 상품의 판매가능 조합을 모두 단종({@code is_available=false})한다. 옵션 교체 시 기존 조합을 일괄 은퇴시키는 용도의 벌크 갱신이다.
      *
-     * <p>벌크 UPDATE라 {@code @Version}을 증가시키지 않고 영속성 컨텍스트를 우회한다(전량 은퇴라 동시성 보호 불필요). 옵션값 매핑은 보존한다(주문 이력 참조).
+     * <p>벌크 UPDATE로 영속성 컨텍스트를 우회하되 version을 직접 올려 동시 조합 수정의 덮어쓰기를 막는다. 옵션값 매핑은 보존한다(주문 이력 참조).
+     * 단일 상품의 기본 조합 키({@code DEFAULT})는 은퇴 시 비워, 교체 뒤 새 기본 조합을 만들 수 있게 한다.
      *
      * @return 단종 처리된 행 수
      */

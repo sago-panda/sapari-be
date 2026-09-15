@@ -33,8 +33,10 @@ public final class CombinationGenerator {
     }
 
     /**
-     * 옵션 타입들의 데카르트 곱으로 조합을 생성한다. 옵션 타입이 없으면 빈 목록(옵션 없는 단일 상품)을 반환한다. 생성된 조합은 {@code id=null}, {@code isAvailable=true},
-     * 재고는 {@code defaultStock}(예약 0)으로 시작한다.
+     * 옵션 타입들의 데카르트 곱으로 조합을 생성한다. 생성된 조합은 {@code id=null}, {@code isAvailable=true}, 재고는 {@code defaultStock}(예약 0)으로 시작한다.
+     *
+     * <p>옵션 타입이 없으면(단일 상품) 옵션값 없는 <b>기본 조합 1개</b>(키 {@link CombinationKey#DEFAULT}, 가격 {@code basePrice})를 만든다 — 재고·가격·SKU·
+     * 예약과 상품 캐시(min_price·has_stock)를 옵션 상품과 같은 조합 경로로 관리하기 위해서다.
      *
      * @param productId      소속 상품 id (영속화되어 부여된 값)
      * @param basePrice      상품 기본 가격
@@ -55,9 +57,17 @@ public final class CombinationGenerator {
             List<ExclusionRule> exclusionRules,
             int defaultStock,
             Instant now) {
-        // 옵션 타입이 없으면 조합도 없다 (옵션 없는 단일 가격·재고 상품)
+        // 옵션 타입이 없으면 단일 상품 — 옵션값 없는 기본 조합 하나가 재고·가격 단위가 된다
         if (optionTypes == null || optionTypes.isEmpty()) {
-            return List.of();
+            return List.of(ProductOptionCombination.create(
+                    productId,
+                    CombinationKey.of(CombinationKey.DEFAULT),
+                    null,
+                    null,
+                    basePrice,
+                    Stock.of(defaultStock, 0),
+                    List.of(),
+                    now));
         }
 
         // 타입을 sortOrder 순으로 고정 — 데카르트 곱의 결합 순서를 결정적으로 만든다

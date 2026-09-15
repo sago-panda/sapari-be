@@ -37,4 +37,20 @@ public interface ProductOptionCombinationJpaRepository
              WHERE c.productId = :productId AND c.isAvailable = true
             """)
     int discontinueAllByProductId(@Param("productId") UUID productId, @Param("now") Instant now);
+
+    /**
+     * 상품의 기본 조합 키({@code DEFAULT})를 {@code DEFAULT#조합id}로 바꿔 비운다(판매여부 무관). 옵션 교체로 은퇴한 기본 조합이
+     * {@code (product_id, combination_key)} 유니크를 계속 점유해 새 기본 조합 생성을 막지 않도록 한다. 동시 조합 수정이 옛 키로 덮어쓰지 못하게 version을 올린다.
+     *
+     * @return 키를 비운 행 수(0 또는 1)
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            UPDATE ProductOptionCombinationEntity c
+               SET c.combinationKey = CONCAT(c.combinationKey, '#', CAST(c.id AS String)),
+                   c.updatedAt = :now, c.version = c.version + 1
+             WHERE c.productId = :productId AND c.combinationKey = :defaultKey
+            """)
+    int releaseDefaultKey(
+            @Param("productId") UUID productId, @Param("defaultKey") String defaultKey, @Param("now") Instant now);
 }

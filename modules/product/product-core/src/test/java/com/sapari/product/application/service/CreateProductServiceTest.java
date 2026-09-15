@@ -23,6 +23,7 @@ import com.sapari.product.domain.exception.CategoryNotFoundException;
 import com.sapari.product.domain.exception.InvalidProductOptionException;
 import com.sapari.product.domain.exception.InvalidProductTagException;
 import com.sapari.product.domain.model.category.Category;
+import com.sapari.product.domain.model.combination.CombinationKey;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionConfigModel;
@@ -424,8 +425,8 @@ class CreateProductServiceTest {
     class WithoutOptions {
 
         @Test
-        @DisplayName("옵션 타입이 없으면 상품만 저장하고 조합은 만들지 않는다")
-        void savesProductWithoutCombinations() {
+        @DisplayName("옵션 타입이 없으면 기본 조합 1개(가격=기본가, 재고=defaultStock)를 저장한다 — 단일 상품도 조합으로 재고를 관리")
+        void savesSingleDefaultCombination() {
             given(categoryRepository.findById(CATEGORY_ID)).willReturn(Optional.of(aCategory()));
             Product savedNoOptions = Product.create(
                             SELLER_ID, CATEGORY_ID, "단일 상품", "설명", BASE_PRICE,
@@ -436,7 +437,12 @@ class CreateProductServiceTest {
             CreateProductView view = service.create(commandWith(List.of()));
 
             then(productRepository).should().save(any());
-            then(combinationRepository).should(never()).saveAll(any());
+            assertThat(captureSavedCombinations()).singleElement().satisfies(c -> {
+                assertThat(c.combinationKey().value()).isEqualTo(CombinationKey.DEFAULT);
+                assertThat(c.optionValueIds()).isEmpty();
+                assertThat(c.price()).isEqualTo(BASE_PRICE);
+                assertThat(c.stock().stock()).isEqualTo(DEFAULT_STOCK);
+            });
             assertThat(view.productId()).isEqualTo(PRODUCT_ID);
         }
     }

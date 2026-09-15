@@ -6,6 +6,7 @@ import com.sapari.product.infrastructure.persistence.entity.combination.ProductO
 import com.sapari.product.domain.exception.ProductConcurrentModificationException;
 import com.sapari.product.domain.exception.ProductDomainException;
 import com.sapari.product.domain.exception.ProductErrorCode;
+import com.sapari.product.domain.model.combination.CombinationKey;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.infrastructure.persistence.mapper.combination.ProductOptionCombinationMapper;
@@ -125,7 +126,10 @@ public class ProductOptionCombinationRepositoryImpl implements ProductOptionComb
 
     @Override
     public int discontinueAllByProductId(UUID productId, Instant now) {
-        return jpaRepository.discontinueAllByProductId(productId, now);
+        int discontinued = jpaRepository.discontinueAllByProductId(productId, now);
+        // 은퇴한 기본 조합이 DEFAULT 키를 점유하면 옵션 교체 뒤 새 기본 조합을 만들 수 없다 — 키를 비운다
+        jpaRepository.releaseDefaultKey(productId, CombinationKey.DEFAULT, now);
+        return discontinued;
     }
 
     /**
