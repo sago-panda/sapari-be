@@ -9,8 +9,9 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
   `SellerProductController` (`/api/v1/seller/products**`, ROLE_SELLER) + `ProductController`
   (`GET /api/v1/products/{id}`, public, ON_SALE-only gate). Request DTOs under
   `controller/product/dto/request` (`@Valid`, `toCommand(sellerId[, productId])`). Swagger UI at
-  `/swagger-ui.html`, API docs at `/v3/api-docs`. Pending: optimistic-lock `version`/`expectedVersion`
-  threading (§13.2), image (④) / rule-override (⑤) fields.
+  `/swagger-ui.html`, API docs at `/v3/api-docs`. Create/option-update accept option-value `ref` +
+  `surchargeRules`/`exclusionRules`/`combinations` (⑤); structural rule checks are service-side (PRODUCT-004),
+  DTOs only enforce scalar limits. Pending: image (④) fields.
 - `@ComponentScan("com.sapari")` picks up `common/web`. JPA is split: `product-core`'s
   `JpaConfiguration` enables product persistence; this app's `config/UserPersistenceConfig` adds
   `com.sapari.user.infrastructure.persistence` (the JWT `UserDetailsService` needs it) — Spring Boot
