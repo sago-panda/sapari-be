@@ -263,6 +263,17 @@ class CreateProductServiceTest {
         }
 
         @Test
+        @DisplayName("조합을 저장한 뒤 상품 캐시(min_price·has_stock)를 재계산한다 (등록 시점 캐시 불일치 제거)")
+        void refreshesCacheAfterSavingCombinations() {
+            service.create(command());
+
+            InOrder inOrder = inOrder(productRepository, combinationRepository);
+            inOrder.verify(productRepository).save(any());
+            inOrder.verify(combinationRepository).saveAll(any());
+            inOrder.verify(productRepository).refreshStockPriceCache(PRODUCT_ID, NOW);
+        }
+
+        @Test
         @DisplayName("룰이 없으면 옵션 config를 기록하지 않는다 (config 행 없음)")
         void skipsConfigWithoutRules() {
             service.create(command());

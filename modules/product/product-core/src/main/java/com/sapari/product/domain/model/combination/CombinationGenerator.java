@@ -35,7 +35,7 @@ public final class CombinationGenerator {
     /**
      * 옵션 타입들의 데카르트 곱으로 조합을 생성한다. 생성된 조합은 {@code id=null}, {@code isAvailable=true}, 재고는 {@code defaultStock}(예약 0)으로 시작한다.
      *
-     * <p>옵션 타입이 없으면(단일 상품) 옵션값 없는 <b>기본 조합 1개</b>(키 {@link CombinationKey#DEFAULT}, 가격 {@code basePrice})를 만든다 — 재고·가격·SKU·
+     * <p>옵션 타입이 없으면(단일 상품) 옵션값 없는 <b>기본 조합 1개</b>(키 {@link CombinationKey#DEFAULT}, 가격 {@code basePrice})를 만든다 — 재고·가격·
      * 예약과 상품 캐시(min_price·has_stock)를 옵션 상품과 같은 조합 경로로 관리하기 위해서다.
      *
      * @param productId      소속 상품 id (영속화되어 부여된 값)

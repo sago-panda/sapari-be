@@ -3,6 +3,7 @@ package com.sapari.product.domain.repository.product;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductSummary;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,6 +30,21 @@ public interface ProductRepository {
      * @param config    교체할 룰, 없으면 null
      */
     void replaceOptionConfig(UUID productId, ProductOptionConfigModel config);
+
+    /**
+     * 상품의 조합 파생 캐시(최저가 {@code min_price}·재고유무 {@code has_stock})를 조합 테이블에서 다시 계산한다. 조합을 만들거나 가격·재고·판매여부를 바꾼
+     * 트랜잭션의 끝에서 호출한다.
+     *
+     * <p>대기 중인 변경을 먼저 DB에 반영하고 상품 행을 잠근 뒤 새 문장으로 계산한다 — 같은 상품의 조합을 동시에 바꾸는 트랜잭션은 이 잠금에서 직렬화되고,
+     * 뒤 트랜잭션은 앞 트랜잭션의 커밋된 조합까지 반영해 계산한다(잠금 순서: 조합 행 → 상품 행). 이 논리는 READ COMMITTED(PostgreSQL 기본)를 전제한다.
+     *
+     * <p>상품 version은 올리지 않는다(판매자 수정 폼의 expectedVersion을 무효화하지 않도록). updated_at은 {@code now}로 갱신한다 — 검색 재색인이
+     * {@code search_indexed_at < updated_at}으로 대상을 고르므로, 재고·가격 캐시 변경이 재색인에 잡혀야 한다.
+     *
+     * @param productId 상품 id
+     * @param now       갱신 시각(TimeProvider)
+     */
+    void refreshStockPriceCache(UUID productId, Instant now);
 
     /**
      * id로 단일 상품을 자식까지 조립해 조회한다(삭제 포함).

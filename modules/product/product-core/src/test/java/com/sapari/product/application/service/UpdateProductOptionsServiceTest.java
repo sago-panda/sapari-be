@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 
 import com.sapari.global.time.TimeProvider;
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -165,6 +167,19 @@ class UpdateProductOptionsServiceTest {
             assertThat(newCombos)
                     .extracting(c -> c.combinationKey().value())
                     .containsExactlyInAnyOrder(NEW_S.toString(), NEW_M.toString());
+        }
+
+        @Test
+        @DisplayName("기존 조합 단종 → 새 조합 저장 뒤 상품 캐시를 재계산한다")
+        void refreshesCacheAfterRegeneratingCombinations() {
+            stubHappyPath();
+
+            service.update(command());
+
+            InOrder inOrder = inOrder(combinationRepository, productRepository);
+            inOrder.verify(combinationRepository).discontinueAllByProductId(PRODUCT_ID, LATER);
+            inOrder.verify(combinationRepository).saveAll(any());
+            inOrder.verify(productRepository).refreshStockPriceCache(PRODUCT_ID, LATER);
         }
 
         @Test
@@ -355,6 +370,7 @@ class UpdateProductOptionsServiceTest {
                     .isInstanceOf(ProductNotFoundException.class);
 
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
             then(combinationRepository).shouldHaveNoInteractions();
         }
 
@@ -367,6 +383,7 @@ class UpdateProductOptionsServiceTest {
                     .isInstanceOf(ProductAccessDeniedException.class);
 
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
             then(combinationRepository).shouldHaveNoInteractions();
         }
     }

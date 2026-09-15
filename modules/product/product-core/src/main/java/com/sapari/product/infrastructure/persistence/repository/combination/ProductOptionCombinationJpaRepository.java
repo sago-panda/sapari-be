@@ -22,19 +22,19 @@ public interface ProductOptionCombinationJpaRepository
     Optional<ProductOptionCombinationEntity> findByProductIdAndSku(UUID productId, String sku);
 
     /**
-     * 상품의 판매가능 조합을 한 번의 UPDATE로 일괄 단종한다(건당 save N+1 방지).
+     * 상품의 조합을 판매여부와 무관하게 한 번의 UPDATE로 일괄 은퇴시킨다(건당 save N+1 방지). 이미 단종된 행도 잠그고 version을 올려 판매 재개 PATCH를 막는다.
      *
      * <p>벌크는 PC를 우회하므로 {@code version + 1}을 명시해 동시 stale 저장을 낙관적 락 충돌로 막는다.
      * {@code flushAutomatically=true}로 호출 전 대기 변경을 먼저 반영하고, {@code clearAutomatically=true}로 호출 후
      * 1차 캐시를 비워, 같은 트랜잭션에서 조합을 로드해 둔 호출자가 단종 전 stale 캐시본을 보거나 version 불일치로 충돌하는 일을 막는다.
      *
-     * @return 단종 처리된 행 수
+     * @return 은퇴 처리된 행 수(이미 단종된 행 포함)
      */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
             UPDATE ProductOptionCombinationEntity c
                SET c.isAvailable = false, c.updatedAt = :now, c.version = c.version + 1
-             WHERE c.productId = :productId AND c.isAvailable = true
+             WHERE c.productId = :productId
             """)
     int discontinueAllByProductId(@Param("productId") UUID productId, @Param("now") Instant now);
 

@@ -4,6 +4,7 @@ import com.sapari.product.domain.model.product.ProductOptionModel;
 import com.sapari.product.domain.model.product.ProductStatus;
 
 import com.sapari.storage.db.entity.UuidTimeEntity;
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -52,8 +53,12 @@ public class ProductEntity extends UuidTimeEntity {
 
     private Instant deletedAt;
 
+    // 최저가·재고유무는 조합에서 파생되는 캐시라 전용 재계산 쿼리(ProductRepository.refreshStockPriceCache)만 갱신한다.
+    // 엔티티 flush가 영속성 컨텍스트의 옛 값으로 덮어쓰지 않도록 UPDATE 대상에서 뺀다(INSERT 초기값만 기록)
+    @Column(updatable = false)
     private Integer minPrice;
 
+    @Column(updatable = false)
     private Boolean hasStock;
 
     private Integer purchaseCount;
@@ -139,14 +144,11 @@ public class ProductEntity extends UuidTimeEntity {
     /**
      * 정렬·필터용 비정규화 캐시 컬럼을 일괄 갱신한다.
      *
-     * <p>최저가·재고유무·구매수·평점·리뷰수·조회수·찜수는 DB가 계산하지 않고 앱이 집계해 채우는 캐시이므로,
-     * 재계산 시점에 한 번에 묶어 갱신한다.
+     * <p>구매수·평점·리뷰수·조회수·찜수는 DB가 계산하지 않고 앱이 집계해 채우는 캐시이므로, 재계산 시점에 한 번에 묶어 갱신한다.
+     * 최저가·재고유무는 조합 파생 캐시라 여기서 다루지 않는다({@code ProductRepository.refreshStockPriceCache}).
      */
-    public void updateCacheColumns(Integer minPrice, Boolean hasStock, Integer purchaseCount,
-                                   BigDecimal avgRating, Integer reviewCount, Integer viewCount,
+    public void updateCacheColumns(Integer purchaseCount, BigDecimal avgRating, Integer reviewCount, Integer viewCount,
                                    Integer wishlistCount) {
-        this.minPrice = minPrice;
-        this.hasStock = hasStock;
         this.purchaseCount = purchaseCount;
         this.avgRating = avgRating;
         this.reviewCount = reviewCount;

@@ -112,8 +112,8 @@ public interface ProductMapper {
                 d.shippingPolicyId(), d.additionalShippingFee(), d.optionModel());
         entity.updateStatus(d.status(), d.rejectionReason());
         entity.updateDeletedAt(d.deletedAt());
-        entity.updateCacheColumns(d.minPrice(), d.hasStock(), d.purchaseCount(), d.avgRating(),
-                d.reviewCount(), d.viewCount(), d.wishlistCount());
+        // 최저가·재고유무는 조합 파생 캐시라 도메인 값으로 덮어쓰지 않는다(refreshStockPriceCache가 전담)
+        entity.updateCacheColumns(d.purchaseCount(), d.avgRating(), d.reviewCount(), d.viewCount(), d.wishlistCount());
         entity.updateSearchIndexedAt(d.searchIndexedAt());
     }
 
