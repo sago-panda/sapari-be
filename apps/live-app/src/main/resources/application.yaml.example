@@ -1,0 +1,241 @@
+# live-app 설정 템플릿.
+#
+# application*.yaml 은 .gitignore 대상이라 저장소에 없다 — 그래서 "어떤 키가 필요한지"를 아는 방법이
+# 이 파일뿐이다. 키를 추가·삭제하면 여기도 같이 고칠 것.
+#
+# 사용법: cp application.yaml.example application.yaml 후 아래 값을 채운다.
+#
+# ⚠️ 표기 규칙
+#   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다.
+#   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
+#
+# ⚠️ 이 파일에 실제 자격증명을 넣지 말 것. 전부 자리표시자다.
+
+spring:
+  application:
+    name: live-app
+
+  datasource:
+    url: ${LIVE_DB_URL:jdbc:postgresql://localhost:5432/sapari_db}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:}          # REQUIRED (운영)
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      # 스키마는 마이그레이션 Job(infra/migration)이 만든다. 앱은 검증만 — update 로 두면
+      # Flyway 가 만든 스키마를 Hibernate 가 임의로 고친다.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: true
+
+  task:
+    scheduling:
+      pool:
+        # 정리 잡 3종이 서로를 막지 않게. 1이면 LiveKit 이 느린 회차에 뒤 잡이 밀린다.
+        size: 3
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+server:
+  port: ${SERVER_PORT:8081}                  # api-app(8080)과 동시 실행되도록 분리
+
+# /swagger-ui.html 과 /v3/api-docs/** 는 LiveSecurityConfig 에서 permitAll 이다 — 켜져 있으면 인증 없이
+# 전체 API 스펙(경로·파라미터·요청/응답 구조)이 나간다. 그래서 기본값을 false 로 둔다: 이 템플릿을 그대로
+# 복사해 배포해도 열리지 않아야 한다.
+# 로컬·dev·staging 에서는 SPRINGDOC_ENABLED=true 로 켤 것(프론트가 이걸로 API 를 본다).
+# 두 키를 함께 걸어야 한다 — api-docs 만 끄면 UI 는 뜨는데 스펙을 못 불러와 빈 화면이 된다.
+springdoc:
+  swagger-ui:
+    enabled: ${SPRINGDOC_ENABLED:false}
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    enabled: ${SPRINGDOC_ENABLED:false}
+    path: /v3/api-docs
+  packages-to-scan: com.sapari
+
+# ---------------------------------------------------------------------------
+# 인증 토큰(HMAC) — live-app 은 발급하지 않고 검증만 한다.
+# secret 은 api-app 과 같은 값이어야 서명 검증이 통과한다.
+# refresh-token-expiration-seconds 는 JwtProperties 의 @NotNull 충족용(여기서는 미사용).
+# ---------------------------------------------------------------------------
+jwt:
+  issuer: ${JWT_ISSUER:sapari-api}
+  secret: ${JWT_SECRET:}                     # REQUIRED — 이 키로 임의의 access 토큰을 만들 수 있다
+  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:3600}
+  refresh-token-expiration-seconds: ${JWT_REFRESH_TOKEN_EXPIRATION_SECONDS:1209600}
+
+live:
+  # -------------------------------------------------------------------------
+  # 채팅 입장용 룸 토큰(RS256) — live 가 개인키로 서명, chat 이 공개키로 검증.
+  # 위 jwt(HMAC)와 키·알고리즘·aud 가 모두 다르며 서로 대체 불가.
+  # -------------------------------------------------------------------------
+  room-token:
+    issuer: ${LIVE_ROOM_TOKEN_ISSUER:live}
+    audience: ${LIVE_ROOM_TOKEN_AUDIENCE:chat}
+    # 짧게 유지(60~120s). jti 가 없어 창 안에서는 재사용이 가능하므로 창 자체가 방어다.
+    expiration-seconds: ${LIVE_ROOM_TOKEN_EXPIRATION_SECONDS:90}
+    # REQUIRED — Base64(PKCS#8 DER), PEM 헤더·개행 제외.
+    # 기본값을 두지 말 것: resources 에 들어간 값은 jar 에 실려 배포된다(운영에서 env 로 덮어써도 남는다).
+    private-key: ${LIVE_ROOM_TOKEN_PRIVATE_KEY:}
+
+  # -------------------------------------------------------------------------
+  # 고아 라이브 정리 스케줄러 (전부 optional — 코드 기본값 있음)
+  #
+  # 잡마다 enabled 를 나눈 건 end-stale-live 만 따로 끄기 위해서다 — 셋 중 유일하게 살아 있을지도
+  # 모르는 방송을 강제 종료하므로, 오작동이 의심되면 그것만 내린다.
+  # cron 은 세 잡이 동시에 LiveKit 을 때리지 않게 3분씩 어긋내 둔다(정렬하지 말 것).
+  #
+  # ※ 레플리카 2 이상에서 돌 수 있다 — 잡마다 ShedLock 분산 락이 걸려 있어 회차는 한 인스턴스만 돈다
+  #    (락 저장소: live_schema.shedlock, 프로바이더 설정은 ReconcileLockConfig).
+  #    락을 못 잡은 인스턴스는 조용히 넘어가고 다음 주기에 다시 시도한다.
+  #
+  #    셋 중 orphan-media 만 DB 전이가 없어 락이 실질적으로 필요하다. 나머지 둘은 행 잠금 + 상태 가드를
+  #    지나 커밋한 쪽만 외부 정리를 등록하므로 락이 없어도 파괴적 정리(stop/delete/close)는 한 번뿐이다
+  #    — 조회(listAllEgress·listRoomIngress)는 레플리카 수만큼 중복된다. 그래도 세 잡을 같은 방식으로
+  #    두는 편이 "이 잡만 왜 다른가"를 매번 확인하지 않아도 되어 안전하다.
+  # -------------------------------------------------------------------------
+  reconcile:
+    # ⚠️ 제거된 키 — 남아 있으면 <부팅이 실패한다>(조용히 무시하면 그 값이 먹는다고 믿게 되므로):
+    #      live.reconcile.batch-size            → 잡별 batch-size 로 이전(end-stale-live 10, expire-ready 20)
+    #      live.reconcile.orphan-media.batch-size → 대체 없음. 고아 정리는 개수가 아니라 시간으로
+    #                                              회차를 묶는다(orphan-media.lock-at-most-for 참고).
+    # 마스터 스위치 — off 면 @EnableScheduling·잡 빈·락 설정·부팅 가드가 전부 내려간다.
+    # on(기본) 이면 live_schema.shedlock 에 쓸 수 있어야 부팅된다(ShedLockTableGuard — 존재가 아니라
+    # 쓰기를 본다: 컬럼 불일치·권한 부족도 여기서 걸린다). 마이그레이션이 앱보다 먼저다.
+    enabled: ${LIVE_RECONCILE_ENABLED:true}
+    # 회차가 순식간에 끝나도 이만큼은 락을 쥔다. 두 인스턴스의 cron 발화가 지터로 수백 ms 어긋날 때
+    # 뒤에 온 쪽이 같은 회차를 한 번 더 도는 걸 막는다.
+    # ⚠️ 켜져 있는 잡의 최단 cron 주기의 절반을 넘으면 부팅이 실패한다(ReconcileLockConfig 의
+    #    lockIntervalsMustFitInCron). 권고가 아니라 강제다 — 넘기면 다음 회차가 아직 안 풀린 락에
+    #    막혀 로그도 지표도 없이 사라진다. 주기는 cron 을 하루치 전개한 최단 간격으로 잰다
+    #    (0/N 형태는 시 경계에서 간격이 줄어 첫 간격과 다르다). 값은 PT1M 과 1m 둘 다 받는다.
+    # ⚠️ 잡별 lock-at-most-for 는 그 잡의 cron 주기보다 짧으면 부팅이 실패한다(다음 tick 이 늘
+    #    만료된 락을 보게 되어 상호배제가 사라진다).
+    #    키 형식은 케밥/카멜 어느 쪽이든 같은 값으로 읽힌다 — Spring Boot 가 환경에
+    #    ConfigurationPropertySources 를 붙여 두어 @SchedulerLock 의 ${...} 도 relaxed 로 풀린다.
+    #    (SchedulerWiringTest 가 세 경로가 같은 값을 보는지 고정한다.)
+    lock-at-least-for: ${LIVE_RECONCILE_LOCK_AT_LEAST_FOR:PT1M}
+    # OBS 가 끝내 연결되지 않아 Ready 에 갇힌 방 → Ended (송출 중이면 대신 Live 로 승격)
+    expire-ready:
+      enabled: ${LIVE_RECONCILE_EXPIRE_READY_ENABLED:true}
+      threshold: ${LIVE_RECONCILE_READY_THRESHOLD:60m}
+      cron: ${LIVE_RECONCILE_EXPIRE_READY_CRON:0 0/10 * * * *}
+      # 락 유지 시간 = 락 보유 인스턴스가 죽었을 때의 인계 지연.
+      # 이 잡도 end-stale-live 와 같은 이유로 후보당 왕복 수가 고정이 아니다(만료가 타는
+      # PostCommitMediaCleanup 은 방의 egress·ingress 를 전부 정리한다). 그래서 리스를 후보 수로
+      # 계산하지 않고 회차를 리스 안에 가둔다 — 후보 루프가 이 값의 4/5(기본 40분)를 넘기면 남은
+      # 후보를 다음 회차로 넘기고 reconcile.acted{job=expire-ready,action=ROUND_BUDGET_EXHAUSTED}=1 로 남긴다.
+      lock-at-most-for: ${LIVE_RECONCILE_EXPIRE_READY_LOCK_AT_MOST_FOR:PT50M}
+      # 한 회차의 처리량. 후보마다 LiveKit 을 왕복하므로 다른 잡보다 작게 둔다.
+      # 회차 길이의 상한은 이 값이 아니라 위의 회차 예산이다 — 후보당 왕복 수는 방의 화질·ingress
+      # 수에 비례해 고정이 아니므로, "후보당 N회" 를 근거로 이 값을 올리면 안 된다.
+      batch-size: ${LIVE_RECONCILE_EXPIRE_READY_BATCH_SIZE:20}
+    # 방송은 끝났는데 room_finished 유실로 Live 에 갇힌 방 → Ended
+    end-stale-live:
+      enabled: ${LIVE_RECONCILE_END_STALE_LIVE_ENABLED:true}
+      threshold: ${LIVE_RECONCILE_STALE_LIVE_THRESHOLD:60m}
+      cron: ${LIVE_RECONCILE_END_STALE_LIVE_CRON:0 3/10 * * * *}
+      # 이 잡의 후보당 왕복 수는 고정이 아니다 — 종료 정리가 방의 egress 를 전부 끊는데 그 수는
+      # 화질 수라 설정으로 늘어난다. 그래서 리스를 후보 수로 계산하지 않고, 반대로 회차를 리스
+      # 안에 가둔다: 후보 루프가 이 값의 4/5 를 넘기면 남은 후보를 다음 회차로 넘긴다(남은 1/5 는
+      # 마지막 후보의 정리가 끝날 여유다 — 마감은 후보 사이에서만 보고 진행 중인 호출은 안 끊는다).
+      # 잘린 회차는 reconcile.acted{job=end-stale-live,action=ROUND_BUDGET_EXHAUSTED}=1 로 보인다.
+      # batch-size 포화(STALE_LIVE_BATCH_SATURATED)와 처방이 다르니 섞어 보지 말 것 —
+      # 이 신호가 계속 서면 batch-size 가 아니라 LiveKit 응답 속도를 봐야 한다.
+      lock-at-most-for: ${LIVE_RECONCILE_END_STALE_LIVE_LOCK_AT_MOST_FOR:PT25M}
+      # 한 회차 처리량. 10 × 10분 주기 = 시간당 60방이다. LiveKit 장애 뒤 room_finished 유실이
+      # 대량으로 쌓이면 이 값이 예산보다 먼저 걸리므로, 적체 해소가 급하면
+      # LIVE_RECONCILE_END_STALE_LIVE_BATCH_SIZE 를 일시적으로 올릴 것(회차가 길어지는 건 예산이 막는다).
+      # STALE_LIVE_BATCH_SATURATED=1 이 계속 서면 그게 이 값이 병목이라는 신호다.
+      batch-size: ${LIVE_RECONCILE_END_STALE_LIVE_BATCH_SIZE:10}
+    # DB 정본과 어긋난 LiveKit ingress/egress/room 회수.
+    # grace 는 생성 직후 정상 리소스를 지우지 않기 위한 유예라 0 이 될 수 없다.
+    orphan-media:
+      enabled: ${LIVE_RECONCILE_ORPHAN_MEDIA_ENABLED:true}
+      grace: ${LIVE_RECONCILE_MEDIA_GRACE:15m}
+      cron: ${LIVE_RECONCILE_ORPHAN_MEDIA_CRON:0 6/10 * * * *}
+      # 이 잡은 <방>을 순회 단위로 삼는다 — 한 방의 ingress 삭제 → egress 중단 → 방 닫기를 한자리에서
+      # 그 순서로 처리한다(하나라도 남기고 방을 닫으면 OBS 가 방을 되살린다). 그래서 개수 상한이 없고,
+      # 정지 규칙은 이 값의 4/5(기본 16분)를 마감으로 삼는 것 하나뿐이다.
+      # 넘기면 reconcile.acted{job=orphan-media,action=ROUND_BUDGET_EXHAUSTED}=1 로 남고, 남은 방은
+      # 다음 회차가 가져간다(그 방은 닫지 않은 채로 넘긴다).
+      # ⚠️ live.reconcile.orphan-media.batch-size 는 제거됐다 — 남아 있으면 부팅이 실패한다.
+      #    처리량은 이 값으로 조절한다. 락 연장은 죽은 인스턴스 판정을 늦추므로 사용하지 않는다.
+      lock-at-most-for: ${LIVE_RECONCILE_ORPHAN_MEDIA_LOCK_AT_MOST_FOR:PT20M}
+
+  # -------------------------------------------------------------------------
+  # webhook 수신 경로 레이트리밋 (전부 optional — 코드 기본값 있음)
+  #
+  # 이건 트래픽 셰이퍼가 아니라 최악의 CPU 소모에 거는 상한이다. 정상 트래픽 부근으로 내리지 말 것 —
+  # /webhooks/livekit 은 permitAll 이라 한도가 곧 미인증 공격자의 비용이고, 낮추면 공격자가 그 rps
+  # 만으로 정상 ingress_started 를 429 로 굶길 수 있다. rps 제한은 앞단(Ingress/WAF)의 몫이다.
+  # 앞단에 이미 걸려 있으면 enabled: false 로 내려도 된다.
+  # -------------------------------------------------------------------------
+  webhook:
+    rate-limit:
+      enabled: ${LIVE_WEBHOOK_RATE_LIMIT_ENABLED:true}
+      permits-per-second: ${LIVE_WEBHOOK_RATE_LIMIT_PERMITS:500}
+      burst: ${LIVE_WEBHOOK_RATE_LIMIT_BURST:1000}   # permits-per-second 이상이어야 부팅된다
+
+# ---------------------------------------------------------------------------
+# LiveKit
+#
+# host / hls.cdn-base-url 은 루프백이 아니면 https 여야 부팅된다(소문자 스킴). 평문이면 매 호출마다
+# S3 자격증명과 API JWT 가 그대로 노출되고, cdn-base-url 은 시청자에게 나가는 재생 URL 이다.
+# api-key / api-secret 은 기본값을 두지 말 것 — host 와 달리 코드가 막아주지 않아 조용히 뜬다.
+# ---------------------------------------------------------------------------
+livekit:
+  host: ${LIVEKIT_HOST:http://127.0.0.1:7880}
+  api-key: ${LIVEKIT_API_KEY:}               # REQUIRED
+  api-secret: ${LIVEKIT_API_SECRET:}         # REQUIRED — 임의 방 publish 토큰 발급 + webhook 서명 위조가 가능
+  s3:
+    bucket: ${S3_BUCKET:}                    # REQUIRED
+    region: ${S3_REGION:ap-northeast-2}
+    key-prefix: ${S3_KEY_PREFIX:live/}
+    access-key: ${S3_ACCESS_KEY:}            # REQUIRED
+    secret-key: ${S3_SECRET_KEY:}            # REQUIRED
+  hls:
+    cdn-base-url: ${HLS_CDN_URL:http://localhost:8081/live}
+    segment-duration: 2                      # 세그먼트 길이(초)
+
+# ---------------------------------------------------------------------------
+# 관측(actuator / micrometer)
+#
+# ⚠️ 관리 포트를 분리한다. 지표에는 방송 수·판매자 활동량 같은 영업 지표가 담기고, 게이지는
+# 스크레이프마다 DB 를 조회한다 — 사용자 트래픽 포트에 열면 무인증 고빈도 스크레이프가
+# 방송 시작과 같은 커넥션 풀을 먹는다. 같은 포트 + permitAll 은 "인그레스가 /actuator 를
+# 막아준다" 를 전제로만 성립하는데 이 저장소에 그 제한은 없다.
+#
+# 이 포트는 클러스터 내부에만 노출할 것(Service/Ingress 에서 외부로 뚫지 말 것).
+# k8s 매니페스트에 포트와 스크레이프 대상 설정이 없으면 지표만 수집되지 않는다 —
+# 앱 부팅과 방송 기능에는 영향이 없다.
+#
+# 노출 항목을 명시하는 이유: 기본값에 기대면 액추에이터 버전이 올라갈 때 새 엔드포인트가
+# 조용히 열린다. 포트가 내부 전용이어도 configprops·env 까지 열 이유는 없다.
+# ---------------------------------------------------------------------------
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8091}      # REQUIRED(운영) — server.port(위 47행, 기본 8081)와 달라야 한다.
+                                       # 같으면 LiveSecurityConfig.managementPortMustDiffer 가 부팅을 막는다.
+  endpoints:
+    web:
+      exposure:
+        # 액추에이터 기본 노출은 health 하나뿐이다 — 이건 좁힌 값이 아니라 prometheus 를 더한 값이다.
+        # 넓히지 말 것: LiveSecurityConfig 가 이 두 개만 permitAll 하고 나머지는 denyAll 이라,
+        # 여기에 추가해도 열리지 않고 403 만 난다(코드도 함께 고쳐야 한다 = 리뷰에 보인다).
+        include: health,prometheus     # optional
+  endpoint:
+    health:
+      show-details: never              # optional — 상세는 DB 주소 등 내부 구조를 흘린다
+  metrics:
+    tags:
+      application: live-app            # optional — 여러 앱을 한 프로메테우스로 모을 때 구분자

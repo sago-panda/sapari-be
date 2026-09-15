@@ -21,7 +21,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.Spy;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -30,12 +32,17 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.PromotionTrigger;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
+import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
+import com.sapari.live.domain.model.LiveProduct;
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStatus.Live;
 import com.sapari.live.domain.model.StreamInfo;
@@ -56,6 +63,11 @@ public class StartLiveServiceTest {
 
     @Mock
     private TimeProvider timeProvider;
+
+    // 목이 아니라 기록 대역을 쓴다 — 검증 대상이 "몇 번 불렸나" 가 아니라 "어떤 갈래로 세었나" 라
+    // verify 나열보다 결과 목록 단언이 읽힌다.
+    @Spy
+    private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
     @InjectMocks
     private StartLiveService startLiveService;
@@ -97,16 +109,17 @@ public class StartLiveServiceTest {
     void execute_success(){
         //given
         String expectedSfuToken = "sfu-token-123";
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
-        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
         LiveRoom room = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
                 .set("status", new LiveStatus.Scheduled(Instant.now()))
                 .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn(expectedSfuToken);
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
@@ -127,11 +140,47 @@ public class StartLiveServiceTest {
         verify(liveRoomRepository).save(any(LiveRoom.class));
     }
 
+    @Test
+    @DisplayName("방송 시작 시 상품의 sortOrder는 리스트 인덱스로, pinnedAt은 고정 상품에만 세팅된다.")
+    @SuppressWarnings("unchecked")
+    void start_persists_products_with_sortOrder_and_pinnedAt(){
+        // given: 상품 3개 중 index 1만 고정 (고정 상품은 정확히 1개여야 시작 가능)
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        StartLiveCommand.ProductEntry p0 = new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 8000, 7000, false);
+        StartLiveCommand.ProductEntry p1 = new StartLiveCommand.ProductEntry(UUID.randomUUID(), 20000, 15000, 12000, true);
+        StartLiveCommand.ProductEntry p2 = new StartLiveCommand.ProductEntry(UUID.randomUUID(), 30000, 25000, 20000, false);
+        StartLiveCommand multiCommand = new StartLiveCommand(roomId, sellerId, List.of(p0, p1, p2));
+
+        LiveRoom room = scheduledRoom();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
+        given(liveMediaManager.startHlsEgress(roomId)).willReturn(new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8"));
+        given(timeProvider.now()).willReturn(now);
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        startLiveService.start(multiCommand);
+
+        // then: 저장되는 LiveProduct 리스트를 캡처해 sortOrder/pinnedAt 검증
+        ArgumentCaptor<List<LiveProduct>> captor = ArgumentCaptor.forClass(List.class);
+        verify(liveProductRepository).saveAll(captor.capture());
+        List<LiveProduct> saved = captor.getValue();
+
+        assertThat(saved.size()).isEqualTo(3);
+        assertThat(saved.get(0).sortOrder()).isEqualTo(0);
+        assertThat(saved.get(1).sortOrder()).isEqualTo(1);
+        assertThat(saved.get(2).sortOrder()).isEqualTo(2);
+        // 고정 상품(index 1)만 pinnedAt이 세팅되고 나머지는 null
+        assertThat(saved.get(0).pinnedAt()).isNull();
+        assertThat(saved.get(1).pinnedAt()).isEqualTo(now);
+        assertThat(saved.get(2).pinnedAt()).isNull();
+    }
+
     @RepeatedTest(value = 10)
     @DisplayName("방송 시작 실패: 해당하는 방을 찾을 수 없어 에러 발생")
     void execute_fail_room_not_found(){
         // given
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.empty());
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.empty());
 
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
@@ -145,16 +194,17 @@ public class StartLiveServiceTest {
     void execute_fail_when_invalid_status(){
         // given
         // 1. 방송을 시작할 수 없는 상태(ex: 이미 종료된 상태)로 세팅
-        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8");
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
         LiveRoom invalidRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
                 .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
                 .set("status", new Live(Instant.now(), streamInfo.sfuRoomId(), streamInfo.egressId(), streamInfo.hlsUrl()))
                 .sample();
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(invalidRoom));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(invalidRoom));
 
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
@@ -169,12 +219,12 @@ public class StartLiveServiceTest {
         TransactionSynchronizationManager.clearSynchronization();
 
         LiveRoom room = scheduledRoom();
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
 
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BroadcastStartException.class)
                 .hasMessageContaining("트랜잭션 동기화 비활성");
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
@@ -185,9 +235,9 @@ public class StartLiveServiceTest {
     void compensation_stops_egress_on_rollback(){
         // given
         LiveRoom room = scheduledRoom();
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
@@ -202,7 +252,7 @@ public class StartLiveServiceTest {
         triggerAfterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
 
         // then
-        verify(liveMediaManager).stopHlsEgress(roomId, "egress-123");
+        verify(liveMediaManager).stopHlsEgress(roomId);
     }
 
     @Test
@@ -210,15 +260,15 @@ public class StartLiveServiceTest {
     void compensation_failure_is_not_propagated(){
         // given
         LiveRoom room = scheduledRoom();
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willThrow(new RuntimeException("DB down"));
         willThrow(new RuntimeException("media server down"))
-                .given(liveMediaManager).stopHlsEgress(roomId, "egress-123");
+                .given(liveMediaManager).stopHlsEgress(roomId);
 
         assertThatThrownBy(() -> startLiveService.start(command)).hasMessage("DB down");
 
@@ -232,9 +282,9 @@ public class StartLiveServiceTest {
     void compensation_skipped_on_unknown_status(){
         // given
         LiveRoom room = scheduledRoom();
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
-        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
         given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
         given(timeProvider.now()).willReturn(Instant.now());
@@ -246,16 +296,114 @@ public class StartLiveServiceTest {
         triggerAfterCompletion(TransactionSynchronization.STATUS_UNKNOWN);
 
         // then
-        verify(liveMediaManager, never()).stopHlsEgress(any(UUID.class), anyString());
+        verify(liveMediaManager, never()).stopHlsEgress(any(UUID.class));
     }
 
-    private LiveRoom scheduledRoom(){
-        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8");
+    @Test
+    @DisplayName("RTMP 방 시작: OBS 미연결이면 상품만 등록하고 Ready로 저장 — 셀러 토큰·egress 없음")
+    void rtmp_start_arms_when_ingress_inactive(){
+        // given
+        LiveRoom room = rtmpScheduledRoom();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveMediaManager.publishingIngressIdsOrEmpty(roomId)).willReturn(List.of());
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        var result = startLiveService.start(command);
+
+        // then: 시작 대기(Ready)로 저장, 토큰·HLS·egress 없음, 상품은 등록
+        assertThat(result.sfuToken()).isNull();
+        assertThat(result.hlsUrl()).isNull();
+        verify(liveProductRepository).saveAll(any());
+        verify(liveMediaManager, never()).issueSellerToken(any(UUID.class), any(UUID.class));
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+
+        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveRoomRepository).save(captor.capture());
+        assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ready.class);
+
+        // 아직 승격이 아니다 — 전이는 한 건, 승격 계측은 없어야 한다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Scheduled->Ready");
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).isEmpty();
+    }
+
+    @Test
+    @DisplayName("RTMP 방 시작: OBS가 이미 연결돼 있으면(랑데부) 즉시 egress 시작하고 Live로 전이한다")
+    void rtmp_start_goes_live_when_ingress_active(){
+        // given
+        LiveRoom room = rtmpScheduledRoom();
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
+        // 방이 배정받은 ingress("ingress-1")가 송출 중 → 승격 대상
+        given(liveMediaManager.publishingIngressIdsOrEmpty(roomId)).willReturn(List.of("ingress-1"));
+        given(liveMediaManager.startHlsEgress(roomId)).willReturn(egressResult);
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        var result = startLiveService.start(command);
+
+        // then: Live로 전이, HLS URL 반환, 셀러 토큰은 미발급(RTMP는 ingress push)
+        assertThat(result.sfuToken()).isNull();
+        assertThat(result.hlsUrl()).isEqualTo(egressResult.hlsUrl());
+        verify(liveMediaManager, never()).issueSellerToken(any(UUID.class), any(UUID.class));
+        verify(liveMediaManager).startHlsEgress(roomId);
+
+        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveRoomRepository).save(captor.capture());
+        assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Live.class);
+        assertThat(captor.getValue().streamInfo().hlsArchiveUrl()).isEqualTo("http://archive/playlist.m3u8");
+
+        // 랑데부는 한 트랜잭션에서 두 전이가 일어난다. 합쳐 세면 깔때기에서 Ready 에 멈춘 방과
+        // 구분되지 않으므로 반드시 두 건으로 갈라야 한다. 승격 경로도 SELLER_START 여야 한다 —
+        // WEBHOOK 으로 새면 "OBS 연결 즉시 시작" 통계가 부풀고 랑데부 지연이 보이지 않는다.
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Scheduled->Ready", "Ready->Live");
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).containsExactly(PromotionTrigger.SELLER_START);
+    }
+
+    @Test
+    @DisplayName("RTMP 방 시작: 방이 인정하지 않는 ingress 가 송출 중이면 승격하지 않고 Ready 로 둔다")
+    void rtmp_start_arms_when_publishing_ingress_is_not_the_rooms(){
+        // given — 경합 패자 ingress 가 회수되지 못하고 살아남아 송출 중인 상황.
+        // 승격시키면 고아 미디어 잡이 그 ingress 를 회수하면서 방송이 끊긴다(우리가 곧 끊을 방송을 시작하는 꼴).
+        LiveRoom room = rtmpScheduledRoom();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
+        given(liveMediaManager.publishingIngressIdsOrEmpty(roomId)).willReturn(List.of("ingress-LOSER"));
+        given(timeProvider.now()).willReturn(Instant.now());
+        given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        // when
+        var result = startLiveService.start(command);
+
+        // then
+        assertThat(result.hlsUrl()).isNull();
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+
+        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveRoomRepository).save(captor.capture());
+        assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ready.class);
+    }
+
+    private LiveRoom rtmpScheduledRoom(){
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", null, null, null);
         return fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
                 .set("status", new LiveStatus.Scheduled(Instant.now()))
                 .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.Rtmp("ingress-1"))
+                .sample();
+    }
+
+    private LiveRoom scheduledRoom(){
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
+        return fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId)
+                .set("sellerId", sellerId)
+                .set("status", new LiveStatus.Scheduled(Instant.now()))
+                .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
                 .sample();
     }
 

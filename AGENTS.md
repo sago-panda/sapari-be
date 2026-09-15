@@ -74,11 +74,14 @@ Create a missing referenced file only when starting work in that area.
 | Live broadcast domain | `modules/live/AGENTS.md` |
 | New domain module layout | `modules/AGENTS.md` |
 | Order / payment domain | `modules/order/AGENTS.md` |
+| Controllers / response envelope | `apps/AGENTS.md` |
+| Paging (cursor / offset) | `common/AGENTS.md` |
 | JPA entities | `storage/db-core/AGENTS.md` |
 | DB schema / Flyway migrations | `infra/AGENTS.md` (Migrations) |
 | Redis cache patterns | `storage/redis-core/AGENTS.md` |
 | WebSocket / STOMP | `apps/streaming-app/AGENTS.md` |
 | LiveKit integration | `.claude/skills/livekit-integration.md` |
 | Infra / deploy / CI-CD | `infra/AGENTS.md` |
+| Running the code reviewers | `/review` skill (`.claude/skills/review/SKILL.md`); reviewer set = `.claude/reviewers.yml` |
 
 _Keep under 100 lines. Push domain/infra detail to the sub-`AGENTS.md` files in the index above._

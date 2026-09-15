@@ -4,7 +4,7 @@ import lombok.Builder;
 
 import java.util.UUID;
 
-import com.sapari.live.view.GetLiveResult.LiveRoomSummary;
+import com.sapari.live.view.GetLiveView.LiveRoomSummary;
 
 /**
  * Redis에 캐싱되는 라이브 방송 정보.

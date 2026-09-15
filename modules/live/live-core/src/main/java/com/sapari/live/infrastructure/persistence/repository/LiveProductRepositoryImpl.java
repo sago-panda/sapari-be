@@ -26,6 +26,8 @@ public class LiveProductRepositoryImpl implements LiveProductRepository {
                         .discountPrice(p.discountPrice())
                         .liveDiscountPrice(p.liveDiscountPrice())
                         .isPinned(p.isPinned())
+                        .sortOrder(p.sortOrder())
+                        .pinnedAt(p.pinnedAt())
                         .build())
                 .toList();
         liveProductJpaRepository.saveAll(entities);

@@ -29,11 +29,11 @@ import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitra
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
+import com.sapari.common.web.config.CommonWebMvcConfig;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.product.port.GetProductDetailUseCase;
 import com.sapari.product.view.ProductDetailView;
 import com.sapari.productapp.config.SecurityConfig;
-import com.sapari.productapp.config.WebMvcConfig;
 
 /**
  * 공개 필터 체인의 기본 거부(default-deny) 동작 테스트. 명시 허용된 공개 GET만 통과하고,
@@ -42,7 +42,7 @@ import com.sapari.productapp.config.WebMvcConfig;
 @WebMvcTest(controllers = ProductController.class)
 @Import({
         SecurityConfig.class,
-        WebMvcConfig.class,
+        CommonWebMvcConfig.class,
         TimeProvider.class,
         PublicFilterChainSecurityTest.FixedClockConfig.class
 })

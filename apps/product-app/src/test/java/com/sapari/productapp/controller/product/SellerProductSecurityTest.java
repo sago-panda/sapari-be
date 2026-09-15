@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
+import com.sapari.common.web.config.CommonWebMvcConfig;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.product.port.ChangeProductSaleStatusUseCase;
 import com.sapari.product.port.CreateProductUseCase;
@@ -38,7 +39,6 @@ import com.sapari.product.port.UpdateCombinationPriceStockUseCase;
 import com.sapari.product.port.UpdateProductInfoUseCase;
 import com.sapari.product.port.UpdateProductOptionsUseCase;
 import com.sapari.productapp.config.SecurityConfig;
-import com.sapari.productapp.config.WebMvcConfig;
 
 /**
  * 판매자 상품 경로 시큐리티 체인 인가 테스트. {@code /api/v1/seller/**}가 미인증 401, 비-SELLER 403,
@@ -47,7 +47,7 @@ import com.sapari.productapp.config.WebMvcConfig;
 @WebMvcTest(controllers = SellerProductController.class)
 @Import({
         SecurityConfig.class,
-        WebMvcConfig.class,
+        CommonWebMvcConfig.class,
         TimeProvider.class,
         SellerProductSecurityTest.FixedClockConfig.class
 })

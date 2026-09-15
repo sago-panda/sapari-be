@@ -1,4 +1,14 @@
 # GitLab CI entrypoint (must live at repo root).
 # Keep this thin: split actual jobs under .gitlab/ci/ and include them here.
 include:
+  - local: '.gitlab/ci/build.yml'
   - local: '.gitlab/ci/mr-review.yml'
+
+# stages 는 여기서만 선언한다. include 된 파일이 각자 선언하면 나중 것이 앞의 것을 덮어써
+# 잡이 통째로 사라진다.
+# build 를 맨 앞에 두어, 빌드가 깨진 MR 에서는 리뷰 단계로 넘어가지 않게 한다.
+stages:
+  - build
+  - precheck
+  - review
+  - comment

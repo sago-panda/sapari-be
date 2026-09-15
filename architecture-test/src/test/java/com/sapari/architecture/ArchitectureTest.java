@@ -117,9 +117,13 @@ class ArchitectureTest {
     }
 
     // <layer>가 application/domain/infrastructure 면 -core 내부로 본다 (common.core·common.web 등은 제외)
+    // com.sapari 접두사를 반드시 확인한다 — 없으면 org.springframework.data.domain.* (Limit/Pageable/Sort)
+    // 같은 서드파티가 parts[3]="domain"으로 걸려 "data 도메인의 core"라는 오탐이 난다.
     private static boolean isCoreLayer(JavaClass clazz) {
         String[] parts = clazz.getPackageName().split("\\.");
-        return parts.length >= 4 && CORE_LAYERS.contains(parts[3]);
+        return parts.length >= 4
+                && "com".equals(parts[0]) && "sapari".equals(parts[1])
+                && CORE_LAYERS.contains(parts[3]);
     }
 
     // 6) 공유 토대(common/global/storage)는 도메인 모듈(customer/seller/user/live...)을 의존하면 안 된다.
@@ -272,6 +276,25 @@ class ArchitectureTest {
                 .that().resideInAnyPackage(
                         "com.sapari.*.application.."
                 ).should().dependOnClassesThat().resideInAPackage("..infrastructure..");
+
+        rule.check(SAPARI);
+    }
+
+    /**
+     * 도메인 계층(domain / application)은 관측 라이브러리를 몰라야 한다.
+     *
+     * <p>관측은 도구가 바뀌는 관심사다(micrometer → 다른 무엇). 서비스가 {@code MeterRegistry} 를 직접
+     * 주입받기 시작하면 그 교체가 도메인 문장을 흔들고, 계측이 도메인 로직 사이에 섞여 "무슨 일이
+     * 일어나는가" 를 읽기 어렵게 만든다. {@code LiveMetrics} 같은 포트를 두고 구현만 infrastructure 에
+     * 두라는 규칙이며, 사람이 지키는 대신 빌드가 지킨다.
+     */
+    @Test
+    void domain_and_application_must_not_depend_on_metrics_library(){
+        ArchRule rule = noClasses()
+                .that().resideInAnyPackage(
+                        "com.sapari.*.domain..",
+                        "com.sapari.*.application.."
+                ).should().dependOnClassesThat().resideInAPackage("io.micrometer..");
 
         rule.check(SAPARI);
     }

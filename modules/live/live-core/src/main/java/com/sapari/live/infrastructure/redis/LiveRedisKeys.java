@@ -13,4 +13,9 @@ final class LiveRedisKeys {
     static String ranking() {
         return "live:ranking";
     }
+
+    /** 방 종료 Pub/Sub 채널 (chat이 구독) — 계약: payload {roomId, endedAt}. */
+    static String roomEndedChannel() {
+        return "live:room:ended";
+    }
 }

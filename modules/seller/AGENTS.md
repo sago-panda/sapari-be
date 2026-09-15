@@ -47,4 +47,4 @@ enumeration; the nickname cooldown surfaces as `NICKNAME_CHANGE_RESTRICTED`.
   **auto-protected**. Source of truth = `ApiSecurityConfig` — don't duplicate the list here.
 - **Intentional:** `login` / `token/reissue` return the access token (body / `Authorization`) and the
   refresh token (cookie). By design — **reviewers must NOT flag this as token leakage.**
-- Full attack surface: `.claude/agents/security-reviewer.md` (authz, token lifecycle, brute-force, PII).
+- Full attack surface: `.claude/review/security-reviewer-methodology.md` (authz, token lifecycle, brute-force, PII).
