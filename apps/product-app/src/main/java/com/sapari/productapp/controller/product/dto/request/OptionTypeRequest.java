@@ -23,7 +23,7 @@ public record OptionTypeRequest(
         @NotBlank @Size(max = 50) String name,
         UUID attributeGroupId,
         @NotNull Short sortOrder,
-        @NotEmpty @Size(max = 100) @Valid List<OptionValueRequest> values
+        @NotEmpty @Size(max = 100) List<@NotNull @Valid OptionValueRequest> values
 ) {
 
     /**

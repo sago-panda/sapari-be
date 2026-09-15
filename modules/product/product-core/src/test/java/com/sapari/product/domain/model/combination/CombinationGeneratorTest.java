@@ -220,7 +220,7 @@ class CombinationGeneratorTest {
             ProductOptionTypeModel size = type("사이즈", (short) 2,
                     value(S, "S", 0, (short) 1), value(M, "M", 0, (short) 2));
 
-            ExclusionRule rule = new ExclusionRule(List.of(BLUE, S));
+            ExclusionRule rule = new ExclusionRule(List.of(BLUE, S), "미생산");
 
             List<ProductOptionCombination> result = CombinationGenerator.generate(
                     PRODUCT_ID, BASE_PRICE, List.of(color, size), List.of(), List.of(rule), 0, NOW);
@@ -292,6 +292,68 @@ class CombinationGeneratorTest {
                     PRODUCT_ID, BASE_PRICE, List.of(t1, t2, t3), List.of(), List.of(), 0, NOW);
 
             assertThat(result).hasSize(CombinationGenerator.MAX_COMBINATIONS);
+        }
+
+        @Test
+        @DisplayName("추가금 합산이 int 범위를 넘으면 조용히 넘치지 않고 InvalidProductOptionException")
+        void rejectsPriceOverflow() {
+            ProductOptionTypeModel color = type("색상", (short) 1, value(RED, "빨강", 0, (short) 1));
+            List<SurchargeRule> huge = List.of(
+                    new SurchargeRule(List.of(RED), Integer.MAX_VALUE),
+                    new SurchargeRule(List.of(RED), Integer.MAX_VALUE));
+
+            assertThatThrownBy(() -> CombinationGenerator.generate(
+                    PRODUCT_ID, BASE_PRICE, List.of(color), huge, List.of(), 0, NOW))
+                    .isInstanceOf(InvalidProductOptionException.class);
+        }
+
+        @Test
+        @DisplayName("경계: 조합 가격이 정확히 Integer.MAX_VALUE면 통과한다")
+        void allowsPriceAtIntMax() {
+            ProductOptionTypeModel color = type("색상", (short) 1, value(RED, "빨강", 0, (short) 1));
+            List<SurchargeRule> toMax = List.of(new SurchargeRule(List.of(RED), Integer.MAX_VALUE - BASE_PRICE));
+
+            List<ProductOptionCombination> result = CombinationGenerator.generate(
+                    PRODUCT_ID, BASE_PRICE, List.of(color), toMax, List.of(), 0, NOW);
+
+            assertThat(result).singleElement()
+                    .satisfies(c -> assertThat(c.price()).isEqualTo(Integer.MAX_VALUE));
+        }
+
+        @Test
+        @DisplayName("음수 priceDelta로 조합 가격이 0 미만이면 서버 오류(IAE)가 아니라 InvalidProductOptionException")
+        void rejectsNegativePrice() {
+            ProductOptionTypeModel color = type("색상", (short) 1, value(RED, "빨강", -BASE_PRICE - 1, (short) 1));
+
+            assertThatThrownBy(() -> CombinationGenerator.generate(
+                    PRODUCT_ID, BASE_PRICE, List.of(color), List.of(), List.of(), 0, NOW))
+                    .isInstanceOf(InvalidProductOptionException.class);
+        }
+
+        @Test
+        @DisplayName("경계: 음수 priceDelta로 조합 가격이 정확히 0이면 통과한다 (전액 할인 옵션)")
+        void allowsZeroPrice() {
+            ProductOptionTypeModel color = type("색상", (short) 1, value(RED, "빨강", -BASE_PRICE, (short) 1));
+
+            List<ProductOptionCombination> result = CombinationGenerator.generate(
+                    PRODUCT_ID, BASE_PRICE, List.of(color), List.of(), List.of(), 0, NOW);
+
+            assertThat(result).singleElement()
+                    .satisfies(c -> assertThat(c.price()).isZero());
+        }
+
+        @Test
+        @DisplayName("옵션이 있는데 제외 룰이 모든 조합을 배제하면 InvalidProductOptionException (구매 단위 없는 상품 차단)")
+        void rejectsWhenEveryCombinationExcluded() {
+            ProductOptionTypeModel color = type("색상", (short) 1,
+                    value(RED, "빨강", 0, (short) 1), value(BLUE, "파랑", 0, (short) 2));
+            List<ExclusionRule> excludeAll = List.of(
+                    new ExclusionRule(List.of(RED), null),
+                    new ExclusionRule(List.of(BLUE), null));
+
+            assertThatThrownBy(() -> CombinationGenerator.generate(
+                    PRODUCT_ID, BASE_PRICE, List.of(color), List.of(), excludeAll, 0, NOW))
+                    .isInstanceOf(InvalidProductOptionException.class);
         }
 
         private ProductOptionTypeModel bigType(String name, short sortOrder, int valueCount) {

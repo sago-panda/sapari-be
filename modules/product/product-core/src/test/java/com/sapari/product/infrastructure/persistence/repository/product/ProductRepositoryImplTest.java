@@ -10,6 +10,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.sapari.product.domain.model.product.ImageRole;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductImageRef;
+import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
 import com.sapari.product.domain.model.product.ProductStatus;
@@ -248,6 +249,120 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
                     .containsExactlyInAnyOrderElementsOf(images.stream()
                             .map(ProductImageRef::imageKey)
                             .toList());
+        }
+    }
+
+    @Nested
+    @DisplayName("옵션 config 단독 교체(replaceOptionConfig)")
+    class ReplaceOptionConfig {
+
+        private static final String SURCHARGE_JSON = "[{\"valueIds\":[\"00000000-0000-0000-0000-000000000001\"],\"amount\":700}]";
+        private static final String EXCLUSION_JSON = "[{\"valueIds\":[\"00000000-0000-0000-0000-000000000002\"],\"reason\":\"미생산\"}]";
+
+        private Product reload(UUID productId) {
+            em.flush();
+            em.clear();
+            return productRepository.findById(productId)
+                    .orElseThrow();
+        }
+
+        /** 옵션 타입/값 id 목록 — 교체 전후로 재발급되지 않았는지 비교하는 기준. */
+        private List<UUID> optionValueIds(Product product) {
+            return product.optionTypes()
+                    .stream()
+                    .flatMap(t -> t.values()
+                            .stream())
+                    .map(ProductOptionValueModel::id)
+                    .sorted()
+                    .toList();
+        }
+
+        @Test
+        @DisplayName("config 행이 없으면 새로 만든다")
+        void inserts_when_absent() {
+            Product saved = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+
+            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(SURCHARGE_JSON, EXCLUSION_JSON));
+
+            Product after = reload(saved.id());
+            // jsonb는 정규화(공백/키 순서)되므로 부분 비교
+            assertThat(after.optionConfig()
+                    .surchargeRules()).contains("\"amount\"")
+                    .contains("700");
+            assertThat(after.optionConfig()
+                    .exclusionRules()).contains("\"reason\"")
+                    .contains("미생산");
+        }
+
+        @Test
+        @DisplayName("기존 행이 있으면 두 룰 컬럼을 함께 교체한다(한쪽을 null로 비우는 것 포함)")
+        void updates_when_present() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            em.flush();
+            em.clear();
+
+            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(null, EXCLUSION_JSON));
+
+            Product after = reload(saved.id());
+            assertThat(after.optionConfig()
+                    .surchargeRules()).isNull();
+            assertThat(after.optionConfig()
+                    .exclusionRules()).contains("미생산");
+        }
+
+        @Test
+        @DisplayName("null이면 config 행을 삭제한다")
+        void deletes_when_null() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            em.flush();
+            em.clear();
+
+            productRepository.replaceOptionConfig(saved.id(), null);
+
+            assertThat(reload(saved.id()).optionConfig()).isNull();
+        }
+
+        @Test
+        @DisplayName("null인데 행이 없어도 예외 없이 끝난다")
+        void null_without_row_is_noop() {
+            Product saved = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+
+            productRepository.replaceOptionConfig(saved.id(), null);
+
+            assertThat(reload(saved.id()).optionConfig()).isNull();
+        }
+
+        @Test
+        @DisplayName("옵션 타입/값 행을 건드리지 않는다 — 옵션값 id가 재발급되지 않아 조합 참조가 유지된다")
+        void keeps_option_value_ids() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            List<UUID> before = optionValueIds(reload(saved.id()));
+
+            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(SURCHARGE_JSON, null));
+
+            Product after = reload(saved.id());
+            assertThat(before).isNotEmpty();
+            assertThat(optionValueIds(after)).isEqualTo(before);
+        }
+
+        @Test
+        @DisplayName("같은 트랜잭션에서 save(옛 config 재기록) 직후 교체해도 새 룰이 남는다 (옵션 수정 유스케이스 경로)")
+        void replaces_right_after_save_in_same_transaction() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            em.flush();
+            em.clear();
+            Product loaded = productRepository.findById(saved.id())
+                    .orElseThrow();
+
+            // flush/clear 없이 연속 호출 — save가 옛 config를 관리 엔티티로 올린 상태에서 교체
+            productRepository.save(loaded);
+            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(null, EXCLUSION_JSON));
+
+            Product after = reload(saved.id());
+            assertThat(after.optionConfig()
+                    .surchargeRules()).isNull();
+            assertThat(after.optionConfig()
+                    .exclusionRules()).contains("미생산");
         }
     }
 

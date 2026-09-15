@@ -4,21 +4,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.product.application.port.HtmlSanitizer;
+import com.sapari.product.command.CombinationOverrideCommand;
 import com.sapari.product.command.CreateProductCommand;
+import com.sapari.product.command.ExclusionRuleCommand;
 import com.sapari.product.command.ProductOptionTypeCommand;
 import com.sapari.product.command.ProductOptionValueCommand;
+import com.sapari.product.command.SurchargeRuleCommand;
 import com.sapari.product.domain.exception.CategoryNotFoundException;
+import com.sapari.product.domain.exception.InvalidProductOptionException;
 import com.sapari.product.domain.exception.InvalidProductTagException;
 import com.sapari.product.domain.model.category.Category;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.model.product.Product;
+import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductOptionModel;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
@@ -32,6 +39,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,10 +53,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("CreateProductService")
 class CreateProductServiceTest {
+
+    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private static final UUID SELLER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a1");
     private static final UUID SHIPPING_POLICY_ID = UUID.fromString("00000000-0000-0000-0000-0000000000c1");
@@ -96,15 +108,15 @@ class CreateProductServiceTest {
     }
 
     private static ProductOptionTypeCommand sizeOptionCommand() {
-        ProductOptionValueCommand s = new ProductOptionValueCommand("S", null, null, 0, (short) 1);
-        ProductOptionValueCommand m = new ProductOptionValueCommand("M", null, "{\"k\":1}", M_PRICE_DELTA, (short) 2);
+        ProductOptionValueCommand s = new ProductOptionValueCommand("S", null, null, 0, (short) 1, null);
+        ProductOptionValueCommand m = new ProductOptionValueCommand("M", null, "{\"k\":1}", M_PRICE_DELTA, (short) 2, null);
         return new ProductOptionTypeCommand("사이즈", null, (short) 1, List.of(s, m));
     }
 
     private static CreateProductCommand commandWith(List<String> tags, ProductOptionTypeCommand... optionTypes) {
         return new CreateProductCommand(
                 SELLER_ID, CATEGORY_ID, "베이직 티셔츠", "상세 설명", BASE_PRICE,
-                SHIPPING_POLICY_ID, 2_500, tags, List.of(optionTypes), DEFAULT_STOCK);
+                SHIPPING_POLICY_ID, 2_500, tags, List.of(optionTypes), DEFAULT_STOCK, null, null, null);
     }
 
     /** productRepository.save가 돌려줄, 옵션값 id가 부여된 저장본. */
@@ -250,12 +262,160 @@ class CreateProductServiceTest {
         }
 
         @Test
+        @DisplayName("룰이 없으면 옵션 config를 기록하지 않는다 (config 행 없음)")
+        void skipsConfigWithoutRules() {
+            service.create(command());
+
+            then(productRepository).should(never()).replaceOptionConfig(any(), any());
+        }
+
+        @Test
         @DisplayName("뷰는 저장된 상품 id와 상태명을 반환한다")
         void returnsView() {
             CreateProductView view = service.create(command());
 
             assertThat(view.productId()).isEqualTo(PRODUCT_ID);
             assertThat(view.status()).isEqualTo("PENDING_REVIEW");
+        }
+    }
+
+    @Nested
+    @DisplayName("옵션 룰·조합 오버라이드")
+    class WithOptionRules {
+
+        private static final UUID RED_ID = UUID.fromString("00000000-0000-0000-0000-000000000021");
+        private static final UUID BLUE_ID = UUID.fromString("00000000-0000-0000-0000-000000000022");
+        private static final int SURCHARGE = 500;
+
+        /** 색상(빨강 c-red · 파랑 c-blue) × 사이즈(S s-s · M s-m, M +1000) 옵션에 룰·오버라이드를 얹은 등록 커맨드. */
+        private static CreateProductCommand ruleCommand(
+                List<SurchargeRuleCommand> surcharges,
+                List<ExclusionRuleCommand> exclusions,
+                List<CombinationOverrideCommand> overrides) {
+            ProductOptionTypeCommand color = new ProductOptionTypeCommand("색상", null, (short) 1, List.of(
+                    new ProductOptionValueCommand("빨강", null, null, 0, (short) 1, "c-red"),
+                    new ProductOptionValueCommand("파랑", null, null, 0, (short) 2, "c-blue")));
+            ProductOptionTypeCommand size = new ProductOptionTypeCommand("사이즈", null, (short) 2, List.of(
+                    new ProductOptionValueCommand("S", null, null, 0, (short) 1, "s-s"),
+                    new ProductOptionValueCommand("M", null, null, M_PRICE_DELTA, (short) 2, "s-m")));
+            return new CreateProductCommand(
+                    SELLER_ID, CATEGORY_ID, "베이직 티셔츠", "상세 설명", BASE_PRICE,
+                    SHIPPING_POLICY_ID, 2_500, List.of(), List.of(color, size), DEFAULT_STOCK,
+                    surcharges, exclusions, overrides);
+        }
+
+        /** 추가금(빨강+M +500) · 제외(파랑+S) · 오버라이드(파랑+M 판매가·정가·재고·SKU)를 모두 담은 커맨드. */
+        private static CreateProductCommand fullRuleCommand() {
+            return ruleCommand(
+                    List.of(new SurchargeRuleCommand(List.of("c-red", "s-m"), SURCHARGE)),
+                    List.of(new ExclusionRuleCommand(List.of("c-blue", "s-s"), "미생산")),
+                    List.of(new CombinationOverrideCommand(List.of("c-blue", "s-m"), 9_900, 12_000, 7, "TS-BLUE-M")));
+        }
+
+        /** 저장 후 돌려받는 저장본 — 실제 어댑터처럼 DB 재조회라 타입 순서가 입력과 다를 수 있음을 반영해 뒤집어 둔다. */
+        private static Product savedColorAndSize() {
+            ProductOptionTypeModel size = new ProductOptionTypeModel(UUID.randomUUID(), null, "사이즈", (short) 2, List.of(
+                    new ProductOptionValueModel(S_ID, null, "S", null, 0, (short) 1),
+                    new ProductOptionValueModel(M_ID, null, "M", null, M_PRICE_DELTA, (short) 2)));
+            ProductOptionTypeModel color = new ProductOptionTypeModel(UUID.randomUUID(), null, "색상", (short) 1, List.of(
+                    new ProductOptionValueModel(RED_ID, null, "빨강", null, 0, (short) 1),
+                    new ProductOptionValueModel(BLUE_ID, null, "파랑", null, 0, (short) 2)));
+            return savedProduct().toBuilder().optionTypes(List.of(size, color)).build();
+        }
+
+        private void stubHappyPath() {
+            given(categoryRepository.findById(CATEGORY_ID)).willReturn(Optional.of(aCategory()));
+            given(productRepository.save(any())).willReturn(savedColorAndSize());
+            given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
+        }
+
+        private ProductOptionCombination combinationOf(List<ProductOptionCombination> combinations, UUID... ids) {
+            return combinations.stream()
+                    .filter(c -> Set.copyOf(c.optionValueIds()).equals(Set.of(ids)))
+                    .findFirst()
+                    .orElseThrow();
+        }
+
+        @Test
+        @DisplayName("추가금은 매칭 조합 가격에 가산하고, 제외 조합은 만들지 않으며, 오버라이드는 해당 조합에만 덮어쓴다")
+        void appliesRulesAndOverrides() {
+            stubHappyPath();
+
+            service.create(fullRuleCommand());
+
+            List<ProductOptionCombination> combinations = captureSavedCombinations();
+            // 2×2=4 중 파랑+S 제외 → 3개
+            assertThat(combinations).hasSize(3);
+            assertThat(combinations).noneMatch(c -> Set.copyOf(c.optionValueIds()).equals(Set.of(BLUE_ID, S_ID)));
+            // 룰 미매칭: 기본가 그대로, 정가·SKU 미설정, 기본 재고
+            assertThat(combinationOf(combinations, RED_ID, S_ID)).satisfies(c -> {
+                assertThat(c.price()).isEqualTo(BASE_PRICE);
+                assertThat(c.originalPrice()).isNull();
+                assertThat(c.sku()).isNull();
+                assertThat(c.stock().stock()).isEqualTo(DEFAULT_STOCK);
+            });
+            // 추가금 룰 매칭: 기본가 + M 가산액 + 추가금
+            assertThat(combinationOf(combinations, RED_ID, M_ID).price())
+                    .isEqualTo(BASE_PRICE + M_PRICE_DELTA + SURCHARGE);
+            // 오버라이드: 계산값 대신 지정값
+            assertThat(combinationOf(combinations, BLUE_ID, M_ID)).satisfies(c -> {
+                assertThat(c.price()).isEqualTo(9_900);
+                assertThat(c.originalPrice()).isEqualTo(12_000);
+                assertThat(c.stock().stock()).isEqualTo(7);
+                assertThat(c.stock().reservedStock()).isZero();
+                assertThat(c.sku().value()).isEqualTo("TS-BLUE-M");
+            });
+        }
+
+        @Test
+        @DisplayName("룰을 저장된 옵션값 id로 직렬화해 config 행만 기록하고, 상품 save는 한 번만 한다 (옵션값 id 재발급 방지)")
+        void writesConfigWithResolvedIdsWithoutResaving() {
+            stubHappyPath();
+
+            service.create(fullRuleCommand());
+
+            ArgumentCaptor<ProductOptionConfigModel> captor = ArgumentCaptor.forClass(ProductOptionConfigModel.class);
+            then(productRepository).should().replaceOptionConfig(eq(PRODUCT_ID), captor.capture());
+            then(productRepository).should(times(1)).save(any());
+
+            JsonNode surcharge = JSON.readTree(captor.getValue().surchargeRules());
+            assertThat(surcharge).hasSize(1);
+            assertThat(surcharge.get(0).get("valueIds").valueStream().map(JsonNode::asString))
+                    .containsExactly(RED_ID.toString(), M_ID.toString());
+            assertThat(surcharge.get(0).get("amount").asInt()).isEqualTo(SURCHARGE);
+
+            JsonNode exclusion = JSON.readTree(captor.getValue().exclusionRules());
+            assertThat(exclusion).hasSize(1);
+            assertThat(exclusion.get(0).get("valueIds").valueStream().map(JsonNode::asString))
+                    .containsExactly(BLUE_ID.toString(), S_ID.toString());
+            assertThat(exclusion.get(0).get("reason").asString()).isEqualTo("미생산");
+        }
+
+        @Test
+        @DisplayName("상품 저장 → 조합 저장 → config 기록 순서로 진행한다 (config는 확정된 옵션값 id가 필요)")
+        void writesConfigAfterProductAndCombinations() {
+            stubHappyPath();
+
+            service.create(fullRuleCommand());
+
+            InOrder inOrder = inOrder(productRepository, combinationRepository);
+            inOrder.verify(productRepository).save(any());
+            inOrder.verify(combinationRepository).saveAll(any());
+            inOrder.verify(productRepository).replaceOptionConfig(any(), any());
+        }
+
+        @Test
+        @DisplayName("잘못된 룰(존재하지 않는 ref)이면 InvalidProductOptionException, 카테고리 조회·저장 전에 거절한다")
+        void rejectsInvalidRulesBeforeAnyIo() {
+            CreateProductCommand invalid = ruleCommand(
+                    List.of(new SurchargeRuleCommand(List.of("c-green"), SURCHARGE)), null, null);
+
+            assertThatThrownBy(() -> service.create(invalid))
+                    .isInstanceOf(InvalidProductOptionException.class);
+
+            then(categoryRepository).shouldHaveNoInteractions();
+            then(productRepository).shouldHaveNoInteractions();
+            then(combinationRepository).shouldHaveNoInteractions();
         }
     }
 

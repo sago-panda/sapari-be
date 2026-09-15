@@ -43,7 +43,8 @@ public final class CombinationGenerator {
      * @param exclusionRules 제외 룰. null이면 없음으로 처리
      * @param defaultStock   생성 조합의 기본 재고
      * @param now            생성 시각 (호출측이 TimeProvider로 구해 전달)
-     * @throws InvalidProductOptionException 값이 하나도 없는 옵션 타입이 있는 경우
+     * @throws InvalidProductOptionException 값이 하나도 없는 옵션 타입이 있거나, 조합 가격이 0 미만·int 범위 초과이거나,
+     *                                       제외 룰이 모든 조합을 배제한 경우
      * @throws TooManyCombinationsException  조합 수가 {@link #MAX_COMBINATIONS}를 초과하는 경우
      */
     public static List<ProductOptionCombination> generate(
@@ -86,14 +87,19 @@ public final class CombinationGenerator {
             }
 
             // 가격 = 기본가 + Σ(옵션값 추가금) + Σ(이 조합에 매칭되는 추가금 룰 amount)
-            int price = basePrice
+            // long으로 합산 — int 합산은 큰 금액 조합에서 조용히 넘쳐 음수 가격이 된다
+            long price = (long) basePrice
                     + tuple.stream()
-                    .mapToInt(ProductOptionValueModel::priceDelta)
+                    .mapToLong(ProductOptionValueModel::priceDelta)
                     .sum()
                     + surcharges.stream()
                     .filter(rule -> rule.matches(idSet))
-                    .mapToInt(SurchargeRule::amount)
+                    .mapToLong(SurchargeRule::amount)
                     .sum();
+            // 음수(할인 가산액 과다)·int 범위 초과는 조합 생성자의 IllegalArgumentException(서버 오류)이 되기 전에 입력 오류로 돌린다
+            if (price < 0 || price > Integer.MAX_VALUE) {
+                throw new InvalidProductOptionException("조합 가격이 허용 범위(0 ~ " + Integer.MAX_VALUE + ")를 벗어납니다: " + price);
+            }
 
             // 신규 조합 — sku·originalPrice 미지정, 재고는 defaultStock(예약 0)으로 시작
             result.add(ProductOptionCombination.create(
@@ -101,10 +107,15 @@ public final class CombinationGenerator {
                     CombinationKey.of(combinationKey(valueIds)),
                     null,
                     null,
-                    price,
+                    (int) price,
                     Stock.of(defaultStock, 0),
                     valueIds,
                     now));
+        }
+
+        // 옵션이 있는데 제외 룰이 모든 조합을 배제하면 구매할 수 있는 단위가 없는 상품이 된다 → 옵션 구성 오류
+        if (result.isEmpty()) {
+            throw new InvalidProductOptionException("제외 룰이 모든 옵션 조합을 배제했습니다.");
         }
         return result;
     }

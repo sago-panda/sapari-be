@@ -6,6 +6,7 @@ import com.sapari.product.infrastructure.persistence.entity.product.option.Produ
 
 import com.sapari.product.domain.exception.ProductConcurrentModificationException;
 import com.sapari.product.domain.model.product.Product;
+import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.domain.repository.product.ProductRepository;
@@ -55,6 +56,22 @@ public class ProductRepositoryImpl implements ProductRepository {
         }
         replaceChildren(entity.getId(), product);
         return loadAggregate(entity);
+    }
+
+    @Override
+    public void replaceOptionConfig(UUID productId, ProductOptionConfigModel config) {
+        if (config == null) {
+            if (optionConfigJpaRepository.existsById(productId)) {
+                optionConfigJpaRepository.deleteById(productId);
+            }
+            return;
+        }
+        // 기존 행이 있으면 관리 엔티티를 그대로 갱신한다(dirty checking). PK가 앱 주입값이라 새 엔티티로 save하면
+        // merge 경로를 타는데, 같은 트랜잭션에서 앞선 save가 이미 이 행을 관리 중일 수 있어 관리 엔티티 갱신이 안전하다.
+        optionConfigJpaRepository.findById(productId)
+                .ifPresentOrElse(
+                        entity -> entity.updateRules(config.surchargeRules(), config.exclusionRules()),
+                        () -> optionConfigJpaRepository.save(mapper.toConfigEntity(productId, config)));
     }
 
     @Override

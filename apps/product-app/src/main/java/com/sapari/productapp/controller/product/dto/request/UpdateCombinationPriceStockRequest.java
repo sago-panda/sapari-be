@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import com.sapari.product.command.UpdateCombinationPriceStockCommand;
@@ -15,7 +16,7 @@ import com.sapari.product.command.UpdateCombinationPriceStockCommand;
  * @param combinations 변경할 조합별 항목들(최소 1개)
  */
 public record UpdateCombinationPriceStockRequest(
-        @NotEmpty @Size(max = 500) @Valid List<CombinationUpdateRequest> combinations
+        @NotEmpty @Size(max = 500) List<@NotNull @Valid CombinationUpdateRequest> combinations
 ) {
 
     /**

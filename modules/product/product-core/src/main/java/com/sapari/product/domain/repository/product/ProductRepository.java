@@ -1,6 +1,7 @@
 package com.sapari.product.domain.repository.product;
 
 import com.sapari.product.domain.model.product.Product;
+import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductSummary;
 import java.util.List;
 import java.util.Optional;
@@ -17,6 +18,17 @@ public interface ProductRepository {
      * 신규(id == null)면 INSERT, 기존이면 루트 갱신 + 자식 전체 replace 후, 저장된 애그리거트를 반환한다.
      */
     Product save(Product product);
+
+    /**
+     * 옵션 config(추가금·제외 룰 jsonb) 행<b>만</b> 교체한다. {@code config}가 null이면 행을 삭제한다.
+     *
+     * <p>룰은 저장 후에야 확정되는 옵션값 id를 참조하므로 상품 저장 뒤에 따로 기록해야 한다. {@link #save}를 다시 부르면
+     * 옵션 타입/값이 delete-replace되어 id가 재발급되고 조합이 가리키는 옵션값이 사라지므로, 이 전용 메서드를 쓴다.
+     *
+     * @param productId 소속 상품 id(config PK)
+     * @param config    교체할 룰, 없으면 null
+     */
+    void replaceOptionConfig(UUID productId, ProductOptionConfigModel config);
 
     /**
      * id로 단일 상품을 자식까지 조립해 조회한다(삭제 포함).

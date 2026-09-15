@@ -3,19 +3,27 @@ package com.sapari.product.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.product.command.CombinationOverrideCommand;
+import com.sapari.product.command.ExclusionRuleCommand;
 import com.sapari.product.command.ProductOptionTypeCommand;
 import com.sapari.product.command.ProductOptionValueCommand;
+import com.sapari.product.command.SurchargeRuleCommand;
 import com.sapari.product.command.UpdateProductOptionsCommand;
 import com.sapari.product.domain.exception.InvalidProductOptionException;
 import com.sapari.product.domain.exception.ProductAccessDeniedException;
 import com.sapari.product.domain.exception.ProductNotFoundException;
+import com.sapari.product.domain.model.combination.CombinationKey;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
+import com.sapari.product.domain.model.combination.Sku;
+import com.sapari.product.domain.model.combination.Stock;
 import com.sapari.product.domain.model.product.Product;
+import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductOptionModel;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
@@ -84,10 +92,10 @@ class UpdateProductOptionsServiceTest {
     }
 
     private static UpdateProductOptionsCommand command() {
-        ProductOptionValueCommand s = new ProductOptionValueCommand("S", null, null, 0, (short) 1);
-        ProductOptionValueCommand m = new ProductOptionValueCommand("M", null, null, 0, (short) 2);
+        ProductOptionValueCommand s = new ProductOptionValueCommand("S", null, null, 0, (short) 1, null);
+        ProductOptionValueCommand m = new ProductOptionValueCommand("M", null, null, 0, (short) 2, null);
         ProductOptionTypeCommand size = new ProductOptionTypeCommand("사이즈", null, (short) 1, List.of(s, m));
-        return new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(size), 50, EXPECTED_VERSION);
+        return new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(size), 50, EXPECTED_VERSION, null, null, null);
     }
 
     @SuppressWarnings("unchecked")
@@ -160,15 +168,148 @@ class UpdateProductOptionsServiceTest {
         }
 
         @Test
+        @DisplayName("룰이 없어도 config를 null로 교체해 기존 룰(옛 옵션값 id 참조)을 지운다")
+        void clearsStaleConfigWithoutRules() {
+            stubHappyPath();
+
+            service.update(command());
+
+            then(productRepository).should().replaceOptionConfig(PRODUCT_ID, null);
+        }
+
+        @Test
+        @DisplayName("SKU 오버라이드가 없으면 기존 조합을 조회하지 않는다 (SKU 재사용 검사 생략)")
+        void skipsSkuLookupWithoutSkuOverrides() {
+            stubHappyPath();
+
+            service.update(command());
+
+            then(combinationRepository).should(never()).findByProductId(any());
+        }
+
+        @Test
         @DisplayName("옵션을 비우면 기존 조합은 벌크 단종하고 새 조합 saveAll은 호출하지 않는다 (옵션 없는 단일 상품)")
         void emptyOptionsRetiresAllAndCreatesNone() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
             given(productRepository.save(any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
 
-            service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50, EXPECTED_VERSION));
+            service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50, EXPECTED_VERSION, null, null, null));
 
             then(combinationRepository).should().discontinueAllByProductId(PRODUCT_ID, LATER);
             then(combinationRepository).should(never()).saveAll(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("옵션 룰·조합 오버라이드")
+    class WithOptionRules {
+
+        private static final String REUSED_SKU = "TS-M-OLD";
+
+        /** 사이즈(S s-s · M s-m) 옵션에 룰·오버라이드를 얹은 옵션 수정 커맨드. */
+        private static UpdateProductOptionsCommand ruleCommand(
+                List<SurchargeRuleCommand> surcharges,
+                List<ExclusionRuleCommand> exclusions,
+                List<CombinationOverrideCommand> overrides) {
+            ProductOptionTypeCommand size = new ProductOptionTypeCommand("사이즈", null, (short) 1, List.of(
+                    new ProductOptionValueCommand("S", null, null, 0, (short) 1, "s-s"),
+                    new ProductOptionValueCommand("M", null, null, 0, (short) 2, "s-m")));
+            return new UpdateProductOptionsCommand(
+                    PRODUCT_ID, SELLER_ID, List.of(size), 50, EXPECTED_VERSION, surcharges, exclusions, overrides);
+        }
+
+        /** 기존(단종될) 조합 — 주어진 SKU를 점유한다. */
+        private static ProductOptionCombination existingCombination(String sku) {
+            return ProductOptionCombination.create(
+                    PRODUCT_ID, CombinationKey.of("old"), Sku.of(sku), null, 10_000, Stock.of(3, 0), List.of(), NOW);
+        }
+
+        private void stubHappyPath() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
+            given(productRepository.save(any())).willReturn(savedWithNewOptions());
+            given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
+        }
+
+        @Test
+        @DisplayName("새 옵션값 id로 룰을 해석해 추가금 가산·제외·오버라이드를 새 조합에 반영한다")
+        void appliesRulesToRegeneratedCombinations() {
+            stubHappyPath();
+            given(combinationRepository.findByProductId(PRODUCT_ID)).willReturn(List.of(existingCombination("TS-S-OLD")));
+
+            service.update(ruleCommand(
+                    List.of(new SurchargeRuleCommand(List.of("s-m"), 700)),
+                    null,
+                    List.of(new CombinationOverrideCommand(List.of("s-m"), null, 15_000, 3, "TS-M-NEW"))));
+
+            List<ProductOptionCombination> newCombos = captureSavedAll();
+            assertThat(newCombos).hasSize(2);
+            assertThat(newCombos).filteredOn(c -> c.optionValueIds().equals(List.of(NEW_S))).singleElement()
+                    .satisfies(c -> {
+                        assertThat(c.price()).isEqualTo(10_000);
+                        assertThat(c.stock().stock()).isEqualTo(50);
+                        assertThat(c.sku()).isNull();
+                    });
+            // M: 판매가는 오버라이드 미지정이라 계산값(기본가 + 추가금), 나머지는 지정값
+            assertThat(newCombos).filteredOn(c -> c.optionValueIds().equals(List.of(NEW_M))).singleElement()
+                    .satisfies(c -> {
+                        assertThat(c.price()).isEqualTo(10_700);
+                        assertThat(c.originalPrice()).isEqualTo(15_000);
+                        assertThat(c.stock().stock()).isEqualTo(3);
+                        assertThat(c.sku().value()).isEqualTo("TS-M-NEW");
+                    });
+        }
+
+        @Test
+        @DisplayName("제외 룰로 조합을 뺀 뒤 config를 새 옵션값 id 기준 룰로 교체한다")
+        void replacesConfigWithNewIds() {
+            stubHappyPath();
+
+            service.update(ruleCommand(null, List.of(new ExclusionRuleCommand(List.of("s-s"), "단종")), null));
+
+            assertThat(captureSavedAll()).singleElement()
+                    .satisfies(c -> assertThat(c.optionValueIds()).containsExactly(NEW_M));
+
+            ArgumentCaptor<ProductOptionConfigModel> captor = ArgumentCaptor.forClass(ProductOptionConfigModel.class);
+            then(productRepository).should().replaceOptionConfig(eq(PRODUCT_ID), captor.capture());
+            assertThat(captor.getValue().surchargeRules()).isNull();
+            assertThat(captor.getValue().exclusionRules())
+                    .contains(NEW_S.toString())
+                    .contains("단종");
+        }
+
+        @Test
+        @DisplayName("기존 조합(단종 포함)이 쓰던 SKU를 재사용하면 InvalidProductOptionException, 단종·저장을 하지 않는다")
+        void rejectsReusedSkuBeforeWriting() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
+            given(combinationRepository.findByProductId(PRODUCT_ID)).willReturn(List.of(existingCombination(REUSED_SKU)));
+
+            assertThatThrownBy(() -> service.update(ruleCommand(null, null,
+                    List.of(new CombinationOverrideCommand(List.of("s-m"), null, null, null, REUSED_SKU)))))
+                    .isInstanceOf(InvalidProductOptionException.class);
+
+            then(combinationRepository).should(never()).discontinueAllByProductId(any(), any());
+            then(combinationRepository).should(never()).saveAll(any());
+            then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).replaceOptionConfig(any(), any());
+        }
+
+        @Test
+        @DisplayName("잘못된 룰(불완전 조합 오버라이드)이면 소유권 확인 뒤, 기존 조합을 건드리기 전에 거절한다")
+        void rejectsInvalidRulesBeforeWriting() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
+            ProductOptionTypeCommand color = new ProductOptionTypeCommand("색상", null, (short) 2, List.of(
+                    new ProductOptionValueCommand("빨강", null, null, 0, (short) 1, "c-red")));
+            ProductOptionTypeCommand size = new ProductOptionTypeCommand("사이즈", null, (short) 1, List.of(
+                    new ProductOptionValueCommand("S", null, null, 0, (short) 1, "s-s")));
+            UpdateProductOptionsCommand partialOverride = new UpdateProductOptionsCommand(
+                    PRODUCT_ID, SELLER_ID, List.of(size, color), 50, EXPECTED_VERSION, null, null,
+                    List.of(new CombinationOverrideCommand(List.of("s-s"), 1_000, null, null, null)));
+
+            assertThatThrownBy(() -> service.update(partialOverride))
+                    .isInstanceOf(InvalidProductOptionException.class);
+
+            then(combinationRepository).shouldHaveNoInteractions();
+            then(productRepository).should(never()).save(any());
         }
     }
 
@@ -189,7 +330,7 @@ class UpdateProductOptionsServiceTest {
                     new ProductOptionTypeCommand("색상", null, (short) 1, List.of());
 
             assertThatThrownBy(() -> service.update(
-                    new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(colorWithoutValues), 50, EXPECTED_VERSION)))
+                    new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(colorWithoutValues), 50, EXPECTED_VERSION, null, null, null)))
                     .isInstanceOf(InvalidProductOptionException.class);
 
             then(combinationRepository).should(never()).saveAll(any());
