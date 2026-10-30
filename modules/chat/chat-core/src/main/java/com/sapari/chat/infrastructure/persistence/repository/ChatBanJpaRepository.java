@@ -14,6 +14,36 @@ import com.sapari.chat.infrastructure.persistence.entity.ChatBanEntity;
 public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID> {
 
     /**
+     * 사용자 단위 어드바이저리 잠금 — 밴 판단(세기 → 견주기 → 쓰기)을 직렬화한다.
+     *
+     * <p><b>왜 행 잠금이 아닌가.</b> 잠글 행이 없을 수 있다. 밴이 처음 걸리는 순간이 바로 이 직렬화가
+     * 필요한 순간이고, 그때 {@code chat_ban}에는 이 사용자의 행이 아직 없다. {@code SELECT FOR UPDATE}는
+     * 없는 행을 잠그지 못하므로(그래서 이 결함이 지금까지 남아 있었다) 행과 무관한 잠금이 필요하다.
+     *
+     * <p><b>왜 {@code SERIALIZABLE}이 아닌가.</b> 그쪽은 직렬화 실패를 예외로 돌려주므로 강퇴 흐름 전체에
+     * 재시도 책임이 생긴다 — 이미 Redis 쓰기와 발행이 커밋 뒤에 줄줄이 붙어 있어 재시도 단위를 정하는
+     * 일이 작지 않다. 잠금은 기다리기만 하고 상한은 호출자의 트랜잭션 타임아웃이 쥔다.
+     *
+     * <p>{@code _xact_} 변종이라 <b>커밋·롤백과 함께 자동으로 풀린다</b> — 명시적 해제 경로가 없어서
+     * 예외로 빠져나가도 잠금이 남지 않는다. 세션 단위 변종({@code pg_advisory_lock})을 쓰면 커넥션 풀이
+     * 그 커넥션을 재사용하는 순간 잠금이 엉뚱한 요청에 딸려간다.
+     *
+     * <p><b>키는 64비트로 만든다.</b> {@code hashtext}는 int4라 수십만 사용자 규모에서도 충돌이 흔하고
+     * (생일 문제), 충돌하면 서로 무관한 두 사용자가 줄을 선다 — 정확성 손실은 아니고 성능 비용이지만
+     * 공짜로 피할 수 있다. {@code hashtextextended}는 int8을 돌려주므로 실질적으로 충돌이 없다.
+     *
+     * <p>⚠️ 어드바이저리 잠금 키 공간은 <b>DB 전역에 하나</b>다. 지금 이 저장소에서 어드바이저리 잠금을
+     * 쓰는 곳은 여기뿐이지만(확인함), 다른 모듈이 쓰기 시작하면 키가 겹칠 수 있다. 그때는 키에 용도
+     * 접두를 섞는 2-인자 변종({@code pg_advisory_xact_lock(int4, int4)})으로 옮겨야 한다.
+     *
+     * <p>반환형이 {@code void}인 것은 이 함수가 {@code void}를 돌려주기 때문이다. 쓰기가 아니라 잠금
+     * 획득이라 {@code @Modifying}을 붙이지 않는다 — 붙이면 {@code executeUpdate()}로 불려 SELECT에서 깨진다.
+     */
+    @Query(value = "SELECT pg_advisory_xact_lock(hashtextextended(cast(:userId as text), 0))",
+            nativeQuery = true)
+    void lockForBanDecision(@Param("userId") UUID userId);
+
+    /**
      * 지금 유효한 밴. 만료가 없거나({@code expires_at IS NULL}) 아직 지나지 않은 행이다.
      *
      * <p>결과는 <b>많아야 하나</b>다 — {@code uk_chat_ban_user_id}가 사용자당 한 행을 보장한다.

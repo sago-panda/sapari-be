@@ -23,6 +23,11 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
     private final ChatBanJpaRepository jpaRepository;
 
     @Override
+    public void lockForBanDecision(UUID userId) {
+        jpaRepository.lockForBanDecision(userId);
+    }
+
+    @Override
     public Optional<ChatBan> findActive(UUID userId, Instant now) {
         return jpaRepository.findActive(userId, now).map(ChatBanStateRepositoryImpl::toDomain);
     }
