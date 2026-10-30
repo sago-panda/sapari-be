@@ -68,6 +68,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 여기 닿는 건 경합이 길어서가 아니라 <b>보유 스레드가 느려지거나 선점될 때</b>다 — 기동 직후 첫 드레인,
      * STW GC, CPU 스로틀링. 셋 다 JVM 전역이라 여러 세션이 동시에 걸린다. 그래서 상한을 짧게 두어
      * 이벤트루프 점유를 줄이되, 소진했다고 세션을 끊지는 않는다(emit 주석 참고).
+     *
+     * <p>⚠️ <b>그 여유는 emit 한 건 기준이고, 이 값은 emit마다 주어지지 않는다.</b> 방 fan-out은 한
+     * 연산이 예산 하나를 나눠 쓰므로(deadline은 절대 시각이다 — {@code emitSerially} 참고) 실질 여유가
+     * 방 세션 수에 비례해 줄어든다. 실측으로 60세션 fan-out 1회가 0.100ms(이 값의 2%)인데 12,000세션은
+     * 3.96ms(79%)다. 이 값을 읽고 "두 자릿수 여유가 있으니 예산 소비자를 더 붙여도 된다"로 가면,
+     * 큰 방에서 꼬리 세션부터 재시도 없이 한 번만 시도하게 된다.
      */
     private static final long CONTENTION_SPIN_NANOS = Duration.ofMillis(5).toNanos();
 

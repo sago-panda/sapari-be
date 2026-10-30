@@ -418,17 +418,32 @@ class ChatSessionRegistryTest {
         private final List<OutboundMessage> received = new CopyOnWriteArrayList<>();
         private final java.util.concurrent.atomic.AtomicBoolean inside =
                 new java.util.concurrent.atomic.AtomicBoolean();
+        /** 데이터 채널이 곱게 닫혔는지 — 종료 신호가 경합에 소진되면 영영 내려오지 않는다. */
+        private final CountDownLatch completed = new CountDownLatch(1);
         private final Duration linger;
 
         private Lingering(Duration linger) {
             this.linger = linger;
         }
 
+        boolean awaitDataChannelClose(Duration timeout) throws InterruptedException {
+            return completed.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        /**
+         * {@code park}을 <b>루프로 감싼다.</b> 단발 호출은 이유 없이 조기 반환할 수 있고(spurious wakeup은
+         * 명세가 허용한다), 그러면 예산 초과를 노린 체류가 예산 밑으로 줄어 드롭이 나지 않는다 —
+         * 그 테스트가 flaky하게 깨진다. 남은 시간을 다시 재서 데드라인까지 머문다.
+         */
         @Override
         public void accept(OutboundMessage message) {
             received.add(message);
             inside.set(true);
-            java.util.concurrent.locks.LockSupport.parkNanos(linger.toNanos());
+            long deadline = System.nanoTime() + linger.toNanos();
+            long remaining;
+            while ((remaining = deadline - System.nanoTime()) > 0) {
+                java.util.concurrent.locks.LockSupport.parkNanos(remaining);
+            }
             inside.set(false);
         }
 
@@ -438,18 +453,51 @@ class ChatSessionRegistryTest {
          * <p><b>park이 아니라 spin이다.</b> 깨어나는 지연이 머무는 시간과 같은 자릿수면 창을 놓쳐
          * 경합이 안 생기고, 그러면 재시도를 지워도 테스트가 통과한다 — 이 장치가 막으려던 바로 그 구멍이
          * 타이밍 때문에 다시 열린다. spin은 ns 안에 반응한다.
+         *
+         * <p><b>상한이 있다.</b> 상한 없이 돌면 구독자가 끝내 돌지 않는 회귀에서 이 스레드가 코어 하나를
+         * 영원히 태우고, 더 나쁜 것은 그때 테스트가 <b>엉뚱한 단언에서</b> 깨진다는 것이다 — 경합이 아예
+         * 없었으므로 드롭도 0이라 드롭 단언은 통과하고, 수신 목록 단언만 깨져 원인이 가려진다. 소진하면
+         * 그 자리에서 사유를 들고 실패해야 한다. spin의 ns 반응성과 상한은 양립한다.
          */
         void awaitInsideOnNext() {
+            long deadline = System.nanoTime() + INSIDE_ON_NEXT_TIMEOUT.toNanos();
             while (!inside.get()) {
+                if (System.nanoTime() - deadline >= 0) {
+                    throw new AssertionError("구독자가 " + INSIDE_ON_NEXT_TIMEOUT.toMillis()
+                            + "ms 안에 onNext에 들어오지 않았다 — 경합 창이 열리지 않았으므로 "
+                            + "이 테스트의 드롭 단언은 아무것도 재지 못한다");
+                }
                 Thread.onSpinWait();
             }
         }
     }
 
+    /**
+     * 구독자가 {@code onNext}에 들어오기를 기다리는 상한. 첫 emit이 그 자리에서 구독자를 돌리므로
+     * 정상 경로는 µs다 — 이 값은 "영원히 기다리지 않는다"를 위한 것이고 타이밍 조정용이 아니다.
+     */
+    private static final Duration INSIDE_ON_NEXT_TIMEOUT = Duration.ofSeconds(5);
+
     private Lingering subscribeLingering(String sessionId, Duration linger) {
         Lingering consumer = new Lingering(linger);
-        registry.outbound(sessionId).subscribe(consumer);
+        registry.outbound(sessionId).subscribe(consumer, t -> { }, consumer.completed::countDown);
         return consumer;
+    }
+
+    /**
+     * 경합을 만드는 스레드. <b>daemon이다</b> — 상한에 걸려 멈춘 스레드가 테스트 워커 JVM의 종료를
+     * 막지 않게 한다(기본 {@code new Thread}는 non-daemon이다).
+     */
+    private static Thread contenderThread(Runnable body, AtomicReference<Throwable> failure) {
+        Thread thread = new Thread(() -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        });
+        thread.setDaemon(true);
+        return thread;
     }
 
     @Test
@@ -460,14 +508,10 @@ class ChatSessionRegistryTest {
         Lingering consumer = subscribeLingering("s1", Duration.ofMillis(1));
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
-        Thread contender = new Thread(() -> {
-            try {
-                consumer.awaitInsideOnNext();          // 락이 잡힌 순간에 들어간다
-                registry.sendToSession("s1", out("ACK")).block();
-            } catch (Throwable t) {
-                failure.set(t);
-            }
-        });
+        Thread contender = contenderThread(() -> {
+            consumer.awaitInsideOnNext();          // 락이 잡힌 순간에 들어간다
+            registry.sendToSession("s1", out("ACK")).block();
+        }, failure);
 
         // when: 첫 emit이 구독자 안에 머무는 동안 다른 스레드가 같은 Sink로 보낸다
         contender.start();
@@ -476,7 +520,10 @@ class ChatSessionRegistryTest {
 
         // then: 재시도가 경합을 넘겨 줬으므로 둘 다 도착하고 버린 것이 없다.
         // 재시도를 지우면(예산 0) 두 번째가 첫 실패에서 바로 버려져 이 단언이 깨진다.
-        assertThat(failure.get()).isNull();
+        //
+        // 경합 창이 열렸는지를 먼저 본다 — 창이 안 열리면 드롭이 0이라 아래 단언이 통과하면서
+        // 아무것도 재지 못한다. 그 경우 awaitInsideOnNext가 사유를 들고 실패해 여기로 온다.
+        assertThat(failure.get()).as("경합 스레드가 창에 들어가지 못했다").isNull();
         assertThat(registry.droppedOnContention()).as("예산 안의 경합인데 버렸다").isZero();
         assertThat(consumer.received).extracting(OutboundMessage::type)
                 .containsExactlyInAnyOrder("NORMAL", "ACK");
@@ -490,14 +537,10 @@ class ChatSessionRegistryTest {
         Lingering consumer = subscribeLingering("s1", Duration.ofMillis(20));
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
-        Thread contender = new Thread(() -> {
-            try {
-                consumer.awaitInsideOnNext();
-                registry.sendToSession("s1", out("ACK")).block();
-            } catch (Throwable t) {
-                failure.set(t);
-            }
-        });
+        Thread contender = contenderThread(() -> {
+            consumer.awaitInsideOnNext();
+            registry.sendToSession("s1", out("ACK")).block();
+        }, failure);
 
         // when
         contender.start();
@@ -506,13 +549,44 @@ class ChatSessionRegistryTest {
 
         // then: 버린 것이 정확히 하나로 세어진다. 이 코드가 약속한 것은 "안 버린다"가 아니라
         // "버렸으면 센다"인데, 드롭 분기가 발화하는 테스트가 없으면 그 계수를 지우는 변경도 통과한다.
-        assertThat(failure.get()).isNull();
+        assertThat(failure.get()).as("경합 스레드가 창에 들어가지 못했다").isNull();
         assertThat(registry.droppedOnContention()).as("예산을 넘긴 경합을 세지 않았다").isEqualTo(1);
         assertThat(consumer.received).extracting(OutboundMessage::type).containsExactly("NORMAL");
 
         // 경합은 "그 순간 다른 스레드가 쥐고 있었다"는 뜻일 뿐이라 세션은 멀쩡해야 한다 —
         // 버퍼 초과(1013)와 같은 처분으로 묶으면 부하가 오를수록 멀쩡한 시청자를 끊는다.
         assertThat(registry.isTerminating("s1")).as("일시 경합으로 세션을 끊었다").isFalse();
+    }
+
+    @Test
+    @DisplayName("종료 신호는 emit보다 넉넉한 예산을 쓴다 — 머무는 구독자 뒤에서도 데이터 채널이 닫힌다")
+    void close_signal_gets_a_larger_budget_than_emit() throws Exception {
+        // given: 구독자가 20ms 머문다 — emit 예산(5ms)은 넘기지만 종료 예산(50ms) 안이다.
+        // 두 예산을 따로 둔 이유가 이 구간이다: 종료 신호가 걸려야 버퍼 잔여분이 흘러나가고,
+        // 강퇴 직전에 보낸 SYSTEM(KICKED)이 클라에 닿는다. 그 선택을 지키는 자리가 없었다.
+        registry.register("s1", session(roomId, userId)).block();
+        Lingering consumer = subscribeLingering("s1", Duration.ofMillis(20));
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread contender = contenderThread(() -> {
+            consumer.awaitInsideOnNext();
+            registry.terminateKicked("s1");        // complete 를 경합 구간에 떨어뜨린다
+        }, failure);
+
+        // when: 구독자가 머무는 동안 종료가 들어온다
+        contender.start();
+        registry.sendToSession("s1", out("SYSTEM")).block();
+        contender.join(TimeUnit.SECONDS.toMillis(30));
+
+        // then: 종료 예산이 20ms를 넘겨 줬으므로 데이터 채널이 곱게 닫힌다.
+        // 종료 예산을 emit 예산과 같게 줄이면 5ms에 소진돼 complete가 경합으로 실패하고,
+        // 그러면 이 래치는 영영 내려오지 않는다 — 제어 채널이 세션은 닫지만 버퍼 잔여분은 버려진다.
+        assertThat(failure.get()).as("경합 스레드가 창에 들어가지 못했다").isNull();
+        assertThat(consumer.awaitDataChannelClose(Duration.ofSeconds(5)))
+                .as("종료 신호가 경합에 소진돼 데이터 채널이 닫히지 않았다")
+                .isTrue();
+        assertThat(registry.closeStatusOf("s1")).as("강퇴는 1008로 닫는다")
+                .isEqualTo(CloseStatus.POLICY_VIOLATION);
     }
 
     @Test
@@ -543,6 +617,11 @@ class ChatSessionRegistryTest {
         // given: 한 방에 세션 여럿. 운영에서도 브로드캐스트(Redis 구독 스레드)가 방 전체에 뿌리는 동안
         // 각 세션의 ack(WS 이벤트루프)가 같은 Sink로 들어온다. 위 두 테스트가 경합 처분을 결정적으로
         // 고정하고, 이 테스트는 그 처분이 <b>방 규모의 라우팅</b>에서도 어긋나지 않는지를 본다.
+        //
+        // 이 규모가 예산을 조이지는 <b>않는다</b>. 60세션 팬아웃 1회가 0.100ms로 5ms 예산의 2%이고,
+        // 재시도를 지웠을 때의 드롭률이 단건 55~72%인데 여기선 0.29~0.69%다 — 2스레드가 60개 Sink에
+        // 흩어지므로 같은 Sink에서 마주칠 확률이 낮아, 팬아웃이 오히려 예산 희소성에 100배 덜 민감하다
+        // (리뷰어 실측). 예산 공유 자체는 하중으로 볼 수 없어 바로 위 테스트가 생성 수로 직접 센다.
         int sessions = 60;
         int broadcasts = 40;
         int acksPerSession = 40;
@@ -568,7 +647,12 @@ class ChatSessionRegistryTest {
             try {
                 start.await();
                 for (int i = 0; i < broadcasts; i++) {
-                    registry.sendToRoomLocal(roomId, out("NORMAL")).block();
+                    // SYSTEM 프레임을 싣는다 — 운영에서 sendToRoomLocal의 호출자는 SystemMessageService
+                    // 하나뿐이고 PII 없는 SYSTEM만 보낸다. NORMAL 방 팬아웃은 전부 sendToRoomGated를
+                    // 타고, 이메일·원문 게이트가 거기에만 있다. 여기에 NORMAL을 써 두면 이 모양을 복사한
+                    // 다음 사람이 게이트 없는 경로로 특권 뷰를 방 전원에게 보낸다(ArchUnit은 테스트
+                    // 소스를 보지 않아 막지 못한다).
+                    registry.sendToRoomLocal(roomId, out("SYSTEM")).block();
                 }
             } catch (Throwable t) {
                 failures.add(t);
@@ -591,7 +675,9 @@ class ChatSessionRegistryTest {
             }
         }).start();
         start.countDown();
-        assertThat(done.await(60, TimeUnit.SECONDS)).isTrue();
+        assertThat(done.await(60, TimeUnit.SECONDS))
+                .as("브로드캐스트·ack 스레드 중 하나가 60초 안에 끝나지 않았다")
+                .isTrue();
         assertThat(failures).as("전송이 예외로 죽었다면 아래 수치의 원인이 경합이 아니다").isEmpty();
 
         // then: 여기서 드롭 0을 단언하지 않는 것은 규모가 커지면 예산이 빠듯해져서다 — 실측으로
@@ -605,18 +691,24 @@ class ChatSessionRegistryTest {
         //
         // 지키는 것은 둘이다. <b>조용히</b> 사라지지 않는 것 — 받은 수와 센 드롭의 합이 보낸 수와
         // 맞아야 한다. 그리고 <b>종류별로도 넘치지 않는 것</b> — 총량만 보면 ACK 하나가 남의 세션으로
-        // 가고 NORMAL 하나가 드롭으로 세어진 경우가 가려진다.
+        // 가고 SYSTEM 하나가 드롭으로 세어진 경우가 가려진다.
+        //
+        // 단언은 받은함 내용이 아니라 <b>크기</b>로 한다. 오라우팅 뮤턴트에서는 한 세션에 수천 건이
+        // 쌓이는데, 내용으로 비교하면 실패 리포트가 그 전문을 쏟아내 정작 어긋난 수치를 묻는다.
         long totalReceived = inboxes.stream().mapToLong(List::size).sum();
         assertThat(totalReceived + registry.droppedOnContention())
                 .as("받은 수 + 센 드롭")
                 .isEqualTo((long) sessions * (broadcasts + acksPerSession));
-        assertThat(inboxes).allSatisfy(inbox -> {
-            assertThat(inbox.size()).isLessThanOrEqualTo(broadcasts + acksPerSession);
+        for (int i = 0; i < inboxes.size(); i++) {
+            List<OutboundMessage> inbox = inboxes.get(i);
+            String where = "세션 s" + i;
+            assertThat(inbox.size()).as("%s 총 수신", where)
+                    .isLessThanOrEqualTo(broadcasts + acksPerSession);
             assertThat(inbox.stream().filter(m -> "ACK".equals(m.type())).count())
-                    .as("남의 세션 ack가 섞였다").isLessThanOrEqualTo(acksPerSession);
-            assertThat(inbox.stream().filter(m -> "NORMAL".equals(m.type())).count())
-                    .as("브로드캐스트가 겹쳐 왔다").isLessThanOrEqualTo(broadcasts);
-        });
+                    .as("%s — 남의 세션 ack가 섞였다", where).isLessThanOrEqualTo(acksPerSession);
+            assertThat(inbox.stream().filter(m -> "SYSTEM".equals(m.type())).count())
+                    .as("%s — 브로드캐스트가 겹쳐 왔다", where).isLessThanOrEqualTo(broadcasts);
+        }
     }
 
     @Test
