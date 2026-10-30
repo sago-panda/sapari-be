@@ -383,3 +383,24 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   beans it actually built; it supplies its own properties so CI runs it rather than skipping it by tag.
 - **A test claiming a guarantee must be mutation-checked**: revert the production line, confirm that test —
   and ideally only that test — fails, restore. `checkOrphanJavadoc` gates javadoc placement in `check`.
+
+## Persistence mapping — the policy is the net
+
+`@Mapper` here is `unmappedTargetPolicy = ERROR`, not the MapStruct default (`WARN`). Under the default, a
+field added to a domain record but not to the mapper leaves that target empty and the build still passes
+(measured: `warning: Unmapped target property` + BUILD SUCCESSFUL) — every read of a persisted message then
+silently misses it. `live` uses `IGNORE` for the opposite reason: its entity carries persist-only columns
+with no domain counterpart, and that is stated in `LiveRoomMapper`.
+
+**Deleting the attribute is not caught by the build**, because nothing is unmapped at the moment you delete
+it. ArchUnit rule 20 (`chat_mapstruct_mappers_must_fail_on_unmapped_targets`) closes that gap: it reads the
+value out of the class file — `@Mapper` is `RetentionPolicy.CLASS`, so reflection cannot — and when the
+attribute is gone it sees the annotation default `WARN`, so one rule covers both the downgrade to `IGNORE`
+and the deletion.
+
+Neither net is replaced by the round-trip test. Adding a domain field breaks every positional
+`new ChatMessage(...)` call (13 of them, one of which is across the module boundary in `streaming-app`), and
+the cheapest way to make those compile again is a `null` argument — which makes both sides null and the
+round-trip assertion pass (measured: 4 round-trip cases green, only the test that walks
+`getRecordComponents()` red). That walking test has its own blind spot: a primitive field lands on `0`,
+which is not null, so only the policy catches it.

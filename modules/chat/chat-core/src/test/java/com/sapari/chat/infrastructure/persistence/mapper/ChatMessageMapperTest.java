@@ -86,7 +86,7 @@ class ChatMessageMapperTest {
     }
 
     @Test
-    @DisplayName("⭐ toDomain 이 도메인 record 의 모든 필드를 채운다 — 새 필드가 조용히 null 로 남지 않는다")
+    @DisplayName("⭐ toDomain 이 도메인 record 의 모든 참조형 필드를 채운다 — 새 필드가 조용히 비지 않는다")
     void maps_every_domain_component() throws Exception {
         // given: 전 필드에 값이 있는 도큐먼트 — 비어 있는 타깃은 도큐먼트가 아니라 매퍼 탓이어야 한다
         ChatMessageDocument document = new ChatMessageDocument(
@@ -103,6 +103,15 @@ class ChatMessageMapperTest {
         // 이것이 잡는 것: 도메인 record 에 필드를 더하고 매퍼를 안 고치면 MapStruct 는 그 타깃을 비워 두고
         // 경고만 낸다(실측 — "warning: Unmapped target property" + BUILD SUCCESSFUL). 도큐먼트 쪽은
         // toDocument 가 위치 인자로 생성자를 부르므로 컴파일러가 막지만, 도메인 쪽에는 그 그물이 없다.
+        //
+        // 한계: 원시형 필드는 못 잡는다. int 를 더하면 미매핑 타깃이 0 으로 남는데 isNotNull 로는
+        // "안 채워졌다" 와 "타입 기본값으로 채워졌다" 가 구분되지 않는다(실측 — int 필드를 더하면
+        // 경고만 나고 이 테스트도 통과한다). 그쪽은 매퍼의 unmappedTargetPolicy = ERROR 가 잡고,
+        // 그 속성이 지워지는 것은 ArchitectureTest 의 ArchUnit 규칙이 잡는다.
+        //
+        // 이 중 다섯(roomId·senderId·senderRole·type·createdAt)은 ChatMessage 컴팩트 생성자가 null 을
+        // 거부하므로 미매핑이면 단언에 닿기 전에 생성이 던진다. 이 순회가 새로 보는 것은 나머지 여섯과
+        // 앞으로 더해질 필드다.
         for (RecordComponent component : ChatMessage.class.getRecordComponents()) {
             assertThat(component.getAccessor().invoke(domain))
                     .as("ChatMessage.%s — toDomain 이 채우지 않았다", component.getName())

@@ -415,4 +415,51 @@ class ArchitectureTest {
         String[] parts = packageName.split("\\.");
         return parts.length >= 3 && !NON_DOMAIN_ROOTS.contains(parts[2]);
     }
+
+    /**
+     * 20) chat 의 MapStruct 매퍼는 미매핑 타깃에서 빌드를 깨야 한다.
+     *
+     * <p>기본 정책({@code WARN})이면 도메인 record 에 필드를 더하고 매퍼를 안 고쳤을 때 MapStruct 가
+     * 그 타깃을 비워 둔 채 경고 한 줄만 내고 통과한다. 그러면 영속된 메시지를 읽을 때마다 그 필드가
+     * 조용히 비어 있다.
+     *
+     * <p>매퍼 자신의 {@code unmappedTargetPolicy = ERROR} 가 그걸 막지만, <b>그 속성이 지워지는 것은
+     * 아무것도 막지 않는다</b> — 지우는 시점에 미매핑 필드가 없으면 빌드도 테스트도 멀쩡하다. 그 구간을
+     * 닫는 것이 이 규칙이다.
+     *
+     * <p>{@code @Mapper} 는 {@code RetentionPolicy.CLASS} 라 런타임 리플렉션으로는 못 읽지만 클래스
+     * 파일에는 남고, ArchUnit 은 클래스 파일을 직접 읽는다. 속성을 아예 지운 경우에는 ArchUnit 이
+     * <b>애너테이션 기본값을 채워</b> {@code WARN} 을 돌려주므로, 이 한 줄이 {@code IGNORE} 로의 명시적
+     * 격하와 속성 삭제를 동시에 잡는다 — "속성이 있는가" 를 따로 볼 필요가 없다.
+     *
+     * <p>chat 으로 한정한다. {@code live} 는 엔티티에 도메인 대응이 없는 영속 전용 필드가 많아
+     * {@code IGNORE} 가 의도이고, 그 사유가 {@code LiveRoomMapper} javadoc 에 적혀 있다.
+     */
+    @Test
+    void chat_mapstruct_mappers_must_fail_on_unmapped_targets() {
+        ArchRule rule = classes()
+                .that().resideInAPackage("com.sapari.chat..")
+                .and().areAnnotatedWith("org.mapstruct.Mapper")
+                .should(declareUnmappedTargetPolicyError());
+
+        rule.check(SAPARI);
+    }
+
+    /** {@code @Mapper} 의 {@code unmappedTargetPolicy} 를 클래스 파일에서 읽어 ERROR 인지 본다. */
+    private static ArchCondition<JavaClass> declareUnmappedTargetPolicyError() {
+        return new ArchCondition<>("unmappedTargetPolicy = ERROR 로 선언되어야 한다") {
+            @Override
+            public void check(JavaClass mapper, ConditionEvents events) {
+                com.tngtech.archunit.core.domain.JavaAnnotation<?> annotation =
+                        mapper.getAnnotationOfType("org.mapstruct.Mapper");
+                String policy = annotation.get("unmappedTargetPolicy")
+                        .map(value -> value instanceof com.tngtech.archunit.core.domain.JavaEnumConstant constant
+                                ? constant.name()
+                                : String.valueOf(value))
+                        .orElse("(속성 없음 — ArchUnit 이 기본값도 못 채웠다)");
+                events.add(new SimpleConditionEvent(mapper, "ERROR".equals(policy),
+                        mapper.getName() + " 의 unmappedTargetPolicy = " + policy));
+            }
+        };
+    }
 }
