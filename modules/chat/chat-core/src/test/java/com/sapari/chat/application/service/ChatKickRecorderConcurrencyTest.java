@@ -84,17 +84,39 @@ class ChatKickRecorderConcurrencyTest {
 
         private final ChatKickLogRepository delegate;
         private volatile CountDownLatch recorded;
+        /** 상한까지 기다렸는데 상대가 오지 않은 횟수 — 이 값이 "직렬화됐는가"를 가른다. */
+        private final java.util.concurrent.atomic.AtomicInteger waitedInVain =
+                new java.util.concurrent.atomic.AtomicInteger();
 
         LatchedKickLogRepository(ChatKickLogRepository delegate) {
             this.delegate = delegate;
         }
 
         void arm(CountDownLatch latch) {
+            this.waitedInVain.set(0);
             this.recorded = latch;
         }
 
         void disarm() {
             this.recorded = null;
+        }
+
+        /**
+         * 상한까지 기다렸는데 상대가 오지 않은 횟수 — <b>직렬화 여부의 직접 증거다.</b>
+         *
+         * <p>헛되게 기다린 쪽이 있었다면 그때 상대는 기록에 닿기도 전에 잠금에서 멈춰 있었다는 뜻이다.
+         * 반대로 아무도 헛되게 기다리지 않았다면 둘 다 기록에 도달했다는 뜻이고, 그건 잠금이 둘을
+         * 가르지 않았다는 뜻이다.
+         *
+         * <p><b>"성립 횟수"로 세면 안 된다.</b> 마지막에 도착한 쪽은 자기가 카운트를 0으로 만들므로
+         * 직렬화되든 안 되든 늘 성립한다 — 그 값으로는 둘을 가를 수 없다(실제로 그렇게 썼다가
+         * 1 대 2를 0 대 2로 착각했다).
+         *
+         * <p>경과 시간으로도 같은 사실을 짚을 수 있지만(성립 ~58ms vs 상한 ~2000ms) 임계값을 골라야
+         * 하고 러너 속도에 기댄다. 이 셈은 고를 것이 없다.
+         */
+        int rendezvousWaitedInVain() {
+            return waitedInVain.get();
         }
 
         @Override
@@ -104,7 +126,9 @@ class ChatKickRecorderConcurrencyTest {
             if (latch != null) {
                 latch.countDown();
                 try {
-                    latch.await(RENDEZVOUS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+                    if (!latch.await(RENDEZVOUS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
+                        waitedInVain.incrementAndGet();
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -174,6 +198,8 @@ class ChatKickRecorderConcurrencyTest {
     private LatchedKickLogRepository latched;
     @Autowired
     private PlatformTransactionManager txManager;
+    @Autowired
+    private jakarta.persistence.EntityManager entityManager;
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
     private static final Duration WINDOW = Duration.ofDays(730);
@@ -198,14 +224,15 @@ class ChatKickRecorderConcurrencyTest {
         latched.arm(bothRecorded);
         List<Throwable> failures = new CopyOnWriteArrayList<>();
 
-        // when: 둘이 겹친다. 데코레이터가 "둘 다 기록한 뒤에 센다"를 만들어 매번 같은 순서가 되게 한다.
+        // when: 둘이 겹친다. 데코레이터가 기록과 집계 사이에 창을 열어, 직렬화가 없으면 둘이 서로를
+        // 만나 매번 같은(결함이 드러나는) 순서가 되게 한다.
         try {
             Thread a = kicker(failures);
             Thread b = kicker(failures);
             a.start();
             b.start();
-            a.join(TimeUnit.SECONDS.toMillis(30));
-            b.join(TimeUnit.SECONDS.toMillis(30));
+            assertThat(a.join(Duration.ofSeconds(30))).as("강퇴 A가 30초 안에 끝나지 않았다").isTrue();
+            assertThat(b.join(Duration.ofSeconds(30))).as("강퇴 B가 30초 안에 끝나지 않았다").isTrue();
         } finally {
             latched.disarm();
         }
@@ -216,6 +243,12 @@ class ChatKickRecorderConcurrencyTest {
                 .as("서로 다른 방이라 세 행이 모두 남아야 한다")
                 .isEqualTo(3);
 
+        // 같은 대상이므로 둘은 서로를 만나지 못해야 한다 — 만났다면 둘 다 기록에 도달했다는 뜻이고,
+        // 그건 잠금이 둘을 가르지 않았다는 뜻이다. 아래 밴 단언이 결과를 보는 것이고 이것은 기제를 본다.
+        assertThat(latched.rendezvousWaitedInVain())
+                .as("같은 대상인데 아무도 헛되게 기다리지 않았다 — 밴 판단이 직렬화되지 않았다")
+                .isEqualTo(1);
+
         // 임계를 넘겼으므로 밴이 있어야 한다. 없으면 두 트랜잭션이 각자 "기존 1 + 나" 만 세고
         // 임계를 건너뛴 것이다 — 아무도 그 사용자를 다시 강퇴하지 않으면 그 확증 3은 영영 집행되지 않는다.
         assertThat(bans.findActive(targetUserId, NOW))
@@ -223,6 +256,86 @@ class ChatKickRecorderConcurrencyTest {
                 .isPresent();
         assertThat(bans.findActive(targetUserId, NOW).orElseThrow().expiresAt())
                 .isEqualTo(NOW.plus(Duration.ofDays(7)));
+    }
+
+    @Test
+    @DisplayName("⭐ 잠금이 실제로 잡힌다 — 경계가 없으면 예외 없이 아무것도 안 잠근다")
+    void theLockIsActuallyHeldInsideTheBoundary() {
+        // given: 이 테스트만 @DataJpaTest 가 열어 주는 트랜잭션을 그대로 쓴다(NOT_SUPPORTED 가 없다).
+        // 경계가 있으면 잠금이 그 트랜잭션이 끝날 때까지 남아 있어야 한다.
+
+        // when
+        bans.lockForBanDecision(targetUserId);
+
+        // then: 같은 백엔드가 그 키의 어드바이저리 잠금을 쥐고 있다. 잠금 호출을 지우면 0건이 되는데,
+        // 그때 <b>예외는 나지 않는다</b> — 같은 빈의 @Modifying 쓰기들과 달리 이 SELECT 에는
+        // "경계 없음"을 알려 주는 안전망이 없어서, 직렬화가 조용히 사라지는 모양이 된다.
+        //
+        // 키 비교까지 하는 이유: 잠금이 잡혔다는 것만 보면 키 유도를 바꾸는 변경을 놓친다.
+        // pg_locks 는 64비트 키를 classid/objid 두 조각으로 쪼개 보여 주므로 다시 붙여 비교한다.
+        //
+        // ⚠️ seed 는 운영 코드와 <b>같은 상수를 읽는다</b> — 그래서 이 단언은 seed 값을 고정하지
+        // 않는다(바꾸면 양쪽이 같이 바뀐다). 고정하는 것은 키가 <b>그 사용자로부터</b> 유도된다는
+        // 모양이고, seed 는 다른 용도와 겹치지 않기만 하면 되는 자유 파라미터라 그게 맞다.
+        // 키가 사용자와 무관해지는 회귀는 바로 아래 "잠금은 사용자 단위다"가 잡는다.
+        Object held = entityManager.createNativeQuery("""
+                SELECT count(*) FROM pg_locks
+                 WHERE locktype = 'advisory'
+                   AND pid = pg_backend_pid()
+                   AND ((classid::bigint << 32) | objid::bigint)
+                       = hashtextextended(cast(:userId as text), """ + ChatBanJpaRepository.BAN_DECISION_LOCK_SEED + """
+                )
+                """)
+                .setParameter("userId", targetUserId.toString())
+                .getSingleResult();
+
+        assertThat(((Number) held).longValue())
+                .as("경계 안인데 그 사용자 키의 어드바이저리 잠금이 없다 — 직렬화가 조용히 사라졌다")
+                .isEqualTo(1);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 잠금은 사용자 단위다 — 서로 다른 대상은 줄을 서지 않는다")
+    void theLockIsScopedToTheTargetUser() throws Exception {
+        // given: 서로 다른 두 사람을 동시에 강퇴한다. 밴 판단이 사용자 단위로 갈려 있으면 두
+        // 트랜잭션은 서로 무관하므로 둘 다 기록에 도달해 랑데부가 성립한다.
+        //
+        // 이 축을 재는 테스트가 없으면 잠금 키를 <b>상수</b>로 바꿔도 아무것도 깨지지 않는다 —
+        // 위 테스트는 대상이 한 명뿐이라 전역 단일 잠금이어도 직렬화가 똑같이 일어나고 밴도 똑같이
+        // 걸린다. 그러면 모든 강퇴가 플랫폼 전역으로 줄을 서고 각자 최대 상한까지 커넥션을 쥐는
+        // 회귀가 조용히 들어온다.
+        UUID otherTarget = UUID.randomUUID();
+        // 경로를 먼저 덥힌다 — 첫 record 는 JPA·커넥션·쿼리 준비를 함께 타므로, 덥히지 않으면
+        // 느린 쪽이 랑데부 상한을 넘겨 "줄을 섰다"로 잘못 읽힌다. 확증 1명은 임계 미달이라 밴은 없다.
+        recorder.record(new ChatKickLog(targetUserId, UUID.randomUUID(), UUID.randomUUID(),
+                ChatRole.SELLER, "워밍업", NOW));
+        recorder.record(new ChatKickLog(otherTarget, UUID.randomUUID(), UUID.randomUUID(),
+                ChatRole.SELLER, "워밍업", NOW));
+
+        CountDownLatch bothRecorded = new CountDownLatch(2);
+        latched.arm(bothRecorded);
+        List<Throwable> failures = new CopyOnWriteArrayList<>();
+
+        // when
+        try {
+            Thread a = kickerOf(targetUserId, failures);
+            Thread b = kickerOf(otherTarget, failures);
+            a.start();
+            b.start();
+            assertThat(a.join(Duration.ofSeconds(30))).as("강퇴 A가 30초 안에 끝나지 않았다").isTrue();
+            assertThat(b.join(Duration.ofSeconds(30))).as("강퇴 B가 30초 안에 끝나지 않았다").isTrue();
+        } finally {
+            latched.disarm();
+        }
+
+        // then: 둘이 서로를 만났다 — 즉 아무도 상대의 잠금을 기다리지 않았다.
+        // 상수 키로 바뀌면 한쪽이 기록에 닿기도 전에 멈춰 랑데부가 상한에 걸리고 이 단언이 깨진다
+        // (실측 마진: 성립 ~58ms vs 상한 ~2000ms. 그래서 경과 시간이 아니라 성립 여부로 본다).
+        assertThat(failures).as("강퇴 자체가 실패했다면 랑데부 결과의 원인이 잠금이 아니다").isEmpty();
+        assertThat(latched.rendezvousWaitedInVain())
+                .as("서로 다른 대상이 줄을 섰다 — 잠금 키가 사용자 단위가 아니다")
+                .isZero();
     }
 
     @Test
@@ -286,12 +399,26 @@ class ChatKickRecorderConcurrencyTest {
     private static final Duration TRANSACTION_TIMEOUT = Duration.ofSeconds(5);
 
     private Thread kicker(List<Throwable> failures) {
-        return new Thread(() -> {
+        return kickerOf(targetUserId, failures);
+    }
+
+    /**
+     * 지정한 대상을 새 방·새 강퇴자로 한 번 강퇴하는 스레드.
+     *
+     * <p>daemon이다 — 랑데부 상한이나 잠금 대기에 걸려 멈춘 스레드가 러너의 종료 방식에 영향을
+     * 주지 않게 한다. 예외는 삼키지 않고 모아 두어 "강퇴가 실패한 것"과 "강퇴는 됐는데 판정이
+     * 틀린 것"이 단언에서 갈리게 한다.
+     */
+    private Thread kickerOf(UUID target, List<Throwable> failures) {
+        Thread thread = new Thread(() -> {
             try {
-                recorder.record(kick(UUID.randomUUID(), UUID.randomUUID()));
+                recorder.record(new ChatKickLog(target, UUID.randomUUID(), UUID.randomUUID(),
+                        ChatRole.SELLER, "문제된 원문", NOW));
             } catch (Throwable t) {
                 failures.add(t);
             }
         });
+        thread.setDaemon(true);
+        return thread;
     }
 }
