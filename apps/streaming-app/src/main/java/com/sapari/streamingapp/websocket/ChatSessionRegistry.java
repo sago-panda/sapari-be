@@ -369,18 +369,46 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 다음 호출자는 새 비행을 연다.
      */
     private Mono<Long> joinInFlightCount(UUID roomId) {
-        return inFlightCounts.computeIfAbsent(roomId, room -> sessionRepository.count(room)
-                // HVALS distinct = 고유 유저 수
-                .doOnNext(count -> cacheIfRoomStillLocal(room, count))
-                .doFinally(signal -> inFlightCounts.remove(room))
-                .cache());
+        return inFlightCounts.computeIfAbsent(roomId, room -> {
+            // 자기 자신을 제거 조건으로 쓰기 위해 참조를 들고 있는다. set 은 구독보다 먼저 끝난다 —
+            // computeIfAbsent 가 돌려준 뒤에야 누군가 구독하고, doFinally 는 그 구독의 종료에서 돈다.
+            AtomicReference<Mono<Long>> self = new AtomicReference<>();
+            Mono<Long> flight = sessionRepository.count(room)
+                    // HVALS distinct = 고유 유저 수.
+                    // 캐시 쓰기가 cache() <b>상류</b>라 합류자가 50이어도 쓰기는 1회다 — 병합 전에는
+                    // 호출자마다 각자 썼다.
+                    .doOnNext(count -> cacheIfRoomStillLocal(room, count))
+                    // ⚠️ <b>값까지 비교해서 지운다.</b> remove(room) 한 인자로 지우면 "내 비행이 끝났다"가
+                    // 아니라 "그 방의 비행 자리를 비운다"가 되어, 그 사이에 설치된 <b>남의 비행</b>을
+                    // 걷어낼 수 있다. 오늘은 cache() 가 doFinally 를 비행당 1회로 묶어 안전하지만,
+                    // 그 안전이 연산자 선택 하나에 걸려 있다 — 제거를 cache() 하류로 옮기거나
+                    // doFinally 와 cache() 사이에 retry 를 끼우면 구독자 수만큼 발화하고, 그러면
+                    // 1회차가 내 항목을 지운 뒤 2회차가 새로 설치된 비행을 걷어낸다. 부하가 가장 높은
+                    // 순간에 병합이 중복 왕복으로 역전된다. 두 인자 remove 는 맵의 값이 다르면
+                    // 아무것도 지우지 않으므로 그 역전을 구조적으로 막는다.
+                    .doFinally(signal -> inFlightCounts.remove(room, self.get()))
+                    .cache();
+            self.set(flight);
+            return flight;
+        });
+    }
+
+    /** 진행 중인 시청자 수 조회 수. (테스트 진입점 — 비행이 실제로 풀리는지 재는 데 쓴다) */
+    int trackedInFlightCounts() {
+        return inFlightCounts.size();
     }
 
     /**
      * 방별로 진행 중인 시청자 수 조회.
      *
-     * <p>항목은 비행이 끝나면 스스로 지워진다. 구독되지 않으면 지워지지 않지만, 운영 호출지는
-     * {@code ChatWebSocketHandler} 의 입장 경로 하나이고 그 자리는 반드시 구독한다.
+     * <p>항목은 <b>구독에서 생기고 종료에서 지워진다.</b> 한때 "구독되지 않으면 지워지지 않는다"를
+     * 전제로 적어 뒀는데 그 경로는 <b>존재하지 않는다</b> — {@code getActiveCount} 가
+     * {@code Mono.defer} 라 조립만 하면 항목이 아예 생기지 않는다(실측: 조립 후 맵 크기 0).
+     * 없는 누수를 경고하면 다음 사람이 그걸 걱정한다.
+     *
+     * <p>취소에서도 지워지지만 <b>취소 즉시가 아니다</b> — {@code cache()} 가 취소를 상류로 보내지
+     * 않으므로 왕복이 끝날 때 {@code onComplete} 로 지워진다. 즉 취소된 조회도 남은 왕복 동안은
+     * 병합 창을 열어 둔다.
      */
     private final ConcurrentHashMap<UUID, Mono<Long>> inFlightCounts = new ConcurrentHashMap<>();
 

@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
 import java.time.Duration;
@@ -1232,6 +1233,55 @@ class ChatSessionRegistryTest {
 
         // Redis 는 한 번만 다녀왔다. 합치지 않으면 50번 간다(캐시는 첫 응답 뒤에야 채워진다).
         then(sessionRepository).should(times(1)).count(room);
+    }
+
+    /**
+     * ⭐ 취소된 조회도 비행 자리를 놓는다.
+     *
+     * <p>입장 중에 클라가 끊기면 그 체인이 취소된다 — 운영에서 도달하는 경로다. 자리가 안 풀리면
+     * 그 방의 다음 조회가 끝난 비행에 영구히 합류해 시청자 수가 얼어붙는다.
+     *
+     * <p>취소 <b>즉시</b>가 아니라 왕복이 끝날 때 풀린다 — {@code cache()} 가 취소를 상류로 보내지
+     * 않으므로 상류는 끝까지 가고 그 {@code onComplete} 에서 {@code doFinally} 가 돈다. 그래서
+     * 단언이 폴링이다(고정 대기는 부하에서 흔들린다).
+     */
+    @Test
+    @DisplayName("⭐ 취소된 조회도 비행 자리를 놓는다 — 안 놓으면 그 방 시청자 수가 얼어붙는다")
+    void a_cancelled_lookup_still_releases_the_flight() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+        given(sessionRepository.count(room))
+                .willReturn(Mono.just(7L).delayElement(Duration.ofMillis(100)));
+
+        // when: 조회를 걸고 바로 취소한다
+        reactor.core.Disposable subscription = registry.getActiveCount(room).subscribe();
+        assertThat(registry.trackedInFlightCounts()).as("구독으로 비행이 생겼어야 한다").isEqualTo(1);
+        subscription.dispose();
+
+        // then: 왕복이 끝나면 자리가 풀린다
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (registry.trackedInFlightCounts() != 0 && System.nanoTime() - deadline < 0) {
+            java.util.concurrent.locks.LockSupport.parkNanos(Duration.ofMillis(1).toNanos());
+        }
+        assertThat(registry.trackedInFlightCounts())
+                .as("취소된 조회의 비행 자리가 5초 안에 풀리지 않았다").isZero();
+    }
+
+    @Test
+    @DisplayName("⭐ 조립만으로는 비행이 생기지 않는다 — 구독을 늦추는 호출자가 남의 자리를 잡지 않게")
+    void assembling_a_lookup_does_not_install_a_flight() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+        given(sessionRepository.count(room)).willReturn(Mono.just(7L));
+
+        // when: Mono 를 받아만 두고 구독하지 않는다
+        registry.getActiveCount(room);
+
+        // then: 자리도 안 잡고 Redis 도 안 간다. defer 가 없으면 조립 시점에 둘 다 일어난다.
+        assertThat(registry.trackedInFlightCounts()).as("조립만으로 비행 자리를 잡았다").isZero();
+        then(sessionRepository).should(never()).count(room);
     }
 
     @Test
