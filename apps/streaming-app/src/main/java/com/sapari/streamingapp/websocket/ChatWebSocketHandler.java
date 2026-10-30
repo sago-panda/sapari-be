@@ -81,6 +81,13 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     private final SystemMessageService systemMessageService;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 한 연결이 살 수 있는 최대 시간. 설정으로 받는 이유는 테스트가 짧게 주기 때문이다 —
+     * 상수로 두면 이 분기가 배선됐는지를 재는 수단이 가상 시간뿐이고, 가상 시간은 헬퍼만 재고
+     * <b>배선은 재지 못한다</b>.
+     */
+    private final Duration maxSessionLifetime;
+
     /** roomId → (공유 구독 Disposable + 참조 수). 이 Pod 로컬. */
     private final Map<UUID, RoomSub> roomSubs = new ConcurrentHashMap<>();
 
@@ -89,7 +96,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     public ChatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate, ChatSessionRegistry registry,
             SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber, NettyConnectionRegistry connections,
-            SystemMessageService systemMessageService) {
+            SystemMessageService systemMessageService, Duration maxSessionLifetime) {
+        this.maxSessionLifetime = maxSessionLifetime;
         this.verifier = verifier;
         this.connections = connections;
         this.entryGate = entryGate;
@@ -149,7 +157,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .onErrorResume(WebSocketAuthException.class, e -> session.close(CloseStatus.POLICY_VIOLATION));
     }
 
-    private Mono<Void> runSession(WebSocketSession session, ChatSession chatSession) {
+    /**
+     * 세션 하나의 수명 전체. (테스트 진입점 — 수명 상한 분기가 여기서 배선되므로 그 배선을 재려면
+     * 이 메서드를 직접 구동해야 한다. 분기 자체만 따로 재면 배선이 빠진 것을 아무도 묻지 않는다.)
+     */
+    Mono<Void> runSession(WebSocketSession session, ChatSession chatSession) {
         String sid = session.getId();
         UUID roomId = chatSession.roomId();
         acquireRoom(roomId);
@@ -185,6 +197,14 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // "이미 닫음" 래치를 거는 덕이라 우리 코드의 보장이 아니다. 여기서 한 번만 돌게 못 박는다.
         Mono<Void> closeWithReason = closeWithReason(session, sid).cache();
 
+        // 수명 상한. 상한에 닿으면 종료를 <b>촉발만</b> 하고 이 분기는 끝나지 않는다(Mono.never) —
+        // 실제 닫기는 아래 셋이 이미 하는 일이고, 여기서 함께 완료되면 그 경로를 건너뛰어 버퍼에 남은
+        // 메시지가 버려진다. 촉발이 전달되지 않는 경우도 유계다: 제어 채널이 발화하므로 forcedClose가
+        // 유예 뒤에 받는다.
+        Mono<Void> lifetimeExpiry = Mono.delay(maxSessionLifetime)
+                .doOnNext(ignored -> registry.terminateLifetimeExpired(sid))
+                .then(Mono.never());
+
         return registry.register(sid, chatSession)
                 .then(roomInfoFor(roomId, chatSession))
                 .flatMap(info -> registry.sendToSession(sid, info))
@@ -192,7 +212,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 // (sink complete → outbound), 그리고 그 둘이 다 막혔을 때의 강제 종료.
                 // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
                 .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
-                        forcedClose.then(closeWithReason)))
+                        forcedClose.then(closeWithReason), lifetimeExpiry))
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 

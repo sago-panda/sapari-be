@@ -79,9 +79,55 @@ class ChatWebSocketHandlerTest {
         given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(true));
         systemMessageService = mock(SystemMessageService.class);
         given(systemMessageService.renderToSession(anyString(), any())).willReturn(Mono.empty());
-        handler = new ChatWebSocketHandler(
+        handler = handlerWithLifetime(Duration.ofHours(1));
+    }
+
+    private ChatWebSocketHandler handlerWithLifetime(Duration lifetime) {
+        return new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), entryGate,
-                registry, sendUseCase, subscriber, connections, systemMessageService);
+                registry, sendUseCase, subscriber, connections, systemMessageService, lifetime);
+    }
+
+    /**
+     * ⭐ 수명 상한이 <b>배선돼 있는지</b>를 {@code runSession}으로 직접 구동해 확인한다.
+     *
+     * <p>분기만 따로 재면 안 된다 — 그 분기를 {@code firstWithSignal}에서 빼도 아무 테스트가 깨지지
+     * 않는다. 배선이 고정되는 자리는 이 메서드 하나다.
+     *
+     * <p>왜 필요한가: 입장 토큰은 핸드셰이크 때 한 번만 검증되고 그 안에 신원·역할·방 소유가 들어 있다.
+     * 그 뒤의 역할 강등·방 소유권 이전·탈퇴 확정은 이 세션에 닿지 않는다(지금 전파되는 것은 밴 하나뿐).
+     * 수명 상한이 그 전부를 유계로 만든다 — 재접속이 live의 입장을 다시 타므로 거기서 권위가 새로
+     * 평가된다.
+     */
+    @Test
+    @DisplayName("⭐ 수명 상한에 닿으면 세션이 종료된다 — 재접속으로 권위를 다시 받게 한다")
+    void session_is_terminated_at_the_lifetime_limit() {
+        // given: 클라도 서버도 먼저 끝내지 않는 세션 — 수명 상한만이 이 연결을 끝낼 수 있다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        Duration lifetime = Duration.ofMinutes(60);
+        ChatWebSocketHandler bounded = handlerWithLifetime(lifetime);
+
+        // when & then: 상한 직전에는 아직 끊지 않고, 상한을 지나면 끊는다.
+        // verify 에 상한을 준다 — 기본값은 무한 대기라, 분기가 빠지면 이 테스트가 실패하는 대신 멈춘다.
+        StepVerifier.withVirtualTime(() -> bounded.runSession(session, chatSession))
+                .thenAwait(lifetime.minusSeconds(1))
+                .then(() -> then(registry).should(never()).terminateLifetimeExpired(anyString()))
+                .thenAwait(Duration.ofSeconds(2))
+                .then(() -> then(registry).should(times(1)).terminateLifetimeExpired("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
     }
 
     @Test

@@ -1,7 +1,9 @@
 package com.sapari.streamingapp.config;
 
+import java.time.Duration;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
@@ -34,9 +36,10 @@ public class WebSocketConfig {
     @Bean
     public ChatWebSocketHandler chatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate,
             ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber,
-            NettyConnectionRegistry connections, SystemMessageService systemMessageService) {
+            NettyConnectionRegistry connections, SystemMessageService systemMessageService,
+            @Value("${chat.session.max-lifetime:60m}") Duration maxSessionLifetime) {
         return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber, connections,
-                systemMessageService);
+                systemMessageService, maxSessionLifetime);
     }
 
     @Bean

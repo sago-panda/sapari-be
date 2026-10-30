@@ -537,6 +537,34 @@ public class ChatSessionRegistry implements ChatSessionManager {
         terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
     }
 
+    /**
+     * transport 전용: 수명 상한에 닿은 세션을 닫는다 — 재접속으로 권위를 다시 받게 하려는 것이다.
+     *
+     * <p><b>왜 수명에 상한이 필요한가.</b> 입장 토큰은 핸드셰이크 때 <b>한 번만</b> 검증되고 그 안에
+     * 신원·역할·방 소유가 들어 있다. 그 뒤로 계정 쪽에서 무엇이 바뀌어도 이 세션은 모른다 —
+     * 역할 강등, 방 소유권 이전, 탈퇴 확정. 지금 그 중 전파되는 것은 밴 하나뿐(계정 이벤트 채널)이고
+     * 나머지는 세션이 살아 있는 동안 영원히 옛 권위로 돈다.
+     *
+     * <p>개별 전파를 하나씩 늘리는 대신 <b>수명으로 전부 유계로 만든다.</b> 재접속은 live의 입장을
+     * 다시 타므로 거기서 권위가 새로 평가된다 — 끝난 방이면 토큰이 아예 발급되지 않고, 역할이 바뀌었으면
+     * 바뀐 역할로 온다. 전파 경로를 몰라도 상한만큼 뒤에는 맞는 상태가 된다.
+     *
+     * <p>정상 종료(1000)로 닫는다. 이 코드에는 "곧장 다시 붙어라"는 뜻이 이미 실려 있고
+     * ({@link #emit}의 1013 주석 참고) 여기서 원하는 것이 바로 그것이다. 사유 프레임은 보내지 않는다 —
+     * 클라가 해야 할 일이 재접속 하나뿐이라 알려 줄 것이 없고, 새 SYSTEM 코드를 만들면 프론트 계약이
+     * 늘어난다.
+     */
+    public void terminateLifetimeExpired(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
+        }
+        // info다 — 고장이 아니라 설계대로 도는 정상 경로이고, 방 하나에서 수천 건이 난다.
+        log.info("세션 수명 상한 — 종료(재접속으로 권위 재평가) sessionId={} roomId={}",
+                sessionId, ls.session().roomId());
+        terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
+    }
+
     /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */
     public CloseStatus closeStatusOf(String sessionId) {
         LocalSession ls = local.get(sessionId);
