@@ -112,6 +112,25 @@ class RedisChatBroadcasterTest {
     }
 
     @Test
+    @DisplayName("⭐ subscribe — 모르는 필드가 든 봉투도 전달한다(롤링 배포 중 구·신 버전 공존)")
+    void subscribe_tolerates_unknown_fields_from_a_newer_publisher() throws Exception {
+        // given: 신 버전이 ChatEnvelope(또는 그 안의 메시지)에 필드를 하나 더해 발행한 봉투.
+        // 배포는 한 번에 끝나지 않으므로 구 버전 Pod 가 이 봉투를 받는 구간이 반드시 생긴다.
+        String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
+        String withNewField = wire.replaceFirst("\\{", "{\"reactionCount\":3,");
+
+        // when & then: 모르는 필드 하나 때문에 역직렬화가 통째로 실패하면 그 Pod 의 <b>방 전체</b>가
+        // 실시간 전달을 잃는다 — 깨진 봉투 한 건이 아니라 신 버전이 보내는 모든 봉투가 skip 된다.
+        // 계정 이벤트 쪽은 이미 모르는 필드를 흘려보내는데 이쪽만 엄격했다.
+        StepVerifier.create(broadcaster.subscribe(roomId))
+                .then(() -> pattern.tryEmitNext(message(channel, withNewField)))
+                .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg cm
+                        && cm.message().equals(sampleMessage()))
+                .thenCancel()
+                .verify(Duration.ofSeconds(2));
+    }
+
+    @Test
     @DisplayName("subscribe — 깨진 봉투 1건은 skip하고 스트림은 살아남는다(poison 생존)")
     void subscribe_skips_poison_message() throws Exception {
         // given

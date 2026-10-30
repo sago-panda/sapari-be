@@ -8,6 +8,7 @@ import java.util.stream.Collectors;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -55,6 +56,15 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         this.redis = redis;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
+                // 모르는 필드는 흘려보낸다. 배포는 한 번에 끝나지 않으므로 신 버전이 봉투에 필드를
+                // 하나 더하면 구 버전 Pod 가 그것을 받는 구간이 <b>반드시</b> 생긴다. 엄격하면 그 구간
+                // 동안 그 Pod 의 <b>방 전체</b>가 실시간 전달을 잃는다 — 깨진 봉투 한 건이 아니라
+                // 신 버전이 보내는 모든 봉투가 아래 deserialize 에서 skip 된다.
+                //
+                // 계약이 느슨해지는 것은 아니다. 봉투에 <b>있는</b> 필드는 그대로 엄격히 검증되고,
+                // 타입이 어긋나면 지금처럼 skip 되며 그 사실이 로그에 남는다. 계정 이벤트 채널이
+                // 같은 이유로 이미 이렇게 되어 있었고 이쪽만 엄격했다.
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .addMixIn(ChatMessageType.class, ChatMessageTypeMixin.class);
 
         // publish().autoConnect(0): 생성 즉시 업스트림 연결 + 구독자 0이어도 끊지 않음(상시 가동 → 구독 레이스 제거).
