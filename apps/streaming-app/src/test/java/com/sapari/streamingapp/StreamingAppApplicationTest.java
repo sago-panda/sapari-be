@@ -1,5 +1,6 @@
 package com.sapari.streamingapp;
 
+import java.time.Duration;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
@@ -46,6 +47,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @DisplayName("streaming-app — 인프라를 갖추면 컨텍스트가 뜬다")
 class StreamingAppApplicationTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     @ServiceConnection(name = "redis")
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
@@ -100,6 +104,6 @@ class StreamingAppApplicationTest {
     @DisplayName("관계형 DB 없이도 뜬다 — chat-core가 끌고 오는 JPA가 이 앱을 막지 않는다")
     void bootsWithoutARelationalDatabase() {
         // when & then: DataSource 자동설정 제외가 풀리면 여기서 컨텍스트가 아예 못 뜬다
-        assertThat(reactiveMongoTemplate.getMongoDatabase().block()).isNotNull();
+        assertThat(reactiveMongoTemplate.getMongoDatabase().block(VERIFY_CEILING)).isNotNull();
     }
 }

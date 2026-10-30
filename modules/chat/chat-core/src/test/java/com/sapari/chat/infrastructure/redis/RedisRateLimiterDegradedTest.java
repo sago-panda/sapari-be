@@ -34,6 +34,9 @@ import reactor.core.publisher.Mono;
 @DisplayName("RedisRateLimiter — Redis 장애 구간")
 class RedisRateLimiterDegradedTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private RedisRateLimiter rateLimiter;
 
     @SuppressWarnings("unchecked")
@@ -110,8 +113,8 @@ class RedisRateLimiterDegradedTest {
         UUID userId = UUID.randomUUID();
 
         // when
-        RateLimitResult first = rateLimiter.tryAcquire(userId).block();
-        RateLimitResult second = rateLimiter.tryAcquire(userId).block();
+        RateLimitResult first = rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
+        RateLimitResult second = rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
 
         // then: 전면 통과였다면 회선 속도로 미는 클라 하나가 창 없이 전부 통과하고, 그 프레임마다
         // 저장이 일어난다. 가용성을 지키려 허용하는 것이 "무제한 허용"일 이유는 없다.
@@ -144,11 +147,11 @@ class RedisRateLimiterDegradedTest {
     void cap_is_per_user() {
         // given
         UUID blocked = UUID.randomUUID();
-        rateLimiter.tryAcquire(blocked).block();
+        rateLimiter.tryAcquire(blocked).block(VERIFY_CEILING);
 
         // when & then
-        assertThat(rateLimiter.tryAcquire(blocked).block().allowed()).isFalse();
-        assertThat(rateLimiter.tryAcquire(UUID.randomUUID()).block().allowed()).isTrue();
+        assertThat(rateLimiter.tryAcquire(blocked).block(VERIFY_CEILING).allowed()).isFalse();
+        assertThat(rateLimiter.tryAcquire(UUID.randomUUID()).block(VERIFY_CEILING).allowed()).isTrue();
     }
 
     @Test

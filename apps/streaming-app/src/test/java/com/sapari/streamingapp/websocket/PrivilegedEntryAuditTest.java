@@ -4,6 +4,7 @@ import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -43,6 +44,9 @@ import reactor.core.publisher.Mono;
 @DisplayName("관리자 입장 감사 — 특권을 쓴 흔적이 남는다")
 class PrivilegedEntryAuditTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private static final UUID ROOM = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID ADMIN = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final String EMAIL = "admin@example.com";
@@ -80,7 +84,7 @@ class PrivilegedEntryAuditTest {
     @DisplayName("⭐ 관리자 입장이 남는다 — 없으면 특권 사용에 답할 기록이 0이다")
     void adminEntryIsRecorded() {
         // when
-        registry.register("s1", new ChatSession(ROOM, ADMIN, ChatRole.ADMIN, NICKNAME, EMAIL, false)).block();
+        registry.register("s1", new ChatSession(ROOM, ADMIN, ChatRole.ADMIN, NICKNAME, EMAIL, false)).block(VERIFY_CEILING);
 
         // then: sessionId까지 남아야 이 파일의 종료·드롭 로그와 이어 붙는다
         assertThat(messages())
@@ -96,7 +100,7 @@ class PrivilegedEntryAuditTest {
     @DisplayName("⭐ 이메일·닉네임은 남기지 않는다 — 감사는 접근을 남기는 것이지 본 것을 복제하는 게 아니다")
     void doesNotCopyWhatTheAdminSaw() {
         // when
-        registry.register("s1", new ChatSession(ROOM, ADMIN, ChatRole.ADMIN, NICKNAME, EMAIL, false)).block();
+        registry.register("s1", new ChatSession(ROOM, ADMIN, ChatRole.ADMIN, NICKNAME, EMAIL, false)).block(VERIFY_CEILING);
 
         // then: 실으면 로그가 그 자체로 개인정보 사본이 된다.
         // 빈 리스트에 allSatisfy는 항상 참이라, 줄이 남았다는 전제를 먼저 세운다 — 안 그러면 로그를
@@ -110,8 +114,8 @@ class PrivilegedEntryAuditTest {
     @DisplayName("판매자·구매자 입장은 남기지 않는다 — 남기면 모든 입장이 감사 로그가 된다")
     void ordinaryEntriesAreNotRecorded() {
         // when
-        registry.register("s1", new ChatSession(ROOM, UUID.randomUUID(), ChatRole.SELLER, NICKNAME, EMAIL, false)).block();
-        registry.register("s2", new ChatSession(ROOM, UUID.randomUUID(), ChatRole.BUYER, NICKNAME, EMAIL, false)).block();
+        registry.register("s1", new ChatSession(ROOM, UUID.randomUUID(), ChatRole.SELLER, NICKNAME, EMAIL, false)).block(VERIFY_CEILING);
+        registry.register("s2", new ChatSession(ROOM, UUID.randomUUID(), ChatRole.BUYER, NICKNAME, EMAIL, false)).block(VERIFY_CEILING);
 
         // then
         assertThat(messages()).noneMatch(message -> message.contains("특권 뷰 입장"));

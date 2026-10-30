@@ -385,9 +385,15 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   `VerifySubscriber timed out` instead of hanging. Keep it that way — a ceiling-less terminator does not
   just hide one bug, it voids **every mutation verdict in that run**, because the suite cannot report at
   all. "passing ≠ catching" has a twin in "failing ≠ telling".
-  - **Scope**: the rule is about `StepVerifier` only. The same hang shape exists on `.block()` without a
-    timeout and **~150 of those remain**, 66 inside container-backed classes. Not closed; do not read the
-    sentence above as covering them.
+  - **`.block()` carries the same rule** — 201 test call sites were converted to `block(VERIFY_CEILING)`
+    in the same shape; verified end to end by making `register` return `Mono.never()`, which turns the
+    class red at the ceiling instead of hanging. Two reviewers reported 150 and 201 here; measured on this
+    tree it is **201 in tests, plus 3 in production** (`ChatMongoConfig`'s startup index creation, which
+    the Mongo driver bounds by its own server-selection timeout — a different failure, boot-hang not
+    test-hang, and left alone).
+  - **The uniform 10s has a cost under a mass regression**: a break that stalls every `block` makes the
+    suite take ceiling × call sites (≈94 × 10s in `ChatSessionRegistryTest` alone) before it reports. Slow,
+    but it *reports* — that is the trade this rule buys.
   - **Don't size a ceiling off a test case's reported time.** The ceiling bounds the *terminator's wait*,
     not the case — setup, `Thread.sleep` before `StepVerifier.create`, and an inner `.timeout(...)` all sit
     outside it. Picking values off per-case durations once produced a "raise the ceiling" commit whose slow

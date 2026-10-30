@@ -482,7 +482,7 @@ class ChatWebSocketHandlerTest {
         ChatSession session = new ChatSession(roomId, userId, ChatRole.SELLER, "판매자", "s@example.com", true);
 
         // when
-        OutboundMessage info = handler.roomInfoFor(roomId, session).block();
+        OutboundMessage info = handler.roomInfoFor(roomId, session).block(VERIFY_CEILING);
 
         // then: 방주인 여부는 그대로 실리고(방주인 토글 UI), 수만 알 수 없음으로 비운다
         assertThat(info).isNotNull();

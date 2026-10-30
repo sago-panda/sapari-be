@@ -83,7 +83,7 @@ class CrossPodBroadcastTest {
         // Pod B: 방 구독 시작 + 로컬 세션 등록(비-owner → 마스킹 뷰)
         Disposable sub = subscriberB.subscribeRoom(roomId);
         ChatSession sessionB = new ChatSession(roomId, UUID.randomUUID(), ChatRole.BUYER, "구매자B", "b@example.com", false);
-        registryB.register("sessB", sessionB).block();
+        registryB.register("sessB", sessionB).block(VERIFY_CEILING);
 
         // Redis 패턴 구독이 실제로 활성화될 시간을 준다(pub/sub은 버퍼 없음 — 활성 전 발행분은 유실)
         Thread.sleep(1500);
@@ -95,7 +95,7 @@ class CrossPodBroadcastTest {
 
         // when & then
         StepVerifier.create(registryB.outbound("sessB").next().timeout(Duration.ofSeconds(5)))
-                .then(() -> broadcasterA.publish(roomId, fromA).block())
+                .then(() -> broadcasterA.publish(roomId, fromA).block(VERIFY_CEILING))
                 .assertNext(out -> {
                     org.assertj.core.api.Assertions.assertThat(out.type()).isEqualTo("NORMAL");
                     org.assertj.core.api.Assertions.assertThat(out.displayMessage()).isEqualTo("크로스팟 안녕");

@@ -67,14 +67,14 @@ class ChatSessionRegistryTest {
     @DisplayName("register — Redis HSET 위임 + outbound로 받은 메시지가 흘러나온다")
     void register_then_sendToSession_flows_out() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         then(sessionRepository).should(times(1)).add(roomId, "s1", userId);
 
         OutboundMessage msg = out("NORMAL");
 
         // when & then
         StepVerifier.create(registry.outbound("s1"))
-                .then(() -> registry.sendToSession("s1", msg).block())
+                .then(() -> registry.sendToSession("s1", msg).block(VERIFY_CEILING))
                 .expectNext(msg)
                 .thenCancel()
                 .verify(VERIFY_CEILING);
@@ -84,13 +84,13 @@ class ChatSessionRegistryTest {
     @DisplayName("sendToRoomLocal — 같은 방 세션은 받는다")
     void room_local_delivers_to_same_room() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         OutboundMessage msg = out("SYSTEM");
 
         // when & then
         StepVerifier.create(registry.outbound("s1"))
-                .then(() -> registry.sendToRoomLocal(roomId, msg).block())
+                .then(() -> registry.sendToRoomLocal(roomId, msg).block(VERIFY_CEILING))
                 .expectNext(msg)
                 .thenCancel()
                 .verify(VERIFY_CEILING);
@@ -100,11 +100,11 @@ class ChatSessionRegistryTest {
     @DisplayName("sendToRoomLocal — 다른 방 세션은 안 받는다")
     void room_local_skips_other_room() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when & then
         StepVerifier.create(registry.outbound("s1"))
-                .then(() -> registry.sendToRoomLocal(UUID.randomUUID(), out("SYSTEM")).block())
+                .then(() -> registry.sendToRoomLocal(UUID.randomUUID(), out("SYSTEM")).block(VERIFY_CEILING))
                 .expectNoEvent(Duration.ofMillis(50))
                 .thenCancel()
                 .verify(VERIFY_CEILING);
@@ -127,9 +127,9 @@ class ChatSessionRegistryTest {
     @DisplayName("unregister — Redis remove 위임 + 로컬에서 사라져 outbound가 빈 스트림")
     void unregister_removes_local_and_redis() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
-        registry.unregister(roomId, "s1").block();
+        registry.unregister(roomId, "s1").block(VERIFY_CEILING);
         then(sessionRepository).should(times(1)).remove(roomId, "s1");
 
         // 제거 후 outbound("s1")은 빈 Flux(즉시 완료)
@@ -143,11 +143,11 @@ class ChatSessionRegistryTest {
     @DisplayName("closeAll — 방 세션의 아웃바운드가 완료(complete)된다")
     void close_all_completes_outbound() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when & then
         StepVerifier.create(registry.outbound("s1"))
-                .then(() -> registry.closeAll(roomId).block())
+                .then(() -> registry.closeAll(roomId).block(VERIFY_CEILING))
                 .expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
     }
@@ -156,11 +156,11 @@ class ChatSessionRegistryTest {
     @DisplayName("closeUser — 해당 유저 세션의 아웃바운드만 완료")
     void close_user_completes_target_outbound() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when
         StepVerifier.create(registry.outbound("s1"))
-                .then(() -> registry.closeUser(roomId, userId).block())
+                .then(() -> registry.closeUser(roomId, userId).block(VERIFY_CEILING))
                 .expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
 
@@ -173,8 +173,8 @@ class ChatSessionRegistryTest {
     void close_user_everywhere_reaches_other_rooms() {
         // given: 한 사람이 두 방에 동시에 접속해 있다. 밴이 걸릴 때 다른 방 세션이 정확히 이 상태다.
         UUID otherRoom = UUID.randomUUID();
-        registry.register("s1", session(roomId, userId)).block();
-        registry.register("s2", session(otherRoom, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("s2", session(otherRoom, userId)).block(VERIFY_CEILING);
 
         // when & then: 방을 모르는 채로 끊어도 둘 다 닫힌다.
         // 방 색인으로 찾으면 강퇴가 일어난 방 하나만 닫히고 나머지는 살아남는다 — 그게 이 메서드가 없앤 상태다.
@@ -182,7 +182,7 @@ class ChatSessionRegistryTest {
         // 상한을 준다. 안 주면 닫히지 않은 세션에서 이 테스트가 <b>영원히 기다린다</b> — 회귀가 빨간불이
         // 아니라 멈춤으로 나타나고, 그건 회귀를 알려 주지 않는 것과 같다(되돌림 확인에서 실제로 겪었다).
         StepVerifier.create(registry.outbound("s2"))
-                .then(() -> registry.closeUserEverywhere(userId).block())
+                .then(() -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING))
                 .expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
         StepVerifier.create(registry.outbound("s1"))
@@ -195,11 +195,11 @@ class ChatSessionRegistryTest {
     void close_user_everywhere_spares_other_users() {
         // given
         UUID bystander = UUID.randomUUID();
-        registry.register("s1", session(roomId, userId)).block();
-        registry.register("s2", session(roomId, bystander)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("s2", session(roomId, bystander)).block(VERIFY_CEILING);
 
         // when
-        registry.closeUserEverywhere(userId).block();
+        registry.closeUserEverywhere(userId).block(VERIFY_CEILING);
 
         // then: 옆 사람의 채널은 살아 있다 — 완료됐다면 방 전체를 끊은 것이다
         StepVerifier.create(registry.outbound("s2"))
@@ -219,7 +219,7 @@ class ChatSessionRegistryTest {
 
         // 명부 등재와 무관하게 방 fan-out은 로컬 인덱스로 도달한다
         StepVerifier.create(registry.outbound("s1"))
-                .then(() -> registry.sendToRoomLocal(roomId, out("SYSTEM")).block())
+                .then(() -> registry.sendToRoomLocal(roomId, out("SYSTEM")).block(VERIFY_CEILING))
                 .expectNextCount(1)
                 .thenCancel()
                 .verify(VERIFY_CEILING);
@@ -229,7 +229,7 @@ class ChatSessionRegistryTest {
     @DisplayName("퇴장 — Redis 명부 제거가 실패해도 정리는 완료된다(호출부가 subscribe라 에러가 새면 안 됨)")
     void unregister_survives_redis_failure() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         given(sessionRepository.remove(any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
 
         // when
@@ -247,13 +247,13 @@ class ChatSessionRegistryTest {
     @DisplayName("강퇴 — 버퍼가 막혀 데이터 채널로 못 닫아도 제어 채널로 종료되고 사유는 1008")
     void kick_terminates_through_control_channel_when_buffer_is_blocked() {
         // given: 소켓을 읽지 않는 클라(request 0). 버퍼는 넘치지 않게 채워 overflow 종료와 섞이지 않게 한다.
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         StepVerifier.create(registry.outbound("s1"), 0)
                 .then(() -> {
                     for (int i = 0; i < 5; i++) {
-                        registry.sendToSession("s1", out("NORMAL")).block();
+                        registry.sendToSession("s1", out("NORMAL")).block(VERIFY_CEILING);
                     }
-                    registry.closeUser(roomId, userId).block();   // when
+                    registry.closeUser(roomId, userId).block(VERIFY_CEILING);   // when
                 })
                 // 데이터 채널로는 아무것도 못 간다 — complete도 쌓인 5건 뒤에 막혀 전달되지 않는다
                 .expectNoEvent(Duration.ofMillis(50))
@@ -272,11 +272,11 @@ class ChatSessionRegistryTest {
     @DisplayName("방 종료 — 정상 종료(1000)로 닫는다. 사유는 앞서 보낸 SYSTEM이 전달")
     void room_end_closes_normally() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         // 종료 전에는 사유가 미정이다 — closeStatusOf의 기본값(NORMAL)만 보면 closeAll을 지워도 통과한다
         assertThat(registry.isTerminating("s1")).isFalse();
 
-        registry.closeAll(roomId).block();
+        registry.closeAll(roomId).block(VERIFY_CEILING);
 
         assertThat(registry.isTerminating("s1")).isTrue();
 
@@ -322,18 +322,18 @@ class ChatSessionRegistryTest {
     @DisplayName("방 인덱스 — 마지막 세션이 나가면 방 항목까지 제거된다(인덱스 누수 방지)")
     void room_index_drops_room_when_last_session_leaves() {
         // given: 같은 방에 세션 2개
-        registry.register("s1", session(roomId, userId)).block();
-        registry.register("s2", session(roomId, UUID.randomUUID())).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("s2", session(roomId, UUID.randomUUID())).block(VERIFY_CEILING);
         assertThat(registry.trackedRoomCount()).isEqualTo(1);
 
         // when: 하나만 퇴장
-        registry.unregister(roomId, "s1").block();
+        registry.unregister(roomId, "s1").block(VERIFY_CEILING);
 
         // then: 아직 s2가 있으므로 방은 유지
         assertThat(registry.trackedRoomCount()).isEqualTo(1);
 
         // when: 마지막 세션도 퇴장
-        registry.unregister(roomId, "s2").block();
+        registry.unregister(roomId, "s2").block(VERIFY_CEILING);
 
         // then: 방 항목이 남지 않는다 — 남기면 방송할 때마다 죽은 방이 쌓인다
         assertThat(registry.trackedRoomCount()).isZero();
@@ -343,12 +343,12 @@ class ChatSessionRegistryTest {
     @DisplayName("sendToRoomGated — 같은 방 세션마다 resolver 결과를 받고, 다른 방은 받지 않는다")
     void gated_fanout_is_per_session_and_room_scoped() {
         UUID otherRoom = UUID.randomUUID();
-        registry.register("s1", session(roomId, userId)).block();
-        registry.register("s2", session(roomId, UUID.randomUUID())).block();
-        registry.register("other", session(otherRoom, UUID.randomUUID())).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("s2", session(roomId, UUID.randomUUID())).block(VERIFY_CEILING);
+        registry.register("other", session(otherRoom, UUID.randomUUID())).block(VERIFY_CEILING);
 
         // when: resolver가 세션마다 다른 메시지를 낸다(방주인 PII 게이팅이 쓰는 방식)
-        registry.sendToRoomGated(roomId, s -> out(s.userId().equals(userId) ? "OWNER" : "PLAIN")).block();
+        registry.sendToRoomGated(roomId, s -> out(s.userId().equals(userId) ? "OWNER" : "PLAIN")).block(VERIFY_CEILING);
 
         // then: 같은 방 세션은 각자 몫을 받고
         StepVerifier.create(registry.outbound("s1"))
@@ -373,7 +373,7 @@ class ChatSessionRegistryTest {
     void concurrent_emit_is_never_silently_lost() throws Exception {
         // given: 구독 중인 세션 하나. 실제로도 ack(WS 이벤트루프)와 브로드캐스트(Redis pubsub 스레드)가
         // 같은 세션 Sink에 동시 emit한다 — unicast Sink는 경합 시 FAIL_NON_SERIALIZED로 값을 버린다.
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         List<OutboundMessage> received = new CopyOnWriteArrayList<>();
         registry.outbound("s1").subscribe(received::add);
 
@@ -388,7 +388,7 @@ class ChatSessionRegistryTest {
                 try {
                     start.await();
                     for (int i = 0; i < perThread; i++) {
-                        registry.sendToSession("s1", out("NORMAL")).block();
+                        registry.sendToSession("s1", out("NORMAL")).block(VERIFY_CEILING);
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -556,18 +556,18 @@ class ChatSessionRegistryTest {
     @DisplayName("경합이 예산 안이면 재시도가 넘겨 준다 — 머무는 구독자 뒤에서 보내도 도착한다")
     void contention_within_budget_is_carried_over_by_retry() throws Exception {
         // given: 구독자가 예산의 1/5 만큼 머무는 세션. 재시도가 그 구간을 넘길 수 있다.
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         Lingering consumer = subscribeLingering("s1", LINGER_WITHIN_BUDGET);
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
         Thread contender = contenderThread(() -> {
             consumer.awaitInsideOnNext();          // 락이 잡힌 순간에 들어간다
-            registry.sendToSession("s1", out("ACK")).block();
+            registry.sendToSession("s1", out("ACK")).block(VERIFY_CEILING);
         }, failure);
 
         // when: 첫 emit이 구독자 안에 머무는 동안 다른 스레드가 같은 Sink로 보낸다
         contender.start();
-        registry.sendToSession("s1", out("NORMAL")).block();
+        registry.sendToSession("s1", out("NORMAL")).block(VERIFY_CEILING);
         contender.join(TimeUnit.SECONDS.toMillis(30));
 
         // then: 재시도가 경합을 넘겨 줬으므로 둘 다 도착하고 버린 것이 없다.
@@ -585,18 +585,18 @@ class ChatSessionRegistryTest {
     @DisplayName("경합이 예산을 넘기면 그 메시지만 버리고 — 버린 것은 센다")
     void contention_beyond_budget_drops_that_message_and_counts_it() throws Exception {
         // given: 구독자가 20ms 머무는 세션. 예산(5ms)을 넘기므로 재시도가 소진된다.
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         Lingering consumer = subscribeLingering("s1", LINGER_BEYOND_BUDGET);
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
         Thread contender = contenderThread(() -> {
             consumer.awaitInsideOnNext();
-            registry.sendToSession("s1", out("ACK")).block();
+            registry.sendToSession("s1", out("ACK")).block(VERIFY_CEILING);
         }, failure);
 
         // when
         contender.start();
-        registry.sendToSession("s1", out("NORMAL")).block();
+        registry.sendToSession("s1", out("NORMAL")).block(VERIFY_CEILING);
         contender.join(TimeUnit.SECONDS.toMillis(30));
 
         // then: 버린 것이 정확히 하나로 세어진다. 이 코드가 약속한 것은 "안 버린다"가 아니라
@@ -640,7 +640,7 @@ class ChatSessionRegistryTest {
         }, failure);
 
         contender.start();
-        registry.sendToSession(sessionId, out("SYSTEM")).block();
+        registry.sendToSession(sessionId, out("SYSTEM")).block(VERIFY_CEILING);
         contender.join(TimeUnit.SECONDS.toMillis(30));
 
         // 종료 예산이 20ms를 넘겨 줬으므로 데이터 채널이 곱게 닫힌다. emit 예산으로 바꾸면 5ms에
@@ -656,7 +656,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("전송 경로 강퇴 종료는 emit보다 넉넉한 예산을 쓴다")
     void terminate_kicked_close_outlasts_the_emit_budget() throws Exception {
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateKicked("s1"),
                 CloseStatus.POLICY_VIOLATION);
     }
@@ -665,7 +665,7 @@ class ChatSessionRegistryTest {
     @DisplayName("생존 시계 — 프레임이 올라오면 밀리고, 기한이 지나면 응답 없음으로 답한다")
     void liveness_clock_advances_on_inbound_and_expires_on_silence() {
         // given: 등재 직후는 응답 없음이 아니다 — 방금 핸드셰이크를 마쳤다
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         Duration deadline = Duration.ofSeconds(90);
         assertThat(registry.isUnresponsive("s1", deadline))
                 .as("등재 직후인데 응답 없음으로 답했다 — 모든 새 세션이 첫 점검에서 끊긴다").isFalse();
@@ -693,7 +693,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("전송 경로 방 종료도 emit보다 넉넉한 예산을 쓴다 — 종료 호출지가 모두 걸려야 한다")
     void terminate_room_ended_close_outlasts_the_emit_budget() throws Exception {
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateRoomEnded("s1"),
                 CloseStatus.NORMAL);
     }
@@ -701,7 +701,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("수명 상한 종료도 emit보다 넉넉한 예산을 쓴다")
     void terminate_lifetime_expired_close_outlasts_the_emit_budget() throws Exception {
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateLifetimeExpired("s1"),
                 CloseStatus.NORMAL);
     }
@@ -709,7 +709,7 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("생존 확인 종료도 emit보다 넉넉한 예산을 쓴다")
     void terminate_unresponsive_close_outlasts_the_emit_budget() throws Exception {
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateUnresponsive("s1"),
                 CloseStatus.NORMAL);
     }
@@ -717,24 +717,24 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("강퇴 팬아웃 종료도 emit보다 넉넉한 예산을 쓴다 — 예산을 나눠 쓰므로 단건보다 먼저 마른다")
     void close_user_fanout_outlasts_the_emit_budget() throws Exception {
-        registry.register("s1", session(roomId, userId)).block();
-        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUser(roomId, userId).block(),
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUser(roomId, userId).block(VERIFY_CEILING),
                 CloseStatus.POLICY_VIOLATION);
     }
 
     @Test
     @DisplayName("밴 팬아웃 종료도 emit보다 넉넉한 예산을 쓴다")
     void close_user_everywhere_outlasts_the_emit_budget() throws Exception {
-        registry.register("s1", session(roomId, userId)).block();
-        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUserEverywhere(userId).block(),
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING),
                 CloseStatus.POLICY_VIOLATION);
     }
 
     @Test
     @DisplayName("방 종료 팬아웃도 emit보다 넉넉한 예산을 쓴다 — 매 방송마다 도는 정상 경로다")
     void close_all_outlasts_the_emit_budget() throws Exception {
-        registry.register("s1", session(roomId, userId)).block();
-        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeAll(roomId).block(),
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeAll(roomId).block(VERIFY_CEILING),
                 CloseStatus.NORMAL);
     }
 
@@ -744,7 +744,7 @@ class ChatSessionRegistryTest {
         // given: 한 방에 세션 여럿. 전원 같은 userId 라 계정 단위 팬아웃도 이 세션들을 훑는다.
         int sessions = 40;
         for (int i = 0; i < sessions; i++) {
-            registry.register("s" + i, session(roomId, userId)).block();
+            registry.register("s" + i, session(roomId, userId)).block(VERIFY_CEILING);
             registry.outbound("s" + i).subscribe(m -> { });
         }
 
@@ -757,12 +757,12 @@ class ChatSessionRegistryTest {
         // 깨뜨리지 않고 바뀐다. 전송이 먼저, 종료가 나중인 순서인 것은 종료가 세션을 끊기 때문이다 —
         // 예산 자체는 순회 전에 무조건 만들어지므로 세션이 남아 있지 않아도 세어지지만, 순서를
         // 지켜 두면 각 호출이 실제로 세션을 훑는 상태에서 세어진다.
-        assertOneBudgetPerCall("sendToRoomLocal", () -> registry.sendToRoomLocal(roomId, out("SYSTEM")).block());
-        assertOneBudgetPerCall("sendToRoomGated", () -> registry.sendToRoomGated(roomId, s -> out("SYSTEM")).block());
-        assertOneBudgetPerCall("sendToUserEverywhere", () -> registry.sendToUserEverywhere(userId, out("SYSTEM")).block());
-        assertOneBudgetPerCall("closeUser", () -> registry.closeUser(roomId, userId).block());
-        assertOneBudgetPerCall("closeUserEverywhere", () -> registry.closeUserEverywhere(userId).block());
-        assertOneBudgetPerCall("closeAll", () -> registry.closeAll(roomId).block());
+        assertOneBudgetPerCall("sendToRoomLocal", () -> registry.sendToRoomLocal(roomId, out("SYSTEM")).block(VERIFY_CEILING));
+        assertOneBudgetPerCall("sendToRoomGated", () -> registry.sendToRoomGated(roomId, s -> out("SYSTEM")).block(VERIFY_CEILING));
+        assertOneBudgetPerCall("sendToUserEverywhere", () -> registry.sendToUserEverywhere(userId, out("SYSTEM")).block(VERIFY_CEILING));
+        assertOneBudgetPerCall("closeUser", () -> registry.closeUser(roomId, userId).block(VERIFY_CEILING));
+        assertOneBudgetPerCall("closeUserEverywhere", () -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING));
+        assertOneBudgetPerCall("closeAll", () -> registry.closeAll(roomId).block(VERIFY_CEILING));
     }
 
     private void assertOneBudgetPerCall(String what, Runnable fanOut) {
@@ -792,7 +792,7 @@ class ChatSessionRegistryTest {
         for (int i = 0; i < sessions; i++) {
             String sid = "s" + i;
             sessionIds.add(sid);
-            registry.register(sid, session(roomId, UUID.randomUUID())).block();
+            registry.register(sid, session(roomId, UUID.randomUUID())).block(VERIFY_CEILING);
             List<OutboundMessage> inbox = new CopyOnWriteArrayList<>();
             inboxes.add(inbox);
             registry.outbound(sid).subscribe(inbox::add);
@@ -814,7 +814,7 @@ class ChatSessionRegistryTest {
                     // 타고, 이메일·원문 게이트가 거기에만 있다. 여기에 NORMAL을 써 두면 이 모양을 복사한
                     // 다음 사람이 게이트 없는 경로로 특권 뷰를 방 전원에게 보낸다(ArchUnit은 테스트
                     // 소스를 보지 않아 막지 못한다).
-                    registry.sendToRoomLocal(roomId, out("SYSTEM")).block();
+                    registry.sendToRoomLocal(roomId, out("SYSTEM")).block(VERIFY_CEILING);
                 }
             } catch (Throwable t) {
                 failures.add(t);
@@ -827,7 +827,7 @@ class ChatSessionRegistryTest {
                 start.await();
                 for (int i = 0; i < acksPerSession; i++) {
                     for (String sid : sessionIds) {
-                        registry.sendToSession(sid, out("ACK")).block();
+                        registry.sendToSession(sid, out("ACK")).block(VERIFY_CEILING);
                     }
                 }
             } catch (Throwable t) {
@@ -878,10 +878,10 @@ class ChatSessionRegistryTest {
     void emit_before_subscribe_is_not_lost() {
         // given: 핸들러는 세션을 등재한 뒤에 아웃바운드를 구독한다. 그 사이에 들어온 프레임이
         // 버려지면 입장 직후의 ROOM_INFO·SYSTEM이 조용히 사라진다.
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when: 아직 구독 전인데 보낸다
-        registry.sendToSession("s1", out("ROOM_INFO")).block();
+        registry.sendToSession("s1", out("ROOM_INFO")).block(VERIFY_CEILING);
 
         // then: 구독이 붙는 순간 받는다
         List<OutboundMessage> received = new CopyOnWriteArrayList<>();
@@ -893,14 +893,14 @@ class ChatSessionRegistryTest {
     @DisplayName("아웃바운드 버퍼 초과 — 느린 클라 세션을 끊는다(Pod 힙 보호)")
     void outbound_overflow_closes_session() {
         // given: 구독하되 소비하지 않는(request 0) 느린 클라
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when: 버퍼 용량의 2배를 밀어넣는다
         // then: 버퍼 크기만큼만 담기고, 무제한 적체 대신 스트림이 종료된다(= 세션 끊김)
         StepVerifier.create(registry.outbound("s1"), 0)
                 .then(() -> {
                     for (int i = 0; i < ChatSessionRegistry.OUTBOUND_BUFFER_SIZE * 2; i++) {
-                        registry.sendToSession("s1", out("NORMAL")).block();
+                        registry.sendToSession("s1", out("NORMAL")).block(VERIFY_CEILING);
                     }
                 })
                 .thenRequest(Long.MAX_VALUE)   // 실제로는 session.send()가 request한다
@@ -917,19 +917,19 @@ class ChatSessionRegistryTest {
     void overflow_and_kick_use_distinct_close_codes() {
         // given: 두 세션을 같은 방에 둔다. 하나는 버퍼를 넘기고, 하나는 강퇴한다.
         UUID otherUserId = UUID.randomUUID();
-        registry.register("overflowing", session(roomId, userId)).block();
-        registry.register("kicked", session(roomId, otherUserId)).block();
+        registry.register("overflowing", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("kicked", session(roomId, otherUserId)).block(VERIFY_CEILING);
 
         // when
         StepVerifier.create(registry.outbound("overflowing"), 0)
                 .then(() -> {
                     for (int i = 0; i < ChatSessionRegistry.OUTBOUND_BUFFER_SIZE * 2; i++) {
-                        registry.sendToSession("overflowing", out("NORMAL")).block();
+                        registry.sendToSession("overflowing", out("NORMAL")).block(VERIFY_CEILING);
                     }
                 })
                 .thenCancel()
                 .verify(VERIFY_CEILING);
-        registry.closeUser(roomId, otherUserId).block();
+        registry.closeUser(roomId, otherUserId).block(VERIFY_CEILING);
 
         // then
         assertThat(registry.closeStatusOf("overflowing")).isEqualTo(CloseStatus.SERVICE_OVERLOAD);
@@ -940,7 +940,7 @@ class ChatSessionRegistryTest {
     @DisplayName("레이트리밋 창 — 걸린 뒤에는 남은 시간이 나오고, 지나면 다시 0이 된다")
     void rate_limit_window_reports_remaining_then_clears() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
         assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
 
         // when: 3초 제한이 걸렸다고 기록
@@ -965,7 +965,7 @@ class ChatSessionRegistryTest {
     @DisplayName("거부 응답 솎기 — 첫 건은 답하고, 간격 안의 반복은 조용히 버린다(연결은 유지)")
     void rejection_reply_is_throttled_but_first_always_answers() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when & then: 첫 거부는 반드시 답한다 — 클라가 무엇이 틀렸는지 알아야 고친다
         assertThat(registry.shouldReplyToRejection("s1")).isTrue();
@@ -987,7 +987,7 @@ class ChatSessionRegistryTest {
     @DisplayName("전송 경로 강퇴 확인 — 그 세션을 1008로 끊는다(종료 신호를 놓친 Pod의 자가 복구)")
     void terminateKicked_closes_session() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when
         registry.terminateKicked("s1");
@@ -1001,7 +1001,7 @@ class ChatSessionRegistryTest {
     @DisplayName("레이트리밋 창 — 남은 시간을 올림한다(절삭하면 제한 없음과 구분이 안 된다)")
     void rate_limit_window_rounds_up() {
         // given
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // when
         registry.recordRateLimited("s1", 3);
@@ -1014,7 +1014,7 @@ class ChatSessionRegistryTest {
     @DisplayName("레이트리밋 창 — 등록 직후에는 제한이 없다(nanoTime 원점이 음수여도)")
     void rate_limit_window_is_clear_right_after_register() {
         // given & when
-        registry.register("s1", session(roomId, userId)).block();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
 
         // then: 0을 센티널로 쓰면 nanoTime이 음수인 JVM에서 전 세션이 막힌다
         assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
@@ -1025,7 +1025,7 @@ class ChatSessionRegistryTest {
     void activeCount_servedFromCacheWithinWindow() {
         // given: 실제 흐름대로 등록 뒤에 묻는다 — 캐시는 이 Pod에 남아 있는 방에만 붙는다
         // (조회를 다녀온 사이 방이 비면 담지 않는다. 담으면 회수 주체가 사라져 항목이 영영 남는다.)
-        registry.register("s1", session(roomId, UUID.randomUUID())).block();
+        registry.register("s1", session(roomId, UUID.randomUUID())).block(VERIFY_CEILING);
         given(sessionRepository.count(roomId)).willReturn(Mono.just(42L));
 
         // when: 같은 방에 연달아 두 번 묻는다
@@ -1042,7 +1042,7 @@ class ChatSessionRegistryTest {
     @DisplayName("시청자 수 — 조회 실패는 캐시에 굳히지 않는다(다음 입장이 값 없이 나가면 안 된다)")
     void activeCount_doesNotCacheFailures() {
         // given
-        registry.register("s1", session(roomId, UUID.randomUUID())).block();
+        registry.register("s1", session(roomId, UUID.randomUUID())).block(VERIFY_CEILING);
         given(sessionRepository.count(roomId))
                 .willReturn(Mono.error(new RuntimeException("redis down")))
                 .willReturn(Mono.just(7L));
@@ -1058,7 +1058,7 @@ class ChatSessionRegistryTest {
     void roomAliveRecheck_notDueRightAfterRegister() {
         // given
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
 
         // when & then: 첫 프레임마다 Redis를 치면 창을 둔 의미가 없다
         assertThat(registry.shouldRecheckRoomAlive("s1")).isFalse();
@@ -1076,7 +1076,7 @@ class ChatSessionRegistryTest {
     void roomEndedLatch_isSticky() {
         // given
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         assertThat(registry.isRoomKnownEnded("s1")).isFalse();
 
         // when
@@ -1101,13 +1101,13 @@ class ChatSessionRegistryTest {
         // given: 한 명이 들어와 값을 캐시한 뒤 나간다
         UUID room = UUID.randomUUID();
         given(sessionRepository.count(room)).willReturn(Mono.just(1L), Mono.just(9L));
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         StepVerifier.create(registry.getActiveCount(room)).expectNext(1L).expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
-        registry.unregister(room, "s1").block();
+        registry.unregister(room, "s1").block(VERIFY_CEILING);
 
         // when: 같은 방에 다시 들어온다
-        registry.register("s2", session(room, UUID.randomUUID())).block();
+        registry.register("s2", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
 
         // then: 캐시가 남아 있으면 이전 값이 나오고, 방송이 끝난 방의 항목이 계속 쌓인다
         StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).expectComplete()
@@ -1129,7 +1129,7 @@ class ChatSessionRegistryTest {
             registry.terminateRoomEnded(gone);
             registry.terminateKicked(gone);
             registry.expireRoomAliveWindow(gone);
-            registry.sendToSession(gone, out("SYSTEM")).block();
+            registry.sendToSession(gone, out("SYSTEM")).block(VERIFY_CEILING);
         }).doesNotThrowAnyException();
 
         assertThat(registry.rateLimitRetryAfterSeconds(gone)).isZero();
@@ -1146,7 +1146,7 @@ class ChatSessionRegistryTest {
     void closeStatus_defaultsToNormal() {
         // given
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
 
         // when & then: 서버가 정한 사유가 없으면 정책 위반 코드를 붙이면 안 된다 — 프론트가 재접속을 포기한다
         assertThat(registry.closeStatusOf("s1")).isEqualTo(CloseStatus.NORMAL);
@@ -1158,7 +1158,7 @@ class ChatSessionRegistryTest {
     void closeStatus_reflectsKick() {
         // given
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
 
         // when
         registry.terminateKicked("s1");
@@ -1172,7 +1172,7 @@ class ChatSessionRegistryTest {
     void roomAliveRecheck_reopensAfterInterval() {
         // given: 30초를 실제로 기다리지 않고 마지막 확인 시각만 과거로 민다
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         registry.expireRoomAliveWindow("s1");
 
         // when & then: 부등호나 CAS를 잘못 고쳐 창이 영영 안 열려도 이 단언이 없으면 전부 초록이다
@@ -1186,7 +1186,7 @@ class ChatSessionRegistryTest {
     void closeStatus_reflectsRoomEnded() {
         // given
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
 
         // 종료 전에는 사유가 미정이라 closeStatusOf가 기본값 NORMAL을 돌려준다 —
         // 그것만 보면 terminateRoomEnded를 통째로 지워도 통과한다. 그래서 종료 여부를 함께 고정한다.
@@ -1215,7 +1215,7 @@ class ChatSessionRegistryTest {
     void concurrent_lookups_share_one_round_trip() {
         // given: 왕복이 100ms 걸리는 조회 — 그 사이에 50건이 더 들어온다
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         given(sessionRepository.count(room))
                 .willReturn(Mono.just(7L).delayElement(Duration.ofMillis(100)));
 
@@ -1250,7 +1250,7 @@ class ChatSessionRegistryTest {
     void a_cancelled_lookup_still_releases_the_flight() {
         // given
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         given(sessionRepository.count(room))
                 .willReturn(Mono.just(7L).delayElement(Duration.ofMillis(100)));
 
@@ -1273,7 +1273,7 @@ class ChatSessionRegistryTest {
     void assembling_a_lookup_does_not_install_a_flight() {
         // given
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         given(sessionRepository.count(room)).willReturn(Mono.just(7L));
 
         // when: Mono 를 받아만 두고 구독하지 않는다
@@ -1290,7 +1290,7 @@ class ChatSessionRegistryTest {
         // given: Redis를 다녀오는 사이에 마지막 세션이 끊기는 상황.
         // 담는 시점과 회수 시점이 다른 락 구간이라, 그냥 넣으면 unregister가 먼저 지나간 뒤 항목이 새로 생긴다.
         UUID room = UUID.randomUUID();
-        registry.register("s1", session(room, UUID.randomUUID())).block();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         given(sessionRepository.count(room))
                 .willReturn(Mono.just(5L).delayElement(Duration.ofMillis(60)))
                 .willReturn(Mono.just(9L));
@@ -1298,7 +1298,7 @@ class ChatSessionRegistryTest {
         // when: 조회를 걸어두고 그 사이에 방을 비운다
         Mono<Long> inFlight = registry.getActiveCount(room);
         StepVerifier.create(inFlight.doOnSubscribe(sub -> {
-                    registry.unregister(room, "s1").block();   // 조회 응답 전에 방이 빈다
+                    registry.unregister(room, "s1").block(VERIFY_CEILING);   // 조회 응답 전에 방이 빈다
                 }))
                 .expectNext(5L)
                 .expectComplete()
@@ -1306,7 +1306,7 @@ class ChatSessionRegistryTest {
 
         // then: 그 방에 다시 들어오면 캐시가 아니라 Redis를 봐야 한다.
         // 고아 항목이 남았다면 아래가 9가 아니라 5로 나온다.
-        registry.register("s2", session(room, UUID.randomUUID())).block();
+        registry.register("s2", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
         StepVerifier.create(registry.getActiveCount(room)).expectNext(9L).expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
     }

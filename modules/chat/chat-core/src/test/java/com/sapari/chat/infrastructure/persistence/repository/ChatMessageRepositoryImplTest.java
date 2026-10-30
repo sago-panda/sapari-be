@@ -79,7 +79,7 @@ class ChatMessageRepositoryImplTest {
     @BeforeEach
     void setUp() {
         // 컬렉션 drop은 인덱스도 지우므로 매번 재생성 (멱등)
-        mongoTemplate.dropCollection(ChatMessageDocument.class).block();
+        mongoTemplate.dropCollection(ChatMessageDocument.class).block(VERIFY_CEILING);
         ChatMongoConfig.createChatMessagesIndexes(mongoTemplate);
     }
 
@@ -87,7 +87,7 @@ class ChatMessageRepositoryImplTest {
     @DisplayName("save — id가 채번되고 전 필드가 보존된다")
     void save_assigns_id_and_preserves_fields() {
         // given
-        ChatMessage saved = repository.save(message("안녕하세요", "client-1")).block();
+        ChatMessage saved = repository.save(message("안녕하세요", "client-1")).block(VERIFY_CEILING);
 
         // when & then
         assertThat(saved.id()).isNotNull();
@@ -101,10 +101,10 @@ class ChatMessageRepositoryImplTest {
     void returns_latest_messages_in_reverse_order() {
         // given
         for (int i = 0; i < 10; i++) {
-            repository.save(message("m" + i, null)).block();
+            repository.save(message("m" + i, null)).block(VERIFY_CEILING);
         }
 
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block();
+        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block(VERIFY_CEILING);
 
         // when & then
         assertThat(page).hasSize(5);
@@ -117,12 +117,12 @@ class ChatMessageRepositoryImplTest {
     void cursor_paging_is_continuous_without_duplicates() {
         // given
         for (int i = 0; i < 10; i++) {
-            repository.save(message("m" + i, null)).block();
+            repository.save(message("m" + i, null)).block(VERIFY_CEILING);
         }
-        List<ChatMessage> page1 = repository.findByRoomIdBefore(roomId, null, 5).collectList().block();
+        List<ChatMessage> page1 = repository.findByRoomIdBefore(roomId, null, 5).collectList().block(VERIFY_CEILING);
 
         List<ChatMessage> page2 = repository
-                .findByRoomIdBefore(roomId, page1.get(4).id(), 5).collectList().block();
+                .findByRoomIdBefore(roomId, page1.get(4).id(), 5).collectList().block(VERIFY_CEILING);
 
         // when & then
         assertThat(page2).hasSize(5);
@@ -135,7 +135,7 @@ class ChatMessageRepositoryImplTest {
     @DisplayName("TC#8·#19 — 메시지 없는 방 조회 시 빈 목록, 예외 없음")
     void empty_room_returns_empty_list() {
         // given
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block();
+        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block(VERIFY_CEILING);
 
         // when & then
         assertThat(page).isEmpty();
@@ -145,10 +145,10 @@ class ChatMessageRepositoryImplTest {
     @DisplayName("TC#25 — 형식은 유효하나 모든 메시지보다 오래된 beforeId면 빈 목록")
     void beforeId_older_than_all_returns_empty() {
         // given
-        repository.save(message("m0", null)).block();
+        repository.save(message("m0", null)).block(VERIFY_CEILING);
         String epochId = new ObjectId(new Date(0)).toHexString();
 
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, epochId, 5).collectList().block();
+        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, epochId, 5).collectList().block(VERIFY_CEILING);
 
         // when & then
         assertThat(page).isEmpty();
@@ -176,12 +176,12 @@ class ChatMessageRepositoryImplTest {
     @DisplayName("TC#15 — 다른 방 메시지는 섞이지 않는다 (roomId 격리)")
     void other_room_messages_are_isolated() {
         // given
-        repository.save(message("mine", null)).block();
+        repository.save(message("mine", null)).block(VERIFY_CEILING);
         ChatMessage other = new ChatMessage(null, UUID.randomUUID(), senderId, "닉", "e@x.com",
                 ChatRole.BUYER, new ChatMessageType.Normal(), "남의방", "남의방", null, Instant.now());
-        repository.save(other).block();
+        repository.save(other).block(VERIFY_CEILING);
 
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 10).collectList().block();
+        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 10).collectList().block(VERIFY_CEILING);
 
         // when & then
         assertThat(page).hasSize(1);
@@ -192,15 +192,15 @@ class ChatMessageRepositoryImplTest {
     @DisplayName("dedup — 같은 (roomId, senderId, clientMsgId) 재삽입은 DuplicateKey, 재조회로 기존 메시지 복구")
     void duplicate_clientMsgId_is_rejected_and_recoverable() {
         // given
-        ChatMessage first = repository.save(message("원본", "dup-key")).block();
+        ChatMessage first = repository.save(message("원본", "dup-key")).block(VERIFY_CEILING);
 
         // when
-        assertThatThrownBy(() -> repository.save(message("중복", "dup-key")).block())
+        assertThatThrownBy(() -> repository.save(message("중복", "dup-key")).block(VERIFY_CEILING))
                 .isInstanceOf(DuplicateKeyException.class);
 
         // then
         ChatMessage recovered = repository
-                .findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "dup-key").block();
+                .findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "dup-key").block(VERIFY_CEILING);
         assertThat(recovered.id()).isEqualTo(first.id());
         assertThat(recovered.displayMessage()).isEqualTo("원본");
     }
@@ -209,18 +209,18 @@ class ChatMessageRepositoryImplTest {
     @DisplayName("dedup — clientMsgId=null은 partial 인덱스 미적용이라 2건 이상 저장 가능")
     void null_clientMsgId_is_not_deduplicated() {
         // given
-        repository.save(message("첫번째", null)).block();
-        repository.save(message("두번째", null)).block();
+        repository.save(message("첫번째", null)).block(VERIFY_CEILING);
+        repository.save(message("두번째", null)).block(VERIFY_CEILING);
 
         // when & then
-        assertThat(repository.findByRoomIdBefore(roomId, null, 10).collectList().block()).hasSize(2);
+        assertThat(repository.findByRoomIdBefore(roomId, null, 10).collectList().block(VERIFY_CEILING)).hasSize(2);
     }
 
     @Test
     @DisplayName("인덱스 3종(페이징·dedup unique partial·TTL 2년)이 생성된다")
     void creates_three_indexes() {
         // given
-        var indexes = mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo().collectList().block();
+        var indexes = mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo().collectList().block(VERIFY_CEILING);
 
         // when & then
         assertThat(indexes).extracting(i -> i.getName())

@@ -48,6 +48,9 @@ import reactor.core.publisher.Mono;
 @Testcontainers
 class ChatWebSocketIntegrationTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private static KeyPair liveKeys;    // 발급용(앱이 공개키로 검증)
     private static KeyPair otherKeys;   // 위조 서명용
 
@@ -187,7 +190,7 @@ class ChatWebSocketIntegrationTest {
         // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
-        redisTemplate.opsForSet().add("chat:kicked:" + roomId, userId.toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + roomId, userId.toString()).block(VERIFY_CEILING);
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
 
         List<String> frames = collect(roomId, token, null, Duration.ofSeconds(3));
