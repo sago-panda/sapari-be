@@ -73,7 +73,7 @@ pipeline runs them (`.gitlab/ci/build.yml`) — a violation here blocks the merg
 17. `streaming-app` → blocking chat use cases / blocking `MongoTemplate` — `streaming_app_must_not_call_blocking_chat_use_cases`
 18. `live-app` → reactive chat use cases — `live_app_must_not_call_reactive_chat_use_cases`
 19. `OutboundMessage` built outside its type factories (positional-arg slip = PII leak) — `outbound_message_must_be_built_through_factories`
-20. chat `@Mapper` without `unmappedTargetPolicy = ERROR` (silent unmapped domain field; attribute removal reports the `WARN` default, so this one rule covers both) — `chat_mapstruct_mappers_must_fail_on_unmapped_targets`
+20. `@Mapper` without `unmappedTargetPolicy = ERROR`, outside `live` (silent unmapped domain field; attribute removal reports the `WARN` default, so this one rule covers both) — `mapstruct_mappers_must_fail_on_unmapped_targets`
 
 A one-line heads-up is fine only for a genuinely new pattern it can't guard. **This list is checked
 against the test file in CI** — if they diverge, the build fails, so fix the list rather than working

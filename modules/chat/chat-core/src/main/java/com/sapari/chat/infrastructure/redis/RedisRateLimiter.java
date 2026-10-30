@@ -35,19 +35,19 @@ public class RedisRateLimiter implements RateLimiter {
     private static final Duration WINDOW = Duration.ofSeconds(3);
 
     /**
-     * fail-open 로그 간격. <b>건수가 아니라 경과시간</b>으로 솎아낸다 — 건수 기준(N건당 1줄)은 카운터가
+     * 강등 로그 간격. <b>건수가 아니라 경과시간</b>으로 솎아낸다 — 건수 기준(N건당 1줄)은 카운터가
      * 프로세스 생애 누적이라 두 번째 이후의 짧은 장애가 통째로 침묵한다(예: 누적 251~290이면 한 줄도 안 남음).
      * 규모가 작을수록 안 남는 역방향이라, 진단이 정작 어려운 산발 장애를 놓친다.
      */
-    private static final long FAIL_OPEN_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
+    private static final long DEGRADED_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
 
     private final ReactiveStringRedisTemplate redisTemplate;
 
-    /** fail-open 누적 횟수. 로그를 솎아내도 규모는 남기기 위한 카운터. */
-    private final AtomicLong failOpenCount = new AtomicLong();
+    /** 강등 누적 횟수(= Redis 가 답하지 못해 로컬 창이 판정한 횟수). 로그를 솎아내도 규모는 남기기 위한 카운터. */
+    private final AtomicLong degradedCount = new AtomicLong();
 
-    /** 마지막으로 fail-open을 로깅한 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
-    private final AtomicLong lastFailOpenLogNanos = new AtomicLong(System.nanoTime() - FAIL_OPEN_LOG_INTERVAL_NANOS);
+    /** 마지막으로 강등을 로깅한 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
+    private final AtomicLong lastDegradedLogNanos = new AtomicLong(System.nanoTime() - DEGRADED_LOG_INTERVAL_NANOS);
 
     /**
      * Redis 장애 구간의 로컬 창 — userId → 창이 끝나는 {@code nanoTime}.
@@ -75,8 +75,8 @@ public class RedisRateLimiter implements RateLimiter {
                     // 표본 하나에 찍힌 id는 "이 사용자 문제"로 오독을 부른다. 대신 예외를 그대로 실어
                     // 위치를 남긴다 — 이 catch는 전 예외를 받으므로 체인 내부 결함이 흘러들 수도 있는데,
                     // 그때는 스택트레이스가 id보다 훨씬 쓸모 있다.
-                    long count = failOpenCount.incrementAndGet();
-                    if (shouldLogFailOpen()) {
+                    long count = degradedCount.incrementAndGet();
+                    if (shouldLogDegraded()) {
                         log.error("rate limit Redis 장애 — 로컬 창으로 강등(누적 {}건)", count, err);
                     }
                     return Mono.just(localWindow(userId, System.nanoTime()));
@@ -84,10 +84,10 @@ public class RedisRateLimiter implements RateLimiter {
     }
 
     /** 마지막 로그로부터 간격이 지났으면 true. 경쟁 시 한 스레드만 통과한다(스로틀이 곧 중복 억제). */
-    private boolean shouldLogFailOpen() {
+    private boolean shouldLogDegraded() {
         long now = System.nanoTime();
-        long last = lastFailOpenLogNanos.get();
-        return now - last >= FAIL_OPEN_LOG_INTERVAL_NANOS && lastFailOpenLogNanos.compareAndSet(last, now);
+        long last = lastDegradedLogNanos.get();
+        return now - last >= DEGRADED_LOG_INTERVAL_NANOS && lastDegradedLogNanos.compareAndSet(last, now);
     }
 
     /**
@@ -118,7 +118,11 @@ public class RedisRateLimiter implements RateLimiter {
         if (remainingNanos[0] == 0) {
             return new RateLimitResult(true, 0);
         }
-        // 올림 + 최소 1 — Redis 경로의 remainingSeconds 와 같은 계약이다(만료 직전이어도 카운트다운용 1).
+        // 올림 + 최소 1. <b>Redis 경로와 같은 계약이 아니다</b> — 한때 그렇게 적었는데 거짓이다.
+        // 이쪽은 올리고 저쪽({@code remainingSeconds})은 {@code ttl.toSeconds()} 가 0 쪽으로 버려
+        // 내린다. 남은 2.5초가 여기서는 3, 저기서는 2 다. 공유되는 것은 {@code max(1, …)} 뿐이다.
+        // 올리는 쪽이 더 안전하다 — 내리면 창이 남았는데 짧게 알려 줘서 클라가 일찍 재시도하고
+        // 거부 왕복이 한 번 더 붙는다. 그러니 이 문장을 근거로 양쪽을 "맞추지" 말 것.
         return new RateLimitResult(false,
                 Math.max(1, (remainingNanos[0] + 999_999_999L) / 1_000_000_000L));
     }

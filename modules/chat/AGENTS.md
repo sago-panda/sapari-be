@@ -40,16 +40,18 @@ ArchUnit enforces the calling direction: streaming-app must not touch blocking R
 blocking chat use cases; live-app (MVC) must not touch reactive ones. **Rule ② matches class names by regex** —
 name a service something other than `KickUserService` and it silently guards nothing.
 
-## Failure policy — everything opens, nothing closes
+## Failure policy — the moderation reads open, the rate limit degrades
 
-Every moderation read is **fail-open**. There is no fail-closed path in chat.
+Every moderation read (kick, ban, room-ended) is **fail-open**. The rate limit is **not** one of them
+any more: it falls back to a pod-local window of the same length, so a Redis outage no longer removes
+the cap. There is still no fail-closed path in chat.
 
 | Read | On failure | Loses |
 |---|---|---|
 | room-ended marker (entry + send re-check) | allow | ended-room blocking |
 | kick set | allow | kick enforcement |
 | ban key | allow | ban enforcement |
-| rate limit | allow | flood control |
+| rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
 | session HASH register / viewer count | allow | count accuracy only |
 
 The bet: total chat outage is worse than a kicked user slipping through. **Adapters propagate, consumers
@@ -393,7 +395,7 @@ silently misses it. `live` uses `IGNORE` for the opposite reason: its entity car
 with no domain counterpart, and that is stated in `LiveRoomMapper`.
 
 **Deleting the attribute is not caught by the build**, because nothing is unmapped at the moment you delete
-it. ArchUnit rule 20 (`chat_mapstruct_mappers_must_fail_on_unmapped_targets`) closes that gap: it reads the
+it. ArchUnit rule 20 (`mapstruct_mappers_must_fail_on_unmapped_targets`, repo-wide except `live`) closes that gap: it reads the
 value out of the class file — `@Mapper` is `RetentionPolicy.CLASS`, so reflection cannot — and when the
 attribute is gone it sees the annotation default `WARN`, so one rule covers both the downgrade to `IGNORE`
 and the deletion.

@@ -125,9 +125,18 @@ class RedisRateLimiterTest {
         assertThat(rateLimiter.tryAcquire(userId).block().allowed()).isTrue();
     }
 
+    /**
+     * TC#9 — Redis 장애 시 <b>첫 요청은</b> 허용한다.
+     *
+     * <p>한때 이 테스트의 이름이 "fail-open" 이었고 단언이 이 한 줄뿐이었다. 그 모양으로는 강등을
+     * 되돌려도(무조건 {@code allowed=true}) 멀쩡히 초록이라, <b>지워진 계약을 주장하는 초록 테스트</b>가
+     * 된다 — 다음 사람이 "fail-open" 으로 grep 하면 이것을 찾는다. 창 안의 두 번째 요청이 거부되는지는
+     * {@code RedisRateLimiterDegradedTest} 가 본다. 여기서 재는 것은 "장애가 첫 요청을 막지 않는다"
+     * 하나다(가용성 우선).
+     */
     @Test
-    @DisplayName("TC#9 — Redis 장애 시 fail-open (allowed=true)")
-    void redis_failure_fails_open() {
+    @DisplayName("TC#9 — Redis 장애가 첫 요청을 막지 않는다 (상한은 로컬 창으로 강등 — Degraded 테스트 참고)")
+    void redis_failure_still_allows_the_first_request() {
         // given
         ReactiveStringRedisTemplate broken = Mockito.mock(ReactiveStringRedisTemplate.class,
                 Mockito.RETURNS_DEEP_STUBS);

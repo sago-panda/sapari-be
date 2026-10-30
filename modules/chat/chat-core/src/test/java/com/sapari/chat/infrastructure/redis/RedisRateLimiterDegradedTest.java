@@ -8,6 +8,11 @@ import static org.mockito.Mockito.mock;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -56,7 +61,26 @@ class RedisRateLimiterDegradedTest {
         // 저장이 일어난다. 가용성을 지키려 허용하는 것이 "무제한 허용"일 이유는 없다.
         assertThat(first.allowed()).as("장애 중 첫 요청은 허용 — 가용성이 엄격성보다 우선").isTrue();
         assertThat(second.allowed()).as("창 안의 두 번째는 거부 — 장애가 상한을 지우지 않는다").isFalse();
-        assertThat(second.retryAfterSeconds()).isBetween(1L, 3L);
+        assertThat(second.retryAfterSeconds()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("⭐ 남은 시간은 올려서 돌려준다 — 내리면 창이 남았는데 0 이 나가 클라가 곧장 재시도한다")
+    void remaining_seconds_are_rounded_up() {
+        // given: 창을 열고 합성 시계로 두 지점을 본다. isBetween(1, 3) 으로는 이 계약을 못 잡는다 —
+        // 합법 범위 전체를 받아들여 올림을 내림으로 바꿔도 통과한다(실측으로 그 뮤턴트가 생존했다).
+        UUID userId = UUID.randomUUID();
+        long start = System.nanoTime();
+        rateLimiter.localWindow(userId, start);
+
+        // when & then: 1.5초 지난 시점 — 남은 1.5초는 2초로 올라간다(내리면 1)
+        assertThat(rateLimiter.localWindow(userId, start + 1_500_000_000L).retryAfterSeconds())
+                .as("남은 1.5초").isEqualTo(2);
+
+        // 만료 0.5ms 전 — 올리면 1 이고 내리면 0 이다. 0 이 나가면 클라가 곧장 재시도해
+        // 거부 왕복이 한 번 더 늘고, 카운트다운 UI 도 "0초 남음" 으로 멈춘다.
+        assertThat(rateLimiter.localWindow(userId, start + 2_999_500_000L).retryAfterSeconds())
+                .as("만료 직전").isEqualTo(1);
     }
 
     @Test
@@ -105,6 +129,86 @@ class RedisRateLimiterDegradedTest {
         assertThat(rateLimiter.localWindow(userId, start + 1).allowed()).isFalse();
         assertThat(rateLimiter.localWindow(userId, afterWindow).allowed())
                 .as("창이 지났으면 다시 허용 — 그렇지 않으면 장애 한 번이 영구 차단이 된다").isTrue();
+    }
+
+    /**
+     * ⭐ 상한을 집행하는 것이 <b>창 자신</b>임을 본다 — 쓸기 틱이 아니다.
+     *
+     * <p>두 기계장치가 서로를 가려 준다. 쓸기 간격과 창 길이가 둘 다 {@code WINDOW} 라, 항목이
+     * 만료됐으면 보통 쓸기도 자격을 얻는다 — 그래서 창 만료 가드를 지워도, 쓸기를 "전부 지움" 으로
+     * 바꿔도 스위트가 멀쩡했다(실측으로 두 뮤턴트 모두 생존했다). 운영 결과는 양방향으로 실재한다:
+     * 가드가 없으면 차단이 자기 창의 끝이 아니라 쓸기 틱에 풀려 <b>최대 2배 과차단</b>, 쓸기가 전부
+     * 지우면 틱마다 모든 창이 사라져 <b>최대 2배 과통과</b>다.
+     *
+     * <p>분리하는 조건은 "창이 아직 살아 있는데 쓸기는 스로틀에 걸린 시점" 이다. 그 지점에서 통과를
+     * 허용할 수 있는 것은 가드뿐이고, 그 지점에 항목이 남아 있어야 하므로 쓸기도 함께 고정된다.
+     */
+    @Test
+    @DisplayName("⭐ 상한을 집행하는 것은 창 자신이다 — 쓸기 틱이 대신 집행하고 있지 않다")
+    void the_window_enforces_the_cap_not_the_sweep() {
+        // given: t0+0.1s 에 창을 연다 → 그 창은 t0+3.1s 에 끝난다
+        UUID lingering = UUID.randomUUID();
+        long start = System.nanoTime();
+        rateLimiter.localWindow(lingering, start + 100_000_000L);
+
+        // when: t0+3.0s 에 다른 사용자가 들어온다 — 쓸기 간격이 지나 쓸기가 돈다
+        rateLimiter.localWindow(UUID.randomUUID(), start + 3_000_000_000L);
+
+        // then: 아직 살아 있는 창은 그 쓸기에서 지워지지 않는다
+        assertThat(rateLimiter.trackedLocalWindows())
+                .as("쓸기가 만료되지 않은 창까지 지웠다 — 틱마다 모든 상한이 풀린다").isEqualTo(2);
+
+        // 그리고 t0+3.15s — 창은 끝났고(3.1s) 쓸기는 스로틀에 걸려 있다(마지막 쓸기 150ms 전).
+        // 즉 여기서 통과시킬 수 있는 것은 창 만료 가드뿐이다. 가드가 없으면 "항목이 있다" 만 보고
+        // 거부하므로, 차단이 자기 창의 끝이 아니라 다음 쓸기 틱까지 늘어난다.
+        assertThat(rateLimiter.localWindow(lingering, start + 3_150_000_000L).allowed())
+                .as("창이 끝났는데 거부했다 — 해제를 쓸기 틱이 결정하고 있다").isTrue();
+    }
+
+    /**
+     * ⭐ 같은 사용자의 동시 호출에서 둘 다 통과하지 않는다 — {@code compute} 가 키 단위로 원자적이다.
+     *
+     * <p>{@code compute} 를 "읽고 나서 쓴다" 로 바꾸면 그 사이에 둘 다 "창이 비었다" 를 보고 통과한다.
+     * 단일 스레드 테스트로는 그 차이가 안 보여 그 뮤턴트가 생존했다(실측).
+     *
+     * <p><b>사살이 확률적이다.</b> 라운드마다 두 스레드를 배리어로 맞춰도 겹칠 확률은 1보다 작다 —
+     * 리뷰어 실측으로 get-then-put 이 2,000 라운드에서 6회 이중허용(라운드당 ≈0.3%)이었다.
+     * 5,000 라운드면 사살 확률이 ≈99.999% 다. 통과 방향은 결정적이므로({@code compute} 는 언제나 0)
+     * 이 테스트 자체가 흔들리지는 않는다.
+     */
+    @Test
+    @DisplayName("⭐ 같은 사용자에 동시에 들어와도 둘 다 통과하지 않는다 — 판정이 키 단위로 원자적이다")
+    void concurrent_callers_never_both_pass() throws Exception {
+        // given
+        int rounds = 5_000;
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        int doubleAllowed = 0;
+
+        // when: 라운드마다 새 사용자로 두 스레드를 같은 시각에 들여보낸다. 사용자를 새로 뽑는 이유는
+        // 앞 라운드의 창이 남아 뒤 라운드를 전부 거부로 만들면 경합이 재현되지 않기 때문이다.
+        try {
+            for (int round = 0; round < rounds; round++) {
+                UUID userId = UUID.randomUUID();
+                long now = System.nanoTime();
+                Callable<Boolean> attempt = () -> {
+                    barrier.await();
+                    return rateLimiter.localWindow(userId, now).allowed();
+                };
+                Future<Boolean> first = pool.submit(attempt);
+                Future<Boolean> second = pool.submit(attempt);
+                if (first.get() && second.get()) {
+                    doubleAllowed++;
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        // then
+        assertThat(doubleAllowed)
+                .as("같은 사용자의 동시 호출이 둘 다 통과했다 — 창 하나에 두 건이 들어가 상한이 두 배가 된다")
+                .isZero();
     }
 
     @Test

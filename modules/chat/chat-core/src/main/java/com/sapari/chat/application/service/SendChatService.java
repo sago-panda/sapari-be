@@ -212,7 +212,7 @@ public class SendChatService implements SendChatUseCase {
     }
 
     /**
-     * 5) Rate limit — 면제는 <b>이 방송을 진행하는 판매자</b>와 운영자만. 어댑터가 Redis 장애 시 fail-open.
+     * 5) Rate limit — 면제는 <b>이 방송을 진행하는 판매자</b>와 운영자만. 어댑터는 Redis 장애 시 Pod 로컬 창으로 강등한다(상한이 사라지지 않는다).
      *
      * <p>면제 근거가 "상품설명 연속전송"이라 방주인에게만 해당한다. role만 보면 판매자 계정이 남의 방에
      * 시청자로 들어가 무제한 도배할 수 있는데, 권한 정책이 세운 <b>role + 방 소유 두 축</b> 원칙과 어긋난다.

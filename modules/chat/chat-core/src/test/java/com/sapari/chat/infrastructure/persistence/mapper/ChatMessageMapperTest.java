@@ -105,8 +105,9 @@ class ChatMessageMapperTest {
         // toDocument 가 위치 인자로 생성자를 부르므로 컴파일러가 막지만, 도메인 쪽에는 그 그물이 없다.
         //
         // 한계: 원시형 필드는 못 잡는다. int 를 더하면 미매핑 타깃이 0 으로 남는데 isNotNull 로는
-        // "안 채워졌다" 와 "타입 기본값으로 채워졌다" 가 구분되지 않는다(실측 — int 필드를 더하면
-        // 경고만 나고 이 테스트도 통과한다). 그쪽은 매퍼의 unmappedTargetPolicy = ERROR 가 잡고,
+        // "안 채워졌다" 와 "타입 기본값으로 채워졌다" 가 구분되지 않는다(실측 — 정책을 기본값(WARN)으로
+        // 되돌린 상태에서 int 필드를 더하면 경고만 나고 이 테스트도 통과한다. 정책이 ERROR 인 지금은
+        // 그 전에 컴파일이 깨진다). 그쪽은 매퍼의 unmappedTargetPolicy = ERROR 가 잡고,
         // 그 속성이 지워지는 것은 ArchitectureTest 의 ArchUnit 규칙이 잡는다.
         //
         // 이 중 다섯(roomId·senderId·senderRole·type·createdAt)은 ChatMessage 컴팩트 생성자가 null 을
