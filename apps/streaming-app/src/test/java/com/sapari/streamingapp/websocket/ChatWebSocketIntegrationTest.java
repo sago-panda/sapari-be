@@ -305,10 +305,12 @@ class ChatWebSocketIntegrationTest {
 
         AtomicReference<Long> kickedAtNanos = new AtomicReference<>();
         AtomicReference<Long> closedAtNanos = new AtomicReference<>();
+        List<String> received = new CopyOnWriteArrayList<>();
 
         new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
             session.closeStatus().doOnNext(ignored -> closedAtNanos.set(System.nanoTime())).subscribe();
-            Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText).then();
+            Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
+                    .doOnNext(received::add).then();
             Mono<Void> kick = Mono.delay(Duration.ofMillis(700))
                     .doOnNext(ignored -> kickedAtNanos.set(System.nanoTime()))
                     .then(redisTemplate.convertAndSend("chat:pubsub:" + roomId, kickEnvelope))
@@ -320,10 +322,22 @@ class ChatWebSocketIntegrationTest {
         // 1초는 그 둘을 가르는 값이다 — 정상 경로는 수십 ms 이고 유예 경로는 3초다.
         assertThat(kickedAtNanos.get()).as("강퇴 발행 시각이 안 잡혔다").isNotNull();
         assertThat(closedAtNanos.get()).as("세션이 닫히지 않았다").isNotNull();
+
+        // ⚠️ <b>강퇴 팬아웃을 실제로 탔는지를 먼저 본다.</b> 아래 경과시간만 보면 이 테스트에
+        // 초록인 채 아무것도 재지 않는 모드가 있다 — kickedAtNanos 는 convertAndSend 앞에서 무조건
+        // 찍히고 closedAtNanos 는 <b>어떤 이유의</b> close 에도 찍히므로, 세션이 강퇴보다 먼저 닫히면
+        // 경과시간이 음수가 되어 "1초 미만" 을 만족한다. 리뷰어가 그 모드를 재현했다 — 토큰을 위조해
+        // 입장 거부로 ~50ms 에 끊으니 이 테스트가 팬아웃을 한 번도 타지 않은 채 통과했고 형제
+        // 테스트들은 정상적으로 실패했다. SYSTEM(KICKED) 수신이 "팬아웃이 돌았다" 의 양성 증거다.
+        assertThat(received)
+                .as("SYSTEM(KICKED)이 오지 않았다 — 강퇴 팬아웃을 타지 않았으므로 아래 경과시간은 "
+                        + "강퇴와 무관한 종료를 재고 있다")
+                .anySatisfy(payload -> assertThat(payload).contains("KICKED"));
+
         long elapsedMillis = (closedAtNanos.get() - kickedAtNanos.get()) / 1_000_000;
         assertThat(elapsedMillis)
                 .as("서버발 종료가 유예를 기다렸다 — 데이터 채널 종료 경로가 도달 불가다")
-                .isLessThan(1_000);
+                .isBetween(0L, 999L);
     }
 
     @Test

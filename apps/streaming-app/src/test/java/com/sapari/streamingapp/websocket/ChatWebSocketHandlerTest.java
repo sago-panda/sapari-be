@@ -179,6 +179,48 @@ class ChatWebSocketHandlerTest {
                 .hasSizeGreaterThan(50);
     }
 
+    /**
+     * ⭐ 수명 분기가 <b>지터를 거쳐</b> 배선돼 있는지 본다.
+     *
+     * <p>{@code lifetime_is_jittered_below_the_limit} 는 헬퍼를 직접 부르고,
+     * {@code session_is_terminated_at_the_lifetime_limit} 는 80% / 100%+1s 로 단언한다 —
+     * 둘 다 지터 없이도 참이라, {@code Mono.delay(jittered(limit))} 를 {@code Mono.delay(limit)} 로
+     * 되돌려도 아무것도 깨지지 않았다(실측: websocket 패키지 전체 BUILD SUCCESSFUL).
+     * {@code runSession} 자신의 javadoc 이 경고한 "분기만 따로 재면 배선이 빠진 것을 아무도 묻지
+     * 않는다" 가 지터에서 그대로 일어났다.
+     *
+     * <p>가상 시간이라 시계는 정확하다. 남는 불확실성은 난수 하나뿐이다 — 지터 폭이 60분의 15%
+     * (540,000ms)이고 뽑기가 {@code [0, span]} 이라, 정확히 0이 나오면 상한에 발화해 이 테스트가
+     * 깨진다. 확률 1/540,001 이고, 그 경우는 "지터가 없다"와 구별되지 않는 것이 맞다.
+     */
+    @Test
+    @DisplayName("⭐ 수명 분기가 지터를 거쳐 배선돼 있다 — 상한 1ms 전에 이미 끊겨 있다")
+    void lifetime_branch_is_wired_through_the_jitter() {
+        // given: 클라도 서버도 먼저 끝내지 않는 세션 — 수명 분기만이 이 연결을 끝낼 수 있다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        Duration lifetime = Duration.ofMinutes(60);
+        ChatWebSocketHandler bounded = handlerWithLifetime(lifetime);
+
+        // when & then: 지터를 거치지 않으면 정확히 상한에 발화하므로 1ms 전에는 아직 끊기지 않는다
+        StepVerifier.withVirtualTime(() -> bounded.runSession(session, chatSession))
+                .thenAwait(lifetime.minusMillis(1))
+                .then(() -> then(registry).should(times(1)).terminateLifetimeExpired("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
     @Test
     @DisplayName("⭐ 수명 상한에 닿으면 세션이 종료된다 — 재접속으로 권위를 다시 받게 한다")
     void session_is_terminated_at_the_lifetime_limit() {
