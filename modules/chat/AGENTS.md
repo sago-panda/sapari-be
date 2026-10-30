@@ -91,6 +91,19 @@ corruption split is not widened to them.
 1. **`ChatEnvelope`** (`application/protocol`, not infrastructure — the port returns it). Both the reactive
    broadcaster and the blocking kick publisher serialize the **real type**; hand-built JSON was the old
    design and a one-character field-name typo compiles fine and vanishes across every pod.
+   - The broadcaster disables `FAIL_ON_UNKNOWN_PROPERTIES` for the same reason contract 4 does: a rollout is
+     never atomic, so an older pod *will* receive envelopes carrying a field it does not know, and strictness
+     makes it drop **every** envelope the newer publisher sends. **Only one direction is bounded by that.**
+     Add envelope fields **nullable and unvalidated** — a required one makes newer pods drop every *older*
+     envelope instead, and KICK_EVENT shares this channel, so moderation goes with it.
+   - Lenience covers *properties*, not *type ids*. Both discriminators (`ChatEnvelope.kind`,
+     `ChatMessageTypeMixin.kind`) have no `defaultImpl`, so an unknown `kind` still throws — a **new envelope
+     kind reaches older pods as a silent drop of exactly that kind**. Ship the consuming version first, or
+     give the discriminator a `defaultImpl` that explicitly ignores unknowns.
+   - Lenience also turns *rejections into nulls*: a mistyped field name now yields a null component instead of
+     an error. Envelope records therefore validate their own required fields (`KickEvent` rejects a null
+     `userId`; `ChatMsg` relies on `ChatMessage`), because this channel is outside the trust boundary — the
+     channel-name parser says as much.
 2. **`ChatMessageTypeMixin` registration is mandatory** on any mapper touching a CHAT envelope. Omission
    dies loudly on first deserialize — that is the good case.
 3. **`OutboundMessage` omits null fields** (`@JsonInclude(NON_NULL)`). It is an 8-type union, so over half

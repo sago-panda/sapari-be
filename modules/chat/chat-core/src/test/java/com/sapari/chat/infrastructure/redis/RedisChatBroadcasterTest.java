@@ -117,17 +117,65 @@ class RedisChatBroadcasterTest {
         // given: 신 버전이 ChatEnvelope(또는 그 안의 메시지)에 필드를 하나 더해 발행한 봉투.
         // 배포는 한 번에 끝나지 않으므로 구 버전 Pod 가 이 봉투를 받는 구간이 반드시 생긴다.
         String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
-        String withNewField = wire.replaceFirst("\\{", "{\"reactionCount\":3,");
+        // 두 자리를 다 본다. 봉투 최상위만 보면 ChatEnvelope 에만 ignoreUnknown 을 붙이는 변경이
+        // 통과하는데(실측), 현실의 새 필드는 ChatMessage 쪽에 붙을 가능성이 더 크다 — 픽스처 이름이
+        // reactionCount(메시지 개념)인데 정작 메시지 레벨이 비어 있었다.
+        String withEnvelopeField = wire.replaceFirst("\\{", "{\"envelopeVersion\":2,");
+        String withMessageField = wire.replaceFirst("\"message\":\\{", "\"message\":{\"reactionCount\":3,");
 
         // when & then: 모르는 필드 하나 때문에 역직렬화가 통째로 실패하면 그 Pod 의 <b>방 전체</b>가
         // 실시간 전달을 잃는다 — 깨진 봉투 한 건이 아니라 신 버전이 보내는 모든 봉투가 skip 된다.
         // 계정 이벤트 쪽은 이미 모르는 필드를 흘려보내는데 이쪽만 엄격했다.
         StepVerifier.create(broadcaster.subscribe(roomId))
-                .then(() -> pattern.tryEmitNext(message(channel, withNewField)))
+                .then(() -> pattern.tryEmitNext(message(channel, withEnvelopeField)))
+                .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg cm
+                        && cm.message().equals(sampleMessage()))
+                .then(() -> pattern.tryEmitNext(message(channel, withMessageField)))
                 .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg cm
                         && cm.message().equals(sampleMessage()))
                 .thenCancel()
-                .verify(Duration.ofSeconds(2));
+                .verify(Duration.ofSeconds(3));
+    }
+
+    /** 조건이 참이 될 때까지 상한 안에서 기다린다 — 고정 sleep 은 느린 러너에서 거짓 실패한다. */
+    private static void await(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+        while (!condition.getAsBoolean() && System.nanoTime() - deadline < 0) {
+            Thread.sleep(10);
+        }
+    }
+
+    @Test
+    @DisplayName("⭐ userId 가 없는 KICK_EVENT 는 전달하지 않는다 — 관용 매퍼가 거부를 null 로 바꿨다")
+    void subscribe_rejects_a_kick_event_without_a_user_id() throws Exception {
+        // given: 필드명이 어긋난 강퇴 봉투. 엄격한 매퍼에서는 "모르는 프로퍼티"로 거부됐는데,
+        // 롤링 배포를 위해 관용으로 바꾼 뒤로는 <b>userId=null</b> 이 되어 통과한다.
+        //
+        // 통과하면 두 가지가 동시에 일어난다. 강퇴 팬아웃이 userId 로 당사자를 고르므로 아무 세션도
+        // 끊지 못하고(조치가 조용히 no-op), 동시에 userId 키가 빠진 KICK 프레임이 방 전원에게 나간다.
+        // 로그도 남지 않는다 — 모더레이션이 소리 없이 실패하는 방향이다.
+        //
+        // 이 채널을 신뢰경계 밖으로 다루는 것은 이 어댑터의 기존 판단이다(채널명 파싱 주석이
+        // "여기 오는 건 우리 발행이 아니다"라고 적어 두었다). 같은 기준을 봉투 내용에도 적용한다.
+        String broken = "{\"kind\":\"KICK_EVENT\",\"userIdd\":\"" + UUID.randomUUID() + "\"}";
+
+        // when: 구독해 두고 밀어넣는다.
+        //
+        // expectNoEvent 를 쓰지 않는다 — 그 단언으로 썼더니 KickEvent[userId=null] 이 실제로 흘러
+        // 나오는데도 통과했다(실측). 받은 것을 모아서 직접 보는 쪽이 문다.
+        java.util.List<ChatEnvelope> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        broadcaster.subscribe(roomId).subscribe(received::add);
+        pattern.tryEmitNext(message(channel, broken));
+        pattern.tryEmitNext(message(channel, mapper.writeValueAsString(
+                new ChatEnvelope.KickEvent(UUID.randomUUID()))));
+
+        // then: 깨진 것은 안 나오고(로그 남는 skip), 뒤따르는 정상 봉투는 나온다(스트림 생존)
+        await(() -> received.size() == 1);
+        assertThat(received)
+                .as("userId 없는 KICK_EVENT 가 전달됐다 — 아무 세션도 못 끊고 방 전원에게 KICK 이 나간다")
+                .singleElement()
+                .isInstanceOf(ChatEnvelope.KickEvent.class);
+        assertThat(((ChatEnvelope.KickEvent) received.get(0)).userId()).isNotNull();
     }
 
     @Test

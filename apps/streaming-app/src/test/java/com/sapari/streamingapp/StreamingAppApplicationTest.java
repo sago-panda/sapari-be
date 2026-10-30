@@ -38,7 +38,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <p>룸 토큰 공개키를 여기서 만들어 넣는다. 그 설정은 <b>필수</b>라 없으면 부팅이 실패하는데
  * ({@code RoomTokenConfig}), 운영 설정 파일은 추적되지 않으므로 CI 에는 없다. 이 테스트가 재려는 것은
  * "인프라를 갖추면 뜨는가"이지 "설정 파일이 있는가"가 아니라서, 키는 테스트가 공급한다 —
- * 값이 무엇인지는 상관없다(검증은 하지 않는다).
+ * <b>아무 RSA 공개키여도 된다</b>(이 테스트는 토큰 서명을 검증하지 않는다). 다만 파싱은 되어야 한다 —
+ * 더미 문자열을 넣으면 가드가 거부해 컨텍스트가 뜨지 않는다.
  */
 @SpringBootTest
 @Testcontainers

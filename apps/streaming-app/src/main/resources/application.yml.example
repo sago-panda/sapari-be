@@ -6,7 +6,14 @@
 # 사용법: cp application.yml.example application.yml 후 아래 값을 채운다.
 #
 # ⚠️ 표기 규칙
-#   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다.
+#   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다 — 그래서 두지 않는다.
+#             미설정이면 부팅이 실패한다(값마다 가드가 다르다: 공개키는 RoomTokenConfig,
+#             세션 상한 셋은 SessionTimeouts).
+#
+# ⚠️ 배포 전제 — 머지 전에 읽을 것
+#   CHAT_ROOMTOKEN_PUBLICKEY 가 <b>롤아웃 전에</b> 환경에 있어야 한다. 매니페스트가 먼저 가고 앱이
+#   따른다 — 없이 올리면 컨텍스트가 뜨지 않아 CrashLoopBackOff 다(실측된 부팅 실패).
+#   live-app 의 MANAGEMENT_PORT 가 같은 성격이고 그쪽 전제는 infra/AGENTS.md 에 적혀 있다.
 #   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
 #
 # ⚠️ 이 파일에 실제 자격증명을 넣지 말 것. 전부 자리표시자다.
@@ -26,8 +33,14 @@ spring:
   #    옛 이름으로 적으면 값이 바인딩되지 않아 MONGODB_URI를 넣어도 조용히 무시되고
   #    기본값 localhost:27017 로 붙는다. 그 상태로 뜨면 인덱스 생성 러너가 타임아웃으로 죽는다.
   #    (redis 쪽 접두 spring.data.redis 는 바뀌지 않았다 — 둘이 달라 보이는 게 정상이다)
+  #
+  # ⚠️ 기본값을 두지 않는다. 위 범례가 적은 대로 REQUIRED 에 기본값을 두면 그 값으로 조용히 뜨는데,
+  #    여기서는 그 조용함이 두 갈래다 — 운영 호스트에 localhost Mongo 가 없으면 인덱스 생성 러너가
+  #    죽어 부팅이 실패하고(시끄럽다), 무언가 떠 있으면 <b>입장도 되고 실시간 전달도 되는데 메시지만
+  #    엉뚱한 DB 에 쌓인다</b>. 이 설계가 "실시간 전달 best-effort, 영속만 보장"이라고 못 박은 바로
+  #    그 보장 쪽이라, 두 번째 갈래가 특히 나쁘다.
   mongodb:
-    uri: ${MONGODB_URI:mongodb://localhost:27017/sapari}   # REQUIRED (운영)
+    uri: ${MONGODB_URI}                                    # REQUIRED (운영) — 기본값 없음
 
 # 룸 토큰 검증용 live 공개키. live가 개인키로 서명하고 이 앱은 공개키로 검증만 한다.
 # 값은 live에서 받아 env로 주입한다(Base64 SPKI, PEM 헤더 없이 본문만).
