@@ -288,6 +288,66 @@ class ChatWebSocketIntegrationTest {
         assertThat(observed.get().getCode()).isEqualTo(CloseStatus.POLICY_VIOLATION.getCode());
     }
 
+    @Test
+    @DisplayName("⭐ 계약상 최대 메시지는 프레임 상한에 걸리지 않는다 — 상한을 낮추면 긴 글만 조용히 사라진다")
+    void largest_legitimate_message_still_passes() {
+        // given: 본문 상한을 꽉 채운 한글 200자 + clientMsgId 상한 64자. 한글은 UTF-8에서 글자당 3바이트라
+        // 영문 기준으로 상한을 잡으면 여기서 처음 걸린다.
+        //
+        // 이 테스트가 프레임 상한의 <b>아래쪽</b>을 지킨다. 위쪽만 지키면 상한을 계속 낮추는 변경이
+        // 통과하고, 그러면 정당한 긴 메시지가 사유 프레임도 없이 사라진다 — 클라에게는 "긴 글만
+        // 안 간다"로 보이고 서버 로그에는 아무것도 남지 않는다.
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String longestContent = "가".repeat(200);
+        String longestClientMsgId = "c".repeat(64);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"" + longestContent
+                + "\",\"clientMsgId\":\"" + longestClientMsgId + "\"}";
+
+        // when
+        List<String> frames = collect(roomId, token, payload, Duration.ofSeconds(4));
+
+        // then: 저장됐고 ACK가 그 상관관계 id를 그대로 돌려준다
+        assertThat(frames)
+                .as("계약상 최대 메시지가 프레임 상한에 걸렸다 — 상한이 본문·id 상한과 어긋났다")
+                .anyMatch(f -> f.contains("\"type\":\"ACK\"")
+                        && f.contains("\"clientMsgId\":\"" + longestClientMsgId + "\""));
+    }
+
+    @Test
+    @DisplayName("⭐ 상한을 넘는 프레임은 프로토콜 계층에서 끊긴다 — 본문 검증까지 가지 않는다")
+    void oversized_frame_is_rejected_before_parsing() {
+        // given: 본문 상한(200자)을 한참 넘지만 Netty 기본 프레임 상한(64KB)에는 못 미치는 프레임.
+        //
+        // 이 구간이 비어 있으면 공격이 싸다 — 프레임이 끝까지 버퍼링되고 JSON 파싱까지 간 뒤에야
+        // 본문 길이 검사가 거부한다. 거부 응답은 세션별로 스로틀되지만 그 앞의 수신·파싱 비용은
+        // 매 프레임 그대로 든다. 프로토콜 상한은 그 비용을 디코더에서 끊는다.
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String oversized = "{\"type\":\"NORMAL\",\"content\":\"" + "x".repeat(16_000)
+                + "\",\"clientMsgId\":\"c1\"}";
+
+        List<String> frames = new CopyOnWriteArrayList<>();
+        AtomicReference<CloseStatus> observed = new AtomicReference<>();
+
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
+            session.closeStatus().doOnNext(observed::set).subscribe();
+            Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
+                    .doOnNext(frames::add).take(Duration.ofSeconds(5)).then();
+            return session.send(Mono.just(session.textMessage(oversized))
+                    .delaySubscription(Duration.ofMillis(500))).and(receive);
+        }).block(Duration.ofSeconds(25));
+
+        // when & then: 입장 안내는 받았지만, 그 프레임에 대한 <b>본문 검증 응답은 오지 않는다</b> —
+        // 디코더가 먼저 끊었다는 뜻이다. 상한이 없으면 파싱까지 가서 VALIDATION이 돌아온다.
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ROOM_INFO\""));
+        assertThat(frames)
+                .as("상한을 넘는 프레임이 파싱까지 갔다 — 디코더가 끊지 않았다")
+                .noneMatch(f -> f.contains("\"code\":\"VALIDATION\""));
+    }
+
     /** WS 접속(토큰=서브프로토콜) → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */
     private List<String> collect(UUID roomId, String token, String sendPayload, Duration window) {
         List<String> frames = new CopyOnWriteArrayList<>();
