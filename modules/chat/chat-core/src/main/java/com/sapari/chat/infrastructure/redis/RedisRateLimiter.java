@@ -2,6 +2,7 @@ package com.sapari.chat.infrastructure.redis;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -18,7 +19,13 @@ import reactor.core.publisher.Mono;
  * ratelimit:chat:{userId} 3초 fixed window — SET NX EX 단일 원자 연산이라
  * 동시 요청 TOCTOU race가 없다(둘 중 하나만 NX 획득). 거부는 잔여 TTL만 읽으므로 윈도우를 연장하지 않는다.
  *
- * <p>Redis 장애 시 fail-open(allowed=true) — 채팅 가용성이 레이트리밋 엄격성보다 우선이다.
+ * <p>Redis 장애 시에는 <b>프로세스 로컬 창으로 강등</b>한다 — 같은 3초 고정 창을 이 Pod 안에서만 적용한다.
+ * 채팅 가용성이 레이트리밋 엄격성보다 우선이지만, 그것이 "상한을 지운다"는 뜻일 이유는 없다. 전면 통과였을
+ * 때는 Redis 가 죽은 동안 회선 속도로 미는 클라 하나가 창 없이 전부 통과하고 그 프레임마다 저장이 일어났다.
+ *
+ * <p>강등 창이 Redis 창보다 느슨한 지점은 <b>Pod 경계</b>다 — 사용자의 탭이 서로 다른 Pod 에 붙으면 각
+ * Pod 가 자기 창을 센다. WebSocket 세션은 한 Pod 에 고정이라 세션 하나는 정확히 3초 창을 보고, 가장
+ * 느슨한 경우도 Pod 수에 비례해 유계다(무제한이 아니다). 장애가 끝나면 Redis 창이 다시 권위를 갖는다.
  */
 @Slf4j
 @Component
@@ -42,6 +49,17 @@ public class RedisRateLimiter implements RateLimiter {
     /** 마지막으로 fail-open을 로깅한 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
     private final AtomicLong lastFailOpenLogNanos = new AtomicLong(System.nanoTime() - FAIL_OPEN_LOG_INTERVAL_NANOS);
 
+    /**
+     * Redis 장애 구간의 로컬 창 — userId → 창이 끝나는 {@code nanoTime}.
+     *
+     * <p>항목 수는 "이 Pod 에 붙어 장애 구간에 전송한 사용자" 수를 넘지 않는다. userId 는 인증된 값이라
+     * 임의로 늘릴 수 없고, 그 상한은 세션 맵과 같은 것이 민다.
+     */
+    private final ConcurrentHashMap<UUID, Long> localWindowEndNanos = new ConcurrentHashMap<>();
+
+    /** 마지막으로 만료된 로컬 창을 쓸어낸 시각. */
+    private final AtomicLong lastSweepNanos = new AtomicLong(System.nanoTime());
+
     @Override
     public Mono<RateLimitResult> tryAcquire(UUID userId) {
         String key = ChatRedisKeys.rateLimit(userId);
@@ -59,9 +77,9 @@ public class RedisRateLimiter implements RateLimiter {
                     // 그때는 스택트레이스가 id보다 훨씬 쓸모 있다.
                     long count = failOpenCount.incrementAndGet();
                     if (shouldLogFailOpen()) {
-                        log.error("rate limit Redis 장애 — fail-open으로 허용(누적 {}건)", count, err);
+                        log.error("rate limit Redis 장애 — 로컬 창으로 강등(누적 {}건)", count, err);
                     }
-                    return Mono.just(new RateLimitResult(true, 0));
+                    return Mono.just(localWindow(userId, System.nanoTime()));
                 });
     }
 
@@ -70,6 +88,59 @@ public class RedisRateLimiter implements RateLimiter {
         long now = System.nanoTime();
         long last = lastFailOpenLogNanos.get();
         return now - last >= FAIL_OPEN_LOG_INTERVAL_NANOS && lastFailOpenLogNanos.compareAndSet(last, now);
+    }
+
+    /**
+     * Redis 가 답하지 못할 때의 판정 — 같은 3초 고정 창을 이 Pod 안에서 적용한다.
+     *
+     * <p>{@code compute}는 키 단위로 원자적이다. 같은 사용자의 탭 둘이 이 Pod 에 붙어 동시에 들어와도
+     * 둘 다 통과하지 않는다 — Redis 경로가 {@code SET NX} 로 얻던 성질을 여기서도 지킨다. 읽고 나서
+     * 쓰는 모양으로 적으면 그 사이에 둘 다 "창이 비었다"를 보고 통과한다.
+     *
+     * <p>시각을 인자로 받는다(테스트 진입점) — 창이 지나 다시 허용되는지, 지난 항목이 실제로 쓸려 나가는지를
+     * 재려면 3초를 기다려야 하는데, 그 기다림이 테스트에 들어가면 느려서 아무도 안 돌리거나 경계에서
+     * 흔들린다. 운영 호출부는 {@code System.nanoTime()} 하나뿐이다.
+     */
+    RateLimitResult localWindow(UUID userId, long now) {
+        sweepExpiredLocalWindows(now);
+        // 람다 안에서 판정 결과를 돌려줄 자리가 없어 1칸 배열에 담는다 — 창이 열려 있었으면 남은 나노초,
+        // 비어 있었으면 0 이 그대로 남는다(0 이 곧 "허용"이다).
+        long[] remainingNanos = new long[1];
+        localWindowEndNanos.compute(userId, (key, windowEnd) -> {
+            if (windowEnd != null && windowEnd - now > 0) {
+                remainingNanos[0] = windowEnd - now;
+                // 연장하지 않는다 — 거부가 창을 밀면 계속 두드리는 클라가 스스로 영구 차단된다.
+                // Redis 경로도 거부 시 잔여 TTL 만 읽고 윈도우를 건드리지 않는다(같은 fixed window 계약).
+                return windowEnd;
+            }
+            return now + WINDOW.toNanos();
+        });
+        if (remainingNanos[0] == 0) {
+            return new RateLimitResult(true, 0);
+        }
+        // 올림 + 최소 1 — Redis 경로의 remainingSeconds 와 같은 계약이다(만료 직전이어도 카운트다운용 1).
+        return new RateLimitResult(false,
+                Math.max(1, (remainingNanos[0] + 999_999_999L) / 1_000_000_000L));
+    }
+
+    /**
+     * 만료된 로컬 창을 쓸어낸다 — 창 길이마다 한 번만.
+     *
+     * <p>항목은 창이 지나면 쓸모가 없는데 스스로 사라지지 않는다. 호출마다 쓸면 O(n) 이 프레임마다 붙어
+     * <b>정작 막으려는 과부하 구간에서 가장 비싸진다.</b> 그래서 간격으로 솎는다 — 위 로그 스로틀과 같은
+     * 방식이고, 경쟁 시 한 스레드만 통과하는 것도 같다.
+     */
+    private void sweepExpiredLocalWindows(long now) {
+        long last = lastSweepNanos.get();
+        if (now - last < WINDOW.toNanos() || !lastSweepNanos.compareAndSet(last, now)) {
+            return;
+        }
+        localWindowEndNanos.values().removeIf(windowEnd -> windowEnd - now <= 0);
+    }
+
+    /** 추적 중인 로컬 창 수 (테스트 진입점) — 장애가 끝난 뒤 항목이 실제로 풀리는지 재는 데 쓴다. */
+    int trackedLocalWindows() {
+        return localWindowEndNanos.size();
     }
 
     private Mono<Long> remainingSeconds(String key) {
