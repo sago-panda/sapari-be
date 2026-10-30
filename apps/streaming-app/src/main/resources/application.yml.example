@@ -7,14 +7,25 @@
 #
 # ⚠️ 표기 규칙
 #   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다 — 그래서 두지 않는다.
-#             미설정이면 부팅이 실패한다(값마다 가드가 다르다: 공개키는 RoomTokenConfig,
-#             세션 상한 셋은 SessionTimeouts).
+#             미설정이면 부팅이 실패하는데 가드가 값마다 다르다: 공개키는 RoomTokenConfig 가 직접
+#             거부하고, Mongo URI 는 드라이버가 거부한다. 후자는 진단 문구에 MONGODB_URI 라는
+#             이름이 나오지 않으니 아래 mongodb 주석을 함께 읽을 것.
+#   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
+#
+# ⚠️ ${VAR:} 의 빈 기본값을 둘지는 REQUIRED/optional 이 아니라 <b>대상 타입</b>이 정한다 (실측).
+#   env 가 없을 때 ${VAR:} 는 "미설정"이 아니라 <b>빈 문자열로 설정됨</b>이고, 그러면 코드의
+#   @Value("${키:기본값}") 에 있는 기본값이 쓰이지 않는다.
+#     String 타깃   빈 문자열이 그대로 바인딩돼 코드가 isBlank() 로 친절히 거부한다. 빈 기본값을
+#                   떼면 PlaceholderResolutionException 이 먼저 나 그 친절함이 사라진다 —
+#                   그래서 public-key 는 ${CHAT_ROOMTOKEN_PUBLICKEY:} 가 맞다.
+#     Duration 타깃 빈 문자열이 null 로 변환돼 가드가 "필수" 로 죽는다. 코드 기본값을 쓰려면 그 줄을
+#                   <b>주석 처리</b>해 키가 아예 없는 상태로 둘 것 — 아래 chat.session 이 그 모양이다.
+#                   (측정: 빈 문자열 → null / 키 부재 → 60m / 값 있음 → 그 값)
 #
 # ⚠️ 배포 전제 — 머지 전에 읽을 것
 #   CHAT_ROOMTOKEN_PUBLICKEY 가 <b>롤아웃 전에</b> 환경에 있어야 한다. 매니페스트가 먼저 가고 앱이
 #   따른다 — 없이 올리면 컨텍스트가 뜨지 않아 CrashLoopBackOff 다(실측된 부팅 실패).
 #   live-app 의 MANAGEMENT_PORT 가 같은 성격이고 그쪽 전제는 infra/AGENTS.md 에 적혀 있다.
-#   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
 #
 # ⚠️ 이 파일에 실제 자격증명을 넣지 말 것. 전부 자리표시자다.
 #
@@ -54,13 +65,22 @@ chat:
     words: ${CHAT_PROFANITY_WORDS:}                        # optional (CSV)
     whitelist: ${CHAT_PROFANITY_WHITELIST:}                # optional (CSV)
 
-  # 연결 하나에 걸리는 시간 상한 셋. 서로 제약한다 — 기한은 간격의 두 배 이상, 수명은 기한보다
-  # 커야 하고 셋 다 양수여야 한다(아니면 부팅 실패: SessionTimeouts).
+  # 연결 하나에 걸리는 시간 상한 셋 — 셋 다 optional 이라 평소에는 건드릴 필요가 없다.
+  #
+  # ⚠️ 아래가 주석인 것이 의도다. 위 표기 규칙의 Duration 항목이 그 이유다 — ${VAR:} 로 적고 env 를
+  #    안 넣으면 빈 문자열이 코드 기본값을 밀어내 <b>부팅이 실패한다</b>. 이 파일은 그대로 복사하라고
+  #    지시하므로, 그 모양으로 두면 복사한 사람에게 CrashLoopBackOff 가 된다.
+  #    값을 바꾸려면 주석을 풀고 반드시 값을 적을 것. env 로 주입하려면 기본값을 플레이스홀더 안에
+  #    둔다 — ${CHAT_SESSION_MAX_LIFETIME:60m} 처럼.
+  #
+  # 서로 제약한다 — 기한은 간격의 두 배 이상, 수명은 기한보다 커야 하고 셋 다 양수여야 한다
+  # (아니면 부팅 실패: SessionTimeouts).
   #
   # 수명 상한이 있는 이유: 입장 토큰은 핸드셰이크 때 한 번만 검증되므로 그 뒤의 역할 강등·방
   # 소유권 이전은 이 세션에 닿지 않는다. 재접속이 live 의 입장을 다시 타므로, 이 값이
   # "접속 후 바뀐 권위가 반영되기까지의 상한"이 된다.
-  session:
-    max-lifetime: ${CHAT_SESSION_MAX_LIFETIME:}            # optional (코드 기본값 60m)
-    ping-interval: ${CHAT_SESSION_PING_INTERVAL:}          # optional (코드 기본값 30s)
-    liveness-deadline: ${CHAT_SESSION_LIVENESS_DEADLINE:}  # optional (코드 기본값 90s = 3 × ping)
+  #
+  # session:
+  #   max-lifetime: 60m          # 코드 기본값 (env: CHAT_SESSION_MAX_LIFETIME)
+  #   ping-interval: 30s         # 코드 기본값 (env: CHAT_SESSION_PING_INTERVAL)
+  #   liveness-deadline: 90s     # 코드 기본값, 3 × ping (env: CHAT_SESSION_LIVENESS_DEADLINE)
