@@ -14,6 +14,20 @@ import com.sapari.chat.infrastructure.persistence.entity.ChatBanEntity;
 public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID> {
 
     /**
+     * 밴 판단 잠금의 해시 seed — 이 잠금이 쓰는 키 공간의 이름이다.
+     *
+     * <p>어드바이저리 잠금 키 공간은 DB 전역에 하나라 다른 용도와 겹칠 수 있다. seed가 그 공간을
+     * 나눈다 — 값 자체에 의미는 없고 <b>다른 용도와 다르다는 것</b>만이 의미다.
+     *
+     * <p>⚠️ 바꾸지 마라. 바꾸는 순간 롤링 배포 중의 구·신 버전이 서로 다른 키를 잡아 그 구간 동안
+     * 직렬화가 통째로 깨진다 — 그리고 깨진 증상은 "동시 강퇴에서 밴이 안 걸린다"라서, 배포가 끝난
+     * 뒤에는 재현되지 않는다.
+     *
+     * <p>{@code @Query}가 컴파일 상수를 요구하므로 문자열이고, 쓰이는 곳보다 먼저 선언돼야 한다.
+     */
+    String BAN_DECISION_LOCK_SEED = "8317461";
+
+    /**
      * 사용자 단위 어드바이저리 잠금 — 밴 판단(세기 → 견주기 → 쓰기)을 직렬화한다.
      *
      * <p><b>왜 행 잠금이 아닌가.</b> 잠글 행이 없을 수 있다. 밴이 처음 걸리는 순간이 바로 이 직렬화가
@@ -32,14 +46,26 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
      * (생일 문제), 충돌하면 서로 무관한 두 사용자가 줄을 선다 — 정확성 손실은 아니고 성능 비용이지만
      * 공짜로 피할 수 있다. {@code hashtextextended}는 int8을 돌려주므로 실질적으로 충돌이 없다.
      *
-     * <p>⚠️ 어드바이저리 잠금 키 공간은 <b>DB 전역에 하나</b>다. 지금 이 저장소에서 어드바이저리 잠금을
-     * 쓰는 곳은 여기뿐이지만(확인함), 다른 모듈이 쓰기 시작하면 키가 겹칠 수 있다. 그때는 키에 용도
-     * 접두를 섞는 2-인자 변종({@code pg_advisory_xact_lock(int4, int4)})으로 옮겨야 한다.
+     * <p>어드바이저리 잠금 키 공간은 <b>DB 전역에 하나</b>라 다른 모듈이 쓰기 시작하면 이름이 겹칠 수
+     * 있다. 그래서 seed를 비워 두지 않고 {@link #BAN_DECISION_LOCK_SEED}를 준다 — 같은 사용자 문자열이라도
+     * seed가 다르면 키가 갈리므로, 네임스페이싱이 나중의 이전 작업이 아니라 지금의 상수 하나로 끝난다
+     * (실측: {@code hashtextextended('abc',0)}과 {@code hashtextextended('abc',7777777)}은 다르고, 같은
+     * seed는 늘 같은 값을 준다).
      *
-     * <p>반환형이 {@code void}인 것은 이 함수가 {@code void}를 돌려주기 때문이다. 쓰기가 아니라 잠금
-     * 획득이라 {@code @Modifying}을 붙이지 않는다 — 붙이면 {@code executeUpdate()}로 불려 SELECT에서 깨진다.
+     * <p>⚠️ <b>2-인자 변종({@code pg_advisory_xact_lock(int4, int4)})으로 옮기지 마라.</b> 한때 이 자리에
+     * "그때는 2-인자로 옮겨야 한다"고 적혀 있었는데 틀렸다. 그 변종은 두 인자가 <b>각각 32비트</b>라
+     * (실측: 오버로드는 {@code bigint}와 {@code integer, integer} 둘뿐이다) 한쪽을 용도 접두로 쓰면
+     * 사용자 키가 int4로 내려간다 — 바로 위 단락이 {@code hashtext}를 기각한 그 생일 문제가 그대로
+     * 돌아온다. 64비트를 지키면서 네임스페이스를 얻는 길은 seed뿐이다.
+     *
+     * <p>반환형이 {@code void}인 것은 <b>Spring Data가 비-{@code @Modifying} 쿼리의 단일 결과를 버리기</b>
+     * 때문이다. 이 SELECT 자체는 1행 1열을 돌려준다 — 함수가 {@code void} 타입이라서가 아니다(그렇게
+     * 적혀 있었는데 인과가 성립하지 않는다. {@code pg_try_advisory_xact_lock}처럼 boolean을 돌려주는
+     * 함수로 바꿔도 {@code void} 선언이 그대로 동작한다). 쓰기가 아니라 잠금 획득이라
+     * {@code @Modifying}을 붙이지 않는다 — 붙이면 {@code executeUpdate()}로 불려 SELECT에서 깨진다.
      */
-    @Query(value = "SELECT pg_advisory_xact_lock(hashtextextended(cast(:userId as text), 0))",
+    @Query(value = "SELECT pg_advisory_xact_lock("
+            + "hashtextextended(cast(:userId as text), " + BAN_DECISION_LOCK_SEED + "))",
             nativeQuery = true)
     void lockForBanDecision(@Param("userId") UUID userId);
 
