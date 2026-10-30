@@ -16,6 +16,15 @@ import java.time.Duration;
  */
 public record SessionTimeouts(Duration maxLifetime, Duration pingInterval, Duration livenessDeadline) {
 
+    /**
+     * 수명 상한을 흩는 폭(%) — 아래로만.
+     *
+     * <p>핸들러가 이 값으로 지터를 만드는데 <b>여기</b>에 두는 이유는 아래 가드가 이 폭을 알아야
+     * 하기 때문이다. 폭을 핸들러에만 두면 가드가 "지터 전" 수명으로 판단해, 가드를 통과하는 설정에서
+     * 생존 확인이 사실상 안 도는 조합이 생긴다 — {@code (91s, 30s, 90s)} 가 그런 예였다.
+     */
+    public static final long LIFETIME_JITTER_PERCENT = 15;
+
     public SessionTimeouts {
         if (maxLifetime == null || pingInterval == null || livenessDeadline == null) {
             throw new IllegalArgumentException("세 상한 모두 필수입니다.");
@@ -53,11 +62,23 @@ public record SessionTimeouts(Duration maxLifetime, Duration pingInterval, Durat
                             + "하나로 멀쩡한 세션이 끊깁니다: interval=" + pingInterval
                             + " deadline=" + livenessDeadline);
         }
-        // 수명 상한이 생존 기한보다 작으면 생존 확인이 한 번도 돌지 않는다 — 코드는 남고 효과는 없다.
-        if (maxLifetime.compareTo(livenessDeadline) <= 0) {
+        // 수명이 짧으면 생존 확인이 한 번도 돌지 않는다 — 코드는 남고 효과는 없다.
+        //
+        // 비교 대상이 생존 기한 자체가 아니라 <b>첫 점검 시각</b>이고, 비교하는 쪽은 지터를 뺀
+        // <b>최소 수명</b>이다. 둘 다 "실제로 한 번은 도는가"를 재려면 필요하다:
+        //   첫 점검은 기한이 아니라 기한 + 간격이다 — 핸들러가 그 시점부터 점검한다(생존 시계가
+        //   등록 시각으로 초기화되므로, 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸 짧아진다)
+        //   수명은 지터로 아래로 흩어지므로 가장 짧은 경우를 봐야 한다 — 지터 폭을 모르는 가드는
+        //   통과시키는데 대부분의 세션에서 생존 확인이 안 도는 조합을 만든다
+        Duration shortestLifetime = maxLifetime.multipliedBy(100 - LIFETIME_JITTER_PERCENT).dividedBy(100);
+        Duration firstLivenessCheck = livenessDeadline.plus(pingInterval);
+        if (shortestLifetime.compareTo(firstLivenessCheck) <= 0) {
             throw new IllegalArgumentException(
-                    "수명 상한은 생존 기한보다 커야 합니다 — 작으면 생존 확인이 한 번도 돌지 않습니다: "
-                            + "lifetime=" + maxLifetime + " deadline=" + livenessDeadline);
+                    "수명 상한이 짧아 생존 확인이 한 번도 돌지 않습니다 — 지터를 뺀 최소 수명이 첫 점검"
+                            + "(기한 + 간격)보다 커야 합니다: lifetime=" + maxLifetime
+                            + " (지터 " + LIFETIME_JITTER_PERCENT + "% 적용 시 최소 " + shortestLifetime + ")"
+                            + " 첫 점검=" + firstLivenessCheck
+                            + " (deadline=" + livenessDeadline + " + interval=" + pingInterval + ")");
         }
     }
 }

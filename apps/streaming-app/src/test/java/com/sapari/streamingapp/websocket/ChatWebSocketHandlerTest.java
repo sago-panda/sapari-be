@@ -133,6 +133,70 @@ class ChatWebSocketHandlerTest {
                 .verify(Duration.ofSeconds(10));
     }
 
+    /**
+     * ⭐ 첫 생존 점검이 <b>기한 + 간격</b> 전에는 돌지 않는다.
+     *
+     * <p>생존 시계가 등록 시각으로 초기화되므로, 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸
+     * 짧아진다 — 기본값에서 t=30s·60s 의 ping 이 둘 다 유실되면 t=90s 점검에서 {@code last} 가 아직
+     * 등록 시각이라 {@code 90 - 0 >= 90} 이 되어 <b>멀쩡한 시청자가 끊긴다.</b> 정상 구간에서는 2회
+     * 유실이 살고 3회가 끊기므로, "기한 = 3 × 간격 = 2회 내성" 이 첫 창에서만 거짓이었다.
+     */
+    @Test
+    @DisplayName("⭐ 첫 생존 점검은 기한 + 간격 뒤다 — 첫 창에서 2회 유실에 멀쩡한 세션이 끊기지 않게")
+    void the_first_liveness_check_waits_one_interval_past_the_deadline() {
+        // given: 레지스트리가 "응답 없음" 이라고 계속 답한다 — 점검이 도는 순간 바로 거둔다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(true);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 기한(90s)만으로는 아직 점검하지 않고, 간격 하나(30s)를 더 지나면 점검한다
+        Duration firstCheck = LIVENESS_DEADLINE.plus(PING_INTERVAL);
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(firstCheck.minusMillis(1))
+                .then(() -> then(registry).should(never()).terminateUnresponsive(anyString()))
+                .thenAwait(Duration.ofMillis(2))
+                .then(() -> then(registry).should(times(1)).terminateUnresponsive("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
+    /**
+     * ⭐ 수요가 없을 때 버린 ping 을 <b>센다.</b>
+     *
+     * <p>한때 {@code onBackpressureDrop()} 을 인자 없이 써서, 이 줄만 이 파일의 규율에서 빠져 있었다 —
+     * 세지도 로그되지도 않으니 줄을 통째로 지워도 스위트가 전부 초록이었다. 지금 드롭이 안 일어나는
+     * 것은 설정 두 값의 비(ping 간격 × 32 = 16분 vs 생존 기한 90s)에 기대고 있어, 그 비가 바뀌면
+     * 조용히 사라진다.
+     *
+     * <p>수요 0으로 직접 구독한다. {@code runSession} 을 거치면 {@code session.send} 가 수요를
+     * 만들어 드롭이 재현되지 않는다.
+     */
+    @Test
+    @DisplayName("⭐ 수요가 없어 버린 ping 을 센다 — 드롭이 숫자 없이 사라지지 않게")
+    void dropped_pings_are_counted() {
+        // given: 아웃바운드 수요가 없는 구독자
+        WebSocketSession session = mock(WebSocketSession.class);
+
+        // when & then: 간격 30s 로 2분 — 네 틱이 전부 버려진다
+        StepVerifier.withVirtualTime(() -> handler.pings(session, Mono.never()), 0)
+                .expectSubscription()
+                .thenAwait(Duration.ofMinutes(2))
+                .then(() -> assertThat(handler.pingsDropped())
+                        .as("버린 ping 이 세어지지 않았다").isEqualTo(4))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
     @Test
     @DisplayName("⭐ 응답이 올라오는 동안은 거두지 않는다 — 말하지 않는 시청자가 대다수다")
     void responsive_session_is_not_reclaimed() {

@@ -93,6 +93,30 @@ class SessionTimeoutsTest {
                 .hasMessageContaining("수명");
     }
 
+    /**
+     * ⭐ 가드가 <b>지터와 첫 점검 지연</b>을 함께 본다.
+     *
+     * <p>{@code (91s, 30s, 90s)} 는 "수명 > 기한" 만 보는 가드를 통과한다. 그런데 수명은 지터로 아래로
+     * 흩어지고(최소 77.35s) 첫 점검은 기한이 아니라 기한 + 간격(120s)이라, 그 조합에서는 생존 확인이
+     * <b>단 한 번도 돌지 않는다.</b> 가드가 막으려던 "코드는 남고 효과는 없다" 가 그 상태다.
+     *
+     * <p>지터 폭이 핸들러에만 있으면 이 검사를 쓸 수 없어서 폭을 이 레코드로 옮겼다.
+     */
+    @Test
+    @DisplayName("⭐ 지터를 뺀 최소 수명이 첫 점검보다 짧으면 거부한다 — 생존 확인이 한 번도 돌지 않는다")
+    void lifetime_that_the_jitter_pushes_below_the_first_check_is_rejected() {
+        // given: 셋 다 양수, 기한은 간격의 세 배, 수명 > 기한 — 옛 가드 전부 통과
+        Duration lifetime = Duration.ofSeconds(91);
+
+        // when & then: 지터 적용 최소 수명 77.35s < 첫 점검 120s
+        assertThatThrownBy(() -> new SessionTimeouts(lifetime, INTERVAL, DEADLINE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("수명");
+
+        // 기본 조합은 넉넉히 통과한다 — 60m × 0.85 = 51m vs 첫 점검 120s
+        assertThatCode(() -> new SessionTimeouts(LIFETIME, INTERVAL, DEADLINE)).doesNotThrowAnyException();
+    }
+
     @Test
     @DisplayName("null 은 거부한다")
     void nulls_are_rejected() {

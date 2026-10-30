@@ -167,7 +167,13 @@ public class RedisRateLimiter implements RateLimiter {
         localWindowEndNanos.values().removeIf(windowEnd -> windowEnd - now <= 0);
     }
 
-    /** 추적 중인 로컬 창 수 (테스트 진입점) — 장애가 끝난 뒤 항목이 실제로 풀리는지 재는 데 쓴다. */
+    /**
+     * 추적 중인 로컬 창 수 (테스트 진입점) — 만료 항목이 실제로 풀리는지 재는 데 쓴다.
+     *
+     * <p>쓸기는 강등 경로에서만 돌므로 <b>마지막 코호트는 다음 강등 호출에서</b> 풀린다. Redis 가
+     * 살아난 뒤로는 그 호출이 오지 않으니 그 항목들은 Pod 수명 내내 남는다 — 유계이고 소량이다
+     * (창 3초 + 다음 쓸기까지 ≤3초 분량, 키는 서명 검증된 userId 뿐).
+     */
     int trackedLocalWindows() {
         return localWindowEndNanos.size();
     }

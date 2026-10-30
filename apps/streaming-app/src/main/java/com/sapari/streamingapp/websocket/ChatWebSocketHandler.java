@@ -211,11 +211,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 실제 조건은 "아웃바운드 전달이 32 틱 동안 0" 이고, 32 는 merge inner 의 prefetch
         // (Queues.XS_BUFFER_SIZE)다. 즉 영향 범위가 <b>ping 간격 × 32</b> 라 간격을 줄이면 그만큼 빨리
         // 닿는다(기본값 30s 에서는 16분이라 생존 기한 90s 가 10배 먼저 발화한다).
-        Flux<WebSocketMessage> pings = Flux.interval(timeouts.pingInterval(), timeouts.pingInterval())
-                .onBackpressureDrop()
-                .map(ignored -> session.pingMessage(factory -> factory.wrap(new byte[0])))
-                .takeUntilOther(dataChannelDone.asMono());
-        Mono<Void> outbound = session.send(Flux.merge(data, pings));
+        Mono<Void> outbound = session.send(Flux.merge(data, pings(session, dataChannelDone.asMono())));
 
         Mono<Void> inbound = runInbound(session.receive()
                 // 생존 시계는 필터 <b>앞에서</b> 민다 — 재려는 것이 "말을 하는가"가 아니라 "소켓이
@@ -278,7 +274,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 생존 확인. 수명 상한과 달리 이쪽은 <b>죽은 소켓</b>을 거둔다 — 아무것도 보내지 않는 클라는
         // 정상이지만(시청만 하는 경우) 아무것도 <i>올리지 않는</i> 클라는 끊긴 소켓과 구별되지 않는다.
         // 끊긴 쪽을 거두지 않으면 그 세션의 sink·방 인덱스·Redis 명부가 수명 상한까지 남는다.
-        Mono<Void> livenessWatch = Flux.interval(timeouts.livenessDeadline(), timeouts.pingInterval())
+        // 첫 점검은 기한이 아니라 <b>기한 + 간격</b>이다. 생존 시계가 등록 시각으로 초기화되므로
+        // (레지스트리의 register 참고), 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸 짧아진다 —
+        // 기본값에서 t=30s·60s 의 ping 이 둘 다 유실되면 t=90s 점검에서 last 가 아직 등록 시각이라
+        // 90 - 0 >= 90 이 되어 <b>멀쩡한 시청자가 끊긴다.</b> 정상 구간에서는 2회 유실이 살고 3회가
+        // 끊기므로, "기한 = 3 × 간격 = 2회 내성" 이 첫 창에서만 거짓이었다.
+        //
+        // 대가는 죽은 소켓 수거가 간격 하나만큼 늦어지는 것이다(기본값 90s → 120s).
+        Mono<Void> livenessWatch = Flux.interval(
+                        timeouts.livenessDeadline().plus(timeouts.pingInterval()), timeouts.pingInterval())
                 .filter(ignored -> registry.isUnresponsive(sid, timeouts.livenessDeadline()))
                 .next()
                 .doOnNext(ignored -> registry.terminateUnresponsive(sid))
@@ -296,7 +300,60 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     /**
-     * 수명 상한을 <b>아래로</b> {@value #LIFETIME_JITTER_PERCENT}% 안쪽에서 흩는다. (테스트 진입점)
+     * 생존을 묻는 ping 스트림. (테스트 진입점 — 수요가 없을 때의 동작을 재려면 직접 구독해야 한다)
+     *
+     * <p>데이터 채널이 닫히면 함께 멈춘다({@code takeUntilOther}) — 위 {@code runSession} 참고.
+     */
+    Flux<WebSocketMessage> pings(WebSocketSession session, Mono<Void> dataChannelDone) {
+        return Flux.interval(timeouts.pingInterval(), timeouts.pingInterval())
+                .onBackpressureDrop(ignored -> recordPingDrop())
+                .map(ignored -> session.pingMessage(factory -> factory.wrap(new byte[0])))
+                .takeUntilOther(dataChannelDone);
+    }
+
+    /**
+     * 버린 ping 을 센다.
+     *
+     * <p>한때 {@code onBackpressureDrop()} 을 인자 없이 썼다. 그러면 이 줄만 이 파일의 규율
+     * ({@code droppedOnContention}·{@code lifetimeExpiredCount})에서 빠진다 — 세지도 로그되지도
+     * 않으니, 이 줄을 통째로 지워도 테스트가 전부 초록이었다.
+     *
+     * <p>지금 드롭이 안 일어나는 것은 <b>설정 두 값의 비</b>에 기대고 있다. 드롭까지 필요한 정체가
+     * ping 간격 × 32({@code Queues.XS_BUFFER_SIZE})이고 기본값에서 16분인데, 생존 기한 90s 가 10배
+     * 먼저 세션을 거둔다. {@code ping-interval} 을 줄이거나 {@code liveness-deadline} 을 키우면 그
+     * 여유가 조용히 사라진다 — 그때 숫자가 보여야 한다.
+     */
+    private void recordPingDrop() {
+        long count = pingsDropped.incrementAndGet();
+        if (shouldLogPingDrop()) {
+            log.warn("ping 드롭 — 아웃바운드 수요가 없어 틱을 버렸다(누적 {}건). 생존 확인이 이 세션을 "
+                    + "거두기 전이면 ping 간격·생존 기한의 비를 확인할 것", count);
+        }
+    }
+
+    /** 드롭 로그 간격 — 몰리는 상황이 곧 포화라 건당 로그가 상황을 악화시킨다(레지스트리와 같은 규율). */
+    private boolean shouldLogPingDrop() {
+        long now = System.nanoTime();
+        long last = lastPingDropLogNanos.get();
+        return now - last >= PING_DROP_LOG_INTERVAL_NANOS
+                && lastPingDropLogNanos.compareAndSet(last, now);
+    }
+
+    private static final long PING_DROP_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
+
+    /** 버린 ping 누적 수. (테스트 진입점) */
+    long pingsDropped() {
+        return pingsDropped.get();
+    }
+
+    private final java.util.concurrent.atomic.AtomicLong pingsDropped =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private final java.util.concurrent.atomic.AtomicLong lastPingDropLogNanos =
+            new java.util.concurrent.atomic.AtomicLong(System.nanoTime() - PING_DROP_LOG_INTERVAL_NANOS);
+
+    /**
+     * 수명 상한을 <b>아래로</b> {@value SessionTimeouts#LIFETIME_JITTER_PERCENT}% 안쪽에서 흩는다. (테스트 진입점)
      *
      * <p><b>아래로만 흩는다.</b> 이 값은 "접속 후 바뀐 권위가 반영되기까지의 상한"이라 넘기면 통제가
      * 느슨해진다. 그래서 {@code [limit × (1 - p), limit]} 범위다.
@@ -304,15 +361,13 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * <p>보안 난수가 아니다 — 흩는 것이 목적이고 예측 불가가 목적이 아니다.
      */
     Duration jittered(Duration limit) {
-        long span = limit.toMillis() * LIFETIME_JITTER_PERCENT / 100;
+        long span = limit.toMillis() * SessionTimeouts.LIFETIME_JITTER_PERCENT / 100;
         if (span <= 0) {
             return limit;
         }
         return limit.minusMillis(java.util.concurrent.ThreadLocalRandom.current().nextLong(span + 1));
     }
 
-    /** 수명 상한을 흩는 폭(%). 재접속이 한 점에 몰리지 않을 만큼이면 되고 정밀할 이유가 없다. */
-    private static final long LIFETIME_JITTER_PERCENT = 15;
 
     /**
      * 종료 사유를 코드로 실어 닫는다. flush가 막혀 close가 끝나지 않아도 상한 뒤 완료해
