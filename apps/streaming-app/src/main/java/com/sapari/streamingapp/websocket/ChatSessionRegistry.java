@@ -347,10 +347,42 @@ public class ChatSessionRegistry implements ChatSessionManager {
         if (cached != null && System.nanoTime() - cached.expiresAtNanos() < 0) {
             return Mono.just(cached.value());
         }
-        // 조회 실패는 캐시에 담지 않는다 — 실패를 굳혀두면 그 방의 다음 입장까지 값 없이 나간다.
-        return sessionRepository.count(roomId)   // HVALS distinct = 고유 유저 수
-                .doOnNext(count -> cacheIfRoomStillLocal(roomId, count));
+        // defer: 합류 판단을 구독 시점에 한다. 즉시 평가하면 Mono 를 받아만 두고 구독을 늦추는
+        // 호출자가 자기 시점의 비행에 끼지 못한다.
+        return Mono.defer(() -> joinInFlightCount(roomId));
     }
+
+    /**
+     * 같은 방의 동시 조회를 <b>한 번의 왕복으로 합친다.</b>
+     *
+     * <p>캐시만으로는 메워지지 않는 창이 있다 — 캐시가 채워지기 전, 즉 첫 조회가 Redis 를 다녀오는
+     * 동안에 도착한 호출은 전부 미스라 각자 왕복한다. 평상시에는 그 창이 ms 라 중복이 몇 건이지만,
+     * <b>파드 kill 후 재접속 폭풍</b>에서는 그 창에 그 방의 세션 수만큼이 들어온다. 그러면 Redis 가
+     * 이미 부하를 받고 있는 순간에 HVALS 가 N 배로 간다.
+     *
+     * <p>{@code cache()} 가 상류를 한 번만 구독하게 하고, {@code doFinally} 가 끝나는 즉시 항목을
+     * 지워 다음 창이 새로 열린다. 취소에도 지워진다 — {@code cache()} 는 취소를 상류로 전파하지 않아
+     * 상류가 끝까지 가고, 그 종료에서 {@code doFinally} 가 돈다.
+     *
+     * <p>실패를 캐시에 담지 않는다는 계약은 그대로다 — {@code activeCountCache} 는 값이 올 때만
+     * 쓰이고, 에러는 같은 비행에 합류한 호출자들에게만 간다(그들은 같은 왕복을 기다린 사람들이다).
+     * 다음 호출자는 새 비행을 연다.
+     */
+    private Mono<Long> joinInFlightCount(UUID roomId) {
+        return inFlightCounts.computeIfAbsent(roomId, room -> sessionRepository.count(room)
+                // HVALS distinct = 고유 유저 수
+                .doOnNext(count -> cacheIfRoomStillLocal(room, count))
+                .doFinally(signal -> inFlightCounts.remove(room))
+                .cache());
+    }
+
+    /**
+     * 방별로 진행 중인 시청자 수 조회.
+     *
+     * <p>항목은 비행이 끝나면 스스로 지워진다. 구독되지 않으면 지워지지 않지만, 운영 호출지는
+     * {@code ChatWebSocketHandler} 의 입장 경로 하나이고 그 자리는 반드시 구독한다.
+     */
+    private final ConcurrentHashMap<UUID, Mono<Long>> inFlightCounts = new ConcurrentHashMap<>();
 
     /**
      * 조회가 끝난 시점에도 그 방이 이 Pod에 남아 있을 때만 캐시에 담는다.

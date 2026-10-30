@@ -1201,6 +1201,39 @@ class ChatSessionRegistryTest {
                 .verify(java.time.Duration.ofSeconds(5));
     }
 
+    /**
+     * ⭐ 같은 방의 동시 조회가 <b>한 번의 왕복으로</b> 합쳐진다.
+     *
+     * <p>캐시만으로는 메워지지 않는 창이 있다 — 첫 조회가 Redis 를 다녀오는 동안 도착한 호출은 전부
+     * 미스라 각자 왕복한다. 평상시에는 ms 짜리 창이라 중복이 몇 건이지만, 파드 kill 후 재접속
+     * 폭풍에서는 그 창에 그 방의 세션 수만큼이 들어온다 — Redis 가 이미 부하를 받는 순간에 HVALS 가
+     * N 배로 간다.
+     */
+    @Test
+    @DisplayName("⭐ 같은 방의 동시 조회는 한 번만 Redis 에 간다 — 재접속 폭풍이 왕복을 N배로 만들지 않게")
+    void concurrent_lookups_share_one_round_trip() {
+        // given: 왕복이 100ms 걸리는 조회 — 그 사이에 50건이 더 들어온다
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block();
+        given(sessionRepository.count(room))
+                .willReturn(Mono.just(7L).delayElement(Duration.ofMillis(100)));
+
+        // when: 50건을 동시에 구독한다
+        List<Mono<Long>> lookups = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            lookups.add(registry.getActiveCount(room));
+        }
+
+        // then: 전부 같은 값을 받고
+        StepVerifier.create(reactor.core.publisher.Flux.merge(lookups))
+                .expectNextCount(50)
+                .expectComplete()
+                .verify(VERIFY_CEILING);
+
+        // Redis 는 한 번만 다녀왔다. 합치지 않으면 50번 간다(캐시는 첫 응답 뒤에야 채워진다).
+        then(sessionRepository).should(times(1)).count(room);
+    }
+
     @Test
     @DisplayName("시청자 수 캐시 — 조회 중에 방이 비면 담지 않는다(회수 주체가 사라진 뒤 생긴 항목은 영영 남는다)")
     void activeCount_doesNotCacheWhenRoomEmptiedDuringLookup() {
