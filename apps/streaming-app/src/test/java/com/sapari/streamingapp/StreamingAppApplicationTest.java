@@ -1,5 +1,9 @@
 package com.sapari.streamingapp;
 
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
+
 import com.sapari.chat.application.port.ChatAccountEventSource;
 import com.sapari.chat.application.handler.ChatAccountEventHandler;
 import org.springframework.context.ApplicationContext;
@@ -10,6 +14,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
@@ -28,6 +34,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <p>주소를 프로퍼티로 적지 않고 {@code @ServiceConnection}에 맡긴다. 이름을 적어 두면 그 이름이 바뀌는
  * 순간 조용히 기본값으로 돌아가는데, Boot 4의 {@code spring.data.mongodb.*} → {@code spring.mongodb.*}
  * 개명에서 실제로 그 일이 있었다.
+ *
+ * <p>룸 토큰 공개키를 여기서 만들어 넣는다. 그 설정은 <b>필수</b>라 없으면 부팅이 실패하는데
+ * ({@code RoomTokenConfig}), 운영 설정 파일은 추적되지 않으므로 CI 에는 없다. 이 테스트가 재려는 것은
+ * "인프라를 갖추면 뜨는가"이지 "설정 파일이 있는가"가 아니라서, 키는 테스트가 공급한다 —
+ * 값이 무엇인지는 상관없다(검증은 하지 않는다).
  */
 @SpringBootTest
 @Testcontainers
@@ -41,6 +52,21 @@ class StreamingAppApplicationTest {
     @Container
     @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+
+    @DynamicPropertySource
+    static void requiredConfig(DynamicPropertyRegistry registry) {
+        registry.add("chat.room-token.public-key", StreamingAppApplicationTest::throwawayPublicKey);
+    }
+
+    private static String throwawayPublicKey() {
+        try {
+            KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+            gen.initialize(2048);
+            return Base64.getEncoder().encodeToString(gen.generateKeyPair().getPublic().getEncoded());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("RSA 를 쓸 수 없다", e);
+        }
+    }
 
     @Autowired
     private ReactiveStringRedisTemplate reactiveStringRedisTemplate;

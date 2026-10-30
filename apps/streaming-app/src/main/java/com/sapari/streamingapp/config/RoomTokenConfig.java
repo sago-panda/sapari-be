@@ -1,7 +1,6 @@
 package com.sapari.streamingapp.config;
 
 import java.security.KeyFactory;
-import java.security.KeyPairGenerator;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
@@ -10,31 +9,59 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import lombok.extern.slf4j.Slf4j;
-
 /**
  * 룸 토큰 검증용 live 공개키 빈.
  *
- * <p>운영에서는 {@code chat.room-token.public-key}(live RSA 공개키, Base64 X.509 SubjectPublicKeyInfo)를 설정한다.
- * 미설정 시에는 부팅을 막지 않기 위해 <b>임시(ephemeral) 키</b>를 생성하지만, 이 키로는 live가 발급한 실제 토큰을
- * 검증할 수 없어 모든 입장이 거부된다(조용한 우회가 아니라 전면 거부 = 시끄러운 실패). live 공개키 수령 후 반드시 설정.
+ * <p>운영에서는 {@code chat.room-token.public-key}(live RSA 공개키, Base64 X.509 SubjectPublicKeyInfo)를
+ * 설정한다. 발급은 live(개인키)만, 이쪽은 검증만 한다 — 대칭 공유키였다면 이 프로세스가 {@code owner=true}
+ * 토큰을 위조할 수 있고 그건 PII 게이트 붕괴다.
  */
-@Slf4j
 @Configuration
 public class RoomTokenConfig {
 
+    /**
+     * 공개키가 없으면 <b>부팅을 실패시킨다</b>.
+     *
+     * <p>한때 여기서 임시 키를 만들어 뜨게 했다. 근거는 "그 키로는 실제 토큰을 검증할 수 없어 모든
+     * 입장이 거부되므로 조용한 우회가 아니라 시끄러운 실패"였는데, <b>시끄러운 쪽이 아니었다.</b>
+     * 남는 신호가 부팅 로그의 경고 한 줄뿐이고 헬스체크는 통과하므로, 배포 파이프라인에서는 성공으로
+     * 보인다. 프로세스는 살아 있고 모든 사용자의 입장이 실패하는 상태가 그대로 굴러간다 — 그건
+     * 부분 저하가 아니라 기능 전면 중단이다.
+     *
+     * <p>그 선택이 사는 자리가 하나 있었다: 키를 받기 전에도 앱을 띄워 볼 수 있다는 것. 그건 설정을
+     * 비워 두는 것으로 얻을 값이 아니다 — 아무 RSA 공개키나 넣으면 같은 상태가 되고, 그때는 그것이
+     * 의도라는 것이 설정에 남는다.
+     *
+     * <p>이 가드가 지키는 것은 "키가 맞다"가 아니라 "키를 넣기로 결정했다"다. 틀린 키는 입장 실패로
+     * 드러나지만 <b>없는 키는 아무것도 드러내지 않는다</b>.
+     */
     @Bean
     public PublicKey roomTokenPublicKey(
             @Value("${chat.room-token.public-key:}") String base64Spki) throws Exception {
 
         if (base64Spki == null || base64Spki.isBlank()) {
-            log.warn("chat.room-token.public-key 미설정 — 임시 RSA 공개키 생성. live 공개키로 교체 전까지 룸 토큰 검증은 전부 실패한다.");
-            KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-            gen.initialize(2048);
-            return gen.generateKeyPair().getPublic();
+            throw new IllegalStateException(
+                    "chat.room-token.public-key 가 없다 — 이 값이 없으면 프로세스는 뜨지만 모든 입장이 "
+                            + "실패한다(룸 토큰을 검증할 수 없다). live 가 발급에 쓰는 RSA 키쌍의 "
+                            + "공개키를 Base64 X.509 SubjectPublicKeyInfo 로 주입할 것.");
         }
 
-        byte[] der = Base64.getDecoder().decode(base64Spki);
-        return KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der));
+        byte[] der;
+        try {
+            der = Base64.getDecoder().decode(base64Spki.trim());
+        } catch (IllegalArgumentException e) {
+            // 친절한 실패가 이 가드의 목적이다 — 여기서 디코더 예외로 죽으면 원인이 "설정 값이 Base64가
+            // 아니다"라는 게 로그에서 바로 읽히지 않는다. 값 자체는 싣지 않는다(공개키라 비밀은 아니지만
+            // 설정 값을 로그에 흘리는 선례를 만들지 않는다).
+            throw new IllegalStateException(
+                    "chat.room-token.public-key 가 Base64 가 아니다 — 길이=" + base64Spki.trim().length(), e);
+        }
+        try {
+            return KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der));
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "chat.room-token.public-key 가 RSA X.509 공개키가 아니다 — live 가 발급에 쓰는 키쌍의 "
+                            + "공개키인지 확인할 것(개인키나 인증서를 넣으면 여기서 걸린다).", e);
+        }
     }
 }
