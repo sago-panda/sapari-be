@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,8 +17,9 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.convert.DurationStyle;
 
-import com.sapari.streamingapp.websocket.ChatWebSocketHandler;
+import com.sapari.streamingapp.websocket.SessionTimeouts;
 
 /**
  * 설정 템플릿이 "그대로 복사하면 뜨는" 상태인지, 그리고 적어 둔 기본값이 실제 기본값인지 본다.
@@ -88,6 +90,28 @@ class ConfigTemplateTest {
         assertThat(documented).as("템플릿 주석과 코드 기본값이 갈렸다").isEqualTo(fromCode);
     }
 
+    /**
+     * ⭐ 템플릿이 적은 기본값 트리오가 {@link SessionTimeouts} 가드를 통과한다.
+     *
+     * <p>세 값은 서로 제약하고 그 제약이 직관과 어긋난다 — 지터를 뺀 최소 수명이 기한 + 간격보다
+     * 커야 해서, 기본값에서 실제 하한은 "기한보다 크면 된다"가 아니라 {@code max-lifetime > 141s} 다.
+     * 설명이 거부되는 조합을 예시로 들면 그대로 복사한 사람이 부팅에서 막힌다.
+     */
+    @Test
+    @DisplayName("⭐ 템플릿이 적은 기본값 트리오가 부팅 가드를 통과한다 — 설명이 거부되는 조합을 가리키지 않게")
+    void documented_defaults_satisfy_the_boot_guard() throws IOException {
+        // given
+        Map<String, String> documented = documentedDefaults();
+
+        // when & then
+        assertThatCode(() -> new SessionTimeouts(
+                DurationStyle.detectAndParse(documented.get("max-lifetime")),
+                DurationStyle.detectAndParse(documented.get("ping-interval")),
+                DurationStyle.detectAndParse(documented.get("liveness-deadline"))))
+                .as("템플릿이 적은 세 값이 SessionTimeouts 에서 거부된다 — 그대로 쓰면 부팅이 막힌다")
+                .doesNotThrowAnyException();
+    }
+
     @Test
     @DisplayName("템플릿이 실제로 읽히고 그 세 키를 여전히 다룬다 — 파일이 사라져도 위 검사가 통과하지 않게")
     void template_is_actually_read() throws IOException {
@@ -121,10 +145,10 @@ class ConfigTemplateTest {
      */
     private Map<String, String> codeDefaults() {
         Map<String, String> defaults = new LinkedHashMap<>();
+        // 반환형으로 거르지 않는다 — 한때 ChatWebSocketHandler 를 돌려주는 메서드만 봤는데, 그러면
+        // 같은 클래스의 다른 메서드에 Duration @Value 를 더했을 때 이 검사에 안 보이고
+        // DURATION_KEYS 가 조용히 낡는다(실측으로 그 뮤턴트가 생존했다).
         for (Method method : WebSocketConfig.class.getDeclaredMethods()) {
-            if (method.getReturnType() != ChatWebSocketHandler.class) {
-                continue;
-            }
             for (Parameter parameter : method.getParameters()) {
                 Value value = parameter.getAnnotation(Value.class);
                 if (value == null) {

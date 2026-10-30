@@ -70,6 +70,17 @@ public record SessionTimeouts(Duration maxLifetime, Duration pingInterval, Durat
         //   등록 시각으로 초기화되므로, 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸 짧아진다)
         //   수명은 지터로 아래로 흩어지므로 가장 짧은 경우를 봐야 한다 — 지터 폭을 모르는 가드는
         //   통과시키는데 대부분의 세션에서 생존 확인이 안 도는 조합을 만든다
+        // ⚠️ 이 가드가 거부하는 띠에 <b>정당한 설정</b>이 들어 있다. 기본값에서 새로 거부되는 구간이
+        // (90s, 141.176s] 인데, 운영자가 "권위 반영 상한" 을 조이려고 수명만 2m 로 내리는 것이 바로
+        // 그 띠다 — 보안 조치가 부팅 실패로 돌아온다.
+        //
+        // 그래도 거부를 유지하는 이유: 짧은 수명이 생존 확인의 일을 <b>대신해 주기는 한다</b>(죽은
+        // 소켓이 수명으로 수거되므로 보유 시간은 같다). 그러나 그 조합은 "생존 확인을 설정했는데
+        // 돌지 않는다" 와 구별되지 않고, 뒤쪽은 기한을 1시간으로 적어 두고 보호받는다고 믿는
+        // 실제 오설정이다. 둘을 가를 방법이 없어 시끄러운 쪽을 택한다.
+        //
+        // 그래서 <b>탈출로가 설정에 적혀 있어야 한다</b> — 기한·간격을 같이 내리면 통과한다
+        // (예: 2m / 30s / 60s → 102s > 90s). application.yml.example 이 그 예를 적고 있다.
         Duration shortestLifetime = maxLifetime.multipliedBy(100 - LIFETIME_JITTER_PERCENT).dividedBy(100);
         Duration firstLivenessCheck = livenessDeadline.plus(pingInterval);
         if (shortestLifetime.compareTo(firstLivenessCheck) <= 0) {
