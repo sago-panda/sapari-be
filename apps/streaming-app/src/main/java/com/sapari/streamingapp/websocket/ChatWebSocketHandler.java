@@ -277,8 +277,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 첫 점검은 기한이 아니라 <b>기한 + 간격</b>이다. 생존 시계가 등록 시각으로 초기화되므로
         // (레지스트리의 register 참고), 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸 짧아진다 —
         // 기본값에서 t=30s·60s 의 ping 이 둘 다 유실되면 t=90s 점검에서 last 가 아직 등록 시각이라
-        // 90 - 0 >= 90 이 되어 <b>멀쩡한 시청자가 끊긴다.</b> 정상 구간에서는 2회 유실이 살고 3회가
-        // 끊기므로, "기한 = 3 × 간격 = 2회 내성" 이 첫 창에서만 거짓이었다.
+        // 90 - 0 >= 90 이 되어 <b>멀쩡한 시청자가 끊긴다.</b> "기한 = 3 × 간격 = 2회 내성" 이
+        // 첫 창에서만 거짓이었다.
+        //
+        // ⚠️ 정상 구간의 그 2회 내성도 <b>넉넉하지는 않다.</b> PONG 이 두 번 연속 유실되면 점검
+        // 시점의 {@code now - last} 가 정확히 90s 이고 판정이 {@code >=} 라, 살아남는 이유는
+        // {@code last} 에 왕복시간이 더해져 있다는 것뿐이다. 즉 왕복 하나만큼의 마진이다 — 같은
+        // 파일의 "기한 >= 간격 × 2" 불변식이 "왕복 하나에 기대지 말라" 를 근거로 세워져 있으니,
+        // 내성을 더 벌리려면 기한을 간격의 3배보다 크게 잡는 것이 그 기준에 맞다. 이 수정이 고친
+        // 첫 창 쪽은 간격 하나(30s)를 더 받아 그 문제가 없다.
         //
         // 대가는 죽은 소켓 수거가 간격 하나만큼 늦어지는 것이다(기본값 90s → 120s).
         Mono<Void> livenessWatch = Flux.interval(
@@ -313,6 +320,13 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     /**
      * 버린 ping 을 센다.
+     *
+     * <p><b>여기서는 던질 수 있는 호출을 하지 마라.</b> 이 메서드는 {@code onBackpressureDrop} 의
+     * 콜백 안에서 돈다 — 던지면 reactor 가 그것을 {@code onError} 로 바꿔 ping 스트림을 종결시키고,
+     * {@code merge} 를 통해 {@code outbound} 가 에러로 끝난다. 그러면 {@code outbound.then(closeWithReason)}
+     * 이 에러를 그대로 전파해 <b>닫는 코드를 싣지 못하고</b> 세션이 사유 없이 끊긴다(코드 경로:
+     * 그 분기에 {@code onErrorResume} 이 없다). {@code modules/chat/AGENTS.md} 가 같은 규율을
+     * fail-open 핸들러에 대해 세워 뒀고 이것이 그 새 사례다.
      *
      * <p>한때 {@code onBackpressureDrop()} 을 인자 없이 썼다. 그러면 이 줄만 이 파일의 규율
      * ({@code droppedOnContention}·{@code lifetimeExpiredCount})에서 빠진다 — 세지도 로그되지도

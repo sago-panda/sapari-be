@@ -174,6 +174,45 @@ class ChatWebSocketHandlerTest {
     }
 
     /**
+     * ⭐ 생존 점검이 <b>간격마다</b> 다시 돈다 — 첫 점검 한 번으로 끝나지 않는다.
+     *
+     * <p>{@code Flux.interval(첫 점검, 간격)} 의 두 번째 인자가 주기다. 그걸 {@code maxLifetime} 으로
+     * 바꿔도 첫 점검은 그대로라, 첫 틱에서 거두는 기존 테스트들은 전부 초록이다 — 그러면 죽은 소켓
+     * 수거가 120초에서 <b>1시간</b>이 된다(첫 점검을 놓친 소켓은 수명까지 남는다).
+     *
+     * <p>그래서 첫 점검에서는 "아직 응답 있음" 으로 답하고 두 번째 틱에서 거두게 만든다.
+     */
+    @Test
+    @DisplayName("⭐ 생존 점검은 간격마다 다시 돈다 — 첫 틱을 놓친 죽은 소켓이 수명까지 남지 않게")
+    void the_liveness_check_repeats_every_interval() {
+        // given: 첫 점검에서는 응답이 있고, 다음 점검에서 끊긴 것으로 확인된다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false, true);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 첫 점검 직후에는 아직 거두지 않고, 간격 하나를 더 지나면 거둔다.
+        // 주기가 maxLifetime 으로 바뀌면 두 번째 틱이 1시간 뒤라 아래 단언이 깨진다.
+        Duration firstCheck = LIVENESS_DEADLINE.plus(PING_INTERVAL);
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(firstCheck.plusMillis(1))
+                .then(() -> then(registry).should(never()).terminateUnresponsive(anyString()))
+                .thenAwait(PING_INTERVAL)
+                .then(() -> then(registry).should(times(1)).terminateUnresponsive("s1"))
+                .thenCancel()
+                .verify(VERIFY_CEILING);
+    }
+
+    /**
      * ⭐ 수요가 없을 때 버린 ping 을 <b>센다.</b>
      *
      * <p>한때 {@code onBackpressureDrop()} 을 인자 없이 써서, 이 줄만 이 파일의 규율에서 빠져 있었다 —

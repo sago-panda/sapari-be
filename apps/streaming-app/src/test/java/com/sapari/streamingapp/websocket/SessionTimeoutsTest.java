@@ -117,6 +117,54 @@ class SessionTimeoutsTest {
         assertThatCode(() -> new SessionTimeouts(LIFETIME, INTERVAL, DEADLINE)).doesNotThrowAnyException();
     }
 
+    /**
+     * ⭐ 가드의 <b>두 항이 각각</b> 필요하다.
+     *
+     * <p>위 테스트의 91s 로는 부족하다 — 첫 점검 항만으로 이미 거부돼서, 지터 항을 지우거나 첫 점검
+     * 항을 지워도 한쪽이 남아 통과한다. 각 항을 혼자 책임지는 값을 따로 둬야 둘 중 하나를 지우는
+     * 변경이 빨간불을 받는다.
+     *
+     * <p>분리하는 수는 산술로 나온다(기한 90s·간격 30s·지터 15%):
+     * <ul>
+     *   <li>{@code 120s}: 지터 적용 102s. 기한(90s)보다는 크고 첫 점검(120s)보다는 작다 →
+     *       <b>첫 점검 항</b>만이 거부할 수 있다
+     *   <li>{@code 130s}: 지터 적용 110.5s 로 거부인데, 지터를 빼면 130s > 120s 로 통과 →
+     *       <b>지터 항</b>만이 거부할 수 있다
+     * </ul>
+     */
+    @Test
+    @DisplayName("⭐ 가드의 두 항이 각각 필요하다 — 한 항만 지워도 빨간불이 되게")
+    void each_term_of_the_lifetime_guard_is_load_bearing() {
+        // 첫 점검 항 전용: 102s 는 기한 90s 보다 크고 첫 점검 120s 보다 작다
+        assertThatThrownBy(() -> new SessionTimeouts(Duration.ofSeconds(120), INTERVAL, DEADLINE))
+                .as("기한만 보는 가드로 되돌리면 통과한다").isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("수명");
+
+        // 지터 항 전용: 지터를 빼면 130s > 120s 로 통과한다
+        assertThatThrownBy(() -> new SessionTimeouts(Duration.ofSeconds(130), INTERVAL, DEADLINE))
+                .as("지터를 모르는 가드로 되돌리면 통과한다").isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("수명");
+    }
+
+    /**
+     * ⭐ 경계는 <b>같을 때도 거부</b>다.
+     *
+     * <p>지터 적용 최소 수명이 첫 점검과 정확히 같으면 생존 확인이 "한 번 돌 수도 있는" 자리가 아니라
+     * 돌지 않는 자리다. {@code <=} 를 {@code <} 로 바꾸는 한 글자가 그 경계를 열어 버린다.
+     *
+     * <p>{@code 141,176,470,589ns} 에서 {@code × 85 / 100} 이 정확히 120초다(정수 나노초 연산).
+     */
+    @Test
+    @DisplayName("⭐ 지터 적용 최소 수명이 첫 점검과 같으면 거부한다 — <= 를 < 로 바꾸는 한 글자를 막는다")
+    void the_lifetime_boundary_rejects_equality() {
+        assertThatThrownBy(() -> new SessionTimeouts(Duration.ofNanos(141_176_470_589L), INTERVAL, DEADLINE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("수명");
+        // 1ns 더 크면 통과한다 — 경계가 그 자리임을 함께 고정한다
+        assertThatCode(() -> new SessionTimeouts(Duration.ofNanos(141_176_470_590L), INTERVAL, DEADLINE))
+                .doesNotThrowAnyException();
+    }
+
     @Test
     @DisplayName("null 은 거부한다")
     void nulls_are_rejected() {

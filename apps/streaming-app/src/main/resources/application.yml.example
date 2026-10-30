@@ -15,9 +15,13 @@
 # ⚠️ ${VAR:} 의 빈 기본값을 둘지는 REQUIRED/optional 이 아니라 <b>대상 타입</b>이 정한다 (실측).
 #   env 가 없을 때 ${VAR:} 는 "미설정"이 아니라 <b>빈 문자열로 설정됨</b>이고, 그러면 코드의
 #   @Value("${키:기본값}") 에 있는 기본값이 쓰이지 않는다.
-#     String 타깃   빈 문자열이 그대로 바인딩돼 코드가 isBlank() 로 친절히 거부한다. 빈 기본값을
-#                   떼면 PlaceholderResolutionException 이 먼저 나 그 친절함이 사라진다 —
-#                   그래서 public-key 는 ${CHAT_ROOMTOKEN_PUBLICKEY:} 가 맞다.
+#     String 타깃   빈 문자열이 그대로 바인딩된다 — 변환이 없으니 부팅이 그 자체로는 막히지 않는다.
+#                   그 다음은 <b>키마다 다르다</b>: public-key 는 코드가 isBlank() 로 거부해 친절한
+#                   부팅 실패가 되고(그래서 ${CHAT_ROOMTOKEN_PUBLICKEY:} 가 맞다 — 빈 기본값을 떼면
+#                   PlaceholderResolutionException 이 먼저 나 그 친절함이 사라진다),
+#                   chat.profanity.* 는 빈 값이 합법이라 마스킹이 pass-through 로 조용히 꺼지고,
+#                   spring.data.redis.host 는 스프링 기본값 localhost 로 간다. "String 이면 안전" 이
+#                   아니라 "String 이면 변환이 안 막으니 그 키의 코드를 봐야 한다" 가 규칙이다.
 #     Integer 타깃  Duration 과 같다 — 빈 문자열이 숫자로 변환되지 않는다. 아래 REDIS_PORT 가 그
 #                   경우이고, 그래서 ${REDIS_PORT:6379} 처럼 기본값이 플레이스홀더 안에 있다.
 #                   String 규칙을 적용해 ${REDIS_PORT:} 로 바꾸지 말 것.
