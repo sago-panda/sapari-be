@@ -108,9 +108,10 @@ class ChatKickRecorderConcurrencyTest {
          * 반대로 아무도 헛되게 기다리지 않았다면 둘 다 기록에 도달했다는 뜻이고, 그건 잠금이 둘을
          * 가르지 않았다는 뜻이다.
          *
-         * <p><b>"성립 횟수"로 세면 안 된다.</b> 마지막에 도착한 쪽은 자기가 카운트를 0으로 만들므로
-         * 직렬화되든 안 되든 늘 성립한다 — 그 값으로는 둘을 가를 수 없다(실제로 그렇게 썼다가
-         * 1 대 2를 0 대 2로 착각했다).
+         * <p><b>"성립 횟수"로 세려면 기대값이 1이어야 한다.</b> 마지막에 도착한 쪽은 자기가 카운트를
+         * 0으로 만들므로 직렬화되든 안 되든 늘 성립한다 — 즉 1 대 2로 갈리고 0이 될 수는 없다.
+         * 판별력 자체는 있지만(실제로 그렇게 썼다가 기대값을 0으로 잡아 깨뜨렸다) 이름이 뜻을 바로
+         * 말해 주지 않아 이쪽을 고른다.
          *
          * <p>경과 시간으로도 같은 사실을 짚을 수 있지만(성립 ~58ms vs 상한 ~2000ms) 임계값을 골라야
          * 하고 러너 속도에 기댄다. 이 셈은 고를 것이 없다.
@@ -267,9 +268,13 @@ class ChatKickRecorderConcurrencyTest {
         // when
         bans.lockForBanDecision(targetUserId);
 
-        // then: 같은 백엔드가 그 키의 어드바이저리 잠금을 쥐고 있다. 잠금 호출을 지우면 0건이 되는데,
-        // 그때 <b>예외는 나지 않는다</b> — 같은 빈의 @Modifying 쓰기들과 달리 이 SELECT 에는
-        // "경계 없음"을 알려 주는 안전망이 없어서, 직렬화가 조용히 사라지는 모양이 된다.
+        // then: 같은 백엔드가 그 키의 어드바이저리 잠금을 쥐고 있다. 잠금 호출을 지우면 0건이 된다.
+        //
+        // 경계가 없을 때의 이야기는 <b>바뀌었다</b>. 전에는 이 SELECT 가 조용히 0을 보호했는데,
+        // 대기 상한을 거는 @Modifying 문장이 그 앞에 생긴 뒤로는 경계 없이 부르면
+        // InvalidDataAccessApiUsageException("No active transaction for update or delete query")로
+        // 시끄럽게 죽는다(세 리뷰어 각자 실측). 그 안전망은 <b>그 문장이 앞에 있다는 사실</b>에
+        // 걸려 있으므로, 두 문장을 하나로 "정리"하면 함께 사라진다.
         //
         // 키 비교까지 하는 이유: 잠금이 잡혔다는 것만 보면 키 유도를 바꾸는 변경을 놓친다.
         // pg_locks 는 64비트 키를 classid/objid 두 조각으로 쪼개 보여 주므로 다시 붙여 비교한다.
@@ -367,9 +372,16 @@ class ChatKickRecorderConcurrencyTest {
 
         // when
         long startedAt = System.nanoTime();
-        Throwable thrown = catchThrowable(() -> recorder.record(kick(UUID.randomUUID(), UUID.randomUUID())));
-        long waitedMillis = (System.nanoTime() - startedAt) / 1_000_000;
-        release.countDown();
+        Throwable thrown;
+        long waitedMillis;
+        try {
+            thrown = catchThrowable(() -> recorder.record(kick(UUID.randomUUID(), UUID.randomUUID())));
+        } finally {
+            // 단언보다 먼저, 그리고 실패해도 반드시 놓는다 — 안 놓으면 보유자 데몬이 자기 await 동안
+            // 커넥션과 잠금을 쥔 채 남아 뒤따르는 테스트를 느리게 만든다.
+            waitedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+            release.countDown();
+        }
 
         // then: 무한정 기다리지 않고 끊긴다. 상한을 지우면 트랜잭션 타임아웃(5초)까지 버티므로
         // 이 단언이 그 차이를 가른다 — 잠금 뒤에는 쿼리 셋과 커밋뿐이라 정상 경로는 밀리초다.
@@ -395,8 +407,13 @@ class ChatKickRecorderConcurrencyTest {
     /**
      * {@code ChatKickRecorder}의 트랜잭션 상한. 잠금 대기 상한이 이보다 작아야 "대기가 유계다"가
      * 의미를 갖는다 — 같으면 상한을 지워도 증상이 같아 위 단언이 아무것도 가르지 못한다.
+     *
+     * <p><b>운영 상수를 읽는다.</b> 손으로 복사해 두면 그쪽을 줄일 때 이 가드가 조용히 죽는다 —
+     * 상한 제거 뮤턴트의 대기가 줄어든 트랜잭션 상한에서 끊기고, 그 값이 사본보다 작아 단언을
+     * 통과한다(실측: 5 → 2로 줄이면 14개 전부 초록).
      */
-    private static final Duration TRANSACTION_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration TRANSACTION_TIMEOUT =
+            Duration.ofSeconds(ChatKickRecorder.TRANSACTION_TIMEOUT_SECONDS);
 
     private Thread kicker(List<Throwable> failures) {
         return kickerOf(targetUserId, failures);

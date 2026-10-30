@@ -609,6 +609,14 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("전송 경로 방 종료도 emit보다 넉넉한 예산을 쓴다 — 종료 호출지 다섯이 모두 걸려야 한다")
+    void terminate_room_ended_close_outlasts_the_emit_budget() throws Exception {
+        registry.register("s1", session(roomId, userId)).block();
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateRoomEnded("s1"),
+                CloseStatus.NORMAL);
+    }
+
+    @Test
     @DisplayName("강퇴 팬아웃 종료도 emit보다 넉넉한 예산을 쓴다 — 예산을 나눠 쓰므로 단건보다 먼저 마른다")
     void close_user_fanout_outlasts_the_emit_budget() throws Exception {
         registry.register("s1", session(roomId, userId)).block();

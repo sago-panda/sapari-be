@@ -45,13 +45,22 @@ public class ChatKickRecorder {
     private static final Duration CONFIRMATION_WINDOW = Duration.ofDays(730);
 
     /**
-     * 잠금 대기를 포함한 이 트랜잭션의 상한(초).
+     * 이 트랜잭션 전체의 상한(초).
      *
-     * <p>정상 보유 시간은 밀리초라 이 값은 정상 경로에 닿지 않는다. 같은 사람을 여러 방에서 동시에
-     * 강퇴하는 드문 순간의 줄서기만 끊는다 — 짧게 잡으면 그 정당한 대기가 실패하고, 길게 잡으면
-     * 커넥션을 쥔 줄이 길어진다. 5초는 그 사이에서 고른 값이지 측정된 값이 아니다.
+     * <p><b>잠금 대기의 상한이 아니다.</b> 그것은 어댑터가 따로 건다({@code ChatBanJpaRepository}의
+     * 대기 상한) — 대기자가 기다리는 동안에도 커넥션을 쥐므로, 그 비용을 이 값으로 막으려 하면
+     * 너무 길다. 전에는 이 자리에 "길게 잡으면 커넥션을 쥔 줄이 길어진다"는 근거가 적혀 있었는데,
+     * 그 걱정은 이제 대기 상한이 받는다.
+     *
+     * <p>남은 역할은 <b>트랜잭션 전체가 무한히 돌지 않게</b> 하는 것이다. 정상 경로는 밀리초라
+     * (임계구역 실측 avg 0.186ms / max 2.262ms) 이 값에 닿지 않는다. 5초는 고른 값이지 측정된
+     * 값이 아니다.
+     *
+     * <p>package-private 인 것은 테스트가 읽기 때문이다. 손으로 복사해 두면 이 값을 줄일 때
+     * "대기가 유계다"를 지키는 단언이 <b>조용히 죽는다</b>(실측: 2초로 줄이면 상한 제거 뮤턴트의
+     * 대기가 그 사본 5초 미만을 통과해 14개 전부 초록이 된다).
      */
-    private static final int LOCK_WAIT_SECONDS = 5;
+    static final int TRANSACTION_TIMEOUT_SECONDS = 5;
 
     private final ChatKickLogRepository kickLogRepository;
     private final ChatBanStateRepository banStateRepository;
@@ -95,7 +104,7 @@ public class ChatKickRecorder {
      *
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = LOCK_WAIT_SECONDS)
+    @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = TRANSACTION_TIMEOUT_SECONDS)
     public Optional<ChatBan> record(ChatKickLog kickLog) {
         Instant now = kickLog.kickedAt();
         // 승격 판단 전체를 사용자 단위로 줄 세운다. 세기·견주기·쓰기가 세 걸음이고 그 사이에 남의
@@ -122,9 +131,9 @@ public class ChatKickRecorder {
         // 줄을 선다</b>. 받아들이는 근거: 경계 안에 외부 호출이 없고 잠금 뒤에는 쿼리 셋과 커밋뿐이라
         // 정상 보유 시간이 밀리초다.
         //
-        // 그래도 상한을 건다. 상한이 없으면 병목이 생겼을 때 스레드가 DB 커넥션을 쥔 채 무한히 줄을
-        // 서고, 그 줄이 풀보다 길어지면 강퇴와 무관한 요청까지 굶는다. 상한이 있으면 실패가 '대기'가
-        // 아니라 '재시도할 수 있는 예외'가 된다.
+        // 줄서기 자체의 상한은 어댑터가 건다 — 기다리는 쪽도 커넥션을 쥐므로 트랜잭션 상한으로는
+        // 너무 늦다. 이 트랜잭션의 상한은 그와 별개로 "전체가 무한히 돌지 않게"를 맡는다. 둘 다
+        // 있어야 실패가 '대기'가 아니라 '재시도할 수 있는 예외'가 된다.
         boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
 
         Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);

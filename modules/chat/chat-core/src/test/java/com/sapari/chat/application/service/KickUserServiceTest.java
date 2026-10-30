@@ -7,6 +7,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import java.util.stream.Stream;
 import com.sapari.chat.domain.exception.ChatKickContendedException;
 import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -105,14 +106,18 @@ class KickUserServiceTest {
     /**
      * 상한 초과가 드러나는 <b>세 모양</b>. 하나만 잡으면 나머지가 500으로 새어 나간다.
      *
-     * <p>잠금 대기 쪽이 가장 흔한 출처다 — 밴 판단이 사용자 단위로 직렬화되므로 같은 사람을 겹쳐
-     * 강퇴하면 뒤에 온 쪽이 트랜잭션 상한보다 먼저 거기서 끊긴다. 계보도 나머지 둘과 다르다
-     * ({@code ConcurrencyFailureException} 밑이다).
+     * <p>잠금 쪽이 가장 흔한 출처이고 갈래가 둘이다 — 대기가 제 상한을 넘으면
+     * {@code CannotAcquireLockException}({@code 55P03}), 교착이면
+     * {@code PessimisticLockingFailureException}({@code 40P01})이다. <b>후자가 전자의 상위</b>라
+     * 자식만 열거하면 교착이 500으로 새어 나간다. 상위로 잡으면 자식도 덮인다는 것을 첫 모양이
+     * 같이 확인한다.
      */
     static Stream<Arguments> timeoutShapes() {
         return Stream.of(
                 Arguments.of("잠금 대기 상한 초과",
                         new CannotAcquireLockException("canceling statement due to lock timeout")),
+                Arguments.of("교착 — 잠금 계열의 상위 타입으로 온다",
+                        new PessimisticLockingFailureException("deadlock detected")),
                 Arguments.of("문이 취소됨",
                         new QueryTimeoutException("canceling statement due to user request")),
                 Arguments.of("남은 수명이 0 — 다음 문을 세우지 못함",
@@ -298,11 +303,10 @@ class KickUserServiceTest {
     class Contention {
 
         /**
-         * 상한 초과는 <b>세 모양</b>으로 나온다. 잠금 대기가 제 상한을 넘으면
-         * {@code CannotAcquireLockException}, DB가 문을 취소하면 {@code QueryTimeoutException},
-         * 남은 수명이 0 이하라 다음 문을 세우지도 못하면 {@code TransactionTimedOutException}이다.
-         * 공통 조상이 {@code NestedRuntimeException}뿐이라 하나만 잡으면 나머지가 500으로 나간다 —
-         * 실제로 그렇게 썼다가 잡혔고, 그래서 셋을 모두 여기에 건다.
+         * 상한 초과는 <b>네 모양</b>으로 나온다 — 잠금 대기 상한({@code 55P03}), 교착({@code 40P01}),
+         * DB가 문을 취소({@code QueryTimeoutException}), 남은 수명이 0 이하라 다음 문을 세우지도 못함
+         * ({@code TransactionTimedOutException}). 앞 둘은 상위 타입 하나로 묶이고 뒤 둘은 각각이다.
+         * 하나만 잡으면 나머지가 500으로 나간다 — 실제로 그렇게 썼다가 <b>두 번</b> 잡혔다.
          *
          * <p>실제로 어느 타입이 오는지는 여기서 정하지 않는다. 그건 실제 Postgres가 답하는 것이고
          * {@code ChatKickRecorderConcurrencyTest}가 잰다 — 이 테스트는 "그 타입이 오면 번역된다"만

@@ -675,8 +675,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 메시지마다 불리므로 모든 ACK·유니캐스트가 테스트만 읽는 카운터를 위해 경합 CAS를 하나씩 물었다.
      * 불변식은 "fan-out 하나가 예산 하나"이고 단건은 그 불변식의 대상이 아니다.
      *
-     * <p>새 fan-out 경로가 {@link #newBudget}을 부르면 셈이 0이라 그 경로를 덮는 단언이 깨진다 —
-     * 조용히 빠지지 않는다.
+     * <p>⚠️ <b>이 갈라짐이 스스로를 지키지는 못한다.</b> 기존 경로가 {@link #newBudget}으로 돌아가면
+     * 그 경로를 덮는 단언이 깨지지만, <b>일곱 번째 경로를 새로 만들고 열거 테스트에 한 줄 적지 않으면
+     * 아무도 묻지 않는다</b> — 조건절이 자기 자신이다. 구조로 막으려면 {@link #forEachInRoom}·
+     * {@link #forEachSessionOf}가 예산을 만들어 넘기게 해서 fan-out 측에 per-session 예산을 만들 수단
+     * 자체를 없애야 하고, 그러면 이 셈도 필요 없어진다. 오늘의 여섯 열거는 완전하다.
      */
     private FanOutBudget newSharedBudget() {
         budgetsCreated.increment();
@@ -686,8 +689,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /**
      * 만든 fan-out 공유 예산의 누적 수. <b>관측용이 아니라 불변식 고정용이다</b>(위 참고).
      *
-     * <p>{@code LongAdder}가 아니라 {@code AtomicLong}이어도 됐을 만큼 드문 경로이지만, fan-out은
-     * 방마다 메시지마다 도는 자리라 쓰기가 읽기보다 압도적으로 많다 — 그 모양에 맞는 자료구조를 쓴다.
+     * <p>{@code LongAdder}인 것은 <b>지금 근거가 약하다.</b> 셈을 단건 경로에서 뺀 뒤로는 스레드 간
+     * 쓰기 경합이 사실상 없고, {@code LongAdder}가 이기는 조건은 쓰기/읽기 비율이 아니라 그 경합이다 —
+     * {@code AtomicLong}으로도 족하다(한때 이 자리에 "쓰기가 읽기보다 많아서"라고 적혀 있었는데
+     * 조건을 잘못 짚은 것이다). 비용이 중립이라 두지만, 이 선택을 근거로 확장하지 말 것.
      *
      * (테스트 진입점)
      */
