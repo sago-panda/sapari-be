@@ -505,33 +505,61 @@ class ChatSessionRegistryTest {
         return thread;
     }
 
+    /**
+     * "넘긴다"를 보려고 시도하는 횟수.
+     *
+     * <p>한 번만 보면 <b>부하에 흔들린다.</b> 1ms 체류와 5ms 예산의 5배 마진은 벽시계라, 머신이 포화면
+     * {@code park}이 예산을 넘겨 버린다 — 그리고 그때 드롭하는 것은 회귀가 아니라 설계된 동작이다
+     * (경합 소진 시 드롭은 best-effort 계약이고, 이 파일의 다음 테스트가 바로 그것을 단언한다).
+     * 실측: load average 13.57 구간에서 1회 실패, 부하가 내려간 뒤 단독 3/3 통과.
+     *
+     * <p>그래서 "매번 넘긴다"가 아니라 <b>"한 번이라도 넘긴다"</b>를 본다. 뮤턴트 감도는 줄지 않는다 —
+     * 재시도를 지우면(예산 0) <b>모든</b> 시도가 첫 실패에서 바로 버리므로 한 번도 넘기지 못한다.
+     */
+    private static final int CARRY_OVER_ATTEMPTS = 5;
+
     @Test
     @DisplayName("경합이 예산 안이면 재시도가 넘겨 준다 — 머무는 구독자 뒤에서 보내도 도착한다")
     void contention_within_budget_is_carried_over_by_retry() throws Exception {
-        // given: 구독자가 1ms 머무는 세션. 예산(5ms)보다 짧으므로 재시도가 그 구간을 넘길 수 있다.
-        registry.register("s1", session(roomId, userId)).block();
-        Lingering consumer = subscribeLingering("s1", Duration.ofMillis(1));
+        List<String> outcomes = new ArrayList<>();
+        boolean carriedOver = false;
 
-        AtomicReference<Throwable> failure = new AtomicReference<>();
-        Thread contender = contenderThread(() -> {
-            consumer.awaitInsideOnNext();          // 락이 잡힌 순간에 들어간다
-            registry.sendToSession("s1", out("ACK")).block();
-        }, failure);
+        for (int attempt = 1; attempt <= CARRY_OVER_ATTEMPTS && !carriedOver; attempt++) {
+            // given: 구독자가 1ms 머무는 세션. 예산(5ms)보다 짧으므로 재시도가 그 구간을 넘길 수 있다.
+            final String sessionId = "s" + attempt;
+            registry.register(sessionId, session(roomId, userId)).block();
+            Lingering consumer = subscribeLingering(sessionId, Duration.ofMillis(1));
 
-        // when: 첫 emit이 구독자 안에 머무는 동안 다른 스레드가 같은 Sink로 보낸다
-        contender.start();
-        registry.sendToSession("s1", out("NORMAL")).block();
-        contender.join(TimeUnit.SECONDS.toMillis(30));
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread contender = contenderThread(() -> {
+                consumer.awaitInsideOnNext();          // 락이 잡힌 순간에 들어간다
+                registry.sendToSession(sessionId, out("ACK")).block();
+            }, failure);
 
-        // then: 재시도가 경합을 넘겨 줬으므로 둘 다 도착하고 버린 것이 없다.
-        // 재시도를 지우면(예산 0) 두 번째가 첫 실패에서 바로 버려져 이 단언이 깨진다.
-        //
-        // 경합 창이 열렸는지를 먼저 본다 — 창이 안 열리면 드롭이 0이라 아래 단언이 통과하면서
-        // 아무것도 재지 못한다. 그 경우 awaitInsideOnNext가 사유를 들고 실패해 여기로 온다.
-        assertThat(failure.get()).as("경합 스레드가 창에 들어가지 못했다").isNull();
-        assertThat(registry.droppedOnContention()).as("예산 안의 경합인데 버렸다").isZero();
-        assertThat(consumer.received).extracting(OutboundMessage::type)
-                .containsExactlyInAnyOrder("NORMAL", "ACK");
+            // when: 첫 emit이 구독자 안에 머무는 동안 다른 스레드가 같은 Sink로 보낸다
+            long droppedBefore = registry.droppedOnContention();
+            contender.start();
+            registry.sendToSession(sessionId, out("NORMAL")).block();
+            contender.join(TimeUnit.SECONDS.toMillis(30));
+
+            // then: 경합 창이 열렸는지를 먼저 본다 — 창이 안 열리면 드롭이 0이라 아래 판정이 "넘겼다"로
+            // 읽히면서 아무것도 재지 못한다. 그 경우 awaitInsideOnNext가 사유를 들고 실패해 여기로 온다.
+            assertThat(failure.get()).as("경합 스레드가 창에 들어가지 못했다").isNull();
+
+            // 누적 카운터라 시도별 증분을 본다 — 누적으로 보면 앞선 시도의 드롭이 뒤 시도를 영구히 오염시킨다.
+            long dropped = registry.droppedOnContention() - droppedBefore;
+            outcomes.add("시도 " + attempt + " → 드롭 " + dropped);
+            if (dropped == 0) {
+                assertThat(consumer.received).extracting(OutboundMessage::type)
+                        .containsExactlyInAnyOrder("NORMAL", "ACK");
+                carriedOver = true;
+            }
+        }
+
+        assertThat(carriedOver)
+                .as("예산 안의 경합을 %d번 시도해 한 번도 넘기지 못했다 — 재시도가 없는 것과 구별되지 않는다. %s",
+                        CARRY_OVER_ATTEMPTS, outcomes)
+                .isTrue();
     }
 
     @Test
