@@ -18,6 +18,9 @@
 #     String 타깃   빈 문자열이 그대로 바인딩돼 코드가 isBlank() 로 친절히 거부한다. 빈 기본값을
 #                   떼면 PlaceholderResolutionException 이 먼저 나 그 친절함이 사라진다 —
 #                   그래서 public-key 는 ${CHAT_ROOMTOKEN_PUBLICKEY:} 가 맞다.
+#     Integer 타깃  Duration 과 같다 — 빈 문자열이 숫자로 변환되지 않는다. 아래 REDIS_PORT 가 그
+#                   경우이고, 그래서 ${REDIS_PORT:6379} 처럼 기본값이 플레이스홀더 안에 있다.
+#                   String 규칙을 적용해 ${REDIS_PORT:} 로 바꾸지 말 것.
 #     Duration 타깃 빈 문자열이 null 로 변환돼 가드가 "필수" 로 죽는다. 코드 기본값을 쓰려면 그 줄을
 #                   <b>주석 처리</b>해 키가 아예 없는 상태로 둘 것 — 아래 chat.session 이 그 모양이다.
 #                   (측정: 빈 문자열 → null / 키 부재 → 60m / 값 있음 → 그 값)
@@ -70,8 +73,14 @@ chat:
   # ⚠️ 아래가 주석인 것이 의도다. 위 표기 규칙의 Duration 항목이 그 이유다 — ${VAR:} 로 적고 env 를
   #    안 넣으면 빈 문자열이 코드 기본값을 밀어내 <b>부팅이 실패한다</b>. 이 파일은 그대로 복사하라고
   #    지시하므로, 그 모양으로 두면 복사한 사람에게 CrashLoopBackOff 가 된다.
-  #    값을 바꾸려면 주석을 풀고 반드시 값을 적을 것. env 로 주입하려면 기본값을 플레이스홀더 안에
-  #    둔다 — ${CHAT_SESSION_MAX_LIFETIME:60m} 처럼.
+  #
+  # ⚠️ env 로 주입하려고 플레이스홀더를 쓸 필요가 <b>없다.</b> 키가 yml 에 아예 없어도 env 는
+  #    완화 이름 해석으로 바인딩된다 (실측: 키 부재 + CHAT_SESSION_MAX_LIFETIME=17m → PT17M,
+  #    env 없음 → PT1H). 그 해석이 바인더가 아니라 프로퍼티 소스에 있어서 @Value 에도 적용된다.
+  #    굳이 플레이스홀더로 적겠다면 기본값을 <b>반드시</b> 안에 둘 것 — ${CHAT_SESSION_MAX_LIFETIME:60m}.
+  #    한 글자가 빠져 ${CHAT_SESSION_MAX_LIFETIME:} 가 되면 위 함정으로 돌아간다.
+  #
+  #    값을 바꾸려면 주석을 풀고 값을 적는 쪽이 가장 안전하다.
   #
   # 서로 제약한다 — 기한은 간격의 두 배 이상, 수명은 기한보다 커야 하고 셋 다 양수여야 한다
   # (아니면 부팅 실패: SessionTimeouts).

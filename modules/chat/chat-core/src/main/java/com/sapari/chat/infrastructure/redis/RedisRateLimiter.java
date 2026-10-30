@@ -19,7 +19,9 @@ import reactor.core.publisher.Mono;
  * ratelimit:chat:{userId} 3초 fixed window — SET NX EX 단일 원자 연산이라
  * 동시 요청 TOCTOU race가 없다(둘 중 하나만 NX 획득). 거부는 잔여 TTL만 읽으므로 윈도우를 연장하지 않는다.
  *
- * <p>Redis 장애 시에는 <b>프로세스 로컬 창으로 강등</b>한다 — 같은 3초 고정 창을 이 Pod 안에서만 적용한다.
+ * <p>Redis 장애 시에는 <b>프로세스 로컬 창으로 강등</b>한다 — 끊긴 Redis 뿐 아니라 <b>답이 느린</b>
+ * Redis 도 포함한다({@link #REDIS_CALL_LIMIT} 참고. 상한이 없으면 강등이 에러 신호에만 걸려,
+ * 패킷을 떨구는 장애에서는 60초를 기다린다) — 같은 3초 고정 창을 이 Pod 안에서만 적용한다.
  * 채팅 가용성이 레이트리밋 엄격성보다 우선이지만, 그것이 "상한을 지운다"는 뜻일 이유는 없다. 전면 통과였을
  * 때는 Redis 가 죽은 동안 회선 속도로 미는 클라 하나가 창 없이 전부 통과하고 그 프레임마다 저장이 일어났다.
  *
@@ -33,6 +35,28 @@ import reactor.core.publisher.Mono;
 public class RedisRateLimiter implements RateLimiter {
 
     private static final Duration WINDOW = Duration.ofSeconds(3);
+
+    /**
+     * Redis 왕복 상한 — <b>느린 Redis 를 죽은 Redis 로 수렴시킨다.</b>
+     *
+     * <p>이게 없으면 강등이 <b>에러 신호에만</b> 걸린다. Redis 를 죽이는 대신 패킷을 떨구면
+     * (파티션·과부하) 커맨드가 Lettuce 기본 타임아웃까지 pending 인데 그 값이 <b>60초</b>이고
+     * ({@code RedisURI.DEFAULT_TIMEOUT = 60l}, lettuce-core 6.8.2 바이트코드 실측)
+     * {@code spring.data.redis.timeout} 은 이 저장소에 설정돼 있지 않다. 그 60초 동안
+     * {@code onErrorResume} 이 돌지 않으므로 아래 로컬 창은 발화하지 않고, 전송 경로가
+     * {@code concatMap} 으로 직렬화돼 있어 <b>그 세션의 채팅이 통째로 멈춘다</b> — 공격자가 얻는 것이
+     * 상한 우회가 아니라 가용성 박탈이고, 그건 이 어댑터가 내세운 "가용성 우선"의 반대 방향이다.
+     *
+     * <p>값은 창의 1/15 다. 정상 왕복은 ms 아래라 평소 지터·GC 로는 걸리지 않고, 걸렸을 때 잃는 것은
+     * 그 한 건의 Pod 간 정확도뿐이다(= 강등과 같은 대가). 거부 경로의 TTL 조회까지 함께 덮도록
+     * 체인 전체에 건다.
+     *
+     * <p>⚠️ <b>형제 조회들은 아직 상한이 없다.</b> 전송 경로의 강퇴·밴 조회와 입장 게이트의 종료 마커
+     * 조회가 같은 모양이고 같은 {@code concatMap} 위에 있어, 느린 Redis 는 그쪽에서 먼저 멈춘다.
+     * 즉 "느린 Redis 가 세션을 멈추지 않는다"가 전 경로에서 참이 되려면 그쪽도 함께 유계여야 한다.
+     * 이 어댑터만으로는 그 주장을 할 수 없다.
+     */
+    private static final Duration REDIS_CALL_LIMIT = Duration.ofMillis(200);
 
     /**
      * 강등 로그 간격. <b>건수가 아니라 경과시간</b>으로 솎아낸다 — 건수 기준(N건당 1줄)은 카운터가
@@ -68,6 +92,7 @@ public class RedisRateLimiter implements RateLimiter {
                 .flatMap(acquired -> acquired
                         ? Mono.just(new RateLimitResult(true, 0))
                         : remainingSeconds(key).map(remaining -> new RateLimitResult(false, remaining)))
+                .timeout(REDIS_CALL_LIMIT)
                 .onErrorResume(err -> {
                     // Redis가 죽으면 전 사용자의 모든 전송이 이 경로를 탄다. 건당 스택트레이스를 남기면
                     // 초당 수백 줄이 쌓여 정작 원인(Redis 장애) 로그를 묻는다. 그래서 간격으로 솎아낸다.

@@ -47,6 +47,32 @@ class RedisRateLimiterDegradedTest {
         rateLimiter = new RedisRateLimiter(template);
     }
 
+    /**
+     * ⭐ 답이 없는 Redis 를 기다리지 않는다.
+     *
+     * <p>장애에는 두 모양이 있고 어댑터는 둘 다 받아야 한다 — 끊긴 Redis(에러)와 <b>답이 느린</b>
+     * Redis(pending)다. 후자에 상한이 없으면 Lettuce 기본 타임아웃 60초까지 매달려
+     * {@code onErrorResume} 이 돌지 않고, 전송 경로가 직렬화돼 있어 그 세션의 채팅이 통째로 멈춘다.
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("⭐ 답이 없는 Redis 를 기다리지 않는다 — 느린 Redis 가 그 세션의 채팅을 멈추지 않게")
+    void a_silent_redis_does_not_block_the_caller() {
+        // given: 에러가 아니라 영원히 pending 인 Redis — 파티션·과부하의 모양이다
+        ReactiveStringRedisTemplate template = mock(ReactiveStringRedisTemplate.class);
+        ReactiveValueOperations<String, String> operations = mock(ReactiveValueOperations.class);
+        given(template.opsForValue()).willReturn(operations);
+        given(operations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+                .willReturn(Mono.never());
+        RedisRateLimiter silent = new RedisRateLimiter(template);
+
+        // when & then: block 의 상한은 어댑터 상한보다 넉넉하다 — 어댑터가 안 끊으면 여기서 터진다
+        RateLimitResult result = silent.tryAcquire(UUID.randomUUID()).block(Duration.ofSeconds(2));
+
+        assertThat(result).as("상한 안에 판정이 돌아오지 않았다").isNotNull();
+        assertThat(result.allowed()).as("강등 판정의 첫 요청은 허용").isTrue();
+    }
+
     @Test
     @DisplayName("⭐ 장애 중에도 상한이 남는다 — 첫 요청은 허용하되 창 안의 두 번째는 거부한다")
     void keeps_a_cap_while_redis_is_down() {
