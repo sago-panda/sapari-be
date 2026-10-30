@@ -3,6 +3,7 @@ package com.sapari.chat.infrastructure.persistence.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.lang.reflect.RecordComponent;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -82,5 +83,30 @@ class ChatMessageMapperTest {
         // when & then
         assertThatThrownBy(() -> mapper.toDomain(corrupted))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("⭐ toDomain 이 도메인 record 의 모든 필드를 채운다 — 새 필드가 조용히 null 로 남지 않는다")
+    void maps_every_domain_component() throws Exception {
+        // given: 전 필드에 값이 있는 도큐먼트 — 비어 있는 타깃은 도큐먼트가 아니라 매퍼 탓이어야 한다
+        ChatMessageDocument document = new ChatMessageDocument(
+                "65a1f2c3d4e5f60718293a4b", UUID.randomUUID(), UUID.randomUUID(),
+                "구매자닉", "buyer@example.com", "BUYER", "NORMAL",
+                "원문", "마스킹본", "client-1", Instant.parse("2026-06-12T00:00:00Z"));
+
+        // when
+        ChatMessage domain = mapper.toDomain(document);
+
+        // then: 필드를 열거하지 않고 record component 를 돌아 읽는다. 열거하면 도메인에 필드를 더할 때
+        // 이 테스트도 같이 안 고쳐져서, 막으려던 바로 그 실수에 테스트가 함께 눈을 감는다.
+        //
+        // 이것이 잡는 것: 도메인 record 에 필드를 더하고 매퍼를 안 고치면 MapStruct 는 그 타깃을 비워 두고
+        // 경고만 낸다(실측 — "warning: Unmapped target property" + BUILD SUCCESSFUL). 도큐먼트 쪽은
+        // toDocument 가 위치 인자로 생성자를 부르므로 컴파일러가 막지만, 도메인 쪽에는 그 그물이 없다.
+        for (RecordComponent component : ChatMessage.class.getRecordComponents()) {
+            assertThat(component.getAccessor().invoke(domain))
+                    .as("ChatMessage.%s — toDomain 이 채우지 않았다", component.getName())
+                    .isNotNull();
+        }
     }
 }
