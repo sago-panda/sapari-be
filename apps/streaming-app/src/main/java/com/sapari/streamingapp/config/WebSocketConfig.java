@@ -22,6 +22,7 @@ import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 import com.sapari.streamingapp.websocket.ChatWebSocketHandler;
 import com.sapari.streamingapp.websocket.EntryGate;
 import com.sapari.streamingapp.websocket.NettyConnectionRegistry;
+import com.sapari.streamingapp.websocket.SessionTimeouts;
 import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
 
 /**
@@ -37,9 +38,11 @@ public class WebSocketConfig {
     public ChatWebSocketHandler chatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate,
             ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber,
             NettyConnectionRegistry connections, SystemMessageService systemMessageService,
-            @Value("${chat.session.max-lifetime:60m}") Duration maxSessionLifetime) {
+            @Value("${chat.session.max-lifetime:60m}") Duration maxLifetime,
+            @Value("${chat.session.ping-interval:30s}") Duration pingInterval,
+            @Value("${chat.session.liveness-deadline:90s}") Duration livenessDeadline) {
         return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber, connections,
-                systemMessageService, maxSessionLifetime);
+                systemMessageService, new SessionTimeouts(maxLifetime, pingInterval, livenessDeadline));
     }
 
     @Bean

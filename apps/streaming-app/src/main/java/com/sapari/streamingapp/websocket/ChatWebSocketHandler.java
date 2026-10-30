@@ -82,11 +82,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     private final ObjectMapper objectMapper;
 
     /**
-     * 한 연결이 살 수 있는 최대 시간. 설정으로 받는 이유는 테스트가 짧게 주기 때문이다 —
-     * 상수로 두면 이 분기가 배선됐는지를 재는 수단이 가상 시간뿐이고, 가상 시간은 헬퍼만 재고
-     * <b>배선은 재지 못한다</b>.
+     * 연결 하나에 걸리는 시간 상한 셋. 설정으로 받는 이유는 테스트가 짧게 주기 때문이다 — 상수로
+     * 두면 이 분기들이 <b>배선됐는지</b>를 재는 수단이 가상 시간뿐이고, 가상 시간은 분기만 재고
+     * 배선은 재지 못한다. 특히 ping 에 대한 pong 이 인바운드로 돌아오는지는 실제 소켓으로만 확인된다.
      */
-    private final Duration maxSessionLifetime;
+    private final SessionTimeouts timeouts;
 
     /** roomId → (공유 구독 Disposable + 참조 수). 이 Pod 로컬. */
     private final Map<UUID, RoomSub> roomSubs = new ConcurrentHashMap<>();
@@ -96,8 +96,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     public ChatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate, ChatSessionRegistry registry,
             SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber, NettyConnectionRegistry connections,
-            SystemMessageService systemMessageService, Duration maxSessionLifetime) {
-        this.maxSessionLifetime = maxSessionLifetime;
+            SystemMessageService systemMessageService, SessionTimeouts timeouts) {
+        this.timeouts = timeouts;
         this.verifier = verifier;
         this.connections = connections;
         this.entryGate = entryGate;
@@ -167,10 +167,26 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         acquireRoom(roomId);
 
         // Flux.defer: outbound()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
-        Mono<Void> outbound = session.send(
-                Flux.defer(() -> registry.outbound(sid)).map(message -> session.textMessage(serialize(message))));
+        // 아웃바운드에 ping 을 합류시킨다. 별도 send 로 두면 같은 소켓에 두 publisher 가 붙어 프레임
+        // 순서 보장이 사라진다 — Reactor Netty 의 send 는 한 publisher 안에서만 직렬화한다.
+        Mono<Void> outbound = session.send(Flux.merge(
+                Flux.defer(() -> registry.outbound(sid)).map(message -> session.textMessage(serialize(message))),
+                // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
+                Flux.interval(timeouts.pingInterval(), timeouts.pingInterval())
+                        .map(ignored -> session.pingMessage(factory -> factory.wrap(new byte[0])))));
 
         Mono<Void> inbound = runInbound(session.receive()
+                // 생존 시계는 필터 <b>앞에서</b> 민다 — 재려는 것이 "말을 하는가"가 아니라 "소켓이
+                // 살아 있는가"라서, 서버 ping 에 대한 pong 처럼 파싱 대상이 아닌 프레임도 세어야 한다.
+                // 여기서는 종류만 읽고 payload 는 건드리지 않는다(버퍼 수명은 아래 필터와 동일하게 유지).
+                //
+                // <b>PONG 이 여기까지 올라온다는 것이 이 기능의 전제다</b>(실측). Netty 기본 설정은
+                // 들어오는 PING 만 자동 응답하고 삼키며, PONG 은 그대로 올려준다 — 즉 서버가 먼저 묻고
+                // 그 응답을 여기서 받는 모양이 성립한다. 올라오지 않는다면 생존 확인이 "소켓이 살아
+                // 있는가" 대신 "클라가 말을 하는가"를 재게 되어, 보는 것만 하는 시청자를 기한마다
+                // 전부 끊는다. {@code handlePing(true)} 로 바꿀 필요는 없다 — 그러면 클라 PING 에
+                // 손으로 응답해야 한다.
+                .doOnNext(message -> registry.recordInbound(sid))
                 // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
                 // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(Ping은 Netty가 자동 응답하고 올려주지 않음).
                 .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
@@ -201,8 +217,17 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 실제 닫기는 아래 셋이 이미 하는 일이고, 여기서 함께 완료되면 그 경로를 건너뛰어 버퍼에 남은
         // 메시지가 버려진다. 촉발이 전달되지 않는 경우도 유계다: 제어 채널이 발화하므로 forcedClose가
         // 유예 뒤에 받는다.
-        Mono<Void> lifetimeExpiry = Mono.delay(maxSessionLifetime)
+        Mono<Void> lifetimeExpiry = Mono.delay(timeouts.maxLifetime())
                 .doOnNext(ignored -> registry.terminateLifetimeExpired(sid))
+                .then(Mono.never());
+
+        // 생존 확인. 수명 상한과 달리 이쪽은 <b>죽은 소켓</b>을 거둔다 — 아무것도 보내지 않는 클라는
+        // 정상이지만(시청만 하는 경우) 아무것도 <i>올리지 않는</i> 클라는 끊긴 소켓과 구별되지 않는다.
+        // 끊긴 쪽을 거두지 않으면 그 세션의 sink·방 인덱스·Redis 명부가 수명 상한까지 남는다.
+        Mono<Void> livenessWatch = Flux.interval(timeouts.livenessDeadline(), timeouts.pingInterval())
+                .filter(ignored -> registry.isUnresponsive(sid, timeouts.livenessDeadline()))
+                .next()
+                .doOnNext(ignored -> registry.terminateUnresponsive(sid))
                 .then(Mono.never());
 
         return registry.register(sid, chatSession)
@@ -212,7 +237,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 // (sink complete → outbound), 그리고 그 둘이 다 막혔을 때의 강제 종료.
                 // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
                 .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
-                        forcedClose.then(closeWithReason), lifetimeExpiry))
+                        forcedClose.then(closeWithReason), lifetimeExpiry, livenessWatch))
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 

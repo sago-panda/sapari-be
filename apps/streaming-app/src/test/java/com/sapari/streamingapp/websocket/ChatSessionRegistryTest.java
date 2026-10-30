@@ -575,6 +575,12 @@ class ChatSessionRegistryTest {
      * {@code emitDeadline()}을 적는 실수는 복사 한 번이면 생기는데, 어느 한 호출지만 덮으면 나머지는
      * 아무 테스트도 깨뜨리지 않고 바뀐다 — 그리고 fan-out 쪽은 예산 하나를 세션들이 나눠 쓰므로
      * 단건 경로보다 <b>먼저</b> 소진된다.
+     *
+     * <p>⚠️ <b>이 열거의 한계가 실제로 현실이 됐다.</b> 종료 경로가 둘(수명 상한·생존 확인) 늘었을 때
+     * 여기 한 줄씩 적지 않으면 아무도 묻지 않는다 — 리뷰어가 그 누락을 잡아 줘서 알았다. 열거를
+     * 유지하는 동안은 종료 경로를 더할 때마다 이 자리를 함께 봐야 하고, 그게 부담이 되면
+     * {@code forEachInRoom}·{@code forEachSessionOf}가 예산을 만들어 넘기는 쪽으로 구조를 바꿔
+     * 열거 자체를 없애는 것이 맞다.
      */
     private void assertCloseOutlastsTheEmitBudget(String sessionId, Runnable closeAction,
                                                   CloseStatus expected) throws Exception {
@@ -609,10 +615,55 @@ class ChatSessionRegistryTest {
     }
 
     @Test
-    @DisplayName("전송 경로 방 종료도 emit보다 넉넉한 예산을 쓴다 — 종료 호출지 다섯이 모두 걸려야 한다")
+    @DisplayName("생존 시계 — 프레임이 올라오면 밀리고, 기한이 지나면 응답 없음으로 답한다")
+    void liveness_clock_advances_on_inbound_and_expires_on_silence() {
+        // given: 등재 직후는 응답 없음이 아니다 — 방금 핸드셰이크를 마쳤다
+        registry.register("s1", session(roomId, userId)).block();
+        Duration deadline = Duration.ofSeconds(90);
+        assertThat(registry.isUnresponsive("s1", deadline))
+                .as("등재 직후인데 응답 없음으로 답했다 — 모든 새 세션이 첫 점검에서 끊긴다").isFalse();
+
+        // when: 기한만큼 조용했던 상태를 만든다
+        registry.expireLiveness("s1", deadline);
+
+        // then
+        assertThat(registry.isUnresponsive("s1", deadline))
+                .as("기한이 지났는데 살아 있다고 답했다 — 끊긴 소켓이 수명 상한까지 남는다").isTrue();
+
+        // and: 프레임 하나가 올라오면 시계가 밀려 다시 살아 있는 것으로 답한다
+        registry.recordInbound("s1");
+        assertThat(registry.isUnresponsive("s1", deadline))
+                .as("프레임이 올라왔는데 응답 없음으로 답했다 — 멀쩡한 세션이 끊긴다").isFalse();
+    }
+
+    @Test
+    @DisplayName("생존 시계 — 모르는 세션은 응답 없음이 아니다(이미 사라진 것을 또 닫지 않는다)")
+    void liveness_clock_treats_unknown_session_as_alive() {
+        assertThat(registry.isUnresponsive("nope", Duration.ofSeconds(1)))
+                .as("사라진 세션을 응답 없음으로 답하면 호출자가 없는 세션을 또 닫으려 든다").isFalse();
+    }
+
+    @Test
+    @DisplayName("전송 경로 방 종료도 emit보다 넉넉한 예산을 쓴다 — 종료 호출지가 모두 걸려야 한다")
     void terminate_room_ended_close_outlasts_the_emit_budget() throws Exception {
         registry.register("s1", session(roomId, userId)).block();
         assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateRoomEnded("s1"),
+                CloseStatus.NORMAL);
+    }
+
+    @Test
+    @DisplayName("수명 상한 종료도 emit보다 넉넉한 예산을 쓴다")
+    void terminate_lifetime_expired_close_outlasts_the_emit_budget() throws Exception {
+        registry.register("s1", session(roomId, userId)).block();
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateLifetimeExpired("s1"),
+                CloseStatus.NORMAL);
+    }
+
+    @Test
+    @DisplayName("생존 확인 종료도 emit보다 넉넉한 예산을 쓴다")
+    void terminate_unresponsive_close_outlasts_the_emit_budget() throws Exception {
+        registry.register("s1", session(roomId, userId)).block();
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateUnresponsive("s1"),
                 CloseStatus.NORMAL);
     }
 

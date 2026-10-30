@@ -85,7 +85,8 @@ class ChatWebSocketHandlerTest {
     private ChatWebSocketHandler handlerWithLifetime(Duration lifetime) {
         return new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), entryGate,
-                registry, sendUseCase, subscriber, connections, systemMessageService, lifetime);
+                registry, sendUseCase, subscriber, connections, systemMessageService,
+                new SessionTimeouts(lifetime, Duration.ofSeconds(30), Duration.ofSeconds(90)));
     }
 
     /**
@@ -99,6 +100,58 @@ class ChatWebSocketHandlerTest {
      * 수명 상한이 그 전부를 유계로 만든다 — 재접속이 live의 입장을 다시 타므로 거기서 권위가 새로
      * 평가된다.
      */
+    @Test
+    @DisplayName("⭐ 기한 동안 아무 프레임도 올라오지 않으면 세션을 거둔다 — 끊긴 소켓이 수명 상한까지 남지 않게")
+    void unresponsive_session_is_reclaimed() {
+        // given: 소켓은 열려 있지만 아무것도 올라오지 않는다 — 끊긴 소켓과 구별되지 않는 상태다.
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        // 기한이 지났다고 레지스트리가 답한다 — 시계 자체는 레지스트리 단위 테스트가 지킨다.
+        given(registry.isUnresponsive(eq("s1"), any())).willReturn(true);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 수명 상한(1시간)보다 한참 먼저 거둬야 한다 — 그게 이 분기의 존재 이유다.
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(Duration.ofMinutes(3))
+                .then(() -> then(registry).should(times(1)).terminateUnresponsive("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
+    @Test
+    @DisplayName("⭐ 응답이 올라오는 동안은 거두지 않는다 — 말하지 않는 시청자가 대다수다")
+    void responsive_session_is_not_reclaimed() {
+        // given: 프레임은 올라오지만(= 소켓 살아 있음) 발화는 없다. 채팅의 정상 다수다.
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.isUnresponsive(eq("s1"), any())).willReturn(false);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 발화가 없다는 이유로 끊으면 정상 시청자가 전부 끊긴다
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(Duration.ofMinutes(30))
+                .then(() -> then(registry).should(never()).terminateUnresponsive(anyString()))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
     @Test
     @DisplayName("⭐ 수명 상한에 닿으면 세션이 종료된다 — 재접속으로 권위를 다시 받게 한다")
     void session_is_terminated_at_the_lifetime_limit() {

@@ -161,7 +161,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
             AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
-            AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded) {
+            AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded,
+            AtomicLong lastInboundNanos) {
     }
 
     /**
@@ -229,7 +230,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 new AtomicLong(System.nanoTime()),
                 // 입장 게이트가 방금 확인했으므로 창을 지금부터 연다 — 첫 프레임에서 또 묻지 않는다.
                 new AtomicLong(System.nanoTime()),
-                new AtomicBoolean()));
+                new AtomicBoolean(),
+                // 생존 시계도 지금부터 — 방금 핸드셰이크를 마쳤으므로 응답이 없는 상태가 아니다.
+                new AtomicLong(System.nanoTime())));
         // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
         // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
         roomSessions.compute(session.roomId(), (room, sessionIds) -> {
@@ -475,6 +478,46 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 && ls.lastRoomAliveCheckNanos().compareAndSet(last, now);
     }
 
+    /**
+     * transport 전용: 이 세션에서 프레임이 올라왔다는 사실을 적어 둔다 — 종류는 묻지 않는다.
+     *
+     * <p><b>왜 종류를 묻지 않는가.</b> 재려는 것은 "클라가 말을 하는가"가 아니라 <b>소켓이 아직 살아
+     * 있는가</b>다. 채팅은 대다수가 보지만 말하지 않는 구조라 발화를 생존 신호로 쓰면 정상 시청자가
+     * 전부 죽은 것으로 보인다. 그래서 서버가 주기적으로 ping 을 보내고, 그 응답(pong)도 다른 프레임과
+     * 똑같이 여기로 들어와 시계를 민다.
+     *
+     * <p>클라가 먼저 보내는 ping 은 여기 오지 않는다 — Netty 가 자동으로 pong 을 돌려주고 올려주지
+     * 않는다(인바운드 필터 주석 참고). 그래서 서버가 먼저 묻는 쪽이어야 한다.
+     */
+    public void recordInbound(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.lastInboundNanos().set(System.nanoTime());
+        }
+    }
+
+    /**
+     * transport 전용: 이 세션이 상한 동안 아무 프레임도 올리지 않았는가.
+     *
+     * <p>모르는 세션은 <b>거짓</b>이다 — 이미 사라진 세션을 "응답 없음"으로 답하면 호출자가 없는
+     * 세션을 또 닫으려 든다.
+     */
+    public boolean isUnresponsive(String sessionId, Duration deadline) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return false;
+        }
+        return System.nanoTime() - ls.lastInboundNanos().get() >= deadline.toNanos();
+    }
+
+    /** 생존 시계를 과거로 밀어 "응답 없음" 상태를 만든다. (테스트 진입점 — 기한을 기다리지 않기 위해) */
+    void expireLiveness(String sessionId, Duration deadline) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.lastInboundNanos().addAndGet(-deadline.toNanos());
+        }
+    }
+
     /** 마지막 확인 시각을 과거로 밀어 창이 열린 상태를 만든다. (테스트 진입점 — 30초를 기다리지 않기 위해) */
     void expireRoomAliveWindow(String sessionId) {
         LocalSession ls = local.get(sessionId);
@@ -561,6 +604,25 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
         // info다 — 고장이 아니라 설계대로 도는 정상 경로이고, 방 하나에서 수천 건이 난다.
         log.info("세션 수명 상한 — 종료(재접속으로 권위 재평가) sessionId={} roomId={}",
+                sessionId, ls.session().roomId());
+        terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
+    }
+
+    /**
+     * transport 전용: 기한 동안 아무 프레임도 올리지 않은 세션을 끊는다.
+     *
+     * <p>이것이 거두는 것은 <b>죽은 소켓</b>이다. 아무것도 <i>보내지</i> 않는 클라는 정상이지만
+     * (시청만 하는 경우가 대다수다) 서버 ping 에도 아무것도 <i>올리지</i> 않는 클라는 이미 끊긴 소켓과
+     * 구별되지 않는다. 그런 세션을 거두지 않으면 sink·방 인덱스·Redis 명부가 수명 상한까지 남는다.
+     *
+     * <p>정상 종료(1000)다 — 클라가 살아 있다면 다시 붙으면 되고, 죽었다면 받을 쪽이 없다.
+     */
+    public void terminateUnresponsive(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls == null) {
+            return;
+        }
+        log.info("생존 확인 실패 — 세션 종료(응답 없는 소켓 회수) sessionId={} roomId={}",
                 sessionId, ls.session().roomId());
         terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
     }
