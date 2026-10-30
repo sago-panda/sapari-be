@@ -174,20 +174,43 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // ⚠️ <b>ping 은 데이터 채널이 닫힐 때 함께 멈춰야 한다.</b> {@code Flux.interval} 은 스스로
         // 끝나지 않으므로 그대로 합류시키면 합쳐진 publisher 가 영원히 완료되지 않고, 그러면
         // {@code session.send} 도 완료되지 않아 아래 {@code outbound.then(closeWithReason)} 가
-        // <b>도달 불가</b>가 된다. 그 결과 서버발 종료 전부(강퇴·밴·방 종료·버퍼 초과·수명·생존)가
-        // 유예 경로로만 닫혀 27ms 가 3초가 된다(실측 — 리뷰어가 세 번, 내가 한 번).
+        // <b>도달 불가</b>가 된다. 그 결과 서버발 종료(강퇴·밴·방 종료·수명·생존)가 유예 경로로만
+        // 닫혀 27ms 가 3초가 된다(실측 — 리뷰어가 세 번, 내가 한 번).
         //
-        // 제어 채널이 아니라 <b>데이터 스트림의 종료</b>에 묶는다. 제어 채널에 묶으면 그 발화가
-        // 실패할 때(레지스트리가 ERROR 로 남기는 경우) 어느 분기도 이기지 못해 세션이 영구히 남는다 —
-        // 데이터 채널과 제어 채널을 둘 다 거는 이중화가 그때 사라진다.
+        // <b>버퍼 초과(1013)는 그 목록에 들지 않는다 — 수정 전에도 후에도 유예 경로다.</b> 1013 이
+        // 발생하는 조건이 "클라가 256 슬롯을 비우지 않는다"인데, 그것이 곧 데이터 스트림이 종료를
+        // 전달하지 못하는 조건이다. 큐가 비어야 unicast 가 onComplete 를 내고 그때서야 아래
+        // {@code doFinally} 가 돌기 때문이다. 즉 이 빠른 경로가 1013 에는 원리적으로 닿지 않는다
+        // (리뷰어가 동형 replica 로 실측 — 버퍼가 찬 상태에서 tryEmitComplete=OK 가 와도 merge 가
+        // 완료되지 않는다). 버스트로 한 번 넘쳤다가 따라잡는 클라라면 빠른 경로를 탈 수 있지만,
+        // 1013 이 존재하는 이유인 "읽기를 멈춘 클라"는 탈 수 없다.
+        //
+        // 제어 채널이 아니라 <b>데이터 스트림의 종료</b>에 묶는다.
+        //
+        // ⚠️ 한때 그 근거를 "제어 채널 발화가 실패하면 어느 분기도 이기지 못한다"로 적었는데
+        // <b>그 전제가 도달 불가다.</b> Sinks.one() 은 SinkOneSerialized 이고 첫 tryEmitValue 는
+        // 구독자가 없어도, 구독자가 취소한 뒤에도 OK 를 돌려준다(실측). 실패는 2회차
+        // (FAIL_TERMINATED)와 동시 발화(FAIL_NON_SERIALIZED)뿐인데, 레지스트리가 closeStatus CAS 로
+        // 발화를 1회·1스레드로 고정하고 호출지가 한 곳이라 둘 다 생기지 않는다.
+        //
+        // 성립하는 근거는 다른 것이다: {@code registry.outbound(sid)} 가 {@code Flux.empty()} 를
+        // 돌려주는 경우 — 구독 시점에 그 세션이 이미 사라졌을 때다. 데이터 쪽에 묶으면 그 빈 스트림이
+        // 곧 {@code doFinally} 를 돌려 {@code takeUntilOther} 가 ping 을 완료시키고 merge 가 끝나
+        // 세션이 닫힌다. 제어 채널에 묶으면 {@code terminationSignal} 이 모르는 세션에
+        // {@code Mono.never()} 를 주므로 ping 이 영원히 돌고, 클라가 스스로 끊지 않으면 그 세션이 남는다.
         Sinks.Empty<Void> dataChannelDone = Sinks.empty();
         Flux<WebSocketMessage> data = Flux.defer(() -> registry.outbound(sid))
                 .map(message -> session.textMessage(serialize(message)))
                 .doFinally(signal -> dataChannelDone.tryEmitEmpty());
         // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
-        // onBackpressureDrop: 요청이 없을 때 틱을 버린다. 안 버리면 PONG 은 답하지만 데이터 프레임은
-        // 읽지 않는 클라에서 prefetch 가 차면 send 가 OverflowException 으로 끝나는데, 그 에러는
-        // 핸들러의 어느 onErrorResume 에도 안 걸린다. 못 쓰는 ping 은 버리는 것이 맞다.
+        // onBackpressureDrop: 요청이 없을 때 틱을 버린다. 안 버리면 prefetch 가 차는 순간 send 가
+        // OverflowException 으로 끝나는데, 그 에러는 핸들러의 어느 onErrorResume 에도 안 걸린다.
+        //
+        // 한때 그 조건을 "PONG 은 답하지만 데이터 프레임은 읽지 않는 클라"로 적었는데 <b>그런 클라는
+        // 없다</b> — PING·PONG 과 데이터가 같은 TCP 스트림이라 소켓을 비우지 않는 클라는 PING 도 못 본다.
+        // 실제 조건은 "아웃바운드 전달이 32 틱 동안 0" 이고, 32 는 merge inner 의 prefetch
+        // (Queues.XS_BUFFER_SIZE)다. 즉 영향 범위가 <b>ping 간격 × 32</b> 라 간격을 줄이면 그만큼 빨리
+        // 닿는다(기본값 30s 에서는 16분이라 생존 기한 90s 가 10배 먼저 발화한다).
         Flux<WebSocketMessage> pings = Flux.interval(timeouts.pingInterval(), timeouts.pingInterval())
                 .onBackpressureDrop()
                 .map(ignored -> session.pingMessage(factory -> factory.wrap(new byte[0])))
@@ -214,7 +237,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 // <b>이 기능이 조용히 죽는다.</b>
                 .doOnNext(message -> registry.recordInbound(sid))
                 // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
-                // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(Ping은 Netty가 자동 응답하고 올려주지 않음).
+                // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(들어오는 PING 은 reactor-netty 가 자동
+                // 응답하고 올려주지 않는다 — 위 문단의 귀속과 같다. PONG 은 올라오므로 위 탭이 센다).
                 .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
                 .map(WebSocketMessage::getPayloadAsText), sid, chatSession);
 
@@ -272,7 +296,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     /**
-     * 수명 상한을 ±{@value #LIFETIME_JITTER_PERCENT}% 안쪽에서 흩는다. (테스트 진입점)
+     * 수명 상한을 <b>아래로</b> {@value #LIFETIME_JITTER_PERCENT}% 안쪽에서 흩는다. (테스트 진입점)
      *
      * <p><b>아래로만 흩는다.</b> 이 값은 "접속 후 바뀐 권위가 반영되기까지의 상한"이라 넘기면 통제가
      * 느슨해진다. 그래서 {@code [limit × (1 - p), limit]} 범위다.

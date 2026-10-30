@@ -719,6 +719,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
         complete(ls, deadline);
         // 제어 채널은 데이터 채널이 막혔을 때의 최후 경로다 — 실패하면 그 세션은 강제 종료 수단을 잃으므로 남긴다.
+        //
+        // ⚠️ <b>아래 실패 분기는 현재 코드에서 도달 불가다.</b> Sinks.one()은 SinkOneSerialized 이고 첫
+        // tryEmitValue 는 구독자가 없어도, 구독자가 취소한 뒤에도 OK 를 돌려준다(실측). 실패는 2회차
+        // (FAIL_TERMINATED)와 동시 발화(FAIL_NON_SERIALIZED)뿐인데, 위 closeStatus CAS 가 발화를
+        // 1회·1스레드로 고정하고 이 메서드가 유일한 호출지다. 지우지 않는 이유는 그 두 전제(CAS 와
+        // 단일 호출지) 중 하나만 깨져도 곧 도달하게 되고, 그때 잃는 것이 "그 세션의 강제 종료 수단"이라
+        // 조용히 넘어가서는 안 되기 때문이다. <b>이 로그가 보이면 그 전제를 먼저 확인할 것.</b>
         Sinks.EmitResult signalled = ls.terminate().tryEmitValue(status);
         if (signalled.isFailure()) {
             log.error("세션 종료 제어 신호 발화 실패 — 강제 종료 경로 상실 sessionId={} roomId={} result={}",

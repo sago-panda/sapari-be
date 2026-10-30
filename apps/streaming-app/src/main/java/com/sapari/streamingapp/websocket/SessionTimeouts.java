@@ -21,10 +21,20 @@ public record SessionTimeouts(Duration maxLifetime, Duration pingInterval, Durat
             throw new IllegalArgumentException("세 상한 모두 필수입니다.");
         }
         // 절대 하한. 이것이 유일한 구멍이었고 나머지는 전이적으로 막힌다.
+        //
         // 0이면 아래 두 검사를 통과하는데 Flux.interval(ZERO, ZERO)은 예외 없이 최대 속도로 틱한다
-        // (실측 ≈17M tick/s) — 프로퍼티 한 줄로 연결마다 ping 폭주가 된다. 음수면 구독 시점에
-        // 예외가 나므로 기동은 성공하고 <b>모든 WS 핸드셰이크가 죽는다</b> — 기동 실패보다 나쁘다.
-        // 상한 셋을 한 값으로 묶은 이유가 이 검증이다.
+        // (실측 ≈17M tick/s) — 프로퍼티 한 줄로 연결마다 ping 폭주가 된다.
+        //
+        // 음수의 실패 모양은 <b>값마다 다르다</b>(실측). 한때 여기에 "음수면 구독 시점에 예외가 나므로
+        // 모든 WS 핸드셰이크가 죽는다"고 한 줄로 적었는데 그건 pingInterval 에만 맞는다:
+        //   pingInterval      interval(-1s, -1s) 이 IllegalArgumentException("period >= 0 required")
+        //                     → 기동은 성공하고 모든 핸드셰이크가 죽는다(기동 실패보다 나쁘다)
+        //   maxLifetime       Mono.delay(-1s) 는 예외 없이 즉시 발화한다(실측 0ms)
+        //                     → 모든 세션이 등록 직후 수명 종료로 끊긴다
+        //   livenessDeadline  interval(delay=-1s, period=30s) 는 예외 없이 첫 틱을 즉시 낸다. 그리고
+        //                     isUnresponsive 가 now - last >= deadline 이라 음수 기한은 항상 참이다
+        //                     → 모든 세션이 즉시 수거된다
+        // 셋 다 막아야 하는 것은 같고 근거만 값별로 다르다. 상한 셋을 한 값으로 묶은 이유가 이 검증이다.
         if (!pingInterval.isPositive() || !livenessDeadline.isPositive() || !maxLifetime.isPositive()) {
             throw new IllegalArgumentException(
                     "세 상한 모두 양수여야 합니다 — 0이면 ping 이 최대 속도로 나가고 음수면 접속마다 깨집니다: "
