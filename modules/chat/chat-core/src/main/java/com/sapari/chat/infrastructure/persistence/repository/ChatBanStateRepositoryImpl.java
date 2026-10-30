@@ -27,7 +27,13 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
      *
      * <p>두 문장인 것이 포트로 새지 않는다 — 포트는 "이 사용자의 밴 판단을 직렬화한다" 하나이고,
      * 그걸 어떻게 유계로 만드는지는 이 스택의 몫이다. 상한을 거는 것이 잠금보다 먼저여야 한다는
-     * 순서는 여기서만 지켜지면 된다.
+     * 순서도 여기서만 지켜지면 된다.
+     *
+     * <p>⚠️ <b>한 문장으로 합치지 말 것.</b> 포트가 약속한 "경계 없이 부르면 시끄럽게 죽는다"가
+     * 이 순서에 걸려 있다 — 잠금 자체는 SELECT라 경계가 없어도 조용히 지나가는데, 앞 문장이
+     * {@code @Modifying}이라 그쪽이 먼저
+     * {@code "No active transaction for update or delete query"}로 죽는다(실측). 합치면 그 안전망이
+     * 사라지고 포트의 약속이 거짓이 된다.
      */
     @Override
     public void lockForBanDecision(UUID userId) {

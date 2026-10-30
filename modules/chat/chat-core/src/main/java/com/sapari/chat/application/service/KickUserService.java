@@ -150,13 +150,24 @@ public class KickUserService implements KickUserUseCase {
      * {@link ChatKickRecorder} 바로 바깥이 그 판단이 한 번만 서는 자리다.
      *
      * <p><b>잠금 쪽이 가장 흔한 출처다.</b> 밴 판단이 사용자 단위로 직렬화되므로 같은 사람을 겹쳐
-     * 강퇴하면 뒤에 온 쪽이 트랜잭션 상한보다 먼저 거기서 끊긴다. 그 갈래가 둘이라
-     * {@link PessimisticLockingFailureException}으로 묶어 잡는다 — 대기가 제 상한을 넘으면
-     * {@code 55P03}에서 {@code CannotAcquireLockException}(실측: Hibernate {@code LockTimeoutException}을
-     * 지나 번역, 1초 상한에서 1024ms)이고, 교착이면 {@code 40P01}에서
-     * {@code PessimisticLockingFailureException} 자신이다. <b>후자가 전자의 상위</b>라 자식만 열거하면
-     * 교착이 그대로 500으로 나간다 — 하필 {@link ChatKickRecorder}가 "어긴 것을 알아채는 시점은
-     * 운영에서 40P01이 뜰 때다"라고 적어 둔 그 날, 알아채는 방식이 재시도 가능한 409가 아니라 500이 된다.
+     * 강퇴하면 뒤에 온 쪽이 트랜잭션 상한보다 먼저 거기서 끊긴다.
+     *
+     * <p>이 경로의 잠금 실패는 <b>종류와 무관하게 {@code CannotAcquireLockException} 하나로 온다</b>
+     * (실측: 대기 상한 초과 {@code 55P03} · 교착 {@code 40P01} · 직렬화 실패 {@code 40001} 셋 모두).
+     * Spring Data JPA → Hibernate 경로에서 {@code LockAcquisitionException}이
+     * {@code PessimisticLockException}보다 먼저 검사되기 때문이다. 그래도 상위
+     * {@link PessimisticLockingFailureException}으로 묶는 이유는 <b>장래에 대한 하드닝</b>이다 —
+     * 맨몸 상위 타입은 {@code JdbcTemplate} 경로의 모양이고(이 모듈에는 0건) 엔티티 비관적 잠금을
+     * 들이면 그 모양이 생긴다. 하위 셋({@code CannotAcquireLockException} ·
+     * {@code CannotSerializeTransactionException} · {@code DeadlockLoserDataAccessException})이 전부
+     * 혼잡계라 넓혀도 뜻이 흐려지지 않는다.
+     *
+     * <p>⚠️ 한때 이 자리에 "교착은 맨몸 상위 타입으로 오므로 자식만 열거하면 500이 된다"고
+     * <b>실측이라 적혀 있었다. 거짓이다</b> — 그 매핑은 다른 번역기(JdbcTemplate 경로)의 것이고,
+     * 이 경로에서 도는 번역기를 보지 않은 채 받은 것이었다. 교착은 교체 전 좁은 catch 로도 이미
+     * 409였다. 덤으로 오늘 이 트랜잭션에서 교착은 도달 불가다 — 스키마에 외래키가 0건이라 잠길
+     * 자원이 어드바이저리 키와 유니크 인덱스 행뿐이고, 어드바이저리가 첫 문장이라
+     * {@link ChatKickRecorder}의 전순서 논증이 실제로 성립한다.
      *
      * <p>나머지 둘은 트랜잭션 상한 쪽이다. DB가 문을 취소하면 {@link QueryTimeoutException}이고,
      * 남은 수명이 이미 0 이하라 다음 문을 세우지도 못하면 {@link TransactionTimedOutException}이다
@@ -205,17 +216,13 @@ public class KickUserService implements KickUserUseCase {
             // 그러면 "동시 강퇴가 겹쳤다"(정상)와 "DB가 느려져 문 하나가 상한을 넘었다"(고장)를 운영자가
             // 구별할 수단이 없다. 두 상황이 같은 타입으로 오기 때문이다. 5xx를 피한 이유는 정상 혼잡이
             // 알림을 울리지 않게 하려는 것이었는데, 원인까지 지우면 울려야 할 쪽도 조용해진다.
-            // ⚠️ 이 409는 공짜 재시도가 아니다. 트랜잭션이 되감기므로 <b>그 강퇴의 로그 행도 안 써진다</b> —
-            // 그 운영자의 확증 1건이 사라지고, 클라가 재시도하지 않으면 임계가 그만큼 늦게 찬다.
-            // 이 저장소에 강퇴 경로 재시도가 없으므로(확인: @Retryable·RetryTemplate 0건) "잠시 후 다시
-            // 시도해 주세요"는 문구가 아니라 <b>하중을 받는 계약</b>이다. 지금은 대기 상한을 넘긴 뒤에만
-            // 일어나고 임계구역 실측 최악이 2.262ms라 사실상 안 일어나지만, 그 상한을 낮추면 확률이 오른다.
-            //
-            // 같은 이유로 try-lock(즉시 실패)으로 바꾸지 말 것 — 경합마다 확증을 버리게 된다.
             log.warn("강퇴 기록이 상한을 넘었다 — 경합이면 정상이고, 반복되면 DB가 느려진 것이다."
                     + " targetUserId={}", kickLog.targetUserId(), e);
+            // 사유를 잠금으로 못 박지 않는다 — 네 모양 중 셋은 트랜잭션 상한 쪽이고, 고정 문구를 두면
+            // 운영자가 로그만 보고 원인을 잠금으로 오판한다. 실제 타입을 싣는다.
             throw new ChatKickContendedException(
-                    "강퇴 기록이 잠금 대기 상한을 넘었다 — targetUserId=" + kickLog.targetUserId(), e);
+                    "강퇴 기록이 상한을 넘었다(" + e.getClass().getSimpleName() + ") — targetUserId="
+                            + kickLog.targetUserId(), e);
         }
     }
 

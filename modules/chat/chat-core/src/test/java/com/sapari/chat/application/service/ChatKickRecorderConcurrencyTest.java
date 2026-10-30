@@ -75,10 +75,11 @@ class ChatKickRecorderConcurrencyTest {
      * 이 테스트가 수정 후에 통과하려면 상한이 있어야 한다. 상한이 지나면 그냥 진행하고, 그때는 앞선
      * 쪽이 커밋하며 잠금을 놓아 뒤쪽이 온전한 수를 센다.
      *
-     * <p>⚠️ {@code await}의 반환값을 쓰지 않는 것은 <b>아직 그 축을 재는 테스트가 없기 때문</b>이다.
-     * 그 boolean이 "둘이 만났다"(= 직렬화 안 됨)와 "상한에 걸렸다"(= 직렬화됨)를 가르므로, 잠금 키가
-     * 사용자 단위인지를 재려면 그 값을 살려야 한다 — 서로 다른 대상 둘을 동시에 강퇴하면 만나야 하고,
-     * 전역 단일 키로 바뀌면 못 만난다. 지금은 상수 키로 바꿔도 이 스위트가 통과한다.
+     * <p>{@code await}의 결과는 {@link LatchedKickLogRepository#rendezvousWaitedInVain()}으로 노출된다 —
+     * 그 값이 "둘이 만났다"(= 직렬화 안 됨)와 "한쪽이 헛되게 기다렸다"(= 직렬화됨)를 가르므로, 잠금
+     * 키가 사용자 단위인지를 재는 축이 거기 걸려 있다. 서로 다른 대상 둘을 동시에 강퇴하면 만나야
+     * 하고, 전역 단일 키로 바뀌면 못 만난다 — 그 축은 아래 "잠금은 사용자 단위다"가 재고, 상수 키로
+     * 바꾸면 깨진다.
      */
     static class LatchedKickLogRepository implements ChatKickLogRepository {
 

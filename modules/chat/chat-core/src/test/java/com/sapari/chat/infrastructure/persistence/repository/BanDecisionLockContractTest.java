@@ -44,9 +44,17 @@ class BanDecisionLockContractTest {
         Query query = method("boundLockWait").getAnnotation(Query.class);
 
         assertThat(query).as("boundLockWait 에 @Query 가 없다").isNotNull();
+        // 지키려는 성질은 "트랜잭션 범위"다. 접두만 보면 값이나 대상이 바뀌는 변경을 놓치므로
+        // 셋을 함께 본다 — 어느 설정인지, 어떤 값인지, 그리고 그것이 트랜잭션 범위인지.
+        //
+        // ⚠️ set_config(..., true) 가 실측 등가이고 바인드 파라미터를 받는다(값이 리터럴이어야 하는
+        // 제약이 사라진다). 그쪽으로 옮기면 이 접두 단언이 거짓 실패하므로, 그때는 "트랜잭션 범위"를
+        // 재는 방식을 함께 옮길 것 — 지우지 말 것.
         assertThat(query.value())
                 .as("대기 상한이 트랜잭션 범위가 아니다 — 커넥션에 남아 풀을 공유하는 다른 도메인을 끊는다")
-                .startsWith("SET LOCAL ");
+                .startsWith("SET LOCAL ")
+                .contains("lock_timeout")
+                .contains(ChatBanJpaRepository.LOCK_WAIT_LIMIT);
         assertThat(query.nativeQuery()).as("SET 은 JPQL 로 해석되지 않는다").isTrue();
     }
 
@@ -83,7 +91,9 @@ class BanDecisionLockContractTest {
         assertThat(ChatBanJpaRepository.BAN_DECISION_LOCK_SEED)
                 .as("seed 가 바뀌었다 — 롤링 배포 구간에서 구·신 버전이 다른 키를 잡는다")
                 .isEqualTo("8317461");
-        assertThat(method("lockForBanDecision").getAnnotation(Query.class).value())
+        Query lockQuery = method("lockForBanDecision").getAnnotation(Query.class);
+        assertThat(lockQuery).as("lockForBanDecision 에 @Query 가 없다").isNotNull();
+        assertThat(lockQuery.value())
                 .as("잠금 키가 그 seed 로 유도되지 않는다")
                 .contains(ChatBanJpaRepository.BAN_DECISION_LOCK_SEED);
     }

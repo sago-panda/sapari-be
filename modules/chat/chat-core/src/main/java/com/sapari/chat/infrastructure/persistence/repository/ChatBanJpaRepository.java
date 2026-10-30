@@ -68,7 +68,10 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
      *
      * <p><b>왜 {@code SERIALIZABLE}이 아닌가.</b> 그쪽은 직렬화 실패를 예외로 돌려주므로 강퇴 흐름 전체에
      * 재시도 책임이 생긴다 — 이미 Redis 쓰기와 발행이 커밋 뒤에 줄줄이 붙어 있어 재시도 단위를 정하는
-     * 일이 작지 않다. 잠금은 기다리기만 하고 상한은 호출자의 트랜잭션 타임아웃이 쥔다.
+     * 일이 작지 않다. 잠금은 기다리기만 하고, 그 대기의 상한은 <b>바로 위 {@link #boundLockWait}가
+     * 쥔다</b> — 호출자의 트랜잭션 타임아웃이 아니다. 전에는 그렇게 적혀 있었는데, 대기하는 쪽도
+     * 커넥션을 쥐므로 트랜잭션 상한(초 단위)으로는 너무 늦다는 것을 알게 되어 상한을 따로 들였다.
+     * 이 문단을 근거로 {@code boundLockWait}를 "중복이니 제거"로 읽지 말 것.
      *
      * <p>{@code _xact_} 변종이라 <b>커밋·롤백과 함께 자동으로 풀린다</b> — 명시적 해제 경로가 없어서
      * 예외로 빠져나가도 잠금이 남지 않는다. 세션 단위 변종({@code pg_advisory_lock})을 쓰면 커넥션 풀이

@@ -106,17 +106,20 @@ class KickUserServiceTest {
     /**
      * 상한 초과가 드러나는 <b>세 모양</b>. 하나만 잡으면 나머지가 500으로 새어 나간다.
      *
-     * <p>잠금 쪽이 가장 흔한 출처이고 갈래가 둘이다 — 대기가 제 상한을 넘으면
-     * {@code CannotAcquireLockException}({@code 55P03}), 교착이면
-     * {@code PessimisticLockingFailureException}({@code 40P01})이다. <b>후자가 전자의 상위</b>라
-     * 자식만 열거하면 교착이 500으로 새어 나간다. 상위로 잡으면 자식도 덮인다는 것을 첫 모양이
-     * 같이 확인한다.
+     * <p>잠금 쪽이 가장 흔한 출처다. 이 경로의 잠금 실패는 종류와 무관하게
+     * {@code CannotAcquireLockException} 하나로 오지만(실측 — 대기 상한 초과·교착·직렬화 실패 전부),
+     * 상위 타입으로 묶어 잡으므로 맨몸 상위가 들어오는 경우도 번역된다. 아래 두 모양이 그 둘을
+     * 각각 넣는다.
+     *
+     * <p>⚠️ 이 모양들은 <b>번역 분기만</b> 덮는다. "어떤 SQLSTATE가 어떤 타입이 되는가"는 손으로 만든
+     * 예외로 재지지 못하고 실제 DB가 답한다 — 그 매핑을 재는 테스트는 지금 없다(역순 어드바이저리
+     * 잠금 둘로 실제 교착을 만들면 가능하다).
      */
     static Stream<Arguments> timeoutShapes() {
         return Stream.of(
                 Arguments.of("잠금 대기 상한 초과",
                         new CannotAcquireLockException("canceling statement due to lock timeout")),
-                Arguments.of("교착 — 잠금 계열의 상위 타입으로 온다",
+                Arguments.of("맨몸 상위 타입 — JdbcTemplate 경로·엔티티 비관적 잠금의 모양",
                         new PessimisticLockingFailureException("deadlock detected")),
                 Arguments.of("문이 취소됨",
                         new QueryTimeoutException("canceling statement due to user request")),
@@ -303,7 +306,7 @@ class KickUserServiceTest {
     class Contention {
 
         /**
-         * 상한 초과는 <b>네 모양</b>으로 나온다 — 잠금 대기 상한({@code 55P03}), 교착({@code 40P01}),
+         * 상한 초과는 <b>네 모양</b>으로 나온다 — 잠금 실패(구체 타입), 잠금 실패(맨몸 상위 타입),
          * DB가 문을 취소({@code QueryTimeoutException}), 남은 수명이 0 이하라 다음 문을 세우지도 못함
          * ({@code TransactionTimedOutException}). 앞 둘은 상위 타입 하나로 묶이고 뒤 둘은 각각이다.
          * 하나만 잡으면 나머지가 500으로 나간다 — 실제로 그렇게 썼다가 <b>두 번</b> 잡혔다.
