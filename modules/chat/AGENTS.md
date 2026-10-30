@@ -381,6 +381,19 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   `VerifySubscriber timed out` instead of hanging. Keep it that way — a ceiling-less terminator does not
   just hide one bug, it voids **every mutation verdict in that run**, because the suite cannot report at
   all. "passing ≠ catching" has a twin in "failing ≠ telling".
+  - **Scope**: the rule is about `StepVerifier` only. The same hang shape exists on `.block()` without a
+    timeout and **~150 of those remain**, 66 inside container-backed classes. Not closed; do not read the
+    sentence above as covering them.
+  - **Don't size a ceiling off a test case's reported time.** The ceiling bounds the *terminator's wait*,
+    not the case — setup, `Thread.sleep` before `StepVerifier.create`, and an inner `.timeout(...)` all sit
+    outside it. Picking values off per-case durations once produced a "raise the ceiling" commit whose slow
+    tests turned out to use an inline literal rather than the constant, so the margin did not move at all.
+  - **A slow case is not automatically a load-sensitive one.** `RedisChatBroadcasterTest` and
+    `RedisLiveRoomEndedSourceTest` take ~1.2–1.5s per recovery case, but they are mock-based (no
+    `@Testcontainers`) and that time is the production `Retry.backoff(…, ofSeconds(1))` constant plus its
+    jitter — a scheduled delay does not stretch under CPU pressure the way a `park`-vs-busy-spin margin
+    does. The actually container-backed classes among the converted 15 are `CrossPodBroadcastTest`,
+    `ChatKickRedisRepositoryTest` and `ChatMessageRepositoryImplTest`.
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the
