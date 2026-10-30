@@ -385,15 +385,22 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   `VerifySubscriber timed out` instead of hanging. Keep it that way — a ceiling-less terminator does not
   just hide one bug, it voids **every mutation verdict in that run**, because the suite cannot report at
   all. "passing ≠ catching" has a twin in "failing ≠ telling".
-  - **`.block()` carries the same rule** — 201 test call sites were converted to `block(VERIFY_CEILING)`
-    in the same shape; verified end to end by making `register` return `Mono.never()`, which turns the
-    class red at the ceiling instead of hanging. Two reviewers reported 150 and 201 here; measured on this
-    tree it is **201 in tests, plus 3 in production** (`ChatMongoConfig`'s startup index creation, which
-    the Mongo driver bounds by its own server-selection timeout — a different failure, boot-hang not
-    test-hang, and left alone).
-  - **The uniform 10s has a cost under a mass regression**: a break that stalls every `block` makes the
-    suite take ceiling × call sites (≈94 × 10s in `ChatSessionRegistryTest` alone) before it reports. Slow,
-    but it *reports* — that is the trade this rule buys.
+  - **`.block()` carries the same rule** — every test call site carries a ceiling; verified end to end by
+    making `register` return `Mono.never()`, which turns the class red at the ceiling instead of hanging.
+    **Count a conversion against the commit it lands on, not against an older one**: the sweep converted
+    201 sites measured at its own parent, while the same count taken three commits earlier is 199 — two of
+    the tests added in between use `register(...).block()` themselves. A third number (204) comes from
+    including `src/main`, and a fourth from letting the grep pick up two *comment* lines in
+    `architecture-test` that merely mention `.block()`.
+  - **Production has 3 of its own** (`ChatMongoConfig`'s startup index creation) and they are left alone,
+    because they are bounded by the driver rather than by us: against a closed address the block throws
+    `DataAccessResourceFailureException` after **30,053 ms** (measured), i.e. the Mongo
+    `serverSelectionTimeout` default. Boot fails loudly instead of hanging — a different failure from a
+    test hang, so a `VERIFY_CEILING`-style value would not be the right lever there.
+  - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded. The
+    cost shows up only under a break that stalls *every* `block`: the suite then takes ceiling × call
+    sites (≈94 × 10s in `ChatSessionRegistryTest` alone) before it reports. Slow, but it *reports* — that
+    is the trade this rule buys.
   - **Don't size a ceiling off a test case's reported time.** The ceiling bounds the *terminator's wait*,
     not the case — setup, `Thread.sleep` before `StepVerifier.create`, and an inner `.timeout(...)` all sit
     outside it. Picking values off per-case durations once produced a "raise the ceiling" commit whose slow

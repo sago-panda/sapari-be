@@ -1236,6 +1236,33 @@ class ChatSessionRegistryTest {
     }
 
     /**
+     * ⭐ 끝난 조회가 비행 자리를 놓는다 — 두 인자 {@code remove(key, value)} 가 실제로 맞는지.
+     *
+     * <p>{@code doFinally} 가 {@code cache()} <b>상류</b>에 붙어 있어, 그 람다가 만들어지는 시점에는
+     * 맵에 저장될 참조({@code cache()} 적용 <b>후</b>)가 아직 없다. 람다는 {@code AtomicReference} 를
+     * 캡처하고 <b>호출 시점</b>에 읽으므로 맞는 참조를 보지만, 그게 틀리면 {@code remove(key, value)} 가
+     * 영구 no-op 이 되어 <b>항목이 절대 제거되지 않는다</b> — 고치려던 것(남의 비행을 걷어냄)보다 나쁜
+     * 누수다. 그 자리를 직접 고정한다.
+     */
+    @Test
+    @DisplayName("⭐ 끝난 조회가 비행 자리를 놓는다 — 두 인자 remove 가 맵의 값과 맞아야 한다")
+    void a_completed_lookup_releases_the_flight() {
+        // given
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
+        given(sessionRepository.count(room)).willReturn(Mono.just(7L));
+
+        // when
+        StepVerifier.create(registry.getActiveCount(room)).expectNext(7L).expectComplete()
+                .verify(VERIFY_CEILING);
+
+        // then: 비행이 끝났으면 자리가 비어 있어야 한다. self 가 맵의 값과 다른 참조를 담으면
+        // remove(key, value) 가 아무것도 지우지 않아 여기서 1이 남는다.
+        assertThat(registry.trackedInFlightCounts())
+                .as("끝난 비행의 자리가 남았다 — remove(key, value) 가 맵의 값과 맞지 않는다").isZero();
+    }
+
+    /**
      * ⭐ 취소된 조회도 비행 자리를 놓는다.
      *
      * <p>입장 중에 클라가 끊기면 그 체인이 취소된다 — 운영에서 도달하는 경로다. 자리가 안 풀리면
