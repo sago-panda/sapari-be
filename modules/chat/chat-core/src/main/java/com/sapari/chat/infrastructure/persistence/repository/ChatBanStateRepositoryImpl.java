@@ -22,8 +22,16 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
 
     private final ChatBanJpaRepository jpaRepository;
 
+    /**
+     * 대기 상한을 먼저 걸고 잠근다.
+     *
+     * <p>두 문장인 것이 포트로 새지 않는다 — 포트는 "이 사용자의 밴 판단을 직렬화한다" 하나이고,
+     * 그걸 어떻게 유계로 만드는지는 이 스택의 몫이다. 상한을 거는 것이 잠금보다 먼저여야 한다는
+     * 순서는 여기서만 지켜지면 된다.
+     */
     @Override
     public void lockForBanDecision(UUID userId) {
+        jpaRepository.boundLockWait();
         jpaRepository.lockForBanDecision(userId);
     }
 

@@ -6,6 +6,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.ParameterizedTest;
 import java.util.stream.Stream;
 import com.sapari.chat.domain.exception.ChatKickContendedException;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.QueryTimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -101,9 +102,17 @@ class KickUserServiceTest {
                 new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
-    /** 상한 초과가 드러나는 두 모양. 하나만 잡으면 나머지가 500으로 새어 나간다. */
+    /**
+     * 상한 초과가 드러나는 <b>세 모양</b>. 하나만 잡으면 나머지가 500으로 새어 나간다.
+     *
+     * <p>잠금 대기 쪽이 가장 흔한 출처다 — 밴 판단이 사용자 단위로 직렬화되므로 같은 사람을 겹쳐
+     * 강퇴하면 뒤에 온 쪽이 트랜잭션 상한보다 먼저 거기서 끊긴다. 계보도 나머지 둘과 다르다
+     * ({@code ConcurrencyFailureException} 밑이다).
+     */
     static Stream<Arguments> timeoutShapes() {
         return Stream.of(
+                Arguments.of("잠금 대기 상한 초과",
+                        new CannotAcquireLockException("canceling statement due to lock timeout")),
                 Arguments.of("문이 취소됨",
                         new QueryTimeoutException("canceling statement due to user request")),
                 Arguments.of("남은 수명이 0 — 다음 문을 세우지 못함",
@@ -289,10 +298,15 @@ class KickUserServiceTest {
     class Contention {
 
         /**
-         * 상한 초과는 <b>두 모양</b>으로 나온다. DB가 문을 취소하면 {@code QueryTimeoutException}이고,
+         * 상한 초과는 <b>세 모양</b>으로 나온다. 잠금 대기가 제 상한을 넘으면
+         * {@code CannotAcquireLockException}, DB가 문을 취소하면 {@code QueryTimeoutException},
          * 남은 수명이 0 이하라 다음 문을 세우지도 못하면 {@code TransactionTimedOutException}이다.
-         * 공통 조상이 {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다 —
-         * 실제로 그렇게 썼다가 잡혔고, 그래서 둘을 모두 여기에 건다.
+         * 공통 조상이 {@code NestedRuntimeException}뿐이라 하나만 잡으면 나머지가 500으로 나간다 —
+         * 실제로 그렇게 썼다가 잡혔고, 그래서 셋을 모두 여기에 건다.
+         *
+         * <p>실제로 어느 타입이 오는지는 여기서 정하지 않는다. 그건 실제 Postgres가 답하는 것이고
+         * {@code ChatKickRecorderConcurrencyTest}가 잰다 — 이 테스트는 "그 타입이 오면 번역된다"만
+         * 지킨다. 둘을 한 자리에 두면 DB가 바뀔 때 무엇이 틀렸는지 가려진다.
          */
         @ParameterizedTest(name = "{0}")
         @MethodSource("com.sapari.chat.application.service.KickUserServiceTest#timeoutShapes")

@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.transaction.TransactionTimedOutException;
 
@@ -144,15 +145,24 @@ public class KickUserService implements KickUserUseCase {
      * 기록을 남기고, 잠금 대기가 상한을 넘으면 도메인 예외로 바꿔 던진다.
      *
      * <p>번역을 어댑터가 아니라 여기서 하는 이유: 이 타임아웃은 특정 저장소의 성질이 아니라 <b>트랜잭션의
-     * 성질</b>이다. 강퇴 로그 쓰기에서도 밴 쓰기에서도 같은 예외가 나오므로 어느 한 어댑터에 두면 다른
-     * 쪽이 새고, 양쪽에 두면 같은 판단이 두 벌이 된다. 경계를 여는 {@link ChatKickRecorder} 바로 바깥이
-     * 그 판단이 한 번만 서는 자리다.
+     * 성질</b>이다. 잠금 획득에서도, 강퇴 로그 쓰기에서도, 밴 쓰기에서도 같은 부류가 나오므로 어느 한
+     * 어댑터에 두면 다른 쪽이 새고, 양쪽에 두면 같은 판단이 두 벌이 된다. 경계를 여는
+     * {@link ChatKickRecorder} 바로 바깥이 그 판단이 한 번만 서는 자리다.
      *
-     * <p><b>상한 초과는 두 모양으로 나온다.</b> DB가 문을 취소하면 {@link QueryTimeoutException}이고,
+     * <p><b>상한 초과는 세 모양으로 나온다.</b> 잠금 대기가 제 상한을 넘으면
+     * {@link CannotAcquireLockException}이다 — 이것이 <b>가장 흔한 출처</b>다. 밴 판단이 사용자 단위로
+     * 직렬화되므로 같은 사람을 겹쳐 강퇴하면 뒤에 온 쪽이 거기서 먼저 끊긴다(실측: Postgres가
+     * {@code 55P03 lock_not_available}을 주고 Hibernate의 {@code LockTimeoutException}을 지나
+     * 이 타입으로 번역된다. 1초 상한에서 1024ms). 전에는 이 자리에 "강퇴 로그 쓰기에서도 밴 쓰기에서도"
+     * 두 출처만 적혀 있었는데, 잠금이 들어온 뒤로는 그 둘보다 이쪽이 먼저 걸린다.
+     *
+     * <p>나머지 둘은 트랜잭션 상한 쪽이다. DB가 문을 취소하면 {@link QueryTimeoutException}이고,
      * 남은 수명이 이미 0 이하라 다음 문을 세우지도 못하면 {@link TransactionTimedOutException}이다
-     * (Spring의 {@code ResourceHolderSupport}가 문마다 데드라인을 검사한다). 둘의 공통 조상은
-     * {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다 — 실제로 그렇게
+     * (Spring의 {@code ResourceHolderSupport}가 문마다 데드라인을 검사한다). 셋의 공통 조상은
+     * {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지가 500으로 나간다 — 실제로 그렇게
      * 썼다가 잡혔다. 프로브가 앞쪽 갈래만 만들어 냈고 catch가 그 프로브 크기에 맞춰졌다.
+     * {@code CannotAcquireLockException}은 {@code ConcurrencyFailureException} 밑이라 나머지 둘과
+     * 계보가 또 다르다 — 셋을 함께 열거하는 수밖에 없다.
      *
      * <p><b>상한은 문 하나가 아니라 트랜잭션 전체에 걸린다.</b> 4초짜리 문 둘을 5초 상한에 넣으면 첫
      * 문은 완주하고 둘째가 남은 1초에 끊긴다(실측).
@@ -176,7 +186,7 @@ public class KickUserService implements KickUserUseCase {
     private Optional<ChatBan> record(ChatKickLog kickLog) {   // 이름이 log가 아닌 것은 로거 필드와 겹쳐서다
         try {
             return kickRecorder.record(kickLog);
-        } catch (QueryTimeoutException | TransactionTimedOutException e) {
+        } catch (CannotAcquireLockException | QueryTimeoutException | TransactionTimedOutException e) {
             // 원인을 여기서 한 번 남긴다. 이 예외는 4xx라 전역 핸들러가 warn 갈래로 보내는데, 그 줄은
             // 코드와 메시지만 찍고 throwable을 넘기지 않는다 — 즉 여기서 안 남기면 원래 예외의 타입도
             // 스택도 어디에도 남지 않는다.

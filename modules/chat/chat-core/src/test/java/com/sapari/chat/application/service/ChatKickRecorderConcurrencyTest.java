@@ -1,6 +1,7 @@
 package com.sapari.chat.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -22,6 +23,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -60,13 +65,20 @@ class ChatKickRecorderConcurrencyTest {
     /**
      * 기록과 집계 사이에 창을 여는 데코레이터.
      *
-     * <p>{@code arm}한 래치가 있으면 {@code appendIfAbsent} 직후에 상대를 기다린다 — 그래야 두 트랜잭션이
-     * <b>둘 다 기록한 뒤에</b> 집계에 들어가고, 운영에서 드물게 겹치는 순간이 매번 재현된다.
+     * <p><b>이 장치는 깨진 코드에서만 랑데부를 만든다.</b> 직렬화가 없으면 두 트랜잭션이 각자 기록한 뒤
+     * 서로를 만나 둘 다 집계에 들어가고, 그러면 각자 "기존 + 나"만 세어 결함이 매번 재현된다. 반대로
+     * 직렬화가 있으면 한쪽은 기록에 닿기도 전에 잠금에서 멈추므로 <b>랑데부는 반드시 실패해야 한다</b> —
+     * 초록불 경로에서 이 기다림은 매번 상한에 걸리고, 이 장치는 그때 상한만큼의 지연기로만 동작한다.
+     * 회귀 가드로서는 그게 맞는 성질이다.
      *
-     * <p><b>기다림에 상한이 있는 것이 핵심이다.</b> 사용자 단위로 직렬화하면 한쪽은 기록에 닿기도 전에
-     * 잠금에서 멈추므로 영원히 오지 않는다. 상한이 없으면 고친 코드가 여기서 교착한다 — 즉 이 테스트가
-     * 수정 후에 통과하려면 상한이 있어야 한다. 상한이 지나면 그냥 진행하고, 그때는 앞선 쪽이 커밋하며
-     * 잠금을 놓아 뒤쪽이 온전한 수를 센다.
+     * <p>그래서 <b>기다림에 상한이 있는 것이 핵심이다.</b> 상한이 없으면 고친 코드가 여기서 교착한다 —
+     * 이 테스트가 수정 후에 통과하려면 상한이 있어야 한다. 상한이 지나면 그냥 진행하고, 그때는 앞선
+     * 쪽이 커밋하며 잠금을 놓아 뒤쪽이 온전한 수를 센다.
+     *
+     * <p>⚠️ {@code await}의 반환값을 쓰지 않는 것은 <b>아직 그 축을 재는 테스트가 없기 때문</b>이다.
+     * 그 boolean이 "둘이 만났다"(= 직렬화 안 됨)와 "상한에 걸렸다"(= 직렬화됨)를 가르므로, 잠금 키가
+     * 사용자 단위인지를 재려면 그 값을 살려야 한다 — 서로 다른 대상 둘을 동시에 강퇴하면 만나야 하고,
+     * 전역 단일 키로 바뀌면 못 만난다. 지금은 상수 키로 바꿔도 이 스위트가 통과한다.
      */
     static class LatchedKickLogRepository implements ChatKickLogRepository {
 
@@ -107,11 +119,18 @@ class ChatKickRecorderConcurrencyTest {
     }
 
     /**
-     * 상대를 기다리는 상한. {@code ChatKickRecorder}의 트랜잭션 상한(5초)보다 넉넉히 작아야 한다 —
-     * 이 대기는 그 트랜잭션 안에서 일어나므로, 둘을 더한 값이 상한을 넘으면 테스트가 레이스가 아니라
-     * 타임아웃으로 깨진다.
+     * 상대를 기다리는 상한.
+     *
+     * <p><b>{@code ChatBanJpaRepository.LOCK_WAIT_LIMIT}보다 작아야 한다.</b> 초록불 경로에서 뒤에 온
+     * 쪽은 이 시간만큼 잠금에서 기다리는데, 그 대기에도 상한이 걸려 있어서다 — 이 값이 그보다 크면
+     * 뒤쪽이 레이스가 아니라 잠금 타임아웃으로 죽고, 테스트는 "강퇴 자체가 실패했다"로 깨진다(실제로
+     * 2초였을 때 그렇게 깨졌다). 트랜잭션 상한(5초)보다 작아야 하는 조건도 같은 이유로 여전히 유효하다.
+     *
+     * <p>덮어야 하는 것은 "깨진 코드에서 두 스레드가 기록에 도달하는 시차"뿐이고 그건 밀리초 규모다 —
+     * {@code given}의 첫 {@code record}가 이미 JPA·커넥션·쿼리 경로를 워밍한다. 200ms면 잠금 상한
+     * 1초에 대해 5배 여유다(실측: 본 테스트 0.348초, 전에 2초였을 때 2.42초).
      */
-    private static final Duration RENDEZVOUS_TIMEOUT = Duration.ofSeconds(2);
+    private static final Duration RENDEZVOUS_TIMEOUT = Duration.ofMillis(200);
 
     @TestConfiguration
     static class Wiring {
@@ -153,6 +172,8 @@ class ChatKickRecorderConcurrencyTest {
     private ChatBanStateRepository bans;
     @Autowired
     private LatchedKickLogRepository latched;
+    @Autowired
+    private PlatformTransactionManager txManager;
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
     private static final Duration WINDOW = Duration.ofDays(730);
@@ -203,6 +224,66 @@ class ChatKickRecorderConcurrencyTest {
         assertThat(bans.findActive(targetUserId, NOW).orElseThrow().expiresAt())
                 .isEqualTo(NOW.plus(Duration.ofDays(7)));
     }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 잠금 대기는 상한에서 끊기고 재시도 가능한 도메인 예외가 된다 — 커넥션을 오래 쥐지 않는다")
+    void lockWaitIsBoundedAndTranslated() throws Exception {
+        // given: 누군가 이 사용자의 잠금을 상한보다 오래 쥐고 있다. 운영에서는 강퇴 엔드포인트에
+        // 레이트리밋이 없어 같은 사용자로 요청을 겹쳐 쌓을 수 있고, 기다리는 요청은 기다리는 동안에도
+        // 커넥션을 쥔다(잠금이 트랜잭션 첫 문이라 커넥션이 이미 획득된 상태다). 상한이 없으면 보유
+        // 시간이 '작업 시간'에서 '대기열 깊이 × 작업 시간'으로 바뀌어 풀이 마른다.
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Thread holder = new Thread(() -> {
+            TransactionTemplate tx = new TransactionTemplate(txManager);
+            tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            tx.executeWithoutResult(status -> {
+                bans.lockForBanDecision(targetUserId);
+                held.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        });
+        holder.setDaemon(true);
+        holder.start();
+        assertThat(held.await(10, TimeUnit.SECONDS)).as("보유자가 잠금을 잡지 못했다").isTrue();
+
+        // when
+        long startedAt = System.nanoTime();
+        Throwable thrown = catchThrowable(() -> recorder.record(kick(UUID.randomUUID(), UUID.randomUUID())));
+        long waitedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+        release.countDown();
+
+        // then: 무한정 기다리지 않고 끊긴다. 상한을 지우면 트랜잭션 타임아웃(5초)까지 버티므로
+        // 이 단언이 그 차이를 가른다 — 잠금 뒤에는 쿼리 셋과 커밋뿐이라 정상 경로는 밀리초다.
+        assertThat(waitedMillis)
+                .as("잠금 대기가 상한에서 끊기지 않았다 — 대기열이 커넥션을 오래 쥔다")
+                .isLessThan(TRANSACTION_TIMEOUT.toMillis());
+
+        // 그리고 500이 아니라 재시도 가능한 도메인 예외로 나간다. 실측으로 Postgres가
+        // 55P03(lock_not_available)을 주고 Hibernate LockTimeoutException을 지나
+        // CannotAcquireLockException으로 번역되는데, 그 타입이 QueryTimeoutException과 계보가 달라
+        // 호출자 catch에 함께 열거되지 않으면 그대로 500이 된다.
+        // 그리고 올라오는 타입이 무엇인지 여기서 고정한다. 실측으로 Postgres가 55P03(lock_not_available)을
+        // 주고 Hibernate LockTimeoutException을 지나 이 타입으로 번역된다. 이 타입이 QueryTimeoutException과
+        // 계보가 달라(ConcurrencyFailureException 밑이다) 호출자 catch에 함께 열거되지 않으면 500이 된다.
+        //
+        // 번역 자체는 여기서 재지 않는다 — 그건 KickUserService의 몫이고 KickUserServiceTest가 이 타입을
+        // 입력으로 받아 409가 되는지 지킨다. 둘을 한 자리에 두면 DB가 바뀔 때 무엇이 틀렸는지 가려진다.
+        assertThat(thrown)
+                .as("잠금 대기 초과가 예상과 다른 타입으로 올라온다 — 호출자 catch가 못 잡는다")
+                .isInstanceOf(CannotAcquireLockException.class);
+    }
+
+    /**
+     * {@code ChatKickRecorder}의 트랜잭션 상한. 잠금 대기 상한이 이보다 작아야 "대기가 유계다"가
+     * 의미를 갖는다 — 같으면 상한을 지워도 증상이 같아 위 단언이 아무것도 가르지 못한다.
+     */
+    private static final Duration TRANSACTION_TIMEOUT = Duration.ofSeconds(5);
 
     private Thread kicker(List<Throwable> failures) {
         return new Thread(() -> {
