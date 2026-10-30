@@ -485,8 +485,13 @@ class ChatSessionRegistryTest {
     }
 
     /**
-     * 경합을 만드는 스레드. <b>daemon이다</b> — 상한에 걸려 멈춘 스레드가 테스트 워커 JVM의 종료를
-     * 막지 않게 한다(기본 {@code new Thread}는 non-daemon이다).
+     * 경합을 만드는 스레드. 예외를 모아 두어 "어느 쪽이 죽었는가"가 단언으로 드러나게 한다 —
+     * 안 모으면 전송 건수가 줄어 회계 단언이 깨지는데 진짜 원인은 stderr에만 남는다.
+     *
+     * <p>daemon으로 두는 것은 <b>값을 매길 수 없는 하드닝이다.</b> 상한에 걸려 멈춘 스레드가 JVM 종료를
+     * 막지 못하게 하려는 것인데, 이 빌드에서는 그 효과가 관측되지 않는다 — 10분 잠드는 non-daemon
+     * 스레드를 남겨도 Gradle 테스트 워커가 정상 종료한다(리뷰어 실측). 즉 러너의 종료 방식에 기대지
+     * 않겠다는 뜻이고, 비용이 0이라 둔다. 러너가 바뀌면 이 선택이 값을 갖는다.
      */
     private static Thread contenderThread(Runnable body, AtomicReference<Throwable> failure) {
         Thread thread = new Thread(() -> {
@@ -558,56 +563,107 @@ class ChatSessionRegistryTest {
         assertThat(registry.isTerminating("s1")).as("일시 경합으로 세션을 끊었다").isFalse();
     }
 
-    @Test
-    @DisplayName("종료 신호는 emit보다 넉넉한 예산을 쓴다 — 머무는 구독자 뒤에서도 데이터 채널이 닫힌다")
-    void close_signal_gets_a_larger_budget_than_emit() throws Exception {
-        // given: 구독자가 20ms 머문다 — emit 예산(5ms)은 넘기지만 종료 예산(50ms) 안이다.
-        // 두 예산을 따로 둔 이유가 이 구간이다: 종료 신호가 걸려야 버퍼 잔여분이 흘러나가고,
-        // 강퇴 직전에 보낸 SYSTEM(KICKED)이 클라에 닿는다. 그 선택을 지키는 자리가 없었다.
-        registry.register("s1", session(roomId, userId)).block();
-        Lingering consumer = subscribeLingering("s1", Duration.ofMillis(20));
+    /**
+     * 종료가 <b>emit 예산을 넘는 경합</b>을 만나도 데이터 채널이 곱게 닫히는지 본다.
+     *
+     * <p>구독자를 20ms 머물게 하면 emit 예산(5ms)은 넘기지만 종료 예산(50ms) 안이다 — 두 예산을 따로
+     * 둔 이유가 정확히 그 구간이다. 종료 신호가 걸려야 버퍼 잔여분이 흘러나가고 강퇴 직전에 보낸
+     * SYSTEM(KICKED)이 클라에 닿는다.
+     *
+     * <p><b>호출지마다 따로 걸어야 한다.</b> 예산은 호출지가 고르고(종료는 {@code completeDeadline()},
+     * 전송은 {@code emitDeadline()}), 둘 다 정당한 관용구로 같은 파일에 있다. 그래서 종료 자리에
+     * {@code emitDeadline()}을 적는 실수는 복사 한 번이면 생기는데, 어느 한 호출지만 덮으면 나머지는
+     * 아무 테스트도 깨뜨리지 않고 바뀐다 — 그리고 fan-out 쪽은 예산 하나를 세션들이 나눠 쓰므로
+     * 단건 경로보다 <b>먼저</b> 소진된다.
+     */
+    private void assertCloseOutlastsTheEmitBudget(String sessionId, Runnable closeAction,
+                                                  CloseStatus expected) throws Exception {
+        Lingering consumer = subscribeLingering(sessionId, Duration.ofMillis(20));
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
         Thread contender = contenderThread(() -> {
             consumer.awaitInsideOnNext();
-            registry.terminateKicked("s1");        // complete 를 경합 구간에 떨어뜨린다
+            closeAction.run();                     // complete 를 경합 구간에 떨어뜨린다
         }, failure);
 
-        // when: 구독자가 머무는 동안 종료가 들어온다
         contender.start();
-        registry.sendToSession("s1", out("SYSTEM")).block();
+        registry.sendToSession(sessionId, out("SYSTEM")).block();
         contender.join(TimeUnit.SECONDS.toMillis(30));
 
-        // then: 종료 예산이 20ms를 넘겨 줬으므로 데이터 채널이 곱게 닫힌다.
-        // 종료 예산을 emit 예산과 같게 줄이면 5ms에 소진돼 complete가 경합으로 실패하고,
-        // 그러면 이 래치는 영영 내려오지 않는다 — 제어 채널이 세션은 닫지만 버퍼 잔여분은 버려진다.
+        // 종료 예산이 20ms를 넘겨 줬으므로 데이터 채널이 곱게 닫힌다. emit 예산으로 바꾸면 5ms에
+        // 소진돼 complete 가 경합으로 실패하고, 그러면 이 래치는 영영 내려오지 않는다 —
+        // 제어 채널이 세션은 닫지만 버퍼 잔여분은 버려진다.
         assertThat(failure.get()).as("경합 스레드가 창에 들어가지 못했다").isNull();
         assertThat(consumer.awaitDataChannelClose(Duration.ofSeconds(5)))
                 .as("종료 신호가 경합에 소진돼 데이터 채널이 닫히지 않았다")
                 .isTrue();
-        assertThat(registry.closeStatusOf("s1")).as("강퇴는 1008로 닫는다")
-                .isEqualTo(CloseStatus.POLICY_VIOLATION);
+        assertThat(registry.closeStatusOf(sessionId)).isEqualTo(expected);
     }
 
     @Test
-    @DisplayName("방 팬아웃은 예산 하나를 나눠 쓴다 — 세션마다 새로 주면 상한이 세션 수만큼 곱해진다")
-    void room_fanout_shares_one_budget_across_sessions() {
-        // given: 한 방에 세션 여럿
+    @DisplayName("전송 경로 강퇴 종료는 emit보다 넉넉한 예산을 쓴다")
+    void terminate_kicked_close_outlasts_the_emit_budget() throws Exception {
+        registry.register("s1", session(roomId, userId)).block();
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.terminateKicked("s1"),
+                CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    @DisplayName("강퇴 팬아웃 종료도 emit보다 넉넉한 예산을 쓴다 — 예산을 나눠 쓰므로 단건보다 먼저 마른다")
+    void close_user_fanout_outlasts_the_emit_budget() throws Exception {
+        registry.register("s1", session(roomId, userId)).block();
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUser(roomId, userId).block(),
+                CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    @DisplayName("밴 팬아웃 종료도 emit보다 넉넉한 예산을 쓴다")
+    void close_user_everywhere_outlasts_the_emit_budget() throws Exception {
+        registry.register("s1", session(roomId, userId)).block();
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUserEverywhere(userId).block(),
+                CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    @DisplayName("방 종료 팬아웃도 emit보다 넉넉한 예산을 쓴다 — 매 방송마다 도는 정상 경로다")
+    void close_all_outlasts_the_emit_budget() throws Exception {
+        registry.register("s1", session(roomId, userId)).block();
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeAll(roomId).block(),
+                CloseStatus.NORMAL);
+    }
+
+    @Test
+    @DisplayName("팬아웃 호출지는 모두 예산 하나를 나눠 쓴다 — 세션마다 새로 주면 상한이 세션 수만큼 곱해진다")
+    void every_fanout_entry_point_shares_one_budget() {
+        // given: 한 방에 세션 여럿. 전원 같은 userId 라 계정 단위 팬아웃도 이 세션들을 훑는다.
         int sessions = 40;
         for (int i = 0; i < sessions; i++) {
-            registry.register("s" + i, session(roomId, UUID.randomUUID())).block();
+            registry.register("s" + i, session(roomId, userId)).block();
             registry.outbound("s" + i).subscribe(m -> { });
         }
+
+        // when & then: 팬아웃 호출지는 저마다 예산을 만든다. 하나라도 세션마다 새로 주는 쪽으로
+        // 돌아가면 재시도 상한이 세션 수에 비례해 곱해지는데(40세션이면 5ms가 최악 200ms로),
+        // 그 자리가 방 전체 중계를 담당하는 Redis 구독 스레드다. 되돌려도 드롭은 줄거나 같으므로
+        // 결과를 보는 단언으로는 이 회귀가 잡히지 않는다 — 그래서 생성 수를 직접 센다.
+        //
+        // <b>호출지를 열거하는 것이 요점이다.</b> 한 곳만 덮으면 나머지 다섯은 아무 테스트도
+        // 깨뜨리지 않고 바뀐다. 전송이 먼저, 종료가 나중인 순서인 것은 종료가 세션을 끊기 때문이다 —
+        // 예산 자체는 순회 전에 무조건 만들어지므로 세션이 남아 있지 않아도 세어지지만, 순서를
+        // 지켜 두면 각 호출이 실제로 세션을 훑는 상태에서 세어진다.
+        assertOneBudgetPerCall("sendToRoomLocal", () -> registry.sendToRoomLocal(roomId, out("SYSTEM")).block());
+        assertOneBudgetPerCall("sendToRoomGated", () -> registry.sendToRoomGated(roomId, s -> out("SYSTEM")).block());
+        assertOneBudgetPerCall("sendToUserEverywhere", () -> registry.sendToUserEverywhere(userId, out("SYSTEM")).block());
+        assertOneBudgetPerCall("closeUser", () -> registry.closeUser(roomId, userId).block());
+        assertOneBudgetPerCall("closeUserEverywhere", () -> registry.closeUserEverywhere(userId).block());
+        assertOneBudgetPerCall("closeAll", () -> registry.closeAll(roomId).block());
+    }
+
+    private void assertOneBudgetPerCall(String what, Runnable fanOut) {
         long before = registry.budgetsCreated();
-
-        // when: 한 번 뿌린다
-        registry.sendToRoomLocal(roomId, out("NORMAL")).block();
-
-        // then: 예산은 하나다. 호출마다 새로 주면 재시도 상한이 세션 수에 비례해 곱해지는데
-        // (40세션이면 5ms가 최악 200ms로), 그 자리가 방 전체 중계를 담당하는 Redis 구독 스레드다.
-        // 되돌려도 드롭은 줄거나 같으므로 결과를 보는 단언으로는 이 회귀가 잡히지 않는다.
+        fanOut.run();
         assertThat(registry.budgetsCreated() - before)
-                .as("fan-out 1회가 만든 예산 수")
+                .as("%s 1회가 만든 예산 수", what)
                 .isEqualTo(1);
     }
 

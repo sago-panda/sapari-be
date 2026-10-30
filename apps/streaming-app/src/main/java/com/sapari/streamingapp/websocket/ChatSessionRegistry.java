@@ -7,6 +7,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -132,8 +133,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
 
-    /** 만든 예산 수 — fan-out당 하나라는 불변식을 테스트가 고정한다({@link #budgetsCreated}). */
-    private final AtomicLong budgetsCreated = new AtomicLong();
+    /** 만든 fan-out 공유 예산 수 — fan-out당 하나라는 불변식을 테스트가 고정한다({@link #budgetsCreated}). */
+    private final LongAdder budgetsCreated = new LongAdder();
 
     /**
      * 방 종료를 다시 확인하는 간격. 종료 신호를 놓친 Pod가 끝난 방에 글을 받아주는 구간의 상한이 된다.
@@ -315,7 +316,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     @Override
     public Mono<Void> sendToRoomLocal(UUID roomId, OutboundMessage message) {
         return Mono.fromRunnable(() -> {
-            FanOutBudget budget = newBudget();
+            FanOutBudget budget = newSharedBudget();
             forEachInRoom(roomId, ls -> emit(ls, message, budget));
         });
     }
@@ -324,7 +325,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver) {
         // 세션별 차등 fan-out — resolver가 세션마다 메시지 생성(방주인 PII 게이팅·kick 분기). null이면 그 세션 skip.
         return Mono.fromRunnable(() -> {
-            FanOutBudget budget = newBudget();
+            FanOutBudget budget = newSharedBudget();
             forEachInRoom(roomId, ls -> {
                 OutboundMessage message = resolver.apply(ls.session());
                 if (message != null) {
@@ -338,7 +339,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> closeUser(UUID roomId, UUID userId) {
         // 강퇴는 정책상 종료라 1008 — 프론트가 "재접속하지 말 것"으로 읽는 코드다.
         return Mono.fromRunnable(() -> {
-            FanOutBudget budget = newBudget();
+            FanOutBudget budget = newSharedBudget();
             forEachInRoom(roomId, ls -> {
                 if (ls.session().userId().equals(userId)) {
                     terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
@@ -350,7 +351,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     @Override
     public Mono<Void> sendToUserEverywhere(UUID userId, OutboundMessage message) {
         return Mono.fromRunnable(() -> {
-            FanOutBudget budget = newBudget();
+            FanOutBudget budget = newSharedBudget();
             forEachSessionOf(userId, ls -> emit(ls, message, budget));
         });
     }
@@ -359,7 +360,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> closeUserEverywhere(UUID userId) {
         // 밴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
         return Mono.fromRunnable(() -> {
-            FanOutBudget budget = newBudget();
+            FanOutBudget budget = newSharedBudget();
             forEachSessionOf(userId, ls -> terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline()));
         });
     }
@@ -395,7 +396,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> closeAll(UUID roomId) {
         // 방 종료는 정상 종료(1000). 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다.
         return Mono.fromRunnable(() -> {
-            FanOutBudget budget = newBudget();
+            FanOutBudget budget = newSharedBudget();
             forEachInRoom(roomId, ls -> terminate(ls, CloseStatus.NORMAL, budget.completeDeadline()));
         });
     }
@@ -655,26 +656,43 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return now - last >= DROP_LOG_INTERVAL_NANOS && lastDropLogNanos.compareAndSet(last, now);
     }
 
+    /** 세션 하나를 위한 예산 — 단건 전송과 단건 종료가 쓴다. 세지 않는다({@link #newSharedBudget} 참고). */
     private FanOutBudget newBudget() {
-        budgetsCreated.incrementAndGet();
         long now = System.nanoTime();
         return new FanOutBudget(now + CONTENTION_SPIN_NANOS, now + COMPLETE_SPIN_NANOS);
     }
 
     /**
-     * 만든 예산의 누적 수. <b>관측용이 아니라 불변식 고정용이다</b> — 한 번의 fan-out이 예산 하나를
-     * 나눠 쓴다는 것을 테스트가 붙잡는다.
+     * 한 번의 fan-out이 <b>세션들과 나눠 쓸</b> 예산. 방·계정 단위로 여럿에게 닿는 모든 경로가 이것을 쓴다.
      *
-     * <p>세 줄을 더 쓰는 이유: 호출마다 새 예산을 주는 쪽으로 되돌려도 드롭은 <b>줄거나 같으므로</b>
-     * 결과를 보는 단언으로는 구별되지 않는다. 그래서 그 회귀를 잡는 수단이 inbox 크기와 드롭 카운터뿐일
-     * 때는 원리적으로 관측이 안 되고, 재시도 상한이 세션 수에 비례해 곱해지는 것을(그것도 방 전체
-     * 중계를 담당하는 Redis 구독 스레드 위에서) 아무도 알아채지 못한다. 셈은 예산을 만들 때 한 번이라
-     * fan-out당 1회다.
+     * <p>{@link #newBudget}과 만드는 값이 같은데 따로 둔 이유는 <b>세기 때문</b>이다. 그리고 세는 이유는
+     * 이것이 관측 지표가 아니라 불변식이라서다 — 호출마다 새 예산을 주는 쪽으로 되돌려도 드롭은
+     * <b>줄거나 같으므로</b> 결과를 보는 단언으로는 구별되지 않는다. 그 회귀를 잡는 수단이 inbox 크기와
+     * 드롭 카운터뿐일 때는 원리적으로 관측이 안 되고, 재시도 상한이 세션 수에 비례해 곱해지는 것을
+     * (그것도 방 전체 중계를 담당하는 Redis 구독 스레드 위에서) 아무도 알아채지 못한다.
+     *
+     * <p><b>단건 경로를 여기 섞지 마라.</b> 한때 셈이 {@link #newBudget} 안에 있었는데, 그 경로는
+     * 메시지마다 불리므로 모든 ACK·유니캐스트가 테스트만 읽는 카운터를 위해 경합 CAS를 하나씩 물었다.
+     * 불변식은 "fan-out 하나가 예산 하나"이고 단건은 그 불변식의 대상이 아니다.
+     *
+     * <p>새 fan-out 경로가 {@link #newBudget}을 부르면 셈이 0이라 그 경로를 덮는 단언이 깨진다 —
+     * 조용히 빠지지 않는다.
+     */
+    private FanOutBudget newSharedBudget() {
+        budgetsCreated.increment();
+        return newBudget();
+    }
+
+    /**
+     * 만든 fan-out 공유 예산의 누적 수. <b>관측용이 아니라 불변식 고정용이다</b>(위 참고).
+     *
+     * <p>{@code LongAdder}가 아니라 {@code AtomicLong}이어도 됐을 만큼 드문 경로이지만, fan-out은
+     * 방마다 메시지마다 도는 자리라 쓰기가 읽기보다 압도적으로 많다 — 그 모양에 맞는 자료구조를 쓴다.
      *
      * (테스트 진입점)
      */
     long budgetsCreated() {
-        return budgetsCreated.get();
+        return budgetsCreated.sum();
     }
 
     /**
