@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +33,9 @@ import reactor.test.StepVerifier;
 
 class EntryGateTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private ChatKickRepository kickRepository;
     private ChatRoomEndedRepository roomEndedRepository;
     private ChatBanRepository banRepository;
@@ -73,7 +77,7 @@ class EntryGateTest {
         given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
 
         // when & then
-        StepVerifier.create(gate.verify(member())).verifyComplete();
+        StepVerifier.create(gate.verify(member())).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -87,7 +91,7 @@ class EntryGateTest {
         StepVerifier.create(gate.verify(member()))
                 .expectErrorMatches(e -> e instanceof EntryDeniedException ed
                         && ed.reason() == EntryDeniedException.Reason.KICKED)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -100,7 +104,7 @@ class EntryGateTest {
                 .willReturn(Mono.error(new RuntimeException("redis down")));
 
         // when & then
-        StepVerifier.create(gate.verify(member())).verifyComplete();
+        StepVerifier.create(gate.verify(member())).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -120,7 +124,7 @@ class EntryGateTest {
 
         // when: 가용성 우선 — 입장은 그대로 허용한다
         try {
-            StepVerifier.create(gate.verify(member())).verifyComplete();
+            StepVerifier.create(gate.verify(member())).expectComplete().verify(VERIFY_CEILING);
         } finally {
             logger.detachAppender(appender);
         }
@@ -147,7 +151,7 @@ class EntryGateTest {
         StepVerifier.create(gate.verify(member()))
                 .expectErrorMatches(e -> e instanceof EntryDeniedException ed
                         && ed.reason() == EntryDeniedException.Reason.BANNED)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -158,7 +162,7 @@ class EntryGateTest {
         ChatSession guest = new ChatSession(roomId, userId, ChatRole.GUEST, null, null, false);
 
         // when
-        StepVerifier.create(gate.verify(guest)).verifyComplete();
+        StepVerifier.create(gate.verify(guest)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(banRepository).should(never()).isBanned(any());
@@ -173,7 +177,7 @@ class EntryGateTest {
         given(banRepository.isBanned(userId)).willReturn(Mono.error(new RuntimeException("redis down")));
 
         // when & then
-        StepVerifier.create(gate.verify(member())).verifyComplete();
+        StepVerifier.create(gate.verify(member())).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -187,7 +191,7 @@ class EntryGateTest {
         StepVerifier.create(gate.verify(member()))
                 .expectErrorMatches(e -> e instanceof EntryDeniedException ed
                         && ed.reason() == EntryDeniedException.Reason.KICKED)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then
         then(banRepository).should(never()).isBanned(any());
@@ -201,7 +205,7 @@ class EntryGateTest {
         ChatSession guest = new ChatSession(roomId, userId, ChatRole.GUEST, null, null, false);
 
         // when
-        StepVerifier.create(gate.verify(guest)).verifyComplete();
+        StepVerifier.create(gate.verify(guest)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(kickRepository).should(never()).isKicked(any(), any());
@@ -217,7 +221,7 @@ class EntryGateTest {
         StepVerifier.create(gate.verify(member()))
                 .expectErrorMatches(e -> e instanceof EntryDeniedException ed
                         && ed.reason() == EntryDeniedException.Reason.ROOM_ENDED)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then
         then(kickRepository).should(never()).isKicked(any(), any());
@@ -234,7 +238,7 @@ class EntryGateTest {
         StepVerifier.create(gate.verify(guest))
                 .expectErrorMatches(e -> e instanceof EntryDeniedException ed
                         && ed.reason() == EntryDeniedException.Reason.ROOM_ENDED)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -247,7 +251,7 @@ class EntryGateTest {
         givenNotBanned();
 
         // when & then
-        StepVerifier.create(gate.verify(member())).verifyComplete();
+        StepVerifier.create(gate.verify(member())).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -257,7 +261,7 @@ class EntryGateTest {
         given(registry.shouldRecheckRoomAlive("s1")).willReturn(false);
 
         // when & then
-        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(true).verifyComplete();
+        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(true).expectComplete().verify(VERIFY_CEILING);
         then(roomEndedRepository).should(never()).isEnded(roomId);
     }
 
@@ -269,7 +273,7 @@ class EntryGateTest {
         given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.just(true));
 
         // when & then: 전송이 NOT_ACTIVE로 거부되어 끝난 방에 이력이 쌓이지 않는다
-        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).verifyComplete();
+        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -280,7 +284,7 @@ class EntryGateTest {
         given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.error(new RuntimeException("redis down")));
 
         // when & then: Redis가 죽었다고 채팅이 통째로 멈추는 쪽이 더 나쁜 결과다
-        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(true).verifyComplete();
+        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(true).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -291,7 +295,7 @@ class EntryGateTest {
         given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.just(true));
 
         // when
-        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).verifyComplete();
+        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).expectComplete().verify(VERIFY_CEILING);
 
         // then: 표시하지 않으면 다음 30초 동안의 프레임이 전부 통과해 이력에 쌓인다
         then(registry).should(times(1)).markRoomEnded("s1");
@@ -304,7 +308,7 @@ class EntryGateTest {
         given(registry.isRoomKnownEnded("s1")).willReturn(true);
 
         // when & then
-        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).verifyComplete();
+        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(false).expectComplete().verify(VERIFY_CEILING);
         then(roomEndedRepository).should(never()).isEnded(roomId);
         then(registry).should(never()).shouldRecheckRoomAlive("s1");
     }

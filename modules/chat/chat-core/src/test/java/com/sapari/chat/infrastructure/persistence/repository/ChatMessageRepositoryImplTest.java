@@ -3,6 +3,7 @@ package com.sapari.chat.infrastructure.persistence.repository;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
@@ -44,6 +45,9 @@ import reactor.test.StepVerifier;
 @Testcontainers
 class ChatMessageRepositoryImplTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
@@ -156,7 +160,7 @@ class ChatMessageRepositoryImplTest {
         // when & then
         StepVerifier.create(repository.findByRoomIdBefore(roomId, "not-an-objectid", 5))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -165,7 +169,7 @@ class ChatMessageRepositoryImplTest {
         // when & then
         StepVerifier.create(repository.findByRoomIdBefore(roomId, null, 0))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test

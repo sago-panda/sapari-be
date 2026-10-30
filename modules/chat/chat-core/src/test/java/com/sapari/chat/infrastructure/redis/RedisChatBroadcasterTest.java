@@ -43,6 +43,9 @@ import reactor.test.StepVerifier;
 
 class RedisChatBroadcasterTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private ReactiveStringRedisTemplate redis;
     private RedisChatBroadcaster broadcaster;
     private ObjectMapper mapper;   // 검증용(동일 계약)
@@ -71,7 +74,7 @@ class RedisChatBroadcasterTest {
         ChatMessage message = sampleMessage();
 
         // when
-        StepVerifier.create(broadcaster.publish(roomId, message)).verifyComplete();
+        StepVerifier.create(broadcaster.publish(roomId, message)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
@@ -108,7 +111,7 @@ class RedisChatBroadcasterTest {
                 .then(() -> pattern.tryEmitNext(message(otherChannel, otherWire)))
                 .expectNoEvent(Duration.ofMillis(150))
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -214,7 +217,7 @@ class RedisChatBroadcasterTest {
                     .then(() -> pattern.tryEmitNext(message(channel, poison)))
                     .expectNoEvent(Duration.ofMillis(150))
                     .thenCancel()
-                    .verify();
+                    .verify(VERIFY_CEILING);
         } finally {
             logger.detachAppender(appender);
         }

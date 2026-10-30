@@ -7,6 +7,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.times;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
@@ -28,6 +29,9 @@ import reactor.test.StepVerifier;
 @ExtendWith(MockitoExtension.class)
 class SystemMessageServiceTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Mock
     private ChatSessionManager sessionManager;
 
@@ -43,7 +47,7 @@ class SystemMessageServiceTest {
 
         // when
         StepVerifier.create(service.renderToSession("sess-1", SystemMessageCode.KICKED))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(sessionManager).should(times(1)).sendToSession(eq("sess-1"), captor.capture());
@@ -66,7 +70,7 @@ class SystemMessageServiceTest {
 
         // when
         StepVerifier.create(service.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(sessionManager).should(times(1)).sendToRoomLocal(eq(roomId), captor.capture());

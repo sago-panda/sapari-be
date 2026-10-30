@@ -26,6 +26,9 @@ import reactor.test.StepVerifier;
 @Testcontainers
 class ChatKickRedisRepositoryTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
@@ -127,7 +130,7 @@ class ChatKickRedisRepositoryTest {
         redisTemplate.opsForValue().set(key, "남의 값").block();
 
         // when
-        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 오염이 영구히 남지는 않는다. 이 단언이 깨지면 방송이 끝나도 그 키가 그대로 남아
         // 같은 roomId가 다시 쓰일 때까지 회수되지 않는다는 뜻이다
@@ -144,10 +147,10 @@ class ChatKickRedisRepositoryTest {
         redisTemplate.opsForSet().add("chat:kicked:" + room, kicked.toString()).block();
 
         // when
-        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).expectComplete().verify(VERIFY_CEILING);
 
         // then: DEL로 되돌아가면 멤버십이 사라져 이 단언이 깨진다
-        StepVerifier.create(repository.isKicked(room, kicked)).expectNext(true).verifyComplete();
+        StepVerifier.create(repository.isKicked(room, kicked)).expectNext(true).expectComplete().verify(VERIFY_CEILING);
         Duration ttl = redisTemplate.getExpire("chat:kicked:" + room).block();
         assertThat(ttl).isNotNull().isBetween(Duration.ofHours(23), Duration.ofHours(24));
     }
@@ -159,7 +162,7 @@ class ChatKickRedisRepositoryTest {
         UUID room = UUID.randomUUID();
 
         // when & then
-        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
-        StepVerifier.create(redisTemplate.hasKey("chat:kicked:" + room)).expectNext(false).verifyComplete();
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).expectComplete().verify(VERIFY_CEILING);
+        StepVerifier.create(redisTemplate.hasKey("chat:kicked:" + room)).expectNext(false).expectComplete().verify(VERIFY_CEILING);
     }
 }

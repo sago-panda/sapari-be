@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket.auth;
 
+import java.time.Duration;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
@@ -17,6 +18,9 @@ import reactor.test.StepVerifier;
 
 class RoomTokenVerifierTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private static KeyPair liveKeys;     // live 발급용(개인키 서명)
     private static KeyPair otherKeys;    // 위조 서명 테스트용 (다른 키쌍)
     private static RoomTokenVerifier verifier;
@@ -69,7 +73,7 @@ class RoomTokenVerifierTest {
                         && !s.isRoomOwner()
                         && "구매자닉".equals(s.nickname())
                         && "buyer@example.com".equals(s.email()))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -82,7 +86,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectNextMatches(s -> s.role() == ChatRole.SELLER && s.isRoomOwner())
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     /**
@@ -103,7 +107,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectNextMatches(s -> s.role() == ChatRole.ADMIN && !s.isRoomOwner())
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -115,7 +119,7 @@ class RoomTokenVerifierTest {
                 "ADMIN", true, "관리자닉", "admin@sapari.com", in60s());
 
         // when & then
-        StepVerifier.create(verifier.verify(token, roomId)).verifyError();
+        StepVerifier.create(verifier.verify(token, roomId)).expectError().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -131,7 +135,7 @@ class RoomTokenVerifierTest {
                         && !s.isRoomOwner()
                         && s.nickname() == null
                         && s.email() == null)
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -144,7 +148,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -157,7 +161,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -170,7 +174,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -183,7 +187,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -196,7 +200,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -209,7 +213,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -228,7 +232,7 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -241,6 +245,6 @@ class RoomTokenVerifierTest {
         // when & then
         StepVerifier.create(verifier.verify(token, roomId))
                 .expectError(WebSocketAuthException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 }

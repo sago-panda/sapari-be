@@ -10,6 +10,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
+import java.time.Duration;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -57,6 +58,9 @@ import reactor.test.StepVerifier;
 @ExtendWith(MockitoExtension.class)
 class SendChatServiceTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Mock
     private ChatKickRepository kickRepository;
 
@@ -123,7 +127,7 @@ class SendChatServiceTest {
                     assertThat(view.id()).isEqualTo("genId");
                     assertThat(view.displayMessage()).isEqualTo("안녕하세요");
                 })
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(chatMessageRepository).should(times(1)).save(any());
@@ -136,7 +140,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("BUYER", false, false, "NORMAL", "안녕", "c1")))
                 .expectError(LiveNotActiveException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then
         then(kickRepository).should(never()).isKicked(any(), any());
@@ -149,7 +153,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "   ", "c1")))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -158,7 +162,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "a".repeat(201), "c1")))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -167,7 +171,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("GUEST", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(ChatPermissionDeniedException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then
         then(kickRepository).should(never()).isKicked(any(), any());
@@ -183,7 +187,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("ADMIN", false, true, "NORMAL", "운영 안내", "c1")))
                 .expectNextCount(1)
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(rateLimiter).should(never()).tryAcquire(any());
@@ -201,7 +205,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("SELLER", false, true, "NORMAL", "도배", "c1")))
                 .expectError(ChatRateLimitException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then
         then(rateLimiter).should(times(1)).tryAcquire(any());
@@ -213,7 +217,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NOTICE", "공지", "c1")))
                 .expectError(ChatPermissionDeniedException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -225,7 +229,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(UserKickedException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then
         then(rateLimiter).should(never()).tryAcquire(any());
@@ -250,7 +254,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(UserBannedException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then: 강퇴와 같은 자리에서 끊긴다 — 레이트리밋도 저장도 태우지 않는다
         then(rateLimiter).should(never()).tryAcquire(any());
@@ -267,7 +271,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(UserKickedException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -283,7 +287,7 @@ class SendChatServiceTest {
         // when & then: 밴 조회가 죽었다고 채팅 전체가 멈추지는 않는다
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectNextCount(1)
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -299,7 +303,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(chatMessageRepository).should(times(1)).save(any());
@@ -326,7 +330,7 @@ class SendChatServiceTest {
         try {
             StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                     .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
-                    .verifyComplete();
+                    .expectComplete().verify(VERIFY_CEILING);
         } finally {
             logger.detachAppender(appender);
         }
@@ -355,7 +359,7 @@ class SendChatServiceTest {
                     // retryAfterSeconds가 예외에 실려 transport(RATE_LIMIT 응답)까지 운반되는지 — 유실 방지
                     assertThat(((ChatRateLimitException) e).getRetryAfterSeconds()).isEqualTo(3);
                 })
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then
         then(chatMessageRepository).should(never()).save(any());
@@ -373,7 +377,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("SELLER", true, true, "NORMAL", "상품 설명입니다", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(rateLimiter).should(never()).tryAcquire(any());
@@ -389,7 +393,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "이건 욕설 이다", "c1")))
                 .expectNextCount(1)
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(chatMessageRepository).should(times(1)).save(captor.capture());
@@ -419,7 +423,7 @@ class SendChatServiceTest {
         // when
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("existingId"))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(broadcaster).should(never()).publish(any(), any());
@@ -438,7 +442,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -454,7 +458,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(IllegalStateException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -463,7 +467,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", null)))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
 
         then(chatMessageRepository).should(never()).save(any());
     }
@@ -478,7 +482,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", tooLong)))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
         then(kickRepository).should(never()).isKicked(any(), any());
         then(chatMessageRepository).should(never()).save(any());
     }
@@ -492,7 +496,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "x".repeat(64))))
                 .expectNextCount(1)
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -501,7 +505,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "   ")))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
         then(chatMessageRepository).should(never()).save(any());
     }
 
@@ -511,7 +515,7 @@ class SendChatServiceTest {
         // when & then: 통과시키면 일반 사용자가 '방송이 종료되었습니다' 같은 신호를 위조해 방에 뿌릴 수 있다
         StepVerifier.create(service.send(command("BUYER", false, true, "SYSTEM", "안녕", "c1")))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
         then(chatMessageRepository).should(never()).save(any());
     }
 
@@ -521,7 +525,7 @@ class SendChatServiceTest {
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "WHISPER", "안녕", "c1")))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
         then(chatMessageRepository).should(never()).save(any());
     }
 
@@ -532,6 +536,6 @@ class SendChatServiceTest {
         // onErrorResume을 지나쳐 인바운드 스트림이 죽는다. 반드시 onError 신호여야 한다.
         StepVerifier.create(service.send(command("SUPERUSER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(IllegalArgumentException.class)
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 }

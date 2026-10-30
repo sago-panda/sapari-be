@@ -9,6 +9,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.times;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -39,6 +40,9 @@ import reactor.test.StepVerifier;
 @ExtendWith(MockitoExtension.class)
 class ChatBroadcastSubscriberTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Mock
     private ChatBroadcaster broadcaster;
 
@@ -95,7 +99,7 @@ class ChatBroadcastSubscriberTest {
                 null, Instant.parse("2026-06-11T00:00:00Z"));
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
@@ -136,7 +140,7 @@ class ChatBroadcastSubscriberTest {
         given(sessionManager.closeUser(roomId, kickedId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.KickEvent(kickedId))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.KickEvent(kickedId))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(sessionManager).should(times(1)).closeUser(roomId, kickedId);     // 당사자 세션 close
@@ -165,7 +169,7 @@ class ChatBroadcastSubscriberTest {
                 "안녕", "안녕", "c-1", Instant.parse("2026-06-11T00:00:00Z"));
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
@@ -193,7 +197,7 @@ class ChatBroadcastSubscriberTest {
                 "상품 설명", "상품 설명", "c-2", Instant.parse("2026-06-11T00:00:00Z"));
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(fromOwner))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(fromOwner))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();

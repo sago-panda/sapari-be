@@ -36,6 +36,9 @@ import reactor.test.StepVerifier;
 
 class ChatSessionRegistryTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private ChatSessionRepository sessionRepository;
     private ChatSessionRegistry registry;
 
@@ -73,7 +76,7 @@ class ChatSessionRegistryTest {
                 .then(() -> registry.sendToSession("s1", msg).block())
                 .expectNext(msg)
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -89,7 +92,7 @@ class ChatSessionRegistryTest {
                 .then(() -> registry.sendToRoomLocal(roomId, msg).block())
                 .expectNext(msg)
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -103,7 +106,7 @@ class ChatSessionRegistryTest {
                 .then(() -> registry.sendToRoomLocal(UUID.randomUUID(), out("SYSTEM")).block())
                 .expectNoEvent(Duration.ofMillis(50))
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -200,7 +203,7 @@ class ChatSessionRegistryTest {
         // then: 옆 사람의 채널은 살아 있다 — 완료됐다면 방 전체를 끊은 것이다
         StepVerifier.create(registry.outbound("s2"))
                 .expectTimeout(java.time.Duration.ofMillis(200))
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -218,7 +221,7 @@ class ChatSessionRegistryTest {
                 .then(() -> registry.sendToRoomLocal(roomId, out("SYSTEM")).block())
                 .expectNextCount(1)
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -254,7 +257,7 @@ class ChatSessionRegistryTest {
                 // 데이터 채널로는 아무것도 못 간다 — complete도 쌓인 5건 뒤에 막혀 전달되지 않는다
                 .expectNoEvent(Duration.ofMillis(50))
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // then: 그럼에도 제어 신호는 발화하고, 종료 사유가 1008로 남는다
         StepVerifier.create(registry.terminationSignal("s1"))
@@ -291,7 +294,7 @@ class ChatSessionRegistryTest {
                 .expectSubscription()
                 .expectNoEvent(Duration.ofMillis(50))
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @ParameterizedTest
@@ -350,18 +353,18 @@ class ChatSessionRegistryTest {
         StepVerifier.create(registry.outbound("s1"))
                 .expectNextMatches(m -> "OWNER".equals(m.type()))
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
         StepVerifier.create(registry.outbound("s2"))
                 .expectNextMatches(m -> "PLAIN".equals(m.type()))
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
 
         // 다른 방 세션은 아무것도 못 받는다
         StepVerifier.create(registry.outbound("other"))
                 .expectSubscription()
                 .expectNoEvent(Duration.ofMillis(50))
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
     }
 
     @Test
@@ -924,7 +927,7 @@ class ChatSessionRegistryTest {
                     }
                 })
                 .thenCancel()
-                .verify();
+                .verify(VERIFY_CEILING);
         registry.closeUser(roomId, otherUserId).block();
 
         // then
@@ -1044,7 +1047,7 @@ class ChatSessionRegistryTest {
                 .willReturn(Mono.just(7L));
 
         // when & then: 첫 번째는 실패하고, 두 번째는 다시 물어서 값을 얻는다
-        StepVerifier.create(registry.getActiveCount(roomId)).verifyError(RuntimeException.class);
+        StepVerifier.create(registry.getActiveCount(roomId)).expectError(RuntimeException.class).verify(VERIFY_CEILING);
         StepVerifier.create(registry.getActiveCount(roomId)).expectNext(7L).expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
     }

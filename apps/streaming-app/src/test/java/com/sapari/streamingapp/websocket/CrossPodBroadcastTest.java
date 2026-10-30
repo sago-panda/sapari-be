@@ -37,6 +37,9 @@ import reactor.test.StepVerifier;
 @Testcontainers
 class CrossPodBroadcastTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
 
@@ -98,7 +101,7 @@ class CrossPodBroadcastTest {
                     org.assertj.core.api.Assertions.assertThat(out.displayMessage()).isEqualTo("크로스팟 안녕");
                     org.assertj.core.api.Assertions.assertThat(out.senderEmail()).isNull();   // 비-owner라 PII 제외
                 })
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         sub.dispose();
     }

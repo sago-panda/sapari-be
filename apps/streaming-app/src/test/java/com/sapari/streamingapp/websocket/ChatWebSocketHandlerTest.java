@@ -56,6 +56,9 @@ import reactor.test.StepVerifier;
 
 class ChatWebSocketHandlerTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private ChatBroadcastSubscriber subscriber;
     private ChatSessionRegistry registry;
     private SendChatUseCase sendUseCase;
@@ -428,7 +431,7 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(Flux.just(payload)
                         .flatMap(p -> handler.onInbound("s1", session, p))
                         .then())
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -458,7 +461,7 @@ class ChatWebSocketHandlerTest {
 
         // when
         StepVerifier.create(handler.onInbound("s1", session, "{\"type\":\"NORMAL\",\"content\":\"도배\"}"))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then: 전송 파이프라인에 아예 들어가지 않는다 — Redis 강퇴 조회는 장애 시 통과(fail-open)라 믿을 수 없다
         then(sendUseCase).should(never()).send(any());
@@ -478,7 +481,7 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(Flux.just("{\"content\":\"안녕\"}")
                         .flatMap(payload -> handler.onInbound("s1", session, payload))
                         .then())
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then: 스트림은 살아있고 ERROR/VALIDATION만 나간다
         ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
@@ -558,7 +561,7 @@ class ChatWebSocketHandlerTest {
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
 
         // when
-        StepVerifier.create(handler.closeWithReason(session, "s1")).verifyComplete();
+        StepVerifier.create(handler.closeWithReason(session, "s1")).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(connections).should(never()).dispose(any());
@@ -575,7 +578,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\",\"myField\":1}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 커맨드까지 도달했다 = 파싱이 통과했다. 거부 카운터도 오르지 않는다.
         then(sendUseCase).should(times(1)).send(any());
@@ -591,7 +594,7 @@ class ChatWebSocketHandlerTest {
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, "{}")).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, "{}")).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(registry).should(times(1)).shouldReplyToRejection("s1");
@@ -609,7 +612,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 서버 잘못이라고 세거나 끊지 않는다 — 사유만 돌려준다
         then(registry).should(never()).terminateKicked(anyString());
@@ -629,7 +632,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(registry).should(never()).sendToSession(anyString(), any());
@@ -647,7 +650,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다
         then(registry).should(times(1)).terminateKicked("s1");
@@ -666,7 +669,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 커맨드에 실려 나간 값이 false여야 서비스 1단계가 거부한다
         then(sendUseCase).should(times(1)).send(argThat(c -> !c.isRoomAlive()));
@@ -686,7 +689,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: ERROR(롤백 키) → SYSTEM(종료 사유) → 종료. 순서가 뒤집히면 sink가 닫혀 뒤엣것이 사라진다.
         InOrder order = inOrder(registry, systemMessageService);
@@ -710,7 +713,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "NOT_ACTIVE".equals(m.code())));
@@ -728,7 +731,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: terminate가 먼저 나가면 tryEmitNext가 FAIL_TERMINATED가 되어 클라는 1008만 받고 사유를 모른다
         InOrder order = inOrder(registry);
@@ -749,7 +752,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 창이 닫혀 있어도 사유는 나가고, 세션도 끊긴다
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "KICKED".equals(m.code())));
@@ -767,7 +770,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 끊지 않고, 대신 다음 프레임이 Redis에 닿지 않도록 창을 기억한다
         then(registry).should(never()).terminateKicked(anyString());
@@ -785,7 +788,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 서비스를 아예 부르지 않고, 남은 시간을 그대로 돌려준다
         then(sendUseCase).should(never()).send(any());
@@ -816,7 +819,7 @@ class ChatWebSocketHandlerTest {
 
         // when
         StepVerifier.create(handler.runInbound(payloads, "s1", session))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(maxInFlight.get()).isOne();
@@ -845,7 +848,7 @@ class ChatWebSocketHandlerTest {
                 "{\"type\":\"NORMAL\",\"content\":\"m3\",\"clientMsgId\":\"c3\"}");
 
         // when
-        StepVerifier.create(handler.runInbound(payloads, "s1", session)).verifyComplete();
+        StepVerifier.create(handler.runInbound(payloads, "s1", session)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(seen).containsExactly("m1", "m2", "m3");
@@ -862,7 +865,7 @@ class ChatWebSocketHandlerTest {
         given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"" + id + "\"}";
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
         // 실제 와이어로 나가는 직렬화까지 태운다
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> {
             assertThat(handler.serialize(m)).isNotBlank();

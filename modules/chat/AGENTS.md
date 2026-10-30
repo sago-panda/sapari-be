@@ -372,13 +372,15 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   schema mutation appeared to break nothing (measured: 832ms green with the unique index deleted). The
   `inputs.dir` line in `build.gradle` closes it; if you move where the schema comes from, move that line too.
 - **A red test still has to say so.** Every `StepVerifier` terminator without a ceiling —
-  `verifyComplete()`, `verify()`, `verifyError(...)` — waits forever for a signal that a regression may have
-  removed, so the test *hangs* instead of failing (measured: 110s and still running on a missing close, 2m34s
-  on a `thenCancel().verify()` whose `expectNext` never arrived). **Give every one of them
-  `verify(Duration)`.** The existing suite predates this rule and still has **~121** such call sites
-  (`verifyComplete()` 69 · bare `verify()` ~50 · `verifyError(...)` 2); new and touched tests take the
-  ceiling, and the rest is a cleanup of its own. "passing ≠ catching" has a twin in
-  "failing ≠ telling".
+  `verifyComplete()`, bare `verify()`, `verifyError(...)`, `verifyErrorMessage(...)` — waits forever for a
+  signal that a regression may have removed, so the test *hangs* instead of failing (measured: 110s and still
+  running on a missing close, 2m34s on a `thenCancel().verify()` whose `expectNext` never arrived).
+  **Every call site now carries one** — 117 of them across 15 files were converted to
+  `expectXxx().verify(VERIFY_CEILING)`, with `VERIFY_CEILING = Duration.ofSeconds(10)` declared per test
+  class. Verified end to end: making a signal never arrive now fails in 12s with
+  `VerifySubscriber timed out` instead of hanging. Keep it that way — a ceiling-less terminator does not
+  just hide one bug, it voids **every mutation verdict in that run**, because the suite cannot report at
+  all. "passing ≠ catching" has a twin in "failing ≠ telling".
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the

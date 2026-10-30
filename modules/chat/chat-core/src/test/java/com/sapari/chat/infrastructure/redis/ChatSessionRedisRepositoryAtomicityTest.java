@@ -8,6 +8,7 @@ import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -26,6 +27,9 @@ import reactor.test.StepVerifier;
  */
 class ChatSessionRedisRepositoryAtomicityTest {
 
+
+    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private final UUID roomId = UUID.randomUUID();
     private final UUID userId = UUID.randomUUID();
 
@@ -39,7 +43,7 @@ class ChatSessionRedisRepositoryAtomicityTest {
 
         // when
         StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<List<String>> keys = ArgumentCaptor.forClass(List.class);
@@ -62,6 +66,6 @@ class ChatSessionRedisRepositoryAtomicityTest {
 
         // when & then
         StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
-                .verifyErrorMessage("redis blip");
+                .expectErrorMessage("redis blip").verify(VERIFY_CEILING);
     }
 }
