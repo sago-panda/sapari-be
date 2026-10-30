@@ -13,6 +13,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.CloseStatus;
 
@@ -22,7 +23,6 @@ import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -42,7 +42,6 @@ import reactor.util.concurrent.Queues;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class ChatSessionRegistry implements ChatSessionManager {
 
     /** 세션당 아웃바운드 버퍼 상한. 방 하나가 초당 수십 건 × 몇 초 적체를 견디는 크기. */
@@ -76,14 +75,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 3.96ms(79%)다. 이 값을 읽고 "두 자릿수 여유가 있으니 예산 소비자를 더 붙여도 된다"로 가면,
      * 큰 방에서 꼬리 세션부터 재시도 없이 한 번만 시도하게 된다.
      */
-    private static final long CONTENTION_SPIN_NANOS = Duration.ofMillis(5).toNanos();
+    private static final long DEFAULT_CONTENTION_SPIN_NANOS = Duration.ofMillis(5).toNanos();
 
     /**
      * 종료 신호 재시도 상한. emit보다 넉넉히 주는 이유는 종료 보장이 아니라 <b>전달 확률</b>이다 —
      * 이 신호가 걸려야 버퍼 잔여분이 흘러나가고, 강퇴 직전에 보낸 SYSTEM(KICKED)이 클라에 닿는다.
      * 놓쳐도 제어 채널이 종료 자체는 책임진다({@code terminate} 참고).
      */
-    private static final long COMPLETE_SPIN_NANOS = Duration.ofMillis(50).toNanos();
+    private static final long DEFAULT_COMPLETE_SPIN_NANOS = Duration.ofMillis(50).toNanos();
 
     /**
      * 드롭 로그 솎아내기 간격 — 드롭이 몰리는 상황이 곧 CPU 포화라 건당 로그가 상황을 악화시킨다.
@@ -102,6 +101,54 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 한쪽만 따라간다. 뒤처지는 쪽이 감사이고, 그러면 노출은 늘고 흔적은 주는 방향으로 갈린다.
      */
     private final ChatPermissionPolicy permissionPolicy;
+
+    /**
+     * emit 경합 재시도 상한. 운영은 {@link #DEFAULT_CONTENTION_SPIN_NANOS}.
+     *
+     * <p>상수가 아니라 필드인 이유는 <b>테스트가 이 값을 넓혀야 하기 때문</b>이다. 이 값에 기대는
+     * 테스트들이 고정하는 것은 절대값이 아니라 <b>관계</b>다 — "예산보다 짧은 경합은 넘겨진다",
+     * "예산보다 긴 경합은 버려지고 계수된다". 상수로 두면 그 관계를 세울 유일한 레버가 체류 시간이고,
+     * 그러면 마진이 ms 자릿수에 갇힌다(1ms 체류 vs 5ms 예산 = 5배). 스레드가 수십 ms 선점되는 것은
+     * 부하에서 흔한 일이라 그 마진은 지워지고, 테스트는 <b>설계가 약속하지 않은 것</b>을 요구하다
+     * 흔들린다(경합 소진 시 드롭은 best-effort 계약이다).
+     *
+     * <p>예산과 체류를 <b>같이</b> 키우면 관계가 글자 그대로 보존되면서 마진만 곱해진다. 기본값에서
+     * 동작은 완전히 동일하다 — 행동 변화가 0 인 진입점이다.
+     *
+     * <p>⚠️ 결정론은 아니다. 벽시계는 여전히 벽시계이고, 필요한 선점이 ms 에서 수백 ms 로 옮겨가
+     * 확률이 내려가는 것이다. 시계를 가짜로 바꾸는 쪽은 안 된다 — {@code Thread.onSpinWait()} 루프가
+     * 가짜 시계로는 돌지 않아 재려던 기제 자체가 사라진다. <b>키우되 가짜로 만들지 않는다.</b>
+     */
+    private final long contentionSpinNanos;
+
+    /** 종료 신호 재시도 상한. 운영은 {@link #DEFAULT_COMPLETE_SPIN_NANOS}. 위와 같은 이유로 필드다. */
+    private final long completeSpinNanos;
+
+    @Autowired
+    public ChatSessionRegistry(ChatSessionRepository sessionRepository,
+                               ChatPermissionPolicy permissionPolicy) {
+        this(sessionRepository, permissionPolicy,
+                DEFAULT_CONTENTION_SPIN_NANOS, DEFAULT_COMPLETE_SPIN_NANOS);
+    }
+
+    /** 운영 생성자가 실제로 운영 예산을 넘기는지 재기 위한 진입점 — 넓힌 예산이 테스트에만 머물게 한다. */
+    long contentionSpinNanos() {
+        return contentionSpinNanos;
+    }
+
+    /** 위와 같다. 둘을 따로 읽는 이유는 뒤바꿔 넘기는 실수가 한 값만 보면 드러나지 않기 때문이다. */
+    long completeSpinNanos() {
+        return completeSpinNanos;
+    }
+
+    /** 예산을 넓혀 받는다 (테스트 진입점 — 위 {@link #contentionSpinNanos} 참고). */
+    ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
+                        long contentionSpinNanos, long completeSpinNanos) {
+        this.sessionRepository = sessionRepository;
+        this.permissionPolicy = permissionPolicy;
+        this.contentionSpinNanos = contentionSpinNanos;
+        this.completeSpinNanos = completeSpinNanos;
+    }
 
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
     private final Map<String, LocalSession> local = new ConcurrentHashMap<>();
@@ -776,7 +823,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 세션 하나를 위한 예산 — 단건 전송과 단건 종료가 쓴다. 세지 않는다({@link #newSharedBudget} 참고). */
     private FanOutBudget newBudget() {
         long now = System.nanoTime();
-        return new FanOutBudget(now + CONTENTION_SPIN_NANOS, now + COMPLETE_SPIN_NANOS);
+        return new FanOutBudget(now + contentionSpinNanos, now + completeSpinNanos);
     }
 
     /**
