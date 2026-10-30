@@ -44,8 +44,16 @@ import reactor.test.StepVerifier;
 class RedisChatBroadcasterTest {
 
 
-    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
-    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
+    /**
+     * StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다
+     * (근거: modules/chat/AGENTS.md).
+     *
+     * <p>다른 테스트 클래스의 10초가 아니라 30초다. 이 클래스는 실제 컨테이너를 왕복하고
+     * 실측 최악 케이스가 1.232s 라, 10초면 마진이 8~9배뿐이다 — 이 저장소에서 5배 마진의
+     * 벽시계 단언이 부하 구간에 실제로 뒤집힌 적이 있다. 이 상한의 일은 "무한을 유한으로"이고
+     * 성능을 단언하는 것이 아니므로, 넉넉하게 두는 쪽이 비용이 없다(멈춤은 30초에도 잡힌다).
+     */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(30);
     private ReactiveStringRedisTemplate redis;
     private RedisChatBroadcaster broadcaster;
     private ObjectMapper mapper;   // 검증용(동일 계약)
