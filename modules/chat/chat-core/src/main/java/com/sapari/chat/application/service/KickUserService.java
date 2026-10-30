@@ -218,7 +218,7 @@ public class KickUserService implements KickUserUseCase {
             // 알림을 울리지 않게 하려는 것이었는데, 원인까지 지우면 울려야 할 쪽도 조용해진다.
             log.warn("강퇴 기록이 상한을 넘었다 — 경합이면 정상이고, 반복되면 DB가 느려진 것이다."
                     + " targetUserId={}", kickLog.targetUserId(), e);
-            // 사유를 잠금으로 못 박지 않는다 — 네 모양 중 셋은 트랜잭션 상한 쪽이고, 고정 문구를 두면
+            // 사유를 잠금으로 못 박지 않는다 — 네 모양 중 둘은 트랜잭션 상한 쪽이고, 고정 문구를 두면
             // 운영자가 로그만 보고 원인을 잠금으로 오판한다. 실제 타입을 싣는다.
             throw new ChatKickContendedException(
                     "강퇴 기록이 상한을 넘었다(" + e.getClass().getSimpleName() + ") — targetUserId="

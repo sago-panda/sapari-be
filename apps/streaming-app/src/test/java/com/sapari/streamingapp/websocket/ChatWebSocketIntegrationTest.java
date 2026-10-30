@@ -289,6 +289,44 @@ class ChatWebSocketIntegrationTest {
     }
 
     @Test
+    @DisplayName("⭐ 서버발 종료는 유예를 기다리지 않는다 — 데이터 채널이 닫히면 그 자리에서 끊긴다")
+    void server_initiated_close_does_not_wait_for_the_forced_grace() {
+        // given: 접속 중 강퇴. 종료 경로가 둘이다 — 데이터 채널(sink complete → outbound 완료)이
+        // 정상 경로이고, 제어 채널 + 유예(3초)는 그게 막혔을 때의 탈출로다.
+        //
+        // 아웃바운드에 끝나지 않는 publisher 가 섞이면 session.send 가 영원히 완료되지 않아
+        // <b>정상 경로가 도달 불가</b>가 된다. 그러면 강퇴·밴·방 종료·버퍼 초과·수명·생존이 전부
+        // 유예 경로로만 닫히고, 그 사이 세션 명부·방 인덱스·방 구독·Redis 항목이 함께 남는다
+        // (방 종료 때는 그 방 전체가 동시에).
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String kickEnvelope = "{\"kind\":\"KICK_EVENT\",\"userId\":\"" + userId + "\"}";
+
+        AtomicReference<Long> kickedAtNanos = new AtomicReference<>();
+        AtomicReference<Long> closedAtNanos = new AtomicReference<>();
+
+        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
+            session.closeStatus().doOnNext(ignored -> closedAtNanos.set(System.nanoTime())).subscribe();
+            Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText).then();
+            Mono<Void> kick = Mono.delay(Duration.ofMillis(700))
+                    .doOnNext(ignored -> kickedAtNanos.set(System.nanoTime()))
+                    .then(redisTemplate.convertAndSend("chat:pubsub:" + roomId, kickEnvelope))
+                    .then();
+            return receive.and(kick);
+        }).block(Duration.ofSeconds(20));
+
+        // then: 유예(3초)를 기다렸다면 정상 경로가 죽어 있다는 뜻이다.
+        // 1초는 그 둘을 가르는 값이다 — 정상 경로는 수십 ms 이고 유예 경로는 3초다.
+        assertThat(kickedAtNanos.get()).as("강퇴 발행 시각이 안 잡혔다").isNotNull();
+        assertThat(closedAtNanos.get()).as("세션이 닫히지 않았다").isNotNull();
+        long elapsedMillis = (closedAtNanos.get() - kickedAtNanos.get()) / 1_000_000;
+        assertThat(elapsedMillis)
+                .as("서버발 종료가 유예를 기다렸다 — 데이터 채널 종료 경로가 도달 불가다")
+                .isLessThan(1_000);
+    }
+
+    @Test
     @DisplayName("⭐ 계약상 최대 메시지는 프레임 상한에 걸리지 않는다 — 상한을 낮추면 긴 글만 조용히 사라진다")
     void largest_legitimate_message_still_passes() {
         // given: 본문 상한을 꽉 채운 한글 200자 + clientMsgId 상한 64자. 한글은 UTF-8에서 글자당 3바이트라
@@ -300,8 +338,16 @@ class ChatWebSocketIntegrationTest {
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
-        String longestContent = "가".repeat(200);
-        String longestClientMsgId = "c".repeat(64);
+        // 와이어 바이트를 <b>이스케이프 최악</b>으로 만든다. 생 UTF-8 한글은 글자당 3바이트(~714B)인데
+        // 클라가 JSON 유니코드 이스케이프로 보내면 글자당 6바이트다 — 상한을 유도할 때 쓴 바로 그
+        // 최악이고, 생 바이트만 보내면 상한을 1KB 로 낮추는 변경이 통과한다(리뷰어 실측). 그러면
+        // 계약상 정당한 긴 메시지가 사유 프레임도 없이 연결째 끊긴다.
+        //
+        // 접두를 런타임에 조립하는 이유: 자바는 <b>주석과 문자열 안에서도</b> 유니코드 이스케이프를
+        // 토큰화 전에 먼저 해석한다(JLS 3.3). 그 표기를 소스에 그대로 쓰면 컴파일이 깨진다.
+        String escape = "\\" + "u";
+        String longestContent = (escape + "AC00").repeat(200);     // '가' 200자를 이스케이프 표기로
+        String longestClientMsgId = (escape + "0063").repeat(64);  // 'c' 64자를 이스케이프 표기로
         String payload = "{\"type\":\"NORMAL\",\"content\":\"" + longestContent
                 + "\",\"clientMsgId\":\"" + longestClientMsgId + "\"}";
 
@@ -311,8 +357,7 @@ class ChatWebSocketIntegrationTest {
         // then: 저장됐고 ACK가 그 상관관계 id를 그대로 돌려준다
         assertThat(frames)
                 .as("계약상 최대 메시지가 프레임 상한에 걸렸다 — 상한이 본문·id 상한과 어긋났다")
-                .anyMatch(f -> f.contains("\"type\":\"ACK\"")
-                        && f.contains("\"clientMsgId\":\"" + longestClientMsgId + "\""));
+                .anyMatch(f -> f.contains("\"type\":\"ACK\"") && f.contains("\"clientMsgId\":\"" + "c".repeat(64) + "\""));
     }
 
     @Test
@@ -346,6 +391,12 @@ class ChatWebSocketIntegrationTest {
         assertThat(frames)
                 .as("상한을 넘는 프레임이 파싱까지 갔다 — 디코더가 끊지 않았다")
                 .noneMatch(f -> f.contains("\"code\":\"VALIDATION\""));
+        // 처분까지 고정한다 — "응답이 안 온다"만 보면 "조용히 버리고 연결은 유지"로 바뀌는 회귀가
+        // 통과한다. 실제 처분은 1009 종료이고, 그 코드는 프론트 계약에 들어가야 하는 값이다.
+        assertThat(observed.get()).as("상한 초과인데 세션이 닫히지 않았다").isNotNull();
+        assertThat(observed.get().getCode())
+                .as("상한 초과 처분이 1009(TOO_BIG_TO_PROCESS)가 아니다 — 프론트가 사유를 가릴 수 없다")
+                .isEqualTo(1009);
     }
 
     /** WS 접속(토큰=서브프로토콜) → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */

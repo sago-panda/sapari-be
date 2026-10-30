@@ -82,11 +82,15 @@ class ChatWebSocketHandlerTest {
         handler = handlerWithLifetime(Duration.ofHours(1));
     }
 
+    /** 핸들러가 생존 확인에 넘겨야 하는 기한. 목이 이 값으로만 답하므로 다른 값을 넘기면 스텁이 빗나간다. */
+    private static final Duration LIVENESS_DEADLINE = Duration.ofSeconds(90);
+    private static final Duration PING_INTERVAL = Duration.ofSeconds(30);
+
     private ChatWebSocketHandler handlerWithLifetime(Duration lifetime) {
         return new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), entryGate,
                 registry, sendUseCase, subscriber, connections, systemMessageService,
-                new SessionTimeouts(lifetime, Duration.ofSeconds(30), Duration.ofSeconds(90)));
+                new SessionTimeouts(lifetime, PING_INTERVAL, LIVENESS_DEADLINE));
     }
 
     /**
@@ -116,7 +120,9 @@ class ChatWebSocketHandlerTest {
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         // 기한이 지났다고 레지스트리가 답한다 — 시계 자체는 레지스트리 단위 테스트가 지킨다.
-        given(registry.isUnresponsive(eq("s1"), any())).willReturn(true);
+        // 기한 인자를 any() 로 지우면 핸들러가 <b>수명 상한</b>을 기한으로 넘기는 뮤턴트가 통과한다 —
+        // 그러면 생존 확인이 60분 침묵에서만 참이 되어 사실상 무효가 되는데 아무 테스트도 깨지지 않는다.
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(true);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when & then: 수명 상한(1시간)보다 한참 먼저 거둬야 한다 — 그게 이 분기의 존재 이유다.
@@ -141,7 +147,7 @@ class ChatWebSocketHandlerTest {
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
         given(registry.outbound("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
-        given(registry.isUnresponsive(eq("s1"), any())).willReturn(false);
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when & then: 발화가 없다는 이유로 끊으면 정상 시청자가 전부 끊긴다
@@ -150,6 +156,27 @@ class ChatWebSocketHandlerTest {
                 .then(() -> then(registry).should(never()).terminateUnresponsive(anyString()))
                 .thenCancel()
                 .verify(Duration.ofSeconds(10));
+    }
+
+    @Test
+    @DisplayName("⭐ 수명 상한은 흩어지되 상한을 넘지 않는다 — 같이 들어온 세션이 같이 재접속하면 그게 부하다")
+    void lifetime_is_jittered_below_the_limit() {
+        // given: 상한이 통제 값이라 위로 넘기면 안 되고, 한 점에 몰리면 재접속이 폭주한다
+        Duration limit = Duration.ofMinutes(60);
+
+        // when: 여러 번 뽑는다
+        java.util.Set<Long> seen = new java.util.HashSet<>();
+        for (int i = 0; i < 200; i++) {
+            Duration jittered = handler.jittered(limit);
+            seen.add(jittered.toMillis());
+            assertThat(jittered).as("지터가 상한을 넘었다 — 통제 값이 느슨해진다").isLessThanOrEqualTo(limit);
+            assertThat(jittered).as("지터 폭이 과하다 — 상한이 사실상 짧아진다")
+                    .isGreaterThanOrEqualTo(limit.multipliedBy(80).dividedBy(100));
+        }
+
+        // then: 실제로 흩어진다 — 고정값을 돌려주면 지터가 없는 것과 같다
+        assertThat(seen).as("지터가 흩어지지 않았다 — 같이 들어온 세션이 같은 순간에 끊긴다")
+                .hasSizeGreaterThan(50);
     }
 
     @Test
@@ -172,12 +199,14 @@ class ChatWebSocketHandlerTest {
         Duration lifetime = Duration.ofMinutes(60);
         ChatWebSocketHandler bounded = handlerWithLifetime(lifetime);
 
-        // when & then: 상한 직전에는 아직 끊지 않고, 상한을 지나면 끊는다.
+        // when & then: 지터 폭(상한의 15% 아래로) 바깥에서는 아직 끊지 않고, 상한을 지나면 끊는다.
+        // 지터가 있으므로 "상한 직전"으로는 단언할 수 없다 — 최대 15% 일찍 발화한다.
         // verify 에 상한을 준다 — 기본값은 무한 대기라, 분기가 빠지면 이 테스트가 실패하는 대신 멈춘다.
+        Duration beforeAnyJitter = lifetime.multipliedBy(80).dividedBy(100);
         StepVerifier.withVirtualTime(() -> bounded.runSession(session, chatSession))
-                .thenAwait(lifetime.minusSeconds(1))
+                .thenAwait(beforeAnyJitter)
                 .then(() -> then(registry).should(never()).terminateLifetimeExpired(anyString()))
-                .thenAwait(Duration.ofSeconds(2))
+                .thenAwait(lifetime.minus(beforeAnyJitter).plusSeconds(1))
                 .then(() -> then(registry).should(times(1)).terminateLifetimeExpired("s1"))
                 .thenCancel()
                 .verify(Duration.ofSeconds(10));

@@ -40,6 +40,7 @@ import lombok.extern.slf4j.Slf4j;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.publisher.SignalType;
 
 /**
@@ -169,23 +170,48 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // Flux.defer: outbound()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
         // 아웃바운드에 ping 을 합류시킨다. 별도 send 로 두면 같은 소켓에 두 publisher 가 붙어 프레임
         // 순서 보장이 사라진다 — Reactor Netty 의 send 는 한 publisher 안에서만 직렬화한다.
-        Mono<Void> outbound = session.send(Flux.merge(
-                Flux.defer(() -> registry.outbound(sid)).map(message -> session.textMessage(serialize(message))),
-                // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
-                Flux.interval(timeouts.pingInterval(), timeouts.pingInterval())
-                        .map(ignored -> session.pingMessage(factory -> factory.wrap(new byte[0])))));
+        //
+        // ⚠️ <b>ping 은 데이터 채널이 닫힐 때 함께 멈춰야 한다.</b> {@code Flux.interval} 은 스스로
+        // 끝나지 않으므로 그대로 합류시키면 합쳐진 publisher 가 영원히 완료되지 않고, 그러면
+        // {@code session.send} 도 완료되지 않아 아래 {@code outbound.then(closeWithReason)} 가
+        // <b>도달 불가</b>가 된다. 그 결과 서버발 종료 전부(강퇴·밴·방 종료·버퍼 초과·수명·생존)가
+        // 유예 경로로만 닫혀 27ms 가 3초가 된다(실측 — 리뷰어가 세 번, 내가 한 번).
+        //
+        // 제어 채널이 아니라 <b>데이터 스트림의 종료</b>에 묶는다. 제어 채널에 묶으면 그 발화가
+        // 실패할 때(레지스트리가 ERROR 로 남기는 경우) 어느 분기도 이기지 못해 세션이 영구히 남는다 —
+        // 데이터 채널과 제어 채널을 둘 다 거는 이중화가 그때 사라진다.
+        Sinks.Empty<Void> dataChannelDone = Sinks.empty();
+        Flux<WebSocketMessage> data = Flux.defer(() -> registry.outbound(sid))
+                .map(message -> session.textMessage(serialize(message)))
+                .doFinally(signal -> dataChannelDone.tryEmitEmpty());
+        // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
+        // onBackpressureDrop: 요청이 없을 때 틱을 버린다. 안 버리면 PONG 은 답하지만 데이터 프레임은
+        // 읽지 않는 클라에서 prefetch 가 차면 send 가 OverflowException 으로 끝나는데, 그 에러는
+        // 핸들러의 어느 onErrorResume 에도 안 걸린다. 못 쓰는 ping 은 버리는 것이 맞다.
+        Flux<WebSocketMessage> pings = Flux.interval(timeouts.pingInterval(), timeouts.pingInterval())
+                .onBackpressureDrop()
+                .map(ignored -> session.pingMessage(factory -> factory.wrap(new byte[0])))
+                .takeUntilOther(dataChannelDone.asMono());
+        Mono<Void> outbound = session.send(Flux.merge(data, pings));
 
         Mono<Void> inbound = runInbound(session.receive()
                 // 생존 시계는 필터 <b>앞에서</b> 민다 — 재려는 것이 "말을 하는가"가 아니라 "소켓이
                 // 살아 있는가"라서, 서버 ping 에 대한 pong 처럼 파싱 대상이 아닌 프레임도 세어야 한다.
-                // 여기서는 종류만 읽고 payload 는 건드리지 않는다(버퍼 수명은 아래 필터와 동일하게 유지).
+                // 여기서는 종류만 읽고 payload 는 건드리지 않는다. 필터에서 버려지는 프레임의 버퍼도
+                // reactor-netty 가 해제하므로(FluxReceive 가 onNext 직후 try/finally 로 release)
+                // 이 탭이 버퍼 수명에 영향을 주지 않는다 — 리뷰어가 원전으로 확인했다.
                 //
-                // <b>PONG 이 여기까지 올라온다는 것이 이 기능의 전제다</b>(실측). Netty 기본 설정은
-                // 들어오는 PING 만 자동 응답하고 삼키며, PONG 은 그대로 올려준다 — 즉 서버가 먼저 묻고
-                // 그 응답을 여기서 받는 모양이 성립한다. 올라오지 않는다면 생존 확인이 "소켓이 살아
-                // 있는가" 대신 "클라가 말을 하는가"를 재게 되어, 보는 것만 하는 시청자를 기한마다
-                // 전부 끊는다. {@code handlePing(true)} 로 바꿀 필요는 없다 — 그러면 클라 PING 에
-                // 손으로 응답해야 한다.
+                // <b>PONG 이 여기까지 올라온다는 것이 이 기능의 전제다</b>(실측). 올라오지 않는다면
+                // 생존 확인이 "소켓이 살아 있는가" 대신 "클라가 말을 하는가"를 재게 되어, 보는 것만
+                // 하는 시청자를 기한마다 전부 끊는다.
+                //
+                // ⚠️ 그 성질은 <b>Netty 기본값이 아니라 reactor-netty 의 것</b>이다. Netty 자신의
+                // {@code WebSocketProtocolHandler} 는 무인자 생성자가 {@code dropPongFrames = true} 를
+                // 넣어 <b>반대로</b> 동작한다. 성립하는 이유는 reactor-netty 가 그 핸들러를 쓰지 않고
+                // 직접 핸드셰이크하며, 그 인바운드 경로에 PING 분기만 있고 PONG 분기가 없어서
+                // PONG 이 일반 프레임 경로로 올라오기 때문이다({@code WebsocketServerSpec.handlePing()}
+                // 기본값 false = PING 자동 응답). 그 핸들러를 파이프라인에 끼우거나 서버를 바꾸면
+                // <b>이 기능이 조용히 죽는다.</b>
                 .doOnNext(message -> registry.recordInbound(sid))
                 // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
                 // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(Ping은 Netty가 자동 응답하고 올려주지 않음).
@@ -217,7 +243,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 실제 닫기는 아래 셋이 이미 하는 일이고, 여기서 함께 완료되면 그 경로를 건너뛰어 버퍼에 남은
         // 메시지가 버려진다. 촉발이 전달되지 않는 경우도 유계다: 제어 채널이 발화하므로 forcedClose가
         // 유예 뒤에 받는다.
-        Mono<Void> lifetimeExpiry = Mono.delay(timeouts.maxLifetime())
+        // 지터를 섞는다. Mono.delay 는 구독 시점 기준이라, 같이 들어온 세션들(방송 시작 직후가 그렇다)이
+        // 같은 순간에 같이 만료되고 같이 재접속한다. 재접속 1건이 live 의 입장(서명·검증·Redis 왕복)을
+        // 다시 타는데 그 엔드포인트에 레이트리밋이 없다 — 12,000 세션이 한 점에 몰리면 그 자체가 부하다.
+        // 상한을 늘리지 않고 아래로만 흩는다(상한이 통제 값이므로 넘기면 안 된다).
+        Mono<Void> lifetimeExpiry = Mono.delay(jittered(timeouts.maxLifetime()))
                 .doOnNext(ignored -> registry.terminateLifetimeExpired(sid))
                 .then(Mono.never());
 
@@ -233,13 +263,32 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return registry.register(sid, chatSession)
                 .then(roomInfoFor(roomId, chatSession))
                 .flatMap(info -> registry.sendToSession(sid, info))
-                // firstWithSignal: 셋 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
-                // (sink complete → outbound), 그리고 그 둘이 다 막혔을 때의 강제 종료.
+                // firstWithSignal: 다섯 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
+                // (sink complete → outbound), 그 둘이 다 막혔을 때의 강제 종료, 그리고 수명 상한·생존 확인.
                 // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
                 .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
                         forcedClose.then(closeWithReason), lifetimeExpiry, livenessWatch))
                 .doFinally(signal -> cleanup(roomId, sid));
     }
+
+    /**
+     * 수명 상한을 ±{@value #LIFETIME_JITTER_PERCENT}% 안쪽에서 흩는다. (테스트 진입점)
+     *
+     * <p><b>아래로만 흩는다.</b> 이 값은 "접속 후 바뀐 권위가 반영되기까지의 상한"이라 넘기면 통제가
+     * 느슨해진다. 그래서 {@code [limit × (1 - p), limit]} 범위다.
+     *
+     * <p>보안 난수가 아니다 — 흩는 것이 목적이고 예측 불가가 목적이 아니다.
+     */
+    Duration jittered(Duration limit) {
+        long span = limit.toMillis() * LIFETIME_JITTER_PERCENT / 100;
+        if (span <= 0) {
+            return limit;
+        }
+        return limit.minusMillis(java.util.concurrent.ThreadLocalRandom.current().nextLong(span + 1));
+    }
+
+    /** 수명 상한을 흩는 폭(%). 재접속이 한 점에 몰리지 않을 만큼이면 되고 정밀할 이유가 없다. */
+    private static final long LIFETIME_JITTER_PERCENT = 15;
 
     /**
      * 종료 사유를 코드로 실어 닫는다. flush가 막혀 close가 끝나지 않아도 상한 뒤 완료해

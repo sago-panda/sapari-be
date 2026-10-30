@@ -139,8 +139,20 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
 - **Buffer overflow and emit contention are different failures.** Overflow means the client cannot keep up →
   close. Contention means another thread held the lock → drop that message, keep the session. Merging them
   makes load shed healthy viewers, whose reconnects raise load further.
-- Close codes: **1000** room ended (normal *and* the late-discovery path — identical on purpose),
-  **1008** entry denial / kick / account-level ban, **1013** buffer overflow. 1013 rather than 1000 exists to stop instant reconnect.
+- Close codes: **1000** room ended, session-lifetime expiry, and liveness-check failure (all three on purpose
+  — see below), **1008** entry denial / kick / account-level ban, **1009** inbound frame over the 4 KB limit
+  (Netty's decoder closes; the reason string leaks the configured limit), **1013** buffer overflow.
+  1013 rather than 1000 exists to stop instant reconnect.
+- ⚠️ **1000 now means three different things, and only one of them carries an explanation.** Room end is
+  preceded by `SYSTEM(ROOM_ENDED)`; lifetime expiry and liveness failure send no frame at all, because the
+  only thing the client should do is reconnect. **That makes "did a SYSTEM(ROOM_ENDED) arrive just before the
+  close?" the sole signal separating "the broadcast is over" from "reconnect now"** — an implicit contract the
+  front end must hold. If it instead reads 1000 as "ended", every healthy viewer sees "방송이 종료되었습니다"
+  once per lifetime window. **The front-end behaviour is not verifiable from this repo** (no front-end code
+  here), so treat it as an assumption to confirm, not a measured fact. Giving expiry its own code would remove
+  the ambiguity at the cost of a new front-end contract.
+- ⚠️ **1009 has no defined front-end behaviour yet** — nothing in this repo mentions it besides the limit
+  itself. A client hitting it is sending frames the protocol layer refuses, so retrying unchanged will loop.
 - Terminate signals **both** channels: sink `complete` (drains the buffer so a just-sent SYSTEM arrives) and
   a control sink (the escape when the client never reads). First reason wins; a later kick cannot overwrite it.
 - Fan-out budgets are **per operation, not per session** — the loop runs on the pod's shared Redis subscriber

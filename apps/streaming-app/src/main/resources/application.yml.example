@@ -40,3 +40,14 @@ chat:
   profanity:
     words: ${CHAT_PROFANITY_WORDS:}                        # optional (CSV)
     whitelist: ${CHAT_PROFANITY_WHITELIST:}                # optional (CSV)
+
+  # 연결 하나에 걸리는 시간 상한 셋. 서로 제약한다 — 기한은 간격의 두 배 이상, 수명은 기한보다
+  # 커야 하고 셋 다 양수여야 한다(아니면 부팅 실패: SessionTimeouts).
+  #
+  # 수명 상한이 있는 이유: 입장 토큰은 핸드셰이크 때 한 번만 검증되므로 그 뒤의 역할 강등·방
+  # 소유권 이전은 이 세션에 닿지 않는다. 재접속이 live 의 입장을 다시 타므로, 이 값이
+  # "접속 후 바뀐 권위가 반영되기까지의 상한"이 된다.
+  session:
+    max-lifetime: ${CHAT_SESSION_MAX_LIFETIME:}            # optional (코드 기본값 60m)
+    ping-interval: ${CHAT_SESSION_PING_INTERVAL:}          # optional (코드 기본값 30s)
+    liveness-deadline: ${CHAT_SESSION_LIVENESS_DEADLINE:}  # optional (코드 기본값 90s = 3 × ping)

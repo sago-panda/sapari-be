@@ -38,6 +38,13 @@ public class WebSocketConfig {
     public ChatWebSocketHandler chatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate,
             ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber,
             NettyConnectionRegistry connections, SystemMessageService systemMessageService,
+            // 기본값 셋의 근거. 생존 기한 90s = 3 × ping 간격이다 — ping <b>두 번</b> 유실까지
+            // 견딘다는 뜻이고, 그게 SessionTimeouts 의 "기한 >= 2 × 간격" 불변식과 같은 축이다
+            // (불변식은 하한이고 이 값은 거기에 한 칸 더 준 것이다).
+            //
+            // ping 30s 와 수명 60m 은 고른 값이다. 전자는 흔한 유휴 커넥션 타임아웃(LB·프록시가
+            // 보통 60s 안팎)보다 짧게 둔 것이고, 후자는 "접속 후 바뀐 권위가 반영되기까지의 상한"이라
+            // 짧으면 재접속 폭주가 늘고 길면 옛 권위가 오래 남는다. 측정된 값이 아니다.
             @Value("${chat.session.max-lifetime:60m}") Duration maxLifetime,
             @Value("${chat.session.ping-interval:30s}") Duration pingInterval,
             @Value("${chat.session.liveness-deadline:90s}") Duration livenessDeadline) {

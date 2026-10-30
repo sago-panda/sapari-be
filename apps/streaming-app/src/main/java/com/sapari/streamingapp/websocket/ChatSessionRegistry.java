@@ -133,6 +133,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
 
+    /** 수명 상한으로 끊은 누적 수 — 로그를 솎아도 규모는 남긴다. */
+    private final AtomicLong lifetimeExpiredCount = new AtomicLong();
+
+    /** 수명 상한 로그를 마지막으로 남긴 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
+    private final AtomicLong lastLifetimeExpiryLogNanos =
+            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+
     /** 만든 fan-out 공유 예산 수 — fan-out당 하나라는 불변식을 테스트가 고정한다({@link #budgetsCreated}). */
     private final LongAdder budgetsCreated = new LongAdder();
 
@@ -588,9 +595,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 역할 강등, 방 소유권 이전, 탈퇴 확정. 지금 그 중 전파되는 것은 밴 하나뿐(계정 이벤트 채널)이고
      * 나머지는 세션이 살아 있는 동안 영원히 옛 권위로 돈다.
      *
-     * <p>개별 전파를 하나씩 늘리는 대신 <b>수명으로 전부 유계로 만든다.</b> 재접속은 live의 입장을
-     * 다시 타므로 거기서 권위가 새로 평가된다 — 끝난 방이면 토큰이 아예 발급되지 않고, 역할이 바뀌었으면
-     * 바뀐 역할로 온다. 전파 경로를 몰라도 상한만큼 뒤에는 맞는 상태가 된다.
+     * <p>개별 전파를 하나씩 늘리는 대신 <b>수명으로 유계로 만든다.</b> 재접속은 live의 입장을 다시
+     * 타므로 <b>방 상태</b>는 거기서 새로 평가된다 — 끝난 방이면 토큰이 아예 발급되지 않고 소유권
+     * 이전도 반영된다. 그 둘은 live DB 에서 온다.
+     *
+     * <p>⚠️ <b>계정 상태는 그렇지 않다.</b> 한때 여기에 "역할이 바뀌었으면 바뀐 역할로 온다"고
+     * 적혀 있었는데 거짓이다 — 역할은 live DB 가 아니라 <b>access 토큰 claims</b> 에서 오고, live-app 의
+     * 인증 필터가 폐기 저장소를 보지 않는다(그 파일이 스스로 "폐기 갭"으로 적어 두었다). 즉 역할 강등·
+     * 탈퇴·로그아웃이 반영되기까지의 실제 상한은 <b>이 수명 + access 잔여 TTL</b> 이다. 특권 세션
+     * (방 주인·ADMIN)은 그 창 동안 {@code senderEmail} 과 마스킹 전 원문을 계속 받으므로 그건 PII 창이다 —
+     * 짧은 별도 상한이나 밴과 같은 전파 채널이 그쪽의 처방이고, 이 수명이 대신하지 못한다.
      *
      * <p>정상 종료(1000)로 닫는다. 이 코드에는 "곧장 다시 붙어라"는 뜻이 이미 실려 있고
      * ({@link #emit}의 1013 주석 참고) 여기서 원하는 것이 바로 그것이다. 사유 프레임은 보내지 않는다 —
@@ -602,9 +616,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
         if (ls == null) {
             return;
         }
-        // info다 — 고장이 아니라 설계대로 도는 정상 경로이고, 방 하나에서 수천 건이 난다.
-        log.info("세션 수명 상한 — 종료(재접속으로 권위 재평가) sessionId={} roomId={}",
-                sessionId, ls.session().roomId());
+        // 솎아낸다. 같이 들어온 세션들이 같이 만료되므로 이 로그는 재접속 폭주 구간에 몰리고,
+        // 그 구간에 세션당 한 줄을 남기면 원인 로그를 제 로그로 묻는다 — 이 파일의 다른 열화 로그가
+        // 전부 간격 솎기를 쓰는 근거와 같다. 누적 수는 함께 남겨 규모를 잃지 않는다.
+        long expired = lifetimeExpiredCount.incrementAndGet();
+        if (shouldLogLifetimeExpiry()) {
+            log.info("세션 수명 상한 — 종료(재접속으로 권위 재평가) 표본 sessionId={} 표본 roomId={} 누적={}",
+                    sessionId, ls.session().roomId(), expired);
+        }
         terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
     }
 
@@ -737,6 +756,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 곱해지지 않는다 — 방 fan-out은 방 전체 중계를 담당하는 Redis 구독 스레드 위에서 돈다.
      */
     private record FanOutBudget(long emitDeadline, long completeDeadline) {
+    }
+
+    /** 수명 상한 로그 간격 — 드롭 로그와 같은 규율이다(간격당 1건, 첫 발생은 반드시). */
+    private boolean shouldLogLifetimeExpiry() {
+        long now = System.nanoTime();
+        long last = lastLifetimeExpiryLogNanos.get();
+        return now - last >= DROP_LOG_INTERVAL_NANOS
+                && lastLifetimeExpiryLogNanos.compareAndSet(last, now);
     }
 
     /** 마지막 드롭 로그로부터 간격이 지났으면 true. 경쟁 시 CAS로 한 스레드만 통과한다. */
