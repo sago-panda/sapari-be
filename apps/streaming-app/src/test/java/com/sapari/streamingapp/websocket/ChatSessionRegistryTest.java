@@ -16,6 +16,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -364,7 +365,7 @@ class ChatSessionRegistryTest {
 
     @Test
     @DisplayName("동시 emit — 여러 스레드가 같은 세션에 보내도 조용히 사라지지 않는다(드롭은 계수된다)")
-    void concurrent_emit_does_not_drop_messages() throws Exception {
+    void concurrent_emit_is_never_silently_lost() throws Exception {
         // given: 구독 중인 세션 하나. 실제로도 ack(WS 이벤트루프)와 브로드캐스트(Redis pubsub 스레드)가
         // 같은 세션 Sink에 동시 emit한다 — unicast Sink는 경합 시 FAIL_NON_SERIALIZED로 값을 버린다.
         registry.register("s1", session(roomId, userId)).block();
@@ -401,12 +402,147 @@ class ChatSessionRegistryTest {
                 .isEqualTo((long) threads * perThread);
     }
 
+    /**
+     * 구독자를 {@code onNext} 안에 머물게 해 경합을 <b>확률이 아니라 약속</b>으로 만든다.
+     *
+     * <p>안전 스펙으로 만든 Sink는 직렬화 래퍼를 끼우는데, 그 락이 {@code tryEmitNext} 전 구간
+     * — 적재부터 구독자 {@code onNext}까지 — 에 걸쳐 잡힌다. 그래서 구독자가 머무는 동안 다른 스레드의
+     * emit은 <b>반드시</b> {@code FAIL_NON_SERIALIZED}가 된다. (실측, reactor-core 3.8.5: 구독자가
+     * 200ms 머무는 동안 다른 스레드 emit이 FAIL_NON_SERIALIZED를 받고 그 값은 수신되지 않았다.)
+     *
+     * <p>이 장치가 없으면 경합이 µs 단위로만 스쳐서, 규모를 키워도 "경합이 없었다"와 "경합이 있었고
+     * 재시도가 흡수했다"를 구별할 수 없다 — 그 둘이 구별되지 않으면 재시도 자체를 지우는 변경도 통과한다.
+     */
+    private static final class Lingering implements java.util.function.Consumer<OutboundMessage> {
+
+        private final List<OutboundMessage> received = new CopyOnWriteArrayList<>();
+        private final java.util.concurrent.atomic.AtomicBoolean inside =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        private final Duration linger;
+
+        private Lingering(Duration linger) {
+            this.linger = linger;
+        }
+
+        @Override
+        public void accept(OutboundMessage message) {
+            received.add(message);
+            inside.set(true);
+            java.util.concurrent.locks.LockSupport.parkNanos(linger.toNanos());
+            inside.set(false);
+        }
+
+        /**
+         * 구독자가 지금 {@code onNext} 안에 있을 때까지 기다린다.
+         *
+         * <p><b>park이 아니라 spin이다.</b> 깨어나는 지연이 머무는 시간과 같은 자릿수면 창을 놓쳐
+         * 경합이 안 생기고, 그러면 재시도를 지워도 테스트가 통과한다 — 이 장치가 막으려던 바로 그 구멍이
+         * 타이밍 때문에 다시 열린다. spin은 ns 안에 반응한다.
+         */
+        void awaitInsideOnNext() {
+            while (!inside.get()) {
+                Thread.onSpinWait();
+            }
+        }
+    }
+
+    private Lingering subscribeLingering(String sessionId, Duration linger) {
+        Lingering consumer = new Lingering(linger);
+        registry.outbound(sessionId).subscribe(consumer);
+        return consumer;
+    }
+
+    @Test
+    @DisplayName("경합이 예산 안이면 재시도가 넘겨 준다 — 머무는 구독자 뒤에서 보내도 도착한다")
+    void contention_within_budget_is_carried_over_by_retry() throws Exception {
+        // given: 구독자가 1ms 머무는 세션. 예산(5ms)보다 짧으므로 재시도가 그 구간을 넘길 수 있다.
+        registry.register("s1", session(roomId, userId)).block();
+        Lingering consumer = subscribeLingering("s1", Duration.ofMillis(1));
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread contender = new Thread(() -> {
+            try {
+                consumer.awaitInsideOnNext();          // 락이 잡힌 순간에 들어간다
+                registry.sendToSession("s1", out("ACK")).block();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        });
+
+        // when: 첫 emit이 구독자 안에 머무는 동안 다른 스레드가 같은 Sink로 보낸다
+        contender.start();
+        registry.sendToSession("s1", out("NORMAL")).block();
+        contender.join(TimeUnit.SECONDS.toMillis(30));
+
+        // then: 재시도가 경합을 넘겨 줬으므로 둘 다 도착하고 버린 것이 없다.
+        // 재시도를 지우면(예산 0) 두 번째가 첫 실패에서 바로 버려져 이 단언이 깨진다.
+        assertThat(failure.get()).isNull();
+        assertThat(registry.droppedOnContention()).as("예산 안의 경합인데 버렸다").isZero();
+        assertThat(consumer.received).extracting(OutboundMessage::type)
+                .containsExactlyInAnyOrder("NORMAL", "ACK");
+    }
+
+    @Test
+    @DisplayName("경합이 예산을 넘기면 그 메시지만 버리고 — 버린 것은 센다")
+    void contention_beyond_budget_drops_that_message_and_counts_it() throws Exception {
+        // given: 구독자가 20ms 머무는 세션. 예산(5ms)을 넘기므로 재시도가 소진된다.
+        registry.register("s1", session(roomId, userId)).block();
+        Lingering consumer = subscribeLingering("s1", Duration.ofMillis(20));
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread contender = new Thread(() -> {
+            try {
+                consumer.awaitInsideOnNext();
+                registry.sendToSession("s1", out("ACK")).block();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        });
+
+        // when
+        contender.start();
+        registry.sendToSession("s1", out("NORMAL")).block();
+        contender.join(TimeUnit.SECONDS.toMillis(30));
+
+        // then: 버린 것이 정확히 하나로 세어진다. 이 코드가 약속한 것은 "안 버린다"가 아니라
+        // "버렸으면 센다"인데, 드롭 분기가 발화하는 테스트가 없으면 그 계수를 지우는 변경도 통과한다.
+        assertThat(failure.get()).isNull();
+        assertThat(registry.droppedOnContention()).as("예산을 넘긴 경합을 세지 않았다").isEqualTo(1);
+        assertThat(consumer.received).extracting(OutboundMessage::type).containsExactly("NORMAL");
+
+        // 경합은 "그 순간 다른 스레드가 쥐고 있었다"는 뜻일 뿐이라 세션은 멀쩡해야 한다 —
+        // 버퍼 초과(1013)와 같은 처분으로 묶으면 부하가 오를수록 멀쩡한 시청자를 끊는다.
+        assertThat(registry.isTerminating("s1")).as("일시 경합으로 세션을 끊었다").isFalse();
+    }
+
+    @Test
+    @DisplayName("방 팬아웃은 예산 하나를 나눠 쓴다 — 세션마다 새로 주면 상한이 세션 수만큼 곱해진다")
+    void room_fanout_shares_one_budget_across_sessions() {
+        // given: 한 방에 세션 여럿
+        int sessions = 40;
+        for (int i = 0; i < sessions; i++) {
+            registry.register("s" + i, session(roomId, UUID.randomUUID())).block();
+            registry.outbound("s" + i).subscribe(m -> { });
+        }
+        long before = registry.budgetsCreated();
+
+        // when: 한 번 뿌린다
+        registry.sendToRoomLocal(roomId, out("NORMAL")).block();
+
+        // then: 예산은 하나다. 호출마다 새로 주면 재시도 상한이 세션 수에 비례해 곱해지는데
+        // (40세션이면 5ms가 최악 200ms로), 그 자리가 방 전체 중계를 담당하는 Redis 구독 스레드다.
+        // 되돌려도 드롭은 줄거나 같으므로 결과를 보는 단언으로는 이 회귀가 잡히지 않는다.
+        assertThat(registry.budgetsCreated() - before)
+                .as("fan-out 1회가 만든 예산 수")
+                .isEqualTo(1);
+    }
+
     @Test
     @DisplayName("방 팬아웃과 ack가 겹쳐도 조용히 사라지거나 겹쳐 오지 않는다")
-    void room_fanout_concurrent_with_acks_accounts_for_every_message() throws Exception {
+    void room_fanout_with_concurrent_acks_accounts_for_every_message() throws Exception {
         // given: 한 방에 세션 여럿. 운영에서도 브로드캐스트(Redis 구독 스레드)가 방 전체에 뿌리는 동안
-        // 각 세션의 ack(WS 이벤트루프)가 같은 Sink로 들어온다. 방 팬아웃은 방 전체가 예산 하나를
-        // 나눠 쓰므로 단건 전송보다 재시도 여유가 적다 — 기존 동시 emit 테스트가 덮지 않는 경로다.
+        // 각 세션의 ack(WS 이벤트루프)가 같은 Sink로 들어온다. 위 두 테스트가 경합 처분을 결정적으로
+        // 고정하고, 이 테스트는 그 처분이 <b>방 규모의 라우팅</b>에서도 어긋나지 않는지를 본다.
         int sessions = 60;
         int broadcasts = 40;
         int acksPerSession = 40;
@@ -423,6 +559,9 @@ class ChatSessionRegistryTest {
 
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(2);
+        // 스레드 예외를 모은다 — 안 모으면 전송 건수가 줄어 "받은 수 + 센 드롭" 불일치로 실패하는데
+        // 진짜 원인은 stderr에만 남는다. 두 스레드의 역할이 달라 어느 쪽이 죽었는지가 진단을 가른다.
+        List<Throwable> failures = new CopyOnWriteArrayList<>();
 
         // when: 브로드캐스트 스레드와 ack 스레드가 같은 Sink들을 동시에 때린다
         new Thread(() -> {
@@ -431,8 +570,8 @@ class ChatSessionRegistryTest {
                 for (int i = 0; i < broadcasts; i++) {
                     registry.sendToRoomLocal(roomId, out("NORMAL")).block();
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            } catch (Throwable t) {
+                failures.add(t);
             } finally {
                 done.countDown();
             }
@@ -445,30 +584,39 @@ class ChatSessionRegistryTest {
                         registry.sendToSession(sid, out("ACK")).block();
                     }
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            } catch (Throwable t) {
+                failures.add(t);
             } finally {
                 done.countDown();
             }
         }).start();
         start.countDown();
         assertThat(done.await(60, TimeUnit.SECONDS)).isTrue();
+        assertThat(failures).as("전송이 예외로 죽었다면 아래 수치의 원인이 경합이 아니다").isEmpty();
 
-        // then: 드롭 0을 단언하지 않는다 — 실시간 전달은 best-effort이고 영속만 보장이라, 이 코드가
-        // 약속한 것은 "안 버린다"가 아니라 "버렸으면 센다"다. 드롭 0으로 못 박으면 느린 러너에서
-        // 깨지는 테스트가 된다(실측: 12,000세션 팬아웃 1회 3.96ms로 5ms 예산 안이라 보통 0건이지만,
-        // JIT 콜드 상태에서 같은 조건이 10.72ms로 늘며 49만 건 중 2건이 드롭됐다. 5만 세션에서는
-        // 205만 건 중 10건).
+        // then: 여기서 드롭 0을 단언하지 않는 것은 규모가 커지면 예산이 빠듯해져서다 — 실측으로
+        // 12,000세션 팬아웃 1회가 3.96ms(예산 5ms 안)였지만 JIT 콜드 상태에서 10.72ms로 늘며 49만 건
+        // 중 2건이 드롭됐고, 5만 세션에서는 205만 건 중 10건이었다. 경합 처분 자체는 위 두 테스트가
+        // 결정적으로 고정하므로, 여기서는 그것을 다시 재지 않고 라우팅만 본다.
         //
-        // 대신 둘을 지킨다. 하나는 <b>조용히</b> 사라지지 않는 것 — 받은 수와 센 드롭의 합이 보낸 수와
-        // 맞아야 한다. 다른 하나는 <b>겹쳐 오지 않는 것</b> — 기대보다 많이 받은 세션이 있으면 남의
-        // 방·남의 세션 메시지가 섞였다는 뜻이고, 그건 계수로 가려지지 않는 결함이다.
+        // ⚠️ 이 관용이 발행 실패에 대한 "실시간 best-effort, 영속만 보장" 계약과 같은 것은 아니다.
+        // 그 계약은 Redis 발행이 실패한 경우를 가리키고, 여기 드롭은 세션 Sink 경합이라 실패 모드가
+        // 다르다. 같은 계열의 판단이라는 뜻일 뿐, 그 문구가 이 자리를 덮어 주지는 않는다.
+        //
+        // 지키는 것은 둘이다. <b>조용히</b> 사라지지 않는 것 — 받은 수와 센 드롭의 합이 보낸 수와
+        // 맞아야 한다. 그리고 <b>종류별로도 넘치지 않는 것</b> — 총량만 보면 ACK 하나가 남의 세션으로
+        // 가고 NORMAL 하나가 드롭으로 세어진 경우가 가려진다.
         long totalReceived = inboxes.stream().mapToLong(List::size).sum();
         assertThat(totalReceived + registry.droppedOnContention())
                 .as("받은 수 + 센 드롭")
                 .isEqualTo((long) sessions * (broadcasts + acksPerSession));
-        assertThat(inboxes).allSatisfy(inbox ->
-                assertThat(inbox.size()).isLessThanOrEqualTo(broadcasts + acksPerSession));
+        assertThat(inboxes).allSatisfy(inbox -> {
+            assertThat(inbox.size()).isLessThanOrEqualTo(broadcasts + acksPerSession);
+            assertThat(inbox.stream().filter(m -> "ACK".equals(m.type())).count())
+                    .as("남의 세션 ack가 섞였다").isLessThanOrEqualTo(acksPerSession);
+            assertThat(inbox.stream().filter(m -> "NORMAL".equals(m.type())).count())
+                    .as("브로드캐스트가 겹쳐 왔다").isLessThanOrEqualTo(broadcasts);
+        });
     }
 
     @Test

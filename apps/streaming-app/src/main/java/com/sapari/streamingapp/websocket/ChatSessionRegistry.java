@@ -126,6 +126,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 경합 재시도 소진으로 버린 메시지 수. 유실을 조용히 넘기지 않기 위한 카운터. */
     private final AtomicLong droppedOnContention = new AtomicLong();
 
+    /** 만든 예산 수 — fan-out당 하나라는 불변식을 테스트가 고정한다({@link #budgetsCreated}). */
+    private final AtomicLong budgetsCreated = new AtomicLong();
+
     /**
      * 방 종료를 다시 확인하는 간격. 종료 신호를 놓친 Pod가 끝난 방에 글을 받아주는 구간의 상한이 된다.
      * 짧게 잡을수록 그 구간은 줄지만 정상 전송에 붙는 Redis 왕복 빈도가 오른다.
@@ -647,8 +650,25 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     private FanOutBudget newBudget() {
+        budgetsCreated.incrementAndGet();
         long now = System.nanoTime();
         return new FanOutBudget(now + CONTENTION_SPIN_NANOS, now + COMPLETE_SPIN_NANOS);
+    }
+
+    /**
+     * 만든 예산의 누적 수. <b>관측용이 아니라 불변식 고정용이다</b> — 한 번의 fan-out이 예산 하나를
+     * 나눠 쓴다는 것을 테스트가 붙잡는다.
+     *
+     * <p>세 줄을 더 쓰는 이유: 호출마다 새 예산을 주는 쪽으로 되돌려도 드롭은 <b>줄거나 같으므로</b>
+     * 결과를 보는 단언으로는 구별되지 않는다. 그래서 그 회귀를 잡는 수단이 inbox 크기와 드롭 카운터뿐일
+     * 때는 원리적으로 관측이 안 되고, 재시도 상한이 세션 수에 비례해 곱해지는 것을(그것도 방 전체
+     * 중계를 담당하는 Redis 구독 스레드 위에서) 아무도 알아채지 못한다. 셈은 예산을 만들 때 한 번이라
+     * fan-out당 1회다.
+     *
+     * (테스트 진입점)
+     */
+    long budgetsCreated() {
+        return budgetsCreated.get();
     }
 
     /**
