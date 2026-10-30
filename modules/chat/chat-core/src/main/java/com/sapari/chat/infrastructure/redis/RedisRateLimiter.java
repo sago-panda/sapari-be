@@ -63,8 +63,13 @@ public class RedisRateLimiter implements RateLimiter {
      *   <li>강퇴·밴 조회: 느리면 <b>밴이 없는 것으로 본다</b> — 모더레이션 판정의 fail-open 이고,
      *       {@code modules/chat/AGENTS.md} 가 그것을 의도된 결정으로 따로 다룬다.
      *   <li>종료 마커 조회: 느리면 <b>끝난 방에 입장을 허용한다</b> — 또 다른 방향이다.
+     *   <li>시청자 수 조회({@code ChatSessionRedisRepository.count}): 느리면 <b>시청자 수 없이
+     *       입장시킨다</b> — 이미 fail-open 으로 구현돼 있다. 상한이 없어 입장 경로가 Lettuce 기본
+     *       60초까지 기다릴 수 있고, 거기에 비행 병합이 붙어 그 방 신규 입장자가 <b>같은</b> 멈춘
+     *       왕복에 묶인다(늦게 온 호출자는 남은 시간만 기다리니 평균은 유리하지만, 그 커넥션만
+     *       멈춘 경우에는 새 호출이면 즉시 성공했을 것을 전원이 함께 기다린다).
      * </ul>
-     * 세 자리의 적정 값과 정책은 각각 따로 근거를 가져야 한다. 유추로 확장할 성질이 아니다.
+     * 네 자리의 적정 값과 정책은 각각 따로 근거를 가져야 한다. 유추로 확장할 성질이 아니다.
      */
     private static final Duration REDIS_CALL_LIMIT = Duration.ofMillis(200);
 
@@ -99,10 +104,14 @@ public class RedisRateLimiter implements RateLimiter {
         String key = ChatRedisKeys.rateLimit(userId);
         return redisTemplate.opsForValue()
                 .setIfAbsent(key, "1", WINDOW)
+                // 상한은 <b>판정을 내리는 호출에만</b> 걸린다. 체인 전체에 걸면 거부가 확정된 뒤의
+                // TTL 조회가 느릴 때도 아래 강등으로 떨어지고, 강등의 첫 판정은 허용이다 —
+                // <b>확정된 거부가 허용으로 바뀐다</b>(실측: SET NX=false + 느린 TTL →
+                // allowed=true retryAfter=0). 거부 뒤의 조회는 denied() 가 따로 유계로 만든다.
+                .timeout(REDIS_CALL_LIMIT)
                 .flatMap(acquired -> acquired
                         ? Mono.just(new RateLimitResult(true, 0))
-                        : remainingSeconds(key).map(remaining -> new RateLimitResult(false, remaining)))
-                .timeout(REDIS_CALL_LIMIT)
+                        : denied(key))
                 .onErrorResume(err -> {
                     // Redis가 죽으면 전 사용자의 모든 전송이 이 경로를 탄다. 건당 스택트레이스를 남기면
                     // 초당 수백 줄이 쌓여 정작 원인(Redis 장애) 로그를 묻는다. 그래서 간격으로 솎아낸다.
@@ -123,6 +132,23 @@ public class RedisRateLimiter implements RateLimiter {
         long now = System.nanoTime();
         long last = lastDegradedLogNanos.get();
         return now - last >= DEGRADED_LOG_INTERVAL_NANOS && lastDegradedLogNanos.compareAndSet(last, now);
+    }
+
+    /**
+     * 거부가 확정된 뒤의 잔여 TTL 조회.
+     *
+     * <p><b>실패해도 허용으로 바뀌지 않는다.</b> {@code SET NX} 가 이미 false 를 줬으므로 판정은
+     * 끝났고, 남은 것은 "클라에게 몇 초를 알려 줄까" 뿐이다. 그 조회가 느리거나 깨졌다고 판정을
+     * 뒤집으면 창 안의 전송이 통과한다.
+     *
+     * <p>모르는 잔여 시간은 <b>창 전체</b>로 답한다. 실제 잔여보다 길게 말하는 쪽이라 클라가 조금
+     * 더 기다리는 것이 대가인데, 짧게 말하면 클라가 일찍 재시도해 거부 왕복이 한 번 더 붙는다.
+     */
+    private Mono<RateLimitResult> denied(String key) {
+        return remainingSeconds(key)
+                .map(remaining -> new RateLimitResult(false, remaining))
+                .timeout(REDIS_CALL_LIMIT)
+                .onErrorReturn(new RateLimitResult(false, WINDOW.toSeconds()));
     }
 
     /**

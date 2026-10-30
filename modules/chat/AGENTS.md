@@ -43,8 +43,12 @@ name a service something other than `KickUserService` and it silently guards not
 ## Failure policy — the moderation reads open, the rate limit degrades
 
 Every moderation read (kick, ban, room-ended) is **fail-open**. The rate limit is **not** one of them
-any more: it falls back to a pod-local window of the same length, so a Redis outage no longer removes
-the cap. There is still no fail-closed path in chat.
+any more: it falls back to a pod-local window of the same length, so a Redis **outage — or a round trip
+slower than 200ms** — no longer removes the cap. The latency half matters: dropping packets instead of
+dying keeps the command pending to Lettuce's 60s default, and without the bound the fallback never fires.
+It also means degradation is no longer a rare event you can leave to a throttled `log.error`; it fires on
+latency, so "what fraction of the time was enforcement pod-local" wants a metric, not a log line.
+There is still no fail-closed path in chat.
 
 | Read | On failure | Loses |
 |---|---|---|

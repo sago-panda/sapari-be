@@ -73,6 +73,36 @@ class RedisRateLimiterDegradedTest {
         assertThat(result.allowed()).as("강등 판정의 첫 요청은 허용").isTrue();
     }
 
+    /**
+     * ⭐ 확정된 거부가 상한 때문에 허용으로 바뀌지 않는다.
+     *
+     * <p>{@code SET NX} 가 false 를 주면 판정은 끝났다. 그 뒤의 잔여 TTL 조회가 느릴 때 상한이
+     * 체인 전체에 걸려 있으면 강등으로 떨어지고, 강등의 첫 판정은 허용이다 — 창 안의 전송이
+     * 통과한다(실측: 고치기 전 {@code allowed=true retryAfter=0}).
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("⭐ 거부가 확정된 뒤 TTL 조회가 느려도 거부로 남는다 — 상한이 판정을 뒤집지 않게")
+    void a_confirmed_denial_survives_a_slow_ttl_lookup() {
+        // given: SET NX 는 즉시 false(거부 확정), 잔여 TTL 조회만 느리다
+        ReactiveStringRedisTemplate template = mock(ReactiveStringRedisTemplate.class);
+        ReactiveValueOperations<String, String> operations = mock(ReactiveValueOperations.class);
+        given(template.opsForValue()).willReturn(operations);
+        given(operations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+                .willReturn(Mono.just(false));
+        given(template.getExpire(anyString()))
+                .willReturn(Mono.just(Duration.ofSeconds(2)).delayElement(Duration.ofSeconds(1)));
+
+        // when
+        RateLimitResult result = new RedisRateLimiter(template).tryAcquire(UUID.randomUUID())
+                .block(Duration.ofSeconds(5));
+
+        // then: 거부로 남고, 모르는 잔여 시간은 창 전체로 답한다
+        assertThat(result).isNotNull();
+        assertThat(result.allowed()).as("확정된 거부가 허용으로 바뀌었다").isFalse();
+        assertThat(result.retryAfterSeconds()).as("모르는 잔여는 창 전체로").isEqualTo(3);
+    }
+
     @Test
     @DisplayName("⭐ 장애 중에도 상한이 남는다 — 첫 요청은 허용하되 창 안의 두 번째는 거부한다")
     void keeps_a_cap_while_redis_is_down() {
@@ -197,10 +227,13 @@ class RedisRateLimiterDegradedTest {
      * <p>{@code compute} 를 "읽고 나서 쓴다" 로 바꾸면 그 사이에 둘 다 "창이 비었다" 를 보고 통과한다.
      * 단일 스레드 테스트로는 그 차이가 안 보여 그 뮤턴트가 생존했다(실측).
      *
-     * <p><b>사살이 확률적이다.</b> 라운드마다 두 스레드를 배리어로 맞춰도 겹칠 확률은 1보다 작다 —
-     * 리뷰어 실측으로 get-then-put 이 2,000 라운드에서 6회 이중허용(라운드당 ≈0.3%)이었다.
-     * 5,000 라운드면 사살 확률이 ≈99.999% 다. 통과 방향은 결정적이므로({@code compute} 는 언제나 0)
-     * 이 테스트 자체가 흔들리지는 않는다.
+     * <p><b>사살이 확률적이고 그 확률이 머신·부하에 달렸다.</b> 라운드마다 두 스레드를 배리어로
+     * 맞춰도 겹칠 확률은 1보다 작다. 측정값이 환경마다 갈린다 — 2,000 라운드에서 6회(라운드당
+     * ≈0.3%)로 보고된 것이 다른 두 실행에서는 5,000 라운드에 6·4회(≈0.08~0.12%)였다. 뒤쪽이면
+     * 5,000 라운드의 사살 확률이 ≈98~99.8% 이고 100% 가 아니다. <b>그래서 이 테스트가 한 번
+     * 통과한 것을 "get-then-put 도 안전하다" 로 읽으면 안 된다</b> — 사살 실패와 안전은 구별되지
+     * 않는다. 통과 방향은 결정적이므로({@code compute} 는 언제나 0) 이 테스트 자체가 흔들리지는
+     * 않는다.
      */
     @Test
     @DisplayName("⭐ 같은 사용자에 동시에 들어와도 둘 다 통과하지 않는다 — 판정이 키 단위로 원자적이다")
