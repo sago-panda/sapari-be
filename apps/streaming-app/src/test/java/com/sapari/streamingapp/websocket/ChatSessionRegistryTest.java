@@ -10,6 +10,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -362,7 +363,7 @@ class ChatSessionRegistryTest {
     }
 
     @Test
-    @DisplayName("동시 emit — 여러 스레드가 같은 세션에 보내도 유실되지 않는다")
+    @DisplayName("동시 emit — 여러 스레드가 같은 세션에 보내도 조용히 사라지지 않는다(드롭은 계수된다)")
     void concurrent_emit_does_not_drop_messages() throws Exception {
         // given: 구독 중인 세션 하나. 실제로도 ack(WS 이벤트루프)와 브로드캐스트(Redis pubsub 스레드)가
         // 같은 세션 Sink에 동시 emit한다 — unicast Sink는 경합 시 FAIL_NON_SERIALIZED로 값을 버린다.
@@ -398,6 +399,92 @@ class ChatSessionRegistryTest {
         //  수정 전에는 이 경합 실패가 아무 데도 안 잡혀 그대로 사라졌다.)
         assertThat(received.size() + registry.droppedOnContention())
                 .isEqualTo((long) threads * perThread);
+    }
+
+    @Test
+    @DisplayName("방 팬아웃과 ack가 겹쳐도 조용히 사라지거나 겹쳐 오지 않는다")
+    void room_fanout_concurrent_with_acks_accounts_for_every_message() throws Exception {
+        // given: 한 방에 세션 여럿. 운영에서도 브로드캐스트(Redis 구독 스레드)가 방 전체에 뿌리는 동안
+        // 각 세션의 ack(WS 이벤트루프)가 같은 Sink로 들어온다. 방 팬아웃은 방 전체가 예산 하나를
+        // 나눠 쓰므로 단건 전송보다 재시도 여유가 적다 — 기존 동시 emit 테스트가 덮지 않는 경로다.
+        int sessions = 60;
+        int broadcasts = 40;
+        int acksPerSession = 40;
+        List<List<OutboundMessage>> inboxes = new ArrayList<>();
+        List<String> sessionIds = new ArrayList<>();
+        for (int i = 0; i < sessions; i++) {
+            String sid = "s" + i;
+            sessionIds.add(sid);
+            registry.register(sid, session(roomId, UUID.randomUUID())).block();
+            List<OutboundMessage> inbox = new CopyOnWriteArrayList<>();
+            inboxes.add(inbox);
+            registry.outbound(sid).subscribe(inbox::add);
+        }
+
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(2);
+
+        // when: 브로드캐스트 스레드와 ack 스레드가 같은 Sink들을 동시에 때린다
+        new Thread(() -> {
+            try {
+                start.await();
+                for (int i = 0; i < broadcasts; i++) {
+                    registry.sendToRoomLocal(roomId, out("NORMAL")).block();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                done.countDown();
+            }
+        }).start();
+        new Thread(() -> {
+            try {
+                start.await();
+                for (int i = 0; i < acksPerSession; i++) {
+                    for (String sid : sessionIds) {
+                        registry.sendToSession(sid, out("ACK")).block();
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                done.countDown();
+            }
+        }).start();
+        start.countDown();
+        assertThat(done.await(60, TimeUnit.SECONDS)).isTrue();
+
+        // then: 드롭 0을 단언하지 않는다 — 실시간 전달은 best-effort이고 영속만 보장이라, 이 코드가
+        // 약속한 것은 "안 버린다"가 아니라 "버렸으면 센다"다. 드롭 0으로 못 박으면 느린 러너에서
+        // 깨지는 테스트가 된다(실측: 12,000세션 팬아웃 1회 3.96ms로 5ms 예산 안이라 보통 0건이지만,
+        // JIT 콜드 상태에서 같은 조건이 10.72ms로 늘며 49만 건 중 2건이 드롭됐다. 5만 세션에서는
+        // 205만 건 중 10건).
+        //
+        // 대신 둘을 지킨다. 하나는 <b>조용히</b> 사라지지 않는 것 — 받은 수와 센 드롭의 합이 보낸 수와
+        // 맞아야 한다. 다른 하나는 <b>겹쳐 오지 않는 것</b> — 기대보다 많이 받은 세션이 있으면 남의
+        // 방·남의 세션 메시지가 섞였다는 뜻이고, 그건 계수로 가려지지 않는 결함이다.
+        long totalReceived = inboxes.stream().mapToLong(List::size).sum();
+        assertThat(totalReceived + registry.droppedOnContention())
+                .as("받은 수 + 센 드롭")
+                .isEqualTo((long) sessions * (broadcasts + acksPerSession));
+        assertThat(inboxes).allSatisfy(inbox ->
+                assertThat(inbox.size()).isLessThanOrEqualTo(broadcasts + acksPerSession));
+    }
+
+    @Test
+    @DisplayName("구독 전에 보낸 프레임도 도착한다 — 등재와 구독 사이의 창을 버퍼가 받아 준다")
+    void emit_before_subscribe_is_not_lost() {
+        // given: 핸들러는 세션을 등재한 뒤에 아웃바운드를 구독한다. 그 사이에 들어온 프레임이
+        // 버려지면 입장 직후의 ROOM_INFO·SYSTEM이 조용히 사라진다.
+        registry.register("s1", session(roomId, userId)).block();
+
+        // when: 아직 구독 전인데 보낸다
+        registry.sendToSession("s1", out("ROOM_INFO")).block();
+
+        // then: 구독이 붙는 순간 받는다
+        List<OutboundMessage> received = new CopyOnWriteArrayList<>();
+        registry.outbound("s1").subscribe(received::add);
+        assertThat(received).extracting(OutboundMessage::type).containsExactly("ROOM_INFO");
     }
 
     @Test
