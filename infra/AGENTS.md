@@ -59,6 +59,17 @@ so the port split is the only thing standing between an anonymous scraper and th
 - The app refuses to start when the two ports are equal (`LiveSecurityConfig.managementPortMustDiffer`),
   so a config slip fails loudly instead of quietly publishing metrics on the user port. Manifests still
   have to *set* the management port — nothing here defaults it.
+- **It also refuses to start unless `prometheus` is in `exposure.include`** (added 2026-10-31). Actuator's
+  default exposure is `health` alone, so omitting that line leaves no metrics endpoint at all; the path then
+  misses the actuator chain, falls to `authenticated()`, and the scraper gets **401** — metrics silently
+  empty, indistinguishable from "no broadcasts". Measured: the first CI run of the port test failed exactly
+  that way, which is also how the gap was found. The template no longer calls that line optional.
+- **The context tests for live-app now run in CI** (`LiveAppApplicationTests`, `ActuatorNotOnUserPortTest`).
+  They used to be excluded by `@Tag("context")` on the grounds that CI would need the room-token **private
+  key** as a secret; that was wrong — the key is a plain property, so the test generates a throwaway keypair,
+  Testcontainers supplies Postgres/Redis/Mongo, and Flyway applies the real migrations. Two facts surfaced the
+  moment they ran: the exposure line above, and that `/actuator/health` depends on **Mongo** (503 without it,
+  because the kick-evidence read lives there) — so a manifest that omits Mongo makes this app look unhealthy.
 - **Deployment prerequisite — read before merging live-app.** `MANAGEMENT_PORT` (or
   `management.server.port`) must exist in the environment *before* this app is rolled out: without it the
   app refuses to start by design. That is fail-closed on purpose — booting without it would put metrics on

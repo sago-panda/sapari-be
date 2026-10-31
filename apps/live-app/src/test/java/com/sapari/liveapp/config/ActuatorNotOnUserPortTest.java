@@ -6,11 +6,20 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalManagementPort;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.MongoDBContainer;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import com.sapari.liveapp.support.LiveAppContextFixture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -26,19 +35,42 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>기대값이 404 가 아니라 <b>401</b> 인 것에 유의: 경로가 매핑되지 않았어도 시큐리티 체인이 먼저
  * 돌아 {@code anyRequest().authenticated()} 에 걸린다. 404 로 단언하면 이 테스트가 틀린다.
  *
- * <p><b>이 테스트는 CI 에서 돌지 않는다.</b> 실제 컨텍스트가 필요해 {@code context} 태그를 달았고,
- * 루트 {@code build.gradle} 이 CI 에서 그 태그를 제외한다(클론에 {@code application*.yaml} 이 없어
- * 부팅 자체가 불가능하다). 즉 이 테스트가 지키는 건 <b>로컬에서 이 영역을 만지는 사람</b>이지
- * 파이프라인이 아니다 — 회귀를 자동으로 막아주지 않는다.
+ * <p><b>이 테스트는 이제 CI 에서도 돈다</b>(2026-10-31). 종전에는 {@code @Tag("context")} 로 제외돼
+ * 있었고 그 근거가 "설정을 CI 변수로 채우는 길은 룸토큰 <b>개인키</b>를 CI 에 넣는 것" 이었는데,
+ * 그 키는 외부 의존이 없는 프로퍼티라 <b>테스트가 키쌍을 만들어 넣으면 된다</b>. 인프라는 컨테이너가,
+ * 스키마는 운영 마이그레이션(Flyway)이 세운다 — 데이터소스를 가짜로 바꾸지 않았으므로 "운영과 같은
+ * 구성" 이라는 이 테스트의 값어치도 그대로다.
  *
- * <p>CI 에서 돌게 하려면 데이터소스를 가짜로 바꿔야 하는데, 그러면 "운영과 같은 구성" 이라는 이 테스트의
- * 유일한 값어치가 사라진다. 그 거래는 하지 않았다.
+ * <p>그 전까지 이 가드는 <b>파이프라인에서 비어 있었다</b> — 포트가 합쳐져도 빌드가 초록이었고,
+ * 열리는 것은 영업 물량과 스크레이프마다 DB 를 치는 게이지다.
  */
-@Tag("context")
-@SpringBootTest(
-        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "management.server.port=0")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Testcontainers
 class ActuatorNotOnUserPortTest {
+
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16");
+
+    @Container
+    @ServiceConnection(name = "redis")
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+
+    /**
+     * 이 앱은 강퇴 증거 원문을 Mongo 에서 읽는다({@code ChatMessageEvidenceMongoRepository}).
+     *
+     * <p>컨테이너 없이도 컨텍스트는 뜬다 — 동기 Mongo 템플릿은 느긋하게 접속한다. 그런데
+     * {@code /actuator/health} 는 지표를 실제로 찔러서 <b>503</b> 이 된다(실측). 즉 health 가 Mongo 에
+     * 걸려 있다는 사실이 이 테스트를 CI 로 옮기면서 드러났다.
+     */
+    @Container
+    @ServiceConnection
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+
+    @DynamicPropertySource
+    static void requiredConfig(DynamicPropertyRegistry registry) {
+        LiveAppContextFixture.register(registry);
+    }
 
     @LocalServerPort
     private int userPort;

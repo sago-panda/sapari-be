@@ -84,6 +84,9 @@ class ChatModerationWiringTest {
         registry.add("livekit.hls.segment-duration", () -> 4);
 
         registry.add("management.server.port", () -> 0);
+        // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아 지표가 조용히 빈다
+        // (LiveSecurityConfig.requirePrometheusExposed). 이 테스트가 재는 것과 무관하지만 채워야 뜬다.
+        registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus");
 
         // ⚠️ 재조정 잡 셋을 끈다. 마스터 스위치가 matchIfMissing=true라 설정이 없으면 <b>켜진다</b> —
         //    저장소에 application.yaml이 없으니 이 테스트에서는 부재가 곧 활성이다. 그대로 두면

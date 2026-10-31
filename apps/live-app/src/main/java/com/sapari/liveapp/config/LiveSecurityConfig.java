@@ -4,7 +4,13 @@ import tools.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.DispatcherType;
 
+import java.util.Locale;
+import java.util.Set;
+
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.core.env.Environment;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -106,7 +112,8 @@ public class LiveSecurityConfig {
     @Bean
     public ManagementPortGuard managementPortMustDiffer(
             @Value("${server.port:8080}") int serverPort,
-            @Value("${management.server.port:}") String managementPort
+            @Value("${management.server.port:}") String managementPort,
+            Environment environment
     ) {
         if (managementPort == null || managementPort.isBlank()) {
             throw new IllegalStateException(
@@ -138,7 +145,40 @@ public class LiveSecurityConfig {
                     "management.server.port(" + port + ") 가 server.port 와 같다 — 지표가 사용자 트래픽 포트에 "
                             + "노출된다. MANAGEMENT_PORT 를 다른 값으로 줄 것.");
         }
+        requirePrometheusExposed(environment);
         return new ManagementPortGuard();
+    }
+
+    /**
+     * {@code prometheus} 가 노출 목록에 있어야 <b>부팅한다</b>.
+     *
+     * <p>액추에이터 기본 노출은 {@code health} 하나다. 그래서 그 줄이 빠지면 프로메테우스 엔드포인트가
+     * 아예 없고, 그 경로가 위 액추에이터 체인에 매칭되지 않아 기본 체인의 {@code authenticated()} 에
+     * 걸려 <b>401</b> 이 된다 — 스크레이퍼는 로그인 수단이 없으므로 <b>지표가 조용히 빈다</b>.
+     * 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다. 이 설계가 가장 두려워하는 실패다.
+     *
+     * <p>⚠️ <b>실측으로 드러났다.</b> 이 앱의 컨텍스트 테스트가 CI 에서 제외돼 있던 동안 그 줄은 운영
+     * 템플릿의 {@code optional} 항목이었고, 테스트를 CI 로 옮긴 첫 실행이 정확히 401 로 깨졌다.
+     * 설정 한 줄이 관측 전면 중단으로 이어지는데 그 사이에 아무 신호가 없어서, 조용히 뜨는 대신
+     * 시끄럽게 죽는 쪽으로 바꾼다({@code streaming-app} 이 같은 이유로 같은 가드를 갖는다).
+     *
+     * <p>목록을 <b>좁히는</b> 검사는 여기 없다 — 이 앱은 액추에이터 체인이 {@code health}·
+     * {@code prometheus} 밖을 {@code denyAll} 로 막으므로 넓혀도 열리지 않는다. 시큐리티가 없는
+     * {@code streaming-app} 은 그 반대라 허용 집합까지 코드가 잠근다.
+     */
+    private static void requirePrometheusExposed(Environment environment) {
+        Set<String> exposed = Binder.get(environment)
+                .bind("management.endpoints.web.exposure.include", Bindable.setOf(String.class))
+                .orElseGet(Set::of);
+        boolean prometheusExposed = exposed.stream()
+                .map(value -> value == null ? "" : value.trim().toLowerCase(Locale.ROOT))
+                .anyMatch(value -> value.equals("prometheus") || value.equals("*"));
+        if (!prometheusExposed) {
+            throw new IllegalStateException(
+                    "management.endpoints.web.exposure.include 에 prometheus 가 없다 — 액추에이터 기본 "
+                            + "노출은 health 하나라 지표 엔드포인트가 생기지 않고, 스크레이퍼는 401 을 "
+                            + "받는다(지표가 조용히 빈다). 현재 값=" + exposed + " / 예시: health,prometheus");
+        }
     }
 
     /** 위 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */

@@ -49,7 +49,10 @@ import org.mockito.ArgumentCaptor;
  * 이메일과 욕설 원문을 읽는다. 그래서 컨트롤러가 principal 에서 채우는지를 명령으로 확인한다.
  */
 @WebMvcTest(controllers = ChatHistoryController.class,
-        properties = "management.server.port=9999")
+        properties = {"management.server.port=9999",
+                // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아
+                // 지표가 조용히 빈다(LiveSecurityConfig.requirePrometheusExposed).
+                "management.endpoints.web.exposure.include=health,prometheus"})
 // GlobalExceptionHandler 를 명시로 올린다 — 이 슬라이스에는 컴포넌트 스캔이 없어서
 // @RestControllerAdvice 가 자동으로 잡히지 않는다. 없으면 도메인 예외가 매핑되지 않고
 // ServletException 으로 터져 "400 이 아니다" 가 아니라 "테스트가 못 돈다" 가 된다.

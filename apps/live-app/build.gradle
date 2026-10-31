@@ -34,6 +34,19 @@ dependencies {
     // application*.yaml 이 없어 CI 에서 제외되므로, 그쪽에 기대면 규칙 회귀를 파이프라인이 못 잡는다.
     testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
     testImplementation 'org.springframework.security:spring-security-test'
+
+    // 컨텍스트를 CI 에서도 띄우기 위한 것들. 종전에는 @Tag("context") 로 CI 에서 제외했고 그 근거가
+    // "설정을 CI 변수로 채우려면 룸토큰 개인키를 CI 에 넣어야 한다" 였는데, 키는 외부 의존 없는
+    // 프로퍼티라 테스트가 직접 만들 수 있다 — 그래서 시크릿 없이 돈다.
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
+    testImplementation 'org.testcontainers:mongodb'
+    // 스키마는 <b>운영과 같은 러너로</b> 세운다. 손수 SQL 을 읽는 로더를 또 만들면 "전부, 순서대로"
+    // 라는 규칙이 네 번째 자리에 흩어진다(chat 의 LiveSchema javadoc 이 경고한 그 모양).
+    testImplementation 'org.flywaydb:flyway-core'
+    testImplementation 'org.flywaydb:flyway-database-postgresql'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}
