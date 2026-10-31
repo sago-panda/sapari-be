@@ -431,6 +431,31 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
   machine that pulled 7.2 lacks it, and production's version is not visible from this repo. That is a
   "green locally, broken in production" shape. Revisit when 7.4+ is guaranteed.
 
+## Viewer count updates — the same frame again, only when it changed
+
+`ROOM_INFO` used to be sent once at join, so the number was a **frozen snapshot**: the roster work made the
+count accurate, and nothing could deliver that accurate number to sessions already connected.
+
+- **The frame is reused, not replaced.** The front-end guide's documented handler is a pure state setter
+  (`setActiveCount` + `setOwnerMode`), so repeat delivery is idempotent — whereas nothing in the contract says
+  what a client does with an *unknown* `type`, which makes a new frame type the riskier option.
+  ⚠️ It is still a **front-end contract addition**: that guide says "join only", and it has been updated.
+- **Only on change.** Pushing every round costs one frame per session per round forever, which in a large
+  room is the entire cost of the feature. A quiet room now costs nothing.
+- **The first round seeds, it does not send.** The join-time `ROOM_INFO` is the baseline; sending again would
+  hand every session in every room one duplicate of a number it already has.
+- **An unknown count is never pushed.** `activeCount` is nullable to mean "don't know", and pushing that as an
+  *update* blanks a number the viewer could already see — different from not knowing it at join.
+- **The read bypasses the 3s count cache.** That cache exists to damp a join storm, but this timer's whole job
+  is to observe change, so going through a read-suppressor would hide anything inside the cache window. There
+  is also nothing to damp here: one read per room per round is already bounded.
+- **`isRoomOwner` is resolved per session** (`sendToRoomGated`). One shared frame would switch the owner UI on
+  for everyone or off for the owner.
+- Pods read independently, so viewers in one room can briefly see different numbers. Accepted — reconciling
+  would need cross-pod agreement, which this soft number does not earn.
+- It rides the **heartbeat timer**, after re-registration, so the count it reports is already the
+  zombie-free one. A second timer would double a per-session cost.
+
 ## History (VOD) — the gate is one predicate and the exclusion is in the query
 
 `GetChatHistoryUseCase` → `GetChatHistoryService` (chat-core, **blocking**) ← `ChatHistoryController`

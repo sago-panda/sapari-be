@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -176,6 +177,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private final AtomicLong heartbeatFailures = new AtomicLong();
 
     /**
+     * roomId → 이 Pod 가 마지막으로 보낸 시청자 수.
+     *
+     * <p>변했을 때만 보내기 위한 상태다. 매 회차 뿌리면 큰 방에서는 그 비용이 전부고(세션 수만큼의
+     * 프레임), 조용한 방에서도 쉬지 않는다. 방이 비면 {@code unregister} 가 같이 걷어낸다 —
+     * 남기면 그쪽이 누수원이 된다({@code activeCountCache} 와 같은 규율).
+     */
+    private final Map<UUID, Long> lastPushedCount = new ConcurrentHashMap<>();
+
+    /**
      * Pod 안의 모든 로컬 세션을 주기적으로 <b>재등록</b>한다.
      *
      * <p>이게 없으면 세션 명부가 "마지막 입장 이후" 기준으로만 갱신돼, Pod 가 크래시한 뒤 남은 항목이
@@ -203,7 +213,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 .onBackpressureDrop(tick -> { })
                 .concatMap(tick -> Flux.fromIterable(local.values())
                         .flatMap(this::reregister)
-                        .then())
+                        .then()
+                        // 같은 타이머에 시청자 수 갱신을 얹는다 — 둘 다 "이 Pod 가 주기마다 하는 일"
+                        // 이고 타이머를 하나 더 두면 세션 수만큼의 비용이 두 배가 된다. 순서가 이쪽인
+                        // 이유는 재등록이 먼저 끝나야 그 회차의 수가 좀비를 걷어낸 값이기 때문이다.
+                        .then(pushViewerCounts()))
                 .subscribe();
     }
 
@@ -232,6 +246,68 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 재등록 실패 누적 — 테스트 진입점. */
     long heartbeatFailures() {
         return heartbeatFailures.get();
+    }
+
+    /**
+     * 로컬 세션이 있는 방마다 시청자 수를 다시 읽고, <b>변했으면</b> {@code ROOM_INFO} 를 다시 보낸다.
+     *
+     * <p>지금까지 그 수는 입장 시 1회뿐이라 <b>고정 스냅샷</b>이었다 — 앞 작업이 좀비 항목을 걷어내
+     * 수를 정확하게 만들었는데, 그 정확한 수를 이미 접속한 세션에 전달할 수단이 없었다.
+     *
+     * <p><b>프레임을 새로 만들지 않는다.</b> 프론트 가이드의 클라 핸들러가 순수 상태 setter
+     * ({@code setActiveCount} + {@code setOwnerMode})라 {@code ROOM_INFO} 반복 수신이 멱등이고,
+     * 반대로 모르는 {@code type} 을 어떻게 다루는지는 계약에 적혀 있지 않아 새 타입이 더 위험하다.
+     * ⚠️ 그래도 <b>프론트 계약 추가</b>다 — "입장 시 1회만" 이 그 문서에 명시돼 있으니 함께 고쳐야 한다.
+     *
+     * <p><b>변했을 때만 보낸다.</b> 매 회차 뿌리면 조용한 방도 세션 수만큼의 프레임을 계속 쓴다 —
+     * 큰 방에서는 그게 이 기능의 비용 전부가 된다.
+     *
+     * <p><b>수를 모를 때는 보내지 않는다.</b> {@code activeCount} 는 null 로 "모른다" 를 뜻할 수 있는데
+     * (조회 실패), 그걸 갱신으로 보내면 <b>보이던 숫자가 사라진다</b>. 입장 시의 "모름" 과 다른 상황이다.
+     *
+     * <p>세션마다 {@code resolver} 로 자기 {@code isRoomOwner} 를 받는다 — 한 프레임을 공유하면 방 주인
+     * UI 가 전원에게 켜지거나 방 주인에게서 꺼진다.
+     *
+     * <p>Pod 마다 독립적으로 읽으므로 같은 방의 시청자가 한순간 서로 다른 숫자를 볼 수 있다
+     * (조회 캐시만큼). 부드러운 수치라 받아들인다 — 맞추려면 Pod 간 합의가 필요하고 그건 이 값이
+     * 가질 가치가 없다.
+     */
+    Mono<Void> pushViewerCounts() {
+        return Flux.fromIterable(List.copyOf(roomSessions.keySet()))
+                .concatMap(this::pushViewerCount)
+                .then();
+    }
+
+    private Mono<Void> pushViewerCount(UUID roomId) {
+        // 캐시(getActiveCount)를 거치지 않는다. 그 캐시는 <b>입장 폭주</b>를 막으려고 조회를 억제하는
+        // 장치인데, 이 타이머가 하려는 일이 정확히 "변화를 관측" 이라서 억제를 거치면 캐시 수명 안의
+        // 변화를 못 본다. 그리고 억제할 이유도 없다 — 이쪽은 방당 회차당 한 번으로 이미 유계다.
+        return sessionRepository.count(roomId)
+                .flatMap(count -> {
+                    Long previous = lastPushedCount.put(roomId, count);
+                    if (previous == null || previous.equals(count)) {
+                        // previous == null 은 이 Pod 가 그 방을 처음 보는 회차다. 보내지 않는다 —
+                        // 입장 시 핸들러가 이미 ROOM_INFO 를 보냈고 그것이 기준선이다. 여기서 또
+                        // 보내면 방마다 한 번씩 전원에게 같은 숫자가 중복으로 간다.
+                        return Mono.empty();
+                    }
+                    return sendToRoomGated(roomId,
+                            session -> OutboundMessage.roomInfo(count, session.isRoomOwner()));
+                })
+                .onErrorResume(e -> {
+                    // 수를 모르면 보내지 않는다 — 다음 회차가 받는다. 여기서 터뜨리면 그 뒤로 이 Pod 의
+                    // 모든 방 갱신이 멈춘다(concatMap 상류가 끝난다).
+                    if (shouldLogDrop()) {
+                        log.warn("시청자 수 갱신 실패 — 이번 회차 skip(다음 회차가 받는다) roomId={} cause={}",
+                                roomId, e.getClass().getSimpleName());
+                    }
+                    return Mono.empty();
+                });
+    }
+
+    /** 마지막으로 보낸 수를 들고 있는 방의 개수 — 누수 확인용(테스트 진입점). */
+    int trackedViewerCounts() {
+        return lastPushedCount.size();
     }
 
     /**
@@ -405,6 +481,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             sessionIds.remove(sessionId);
             if (sessionIds.isEmpty()) {
                 activeCountCache.remove(roomId);   // 인덱스와 같은 수명 — 남기면 이쪽이 누수원이 된다
+                lastPushedCount.remove(roomId);    // 같은 이유 — 방이 사라지면 마지막 값도 쓸모가 없다
                 return null;
             }
             return sessionIds;
