@@ -23,6 +23,11 @@ import org.springframework.data.redis.core.ReactiveValueOperations;
 
 import com.sapari.chat.application.port.RateLimitResult;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -104,6 +109,49 @@ class RedisRateLimiterDegradedTest {
         assertThat(result).isNotNull();
         assertThat(result.allowed()).as("확정된 거부가 허용으로 바뀌었다").isFalse();
         assertThat(result.retryAfterSeconds()).as("모르는 잔여는 창 전체로").isEqualTo(3);
+    }
+
+    /**
+     * ⭐ 그 신호가 <b>첫 발생은 반드시 남기고 간격 안의 두 번째는 솎는다.</b>
+     *
+     * <p>카운터만 단언하면 솎기와 "첫 발생은 반드시 남는다"가 아무 테스트도 재지 않는다 — 실측으로
+     * {@code shouldLogDeniedTtlFallback()} 을 {@code return false} 로 영구 침묵시켜도 이 클래스가
+     * 전부 초록이었다. 흡수를 침묵으로 만들지 않겠다는 것이 그 신호의 목적이므로, 발화 자체를 잰다.
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("⭐ 거부 뒤 TTL 실패 로그 — 첫 발생은 남고 간격 안의 두 번째는 솎인다")
+    void the_denied_ttl_fallback_logs_once_per_interval() {
+        // given
+        ReactiveStringRedisTemplate template = mock(ReactiveStringRedisTemplate.class);
+        ReactiveValueOperations<String, String> operations = mock(ReactiveValueOperations.class);
+        given(template.opsForValue()).willReturn(operations);
+        given(operations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+                .willReturn(Mono.just(false));
+        given(template.getExpire(anyString()))
+                .willReturn(Mono.error(new IllegalStateException("TTL 조회 실패")));
+        RedisRateLimiter limiter = new RedisRateLimiter(template);
+
+        Logger logger = (Logger) LoggerFactory.getLogger(RedisRateLimiter.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        // when: 같은 간격(10초) 안에 두 번 실패시킨다
+        try {
+            limiter.tryAcquire(UUID.randomUUID()).block(Duration.ofSeconds(5));
+            int afterFirst = appender.list.size();
+            limiter.tryAcquire(UUID.randomUUID()).block(Duration.ofSeconds(5));
+
+            // then: 첫 발생은 남고 두 번째는 솎인다. 카운터는 둘 다 올라간다 — 솎기가 지우는 것은
+            // 줄 수지 사건 수가 아니다.
+            assertThat(afterFirst).as("첫 발생이 남지 않았다 — 흡수가 침묵이 됐다").isEqualTo(1);
+            assertThat(appender.list).as("간격 안의 두 번째가 솎이지 않았다").hasSize(1);
+            assertThat(limiter.deniedTtlFallbacks()).as("카운터는 둘 다 세야 한다").isEqualTo(2);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     /**

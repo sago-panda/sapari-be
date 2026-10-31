@@ -1246,7 +1246,12 @@ class ChatSessionRegistryTest {
      *
      * <p>한때 이 보장을 "테스트로 가를 수 없다"고 적었다. 틀렸다 — 재야 할 것이 인터리빙이 아니라
      * <b>제거의 조건절</b>이라서, 비행이 진행 중인 동안 맵 값을 바꿔 두면 그 조건이 그대로 드러난다.
-     * 동시성도 래치도 필요 없고 운영 코드에 테스트 전용 훅도 필요 없다(맵은 리플렉션으로 <b>읽기만</b>).
+     * 동시성도 래치도 필요 없다 — 한 스레드 순차다.
+     *
+     * <p>맵을 리플렉션으로 <b>집어 와서 내용을 바꾼다</b>(필드 자체는 쓰지 않는다). 아래 헬퍼가
+     * "읽기 전용" 이 아니라는 뜻이니, 재사용할 때 운영 자료구조를 건드리는 것임을 알고 쓸 것.
+     * 그리고 "운영 코드에 테스트 훅이 필요 없다" 가 아니다 — {@code trackedInFlightCounts()} 라는
+     * 훅은 이미 있다. 그걸로 안 되는 이유는 <b>크기만으로는 어느 항목인지 가를 수 없어서</b>다.
      *
      * <p>두 인자 {@code remove(key, value)} 면 값이 달라 아무것도 지우지 않는다. 한 인자였다면
      * "그 방의 비행 자리를 비운다"가 되어 센티넬이 걷히고, 운영에서는 그 자리에 방금 설치된 남의
@@ -1313,7 +1318,13 @@ class ChatSessionRegistryTest {
                 .as("취소가 상류로 전파됐다 — 떠나는 호출자가 그 방의 왕복을 끊는다").isFalse();
     }
 
-    /** 진행 중인 비행 맵을 <b>읽기만</b> 한다 — 운영 코드에 테스트용 훅을 내지 않기 위해. */
+    /**
+     * 진행 중인 비행 맵을 집어 온다.
+     *
+     * <p>⚠️ <b>읽기 전용이 아니다.</b> 필드는 쓰지 않지만 돌려주는 것은 운영 맵 그 자체이므로,
+     * 호출자가 {@code put}·{@code remove} 를 하면 운영 자료구조가 바뀐다. 지금 유일한 사용처가
+     * 그 변형을 의도적으로 한다({@code put} 으로 "남의 비행" 을 만든다).
+     */
     @SuppressWarnings("unchecked")
     private java.util.Map<UUID, Mono<Long>> inFlightCounts() throws Exception {
         java.lang.reflect.Field field = ChatSessionRegistry.class.getDeclaredField("inFlightCounts");

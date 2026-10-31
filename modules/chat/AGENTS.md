@@ -419,9 +419,11 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded, and
     the worst case is **not** ceiling × call sites. An exceeded `block(Duration)` *throws*
     (`IllegalStateException: Timeout on blocking read…`), which aborts that test method, so the remaining
-    calls in it never run. The bound is ceiling × (methods and worker threads that reach a stall) —
-    measured distribution: 95 call sites across ~50 methods, with worker threads catching `Throwable`
-    outside the loop, so ≈500s rather than ≈940s. Slow, but it *reports* — that is the trade.
+    calls in it never run. The bound is ceiling × (methods and worker threads that reach a stall), not
+    ceiling × call sites — in `ChatSessionRegistryTest` that is **~100 call sites spread over ~60 test
+    methods** (measured at `eecde755`; the counts move with every commit that adds a test, which is why
+    the rule two bullets up says to state the baseline), so the order of magnitude is minutes, not tens
+    of minutes. Slow, but it *reports* — that is the trade.
   - **Scope of "every hang is bounded"**: that claim covers `modules/chat` + `apps/streaming-app` only.
     `modules/live` still has one (`ActiveRoomGaugeTest` — a bare `await()` plus an unbounded
     `Future.get()`), and live is outside this ticket's reach. State the scope whenever the claim is

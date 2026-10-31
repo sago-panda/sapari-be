@@ -124,6 +124,33 @@ class ConfigTemplateTest {
     }
 
     /**
+     * ⭐ <b>코드 기본값</b>도 기한/간격 3배를 유지한다.
+     *
+     * <p>부팅 가드는 2배까지 허용하므로 가드만으로는 이 비율이 지켜지지 않는다. 그리고
+     * {@code documented_defaults_match_the_code_defaults} 는 둘이 <b>같은지</b>만 보므로, 코드 기본값과
+     * 템플릿 주석을 <b>함께</b> 60s 로 내리면 두 테스트가 모두 초록인 채 연속 PONG 유실 내성이
+     * 2회에서 1회로 깎인다 — 산문 탈출로에서 두 번 걸려 고친 결함이 기본값 쪽으로 재도입되는 길이다.
+     *
+     * <p>그래서 비율을 값 자체에 대고 단언한다. 산문 탈출로 쪽은 {@code ConfigTemplateTest} 의
+     * 탈출로 테스트가 같은 단언을 따로 갖는다.
+     */
+    @Test
+    @DisplayName("⭐ 코드 기본값도 기한/간격 3배를 유지한다 — 2배 가드만으로는 내성이 깎인 채 초록이다")
+    void code_defaults_keep_the_three_times_ratio() {
+        // given
+        Map<String, String> fromCode = codeDefaults();
+
+        // when
+        Duration interval = DurationStyle.detectAndParse(fromCode.get("ping-interval"));
+        Duration deadline = DurationStyle.detectAndParse(fromCode.get("liveness-deadline"));
+
+        // then
+        assertThat(deadline)
+                .as("코드 기본 기한이 간격의 3배 미만이다 — 연속 유실 내성이 2회에서 1회로 깎인다")
+                .isGreaterThanOrEqualTo(interval.multipliedBy(3));
+    }
+
+    /**
      * ⭐ 산문에 적어 둔 탈출로가 가드를 통과하고 기본값과 같은 내성을 갖는다.
      *
      * <p>수명만 내리는 길이 가드에 막혀 있으므로 템플릿이 탈출로를 하나 적어 둔다. 통과만으로는

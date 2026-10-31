@@ -56,9 +56,26 @@ public class RedisRateLimiter implements RateLimiter {
      * 거부가 허용으로 바뀐다</b>(실측: allowed=true retryAfter=0). 판정을 내리는 호출에만 걸고,
      * 거부 뒤의 조회는 {@link #denied} 가 따로 유계로 만든다.
      *
-     * <p>그래서 {@code tryAcquire} 한 건의 최악 경계는 이 값이 아니라 <b>그 두 배(400ms)</b>다 —
+     * <p>그래서 {@code tryAcquire} 한 건이 쓰는 예산은 이 값이 아니라 <b>그 두 배</b>다 —
      * {@code SET NX} 200ms + {@code denied()} 200ms. 전송 경로가 {@code concatMap} 으로 직렬화돼
-     * 있으므로 그 값이 세션당 프레임 간격의 하한이 된다.
+     * 있으므로 그 값이 세션당 프레임 간격의 하한이 된다. 창의 1/15 로 잡은 예산이 거부 경로에서는
+     * 실효 2/15 라는 뜻이다.
+     *
+     * <p>⚠️ <b>그 400ms 가 최악 경계는 아니다.</b> 한때 여기에 "최악 경계" 로 적었는데 거짓이다 —
+     * 공유 커넥션이 아직 수립되지 않은 상태에서는 연산자 상한이 아예 무장되지 않는다.
+     * {@code ReactiveRedisTemplate} 이 커넥션 획득을 {@code subscribe()} 경로에서 동기로 하고,
+     * {@code .timeout()} 은 구독이 반환된 뒤에 무장되기 때문이다. 블랙홀 리스너로 실측:
+     * 따뜻한 커넥션은 <b>210ms 내외</b>로 상한이 듣고, 차가운 커넥션은 <b>60,245ms</b> 뒤에
+     * {@code RedisConnectionFailureException}(root {@code RedisCommandTimeoutException})으로 끝난다 —
+     * Lettuce 의 {@code RedisURI.DEFAULT_TIMEOUT}(60s)이고 {@code .timeout(200ms)} 도
+     * {@code .block(1s)} 도 끊지 못한다.
+     *
+     * <p>조건은 좁다 — 그 Pod 의 <b>첫</b> 레이트리밋 호출이 패킷을 떨구는 Redis 를 만날 때(또는
+     * {@code resetConnection} 이후)다. 한 번 따뜻해지면 서버가 완전히 죽어도 유계다. 그러나 그
+     * 구간에서는 위 문단의 경고가 그대로 살아 있다 — 로컬 창 강등이 60초 뒤에 온다.
+     * 실제로 유계로 만들려면 연산자 상한이 아니라 {@code spring.data.redis.timeout} /
+     * {@code clientOptions.connectTimeout} 설정이나 {@code subscribeOn(boundedElastic)} 이 필요하다
+     * (설정 축이라 별건).
      *
      * <p>⚠️ <b>이 상한이 고치는 것은 이 호출 하나다.</b> 증상 자체는 더 넓다 — <b>느린 Redis 가
      * {@code concatMap} 위에서 그 세션을 멈춘다.</b> 같은 모양의 호출이 전송 경로의 강퇴·밴 조회와

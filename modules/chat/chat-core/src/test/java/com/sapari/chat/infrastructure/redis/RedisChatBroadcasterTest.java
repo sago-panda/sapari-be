@@ -44,7 +44,14 @@ import reactor.test.StepVerifier;
 class RedisChatBroadcasterTest {
 
 
-    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    /**
+     * 반응형 종결자({@code .block()} / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신
+     * <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md).
+     *
+     * <p>이 파일에 인라인 <b>2s 둘·3s 하나</b>가 섞여 있는 것은 <b>의도다.</b> 이 상수보다 먼저
+     * 있었고 더 조여 있다 — 스윕은 상한이 <b>없던 자리</b>에만 이 상수를 넣었고 기존 값을 완화하지
+     * 않았다. "정규화" 로 10s 로 맞추면 그 조임이 사라진다.
+     */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private ReactiveStringRedisTemplate redis;
     private RedisChatBroadcaster broadcaster;
