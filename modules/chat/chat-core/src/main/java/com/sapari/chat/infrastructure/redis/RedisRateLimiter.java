@@ -98,6 +98,20 @@ public class RedisRateLimiter implements RateLimiter {
     private final AtomicLong lastDegradedLogNanos = new AtomicLong(System.nanoTime() - DEGRADED_LOG_INTERVAL_NANOS);
 
     /**
+     * 거부 뒤 TTL 조회 실패 누적. <b>강등과 따로 센다</b> — 한쪽의 첫 발생을 다른 쪽이 묻지 않게
+     * 하라는 정본 규율이고, 두 사건의 대응도 다르다(이쪽은 판정이 유지되므로 덜 급하다).
+     *
+     * <p>⚠️ <b>둘을 더해서 "열화 횟수" 로 읽지 말 것.</b> {@code degradedCount} 는 "판정을 Redis 가
+     * 못 내려 로컬 창으로 내려갔다"이고 이쪽은 "판정은 내렸는데 남은 시간을 못 읽었다"다. 전자는
+     * Pod 간 정확도를 잃고 후자는 잃지 않는다 — 대응이 달라서 따로 센다.
+     */
+    private final AtomicLong deniedTtlFallbackCount = new AtomicLong();
+
+    /** 그 로그의 마지막 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
+    private final AtomicLong lastDeniedTtlLogNanos =
+            new AtomicLong(System.nanoTime() - DEGRADED_LOG_INTERVAL_NANOS);
+
+    /**
      * Redis 장애 구간의 로컬 창 — userId → 창이 끝나는 {@code nanoTime}.
      *
      * <p>항목 수는 "이 Pod 에 붙어 장애 구간에 전송한 사용자" 수를 넘지 않는다. userId 는 인증된 값이라
@@ -136,7 +150,17 @@ public class RedisRateLimiter implements RateLimiter {
                 });
     }
 
-    /** 마지막 로그로부터 간격이 지났으면 true. 경쟁 시 한 스레드만 통과한다(스로틀이 곧 중복 억제). */
+    /**
+     * 마지막 로그로부터 간격이 지났으면 true. 경쟁 시 한 스레드만 통과한다(스로틀이 곧 중복 억제).
+     *
+     * <p>CAS 에 지는 쪽은 조용히 넘어간다 — 그래도 <b>카운터는 이미 올라가 있어</b> 규모는 남는다.
+     * 솎기가 지우는 것은 줄 수지 사건 수가 아니다.
+     *
+     * <p>{@code System.nanoTime()} 을 직접 쓴다. ArchUnit 의 TimeProvider 규칙이 보는 범위는
+     * {@code ..application..}·{@code ..domain..} 이고 이 클래스는 infrastructure 라 밖이다. 더
+     * 중요하게 <b>재는 것이 경과 시간이지 시각이 아니다</b> — {@code TimeProvider} 는 벽시계라 NTP
+     * 점프에 흔들린다. 로컬 창 판정도 같은 이유로 {@code nanoTime} 이다.
+     */
     private boolean shouldLogDegraded() {
         long now = System.nanoTime();
         long last = lastDegradedLogNanos.get();
@@ -164,21 +188,20 @@ public class RedisRateLimiter implements RateLimiter {
                 .onErrorResume(err -> {
                     long count = deniedTtlFallbackCount.incrementAndGet();
                     if (shouldLogDeniedTtlFallback()) {
+                        // 키를 싣지 않는다 — ratelimit:chat:{userId} 라 그 자체가 PII 다. 위 강등
+                        // 로그와 같은 결정이고, 예외는 그대로 실어 위치를 남긴다.
+                        //
+                        // 그 예외가 키를 흘리지 않는지 재 봤다: 연결 실패 사슬은
+                        // RedisConnectionFailureException → RedisConnectionException →
+                        // AnnotatedConnectException 이고 호스트·포트만 싣는다(키·userId 둘 다 미포함).
+                        // <b>측정한 것은 그 한 모양뿐이다</b> — 커맨드 타임아웃이나 서버발 오류
+                        // (WRONGTYPE 등)가 명령·키를 인용하는지는 재지 않았다. 그 경로가 생기면
+                        // 여기서 err 를 그대로 싣는 선택을 다시 봐야 한다.
                         log.error("거부 확정 뒤 잔여 TTL 조회 실패 — 창 전체로 답한다(누적 {}건)", count, err);
                     }
                     return Mono.just(new RateLimitResult(false, WINDOW.toSeconds()));
                 });
     }
-
-    /**
-     * 거부 뒤 TTL 조회 실패 누적. <b>강등과 따로 센다</b> — 한쪽의 첫 발생을 다른 쪽이 묻지 않게
-     * 하라는 정본 규율이고, 두 사건의 대응도 다르다(이쪽은 판정이 유지되므로 덜 급하다).
-     */
-    private final AtomicLong deniedTtlFallbackCount = new AtomicLong();
-
-    /** 그 로그의 마지막 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
-    private final AtomicLong lastDeniedTtlLogNanos =
-            new AtomicLong(System.nanoTime() - DEGRADED_LOG_INTERVAL_NANOS);
 
     /** 강등 로그와 같은 규율 — 간격 기반, 경쟁 시 한 스레드만 통과. */
     private boolean shouldLogDeniedTtlFallback() {
