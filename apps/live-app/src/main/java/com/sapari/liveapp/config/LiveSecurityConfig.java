@@ -218,18 +218,24 @@ public class LiveSecurityConfig {
                         // 여는 대신 도달 자체를 끊는다. 되돌리려면 인그레스 제한을 먼저 만들 것.
                         // LiveKit webhook — Spring Security가 아니라 본문 서명(LiveKit JWT)으로 인증하므로 열어둔다.
                         .requestMatchers(HttpMethod.POST, "/webhooks/livekit").permitAll()
-                        // 시청(조회)은 공개 — 다시보기 채팅 이력도 여기에 든다(비회원 조회가 설계 확정).
-                        // principal 이 없으면 특권 뷰(원문·발신자 이메일)를 받지 못할 뿐이고, 그 판정은
-                        // GetChatHistoryService 가 한다. 인증을 요구하면 스펙이 요구하는 공개 조회가
-                        // 불가능해지고, 반대로 여기서 좁히면 같은 판정이 두 곳에 생긴다.
-                        .requestMatchers(HttpMethod.GET, "/api/v1/lives/**").permitAll()
+                        // 공개 조회를 명시한다. 이후 추가되는 GET은 자동 공개하지 않는다.
+                        //
+                        // ⚠️ dev 가 와일드카드(`GET /api/v1/lives/**` permitAll)를 이 목록으로 조였고,
+                        // 그 조임이 chat 의 <b>이력 조회를 비공개로 만들었다</b> — 다시보기 채팅은 비회원도
+                        // 본다는 것이 설계 확정이라, 목록에 명시해 되살린다. 와일드카드로 되돌리지 말 것:
+                        // 조인 쪽이 맞고, chat 경로를 여기 적는 비용이 그 안전의 값이다.
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/lives/rooms",
+                                "/api/v1/lives/rooms/{roomId}",
+                                "/api/v1/lives/rooms/{roomId}/replay",
+                                "/api/v1/lives/{roomId}/chat/history").permitAll()
                         // 채팅 강퇴는 판매자와 관리자 둘 다 — 관리자는 남의 방도 통제한다.
                         // 아래 판매자 전용 규칙보다 먼저 와야 한다(먼저 맞는 규칙이 이긴다).
                         // 실제 판정은 여기서 끝나지 않는다: 자기 방인지, 방이 진행 중인지, 대상이
                         // 관리자는 아닌지는 KickUserService 가 본다. 이 줄은 그 앞의 거친 관문이다.
                         .requestMatchers(HttpMethod.POST, "/api/v1/lives/*/chat/kick")
                                 .hasAnyRole("SELLER", "ADMIN")
-                        // 생성/시작/종료 등 변경은 판매자 전용
+                        // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()
                 )

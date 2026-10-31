@@ -109,8 +109,8 @@ public class StartLiveServiceTest {
     void execute_success(){
         //given
         String expectedSfuToken = "sfu-token-123";
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
-        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
         LiveRoom room = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
@@ -154,7 +154,7 @@ public class StartLiveServiceTest {
         LiveRoom room = scheduledRoom();
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
-        given(liveMediaManager.startHlsEgress(roomId)).willReturn(new HlsEgressResult("egress-123", "http://hls.url/index.m3u8"));
+        given(liveMediaManager.startHlsEgress(roomId)).willReturn(new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8"));
         given(timeProvider.now()).willReturn(now);
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(invocation -> invocation.getArgument(0));
 
@@ -194,7 +194,7 @@ public class StartLiveServiceTest {
     void execute_fail_when_invalid_status(){
         // given
         // 1. 방송을 시작할 수 없는 상태(ex: 이미 종료된 상태)로 세팅
-        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8");
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
         LiveRoom invalidRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
@@ -235,7 +235,7 @@ public class StartLiveServiceTest {
     void compensation_stops_egress_on_rollback(){
         // given
         LiveRoom room = scheduledRoom();
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
@@ -260,7 +260,7 @@ public class StartLiveServiceTest {
     void compensation_failure_is_not_propagated(){
         // given
         LiveRoom room = scheduledRoom();
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
@@ -282,7 +282,7 @@ public class StartLiveServiceTest {
     void compensation_skipped_on_unknown_status(){
         // given
         LiveRoom room = scheduledRoom();
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
 
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         given(liveMediaManager.issueSellerToken(roomId, sellerId)).willReturn("sfu-token-123");
@@ -333,7 +333,7 @@ public class StartLiveServiceTest {
     void rtmp_start_goes_live_when_ingress_active(){
         // given
         LiveRoom room = rtmpScheduledRoom();
-        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8");
+        HlsEgressResult egressResult = new HlsEgressResult("egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(room));
         // 방이 배정받은 ingress("ingress-1")가 송출 중 → 승격 대상
         given(liveMediaManager.publishingIngressIdsOrEmpty(roomId)).willReturn(List.of("ingress-1"));
@@ -353,6 +353,7 @@ public class StartLiveServiceTest {
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
         verify(liveRoomRepository).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Live.class);
+        assertThat(captor.getValue().streamInfo().hlsArchiveUrl()).isEqualTo("http://archive/playlist.m3u8");
 
         // 랑데부는 한 트랜잭션에서 두 전이가 일어난다. 합쳐 세면 깔때기에서 Ready 에 멈춘 방과
         // 구분되지 않으므로 반드시 두 건으로 갈라야 한다. 승격 경로도 SELLER_START 여야 한다 —
@@ -385,7 +386,7 @@ public class StartLiveServiceTest {
     }
 
     private LiveRoom rtmpScheduledRoom(){
-        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", null, null);
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", null, null, null);
         return fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
@@ -396,7 +397,7 @@ public class StartLiveServiceTest {
     }
 
     private LiveRoom scheduledRoom(){
-        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8");
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
         return fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)

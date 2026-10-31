@@ -27,4 +27,13 @@ public record NtsBusinessRegistrationProperties(
             readTimeout = DEFAULT_READ_TIMEOUT;
         }
     }
+
+    @Override
+    public String toString() {
+        return "NtsBusinessRegistrationProperties[baseUrl=" + baseUrl
+                + ", serviceKey=***"
+                + ", connectTimeout=" + connectTimeout
+                + ", readTimeout=" + readTimeout
+                + "]";
+    }
 }

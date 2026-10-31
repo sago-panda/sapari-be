@@ -4,6 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
+import org.springframework.boot.context.TypeExcludeFilter;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
@@ -38,7 +39,11 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
                 @ComponentScan.Filter(
                         type = FilterType.REGEX,
                         pattern = "com\\.sapari\\.chat\\..*"
-                )
+                ),
+                // @SpringBootApplication 을 분해하면서 잃어버린 것을 되돌려 놓는다 — 그 애너테이션은
+                // 이 필터를 기본으로 달고, 그게 테스트 소스의 설정이 앱 스캔에 끌려 들어오는 것을 막는다.
+                // chat-core 의 테스트 애플리케이션이 같은 이유로 같은 필터를 되돌려 뒀다.
+                @ComponentScan.Filter(type = FilterType.CUSTOM, classes = TypeExcludeFilter.class)
         }
 )
 @EnableJpaRepositories({

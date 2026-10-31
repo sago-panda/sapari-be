@@ -57,7 +57,8 @@ public class LiveKitMediaManager implements LiveMediaManager {
     private static final int EMPTY_TIMEOUT = 300;
     private static final int MAX_PARTICIPANTS = 1000;
     private static final String LAYOUT = "speaker-dark";
-    // master.m3u8 업로드 도입 전까지 서빙하는 대표 화질 (이 화질의 변형 m3u8을 직접 재생)
+    // 업로더 미등록(= ABR 불가)이거나 master 업로드가 실패했을 때 강등해서 서빙하는 대표 화질.
+    // 업로더가 있으면 publishMaster 가 master.m3u8 을 게시하고 그 URL 을 쓴다.
     private static final HlsRendition DEFAULT_RENDITION = HlsRendition.P720;
     private final EgressServiceClient egressServiceClient;
     private final IngressServiceClient ingressServiceClient;
@@ -67,12 +68,19 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public SfuRoomResult createRoom(UUID roomId){
         try{
-            Room room = roomServiceClient.createRoom(
+            Response<Room> response = roomServiceClient.createRoom(
                     roomId.toString(),
                     EMPTY_TIMEOUT,
                     MAX_PARTICIPANTS
-            ).execute().body();
+            ).execute();
 
+            if (!response.isSuccessful() || response.body() == null) {
+                log.error("LiveKit 룸 생성 실패: roomId={}, code={}, message={}",
+                        roomId, response.code(), response.message());
+                throw new LiveMediaException("SFU 룸 생성 실패: " + roomId);
+            }
+
+            Room room = response.body();
             log.info("LiveKit 룸 생성 완료: roomId={}", roomId);
             return new SfuRoomResult(room.getName(), room.getMaxParticipants(), true);
         } catch (IOException e){
@@ -149,10 +157,15 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public List<String> publishingIngressIdsOrEmpty(UUID roomId){
         try {
-            List<IngressInfo> ingresses = ingressServiceClient.listIngress(roomId.toString()).execute().body();
-            if (ingresses == null) {
+            Response<List<IngressInfo>> response = ingressServiceClient.listIngress(roomId.toString()).execute();
+            if (!response.isSuccessful() || response.body() == null) {
+                // 빈 목록으로 수렴시키는 실패 방향은 그대로 둔다(포트 계약) — 다만 401/403/5xx 는
+                // 예외도 안 나고 로그도 없어 오설정을 진단할 수단이 아예 없었다. 신호만 남긴다.
+                log.warn("RTMP ingress 송출 조회 실패 — 비활성으로 간주: roomId={}, code={}",
+                        roomId, response.code());
                 return List.of();
             }
+            List<IngressInfo> ingresses = response.body();
             return ingresses.stream()
                     .filter(this::isPublishing)
                     .map(IngressInfo::getIngressId)
@@ -196,7 +209,8 @@ public class LiveKitMediaManager implements LiveMediaManager {
 
     /**
      * HLS Egress 시작 — 1080p/720p/360p 세 화질을 각각 독립 egress로 띄운다.
-     * 방송 -> (화질별) S3 경로 -> CDN. 화질을 묶는 master.m3u8(ABR) 생성은 별도 작업.
+     * 방송 -> (화질별) S3 경로 -> CDN. 화질을 묶는 master.m3u8 은 {@link #publishMaster} 가 게시하며,
+     * 업로더 빈이 없으면 비기본 화질을 아예 시작하지 않고 720p 단일로 강등한다.
      */
     @Override
     public HlsEgressResult startHlsEgress(UUID roomId){
@@ -237,13 +251,14 @@ public class LiveKitMediaManager implements LiveMediaManager {
             }
 
             // 업로더가 있으면 master.m3u8 게시 후 master URL, 없으면(또는 업로드 실패) 기본 화질 variant 직접 서빙.
-            String hlsUrl = publishMaster(publisher, hls, basePath, roomId, startedEgressIds, defaultEgressId);
-            UrlValidator.validateHlsUrl(hlsUrl);
+            HlsEgressResult result = publishMaster(publisher, hls, basePath, roomId, startedEgressIds, defaultEgressId);
+            UrlValidator.validateHlsUrl(result.hlsUrl());
+            UrlValidator.validateHlsUrl(result.hlsArchiveUrl());
             log.info("HLS Egress 시작: roomId={}, abrEnabled={}, defaultEgressId={}, hlsUrl={}",
-                    roomId, abrEnabled, defaultEgressId, hlsUrl);
+                    roomId, abrEnabled, defaultEgressId, result.hlsUrl());
 
             // egressId 는 대표(720p) 1건만 보존 — 중단은 room 기준 일괄 처리(stopHlsEgress)라 전 화질 ID 저장 불필요.
-            return new HlsEgressResult(defaultEgressId, hlsUrl);
+            return result;
         } catch (RuntimeException e) {
             // 일부 화질만 시작된 상태에서 실패 → 추적한 egressId를 직접 중단(전파 지연 회피) 후, listEgress로 누락분 보강.
             log.error("HLS Egress 다중 화질 시작 실패 → 시작분 {}건 보상 중단: roomId={}", startedEgressIds.size(), roomId, e);
@@ -262,20 +277,25 @@ public class LiveKitMediaManager implements LiveMediaManager {
      * 업로더 미등록(링크 전)이거나 업로드 실패 시 기본 화질 variant URL로 강등한다(방송은 정상, ABR만 비활성).
      * 업로드 실패 시에는 어차피 참조되지 않을 비기본 화질 egress를 중단해 잔여 비용(3배 인코딩)을 막는다.
      */
-    private String publishMaster(MasterPlaylistPublisher publisher, LiveKitProperties.Hls hls, String basePath,
+    private HlsEgressResult publishMaster(MasterPlaylistPublisher publisher, LiveKitProperties.Hls hls, String basePath,
                                  UUID roomId, List<String> startedEgressIds, String defaultEgressId) {
         if (publisher != null) {
             try {
                 String masterKey = basePath + "master.m3u8";
+                String archiveMasterKey = basePath + "archive-master.m3u8";
+                publisher.publish(archiveMasterKey, MasterPlaylistGenerator.generateArchive());
                 publisher.publish(masterKey, MasterPlaylistGenerator.generate());
-                return hls.cdnBaseUrl() + "/" + masterKey;
+                return new HlsEgressResult(defaultEgressId, hls.cdnBaseUrl() + "/" + masterKey,
+                        hls.cdnBaseUrl() + "/" + archiveMasterKey);
             } catch (RuntimeException e) {
                 // master 업로드 실패 → ABR 불가. 참조되지 않을 비기본 화질 egress를 중단하고 720p로 강등(방송은 정상).
                 log.warn("master.m3u8 업로드 실패 → 비기본 화질 egress 중단 + 720p 강등: basePath={}", basePath, e);
                 stopNonDefaultEgresses(roomId, startedEgressIds, defaultEgressId);
             }
         }
-        return hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.variantPlaylistPath();
+        return new HlsEgressResult(defaultEgressId,
+                hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.variantPlaylistPath(),
+                hls.cdnBaseUrl() + "/" + basePath + DEFAULT_RENDITION.archivePlaylistPath());
     }
 
     /** 기본 화질을 제외한 시작분 egress를 best-effort 중단(업로드 실패로 ABR 강등 시 잔여 비용 차단). */
@@ -294,15 +314,25 @@ public class LiveKitMediaManager implements LiveMediaManager {
             UUID roomId, S3Upload s3Upload, String renditionPath,
             EncodingOptionsPreset preset, EncodingOptions customOptions, int segmentDuration) {
 
-        // 안전 형태: filename_prefix·playlist_name 모두에 화질 경로를 포함한다.
-        // LiveKit egress가 StorageDir을 playlist_name 디렉터리에서 유도하든(같은 디렉터리는 dedupe) 두 필드를
-        // 독립으로 보든, 어느 해석에서도 세그먼트·인덱스가 동일하게 {basePath}{rendition}/ 아래에 떨어져 안전하다.
-        // (bare "segment_"는 한 해석에서만 동작 → egress 통합 테스트로 확정 전까지 이 형태 유지.)
+        // filename_prefix·playlist_name·live_playlist_name 세 필드 모두에 화질 경로를 포함한다.
+        // SPR-147 로컬 egress 실측: 세 필드가 서로 독립으로 해석되어 세그먼트와 두 플레이리스트가
+        // 모두 {basePath}{rendition}/ 아래에 함께 떨어진다.
+        //
+        // playlist_name 과 live_playlist_name 은 서로 달라야 한다 — 같으면 LiveKit 이
+        // "live_playlist_name cannot be identical to playlist_name" 으로 요청을 거부한다(invalid_argument).
+        // 시청자가 받는 것은 슬라이딩 윈도우인 live 쪽이라 그쪽이 index.m3u8 이고
+        // ({@link HlsRendition#variantPlaylistPath()} 가 가리키는 경로), 전체(VOD) 목록은 playlist.m3u8 로 둔다.
+        // 두 파일의 역할이 다르다 — SPR-147 에서 실측(220 세그먼트 방송, EGRESS_COMPLETE):
+        //   index.m3u8    종료 후 마지막 5개만 참조 (슬라이딩 윈도우). 다시보기로는 못 쓴다.
+        //   playlist.m3u8 EXT-X-PLAYLIST-TYPE:EVENT + 전체 220개 참조. 이쪽이 아카이브다.
+        //
+        // ⚠️ playlist.m3u8 을 라이프사이클로 지우면 다시보기가 영구히 불가능해진다. 세그먼트와 수명을 같이 둘 것.
+        // 아카이브 URL 은 HlsEgressResult → StreamInfo 로 별도 전달하며 endLive 가 보존한다.
         SegmentedFileOutput hlsOutput = SegmentedFileOutput.newBuilder()
                 .setProtocol(SegmentedFileProtocol.HLS_PROTOCOL)
                 .setFilenamePrefix(renditionPath + "segment_")
-                .setPlaylistName(renditionPath + "index.m3u8")
-                .setLivePlaylistName(renditionPath + "index.m3u8")
+                .setPlaylistName(renditionPath + HlsRendition.ARCHIVE_PLAYLIST_NAME)
+                .setLivePlaylistName(renditionPath + HlsRendition.LIVE_PLAYLIST_NAME)
                 .setSegmentDuration(segmentDuration)
                 .setS3(s3Upload)
                 .build();
@@ -368,21 +398,30 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public void stopHlsEgress(UUID roomId){
         try {
-            List<EgressInfo> egresses = egressServiceClient.listEgress(roomId.toString()).execute().body();
-            if (egresses == null || egresses.isEmpty()) {
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress(roomId.toString()).execute();
+            if (!response.isSuccessful() || response.body() == null) {
+                log.error("HLS Egress 목록 조회 실패 — 고아 egress 가능, 수동/배치 복구 필요: roomId={}, code={}",
+                        roomId, response.code());
+                return;
+            }
+            List<EgressInfo> egresses = response.body();
+            if (egresses.isEmpty()) {
                 log.info("중단할 egress 없음: roomId={}", roomId);
                 return;
             }
-            for (EgressInfo egress : egresses) {
-                if (isStoppable(egress.getStatus())) {
-                    safeStopEgress(roomId, egress.getEgressId());
-                }
-            }
+            egresses.stream()
+                    .filter(egress -> isStoppable(egress.getStatus()))
+                    .forEach(egress -> safeStopEgress(roomId, egress.getEgressId()));
         } catch (Exception e) {
             // listEgress 자체 실패 → 이 방의 egress가 하나도 정리되지 않아 전부 고아가 됨(비용 누수).
             // 종료 트랜잭션은 막지 않되(UX), 알람이 잡도록 error로 올린다. 복구는 reconciliation 배치의 몫.
             log.error("HLS Egress 일괄 중단 실패 — 고아 egress 가능, 수동/배치 복구 필요: roomId={}", roomId, e);
         }
+    }
+
+    @Override
+    public void stopEgress(UUID roomId, String egressId) {
+        safeStopEgress(roomId, egressId);
     }
 
     private boolean isStoppable(EgressStatus status){
@@ -393,7 +432,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
 
     private void safeStopEgress(UUID roomId, String egressId){
         try {
-            egressServiceClient.stopEgress(egressId).execute();
+            Response<EgressInfo> response = egressServiceClient.stopEgress(egressId).execute();
+            if (!response.isSuccessful()) {
+                log.warn("HLS Egress 중단 실패 (이미 중단됐을 수 있음): roomId={}, egressId={}, code={}",
+                        roomId, egressId, response.code());
+                return;
+            }
             log.info("HLS Egress 중단: roomId={}, egressId={}", roomId, egressId);
         } catch (Exception e) {
             log.warn("HLS Egress 중단 실패 (이미 중단됐을 수 있음): roomId={}, egressId={}", roomId, egressId, e);
@@ -420,9 +464,10 @@ public class LiveKitMediaManager implements LiveMediaManager {
                 log.info("삭제할 ingress 없음: roomId={}", roomId);
                 return;
             }
-            for (IngressInfo ingress : ingresses) {
-                safeDeleteIngress(roomId, ingress.getIngressId());
-            }
+            // 상한을 두지 않는다 — 하나라도 남으면 OBS 자동 재접속이 닫힌 SFU 방을 되살린다
+            // (AGENTS "a survivor lets OBS re-create the room"). 잔재 회수를 고아 정리 잡으로
+            // 미루면 그 사이 좀비 방이 산다.
+            ingresses.forEach(ingress -> safeDeleteIngress(roomId, ingress.getIngressId()));
         } catch (Exception e) {
             // listIngress 자체 실패 → 이 방의 ingress가 정리되지 않아 고아가 됨. 알람이 잡도록 error로 올린다.
             log.error("RTMP Ingress 일괄 삭제 실패 — 고아 ingress 가능, 수동/배치 복구 필요: roomId={}", roomId, e);
@@ -458,7 +503,12 @@ public class LiveKitMediaManager implements LiveMediaManager {
     @Override
     public void closeRoom(String sfuRoomId){
         try{
-            roomServiceClient.deleteRoom(sfuRoomId).execute();
+            Response<Void> response = roomServiceClient.deleteRoom(sfuRoomId).execute();
+            if (!response.isSuccessful()) {
+                log.warn("LiveKit 룸 삭제 실패 (이미 삭제됐을 수 있음): sfuRoomId={}, code={}",
+                        sfuRoomId, response.code());
+                return;
+            }
             log.info("LiveKit 룸 삭제: sfuRoomId={}", sfuRoomId);
         }catch (Exception e){
             log.warn("LiveKit 룸 삭제 실패 (이미 삭제됐을 수 있음): sfuRoomId={}", sfuRoomId, e);
@@ -546,9 +596,11 @@ public class LiveKitMediaManager implements LiveMediaManager {
     }
 
     /**
-     * LiveKit 전체 egress 목록 조회 — orphan live 정리 전용
+     * LiveKit 전체 egress 목록 조회 — 고아 미디어 정리와 오설정 가드 전용.
      *
-     *  <p>{@link #listAllIngress()}와 같은 이유로 실패를 삼키지 않는다.
+     * <p>{@link #listAllIngress()} 와 같은 이유로 실패를 삼키지 않는다. null body 도 실패로 센다 —
+     * 전역 스윕에서 빈 결과는 "클러스터 전체에 송출 없음"으로 읽히고, 그 오독은 후보 전량을 끊는다.
+     * 방 단위인 {@link #listRoomEgress(UUID)} 도 같은 규칙이다.
      */
     @Override
     public List<EgressSummary> listAllEgress(){
@@ -578,6 +630,41 @@ public class LiveKitMediaManager implements LiveMediaManager {
             // 위와 같은 이유 — IOException 밖의 실패도 도메인 예외로 번역한다.
             log.error("LiveKit Egress 전체 조회 실패", e);
             throw new LiveMediaException("Egress 전체 조회 중 오류", e);
+        }
+    }
+
+    @Override
+    public List<EgressSummary> listRoomEgress(UUID roomId) {
+        try {
+            Response<List<EgressInfo>> response = egressServiceClient.listEgress(roomId.toString()).execute();
+
+            if (!response.isSuccessful()) {
+                log.error("LiveKit 방별 Egress 조회 실패: roomId={}, code={}, message={}",
+                        roomId, response.code(), response.message());
+                throw new LiveMediaException("방별 Egress 조회에 실패했습니다.");
+            }
+            if (response.body() == null) {
+                log.error("LiveKit 방별 Egress 조회 실패 — 성공 응답 본문 없음: roomId={}", roomId);
+                throw new LiveMediaException("방별 Egress 조회 응답 본문이 없습니다.");
+            }
+            if (response.body().stream().anyMatch(info -> !roomId.toString().equals(info.getRoomName()))) {
+                log.error("LiveKit 방별 Egress 조회 실패 — 다른 방 응답 포함: roomId={}", roomId);
+                throw new LiveMediaException("방별 Egress 조회 응답에 다른 방이 포함됐습니다.");
+            }
+
+            return response.body().stream()
+                    .map(info -> new EgressSummary(
+                            info.getEgressId(),
+                            info.getRoomName(),
+                            isStoppable(info.getStatus()),
+                            toInstant(info.getStartedAt())
+                    ))
+                    .toList();
+        } catch (LiveMediaException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("LiveKit 방별 Egress 조회 실패: roomId={}", roomId, e);
+            throw new LiveMediaException("방별 Egress 조회 중 오류", e);
         }
     }
 

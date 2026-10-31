@@ -19,6 +19,7 @@ import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.application.port.ReconcileLockResult;
 import com.sapari.live.domain.model.LiveStatus;
 
 /**
@@ -99,6 +100,15 @@ public class MicrometerLiveMetrics implements LiveMetrics {
                     .register(registry)
                     .increment();
         });
+    }
+
+    @Override
+    public void reconcileLockResult(ReconcileJob job, ReconcileLockResult result) {
+        safe(() -> Counter.builder(LiveMeterNames.RECONCILE_LOCK)
+                .tag(LiveMeterNames.TAG_JOB, tag(job))
+                .tag(LiveMeterNames.TAG_RESULT, tag(result))
+                .register(registry)
+                .increment());
     }
 
     @Override

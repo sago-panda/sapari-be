@@ -8,6 +8,18 @@ import org.junit.jupiter.api.Test;
 class MasterPlaylistGeneratorTest {
 
     @Test
+    void archiveMasterReferencesWholeEventPlaylists() {
+        String archive = MasterPlaylistGenerator.generateArchive();
+        assertThat(archive).startsWith("#EXTM3U\n").doesNotContain("index.m3u8");
+        assertThat(countOccurrences(archive, "#EXT-X-STREAM-INF")).isEqualTo(3);
+        for (HlsRendition rendition : HlsRendition.values()) {
+            assertThat(archive).contains("RESOLUTION=" + rendition.getWidth() + "x"
+                    + rendition.getHeight() + "\n" + rendition.getPathSegment() + "/playlist.m3u8\n");
+        }
+        assertThat(MasterPlaylistGenerator.generate()).doesNotContain("playlist.m3u8");
+    }
+
+    @Test
     @DisplayName("master.m3u8: 헤더와 세 화질 variant가 모두 포함된다")
     void generatesMasterPlaylistWithAllRenditions() {
         String master = MasterPlaylistGenerator.generate();

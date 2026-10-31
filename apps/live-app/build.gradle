@@ -15,6 +15,11 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
+    // 정리 스케줄러 분산 락. 락 저장소는 Postgres — live-app 에 Redis 의존성이 없고(추가 대상이 늘어난다),
+    // 이 락은 파괴적 외부 호출(LiveKit 삭제/중단)을 지키므로 캐시 취급인 Redis 보다 정본 DB 가 맞다.
+    implementation 'net.javacrumbs.shedlock:shedlock-spring:6.6.0'
+    implementation 'net.javacrumbs.shedlock:shedlock-provider-jdbc-template:6.6.0'
+
     // 프로메테우스 스크레이프 엔드포인트. runtimeOnly — 코드가 직접 참조하지 않는다.
     runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
@@ -30,19 +35,24 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
-    // 인가 규칙을 컨텍스트 전체를 띄우지 않고 검사하기 위한 둘. 전체 부팅 테스트는 클론에
-    // application*.yaml 이 없어 CI 에서 제외되므로, 그쪽에 기대면 규칙 회귀를 파이프라인이 못 잡는다.
+    // 인가 규칙을 컨텍스트 전체를 띄우지 않고 검사하기 위한 둘.
     testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
     testImplementation 'org.springframework.security:spring-security-test'
 
     // 컨텍스트를 CI 에서도 띄우기 위한 것들. 종전에는 @Tag("context") 로 CI 에서 제외했고 그 근거가
     // "설정을 CI 변수로 채우려면 룸토큰 개인키를 CI 에 넣어야 한다" 였는데, 키는 외부 의존 없는
     // 프로퍼티라 테스트가 직접 만들 수 있다 — 그래서 시크릿 없이 돈다.
+    //
+    // 락 경합 테스트도 같은 컨테이너를 쓴다 — 인스턴스 2개가 같은 락 저장소를 보는 상황이 전부라
+    // 진짜 Postgres 가 필요하고, 인메모리 DB 로 바꾸면 검증 대상(운영과 같은 프로바이더·같은 DDL)이
+    // 사라진다. 버전은 <b>BOM 하나로</b> 모은다 — dev 쪽이 1.21.3 을 직접 박고 있었는데 다른 모듈은
+    // 전부 이 BOM(1.20.4)을 쓰므로, 한 저장소에 두 버전을 두지 않는다.
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')
     testImplementation 'org.testcontainers:junit-jupiter'
     testImplementation 'org.testcontainers:postgresql'
     testImplementation 'org.testcontainers:mongodb'
+    testRuntimeOnly 'org.postgresql:postgresql'
     // 스키마는 <b>운영과 같은 러너로</b> 세운다. 손수 SQL 을 읽는 로더를 또 만들면 "전부, 순서대로"
     // 라는 규칙이 네 번째 자리에 흩어진다(chat 의 LiveSchema javadoc 이 경고한 그 모양).
     testImplementation 'org.flywaydb:flyway-core'
@@ -59,3 +69,4 @@ bootJar {
 jar{
     enabled = true
 }
+
