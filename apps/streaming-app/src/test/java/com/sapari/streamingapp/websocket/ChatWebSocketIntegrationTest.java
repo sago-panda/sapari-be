@@ -44,7 +44,11 @@ import reactor.core.publisher.Mono;
  *
  * <p>토큰은 쿼리가 아니라 Sec-WebSocket-Protocol 헤더(["bearer", token])로 전달한다(PII 토큰 access log 잔류 방지).
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        // ObservabilityExposureConfig 가 필수로 요구한다 — 비어 있으면 부팅이 실패한다.
+        // 0 = 임의의 빈 포트(테스트끼리 다투지 않음).
+        properties = "management.server.port=0")
 @Testcontainers
 class ChatWebSocketIntegrationTest {
 

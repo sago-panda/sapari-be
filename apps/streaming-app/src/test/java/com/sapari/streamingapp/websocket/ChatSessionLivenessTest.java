@@ -47,6 +47,9 @@ import reactor.core.publisher.Mono;
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
+                // ObservabilityExposureConfig 가 필수로 요구한다 — 비어 있으면 부팅이 실패한다.
+                // 0 = 임의의 빈 포트(테스트끼리 다투지 않음).
+                "management.server.port=0",
                 "chat.session.ping-interval=1s",
                 "chat.session.liveness-deadline=3s",
                 "chat.session.max-lifetime=10m"
