@@ -397,6 +397,48 @@ load through a separate connection factory dropped p99 from 113ms to 12ms. If th
 dedicated connection for this one read is the cheap answer — a maintained counter is the expensive answer to
 the wrong cause.
 
+## Observability — what is measured is the policy *not* being enforced
+
+`ChatMetrics` (`application/port`, no micrometer) ← `infrastructure/metrics`. ArchUnit rule 16 already
+covers chat by wildcard — verified by planting a `MeterRegistry` field in an application class and watching
+it fail. `ChatMetrics.NOOP` is selected via `ObjectProvider` when no registry exists, **not**
+`@ConditionalOnBean`: that condition is evaluated before autoconfiguration, so it picks NOOP even when a
+registry does arrive. Measured — the wiring test supplies the registry *from an autoconfiguration*, and the
+conditional variant really does fall back to NOOP.
+
+| Meter | Tags | What it means |
+|---|---|---|
+| `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through |
+| `chat.ratelimit.degraded` | `mode` | pod-local window, or a denial whose TTL read failed |
+| `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
+| `chat.session.cut` | `reason` | the server closed a session |
+
+- **The adapter must never throw.** Most call sites are inside `onErrorResume` lambdas — a throw there
+  propagates downstream and *denies* the request the policy decided to allow. Instrumentation would invert
+  the availability policy. `safe()` plus null-tolerant tags, pinned by a throwing-registry test.
+- **`failure=store_corrupted` is never merged into `unavailable`.** A corrupted key does not heal on retry
+  or on Redis coming back; a human must clear it. Merged, the permanent condition hides under the transient one.
+- **`checkpoint` separates entry from send.** Open at entry only means a sanctioned user is watching; open at
+  the send re-check means posts land in an ended room. A mutation test caught that this distinction was
+  initially unguarded.
+- **`chat.session.cut` exists because close 1000 means three things** (room end, lifetime, liveness) and only
+  room end is preceded by an explaining frame. `MODERATION` (1008) and `BUFFER_OVERFLOW` (1013) are in the
+  same meter so the reasons sum to all server-initiated closes.
+- Every meter is **0 in the healthy case**, which is what makes alerting possible — tests assert the counters
+  are not even created on a healthy path.
+- The Prometheus registry rejects same-name-different-tag-key meters, so a call that omits a tag makes that
+  series vanish silently at runtime. A scrape test walks every enum value; add a line when adding a meter.
+- **Exposure is locked in code, because this app has no Spring Security.** `ObservabilityExposureConfig`
+  refuses to boot unless `management.server.port` is set and differs from `server.port`, and unless
+  `exposure.include` is a subset of `{health, prometheus}`. It reads that key with `Binder`, not the base
+  property: written as a YAML list the key lands as `include[0]`, and a base-key read lets a list-form `"*"`
+  through (measured). `"*"` would serve `/actuator/env` and `/heapdump` unauthenticated — Mongo credentials
+  and the Redis password.
+- Port reachability is pinned both ways by a test that boots the real app with containers and makes real HTTP
+  calls: 404 on the user port, 200 on the management port. **Expect 404, not live-app's 401** — there is no
+  security chain here to answer first. Unlike live's equivalent it runs in CI, because the infrastructure this
+  app needs is two containers and one throwaway public key.
+
 ## Startup — the port is the deadline, not the runner
 
 Measured boot order (`EagerSingletonsRunBeforeThePortBindsTest`, fixed port, real TCP connect):

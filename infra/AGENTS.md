@@ -34,6 +34,10 @@ How it runs:
 
 ## Observability ports (live-app)
 
+Two apps now expose metrics on a split management port. The rules below were written for live-app; the
+**streaming-app section that follows states where it differs** — most importantly it has no Spring Security,
+so the port split is the only thing standing between an anonymous scraper and the endpoints.
+
 - **live-app listens on two ports: `server.port` (user traffic) and `management.server.port` (metrics).**
   The metrics port serves `/actuator/health` and `/actuator/prometheus` with **no authentication** — a
   Prometheus scraper has no way to hold a JWT, so the gate is the network, not the app.
@@ -63,6 +67,35 @@ How it runs:
 - **Not done yet in this repo**: the manifests themselves live in the infra repo, so none of the above is
   enforced from here. Until they exist, metrics are only as private as the cluster's default networking,
   and the `live.room.active` gauge's 5-second cache is the only thing bounding DB load from scrapes.
+
+## Observability ports (streaming-app)
+
+Same two-port shape as live-app, with one difference that changes the risk: **streaming-app has no Spring
+Security at all** (verified: no `SecurityWebFilterChain` anywhere in the app). live-app can afford a
+`permitAll` actuator chain because a *second* chain denies everything else; here there is no chain to hang
+that on.
+
+- **Default management port is 8092** (`MANAGEMENT_PORT`), chosen to clear api-app 8080 and live-app
+  8081/8091. The user port is where **WebSocket handshakes** arrive.
+- `ObservabilityExposureConfig` refuses to boot unless the management port is set and differs from
+  `server.port`, **and** unless `management.endpoints.web.exposure.include` is a subset of
+  `{health, prometheus}`. The second check does not exist in live-app, because there the security chain
+  denies anything outside that pair; here the yaml line is the whole gate, and `"*"` would serve
+  `/actuator/env` and `/heapdump` unauthenticated — Mongo URI credentials and the Redis password.
+- **Unauthenticated on every interface, same as live-app** — so the same conclusion holds: ClusterIP only,
+  never behind the ingress, NetworkPolicy to the monitoring namespace where available.
+- **Probes**: use `/actuator/health/liveness` and `/actuator/health/readiness`, not the aggregate path, for
+  the reason spelled out in the live-app section. Note this app previously had **no health endpoint at all**,
+  so a TCP socket check was the only probe available — and that check answered `Ready` while startup work was
+  still blocked. A real readiness probe is now possible and the manifest should use one.
+- **Deployment prerequisite**: `MANAGEMENT_PORT` must exist in the environment before rollout — without it
+  the app refuses to start, by design. Developers running locally copy the `management` block from
+  `application.yml.example`.
+- **What the metrics carry**: `chat.policy.open`, `chat.ratelimit.degraded`, `chat.delivery.dropped`,
+  `chat.session.cut` — every one of them is a *policy not being enforced* right now, which is exactly what
+  alerting should watch. They are 0 in the healthy case. Details in `modules/chat/AGENTS.md`.
+- **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
+  network restrictions above are enforced from here.
 
 ## Manifests & Pipeline
 

@@ -152,3 +152,33 @@ chat:
   #   max-lifetime: 60m          # 코드 기본값 (env: CHAT_SESSION_MAX_LIFETIME)
   #   ping-interval: 30s         # 코드 기본값 (env: CHAT_SESSION_PING_INTERVAL)
   #   liveness-deadline: 90s     # 코드 기본값, 3 × ping (env: CHAT_SESSION_LIVENESS_DEADLINE)
+
+# ── 관측 ──────────────────────────────────────────────────────────────────────
+#
+# 이 앱이 내보내는 지표는 chat 의 <b>가용성 정책이 발화한 사실</b>이다 — 게이트가 열린 구간,
+# 레이트리밋 강등, 실시간 전달 포기, 세션 종료 사유. 그 정책들은 전부 "지금은 집행되지 않는다" 를
+# 뜻하므로, 알림을 걸 수 있어야 그 선택이 의도대로 작동하는지 확인된다.
+#
+# ⚠️ 이 앱에는 Spring Security 가 없다. live-app 은 액추에이터 전용 필터체인으로 두 엔드포인트만
+#    허용하고 나머지를 거부하는데, 여기엔 그 체인을 걸 자리가 없다 — 즉 아래 두 줄이 유일한 관문이다.
+#    그래서 ObservabilityExposureConfig 가 부팅 시점에 둘 다 강제한다(틀리면 안 뜬다).
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8092}      # REQUIRED(운영) — server.port 와 달라야 한다. 같으면
+                                       # ObservabilityExposureConfig 가 부팅을 막는다. 사용자 포트는
+                                       # WS 핸드셰이크를 받는 포트라, 합치면 지표가 거기 열린다.
+                                       # (api-app 8080 · live-app 8081/8091 과도 겹치지 않게 둔다)
+  endpoints:
+    web:
+      exposure:
+        # 액추에이터 기본 노출은 health 하나뿐이다 — 이건 좁힌 값이 아니라 prometheus 를 더한 값이다.
+        # 넓히지 말 것: "*" 는 /actuator/env·/heapdump 까지 열고, 시큐리티가 없으니 그 응답이
+        # 무인증으로 Mongo URI 자격증명과 Redis 비밀번호를 내보낸다. 가드가 허용 집합
+        # {health, prometheus} 밖을 거부하므로 추가하려면 코드도 함께 고쳐야 한다 = 리뷰에 보인다.
+        # (스칼라·YAML 리스트 두 표기 모두 검사한다 — 리스트만 읽히지 않는 구현이면 통과했었다)
+        include: health,prometheus     # optional
+#
+# ⚠️ 관리 포트는 인증이 없고 모든 인터페이스에 바인딩된다(management.server.address 를 두지 않는다 —
+#    컨테이너에서 loopback 으로 묶으면 kubelet 프로브가 닿지 않는다). 따라서 클러스터 밖으로
+#    노출하면 안 된다: ClusterIP 로만 두고 인그레스에 태우지 않는다. live-app 과 같은 규율이고
+#    근거는 infra/AGENTS.md 에 있다.
