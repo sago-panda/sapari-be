@@ -1242,6 +1242,86 @@ class ChatSessionRegistryTest {
     }
 
     /**
+     * ⭐ 비행 제거가 <b>자기 항목만</b> 걷는다 — 그 사이 설치된 항목을 걷어내지 않는다.
+     *
+     * <p>한때 이 보장을 "테스트로 가를 수 없다"고 적었다. 틀렸다 — 재야 할 것이 인터리빙이 아니라
+     * <b>제거의 조건절</b>이라서, 비행이 진행 중인 동안 맵 값을 바꿔 두면 그 조건이 그대로 드러난다.
+     * 동시성도 래치도 필요 없고 운영 코드에 테스트 전용 훅도 필요 없다(맵은 리플렉션으로 <b>읽기만</b>).
+     *
+     * <p>두 인자 {@code remove(key, value)} 면 값이 달라 아무것도 지우지 않는다. 한 인자였다면
+     * "그 방의 비행 자리를 비운다"가 되어 센티넬이 걷히고, 운영에서는 그 자리에 방금 설치된 남의
+     * 비행이 들어 있다 — 부하가 가장 높은 순간에 병합이 중복 왕복으로 역전된다.
+     */
+    @Test
+    @DisplayName("⭐ 비행 제거가 자기 항목만 걷는다 — 그 사이 설치된 항목을 걷어내지 않는다")
+    void the_flight_removal_evicts_only_its_own_entry() throws Exception {
+        // given: 종결 시점을 테스트가 쥔 상류
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
+        Sinks.One<Long> upstream = Sinks.one();
+        given(sessionRepository.count(room)).willReturn(upstream.asMono());
+
+        reactor.core.Disposable subscription = registry.getActiveCount(room).subscribe();
+        java.util.Map<UUID, Mono<Long>> inFlight = inFlightCounts();
+        assertThat(inFlight).as("구독으로 비행이 설치됐어야 한다").containsKey(room);
+
+        // when: 비행이 아직 pending 인 동안 그 방 키를 다른 Mono 로 바꿔 둔다
+        //       — 운영에서 "앞 비행이 끝나기 전에 설치된 새 비행"에 해당한다
+        Mono<Long> sentinel = Mono.just(99L);
+        inFlight.put(room, sentinel);
+
+        // 상류를 종결시켜 제거를 발화시킨다(doFinally 가 이 스레드에서 동기로 돈다)
+        upstream.tryEmitValue(7L);
+
+        // then
+        assertThat(inFlight.get(room))
+                .as("제거가 자기 항목이 아닌 것을 걷어냈다 — 값 비조건부 remove 로 되돌아갔다")
+                .isSameAs(sentinel);
+        subscription.dispose();
+    }
+
+    /**
+     * ⭐ 합류 지점이 취소를 <b>상류로 보내지 않는다</b> — {@code cache()} 가 지는 보장이다.
+     *
+     * <p>{@code getActiveCount} javadoc 이 "취소에도 지워지지만 즉시가 아니다 — 취소가 상류로
+     * 전파되지 않아 왕복이 끝날 때 {@code onComplete} 로 지워진다" 를 보장으로 내세운다. 그 보장이
+     * 참인 이유는 전적으로 {@code cache()} 다 — {@code share()} 로 바꾸면 refCount 0 에서 취소를
+     * 상류로 <b>즉시</b> 전파한다. 그러면 먼저 붙은 호출자 하나가 떠나는 것만으로 그 방의 왕복이
+     * 취소되고, 뒤에 합류한 호출자는 새 왕복을 열어야 한다 — 병합이 하려던 일의 반대다.
+     *
+     * <p>그 차이가 앞의 센티넬 테스트로는 갈리지 않는다(실측: {@code share()} 뮤턴트가 생존).
+     * 상류 취소를 직접 관측해야 갈린다.
+     */
+    @Test
+    @DisplayName("⭐ 합류 지점이 취소를 상류로 보내지 않는다 — 떠나는 호출자가 남의 왕복을 끊지 않게")
+    void cancelling_a_joiner_does_not_cancel_the_shared_round_trip() {
+        // given: 상류 취소를 관측할 수 있는 조회
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
+        java.util.concurrent.atomic.AtomicBoolean upstreamCancelled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        Sinks.One<Long> upstream = Sinks.one();
+        given(sessionRepository.count(room))
+                .willReturn(upstream.asMono().doOnCancel(() -> upstreamCancelled.set(true)));
+
+        // when: 유일한 구독자가 떠난다
+        reactor.core.Disposable subscription = registry.getActiveCount(room).subscribe();
+        subscription.dispose();
+
+        // then: 상류는 계속 간다 — 그래야 뒤에 합류한 호출자가 같은 왕복을 받는다
+        assertThat(upstreamCancelled.get())
+                .as("취소가 상류로 전파됐다 — 떠나는 호출자가 그 방의 왕복을 끊는다").isFalse();
+    }
+
+    /** 진행 중인 비행 맵을 <b>읽기만</b> 한다 — 운영 코드에 테스트용 훅을 내지 않기 위해. */
+    @SuppressWarnings("unchecked")
+    private java.util.Map<UUID, Mono<Long>> inFlightCounts() throws Exception {
+        java.lang.reflect.Field field = ChatSessionRegistry.class.getDeclaredField("inFlightCounts");
+        field.setAccessible(true);
+        return (java.util.Map<UUID, Mono<Long>>) field.get(registry);
+    }
+
+    /**
      * ⭐ 끝난 조회가 비행 자리를 놓는다 — 두 인자 {@code remove(key, value)} 가 실제로 맞는지.
      *
      * <p>{@code doFinally} 가 {@code cache()} <b>상류</b>에 붙어 있어, 그 람다가 만들어지는 시점에는

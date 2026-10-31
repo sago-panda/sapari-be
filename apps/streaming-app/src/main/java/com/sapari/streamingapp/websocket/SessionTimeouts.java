@@ -80,7 +80,14 @@ public record SessionTimeouts(Duration maxLifetime, Duration pingInterval, Durat
         // 실제 오설정이다. 둘을 가를 방법이 없어 시끄러운 쪽을 택한다.
         //
         // 그래서 <b>탈출로가 설정에 적혀 있어야 한다</b> — 기한·간격을 같이 내리면 통과한다
-        // (예: 2m / 30s / 60s → 102s > 90s). application.yml.example 이 그 예를 적고 있다.
+        // (예: 2m / 20s / 60s → 첫 점검 80s, 102s > 80s). application.yml.example 이 그 트리오를
+        // 적고 ConfigTemplateTest 가 그 산문에서 뽑아 이 가드에 넣는다.
+        //
+        // ⚠️ <b>가드 통과가 좋은 트리오라는 뜻은 아니다.</b> (2m / 30s / 60s) 도 통과하는데 기한/간격
+        // 비가 2배라 연속 PONG 유실 내성이 2회에서 1회로 깎인다(판정이 now - last >= 기한 이라
+        // k회 연속 유실이 k × 간격을 만들고 그것이 기한보다 작아야 산다 → 3배면 2회, 2배면 1회).
+        // 한때 이 자리가 바로 그 트리오를 예로 들고 있었다. 수명을 조이면서 내성까지 지키려면
+        // 간격 < 0.2125 × 수명(= 0.85 × 수명 / 4)으로 비를 3배로 유지한다.
         Duration shortestLifetime = maxLifetime.multipliedBy(100 - LIFETIME_JITTER_PERCENT).dividedBy(100);
         Duration firstLivenessCheck = livenessDeadline.plus(pingInterval);
         if (shortestLifetime.compareTo(firstLivenessCheck) <= 0) {
