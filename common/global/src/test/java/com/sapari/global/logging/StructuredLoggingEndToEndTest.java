@@ -72,4 +72,37 @@ class StructuredLoggingEndToEndTest {
         assertThat(output).as("service.name 이 없으면 다섯 앱 로그를 가를 수 없다")
                 .contains("\"name\":\"probe-app\"");
     }
+
+    /**
+     * ⭐ 한 줄에만 붙이는 필드({@code addKeyValue})도 JSON 에 실린다.
+     *
+     * <p>MDC 는 <b>스코프</b>가 있는 값이라 요청·세션처럼 수명이 있는 축에만 맞다. 그 스코프가 없는
+     * 자리 — Redis 구독 스레드에서 도는 팬아웃, 방 종료 이벤트 핸들러 — 의 로그는 MDC 로 식별자를
+     * 붙일 수 없고, 그렇다고 메시지 안 문자열로만 두면 "그 방의 모든 줄" 로 묶는 쿼리가 안 된다.
+     *
+     * <p>그 자리에 쓸 수 있는 유일한 수단이 이것이라, 실제로 실리는지를 먼저 고정한다.
+     */
+    @Test
+    @DisplayName("⭐ addKeyValue 로 붙인 한 줄짜리 필드도 JSON 에 실린다 — 스코프가 없는 자리의 유일한 수단이다")
+    void singleLineKeyValuesAlsoBecomeJsonFields() {
+        PrintStream original = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+
+        try (ConfigurableApplicationContext ignored = new SpringApplicationBuilder(ProbeAppApplication.class)
+                .web(WebApplicationType.NONE)
+                .run()) {
+            System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+            LoggerFactory.getLogger(StructuredLoggingEndToEndTest.class)
+                    .atWarn()
+                    .addKeyValue("room_id", "ROOM-9")
+                    .log("방 종료 신호 — 세션 일괄 종료");
+        } finally {
+            System.setOut(original);
+        }
+
+        String output = captured.toString(StandardCharsets.UTF_8);
+        assertThat(output).as("addKeyValue 가 JSON 필드로 실리지 않았다 — 스코프 없는 자리에 쓸 수단이 사라진다")
+                .contains("\"room_id\":\"ROOM-9\"");
+        assertThat(output).contains("방 종료 신호 — 세션 일괄 종료");
+    }
 }

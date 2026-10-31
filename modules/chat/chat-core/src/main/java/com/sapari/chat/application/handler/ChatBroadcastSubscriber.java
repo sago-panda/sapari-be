@@ -4,6 +4,7 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Component;
 
+import com.sapari.global.logging.LogFields;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
@@ -45,11 +46,15 @@ public class ChatBroadcastSubscriber {
     /** 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수. */
     public Disposable subscribeRoom(UUID roomId) {
         return broadcaster.subscribe(roomId)
+                // 팬아웃은 Pod 공유 Redis 구독 스레드에서 돈다 — 세션 컨텍스트가 없다. 여기서 room_id 를
+                // 실어야 라우팅 실패가 어느 방인지 <b>필드</b>로 남는다(팬아웃 실패는 그 방 전원이
+                // 그 메시지를 못 받은 것이라, 방 단위로 묶이지 않으면 규모를 읽을 수 없다).
                 .flatMap(envelope -> route(roomId, envelope)
                         .onErrorResume(e -> {
                             log.error("chat:pubsub 라우팅 실패 — 해당 봉투 skip(구독 유지) roomId={}", roomId, e);
                             return Mono.empty();
-                        }))
+                        })
+                        .contextWrite(context -> context.put(LogFields.ROOM_ID, roomId.toString())))
                 .subscribe();
     }
 
