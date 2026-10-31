@@ -387,11 +387,13 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   all. "passing ≠ catching" has a twin in "failing ≠ telling".
   - **`.block()` carries the same rule** — every test call site carries a ceiling; verified end to end by
     making `register` return `Mono.never()`, which turns the class red at the ceiling instead of hanging.
-    **Count a conversion against the commit it lands on, not against an older one**: the sweep converted
-    201 sites measured at its own parent, while the same count taken three commits earlier is 199 — two of
-    the tests added in between use `register(...).block()` themselves. A third number (204) comes from
-    including `src/main`, and a fourth from letting the grep pick up two *comment* lines in
-    `architecture-test` that merely mention `.block()`.
+    **Count a conversion against the commit it lands on and state the scope** — fixing only the baseline
+    lets the scope drift instead. This sweep is 201 sites measured at its own parent over
+    `modules/chat` + `apps/streaming-app` tests. Three commits earlier the same scope gives 199 (two
+    tests added in between call `register(...).block()`); including `src/main` gives 204; widening to the
+    whole repo adds two *comment* lines in `architecture-test` that merely mention `.block()`. Two of
+    those four numbers landed on 201 by different routes — **the counts matching is not evidence that the
+    same thing was counted.**
   - **Production has 3 of its own** (`ChatMongoConfig`'s startup index creation) and they are left alone,
     because they are bounded by the driver rather than by us: against a closed address the block throws
     `DataAccessResourceFailureException` after **30,053 ms** (measured), i.e. the Mongo
