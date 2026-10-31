@@ -21,7 +21,8 @@ import reactor.core.publisher.Mono;
  *
  * <p>Redis 장애 시에는 <b>프로세스 로컬 창으로 강등</b>한다 — 끊긴 Redis 뿐 아니라 <b>답이 느린</b>
  * Redis 도 포함한다({@link #REDIS_CALL_LIMIT} 참고. 상한이 없으면 강등이 에러 신호에만 걸려,
- * 패킷을 떨구는 장애에서는 60초를 기다린다) — 같은 3초 고정 창을 이 Pod 안에서만 적용한다.
+ * 패킷을 떨구는 장애에서는 클라이언트 상한까지 기다린다) — 같은 3초 고정 창을 이 Pod 안에서만
+ * 적용한다.
  * 채팅 가용성이 레이트리밋 엄격성보다 우선이지만, 그것이 "상한을 지운다"는 뜻일 이유는 없다. 전면 통과였을
  * 때는 Redis 가 죽은 동안 회선 속도로 미는 클라 하나가 창 없이 전부 통과하고 그 프레임마다 저장이 일어났다.
  *
@@ -40,12 +41,15 @@ public class RedisRateLimiter implements RateLimiter {
      * Redis 왕복 상한 — <b>느린 Redis 를 죽은 Redis 로 수렴시킨다.</b>
      *
      * <p>이게 없으면 강등이 <b>에러 신호에만</b> 걸린다. Redis 를 죽이는 대신 패킷을 떨구면
-     * (파티션·과부하) 커맨드가 Lettuce 기본 타임아웃까지 pending 인데 그 값이 <b>60초</b>이고
-     * ({@code RedisURI.DEFAULT_TIMEOUT = 60l}, lettuce-core 6.8.2 바이트코드 실측)
-     * {@code spring.data.redis.timeout} 은 이 저장소에 설정돼 있지 않다. 그 60초 동안
-     * {@code onErrorResume} 이 돌지 않으므로 아래 로컬 창은 발화하지 않고, 전송 경로가
-     * {@code concatMap} 으로 직렬화돼 있어 <b>그 세션의 채팅이 통째로 멈춘다</b> — 공격자가 얻는 것이
-     * 상한 우회가 아니라 가용성 박탈이고, 그건 이 어댑터가 내세운 "가용성 우선"의 반대 방향이다.
+     * (파티션·과부하) 커맨드가 클라이언트 상한까지 pending 이고, 그 동안 {@code onErrorResume} 이
+     * 돌지 않으므로 아래 로컬 창은 발화하지 않는다. 전송 경로가 {@code concatMap} 으로 직렬화돼
+     * 있어 <b>그 세션의 채팅이 통째로 멈춘다</b> — 공격자가 얻는 것이 상한 우회가 아니라 가용성
+     * 박탈이고, 그건 이 어댑터가 내세운 "가용성 우선"의 반대 방향이다.
+     *
+     * <p>그 클라이언트 상한은 이제 1초다({@code RedisTimeoutConfig}). 한때 이 자리에 "Lettuce 기본
+     * 60초이고 {@code spring.data.redis.timeout} 이 설정돼 있지 않다" 고 적혀 있었는데, 그 설정이
+     * 없던 것이 문제였고 지금은 있다 — 그래서 이 200ms 는 "60초를 막는 유일한 수단" 이 아니라
+     * <b>따뜻한 경로의 더 조인 예산</b>이다.
      *
      * <p>값은 창의 1/15 다. 정상 왕복은 ms 아래라 평소 지터·GC 로는 걸리지 않고, 걸렸을 때 잃는 것은
      * 그 한 건의 Pod 간 정확도뿐이다(= 강등과 같은 대가).
@@ -61,21 +65,19 @@ public class RedisRateLimiter implements RateLimiter {
      * 있으므로 그 값이 세션당 프레임 간격의 하한이 된다. 창의 1/15 로 잡은 예산이 거부 경로에서는
      * 실효 2/15 라는 뜻이다.
      *
-     * <p>⚠️ <b>그 400ms 가 최악 경계는 아니다.</b> 한때 여기에 "최악 경계" 로 적었는데 거짓이다 —
-     * 공유 커넥션이 아직 수립되지 않은 상태에서는 연산자 상한이 아예 무장되지 않는다.
-     * {@code ReactiveRedisTemplate} 이 커넥션 획득을 {@code subscribe()} 경로에서 동기로 하고,
-     * {@code .timeout()} 은 구독이 반환된 뒤에 무장되기 때문이다. 블랙홀 리스너로 실측:
-     * 따뜻한 커넥션은 <b>210ms 내외</b>로 상한이 듣고, 차가운 커넥션은 <b>60,245ms</b> 뒤에
-     * {@code RedisConnectionFailureException}(root {@code RedisCommandTimeoutException})으로 끝난다 —
-     * Lettuce 의 {@code RedisURI.DEFAULT_TIMEOUT}(60s)이고 {@code .timeout(200ms)} 도
-     * {@code .block(1s)} 도 끊지 못한다.
+     * <p>⚠️ <b>그 400ms 는 따뜻한 커넥션에서만의 경계다.</b> 공유 커넥션이 아직 수립되지 않은
+     * 상태에서는 연산자 상한이 아예 무장되지 않는다 — {@code ReactiveRedisTemplate} 이 커넥션 획득을
+     * {@code subscribe()} 경로에서 동기로 하고 {@code .timeout()} 은 구독이 반환된 뒤에 무장된다.
+     * 그래서 그 구간은 <b>클라이언트 상한</b>이 묶는다. 블랙홀 리스너로 실측:
      *
-     * <p>조건은 좁다 — 그 Pod 의 <b>첫</b> 레이트리밋 호출이 패킷을 떨구는 Redis 를 만날 때(또는
-     * {@code resetConnection} 이후)다. 한 번 따뜻해지면 서버가 완전히 죽어도 유계다. 그러나 그
-     * 구간에서는 위 문단의 경고가 그대로 살아 있다 — 로컬 창 강등이 60초 뒤에 온다.
-     * 실제로 유계로 만들려면 연산자 상한이 아니라 {@code spring.data.redis.timeout} /
-     * {@code clientOptions.connectTimeout} 설정이나 {@code subscribeOn(boundedElastic)} 이 필요하다
-     * (설정 축이라 별건).
+     * <pre>
+     * 따뜻한 커넥션                       210ms 내외   ← 연산자 상한이 듣는다
+     * 차가운 커넥션 + 클라이언트 기본값   60,245ms     ← .timeout(200ms)·.block(1s) 둘 다 못 끊는다
+     * 차가운 커넥션 + 1초 클라이언트 상한  1,115ms     ← RedisTimeoutConfig 적용 후
+     * </pre>
+     *
+     * 조건은 좁다 — 그 Pod 의 <b>첫</b> 레이트리밋 호출이 패킷을 떨구는 Redis 를 만날 때(또는
+     * {@code resetConnection} 이후)다. 그 구간의 강등이 60초에서 1초로 내려왔다.
      *
      * <p>⚠️ <b>이 상한이 고치는 것은 이 호출 하나다.</b> 증상 자체는 더 넓다 — <b>느린 Redis 가
      * {@code concatMap} 위에서 그 세션을 멈춘다.</b> 같은 모양의 호출이 전송 경로의 강퇴·밴 조회와
@@ -90,10 +92,10 @@ public class RedisRateLimiter implements RateLimiter {
      *       {@code modules/chat/AGENTS.md} 가 그것을 의도된 결정으로 따로 다룬다.
      *   <li>종료 마커 조회: 느리면 <b>끝난 방에 입장을 허용한다</b> — 또 다른 방향이다.
      *   <li>시청자 수 조회({@code ChatSessionRedisRepository.count}): 느리면 <b>시청자 수 없이
-     *       입장시킨다</b> — 이미 fail-open 으로 구현돼 있다. 상한이 없어 입장 경로가 Lettuce 기본
-     *       60초까지 기다릴 수 있고, 거기에 비행 병합이 붙어 그 방 신규 입장자가 <b>같은</b> 멈춘
-     *       왕복에 묶인다(늦게 온 호출자는 남은 시간만 기다리니 평균은 유리하지만, 그 커넥션만
-     *       멈춘 경우에는 새 호출이면 즉시 성공했을 것을 전원이 함께 기다린다).
+     *       입장시킨다</b> — 이미 fail-open 으로 구현돼 있다. 연산자 상한이 없어 클라이언트 상한
+     *       (1초)까지 기다리고, 거기에 비행 병합이 붙어 그 방 신규 입장자가 <b>같은</b> 멈춘 왕복에
+     *       묶인다(늦게 온 호출자는 남은 시간만 기다리니 평균은 유리하지만, 그 커넥션만 멈춘
+     *       경우에는 새 호출이면 즉시 성공했을 것을 전원이 함께 기다린다).
      * </ul>
      * 네 자리의 적정 값과 정책은 각각 따로 근거를 가져야 한다. 유추로 확장할 성질이 아니다.
      */

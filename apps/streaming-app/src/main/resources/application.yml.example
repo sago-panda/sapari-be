@@ -46,6 +46,20 @@ spring:
       host: ${REDIS_HOST:localhost}          # optional (로컬 기본값)
       port: ${REDIS_PORT:6379}               # optional
 
+      # 커맨드 상한. ⚠️ 아래가 주석인 것이 의도다 — Duration 타깃이라 ${VAR:} 로 적고 env 를 안
+      # 넣으면 빈 문자열이 코드 기본값을 밀어낸다(위 표기 규칙의 Duration 항목).
+      #
+      # 코드 기본값 1s 는 RedisTimeoutConfig 에 있고 <b>설정이 없어도 적용된다</b> — 이 파일이
+      # 추적되지 않으므로 여기에만 적으면 복사하지 않은 환경에 적용되지 않는다.
+      #
+      # 이 값이 chat 의 모든 Redis 호출에 대한 실질 상한이다. Lettuce 기본값(60s)으로 두면
+      # 패킷을 떨구는 장애에서 커맨드가 그만큼 pending 이고, 전송 경로가 직렬화돼 있어 그 세션의
+      # 채팅이 통째로 멈춘다(실측: 차가운 커넥션 60,245ms → 1s 설정 시 1,115ms).
+      # 내릴 때 주의 — 강퇴·밴·종료 마커 조회는 실패 시 fail-open 이라, 이 값을 넘기면
+      # "느린 Redis = 그 판정이 통과" 가 된다. 정본이 그 정책을 의도로 적어 두었지만 값을
+      # 더 내리면 그 쪽으로 더 자주 기운다.
+      # timeout: 1s
+
   # ⚠️ 접두가 spring.data.mongodb 가 아니라 spring.mongodb 다.
   #    Boot 4.0.0에서 spring.data.mongodb.* 가 제거됐고(replacement: spring.mongodb.*),
   #    옛 이름으로 적으면 값이 바인딩되지 않아 MONGODB_URI를 넣어도 조용히 무시되고

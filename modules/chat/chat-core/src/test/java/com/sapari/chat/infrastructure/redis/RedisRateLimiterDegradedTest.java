@@ -59,7 +59,7 @@ class RedisRateLimiterDegradedTest {
      * ⭐ 답이 없는 Redis 를 기다리지 않는다.
      *
      * <p>장애에는 두 모양이 있고 어댑터는 둘 다 받아야 한다 — 끊긴 Redis(에러)와 <b>답이 느린</b>
-     * Redis(pending)다. 후자에 상한이 없으면 Lettuce 기본 타임아웃 60초까지 매달려
+     * Redis(pending)다. 후자에 연산자 상한이 없으면 클라이언트 상한까지 매달려
      * {@code onErrorResume} 이 돌지 않고, 전송 경로가 직렬화돼 있어 그 세션의 채팅이 통째로 멈춘다.
      */
     @SuppressWarnings("unchecked")
