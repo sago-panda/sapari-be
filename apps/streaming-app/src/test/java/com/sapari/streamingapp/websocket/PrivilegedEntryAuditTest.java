@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -61,7 +62,7 @@ class PrivilegedEntryAuditTest {
 
     @BeforeEach
     void setUp() {
-        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy());
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
         // lenient — 불변식 테스트는 등록까지 가지 않는다(세션을 만드는 데서 이미 거부된다).
         org.mockito.Mockito.lenient().when(sessionRepository.add(ArgumentMatchers.any(),
                 ArgumentMatchers.any(), ArgumentMatchers.any())).thenReturn(Mono.empty());

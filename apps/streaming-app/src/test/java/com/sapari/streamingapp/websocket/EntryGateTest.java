@@ -21,6 +21,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
@@ -51,7 +52,7 @@ class EntryGateTest {
         roomEndedRepository = mock(ChatRoomEndedRepository.class);
         banRepository = mock(ChatBanRepository.class);
         registry = mock(ChatSessionRegistry.class);
-        gate = new EntryGate(kickRepository, roomEndedRepository, banRepository, registry);
+        gate = new EntryGate(kickRepository, roomEndedRepository, banRepository, ChatMetrics.NOOP, registry);
     }
 
     /** 방이 살아있다는 전제 — 종료 검사를 통과시킨다. */

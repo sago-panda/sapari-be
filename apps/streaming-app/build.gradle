@@ -9,6 +9,10 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
     implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'   // 핸들러 ObjectMapper(Instant)
 
+    // 관측 배선 테스트가 실제 레지스트리로 카운터를 읽는다. chat-core 의 micrometer 는 implementation
+    // 스코프라 여기까지 새지 않는다 — 운영에서 레지스트리를 세우는 것은 actuator 의 몫이다.
+    testImplementation 'io.micrometer:micrometer-core'
+
     testImplementation 'io.projectreactor:reactor-test'   // StepVerifier (reactive 단위 테스트)
 
     // C6 WS 통합테스트 — @SpringBootTest(RANDOM_PORT) + Redis/Mongo 컨테이너 + reactive WS 클라

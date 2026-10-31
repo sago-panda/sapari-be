@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import java.time.Duration;
 import java.time.Instant;
@@ -66,7 +67,8 @@ class CrossPodBroadcastTest {
 
         broadcasterA = new RedisChatBroadcaster(templateA);
 
-        registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB), new ChatPermissionPolicy());
+        registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB), new ChatPermissionPolicy(),
+                ChatMetrics.NOOP);
         subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB), registryB, new ChatPermissionPolicy());
     }
 

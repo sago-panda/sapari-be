@@ -2,6 +2,10 @@ package com.sapari.streamingapp.websocket;
 
 import org.springframework.stereotype.Component;
 
+import com.sapari.chat.application.port.ChatCheckpoint;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.ChatPolicy;
+import com.sapari.chat.application.port.PolicyReadFailure;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
@@ -60,6 +64,16 @@ public class EntryGate {
     private final ChatBanRepository banRepository;
 
     /**
+     * 관측 포트. 아래 스로틀 카운터는 프로세스 안에만 있었고 솎인 로그 줄은 아예 남지 않는다 —
+     * <b>게이트가 열려 있던 구간을 밖에서 알 수 없었다.</b> 입장 게이트가 열리면 제재받은 사람이
+     * 방에 들어오고, 전송 재확인이 열리면 끝난 방에 글이 들어온다.
+     *
+     * <p>초기화하지 않는다 — {@code @RequiredArgsConstructor} 는 값이 붙은 final 필드를 생성자에서
+     * 빼므로, 초기화하면 영원히 null 인 채로 컴파일된다.
+     */
+    private final ChatMetrics metrics;
+
+    /**
      * 전송 경로에서 방 종료를 다시 확인할지 판단해 알려주는 창. 세션별 상태라 레지스트리가 갖는다
      * (퇴장할 때 같이 회수되어야 하므로 여기서 들고 있으면 샌다).
      */
@@ -94,7 +108,7 @@ public class EntryGate {
                 })
                 .map(ended -> !ended)
                 .onErrorResume(e -> {
-                    logGateOpen("방 종료 재확인", session, e);
+                    logGateOpen("방 종료 재확인", ChatPolicy.ROOM_ENDED, ChatCheckpoint.SEND, session, e);
                     return Mono.just(true);
                 });
     }
@@ -125,7 +139,7 @@ public class EntryGate {
                 .onErrorResume(e -> {
                     // 통과시키되 흔적은 남긴다 — 이 구간은 입장 모더레이션이 열린 구간이라,
                     // 사후에 "언제부터 게이트가 열려 있었는가"를 짚을 수 있어야 한다.
-                    logGateOpen("방 종료", session, e);
+                    logGateOpen("방 종료", ChatPolicy.ROOM_ENDED, ChatCheckpoint.ENTRY, session, e);
                     return Mono.just(false);
                 })
                 .flatMap(ended -> ended
@@ -139,7 +153,7 @@ public class EntryGate {
         }
         return kickRepository.isKicked(session.roomId(), session.userId())
                 .onErrorResume(e -> {
-                    logGateOpen("강퇴", session, e);
+                    logGateOpen("강퇴", ChatPolicy.KICK, ChatCheckpoint.ENTRY, session, e);
                     return Mono.just(false);
                 })
                 .flatMap(kicked -> kicked
@@ -162,7 +176,7 @@ public class EntryGate {
         }
         return banRepository.isBanned(session.userId())
                 .onErrorResume(e -> {
-                    logGateOpen("밴", session, e);
+                    logGateOpen("밴", ChatPolicy.BAN, ChatCheckpoint.ENTRY, session, e);
                     return Mono.just(false);
                 })
                 .flatMap(banned -> banned
@@ -170,12 +184,20 @@ public class EntryGate {
                         : Mono.empty());
     }
 
-    /** 게이트가 열린 사실을 간격을 두고 남긴다. 첫 발생은 반드시 남는다. */
-    private void logGateOpen(String what, ChatSession session, Throwable cause) {
+    /**
+     * 게이트가 열린 사실을 간격을 두고 남긴다. 첫 발생은 반드시 남는다.
+     *
+     * <p>로그 라벨({@code what})과 지표 태그를 <b>둘 다</b> 받는다. 라벨은 사람이 읽는 문장이고
+     * 스로틀 카운터의 맵 키라 한글 그대로 쓰는데, 그걸 태그 값으로 쓰면 지표 이름에 한글이 들어가고
+     * 문구를 다듬는 순간 시계열이 갈라진다. 열거로 받으면 호출부를 늘릴 때 컴파일러가 묻는다.
+     */
+    private void logGateOpen(String what, ChatPolicy policy, ChatCheckpoint checkpoint,
+            ChatSession session, Throwable cause) {
         if (cause instanceof KickStoreCorruptedException corrupted) {
-            logStoreCorrupted(what, session, corrupted);
+            logStoreCorrupted(what, policy, checkpoint, session, corrupted);
             return;
         }
+        metrics.policyNotEnforced(policy, checkpoint, PolicyReadFailure.UNAVAILABLE);
         GateOpenLog entry = counterFor(what);
         long total = entry.passedThrough().incrementAndGet();
         if (dueToLog(entry)) {
@@ -190,7 +212,9 @@ public class EntryGate {
      * 그래서 사유를 따로 세고 WARN이 아니라 ERROR로 남긴다. 같은 통에 담으면 곧 복구될 장애의 로그에
      * 묻혀, 이 방의 게이트가 사람이 올 때까지 계속 열려 있다는 사실이 드러나지 않는다.
      */
-    private void logStoreCorrupted(String what, ChatSession session, KickStoreCorruptedException cause) {
+    private void logStoreCorrupted(String what, ChatPolicy policy, ChatCheckpoint checkpoint,
+            ChatSession session, KickStoreCorruptedException cause) {
+        metrics.policyNotEnforced(policy, checkpoint, PolicyReadFailure.STORE_CORRUPTED);
         GateOpenLog entry = counterFor(what + "/키 타입 충돌");
         long total = entry.passedThrough().incrementAndGet();
         if (dueToLog(entry)) {

@@ -26,6 +26,7 @@ import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSession;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.service.SystemMessageService;
@@ -93,7 +94,7 @@ class ChatWebSocketHandlerTest {
         return new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), entryGate,
                 registry, sendUseCase, subscriber, connections, systemMessageService,
-                new SessionTimeouts(lifetime, PING_INTERVAL, LIVENESS_DEADLINE));
+                new SessionTimeouts(lifetime, PING_INTERVAL, LIVENESS_DEADLINE), ChatMetrics.NOOP);
     }
 
     /**
@@ -237,6 +238,36 @@ class ChatWebSocketHandlerTest {
                         .as("버린 ping 이 세어지지 않았다").isEqualTo(4))
                 .thenCancel()
                 .verify(Duration.ofSeconds(10));
+    }
+
+    /**
+     * ⭐ 버린 ping 이 <b>밖으로도</b> 나간다.
+     *
+     * <p>위 테스트는 프로세스 안의 카운터를 본다. 그 값은 로그로만 나가고 로그는 간격으로 솎아내므로,
+     * 짧게 반복되는 드롭은 흔적이 없다. 이 값이 꾸준히 오르면 설정 두 값의 비가 깨졌다는 뜻이라
+     * 알림을 걸 수 있어야 한다.
+     */
+    @Test
+    @DisplayName("⭐ 버린 ping 이 stage=liveness_ping 으로 나간다 — 설정 비가 깨진 것을 알림으로 받으려면")
+    void dropped_pings_are_reported_to_metrics() {
+        // given: 실제 레지스트리를 든 핸들러 + 아웃바운드 수요가 없는 구독자
+        io.micrometer.core.instrument.MeterRegistry meters =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        ChatWebSocketHandler metered = new ChatWebSocketHandler(
+                mock(RoomTokenVerifier.class), entryGate, registry, sendUseCase, subscriber, connections,
+                systemMessageService, new SessionTimeouts(Duration.ofHours(1), PING_INTERVAL, LIVENESS_DEADLINE),
+                new com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics(meters));
+        WebSocketSession session = mock(WebSocketSession.class);
+
+        // when & then
+        StepVerifier.withVirtualTime(() -> metered.pings(session, Mono.never()), 0)
+                .expectSubscription()
+                .thenAwait(Duration.ofMinutes(2))
+                .then(() -> assertThat(meters.get("chat.delivery.dropped")
+                        .tags("stage", "liveness_ping").counter().count())
+                        .as("버린 ping 이 지표로 나가지 않았다").isEqualTo(4))
+                .thenCancel()
+                .verify(VERIFY_CEILING);
     }
 
     @Test

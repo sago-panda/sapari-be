@@ -20,6 +20,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.application.service.SystemMessageService;
@@ -89,6 +91,12 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      */
     private final SessionTimeouts timeouts;
 
+    /**
+     * 관측 포트. ping 드롭은 메시지 유실이 아니지만, 꾸준히 오르면 그 세션의 아웃바운드가 밀려 있다는
+     * 뜻이고 생존 판정이 늦어진다 — 설정(ping 간격 : 생존 기한)의 비가 조용히 깨졌는지를 보는 값이다.
+     */
+    private final ChatMetrics metrics;
+
     /** roomId → (공유 구독 Disposable + 참조 수). 이 Pod 로컬. */
     private final Map<UUID, RoomSub> roomSubs = new ConcurrentHashMap<>();
 
@@ -97,7 +105,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     public ChatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate, ChatSessionRegistry registry,
             SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber, NettyConnectionRegistry connections,
-            SystemMessageService systemMessageService, SessionTimeouts timeouts) {
+            SystemMessageService systemMessageService, SessionTimeouts timeouts, ChatMetrics metrics) {
+        this.metrics = metrics;
         this.timeouts = timeouts;
         this.verifier = verifier;
         this.connections = connections;
@@ -338,6 +347,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * 여유가 조용히 사라진다 — 그때 숫자가 보여야 한다.
      */
     private void recordPingDrop() {
+        metrics.deliveryDropped(DeliveryStage.LIVENESS_PING);
         long count = pingsDropped.incrementAndGet();
         if (shouldLogPingDrop()) {
             log.warn("ping 드롭 — 아웃바운드 수요가 없어 틱을 버렸다(누적 {}건). 생존 확인이 이 세션을 "

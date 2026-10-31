@@ -17,7 +17,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.CloseStatus;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatSessionManager;
+import com.sapari.chat.application.port.DeliveryStage;
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
@@ -95,6 +98,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
 
     /**
+     * 관측 포트. 아래 카운터들은 프로세스 안에만 있었다 — 드롭은 "실시간 전달 best-effort" 계약이
+     * 실제로 발화한 지점이고, 종료 사유는 <b>와이어에서 구분되지 않는다</b>(방 종료·수명·생존 실패가
+     * 전부 close 1000). 밖에서 보면 "정상 종료가 늘었다" 로만 보이는 것을 여기서만 가를 수 있다.
+     */
+    private final ChatMetrics metrics;
+
+    /**
      * 감사 판정을 손으로 적지 않기 위해 받는다.
      *
      * <p>"특권 뷰를 쓰는가"는 팬아웃도 묻는 질문이라, 두 곳에 각자 적으면 특권 뷰를 받는 역할이 늘 때
@@ -126,8 +136,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Autowired
     public ChatSessionRegistry(ChatSessionRepository sessionRepository,
-                               ChatPermissionPolicy permissionPolicy) {
-        this(sessionRepository, permissionPolicy,
+                               ChatPermissionPolicy permissionPolicy,
+                               ChatMetrics metrics) {
+        this(sessionRepository, permissionPolicy, metrics,
                 DEFAULT_CONTENTION_SPIN_NANOS, DEFAULT_COMPLETE_SPIN_NANOS);
     }
 
@@ -143,9 +154,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** 예산을 넓혀 받는다 (테스트 진입점 — 위 {@link #contentionSpinNanos} 참고). */
     ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
-                        long contentionSpinNanos, long completeSpinNanos) {
+                        ChatMetrics metrics, long contentionSpinNanos, long completeSpinNanos) {
         this.sessionRepository = sessionRepository;
         this.permissionPolicy = permissionPolicy;
+        this.metrics = metrics;
         this.contentionSpinNanos = contentionSpinNanos;
         this.completeSpinNanos = completeSpinNanos;
     }
@@ -479,6 +491,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             FanOutBudget budget = newSharedBudget();
             forEachInRoom(roomId, ls -> {
                 if (ls.session().userId().equals(userId)) {
+                    metrics.sessionCut(SessionCutReason.MODERATION);
                     terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
                 }
             });
@@ -498,7 +511,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 밴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
-            forEachSessionOf(userId, ls -> terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline()));
+            forEachSessionOf(userId, ls -> {
+                metrics.sessionCut(SessionCutReason.MODERATION);
+                terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
+            });
         });
     }
 
@@ -534,7 +550,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 방 종료는 정상 종료(1000). 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다.
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
-            forEachInRoom(roomId, ls -> terminate(ls, CloseStatus.NORMAL, budget.completeDeadline()));
+            forEachInRoom(roomId, ls -> {
+                metrics.sessionCut(SessionCutReason.ROOM_ENDED);
+                terminate(ls, CloseStatus.NORMAL, budget.completeDeadline());
+            });
         });
     }
 
@@ -694,6 +713,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
         log.warn("전송 경로에서 강퇴 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={} userId={}",
                 sessionId, ls.session().roomId(), ls.session().userId());
+        metrics.sessionCut(SessionCutReason.MODERATION);
         terminate(ls, CloseStatus.POLICY_VIOLATION, newBudget().completeDeadline());
     }
 
@@ -709,6 +729,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         if (ls == null) {
             return;
         }
+        metrics.sessionCut(SessionCutReason.ROOM_ENDED);
         log.warn("전송 경로에서 방 종료 확인 — 세션 종료(종료 신호를 놓친 Pod) sessionId={} roomId={}",
                 sessionId, ls.session().roomId());
         terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
@@ -746,6 +767,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 솎아낸다. 같이 들어온 세션들이 같이 만료되므로 이 로그는 재접속 폭주 구간에 몰리고,
         // 그 구간에 세션당 한 줄을 남기면 원인 로그를 제 로그로 묻는다 — 이 파일의 다른 열화 로그가
         // 전부 간격 솎기를 쓰는 근거와 같다. 누적 수는 함께 남겨 규모를 잃지 않는다.
+        metrics.sessionCut(SessionCutReason.LIFETIME);
         long expired = lifetimeExpiredCount.incrementAndGet();
         if (shouldLogLifetimeExpiry()) {
             log.info("세션 수명 상한 — 종료(재접속으로 권위 재평가) 표본 sessionId={} 표본 roomId={} 누적={}",
@@ -768,6 +790,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         if (ls == null) {
             return;
         }
+        metrics.sessionCut(SessionCutReason.LIVENESS);
         log.info("생존 확인 실패 — 세션 종료(응답 없는 소켓 회수) sessionId={} roomId={}",
                 sessionId, ls.session().roomId());
         terminate(ls, CloseStatus.NORMAL, newBudget().completeDeadline());
@@ -864,10 +887,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 것이라 흘려보낼 곳이 없다. 그 무의미한 일에 최대 45ms를 쓰면 — 그것도 이 Pod의 모든 방을
             // 중계하는 Redis 구독 스레드 위에서 — fan-out 예산이 그만큼 지나가 뒤쪽 세션들이 재시도
             // 없이 한 번만 시도하게 된다. 종료 자체는 제어 채널이 보장하므로 잃는 것도 없다.
+            metrics.sessionCut(SessionCutReason.BUFFER_OVERFLOW);
             terminate(ls, CloseStatus.SERVICE_OVERLOAD, budget.emitDeadline());
         } else if (result == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
             // 세션은 살려둔다. 대신 드롭을 세어 "조용한 유실"이 되지 않게 한다.
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
+            metrics.deliveryDropped(DeliveryStage.SESSION_EMIT_CONTENTION);
             long dropped = droppedOnContention.incrementAndGet();
             if (shouldLogDrop()) {
                 // id는 이 창을 연 한 건의 것이고 누적은 Pod 전역이다 — "이 세션이 N건"으로 읽히지 않게 표기한다

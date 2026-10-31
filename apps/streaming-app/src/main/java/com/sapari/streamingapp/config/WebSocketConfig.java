@@ -16,6 +16,7 @@ import org.springframework.web.reactive.socket.server.upgrade.ReactorNettyReques
 import reactor.netty.http.server.WebsocketServerSpec;
 
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.service.SystemMessageService;
 import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
@@ -60,9 +61,9 @@ public class WebSocketConfig {
     public ChatWebSocketHandler chatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate,
             ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber,
             NettyConnectionRegistry connections, SystemMessageService systemMessageService,
-            SessionTimeouts timeouts) {
+            SessionTimeouts timeouts, ChatMetrics metrics) {
         return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber, connections,
-                systemMessageService, timeouts);
+                systemMessageService, timeouts, metrics);
     }
 
     @Bean

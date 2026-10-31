@@ -19,5 +19,11 @@ public enum SessionCutReason {
     LIVENESS,
 
     /** 아웃바운드 버퍼 초과(close 1013). 느린 클라이언트를 힙 잠식 전에 끊은 것이다. */
-    BUFFER_OVERFLOW
+    BUFFER_OVERFLOW,
+
+    /**
+     * 강퇴·밴 집행(close 1008). 이 값이 없으면 사유의 합이 서버 주도 종료 전체와 맞지 않아,
+     * 종료율을 보는 사람이 설명되지 않는 차이를 쫓게 된다.
+     */
+    MODERATION
 }

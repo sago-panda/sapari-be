@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -51,7 +52,7 @@ class ChatSessionRegistryTest {
         sessionRepository = mock(ChatSessionRepository.class);
         given(sessionRepository.add(any(), any(), any())).willReturn(Mono.empty());
         given(sessionRepository.remove(any(), any())).willReturn(Mono.empty());
-        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(),
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP,
                 TEST_EMIT_SPIN.toNanos(), TEST_COMPLETE_SPIN.toNanos());
     }
 
@@ -545,7 +546,7 @@ class ChatSessionRegistryTest {
         // given: 이 파일의 다른 테스트들이 쓰는 생성자는 예산을 넓혀 받는다. 그 진입점이 생긴 순간
         // "운영은 무엇을 받는가"를 아무도 묻지 않는 자리가 생겼다 — 위임에서 값을 뒤바꾸거나 넓힌
         // 값을 그대로 넘겨도 다른 테스트는 전부 초록이다(자기 예산을 직접 주므로).
-        ChatSessionRegistry production = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy());
+        ChatSessionRegistry production = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
 
         // when & then: 둘을 따로 본다. 뒤바꿔 넘기면 한 값만 보는 단언으로는 드러나지 않는다.
         assertThat(Duration.ofNanos(production.contentionSpinNanos()))
