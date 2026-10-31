@@ -8,6 +8,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+import com.sapari.global.logging.LogFields;
 import org.slf4j.MDC;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -21,7 +22,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
  */
 public class MdcContextFilter extends OncePerRequestFilter {
 
-    private static final String REQUEST_ID = "requestId";
     private static final String REQUEST_ID_HEADER = "X-Request-Id";
 
     @Override
@@ -31,7 +31,7 @@ public class MdcContextFilter extends OncePerRequestFilter {
             FilterChain filterChain
     ) throws ServletException, IOException {
         String requestId = resolveRequestId(request);
-        MDC.put(REQUEST_ID, requestId);
+        MDC.put(LogFields.REQUEST_ID, requestId);
         response.setHeader(REQUEST_ID_HEADER, requestId); // 클라가 장애 신고 시 로그 추적에 쓰도록 응답에 노출
 
         try {

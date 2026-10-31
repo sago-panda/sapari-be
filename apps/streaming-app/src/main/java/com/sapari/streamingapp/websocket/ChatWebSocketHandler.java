@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.global.logging.LogFields;
 import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
@@ -160,11 +161,27 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             return session.close(CloseStatus.POLICY_VIOLATION);
         }
 
+        // 상관 식별자를 Reactor Context 에 싣는다. MDC 로는 안 된다 — ThreadLocal 이라 Reactor 의
+        // 스레드 전환을 넘지 못하고, 특히 <b>onErrorResume 안에서 null</b> 이다(실측). 이 앱의 열화
+        // 로그가 거의 전부 그 람다 안이라, 가장 알고 싶은 줄이 가장 확실하게 식별자를 잃고 있었다.
+        //
+        // request_id 를 따로 두지 않는다. 서블릿 쪽은 요청이 수명 단위지만 여기서는 <b>세션</b>이고,
+        // session.getId() 가 핸드셰이크 첫 줄부터 있다. 핸드셰이크만 덮는 식별자를 하나 더 만들면
+        // 같은 것을 가리키는 축이 둘이 되고, 둘 중 어느 것으로 묶어야 하는지가 흐려진다.
+        //
+        // user_id 는 안쪽에 따로 싣는다 — 검증 전에는 "이 사람이 누구인지" 가 아직 서버 판단이 아니다.
+        // 게이트가 열린 로그에 user_id 가 없는 것은 누락이 아니라 그 시점의 사실이다(게이트 로그
+        // 문장 자체는 대상 userId 를 싣는다).
         return verifier.verify(token, roomId)
                 .flatMap(session1 -> entryGate.verify(session1).thenReturn(session1))
-                .flatMap(chatSession -> runSession(session, chatSession))
+                .flatMap(chatSession -> runSession(session, chatSession)
+                        .contextWrite(context -> context.put(LogFields.USER_ID,
+                                chatSession.userId().toString())))
                 .onErrorResume(EntryDeniedException.class, e -> denyAndClose(session, e.reason()))
-                .onErrorResume(WebSocketAuthException.class, e -> session.close(CloseStatus.POLICY_VIOLATION));
+                .onErrorResume(WebSocketAuthException.class, e -> session.close(CloseStatus.POLICY_VIOLATION))
+                .contextWrite(context -> context
+                        .put(LogFields.SESSION_ID, session.getId())
+                        .put(LogFields.ROOM_ID, roomId.toString()));
     }
 
     /**
