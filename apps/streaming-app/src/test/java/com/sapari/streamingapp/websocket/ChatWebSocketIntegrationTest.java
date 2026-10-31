@@ -103,6 +103,9 @@ class ChatWebSocketIntegrationTest {
                 .claim("owner", owner)
                 .claim("nickname", nickname)
                 .claim("email", email)
+                // live 의 발급기가 issuedAt 을 넣는다 — RoomTokenVerifier 의 나이 검사가
+                // iat 부재를 거부하므로 픽스처도 실제 토큰과 같은 모양이어야 한다.
+                .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + 60_000))
                 .signWith(key)
                 .compact();

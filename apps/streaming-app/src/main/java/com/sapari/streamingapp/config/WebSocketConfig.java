@@ -34,22 +34,35 @@ import com.sapari.streamingapp.websocket.auth.RoomTokenVerifier;
 @Configuration
 public class WebSocketConfig {
 
+    /**
+     * 연결 상한 셋. <b>빈으로 두는 이유는 수명을 두 곳이 쓰기 때문</b>이다 — 핸들러가 세션을 끊는 데
+     * 쓰고, {@link RoomTokenVerifier} 가 "이 토큰이 그 수명보다 오래됐는가"를 묻는 데 쓴다. 각자
+     * {@code @Value} 로 받으면 기본값이 두 벌이 되고, 그게 이 브랜치에서 반복해 잡은 갈림의 모양이다.
+     *
+     * <p>기본값 셋의 근거. 생존 기한 90s = 3 × ping 간격이다 — ping <b>두 번</b> 유실까지 견딘다는
+     * 뜻이고, 그게 {@code SessionTimeouts} 의 "기한 >= 2 × 간격" 불변식과 같은 축이다(불변식은
+     * 하한이고 이 값은 거기에 한 칸 더 준 것이다. 그 3배는 {@code ConfigTemplateTest} 가 따로 잰다 —
+     * 불변식만으로는 2배까지 통과한다).
+     *
+     * <p>ping 30s 와 수명 60m 은 고른 값이다. 전자는 흔한 유휴 커넥션 타임아웃(LB·프록시가 보통 60s
+     * 안팎)보다 짧게 둔 것이고, 후자는 "접속 후 바뀐 권위가 반영되기까지의 상한"이라 짧으면 재접속
+     * 폭주가 늘고 길면 옛 권위가 오래 남는다. 측정된 값이 아니다.
+     */
+    @Bean
+    public SessionTimeouts sessionTimeouts(
+            @Value("${chat.session.max-lifetime:60m}") Duration maxLifetime,
+            @Value("${chat.session.ping-interval:30s}") Duration pingInterval,
+            @Value("${chat.session.liveness-deadline:90s}") Duration livenessDeadline) {
+        return new SessionTimeouts(maxLifetime, pingInterval, livenessDeadline);
+    }
+
     @Bean
     public ChatWebSocketHandler chatWebSocketHandler(RoomTokenVerifier verifier, EntryGate entryGate,
             ChatSessionRegistry registry, SendChatUseCase sendUseCase, ChatBroadcastSubscriber subscriber,
             NettyConnectionRegistry connections, SystemMessageService systemMessageService,
-            // 기본값 셋의 근거. 생존 기한 90s = 3 × ping 간격이다 — ping <b>두 번</b> 유실까지
-            // 견딘다는 뜻이고, 그게 SessionTimeouts 의 "기한 >= 2 × 간격" 불변식과 같은 축이다
-            // (불변식은 하한이고 이 값은 거기에 한 칸 더 준 것이다).
-            //
-            // ping 30s 와 수명 60m 은 고른 값이다. 전자는 흔한 유휴 커넥션 타임아웃(LB·프록시가
-            // 보통 60s 안팎)보다 짧게 둔 것이고, 후자는 "접속 후 바뀐 권위가 반영되기까지의 상한"이라
-            // 짧으면 재접속 폭주가 늘고 길면 옛 권위가 오래 남는다. 측정된 값이 아니다.
-            @Value("${chat.session.max-lifetime:60m}") Duration maxLifetime,
-            @Value("${chat.session.ping-interval:30s}") Duration pingInterval,
-            @Value("${chat.session.liveness-deadline:90s}") Duration livenessDeadline) {
+            SessionTimeouts timeouts) {
         return new ChatWebSocketHandler(verifier, entryGate, registry, sendUseCase, subscriber, connections,
-                systemMessageService, new SessionTimeouts(maxLifetime, pingInterval, livenessDeadline));
+                systemMessageService, timeouts);
     }
 
     @Bean

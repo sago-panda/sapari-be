@@ -102,6 +102,14 @@ corruption split is not widened to them.
 
 ## Wire contracts — four, and all four fail silently when broken
 
+0. **The room token must carry `iat`.** `RoomTokenVerifier` rejects entry when the token is older than
+   `max-lifetime`, which bounds the window in which a stale `role`/`owner` can start a *new* session —
+   the token has no `jti`, so it is replayable until `exp` and the entry gate re-checks only room-ended,
+   kick and ban. live sets it today (`RoomTokenProvider.issue` → `.issuedAt(...)`). **This one does not
+   fail silently** — a missing `iat` is rejected like a missing `exp`, so dropping it on the live side
+   fails every handshake loudly rather than quietly removing the bound. That is the point: the
+   alternative is losing an enforcement nobody would notice.
+
 1. **`ChatEnvelope`** (`application/protocol`, not infrastructure — the port returns it). Both the reactive
    broadcaster and the blocking kick publisher serialize the **real type**; hand-built JSON was the old
    design and a one-character field-name typo compiles fine and vanishes across every pod.
