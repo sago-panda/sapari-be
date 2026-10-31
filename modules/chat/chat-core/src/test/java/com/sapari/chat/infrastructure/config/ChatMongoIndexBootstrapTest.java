@@ -47,12 +47,12 @@ class ChatMongoIndexBootstrapTest {
 
     @Container
     @ServiceConnection
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
     /** {@code RedisChatBroadcaster}가 생성자에서 구독을 열어 컨테이너 없이는 컨텍스트가 못 뜬다. */
     @Container
     @ServiceConnection(name = "redis")
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     private static final AtomicReference<List<String>> indexesAtEarliestLifecycle = new AtomicReference<>();
 

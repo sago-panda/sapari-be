@@ -57,11 +57,11 @@ class ActuatorNotOnUserPortTest {
 
     @Container
     @ServiceConnection(name = "redis")
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     @Container
     @ServiceConnection
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
     /** 룸 토큰 공개키는 필수 설정이라 없으면 부팅이 실패한다. 서명을 검증하지 않으므로 아무 RSA 키여도 된다. */
     @DynamicPropertySource

@@ -43,7 +43,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class ChatBanWriteRedisRepositoryTest {
 
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     private static LettuceConnectionFactory connectionFactory;
     private static StringRedisTemplate redisTemplate;

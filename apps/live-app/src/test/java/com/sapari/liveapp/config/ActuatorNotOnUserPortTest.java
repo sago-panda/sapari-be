@@ -50,11 +50,11 @@ class ActuatorNotOnUserPortTest {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16.15");
 
     @Container
     @ServiceConnection(name = "redis")
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     /**
      * 이 앱은 강퇴 증거 원문을 Mongo 에서 읽는다({@code ChatMessageEvidenceMongoRepository}).
@@ -65,7 +65,7 @@ class ActuatorNotOnUserPortTest {
      */
     @Container
     @ServiceConnection
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
     @DynamicPropertySource
     static void requiredConfig(DynamicPropertyRegistry registry) {

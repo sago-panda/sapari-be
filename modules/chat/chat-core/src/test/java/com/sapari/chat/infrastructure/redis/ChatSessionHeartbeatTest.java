@@ -42,7 +42,7 @@ class ChatSessionHeartbeatTest {
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
 
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     private static final Instant T0 = Instant.parse("2026-06-18T00:00:00Z");
 

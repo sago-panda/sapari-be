@@ -59,11 +59,11 @@ class ChatSessionLivenessTest {
 
     @Container
     @ServiceConnection(name = "redis")
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     @Container
     @ServiceConnection
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
     @Value("${local.server.port}")
     int port;

@@ -38,7 +38,7 @@ class RedisSubscriptionSurvivesCommandTimeoutTest {
     private static final Duration SILENCE = COMMAND_TIMEOUT.multipliedBy(3);
 
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     @Test
     @DisplayName("⭐ 상한의 세 배를 조용히 보낸 뒤 발행해도 수신된다 — 전역 상한이 실시간 전달을 끊지 않는다")

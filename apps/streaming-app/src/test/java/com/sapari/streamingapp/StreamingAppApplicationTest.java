@@ -53,11 +53,11 @@ class StreamingAppApplicationTest {
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     @ServiceConnection(name = "redis")
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     @Container
     @ServiceConnection
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
     @DynamicPropertySource
     static void requiredConfig(DynamicPropertyRegistry registry) {

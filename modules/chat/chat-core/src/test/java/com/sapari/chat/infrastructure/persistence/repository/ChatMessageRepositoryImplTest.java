@@ -18,6 +18,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -50,7 +52,7 @@ class ChatMessageRepositoryImplTest {
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     @ServiceConnection
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
     /**
      * 이 테스트가 Redis를 쓰지는 않는다. 그런데 부트 컨텍스트에 {@code RedisChatBroadcaster}가 함께 올라오고,
@@ -65,7 +67,7 @@ class ChatMessageRepositoryImplTest {
      */
     @Container
     @ServiceConnection(name = "redis")
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     @Autowired
     private ChatMessageRepositoryImpl repository;
@@ -97,82 +99,6 @@ class ChatMessageRepositoryImplTest {
     }
 
     @Test
-    @DisplayName("TC#1 — beforeId 없이 size=5 조회 시 최신 5개를 ObjectId 역순으로 반환한다")
-    void returns_latest_messages_in_reverse_order() {
-        // given
-        for (int i = 0; i < 10; i++) {
-            repository.save(message("m" + i, null)).block(VERIFY_CEILING);
-        }
-
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block(VERIFY_CEILING);
-
-        // when & then
-        assertThat(page).hasSize(5);
-        assertThat(page.get(0).displayMessage()).isEqualTo("m9"); // 최신부터
-        assertThat(page.get(4).displayMessage()).isEqualTo("m5");
-    }
-
-    @Test
-    @DisplayName("TC#2·#3 — 1페이지 마지막 _id를 beforeId로 2페이지 조회 시 중복 없이 연속된다")
-    void cursor_paging_is_continuous_without_duplicates() {
-        // given
-        for (int i = 0; i < 10; i++) {
-            repository.save(message("m" + i, null)).block(VERIFY_CEILING);
-        }
-        List<ChatMessage> page1 = repository.findByRoomIdBefore(roomId, null, 5).collectList().block(VERIFY_CEILING);
-
-        List<ChatMessage> page2 = repository
-                .findByRoomIdBefore(roomId, page1.get(4).id(), 5).collectList().block(VERIFY_CEILING);
-
-        // when & then
-        assertThat(page2).hasSize(5);
-        assertThat(page2.get(0).displayMessage()).isEqualTo("m4"); // page1 마지막(m5) 직전부터
-        assertThat(page2).extracting(ChatMessage::id).doesNotContainAnyElementsOf(
-                page1.stream().map(ChatMessage::id).toList());
-    }
-
-    @Test
-    @DisplayName("TC#8·#19 — 메시지 없는 방 조회 시 빈 목록, 예외 없음")
-    void empty_room_returns_empty_list() {
-        // given
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 5).collectList().block(VERIFY_CEILING);
-
-        // when & then
-        assertThat(page).isEmpty();
-    }
-
-    @Test
-    @DisplayName("TC#25 — 형식은 유효하나 모든 메시지보다 오래된 beforeId면 빈 목록")
-    void beforeId_older_than_all_returns_empty() {
-        // given
-        repository.save(message("m0", null)).block(VERIFY_CEILING);
-        String epochId = new ObjectId(new Date(0)).toHexString();
-
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, epochId, 5).collectList().block(VERIFY_CEILING);
-
-        // when & then
-        assertThat(page).isEmpty();
-    }
-
-    @Test
-    @DisplayName("TC#14 — 잘못된 ObjectId 형식의 beforeId는 IllegalArgumentException")
-    void invalid_beforeId_format_fails() {
-        // when & then
-        StepVerifier.create(repository.findByRoomIdBefore(roomId, "not-an-objectid", 5))
-                .expectError(IllegalArgumentException.class)
-                .verify(VERIFY_CEILING);
-    }
-
-    @Test
-    @DisplayName("size<=0은 IllegalArgumentException — Mongo limit(0) 무제한 전량조회 차단")
-    void non_positive_size_fails() {
-        // when & then
-        StepVerifier.create(repository.findByRoomIdBefore(roomId, null, 0))
-                .expectError(IllegalArgumentException.class)
-                .verify(VERIFY_CEILING);
-    }
-
-    @Test
     @DisplayName("TC#15 — 다른 방 메시지는 섞이지 않는다 (roomId 격리)")
     void other_room_messages_are_isolated() {
         // given
@@ -181,11 +107,16 @@ class ChatMessageRepositoryImplTest {
                 ChatRole.BUYER, new ChatMessageType.Normal(), "남의방", "남의방", null, Instant.now());
         repository.save(other).block(VERIFY_CEILING);
 
-        List<ChatMessage> page = repository.findByRoomIdBefore(roomId, null, 10).collectList().block(VERIFY_CEILING);
+        // 읽기는 템플릿으로 한다 — 이 테스트가 재는 것은 <b>쓰기가 roomId 를 제대로 담는가</b>이고,
+        // 읽는 쪽 격리는 이력 어댑터 테스트가 따로 잰다. 종전에는 리액티브 커서 조회로 읽었는데
+        // 그 메서드가 운영 호출자 없이 지워졌다.
+        List<ChatMessageDocument> stored = mongoTemplate
+                .find(Query.query(Criteria.where("roomId").is(roomId)), ChatMessageDocument.class)
+                .collectList().block(VERIFY_CEILING);
 
         // when & then
-        assertThat(page).hasSize(1);
-        assertThat(page.get(0).displayMessage()).isEqualTo("mine");
+        assertThat(stored).hasSize(1);
+        assertThat(stored.get(0).getDisplayMessage()).isEqualTo("mine");
     }
 
     @Test
@@ -212,8 +143,10 @@ class ChatMessageRepositoryImplTest {
         repository.save(message("첫번째", null)).block(VERIFY_CEILING);
         repository.save(message("두번째", null)).block(VERIFY_CEILING);
 
-        // when & then
-        assertThat(repository.findByRoomIdBefore(roomId, null, 10).collectList().block(VERIFY_CEILING)).hasSize(2);
+        // when & then: 저장된 문서 수로 본다(종전에는 지워진 커서 조회로 읽었다)
+        assertThat(mongoTemplate
+                .count(Query.query(Criteria.where("roomId").is(roomId)), ChatMessageDocument.class)
+                .block(VERIFY_CEILING)).isEqualTo(2);
     }
 
     @Test

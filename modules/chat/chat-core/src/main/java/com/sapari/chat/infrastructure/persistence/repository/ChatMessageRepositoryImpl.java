@@ -37,45 +37,4 @@ public class ChatMessageRepositoryImpl implements ChatMessageRepository {
         return mongoRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, clientMsgId)
                 .map(mapper::toDomain);
     }
-
-    /**
-     * 커서 역방향 조회.
-     *
-     * <p>⚠️ <b>이 결과를 {@code CursorPage.of(rows, size, …)} 에 그대로 올리지 말 것.</b> 여기는
-     * {@code limit(size)} 로 <b>정확히</b> {@code size} 개를 읽으므로 "하나 더 읽어 다음 페이지 유무를
-     * 안다" 가 성립하지 않는다 — 그대로 올리면 {@code hasNext} 가 false 에 고정된다. 커서도 공용
-     * {@code CursorCodec} 이 아니라 {@code ObjectId.isValid} 로 직접 검사하므로, 잘못된 커서가
-     * 공용 경로의 400 이 아니라 여기서 {@code IllegalArgumentException} 으로 나가 전역 핸들러의
-     * 마지막 그물(500)에 걸린다.
-     *
-     * <p>⚠️ <b>이 메서드는 운영 호출자가 없고, 앞으로도 없다.</b> 한때 이 자리에 "VOD 이력이 붙을 때
-     * {@code size + 1} 을 읽고 커서를 공용 코덱으로 옮기는 것이 그 자리의 일이다" 라고 적혀 있었는데
-     * <b>둘 다 틀렸다</b>. 이력은 블로킹 포트({@code ChatHistoryRepository})로 갔다 — 호출자가 MVC 라
-     * {@code Mono} 를 받으면 결국 {@code block()} 을 하게 된다. 그리고 {@code size + 1} 도 아니다:
-     * 이력 응답에 {@code hasNext} 가 없어 프론트가 {@code messages.length === size} 로 다음 페이지를
-     * 판단하므로(프론트 가이드 계약) <b>정확히 size</b> 를 읽어야 한다. 하나 더 읽으면 마지막이 아닌
-     * 페이지와 딱 맞는 페이지를 가를 수 없다.
-     *
-     * <p>그래서 이 메서드는 <b>정리 대상</b>이다 — 지우면 딸린 테스트 9건도 함께 사라지므로 이 커밋에서
-     * 하지 않았다. 위 공용 커서 경고는 그대로 유효하다(쓰려면 그 전제를 맞춰야 한다).
-     */
-    @Override
-    public Flux<ChatMessage> findByRoomIdBefore(UUID roomId, String beforeId, int size) {
-        // Mongo limit(0) = 무제한 — size<=0이 들어오면 방 전체를 이벤트루프로 긁어오므로 loud failure로 차단
-        if (size <= 0) {
-            return Flux.error(new IllegalArgumentException("size는 1 이상이어야 한다: " + size));
-        }
-        Criteria criteria = Criteria.where("roomId").is(roomId);
-        if (beforeId != null) {
-            if (!ObjectId.isValid(beforeId)) {
-                return Flux.error(new IllegalArgumentException("잘못된 ObjectId 형식: " + beforeId));
-            }
-            criteria = criteria.and("_id").lt(new ObjectId(beforeId));
-        }
-        Query query = Query.query(criteria)
-                .with(Sort.by(Sort.Direction.DESC, "_id"))
-                .limit(size);
-        return mongoTemplate.find(query, ChatMessageDocument.class)
-                .map(mapper::toDomain);
-    }
 }

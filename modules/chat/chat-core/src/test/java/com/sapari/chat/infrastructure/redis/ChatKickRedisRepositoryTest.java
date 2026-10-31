@@ -38,7 +38,7 @@ class ChatKickRedisRepositoryTest {
      */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     private static LettuceConnectionFactory connectionFactory;
     private static ReactiveStringRedisTemplate redisTemplate;
