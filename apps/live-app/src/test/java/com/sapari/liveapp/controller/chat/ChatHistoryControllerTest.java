@@ -179,6 +179,7 @@ class ChatHistoryControllerTest {
         return captor.getValue();
     }
 
+
     /** {@code @WebMvcTest} 가 앱 클래스까지 거슬러 올라가 JPA 를 켜는 것을 막는다. */
     @SpringBootConfiguration
     static class TestApplication {
