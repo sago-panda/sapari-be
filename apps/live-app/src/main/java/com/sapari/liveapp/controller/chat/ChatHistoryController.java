@@ -14,6 +14,7 @@ import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.view.GetChatHistoryView;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 import lombok.RequiredArgsConstructor;
@@ -30,7 +31,8 @@ import lombok.RequiredArgsConstructor;
  *
  * <p>두 모드는 같은 경로에 산다 — 커서({@code beforeId})와 VOD 위치({@code playbackPositionMs}).
  * 동시 지정은 명령이 거부한다(한쪽을 조용히 무시하면 클라가 받은 결과가 자기 의도와 다른 것을
- * 알 수 없다). 그 거부는 {@code IllegalArgumentException} 이라 공통 처리기가 400 으로 바꾼다.
+ * 알 수 없다). 그 거부는 {@code IllegalArgumentException} 인데 전역 핸들러에 그 타입 처리가 없어서,
+ * 아래 {@code command} 가 받아 {@code CHAT-009}(400) 로 번역한다.
  *
  * <p>{@code size} 기본값 15 는 커서 모드 전용이다 — VOD 모드에서는 무시되고 200 고정이다
  * (프론트 가이드 계약). 기본값을 두는 이유는 스크롤 첫 페이지가 파라미터 없이 와도 되게 하는 것이다.
@@ -46,15 +48,15 @@ public class ChatHistoryController {
     private final GetChatHistoryUseCase getChatHistoryUseCase;
 
     @GetMapping("/history")
-    public GetChatHistoryView history(
+    public ResponseEnvelope<GetChatHistoryView> history(
             @PathVariable UUID roomId,
             @RequestParam(required = false) String beforeId,
             @RequestParam(required = false) Long playbackPositionMs,
             @RequestParam(defaultValue = "" + DEFAULT_SIZE) int size,
             @AuthenticationPrincipal LiveUserPrincipal principal) {
 
-        return getChatHistoryUseCase.getHistory(command(roomId, beforeId, playbackPositionMs, size,
-                principal));
+        return ResponseEnvelope.success(getChatHistoryUseCase.getHistory(
+                command(roomId, beforeId, playbackPositionMs, size, principal)));
     }
 
     /**
