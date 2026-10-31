@@ -16,6 +16,11 @@ import reactor.core.publisher.Mono;
 /**
  * chat:room:{roomId}:sessions HASH 어댑터 — 크로스 Pod 세션 집계.
  * count는 HLEN(탭 수)이 아니라 HVALS distinct(고유 유저 수)다 — 같은 유저 멀티탭은 1로 센다(시청자 수는 사람 수지 창 수가 아니다).
+ *
+ * <p><b>HLEN 으로 바꾸는 것은 최적화가 아니라 숫자를 틀리게 하는 것이다.</b> 이 해시는 탭마다 한 행이라
+ * HLEN 은 멀티탭 배수만큼 부풀고(실측: 1인 2탭이면 2배), 그 교체는 저장소 테스트가 바로 잡는다.
+ * O(N) 이 눈에 걸려 손대고 싶어지는 자리라 적어 둔다 — 비용 쪽은 이미 호출자가 캐시와 비행 병합으로
+ * 닫았고, 설계 상한의 5배에서도 상한 아래라는 것을 재서 확인했다({@code ChatSessionRegistry}).
  */
 @Repository
 @RequiredArgsConstructor

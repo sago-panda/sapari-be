@@ -372,6 +372,31 @@ unchanged. What can still fail outside the boundary is the Redis mirror, and a r
 because the active-ban lookup runs *before* the duplicate check and hands the caller the ban to re-mirror.
 That ordering is the whole self-healing story, so it is pinned by a test.
 
+## Viewer count — `HVALS` is not the bottleneck it looks like
+
+`count` is `HVALS` + distinct, and the O(N) is deliberate: the HASH is one row **per tab**
+(`sessionId → userId`) and the number shown is **people, not windows**. `HLEN` is therefore not an
+optimization but a different number — measured off by the multi-tab factor (1 user, 2 tabs → 2×). The
+repository test pins this, so the swap fails the build.
+
+The cost was investigated and **no redesign is warranted** (measured, redis:7 container, 36-byte UUID values):
+
+| Shape | Worst concurrent command |
+|---|---|
+| `HVALS`+distinct alone, 12,000 entries | p50 3ms / max 6ms |
+| 100 concurrent on the *same* 12,000-entry hash | SETNX **211ms** — crosses the rate limiter's 200ms |
+| after in-flight merge: 60,000 sessions in one room | 28ms |
+| after merge: 6 pods × 100 rooms (360,000 entries at once) | 130ms |
+
+So the cache + in-flight merge in `ChatSessionRegistry` is not partial mitigation — it *is* the fix, and it
+holds at five times the sizing model. Entry-gate reads (`EXISTS`/`SISMEMBER`) stayed at 0–2ms throughout.
+
+And the residual tail is **not Redis being single-threaded**: one `ReactiveStringRedisTemplate` means Lettuce
+shares a single native connection, so a large `HVALS` head-of-line-blocks the commands behind it. The same
+load through a separate connection factory dropped p99 from 113ms to 12ms. If this tail ever matters, a
+dedicated connection for this one read is the cheap answer — a maintained counter is the expensive answer to
+the wrong cause.
+
 ## Startup — the port is the deadline, not the runner
 
 Measured boot order (`EagerSingletonsRunBeforeThePortBindsTest`, fixed port, real TCP connect):

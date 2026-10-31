@@ -39,9 +39,10 @@ import org.springframework.context.annotation.Configuration;
  * {@code RedisSubscriptionSurvivesCommandTimeoutTest} 가 고정한다.
  *
  * <p>1초를 고른 근거: 정상 왕복은 ms 아래이고, 가장 큰 호출(시청자 수의 {@code HVALS} 가 방 해시
- * 전체를 당겨온다)도 설계 상한인 12,000 세션에서 ms 자릿수다. 측정된 값이 아니라 두 자릿수 이상의
- * 여유를 둔 값이다 — 레이트리밋은 자기 경로에 200ms 를 따로 걸고 있어 이 값이 그쪽을 느슨하게
- * 만들지 않는다.
+ * 전체를 당겨온다)도 설계 상한인 12,000 세션에서 <b>p50 3ms · 최악 6ms</b>다(실측). 입장 폭풍을
+ * 모사해 파드 6개가 방 100개를 동시에 조회하는 모양(36만 엔트리)까지 올려도 그 순간 가장 밀린
+ * 명령이 130ms 였다 — 이 상한까지 두 자릿수 여유가 남는다. 레이트리밋은 자기 경로에 200ms 를
+ * 따로 걸고 있어 이 값이 그쪽을 느슨하게 만들지 않는다.
  */
 @Configuration
 public class RedisTimeoutConfig {
