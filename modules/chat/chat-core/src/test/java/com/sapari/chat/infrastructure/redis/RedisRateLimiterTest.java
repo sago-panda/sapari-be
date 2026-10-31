@@ -17,6 +17,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 
 import reactor.core.publisher.Mono;
@@ -43,7 +44,7 @@ class RedisRateLimiterTest {
         connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
         connectionFactory.afterPropertiesSet();
         redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
-        rateLimiter = new RedisRateLimiter(redisTemplate);
+        rateLimiter = new RedisRateLimiter(redisTemplate, ChatMetrics.NOOP);
     }
 
     @AfterAll
@@ -145,7 +146,7 @@ class RedisRateLimiterTest {
                 Mockito.RETURNS_DEEP_STUBS);
         BDDMockito.given(broken.opsForValue().setIfAbsent(Mockito.anyString(), Mockito.anyString(), Mockito.any()))
                 .willReturn(Mono.error(new RuntimeException("connection refused")));
-        RedisRateLimiter failing = new RedisRateLimiter(broken);
+        RedisRateLimiter failing = new RedisRateLimiter(broken, ChatMetrics.NOOP);
 
         RateLimitResult result = failing.tryAcquire(UUID.randomUUID()).block(VERIFY_CEILING);
 

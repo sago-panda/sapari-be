@@ -21,6 +21,7 @@ import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.ReactiveValueOperations;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 
 import ch.qos.logback.classic.Logger;
@@ -52,7 +53,7 @@ class RedisRateLimiterDegradedTest {
         given(template.opsForValue()).willReturn(operations);
         given(operations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
                 .willReturn(Mono.error(new RedisConnectionFailureException("프로브 — Redis 가 죽었다")));
-        rateLimiter = new RedisRateLimiter(template);
+        rateLimiter = new RedisRateLimiter(template, ChatMetrics.NOOP);
     }
 
     /**
@@ -72,7 +73,7 @@ class RedisRateLimiterDegradedTest {
         given(template.opsForValue()).willReturn(operations);
         given(operations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
                 .willReturn(Mono.never());
-        RedisRateLimiter silent = new RedisRateLimiter(template);
+        RedisRateLimiter silent = new RedisRateLimiter(template, ChatMetrics.NOOP);
 
         // when & then: block 의 상한은 어댑터 상한보다 넉넉하다 — 어댑터가 안 끊으면 여기서 터진다
         RateLimitResult result = silent.tryAcquire(UUID.randomUUID()).block(Duration.ofSeconds(2));
@@ -102,7 +103,7 @@ class RedisRateLimiterDegradedTest {
                 .willReturn(Mono.just(Duration.ofSeconds(2)).delayElement(Duration.ofSeconds(1)));
 
         // when
-        RateLimitResult result = new RedisRateLimiter(template).tryAcquire(UUID.randomUUID())
+        RateLimitResult result = new RedisRateLimiter(template, ChatMetrics.NOOP).tryAcquire(UUID.randomUUID())
                 .block(Duration.ofSeconds(5));
 
         // then: 거부로 남고, 모르는 잔여 시간은 창 전체로 답한다
@@ -130,7 +131,7 @@ class RedisRateLimiterDegradedTest {
                 .willReturn(Mono.just(false));
         given(template.getExpire(anyString()))
                 .willReturn(Mono.error(new IllegalStateException("TTL 조회 실패")));
-        RedisRateLimiter limiter = new RedisRateLimiter(template);
+        RedisRateLimiter limiter = new RedisRateLimiter(template, ChatMetrics.NOOP);
 
         Logger logger = (Logger) LoggerFactory.getLogger(RedisRateLimiter.class);
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
@@ -173,7 +174,7 @@ class RedisRateLimiterDegradedTest {
                 .willReturn(Mono.just(false));
         given(template.getExpire(anyString()))
                 .willReturn(Mono.error(new IllegalStateException("TTL 조회 실패")));
-        RedisRateLimiter limiter = new RedisRateLimiter(template);
+        RedisRateLimiter limiter = new RedisRateLimiter(template, ChatMetrics.NOOP);
 
         // when
         RateLimitResult result = limiter.tryAcquire(UUID.randomUUID()).block(Duration.ofSeconds(5));

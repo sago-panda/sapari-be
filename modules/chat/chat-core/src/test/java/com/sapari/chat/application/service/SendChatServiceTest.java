@@ -33,6 +33,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
@@ -89,7 +90,8 @@ class SendChatServiceTest {
                 new ChatPermissionPolicy(),
                 new ProfanityFilter(Set.of("욕설"), Set.of()),
                 kickRepository, banRepository, rateLimiter, chatMessageRepository, broadcaster,
-                new TimeProvider(Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC)));
+                new TimeProvider(Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC)),
+                ChatMetrics.NOOP);
         // 기본은 "밴 아님". 강퇴와 밴 조회는 zip으로 함께 뜨므로 강퇴 검사에 닿는 모든 테스트가 이걸
         // 부르지만, 그 앞(권한·검증)에서 끝나는 테스트는 부르지 않는다 — 그래서 lenient다.
         lenient().when(banRepository.isBanned(any())).thenReturn(Mono.just(false));

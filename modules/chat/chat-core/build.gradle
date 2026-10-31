@@ -26,6 +26,13 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
 
+    // 관측 계측(포트 구현). actuator 는 여기 두지 않는다 — 엔드포인트 노출은 앱의 결정이고,
+    // chat-core 를 쓰는 앱이 둘(streaming-app·live-app)이라 한쪽이 원치 않는 엔드포인트를 물려받으면 안 된다.
+    implementation 'io.micrometer:micrometer-core'
+    // 프로메테우스 레지스트리는 SimpleMeterRegistry 보다 규칙이 엄격하다(같은 이름의 태그 키 집합이
+    // 다르면 거부). 운영에서만 드러나는 그 차이를 테스트로 잡으려면 테스트 클래스패스에 필요하다.
+    testImplementation 'io.micrometer:micrometer-registry-prometheus'
+
     // MapStruct — document↔domain 매퍼 (live-core와 동일 와이어링)
     implementation 'org.mapstruct:mapstruct:1.5.5.Final'
     annotationProcessor 'org.mapstruct:mapstruct-processor:1.5.5.Final'

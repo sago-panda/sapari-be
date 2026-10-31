@@ -10,6 +10,11 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
+import com.sapari.chat.application.port.ChatCheckpoint;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.ChatPolicy;
+import com.sapari.chat.application.port.DeliveryStage;
+import com.sapari.chat.application.port.PolicyReadFailure;
 import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
@@ -66,6 +71,13 @@ public class SendChatService implements SendChatUseCase {
     private final ChatBroadcaster broadcaster;
     private final TimeProvider timeProvider;
 
+    /**
+     * 관측 포트. 아래 열화 경로의 카운터들은 프로세스 안에만 있어서 <b>정책이 쉬고 있는지를 밖에서
+     * 알 수 없었다</b> — 이 포트가 그 사실을 내보낸다. 로그 솎아내기용 카운터는 그대로 둔다(로그 문장이
+     * 누적 건수를 싣는다).
+     */
+    private final ChatMetrics metrics;
+
     // 열화 경로 관측 — 통과시키되 규모와 시작 시점은 남긴다.
     private final AtomicLong kickedFailOpenCount = new AtomicLong();
     private final AtomicLong kickStoreCorruptedCount = new AtomicLong();
@@ -89,6 +101,7 @@ public class SendChatService implements SendChatUseCase {
      */
     private void recordKickedFailOpen(UUID roomId, Throwable err) {
         if (err instanceof KickStoreCorruptedException corrupted) {
+            metrics.policyNotEnforced(ChatPolicy.KICK, ChatCheckpoint.SEND, PolicyReadFailure.STORE_CORRUPTED);
             long count = kickStoreCorruptedCount.incrementAndGet();
             if (shouldLog(lastKickStoreCorruptedLog)) {
                 // 예외 객체는 싣지 않는다 — 진단은 이 문장과 key로 끝나고, 스택은 Reactor 내부를 가리켜
@@ -99,6 +112,7 @@ public class SendChatService implements SendChatUseCase {
             }
             return;
         }
+        metrics.policyNotEnforced(ChatPolicy.KICK, ChatCheckpoint.SEND, PolicyReadFailure.UNAVAILABLE);
         long count = kickedFailOpenCount.incrementAndGet();
         if (shouldLog(lastKickedFailOpenLog)) {
             log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
@@ -116,6 +130,7 @@ public class SendChatService implements SendChatUseCase {
      * <p>{@link #recordKickedFailOpen}과 같은 제약을 받는다 — <b>던질 수 있는 호출을 넣지 마라.</b>
      */
     private void recordBannedFailOpen(Throwable err) {
+        metrics.policyNotEnforced(ChatPolicy.BAN, ChatCheckpoint.SEND, PolicyReadFailure.UNAVAILABLE);
         long count = bannedFailOpenCount.incrementAndGet();
         if (shouldLog(lastBannedFailOpenLog)) {
             log.error("밴 조회 실패 — fail-open으로 전송 허용(누적 {}건)", count, err);
@@ -254,6 +269,7 @@ public class SendChatService implements SendChatUseCase {
                         // → 서버 에코 불필요. 크로스 Pod·동일 Pod 타 세션은 실시간 미전달(허용, 메시지는 영속됨).
                         .onErrorResume(err -> {
                             // 장애 중엔 전 전송이 이 경로다 — 건당 스택트레이스는 원인 로그를 묻는다(레이트리밋과 동일)
+                            metrics.deliveryDropped(DeliveryStage.REDIS_PUBLISH);
                             long count = publishFailureCount.incrementAndGet();
                             if (shouldLog(lastPublishFailureLog)) {
                                 log.error("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시"

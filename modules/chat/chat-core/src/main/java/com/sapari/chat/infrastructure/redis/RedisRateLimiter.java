@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.RateLimitResult;
 import com.sapari.chat.application.port.RateLimiter;
 
@@ -110,6 +112,13 @@ public class RedisRateLimiter implements RateLimiter {
 
     private final ReactiveStringRedisTemplate redisTemplate;
 
+    /**
+     * 관측 포트. 아래 두 카운터는 프로세스 안에만 있어서 <b>레이트리밋이 강등된 구간을 밖에서 알 수
+     * 없었다</b> — 강등은 허용량을 Pod 수만큼 늘리는 선택이라, 그 선택이 얼마나 오래 유효했는지가
+     * 집행 정확도의 전부다. 로그 솎아내기용 카운터는 그대로 둔다(로그 문장이 누적 건수를 싣는다).
+     */
+    private final ChatMetrics metrics;
+
     /** 강등 누적 횟수(= Redis 가 답하지 못해 로컬 창이 판정한 횟수). 로그를 솎아내도 규모는 남기기 위한 카운터. */
     private final AtomicLong degradedCount = new AtomicLong();
 
@@ -161,6 +170,7 @@ public class RedisRateLimiter implements RateLimiter {
                     // 표본 하나에 찍힌 id는 "이 사용자 문제"로 오독을 부른다. 대신 예외를 그대로 실어
                     // 위치를 남긴다 — 이 catch는 전 예외를 받으므로 체인 내부 결함이 흘러들 수도 있는데,
                     // 그때는 스택트레이스가 id보다 훨씬 쓸모 있다.
+                    metrics.rateLimitDegraded(RateLimitDegradation.LOCAL_WINDOW);
                     long count = degradedCount.incrementAndGet();
                     if (shouldLogDegraded()) {
                         log.error("rate limit Redis 장애 — 로컬 창으로 강등(누적 {}건)", count, err);
@@ -205,6 +215,7 @@ public class RedisRateLimiter implements RateLimiter {
                 // 같은 실패가 바깥 onErrorResume 으로 흘러 강등 카운터와 솎은 로그를 남겼으므로,
                 // 판정을 지키는 대가로 관측을 잃은 셈이었다. 판정은 그대로 두고 신호만 되돌린다.
                 .onErrorResume(err -> {
+                    metrics.rateLimitDegraded(RateLimitDegradation.TTL_FALLBACK);
                     long count = deniedTtlFallbackCount.incrementAndGet();
                     if (shouldLogDeniedTtlFallback()) {
                         // 키를 싣지 않는다 — ratelimit:chat:{userId} 라 그 자체가 PII 다. 위 강등
