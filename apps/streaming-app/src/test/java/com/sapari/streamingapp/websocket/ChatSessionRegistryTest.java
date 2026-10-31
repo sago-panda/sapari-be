@@ -386,7 +386,9 @@ class ChatSessionRegistryTest {
         for (int t = 0; t < threads; t++) {
             new Thread(() -> {
                 try {
-                    start.await();
+                    if (!start.await(30, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("시작 래치가 30초 안에 열리지 않았다 — 주 스레드가 countDown 전에 터졌다. 상한이 없으면 이 스레드가 영원히 블록된 채 남아 같은 JVM 의 뒤따르는 테스트를 오염시킨다");
+                    }
                     for (int i = 0; i < perThread; i++) {
                         registry.sendToSession("s1", out("NORMAL")).block(VERIFY_CEILING);
                     }
@@ -807,7 +809,9 @@ class ChatSessionRegistryTest {
         // when: 브로드캐스트 스레드와 ack 스레드가 같은 Sink들을 동시에 때린다
         new Thread(() -> {
             try {
-                start.await();
+                if (!start.await(30, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("시작 래치가 30초 안에 열리지 않았다 — 주 스레드가 countDown 전에 터졌다. 상한이 없으면 이 스레드가 영원히 블록된 채 남아 같은 JVM 의 뒤따르는 테스트를 오염시킨다");
+                }
                 for (int i = 0; i < broadcasts; i++) {
                     // SYSTEM 프레임을 싣는다 — 운영에서 sendToRoomLocal의 호출자는 SystemMessageService
                     // 하나뿐이고 PII 없는 SYSTEM만 보낸다. NORMAL 방 팬아웃은 전부 sendToRoomGated를
@@ -824,7 +828,9 @@ class ChatSessionRegistryTest {
         }).start();
         new Thread(() -> {
             try {
-                start.await();
+                if (!start.await(30, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("시작 래치가 30초 안에 열리지 않았다 — 주 스레드가 countDown 전에 터졌다. 상한이 없으면 이 스레드가 영원히 블록된 채 남아 같은 JVM 의 뒤따르는 테스트를 오염시킨다");
+                }
                 for (int i = 0; i < acksPerSession; i++) {
                     for (String sid : sessionIds) {
                         registry.sendToSession(sid, out("ACK")).block(VERIFY_CEILING);

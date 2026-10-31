@@ -166,7 +166,9 @@ class ChatBanWriteRedisRepositoryTest {
                     // 절반은 가장 긴 것, 절반은 가장 짧은 것 — 짧은 쪽이 이기면 최댓값이 깨진다
                     Duration length = (w % 2 == 0) ? longest : shortest;
                     writers.add(pool.submit(() -> {
-                        start.await();
+                        if (!start.await(30, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("시작 래치가 30초 안에 열리지 않았다 — 주 스레드가 countDown 전에 터졌다. 상한이 없으면 이 스레드가 영원히 블록된 채 남아 같은 JVM 의 뒤따르는 테스트를 오염시킨다");
+                        }
                         ban(length);
                         return null;
                     }));

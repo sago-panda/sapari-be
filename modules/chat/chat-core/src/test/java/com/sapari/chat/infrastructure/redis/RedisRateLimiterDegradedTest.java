@@ -254,7 +254,7 @@ class RedisRateLimiterDegradedTest {
                 UUID userId = UUID.randomUUID();
                 long now = System.nanoTime();
                 Callable<Boolean> attempt = () -> {
-                    barrier.await();
+                    barrier.await(30, java.util.concurrent.TimeUnit.SECONDS);
                     return rateLimiter.localWindow(userId, now).allowed();
                 };
                 Future<Boolean> first = pool.submit(attempt);
