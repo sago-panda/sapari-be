@@ -397,6 +397,12 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     `DataAccessResourceFailureException` after **30,053 ms** (measured), i.e. the Mongo
     `serverSelectionTimeout` default. Boot fails loudly instead of hanging — a different failure from a
     test hang, so a `VERIFY_CEILING`-style value would not be the right lever there.
+  - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
+    forever when the main thread throws before `countDown()`. The reason is **not** that a non-daemon
+    thread holds the worker JVM open: it does not (a thread sleeping 10 minutes still lets the Gradle test
+    worker exit cleanly, measured). The reason is that the stuck thread keeps hammering the sinks and
+    registry and so pollutes the *next* test in the same JVM. All 7 sites take `await(30, SECONDS)` and
+    throw with a reason.
   - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded. The
     cost shows up only under a break that stalls *every* `block`: the suite then takes ceiling × call
     sites (≈94 × 10s in `ChatSessionRegistryTest` alone) before it reports. Slow, but it *reports* — that
