@@ -36,7 +36,7 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
   throws, but from the ShedLock proxy **outside** each scheduler's `try/catch`, so the prepared domain
   message never appears and still-billing egress goes unreclaimed. The guard adds no new boot-time DB
   dependency (`ddl-auto: validate` already needs the DB); it covers what `validate` cannot, since the
-  lock table has no entity. **This reaches local development too**: the `@Tag("context")` tests boot a real
+  lock table has no entity. **This reaches local development too**: the app context tests boot a real
   context, so a developer whose local database predates this migration now fails at `contextLoads` — run
   `migrate.sh` against the local DB, or set `live.reconcile.enabled=false` locally.
 

@@ -361,7 +361,8 @@ class SchedulerWiringTest {
         @DisplayName("세 잡 모두 서로 다른 이름의 락을, 잡별 유지 시간으로 건다")
         void everyJobLocksUnderItsOwnName() {
             // 유지 시간까지 여기서 고정하는 이유: 실제 경합·인계 검증인 ReconcileSchedulerLockTest 는
-            // @Tag("docker") 로 CI 에서 빠진다. 값이 조용히 줄어도 CI 는 아무 말이 없는데, 리스는
+            // 종전에는 @Tag("docker") 로 CI 에서 빠졌다(2026-10-31 제외 걷힘 — 이제 CI 에도 데몬이
+            // 있다). 값이 조용히 줄어도 알아채기 어려운 건 그대로인데, 리스는
             // 인계 지연이자 <회차 예산의 원천>이라(예산 = 리스 × 4/5) 줄면 처리량까지 함께 준다.
             Map<Class<?>, Map.Entry<String, Duration>> expected = Map.of(
                     ExpireReadyScheduler.class,
