@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
 import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.liveapp.security.LiveUserPrincipal;
@@ -73,10 +74,34 @@ public class ChatHistoryController {
             return new GetChatHistoryCommand(
                     roomId,
                     principal == null ? null : principal.userId(),
-                    principal == null ? null : principal.role(),
+                    principal == null ? null : toChatRole(principal.role()),
                     beforeId, playbackPositionMs, size);
         } catch (IllegalArgumentException e) {
             throw new ChatHistoryQueryInvalidException(e.getMessage(), e);
         }
+    }
+
+    /**
+     * 플랫폼 역할(JWT {@code role} claim) → chat 역할.
+     *
+     * <p><b>두 열거가 다르다</b> — 플랫폼은 {@code USER}/{@code SELLER} 이고 chat 은 {@code BUYER}/
+     * {@code SELLER}/{@code ADMIN}/{@code GUEST} 다. 겹치는 이름은 {@code SELLER} 하나뿐이라, 번역 없이
+     * 넘기면 판매자만 지나가고 <b>일반 구매자는 소비자의 {@code ChatRole.valueOf} 에서 전부 실패한다</b>
+     * — 응답은 500 이고 고칠 쪽은 서버다. 주 소비자 경로만 깨지는 모양이라 눈에 잘 띄지도 않는다.
+     *
+     * <p>번역이 컨트롤러에 있는 이유: 명령의 {@code requesterRole} 계약이 "chat 역할 이름" 이다. 번역을
+     * 서비스로 밀면 chat 이 자기 경계 밖 열거를 알아야 하고, 소비자가 늘 때마다 그 지식이 복제된다.
+     *
+     * <p>모르는 값은 <b>거부한다</b>. 조용히 {@code BUYER} 로 떨어뜨리면 새 플랫폼 역할이 생겼을 때 그
+     * 사용자가 자기 권한보다 좁은 뷰를 받고도 그 사실을 알 수 없다 — 버그로 보이지 않는 버그가 된다.
+     */
+    private static String toChatRole(String platformRole) {
+        return switch (platformRole) {
+            case "USER" -> ChatRole.BUYER.name();
+            case "SELLER" -> ChatRole.SELLER.name();
+            case "ADMIN" -> ChatRole.ADMIN.name();
+            default -> throw new IllegalStateException(
+                    "플랫폼 역할을 chat 역할로 번역할 수 없다 — role=" + platformRole);
+        };
     }
 }

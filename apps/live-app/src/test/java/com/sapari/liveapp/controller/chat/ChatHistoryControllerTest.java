@@ -25,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
@@ -132,6 +133,36 @@ class ChatHistoryControllerTest {
         // then
         assertThat(captured().requesterId()).isEqualTo(REQUESTER_ID);
         assertThat(captured().requesterRole()).isEqualTo("SELLER");
+    }
+
+    @Test
+    @DisplayName("⭐ 플랫폼 역할 USER 는 ChatRole 로 번역돼 간다 — 그대로 넘기면 일반 구매자 이력 조회가 전부 500 이다")
+    void aPlatformUserRoleIsTranslatedToChatRole() throws Exception {
+        // given
+        stubEmpty();
+
+        // when: JWT role claim 은 플랫폼 역할(USER/SELLER)이고 ChatRole(BUYER/SELLER/ADMIN/GUEST)과
+        // 열거가 다르다. SELLER 만 이름이 우연히 겹쳐, 기존 테스트는 겹치는 값만 재고 있었다.
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID).with(as("USER")))
+                .andExpect(status().isOk());
+
+        // then
+        assertThat(captured().requesterRole()).isEqualTo(ChatRole.BUYER.name());
+    }
+
+    @Test
+    @DisplayName("⭐ 명령에 실리는 역할은 소비자가 해석할 수 있는 값이다 — 못 하면 서비스가 500 으로 터진다")
+    void theForwardedRoleIsParsableByTheConsumer() throws Exception {
+        // given
+        stubEmpty();
+
+        // when
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID).with(as("USER")))
+                .andExpect(status().isOk());
+
+        // then: 소비자(GetChatHistoryService)가 쓰는 파서를 그대로 돌린다 — 동등성만 보면
+        // 양쪽을 같이 틀리게 고쳤을 때 통과한다.
+        assertThat(ChatRole.valueOf(captured().requesterRole())).isEqualTo(ChatRole.BUYER);
     }
 
     @Test
