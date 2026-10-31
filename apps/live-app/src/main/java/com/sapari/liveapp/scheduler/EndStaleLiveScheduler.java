@@ -3,10 +3,17 @@ package com.sapari.liveapp.scheduler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import com.sapari.liveapp.config.ReconcileLockConfig;
+import com.sapari.liveapp.config.SchedulingConfig;
+
+import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.infrastructure.config.LiveReconcileProperties;
 import com.sapari.live.port.ReconcileStaleLiveUseCase;
 
 /**
@@ -25,7 +32,18 @@ public class EndStaleLiveScheduler {
 
     private final ReconcileStaleLiveUseCase reconcileStaleLiveUseCase;
 
-    @Scheduled(cron = "${live.reconcile.end-stale-live.cron:0 3/10 * * * *}")
+    /**
+     * 잡별 락. 유지 시간의 의미와 {@code lock-at-least-for} 는 {@link com.sapari.liveapp.config.ReconcileLockConfig} 참고.
+     *
+     * <p>리스 기본값은 {@link LiveReconcileProperties.EndStaleLive#DEFAULT_LOCK_AT_MOST_FOR} 하나에서 온다
+     * — 회차 예산({@code roundBudget})을 그 값에서 파생시키므로, 여기에 리터럴을 다시 적으면 예산이
+     * 리스보다 길어져도 아무도 알아채지 못한다. 회차 길이는 후보 수가 아니라 그 예산이 묶는다.
+     */
+    @Scheduled(cron = "${live.reconcile.end-stale-live.cron:" + SchedulingConfig.END_STALE_LIVE_CRON + "}")
+    @SchedulerLock(name = ReconcileJob.Locks.END_STALE_LIVE,
+            lockAtMostFor = "${live.reconcile.end-stale-live.lock-at-most-for:"
+                    + LiveReconcileProperties.EndStaleLive.DEFAULT_LOCK_AT_MOST_FOR + "}",
+            lockAtLeastFor = "${live.reconcile.lock-at-least-for:" + ReconcileLockConfig.LOCK_AT_LEAST_FOR + "}")
     public void run() {
         try {
             reconcileStaleLiveUseCase.reconcile();

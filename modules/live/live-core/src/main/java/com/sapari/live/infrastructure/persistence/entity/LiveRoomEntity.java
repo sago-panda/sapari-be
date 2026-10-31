@@ -179,6 +179,10 @@ public class LiveRoomEntity extends UuidTimeEntity {
         this.scheduledAt = scheduledAt;
     }
 
+    public void updateHlsArchiveUrl(String hlsArchiveUrl) {
+        this.hlsArchiveUrl = hlsArchiveUrl;
+    }
+
     public void updateStreamInfo(String sfuRoomId, String egressId, String hlsUrl) {
         this.sfuRoomId = sfuRoomId;
         this.egressId = egressId;

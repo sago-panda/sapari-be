@@ -230,7 +230,7 @@ class ExpireOrphanLiveServiceTest {
         LiveRoom live = fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("status", new LiveStatus.Live(now, "sfu-1", "eg-1", "https://hls/1"))
-                .set("streamInfo", StreamInfo.of("sfu-1", "eg-1", "https://hls/1"))
+                .set("streamInfo", StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null))
                 .set("streamType", new LiveStreamType.Rtmp("ing-1"))
                 .sample();
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(live));

@@ -18,8 +18,11 @@ Context that decides most findings here — read it before judging:
 - `modules/live/AGENTS.md` **Persistence & cache** and **Media ports**: every state-transition read takes
   a row lock (`findByIdForUpdate`); Hibernate emits `for no key update`, not `for update` — don't grep
   the latter and conclude the lock is missing. Start-side media calls sit inside `@Transactional` **on
-  purpose**, bounded by `callTimeout`; end-side cleanup runs after commit. **Single replica assumed** for
-  schedulers — ShedLock is documented as the prerequisite for scaling out, not a current gap.
+  purpose**, bounded by `callTimeout`; end-side cleanup runs after commit. Schedulers are **multi-replica
+  safe since SPR-142** — each holds a ShedLock lock (`live-reconcile-<job>`). A missing `@SchedulerLock`,
+  a shared lock name, or a `lockAtMostFor` shorter than the job's worst round **is** a current gap, not a
+  future one. Only `orphan-media` strictly needs the lock (the other two gate on a row lock and register
+  cleanup inside the winning transaction), but all three carry it.
 - Where a `WHERE` clause is the domain guard (`assignRtmpIngressIfAbsent`), the conditional UPDATE *is*
   the lock. Judge it as one, and check the new `LiveStatus` variant reached it.
 

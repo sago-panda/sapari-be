@@ -38,6 +38,9 @@ public interface LiveMetrics {
      */
     void reconcileRoundFailed(ReconcileJob job);
 
+    /** 스케줄러 프록시가 시도한 분산 락의 결과. */
+    void reconcileLockResult(ReconcileJob job, ReconcileLockResult result);
+
     /** 이번 회차에 실제로 한 일. {@code count} 가 0 이어도 호출해도 된다(구현이 무시한다). */
     void reconcileActed(ReconcileJob job, ReconcileAction action, int count);
 
@@ -67,6 +70,7 @@ public interface LiveMetrics {
         @Override public void reconcileRoundCompleted(ReconcileJob job, Duration took) { }
         @Override public void reconcileRoundAborted(ReconcileJob job, ReconcileAbortReason reason) { }
         @Override public void reconcileRoundFailed(ReconcileJob job) { }
+        @Override public void reconcileLockResult(ReconcileJob job, ReconcileLockResult result) { }
         @Override public void reconcileActed(ReconcileJob job, ReconcileAction action, int count) { }
         @Override public void roomTransitioned(LiveStatus from, LiveStatus to) { }
         @Override public void rtmpPromoted(PromotionTrigger trigger) { }

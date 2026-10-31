@@ -72,7 +72,7 @@ public class StartLiveService implements StartLiveUseCase {
         HlsEgressResult egressResult = startEgressWithCompensation(command.roomId());
 
         // liveRoomEntity status -> Live 변환
-        StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl());
+        StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl(), egressResult.hlsArchiveUrl());
         LiveRoom updatedRoom = room.startLive(streamInfo, timeProvider.now());
 
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송
@@ -100,7 +100,7 @@ public class StartLiveService implements StartLiveUseCase {
 
         if (ownIngressPublishing) {
             HlsEgressResult egressResult = startEgressWithCompensation(command.roomId());
-            StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl());
+            StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl(), egressResult.hlsArchiveUrl());
             LiveRoom liveRoom = armed.goLiveFromReady(streamInfo, timeProvider.now());
             liveRoomRepository.save(liveRoom);
             // arm 과 승격이 한 트랜잭션에서 일어난 랑데부다. 두 전이를 각각 세야 깔때기(Scheduled→Ready→Live)

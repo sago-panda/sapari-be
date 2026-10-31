@@ -93,11 +93,23 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         int expired = 0;
         int promoted = 0;
         int skipped = 0;
+        // 후보 수가 아니라 시계로도 끊는다 — end-stale-live 와 같은 이유·같은 모양이다. 이 잡도
+        // 만료 시 PostCommitMediaCleanup 을 타고, 그 안의 stopHlsEgress/deleteIngress 는 방의
+        // egress·ingress 수만큼 왕복하므로 "후보당 9왕복" 은 상한이 아니라 전제가 붙은 추정이다.
+        // 마감은 후보 사이에서만 본다 — 진행 중인 동기 호출은 끊을 수단이 없다.
+        Instant deadline = startedAt.plus(policy.roundBudget());
+        boolean budgetExhausted = false;
         int ingressMissing = 0;   // skipped 의 부분집합 — 오설정 신호라 따로 센다
         // 집계는 finally 에서 내보낸다 — 루프 도중 예외로 빠져나가면 그때까지 실제로 만료·승격한
         // 건수가 통째로 사라지고 failed 만 남는다. "죽기 전까지 N건은 처리했다" 가 사후 추적의 시작점이다.
         try {
         for (UUID roomId : roomIds) {
+            if (!timeProvider.now().isBefore(deadline)) {
+                budgetExhausted = true;
+                log.warn("Ready 고착 정리 회차 예산 소진 — 남은 후보는 다음 회차로. 예산={}, 만료={}, 승격={}",
+                        policy.roundBudget(), expired, promoted);
+                break;
+            }
             try {
                 // 처리 직전에 확인한다 — 조회가 실패하면 그 방은 만료하지 않고 다음 회차로 미룬다.
                 List<IngressSummary> ingresses = liveMediaManager.listRoomIngress(roomId);
@@ -162,6 +174,8 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
                     ReconcileJob.EXPIRE_READY, ReconcileAction.SKIPPED, skipped - ingressMissing);
             liveMetrics.reconcileActed(
                     ReconcileJob.EXPIRE_READY, ReconcileAction.SKIPPED_INGRESS_MISSING, ingressMissing);
+            liveMetrics.reconcileActed(
+                    ReconcileJob.EXPIRE_READY, ReconcileAction.ROUND_BUDGET_EXHAUSTED, budgetExhausted ? 1 : 0);
         }
         liveMetrics.reconcileRoundCompleted(ReconcileJob.EXPIRE_READY, elapsed(startedAt));
         log.info("고아 Ready 방 정리 완료. 후보={}, 만료={}, 승격={}, 스킵={}",

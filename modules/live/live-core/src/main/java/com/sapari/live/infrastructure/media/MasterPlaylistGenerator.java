@@ -14,6 +14,14 @@ import lombok.NoArgsConstructor;
 final class MasterPlaylistGenerator {
 
     static String generate() {
+        return generate(false);
+    }
+
+    static String generateArchive() {
+        return generate(true);
+    }
+
+    private static String generate(boolean archive) {
         StringBuilder sb = new StringBuilder();
         sb.append("#EXTM3U\n");
         sb.append("#EXT-X-VERSION:3\n");
@@ -21,7 +29,7 @@ final class MasterPlaylistGenerator {
             sb.append("#EXT-X-STREAM-INF:BANDWIDTH=").append(rendition.getBandwidth())
                     .append(",RESOLUTION=").append(rendition.getWidth()).append('x').append(rendition.getHeight())
                     .append('\n');
-            sb.append(rendition.variantPlaylistPath()).append('\n');
+            sb.append(archive ? rendition.archivePlaylistPath() : rendition.variantPlaylistPath()).append('\n');
         }
         return sb.toString();
     }

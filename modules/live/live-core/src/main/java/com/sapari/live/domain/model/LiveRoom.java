@@ -21,6 +21,9 @@ public record LiveRoom(
         StreamInfo streamInfo,
         LiveStreamType streamType,
         LiveStatus status,
+        // 방별 다시보기 공개 스위치(live_rooms.is_vod_public, DB 기본 true). 읽기 전용이다 —
+        // 엔티티 빌더에 이 필드가 없고 update 경로도 건드리지 않으므로 앱이 값을 덮어쓸 수 없다.
+        boolean vodPublic,
         Instant scheduledAt,
         Instant createdAt,
         Instant updatedAt
@@ -54,6 +57,7 @@ public record LiveRoom(
                 .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
                 .streamType(new LiveStreamType.WebRtc())
+                .vodPublic(true)
                 .scheduledAt(scheduledAt)
                 .createdAt(now)
                 .updatedAt(now)
@@ -63,7 +67,7 @@ public record LiveRoom(
     public LiveRoom withSfuRoomId(String sfuRoomId) {
         //streamInfo 정보 없는 경우 sfuRoomId만 추가, 그 외에는 기존 값 복사하고 sfuRoomId만 교체
         StreamInfo updated = (this.streamInfo == null) ?
-                StreamInfo.ofSfuRoomId(sfuRoomId) : StreamInfo.of(sfuRoomId, this.streamInfo.egressId(), this.streamInfo.hlsUrl());
+                StreamInfo.ofSfuRoomId(sfuRoomId) : StreamInfo.of(sfuRoomId, this.streamInfo.egressId(), this.streamInfo.hlsUrl(), this.streamInfo.hlsArchiveUrl());
         return toBuilder()
                 .streamInfo(updated)
                 .build();
@@ -134,7 +138,7 @@ public record LiveRoom(
             default -> throw new IllegalStateException("예상치 못한 상태: " + this.status);
         };
 
-        String hlsArchiveUrl = (streamInfo != null) ? streamInfo.hlsUrl() : null;
+        String hlsArchiveUrl = (streamInfo != null) ? streamInfo.hlsArchiveUrl() : null;
         var endedStatus = new LiveStatus.Ended(startedAt, now, hlsArchiveUrl);
 
         return toBuilder()

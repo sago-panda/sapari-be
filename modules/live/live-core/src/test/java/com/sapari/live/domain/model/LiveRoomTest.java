@@ -69,7 +69,7 @@ class LiveRoomTest {
     @DisplayName("arm — Scheduled 아니면 InvalidLiveStateException")
     void arm_rejectsNonScheduled() {
         LiveRoom live = scheduledRoom().startLive(
-                StreamInfo.of("sfu-1", "eg-1", "https://hls/1"),
+                StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null),
                 Instant.parse("2026-06-10T10:00:00Z"));
 
         assertThatThrownBy(() -> live.arm(Instant.parse("2026-06-10T10:01:00Z")))
@@ -81,7 +81,7 @@ class LiveRoomTest {
     void goLiveFromReady_onReadyRtmp() {
         Instant now = Instant.parse("2026-06-10T10:00:00Z");
 
-        LiveRoom live = readyRtmpRoom().goLiveFromReady(StreamInfo.of("sfu-1", "eg-1", "https://hls/1"), now);
+        LiveRoom live = readyRtmpRoom().goLiveFromReady(StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null), now);
 
         assertThat(live.status()).isInstanceOf(LiveStatus.Live.class);
         LiveStatus.Live liveStatus = (LiveStatus.Live) live.status();
@@ -97,7 +97,7 @@ class LiveRoomTest {
         LiveRoom scheduledRtmp = scheduledRtmpRoom("ing-1");
 
         assertThatThrownBy(() -> scheduledRtmp.goLiveFromReady(
-                StreamInfo.of("sfu-1", "eg-1", "https://hls/1"), Instant.parse("2026-06-10T10:00:00Z")))
+                StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null), Instant.parse("2026-06-10T10:00:00Z")))
                 .isInstanceOf(InvalidLiveStateException.class);
     }
 
@@ -113,7 +113,7 @@ class LiveRoomTest {
 
     private LiveRoom liveRoom() {
         return scheduledRoom().startLive(
-                StreamInfo.of("sfu-1", "eg-1", "https://hls/1"), Instant.parse("2026-06-10T10:00:00Z"));
+                StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null), Instant.parse("2026-06-10T10:00:00Z"));
     }
 
     @Test

@@ -11,6 +11,7 @@ final class LiveMeterNames {
     static final String RECONCILE_ROUND = "live.reconcile.round";
     static final String RECONCILE_DURATION = "live.reconcile.duration";
     static final String RECONCILE_ACTED = "live.reconcile.acted";
+    static final String RECONCILE_LOCK = "live.reconcile.lock";
     static final String MEDIA_CALL = "live.media.call";
     static final String ROOM_TRANSITION = "live.room.transition";
     static final String RTMP_PROMOTION = "live.rtmp.promotion";

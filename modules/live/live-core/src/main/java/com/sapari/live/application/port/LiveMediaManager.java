@@ -41,9 +41,24 @@ public interface LiveMediaManager {
      */
     List<IngressSummary> listRoomIngress(UUID roomId);
     HlsEgressResult startHlsEgress(UUID roomId);
-    /** 방의 HLS egress 를 <b>모두</b> 중단한다. 한 방송이 화질별로 여러 egress 를 띄우므로 단건 중단은 없다. */
+    /** 방의 HLS egress 를 <b>모두</b> 중단한다. 정상 종료·시작 롤백 전용이다. */
     void stopHlsEgress(UUID roomId);
-    /** 방에 묶인 RTMP ingress 를 모두 삭제한다(종료 정리). 방 기준 일괄이라 double-prepare 고아도 함께 정리된다. */
+    /**
+     * 고아 정리 스냅샷에서 판정한 egress 하나만 중단한다. 새로 시작된 egress를 함께 끊지 않는다.
+     *
+     * <p><b>roomId 는 로그 상관용일 뿐 중단 범위가 아니다</b> — LiveKit 의 중단 API 는 egressId 만 받고
+     * 소속 검증을 하지 않으므로 실제로는 전역 단건 중단이다. 시그니처가 "이 방의 egress"처럼 읽히는 게
+     * 위험한 지점: <b>egressId 는 우리가 방금 만든 값이거나 LiveKit 목록에서 온 값이어야 한다.</b>
+     * DB 컬럼이나 요청 파라미터에서 온 id 를 그대로 넘기면 남의 방송 녹화를 끊을 수 있다
+     * (그 경우 여기서 검증할 게 아니라, 호출 전에 소속을 확인해야 한다).
+     * {@link #deleteIngress(UUID, String)} 에 있는 경고와 같은 내용이다.
+     *
+     * <p>{@code default} 로 두지 않는다 — 미구현 어댑터가 있으면 호출 시점에
+     * {@code UnsupportedOperationException} 이 올라와 고아 정리 회차가 통째로 실패하고, 뒤에 오는
+     * SFU 방 스윕까지 건너뛴다. 구현 누락은 컴파일에서 잡는 편이 싸다.
+     */
+    void stopEgress(UUID roomId, String egressId);
+    /** 방에 묶인 RTMP ingress를 <b>전부</b> 삭제한다(종료 정리). 하나라도 남으면 OBS 가 방을 되살린다. */
     void deleteIngress(UUID roomId);
     /**
      * ingress 하나만 삭제한다(고아 정리 배치). 같은 방에 살아 있어야 할 ingress 가 함께 있을 수 있으므로
@@ -60,6 +75,24 @@ public interface LiveMediaManager {
     String getSfuUrl();
     List<IngressSummary> listAllIngress();
     List<EgressSummary> listAllEgress();
+    /**
+     * 이 방의 egress <b>전부</b>(각각 활성인지 포함). 조회 실패는 <b>예외</b>다.
+     *
+     * <p>{@link #listAllEgress()} 와 조회 대상은 겹치지만 쓰임이 다르다. 전역 목록은 회차 시작에 한 번
+     * 읽는 <b>스냅샷</b>이라, 회차가 길어지면 그 사이 재접속해 송출을 재개한 방이 목록에 없다 — 그걸로
+     * 판정하면 <b>살아 있는 방송을 끊는다</b>. 방치 Live 종료처럼 되돌릴 수 없는 판단은 만지기 직전에
+     * 이 메서드로 그 방만 다시 물어야 한다(AGENTS "per room, right before touching it").
+     *
+     * <p>실패를 삼키지 않는 이유는 {@link #listRoomIngress(UUID)} 와 같다 — 빈 목록은 "활성 egress
+     * 없음"으로 읽히고, 이 잡에서 그건 곧 "종료해라"다. 모르는 것을 그렇게 읽으면 안 된다.
+     *
+     * <p><b>빈 목록과 null body 는 다르다.</b> egress 가 없는 방은 빈 목록으로 오고(그게 이 잡 후보의
+     * 전형이다) 정상 처리된다. 반면 성공 응답에 본문이 아예 없는 건 비정상이라 예외로 올린다 —
+     * {@link #listRoomIngress(UUID)} 가 null body 를 "없음"으로 보는 것과 갈리는데, 실패 방향이
+     * 반대이기 때문이다: 그쪽은 모르면 <b>안 지우고</b> 끝이지만, 여기서 모르는 걸 "없음"으로 읽으면
+     * <b>방송을 끊는다</b>. 응답에 다른 방의 egress 가 섞여 와도 예외다(라우팅 오설정).
+     */
+    List<EgressSummary> listRoomEgress(UUID roomId);
     /**
      * LiveKit 에 살아 있는 SFU 방 <b>전부</b>. 실패는 <b>예외</b>다({@link #listAllIngress()} 와 같은 이유 —
      * 빈 목록이 "정리할 방 없음"으로 읽혀 배치가 조용히 성공 종료한다).
