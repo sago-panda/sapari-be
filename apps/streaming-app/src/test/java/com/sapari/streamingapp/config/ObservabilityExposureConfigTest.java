@@ -81,7 +81,9 @@ class ObservabilityExposureConfigTest {
     @Test
     @DisplayName("둘 다 0 이면 통과한다 — 0 은 포트가 아니라 \"빈 포트를 골라라\" 이고 통합 테스트가 그걸 쓴다")
     void bothRandomPortsAreAllowed() {
-        assertThat(config.managementPortMustDiffer(0, "0", withScalarExposure("health"))).isNotNull();
+        // 노출은 이 테스트의 주제가 아니다 — 가드가 prometheus 를 요구하므로 유효한 값을 준다.
+        assertThat(config.managementPortMustDiffer(0, "0", withScalarExposure("health,prometheus")))
+                .isNotNull();
     }
 
     @Test
@@ -89,6 +91,23 @@ class ObservabilityExposureConfigTest {
     void theAllowedPairPasses() {
         assertThatCode(() -> config.managementPortMustDiffer(8080, "8092",
                 withScalarExposure("health,prometheus"))).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("⭐ prometheus 가 없으면 부팅을 막는다 — 엔드포인트가 생기지 않아 지표가 조용히 빈다")
+    void missingPrometheusExposureIsRejected() {
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
+                withScalarExposure("health")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("prometheus 가 없다");
+    }
+
+    @Test
+    @DisplayName("⭐ 노출을 아예 안 적어도 부팅을 막는다 — 거부할 값이 없다고 통과하면 가드가 반쪽이다")
+    void absentExposureIsRejected() {
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092", new MockEnvironment()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("prometheus 가 없다");
     }
 
     @Test

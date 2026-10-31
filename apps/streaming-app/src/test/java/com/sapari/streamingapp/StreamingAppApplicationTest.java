@@ -47,7 +47,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         // management.server.port 는 ObservabilityExposureConfig 가 필수로 요구한다 — 비어 있으면
         // 액추에이터가 WS 핸드셰이크를 받는 사용자 포트에 열리므로 부팅을 실패시킨다. 0 은 포트 번호가
         // 아니라 "임의의 빈 포트를 골라라" 라서 테스트끼리 포트를 다투지 않는다.
-        properties = "management.server.port=0")
+        properties = {
+                "management.server.port=0",
+                // 노출 가드가 prometheus 를 요구한다 — 빠지면 지표가 조용히 빈다.
+                "management.endpoints.web.exposure.include=health,prometheus"
+        })
 @Testcontainers
 @DisplayName("streaming-app — 인프라를 갖추면 컨텍스트가 뜬다")
 class StreamingAppApplicationTest {

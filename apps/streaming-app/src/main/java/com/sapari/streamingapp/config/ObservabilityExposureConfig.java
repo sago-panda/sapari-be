@@ -116,6 +116,21 @@ public class ObservabilityExposureConfig {
                             + "/actuator/env·/heapdump 까지 열어 Mongo URI 자격증명과 Redis 비밀번호를 "
                             + "노출한다. 허용: " + new TreeSet<>(ALLOWED_ENDPOINTS));
         }
+
+        // 허용 집합 밖을 막는 것만으로는 반쪽이다 — 목록이 비면 거부할 것도 없어 통과하는데, 그때
+        // /actuator/prometheus 는 아예 생기지 않는다(액추에이터 기본 노출은 health 하나다). 이 앱에는
+        // 시큐리티가 없어 401 조차 나지 않고 404 다 — 어느 쪽이든 <b>지표가 조용히 빈다</b>. 빈
+        // 대시보드는 "방송이 없어서" 와 구분되지 않는다. live-app 은 같은 실패를 부팅 실패로 막는데
+        // (LiveSecurityConfig.requirePrometheusExposed) 이쪽만 비어 있었다 — 그 비대칭을 없앤다.
+        boolean prometheusExposed = declared.stream()
+                .map(value -> value == null ? "" : value.trim().toLowerCase(Locale.ROOT))
+                .anyMatch("prometheus"::equals);
+        if (!prometheusExposed) {
+            throw new IllegalStateException(
+                    EXPOSURE_KEY + " 에 prometheus 가 없다 — /actuator/prometheus 가 생기지 않아 chat "
+                            + "지표가 조용히 빈다. 관측을 끄려면 이 가드를 지우는 변경이 리뷰에 보여야 "
+                            + "한다. 현재 값=" + new TreeSet<>(declared));
+        }
     }
 
     /** 위 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */
