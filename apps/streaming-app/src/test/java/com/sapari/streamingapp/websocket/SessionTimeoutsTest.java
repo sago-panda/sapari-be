@@ -165,34 +165,6 @@ class SessionTimeoutsTest {
                 .doesNotThrowAnyException();
     }
 
-    /**
-     * ⭐ 템플릿이 적은 <b>탈출로</b> 트리오가 두 가드를 통과하고 기본값과 같은 내성을 갖는다.
-     *
-     * <p>수명만 내리는 길이 가드에 막혀 있으므로 템플릿이 탈출로를 하나 적어 둔다. 그 트리오가
-     * 가드를 통과하는 것만으로는 부족하다 — 기한/간격 비가 내성을 정하기 때문이다. 판정이
-     * {@code now - last >= 기한} 이라 k회 연속 유실이 {@code k × 간격} 을 만들고 그것이 기한보다
-     * 작아야 사므로, 비율 3배면 2회, <b>2배면 1회</b>다.
-     *
-     * <p>{@code (2m, 30s, 60s)} 도 두 가드를 통과하지만 비율이 2배라 내성이 반으로 깎인다. 템플릿이
-     * 그걸 "보안을 조이는 길" 로 제시하면 네트워크가 흔들리는 클라이언트를 더 끊는 쪽으로 기운다.
-     */
-    @Test
-    @DisplayName("⭐ 템플릿의 탈출로 트리오는 가드를 통과하고 기본값과 같은 3배 비율을 유지한다")
-    void the_documented_escape_trio_keeps_the_default_loss_tolerance() {
-        // given: 템플릿이 적은 탈출로
-        Duration lifetime = Duration.ofMinutes(2);
-        Duration interval = Duration.ofSeconds(20);
-        Duration deadline = Duration.ofSeconds(60);
-
-        // when & then: 두 가드를 통과한다
-        assertThatCode(() -> new SessionTimeouts(lifetime, interval, deadline)).doesNotThrowAnyException();
-
-        // 그리고 비율이 기본값과 같다 — 가드는 2배까지 허용하므로 이 단언이 따로 필요하다
-        assertThat(deadline).as("기한/간격 비가 3배 미만이면 연속 유실 내성이 깎인다")
-                .isGreaterThanOrEqualTo(interval.multipliedBy(3));
-        assertThat(DEADLINE).as("기본값도 3배다").isGreaterThanOrEqualTo(INTERVAL.multipliedBy(3));
-    }
-
     @Test
     @DisplayName("null 은 거부한다")
     void nulls_are_rejected() {

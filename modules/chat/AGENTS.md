@@ -394,11 +394,14 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     whole repo adds two *comment* lines in `architecture-test` that merely mention `.block()`. Two of
     those four numbers landed on 201 by different routes — **the counts matching is not evidence that the
     same thing was counted.**
-  - **Production has 3 of its own** (`ChatMongoConfig`'s startup index creation) and they are left alone,
-    because they are bounded by the driver rather than by us: against a closed address the block throws
-    `DataAccessResourceFailureException` after **30,053 ms** (measured), i.e. the Mongo
-    `serverSelectionTimeout` default. Boot fails loudly instead of hanging — a different failure from a
-    test hang, so a `VERIFY_CEILING`-style value would not be the right lever there.
+  - **Production has 3 of its own, and they are a different kind of bounded** — do not read them as part
+    of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
+    throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
+    `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
+    cost is a **30s stall per index, up to ~90s for the three**, which a readiness probe can turn into a
+    restart loop. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
+    serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
+    (`infra/`), so this is recorded, not changed.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
     forever when the main thread throws before `countDown()`. The reason is **not** that a non-daemon
     thread holds the worker JVM open: it does not (a thread sleeping 10 minutes still lets the Gradle test

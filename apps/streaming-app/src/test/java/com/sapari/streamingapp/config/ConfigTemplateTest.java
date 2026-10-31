@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,16 @@ class ConfigTemplateTest {
     /** 주석 안에 적어 둔 코드 기본값 한 줄 — `#   max-lifetime: 60m   # …` 모양. */
     private static final Pattern DOCUMENTED_DEFAULT =
             Pattern.compile("^#\\s*([a-z-]+):\\s*(\\S+)");
+
+    /**
+     * 산문에 적어 둔 <b>탈출로 트리오</b> — `(max-lifetime 2m, ping-interval 20s, liveness-deadline 60s)`.
+     *
+     * <p>기본값 셋은 {@code # session:} 블록에서 뽑히지만 탈출로는 산문 한 줄이라 그 파서가 집지
+     * 않는다. 그래서 불변식이 바뀌면 <b>템플릿의 보안 탈출로만 조용히 거부 띠로 들어간다</b> —
+     * 그 자리가 "수명을 조이는 유일한 사인된 길" 이라 더 나쁘다. 여기서 뽑아 실제 가드에 넣는다.
+     */
+    private static final Pattern ESCAPE_TRIO = Pattern.compile(
+            "\\(max-lifetime (\\S+), ping-interval (\\S+), liveness-deadline (\\S+)\\)");
 
     @Test
     @DisplayName("⭐ Duration 키에 빈 기본값(${VAR:})을 두지 않는다 — 빈 문자열이 코드 기본값을 밀어낸다")
@@ -110,6 +121,37 @@ class ConfigTemplateTest {
                 DurationStyle.detectAndParse(documented.get("liveness-deadline"))))
                 .as("템플릿이 적은 세 값이 SessionTimeouts 에서 거부된다 — 그대로 쓰면 부팅이 막힌다")
                 .doesNotThrowAnyException();
+    }
+
+    /**
+     * ⭐ 산문에 적어 둔 탈출로가 가드를 통과하고 기본값과 같은 내성을 갖는다.
+     *
+     * <p>수명만 내리는 길이 가드에 막혀 있으므로 템플릿이 탈출로를 하나 적어 둔다. 통과만으로는
+     * 부족하다 — 기한/간격 비가 연속 유실 내성을 정하기 때문이다. 판정이 {@code now - last >= 기한}
+     * 이라 k회 연속 유실이 {@code k × 간격} 을 만들고 그것이 기한보다 작아야 사므로, 비율 3배면
+     * 2회이고 <b>2배면 1회</b>다. 가드는 2배까지 허용하므로 그 단언을 따로 둔다.
+     *
+     * <p>값을 테스트에 적지 않고 <b>템플릿 문장에서 뽑는다</b>. 적어 두면 템플릿이 바뀌어도 테스트가
+     * 자기 값만 보고 초록이 된다 — 끈이 없으면 고정이 아니다.
+     */
+    @Test
+    @DisplayName("⭐ 산문의 탈출로 트리오가 가드를 통과하고 3배 비율을 유지한다 — 템플릿에서 뽑아 넣는다")
+    void the_documented_escape_trio_still_passes_the_guard() throws IOException {
+        // given: 산문에서 트리오를 뽑는다
+        Matcher matcher = ESCAPE_TRIO.matcher(template());
+        assertThat(matcher.find()).as("템플릿 산문에서 탈출로 트리오를 찾지 못했다").isTrue();
+        Duration lifetime = DurationStyle.detectAndParse(matcher.group(1));
+        Duration interval = DurationStyle.detectAndParse(matcher.group(2));
+        Duration deadline = DurationStyle.detectAndParse(matcher.group(3));
+
+        // when & then: 실제 가드에 넣는다
+        assertThatCode(() -> new SessionTimeouts(lifetime, interval, deadline))
+                .as("템플릿이 적은 탈출로가 부팅 가드에서 거부된다 — 그 길을 따라간 사람이 막힌다")
+                .doesNotThrowAnyException();
+
+        // 그리고 비율이 기본값과 같다
+        assertThat(deadline).as("기한/간격 비가 3배 미만이면 연속 유실 내성이 2회에서 1회로 깎인다")
+                .isGreaterThanOrEqualTo(interval.multipliedBy(3));
     }
 
     @Test
