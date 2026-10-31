@@ -431,6 +431,42 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
   machine that pulled 7.2 lacks it, and production's version is not visible from this repo. That is a
   "green locally, broken in production" shape. Revisit when 7.4+ is guaranteed.
 
+## Scale axis — what is measured, and what the numbers must still come from
+
+Two items are deliberately **not** implemented here. Both were investigated; the reasons differ.
+
+**Connection cap** — nothing limits accepted connections (`1013` closes an individual slow session, it is not a
+cap). The failure it would prevent is cascading: a pod takes more than it can serve, GCs to death, and its
+whole audience reconnects onto the next pod.
+
+Measured (in-process, 20,000 sessions, three register/unregister cycles):
+
+| | |
+|---|---|
+| Registry heap per idle session | **~1,990 B** |
+| 12,000 sessions | ~24 MB |
+| Retained after everyone leaves | **0 MB** — no leak across cycles |
+
+So **heap in the registry is not the binding resource** — the cap's number has to come from the axes this
+measurement cannot see (Netty/TLS buffers, file descriptors, fan-out CPU), which means the load track, not a
+guess. Shipping a number from nowhere is what this repo spends its time undoing.
+
+⚠️ That measurement first showed 15 MB retained per cycle, growing linearly — which reads exactly like a
+per-session leak. It was **Mockito recording 40,000 invocations** on the stubbed repository. With a
+hand-written stub the residual is 0. If you re-run this, do not use a mock for the collaborator.
+
+**Per-room serialization + batching (and dropping `clientMsgId` from broadcasts)** — today `serialize` runs
+inside each session's pipeline, so one message costs N serializations in a room of N. The premise for the
+contract half is **verified**: `ACK` already carries both `id` and `clientMsgId`, and the front-end guide
+already tells clients to dedup broadcasts by `id`, so the mapping can be built from ACK alone and the
+broadcast copy needs no `clientMsgId` — which collapses the four per-recipient variants to two.
+
+It stays a separate ticket because it moves the transport boundary: the sink would have to carry wire text
+instead of `OutboundMessage`, so every producer (`SendChatService` echo fallback, `SystemMessageService`,
+`LiveRoomEndedHandler`, `ChatBroadcastSubscriber`) serializes and the mapper configuration moves into
+chat-core. That is a defensible change — `OutboundMessage` already owns the wire contract — but it is a
+different review from this one.
+
 ## Viewer count updates — the same frame again, only when it changed
 
 `ROOM_INFO` used to be sent once at join, so the number was a **frozen snapshot**: the roster work made the
