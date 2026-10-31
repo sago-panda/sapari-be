@@ -28,7 +28,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 이 앱이 실제로 뜨는지만 본다 — 가장 싼 부팅 가드다.
  *
  * <p>컨테이너를 띄우는 이유: 컨텍스트에는 시작하자마자 붙는 것들이 있다. {@code RedisChatBroadcaster}는
- * 생성자에서 구독을 열고, {@code ChatMongoConfig}는 시작 러너에서 인덱스를 만든다. 인프라 없이 돌리면
+ * 생성자에서 구독을 열고, {@code ChatMongoConfig}는 빈 생성 단계에서 인덱스를 만든다(포트가 열리기
+ * 전에 끝내려고 일부러 그 자리다 — {@code EagerSingletonsRunBeforeThePortBindsTest}). 인프라 없이 돌리면
  * 이 테스트는 <b>언제나 빨간불</b>이 되고, 그러면 무엇도 지키지 못한다 — 부팅이 실제로 깨진 날에도
  * 평소와 똑같아 보인다.
  *

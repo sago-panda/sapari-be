@@ -372,6 +372,27 @@ unchanged. What can still fail outside the boundary is the Redis mirror, and a r
 because the active-ban lookup runs *before* the duplicate check and hands the caller the ban to re-mirror.
 That ordering is the whole self-healing story, so it is pinned by a test.
 
+## Startup — the port is the deadline, not the runner
+
+Measured boot order (`EagerSingletonsRunBeforeThePortBindsTest`, fixed port, real TCP connect):
+
+| Stage | Port |
+|---|---|
+| singleton pre-instantiation (`@Bean` method bodies) | refused |
+| earliest `SmartLifecycle` (`phase = MIN_VALUE`) | refused |
+| `ApplicationRunner` | **accepted** |
+
+The reactive web server is a `SmartLifecycle` at phase 2,147,481,599, so it binds inside `finishRefresh()`;
+runners come after. **Anything a request depends on must therefore be finished in a bean body, not a runner** —
+Mongo index creation is there for exactly that reason. Note the web server *object* exists during
+`onRefresh()`, long before `start()` binds, so its presence proves nothing (measured).
+
+Why it matters here and not everywhere: streaming-app has **no actuator**, so the only readiness probe
+Kubernetes can attach is a TCP socket check. A runner blocked on Mongo answers that probe `Ready` for its whole
+duration — three indexes × 30s server selection = up to 90s of handshakes routed into a pod that is about to
+die. Failing inside refresh is not a new failure mode: a throwing runner already broke
+`SpringApplication.run()` (measured). It only moves the failure to before the port opens.
+
 ## Tests
 
 Boot 4 split the slices into modules and **has no Mongo slice** (verified by jar inspection):
