@@ -70,7 +70,7 @@ public class ChatMongoConfig {
     }
 
     /**
-     * 인덱스 3종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
+     * 인덱스 4종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
      * 인덱스 정의 전체를 여기로 일원화한다. $type을 쓰는 이유: $exists:true는 null 저장 필드도 매칭해
      * clientMsgId=null 2건째에 DuplicateKey가 터진다. 생성된 인덱스 이름 목록 반환(테스트 검증용).
      */
@@ -93,6 +93,18 @@ public class ChatMongoConfig {
                 .on("createdAt", Sort.Direction.ASC)
                 .expire(Duration.ofDays(730))).block();   // 2년 자동 삭제
 
-        return List.of(paging, dedup, ttl);
+        // VOD 윈도우(roomId 등치 + createdAt 범위)의 범위 필드를 인덱스 경계로 묶는다.
+        //
+        // 없으면 플래너가 위 TTL 의 createdAt 단일 인덱스를 고르는데, 그건 그 시간대의 <b>모든 방</b>을
+        // 훑는다 — 비용이 방 길이가 아니라 동시 방송 수에 비례한다. 실측(explain, 12방·12만건, 재생
+        // 2분 지점): 반환 112건에 docsExamined 1,344(=방 수 배). 이 인덱스가 붙으면 112/112 가 된다.
+        //
+        // 방향은 ASC 다. 정렬 키가 _id 라 두 번째 필드의 방향이 경계에 영향을 주지 않는다(실측: ASC·DESC
+        // 모두 112/112). 나머지 인덱스가 전부 ASC 라 그쪽에 맞춘다.
+        String window = ops.createIndex(new Index()
+                .on("roomId", Sort.Direction.ASC)
+                .on("createdAt", Sort.Direction.ASC)).block();
+
+        return List.of(paging, dedup, ttl, window);
     }
 }
