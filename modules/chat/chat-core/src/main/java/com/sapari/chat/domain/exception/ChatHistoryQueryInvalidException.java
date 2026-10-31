@@ -1,7 +1,8 @@
 package com.sapari.chat.domain.exception;
 
 /**
- * 이력 조회 입력이 계약을 어겼다 — 두 모드 동시 지정, 음수 재생 위치, 범위 밖 {@code size}.
+ * 이력 조회 입력이 계약을 어겼다 — 두 모드 동시 지정, 범위 밖 재생 위치({@code <0} 또는 TTL 초과),
+ * 범위 밖 {@code size}, 형식이 깨진 커서.
  *
  * <p><b>왜 번역이 필요한가.</b> {@code GetChatHistoryCommand} 의 불변식은 record 생성자에서
  * {@code IllegalArgumentException} 으로 던진다. 그게 맞는 모양이지만(계약은 타입에 붙어 있어야 한다)
@@ -19,5 +20,16 @@ public class ChatHistoryQueryInvalidException extends ChatException {
 
     public ChatHistoryQueryInvalidException(String debugMessage, Throwable cause) {
         super(ChatErrorCode.HISTORY_QUERY_INVALID, debugMessage, cause);
+    }
+
+    /**
+     * 번역할 원인이 없을 때 — 서비스가 계약 위반을 <b>직접</b> 판정한 경우다(커서 형식).
+     *
+     * <p>위 생성자처럼 {@code IllegalArgumentException} 을 감싸는 게 아니라서 cause 가 없다. 빈
+     * {@code cause} 를 넘기는 호출부를 만들지 않으려고 생성자를 따로 둔다 — {@code null} 을 인자로
+     * 적는 코드는 읽는 쪽에서 "왜 null 인가" 를 매번 되묻게 한다.
+     */
+    public ChatHistoryQueryInvalidException(String debugMessage) {
+        super(ChatErrorCode.HISTORY_QUERY_INVALID, debugMessage, null);
     }
 }

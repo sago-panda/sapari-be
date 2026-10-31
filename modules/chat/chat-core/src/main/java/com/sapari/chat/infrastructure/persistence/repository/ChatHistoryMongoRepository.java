@@ -59,8 +59,9 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
         Criteria criteria = roomScope(roomId, excludedSenderIds);
         if (beforeId != null) {
             if (!ObjectId.isValid(beforeId)) {
-                // 던지지 않는다 — 갈라 보여 주면 "형식은 맞다" 는 사실이 응답으로 새어 id 를 더듬는
-                // 쪽에 탐색 신호를 준다. 호출자에게는 어느 쪽이든 결론이 같다(빈 페이지).
+                // 여기까지 오면 호출자가 게이트를 거치지 않은 것이다 — 정상 경로에서는
+                // GetChatHistoryService 가 형식을 먼저 보고 400 으로 거부한다. 이 어댑터는 그 뒤의
+                // 방어라서, 던지는 대신 빈 페이지로 답해 호출자별 처리를 강요하지 않는다.
                 return List.of();
             }
             criteria = criteria.and("_id").lt(new ObjectId(beforeId));

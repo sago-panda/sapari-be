@@ -85,4 +85,24 @@ class GetChatHistoryCommandTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("playbackPositionMs");
     }
+
+    @Test
+    @DisplayName("⭐ VOD 위치에 상한이 있다 — 없으면 극단값이 Instant.toEpochMilli 오버플로로 500 이 된다")
+    void anAbsurdPlaybackPositionIsRejected() {
+        // 실측: Instant.plusMillis(Long.MAX_VALUE) 는 터지지 않고 연도 +292279051 을 돌려주지만,
+        // 그 값을 Mongo 로 보낼 때 toEpochMilli() 가 ArithmeticException(long overflow) 을 던진다.
+        // 무인증 공개 엔드포인트라 파라미터 하나로 500 을 만들 수 있었다.
+        assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
+                null, Long.MAX_VALUE, 20))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("playbackPositionMs");
+    }
+
+    @Test
+    @DisplayName("상한 안의 위치는 통과한다 — 2년(메시지 TTL)까지가 의미 있는 범위다")
+    void aPositionWithinTheBoundPasses() {
+        long twoYears = java.time.Duration.ofDays(730).toMillis();
+        assertThatCode(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
+                null, twoYears, 20)).doesNotThrowAnyException();
+    }
 }

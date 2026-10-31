@@ -1,6 +1,7 @@
 package com.sapari.chat.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -26,6 +27,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
+import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
@@ -263,5 +265,21 @@ class GetChatHistoryServiceTest {
         assertThatThrownBy(() -> service.getHistory(cursorBy(sellerId, "SUPERUSER")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("SUPERUSER");
+    }
+
+    @Test
+    @DisplayName("⭐ 형식이 깨진 커서는 400 이다 — 빈 목록으로 답하면 스크롤이 사유 없이 조용히 끝난다")
+    void aMalformedCursorIsRejected() {
+        assertThatThrownBy(() -> service.getHistory(
+                new GetChatHistoryCommand(roomId, buyerId, "BUYER", "not-an-object-id", null, 20)))
+                .isInstanceOf(ChatHistoryQueryInvalidException.class);
+    }
+
+    @Test
+    @DisplayName("형식이 맞는 커서는 질의까지 간다 — 존재하지 않는 id 는 빈 페이지이고 그건 400 이 아니다")
+    void aWellFormedCursorReachesTheQuery() {
+        assertThatCode(() -> service.getHistory(
+                new GetChatHistoryCommand(roomId, buyerId, "BUYER", "68000000000000000000000a", null, 20)))
+                .doesNotThrowAnyException();
     }
 }

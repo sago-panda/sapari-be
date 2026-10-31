@@ -1,5 +1,6 @@
 package com.sapari.chat.command;
 
+import java.time.Duration;
 import java.util.UUID;
 
 /**
@@ -26,6 +27,20 @@ public record GetChatHistoryCommand(
         Long playbackPositionMs,   // VOD 위치(nullable) — beforeId와 배타
         int size                   // 페이지 크기(커서 모드 전용 — VOD 모드는 200 고정)
 ) {
+    /**
+     * 재생 위치 상한.
+     *
+     * <p>메시지는 2년 뒤 TTL 로 사라지므로 그보다 먼 위치의 창은 <b>증명적으로 비어 있다</b> — 상한을
+     * 넘은 요청은 "결과가 없는 것" 이 아니라 입력이 틀린 것이다. 방송 길이로 자르는 쪽이 더 정확하지만
+     * 방 뷰에 종료 시각이 없어(live 계약) 여기서 잴 수 없다.
+     *
+     * <p>상한이 없으면 극단값이 그대로 시각 연산으로 간다. <b>실측</b>: {@code Instant.plusMillis} 자체는
+     * 터지지 않고 연도 {@code +292279051} 을 돌려주지만, 그 값을 Mongo 로 보낼 때
+     * {@code Instant.toEpochMilli()} 가 {@code ArithmeticException: long overflow} 를 던진다 — 이
+     * 엔드포인트는 무인증 공개라 파라미터 하나로 500 을 만들 수 있다.
+     */
+    private static final long MAX_PLAYBACK_POSITION_MS = Duration.ofDays(730).toMillis();
+
     public GetChatHistoryCommand {
         if (roomId == null) {
             throw new IllegalArgumentException("roomId는 필수입니다.");
@@ -45,6 +60,10 @@ public record GetChatHistoryCommand(
         // 음수 위치는 창을 재생 시작 앞으로 보내 조용히 빈 결과가 된다 — 빈 이력과 구분되지 않는다.
         if (playbackPositionMs != null && playbackPositionMs < 0) {
             throw new IllegalArgumentException("playbackPositionMs는 0 이상이어야 합니다.");
+        }
+        if (playbackPositionMs != null && playbackPositionMs > MAX_PLAYBACK_POSITION_MS) {
+            throw new IllegalArgumentException(
+                    "playbackPositionMs는 " + MAX_PLAYBACK_POSITION_MS + " 이하여야 합니다: " + playbackPositionMs);
         }
         if (size < 1 || size > 100) {
             throw new IllegalArgumentException("size는 1~100 범위여야 합니다.");

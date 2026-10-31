@@ -6,10 +6,13 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+import org.bson.types.ObjectId;
+
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
+import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatRole;
@@ -50,7 +53,11 @@ public class GetChatHistoryService implements GetChatHistoryUseCase {
     private final ChatPermissionPolicy permissionPolicy;
 
     /**
-     * {@code readOnly} 트랜잭션 하나로 묶는다 — <b>Postgres 읽기만</b> 그 안에 든다.
+     * {@code readOnly} + {@code SUPPORTS} — 트랜잭션을 <b>새로 열지 않는다</b>.
+     *
+     * <p>이 경로의 Postgres 읽기는 강퇴 목록 한 건이라 경계를 새로 열 이유가 없다. 호출자가 이미
+     * 트랜잭션 안이면 그걸 따르고({@code SUPPORTS}), 아니면 트랜잭션 없이 돈다 — 지금 호출자
+     * (live-app 컨트롤러)가 후자다. 즉 "하나로 묶는다" 가 아니라 "묶여 있으면 따른다" 다.
      *
      * <p>Mongo 읽기는 이 경계 밖이다(다른 저장소다). 그래서 "강퇴 목록을 읽은 시점" 과 "메시지를 읽은
      * 시점" 사이에 새 강퇴가 끼어들 수 있고, 그러면 그 한 요청에서만 그 사람의 메시지가 보인다.
@@ -71,9 +78,28 @@ public class GetChatHistoryService implements GetChatHistoryUseCase {
 
         List<ChatMessage> messages = command.isPlaybackWindow()
                 ? playbackWindow(command, room, kicked)
-                : historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
+                : cursorPage(command, kicked);
 
         return new GetChatHistoryView(messages.stream().map(message -> render(message, privileged)).toList());
+    }
+
+    /**
+     * 커서 페이지.
+     *
+     * <p><b>형식이 깨진 커서는 400 이다.</b> 커서는 불투명하지만 클라이언트가 만들어 보내는 값이 아니라
+     * 서버가 준 값을 되돌려 보내는 것이므로, 형식이 깨졌다면 클라이언트 코드의 버그다. 빈 목록으로
+     * 답하면 프론트가 {@code messages.length === size} 로 다음 페이지를 판단하는 계약 때문에
+     * <b>스크롤이 사유 없이 조용히 끝난다</b> — "이력이 더 없다" 와 구분되지 않는다. 그 침묵이 깨진
+     * 커서를 만든 버그를 숨긴다.
+     *
+     * <p>형식 유효성을 응답으로 가르는 것이 탐색 신호가 되지는 않는다 — {@code ObjectId} 가 24자
+     * 16진수라는 것은 공개된 형식이고, 클라이언트가 서버에 묻지 않고도 스스로 판정할 수 있다.
+     */
+    private List<ChatMessage> cursorPage(GetChatHistoryCommand command, Set<UUID> kicked) {
+        if (command.beforeId() != null && !ObjectId.isValid(command.beforeId())) {
+            throw new ChatHistoryQueryInvalidException("커서 형식이 올바르지 않습니다.");
+        }
+        return historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
     }
 
     /**
