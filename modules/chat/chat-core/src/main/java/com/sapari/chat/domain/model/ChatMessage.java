@@ -47,15 +47,17 @@ public record ChatMessage(
     }
 
     /**
-     * 방 주인 수신자 전용 view — senderEmail과 원문을 포함(마스킹↔원문 토글).
-     * 수신자의 방 소유를 확인한 경우에만 호출한다.
+     * 특권 수신자 view — senderEmail과 원문을 포함(마스킹↔원문 토글).
      *
-     * <p>⚠️ <b>이름이 좁다 — 실시간 게이팅과 다르다.</b> 팬아웃은 방 주인 <b>또는 관리자</b>에게
-     * 원문·이메일을 주는데({@code ChatMessageVisibility.FULL}) 이 메서드는 이름 그대로 방 주인만 상정한다.
-     * 아직 프로덕션 호출자가 없지만, 이력 조회를 짜면서 이걸 그대로 쓰면 <b>실시간은 관리자에게 열리고
-     * 이력은 닫히는</b> 두 갈래 정책이 된다. 그때는 팬아웃과 같은 판정을 쓰거나, 왜 다른지를 적을 것.
+     * <p><b>누가 특권인지 여기서 정하지 않는다.</b> 판정은 {@code ChatPermissionPolicy.seesUnmaskedContent}
+     * 한 자리에서만 하고(방 주인 또는 관리자), 이 메서드는 그 판정이 참일 때 무엇을 담을지만 안다.
+     *
+     * <p>한때 이름이 {@code toOwnerView} 였고 javadoc 이 "이력 조회를 짜면서 이걸 그대로 쓰면 실시간은
+     * 관리자에게 열리고 이력은 닫히는 두 갈래 정책이 된다" 고 경고했다. 이력 조회가 붙으면서 그 질문에
+     * 답했다 — <b>같은 판정을 쓴다</b>. 이름이 좁아서 다음 사람이 "소유만" 으로 읽는 것이 그 함정의
+     * 입구였으므로 이름도 함께 넓혔다.
      */
-    public ChatMessageView toOwnerView() {
+    public ChatMessageView toPrivilegedView() {
         return view(senderEmail, originalMessage);
     }
 

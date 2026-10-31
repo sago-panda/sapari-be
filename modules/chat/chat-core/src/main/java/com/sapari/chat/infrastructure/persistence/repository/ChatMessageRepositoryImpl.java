@@ -48,9 +48,16 @@ public class ChatMessageRepositoryImpl implements ChatMessageRepository {
      * 공용 경로의 400 이 아니라 여기서 {@code IllegalArgumentException} 으로 나가 전역 핸들러의
      * 마지막 그물(500)에 걸린다.
      *
-     * <p>지금은 위반이 아니다 — 이 메서드에 운영 호출자가 없고 이력 조회가 미구현이다. VOD 이력이
-     * 붙을 때 {@code size + 1} 을 읽고 커서를 공용 코덱으로 옮기는 것이 그 자리의 일이다
-     * (근거: {@code common/AGENTS.md} 의 커서 페이징 규약).
+     * <p>⚠️ <b>이 메서드는 운영 호출자가 없고, 앞으로도 없다.</b> 한때 이 자리에 "VOD 이력이 붙을 때
+     * {@code size + 1} 을 읽고 커서를 공용 코덱으로 옮기는 것이 그 자리의 일이다" 라고 적혀 있었는데
+     * <b>둘 다 틀렸다</b>. 이력은 블로킹 포트({@code ChatHistoryRepository})로 갔다 — 호출자가 MVC 라
+     * {@code Mono} 를 받으면 결국 {@code block()} 을 하게 된다. 그리고 {@code size + 1} 도 아니다:
+     * 이력 응답에 {@code hasNext} 가 없어 프론트가 {@code messages.length === size} 로 다음 페이지를
+     * 판단하므로(프론트 가이드 계약) <b>정확히 size</b> 를 읽어야 한다. 하나 더 읽으면 마지막이 아닌
+     * 페이지와 딱 맞는 페이지를 가를 수 없다.
+     *
+     * <p>그래서 이 메서드는 <b>정리 대상</b>이다 — 지우면 딸린 테스트 9건도 함께 사라지므로 이 커밋에서
+     * 하지 않았다. 위 공용 커서 경고는 그대로 유효하다(쓰려면 그 전제를 맞춰야 한다).
      */
     @Override
     public Flux<ChatMessage> findByRoomIdBefore(UUID roomId, String beforeId, int size) {

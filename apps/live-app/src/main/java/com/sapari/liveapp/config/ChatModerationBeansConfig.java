@@ -9,7 +9,13 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.application.service.ChatKickRecorder;
+import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
+import com.sapari.chat.domain.repository.ChatHistoryRepository;
+import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapper;
+import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapperImpl;
+import com.sapari.chat.infrastructure.persistence.repository.ChatHistoryMongoRepository;
+import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
@@ -91,6 +97,42 @@ public class ChatModerationBeansConfig {
     @Bean
     public ChatMessageEvidenceRepository chatMessageEvidenceRepository(MongoTemplate mongoTemplate) {
         return new ChatMessageEvidenceMongoRepository(mongoTemplate);
+    }
+
+    /**
+     * 문서 ↔ 도메인 매퍼.
+     *
+     * <p>생성된 구현을 손으로 세운다 — {@code componentModel = "spring"} 이라 그 구현에
+     * {@code @Component} 가 붙지만 이 앱은 {@code com.sapari.chat} 을 스캔하지 않는다. 리액티브 쪽은
+     * 스캔으로 같은 빈을 얻으므로 <b>구현이 하나이고 쓰는 쪽이 둘</b>이다 — 손수 필드를 옮기는 두 번째
+     * 변환을 만들지 않는 것이 요점이고, 그 매퍼가 {@code unmappedTargetPolicy = ERROR} 라 도메인에
+     * 필드가 늘면 빌드가 막는다.
+     */
+    @Bean
+    public ChatMessageMapper chatMessageMapper() {
+        return new ChatMessageMapperImpl();
+    }
+
+    /** 이력 읽기. 증거 조회와 같은 이유로 블로킹이다 — 호출자가 MVC다. */
+    @Bean
+    public ChatHistoryRepository chatHistoryRepository(MongoTemplate mongoTemplate,
+                                                       ChatMessageMapper chatMessageMapper) {
+        return new ChatHistoryMongoRepository(mongoTemplate, chatMessageMapper);
+    }
+
+    /**
+     * 이력 조회 유스케이스.
+     *
+     * <p>{@code GetLiveRoomUseCase} 를 받는다 — 특권 뷰 판정에 방 주인이 필요하고, VOD 창을 역산하는
+     * 기준이 방송 시작 시각이다. 둘 다 live 소유 값이라 포트로만 묻는다.
+     */
+    @Bean
+    public GetChatHistoryUseCase getChatHistoryUseCase(GetLiveRoomUseCase liveRoomReader,
+                                                        ChatHistoryRepository historyRepository,
+                                                        ChatKickLogRepository kickLogRepository,
+                                                        ChatPermissionPolicy permissionPolicy) {
+        return new GetChatHistoryService(liveRoomReader, historyRepository, kickLogRepository,
+                permissionPolicy);
     }
 
     @Bean

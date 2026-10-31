@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -85,4 +86,20 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
              WHERE user_id = :userId AND kicked_at > :since
             """, nativeQuery = true)
     long countDistinctKickersSince(@Param("userId") UUID userId, @Param("since") Instant since);
+
+    /**
+     * 이 방에서 강퇴된 사용자 id 전부 — 이력 조회가 질의 단계에서 제외하는 데 쓴다.
+     *
+     * <p>{@code DISTINCT} 를 쓰지 않는다. 유니크 제약이 {@code (user_id, live_room_id)} 라 한 방에
+     * 같은 사용자 행은 하나뿐이고, 그래서 결과에 중복이 없다 — {@code DISTINCT} 를 붙이면 없는
+     * 중복을 지우려 정렬·해시 단계가 붙는다.
+     *
+     * <p>{@code (user_id, kicked_at DESC)} 인덱스는 선두 열이 {@code user_id} 라 이 질의
+     * (방 조건)에는 쓰이지 않는다 — 방당 강퇴 행 수가 작아 순차 읽기로 충분하다. 큰 방에서
+     * 문제가 되면 {@code (live_room_id)} 인덱스가 답이고, 그때 재 보고 붙일 것.
+     */
+    @Query(value = """
+            SELECT user_id FROM live_schema.chat_kick_log WHERE live_room_id = :roomId
+            """, nativeQuery = true)
+    List<UUID> findKickedUserIds(@Param("roomId") UUID roomId);
 }

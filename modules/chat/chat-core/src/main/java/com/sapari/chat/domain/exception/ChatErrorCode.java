@@ -28,7 +28,17 @@ public enum ChatErrorCode implements ErrorCode {
     // 409인 이유: 서버가 고장난 게 아니라 같은 대상을 동시에 처리 중이라 지금은 완료할 수 없다는
     // 뜻이다. 5xx로 두면 정상적인 동시 강퇴가 알림을 울리고(전역 핸들러가 5xx만 스택까지 error로
     // 남긴다), 클라이언트에게는 재시도해도 소용없다는 신호로 읽힌다. 문구에 재시도를 담는다.
-    KICK_CONTENDED(409, "CHAT-008", "다른 요청이 같은 사용자를 처리 중입니다. 잠시 후 다시 시도해 주세요.");
+    KICK_CONTENDED(409, "CHAT-008", "다른 요청이 같은 사용자를 처리 중입니다. 잠시 후 다시 시도해 주세요."),
+
+    // 이력 조회 입력이 계약을 어겼다 — 두 모드 동시 지정, 음수 재생 위치, 범위 밖 size.
+    // 이 코드가 따로 있는 이유: 명령 record 의 불변식은 IllegalArgumentException 으로 던지는데
+    // 전역 핸들러에 그 타입 처리가 없어 <b>클라 잘못이 500 + "Unhandled exception" 로그</b>가 된다.
+    // 전역 핸들러에 IllegalArgumentException 을 더하는 쪽은 저장소 전체의 응답을 바꾸므로(인프라 깊은
+    // 곳에서 올라온 것까지 400 이 된다) 여기서 좁게 받는다.
+    //
+    // 문구가 세 사유에 공통인 것은 의도가 아니라 <b>지금은 구분이 쓸모없기 때문</b>이다 — 셋 다
+    // 클라이언트 코드의 버그이고 사용자가 고칠 것이 없다. 사유는 debugMessage 로 로그에만 남는다.
+    HISTORY_QUERY_INVALID(400, "CHAT-009", "채팅 이력 조회 조건이 올바르지 않습니다.");
 
     private final int status;
     private final String code;

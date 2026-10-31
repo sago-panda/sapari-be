@@ -89,6 +89,12 @@ class ChatKickRecorderConcurrencyTest {
         private final java.util.concurrent.atomic.AtomicInteger waitedInVain =
                 new java.util.concurrent.atomic.AtomicInteger();
 
+        @Override
+        public java.util.List<java.util.UUID> findKickedUserIds(java.util.UUID roomId) {
+            // 이 테스트는 강퇴 기록의 직렬화만 본다 — 이력 조회 경로는 여기 오지 않는다.
+            return delegate.findKickedUserIds(roomId);
+        }
+
         LatchedKickLogRepository(ChatKickLogRepository delegate) {
             this.delegate = delegate;
         }

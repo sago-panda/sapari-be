@@ -178,7 +178,10 @@ public class LiveSecurityConfig {
                         // 여는 대신 도달 자체를 끊는다. 되돌리려면 인그레스 제한을 먼저 만들 것.
                         // LiveKit webhook — Spring Security가 아니라 본문 서명(LiveKit JWT)으로 인증하므로 열어둔다.
                         .requestMatchers(HttpMethod.POST, "/webhooks/livekit").permitAll()
-                        // 시청(조회)은 공개
+                        // 시청(조회)은 공개 — 다시보기 채팅 이력도 여기에 든다(비회원 조회가 설계 확정).
+                        // principal 이 없으면 특권 뷰(원문·발신자 이메일)를 받지 못할 뿐이고, 그 판정은
+                        // GetChatHistoryService 가 한다. 인증을 요구하면 스펙이 요구하는 공개 조회가
+                        // 불가능해지고, 반대로 여기서 좁히면 같은 판정이 두 곳에 생긴다.
                         .requestMatchers(HttpMethod.GET, "/api/v1/lives/**").permitAll()
                         // 채팅 강퇴는 판매자와 관리자 둘 다 — 관리자는 남의 방도 통제한다.
                         // 아래 판매자 전용 규칙보다 먼저 와야 한다(먼저 맞는 규칙이 이긴다).

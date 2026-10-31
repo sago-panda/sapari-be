@@ -177,7 +177,11 @@ class ChatModerationWiringTest {
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",
-                "ChatKickEventRedisPublisher", "ChatAccountEventRedisPublisher");
+                "ChatKickEventRedisPublisher", "ChatAccountEventRedisPublisher",
+                // 이력 조회(VOD 다시보기) — 강퇴와 같은 이유로 이 앱이다: 방 주인과 방송 시작 시각을
+                // 묻는 빈이 live-core 에 있다. 매퍼는 생성된 MapStruct 구현을 손으로 세운 것이다
+                // (componentModel=spring 이지만 이 앱은 com.sapari.chat 을 스캔하지 않는다).
+                "GetChatHistoryService", "ChatHistoryMongoRepository", "ChatMessageMapperImpl");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())

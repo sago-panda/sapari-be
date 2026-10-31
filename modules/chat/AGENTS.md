@@ -397,6 +397,41 @@ load through a separate connection factory dropped p99 from 113ms to 12ms. If th
 dedicated connection for this one read is the cheap answer — a maintained counter is the expensive answer to
 the wrong cause.
 
+## History (VOD) — the gate is one predicate and the exclusion is in the query
+
+`GetChatHistoryUseCase` → `GetChatHistoryService` (chat-core, **blocking**) ← `ChatHistoryController`
+(live-app). Blocking because the caller is MVC: a `Mono` there just adds a reactive hop before a `block()`.
+It lives in live-app for the same reason kick does — the beans that answer "who owns this room" and "when did
+it start" are in live-core, and chat asks through `live-api` ports only.
+
+- **Two modes, mutually exclusive**: cursor (`beforeId`) and VOD window (`playbackPositionMs`). Both at once
+  is rejected rather than one silently ignored, because a client that gets the other mode's result cannot tell.
+- **`findBefore` reads exactly `size`, not `size + 1`.** The shipped frontend contract has no `hasNext` and
+  infers it from `messages.length === size`. Reading one extra makes "more pages" and "exactly full"
+  indistinguishable. Do **not** put this result in the shared `CursorPage` — that helper assumes `size + 1`.
+- **Kicked senders are excluded inside the Mongo query** (`$nin`), never after the read. Filter afterwards and
+  a full page comes back short, which the frontend reads as end-of-list — **the scroll stops silently**.
+  Pinned by a Testcontainers test and by a service test that captures what was passed down.
+- **The privileged view (original text + sender email) uses the same predicate as the live fan-out**:
+  `ChatPermissionPolicy.seesUnmaskedContent(role, isRoomOwner)` — room owner **or** ADMIN. The code used to
+  warn that writing history against the owner-only helper would open live to admins while closing history;
+  that helper is now `toPrivilegedView()` and the warning is answered. The design doc's §10.7 still says
+  owner-only — the product decision recorded on `ChatMessageVisibility.FULL` (admins and sellers get the same
+  chat powers) is the one that holds.
+- **An unknown requester role throws instead of narrowing.** Falling back to MASKED would leave a legitimate
+  operator unable to see the original text in their own room, and that looks like nothing at all.
+- **Anonymous requests are allowed** (public VOD chat, design-confirmed), so `requesterId` is nullable and
+  `requesterRole` is its pair — one without the other is rejected because a half-identity silently narrows.
+- **`playbackPositionMs` → absolute instants** via `LiveRoomView.startedAt`; elapsed time is not stored.
+  The window is 5 minutes, clamped at `startedAt`, and capped at **200 regardless of `size`**. A room that
+  never started is rejected, not answered with an empty list — empty means "nobody talked".
+- Command-contract violations become **`CHAT-009` (400)**. The record throws `IllegalArgumentException`, which
+  the global handler does not map, so a client bug would otherwise be a 500 plus an `Unhandled exception` log.
+  The handler was *not* widened: that would turn infrastructure-origin `IllegalArgumentException` into 400 too.
+- `ChatMessageRepository.findByRoomIdBefore` (reactive) has **no caller and never will** — history went to the
+  blocking port. Its javadoc used to instruct the next person to do the opposite; that is corrected. It is a
+  cleanup candidate, left in place only because deleting it removes nine tests with it.
+
 ## Logging — the level is the required response, and the field is the query
 
 Structured ECS JSON for every app, set as *default* properties from `common/global`

@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatKickLog;
@@ -39,5 +40,10 @@ public class ChatKickLogRepositoryImpl implements ChatKickLogRepository {
     @Override
     public long countDistinctKickersSince(UUID userId, Instant since) {
         return jpaRepository.countDistinctKickersSince(userId, since);
+    }
+
+    @Override
+    public List<UUID> findKickedUserIds(UUID roomId) {
+        return jpaRepository.findKickedUserIds(roomId);
     }
 }
