@@ -115,7 +115,11 @@ public class SendChatService implements SendChatUseCase {
         metrics.policyNotEnforced(ChatPolicy.KICK, ChatCheckpoint.SEND, PolicyReadFailure.UNAVAILABLE);
         long count = kickedFailOpenCount.incrementAndGet();
         if (shouldLog(lastKickedFailOpenLog)) {
-            log.error("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
+            // WARN 이다 — Redis 가 돌아오면 저절로 낫고 사람이 조치할 것이 없다. 규모는
+            // chat.policy.open{policy=kick,failure=unavailable} 가 비율로 들고 있어 알림은 그쪽에
+            // 건다. 위의 키 타입 충돌만 ERROR 로 남는다(그건 사람이 키를 치워야 한다) — 둘을 같은
+            // 등급에 두면 정작 조치가 필요한 쪽이 일시 장애의 잡음에 묻힌다.
+            log.warn("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
                     count, roomId, err);
         }
     }
@@ -133,7 +137,8 @@ public class SendChatService implements SendChatUseCase {
         metrics.policyNotEnforced(ChatPolicy.BAN, ChatCheckpoint.SEND, PolicyReadFailure.UNAVAILABLE);
         long count = bannedFailOpenCount.incrementAndGet();
         if (shouldLog(lastBannedFailOpenLog)) {
-            log.error("밴 조회 실패 — fail-open으로 전송 허용(누적 {}건)", count, err);
+            // WARN — 위 강퇴 조회와 같은 근거다(저절로 낫고, 규모는 지표가 들고 있다).
+            log.warn("밴 조회 실패 — fail-open으로 전송 허용(누적 {}건)", count, err);
         }
     }
 
@@ -272,7 +277,9 @@ public class SendChatService implements SendChatUseCase {
                             metrics.deliveryDropped(DeliveryStage.REDIS_PUBLISH);
                             long count = publishFailureCount.incrementAndGet();
                             if (shouldLog(lastPublishFailureLog)) {
-                                log.error("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시"
+                                // WARN — 메시지는 Mongo 에 있고(저장 보장) 잃은 것은 실시간 전달뿐이다.
+                                // 규모는 chat.delivery.dropped{stage=redis_publish} 가 들고 있다.
+                                log.warn("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시"
                                         + "(누적 {}건) 표본 roomId={}", count, command.roomId(), err);
                             }
                             return Mono.empty();

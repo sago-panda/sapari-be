@@ -19,6 +19,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
@@ -100,7 +101,7 @@ class SubscriberLogContextTest {
                 .willReturn(Mono.error(new IllegalStateException("팬아웃 실패")));
 
         ChatBroadcastSubscriber subscriber =
-                new ChatBroadcastSubscriber(broadcaster, sessionManager, new ChatPermissionPolicy());
+                new ChatBroadcastSubscriber(broadcaster, sessionManager, new ChatPermissionPolicy(), ChatMetrics.NOOP);
 
         // when
         subscriber.subscribeRoom(roomId);

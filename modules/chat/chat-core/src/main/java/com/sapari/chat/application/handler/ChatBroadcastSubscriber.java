@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 
 import com.sapari.global.logging.LogFields;
 import com.sapari.chat.application.port.ChatBroadcaster;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
 import com.sapari.chat.application.protocol.ChatMessageVisibility;
@@ -43,6 +45,9 @@ public class ChatBroadcastSubscriber {
     private final ChatSessionManager sessionManager;
     private final ChatPermissionPolicy permissionPolicy;
 
+    /** 팬아웃 유실의 규모를 밖으로 내보낸다 — 로그 등급을 내린 근거가 이 지표다. */
+    private final ChatMetrics metrics;
+
     /** 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수. */
     public Disposable subscribeRoom(UUID roomId) {
         return broadcaster.subscribe(roomId)
@@ -51,7 +56,12 @@ public class ChatBroadcastSubscriber {
                 // 그 메시지를 못 받은 것이라, 방 단위로 묶이지 않으면 규모를 읽을 수 없다).
                 .flatMap(envelope -> route(roomId, envelope)
                         .onErrorResume(e -> {
-                            log.error("chat:pubsub 라우팅 실패 — 해당 봉투 skip(구독 유지) roomId={}", roomId, e);
+                            metrics.deliveryDropped(DeliveryStage.ROOM_FANOUT);
+                            // WARN 이다 — 사람이 조치할 것이 없고(봉투 하나, 구독은 살아 있다) 규모는
+                            // chat.delivery.dropped{stage=room_fanout} 가 비율로 들고 있다. ERROR 로
+                            // 두면 Redis 가 잠깐 흔들릴 때마다 알림이 울려, 정작 사람이 조치해야 하는
+                            // ERROR(키 타입 충돌·계약 불일치)가 그 잡음에 묻힌다.
+                            log.warn("chat:pubsub 라우팅 실패 — 해당 봉투 skip(구독 유지) roomId={}", roomId, e);
                             return Mono.empty();
                         })
                         .contextWrite(context -> context.put(LogFields.ROOM_ID, roomId.toString())))

@@ -182,3 +182,34 @@ management:
 #    컨테이너에서 loopback 으로 묶으면 kubelet 프로브가 닿지 않는다). 따라서 클러스터 밖으로
 #    노출하면 안 된다: ClusterIP 로만 두고 인그레스에 태우지 않는다. live-app 과 같은 규율이고
 #    근거는 infra/AGENTS.md 에 있다.
+
+# ── 로그 ──────────────────────────────────────────────────────────────────────
+#
+# 아래 키는 모두 optional 이다 — 코드가 기본값을 심는다(common/global 의 StructuredLoggingDefaults).
+# 기본값은 ECS JSON 콘솔 출력 + 스택트레이스 상한이고, 여기 적은 값이 그것을 <b>이긴다</b>
+# (기본 프로퍼티 소스라 설정 파일이 우선한다 — 실측).
+#
+# ⚠️ 평문으로 되돌리려면 logging.structured.format.console 을 비우면 된다. 다만 그러면 MDC 가
+#    출력에서 사라진다 — 부트 기본 패턴에는 MDC 항이 없다(실측). 상관 식별자
+#    (session_id·room_id·user_id)를 보려면 패턴을 직접 써야 하고, 그 모양이 한 앱에만 있어서
+#    나머지가 조용히 비던 것이 이 설정이 생긴 이유다.
+#
+# logging:
+#   structured:
+#     format:
+#       console: ecs              # 코드 기본값 (ecs | logstash | gelf | 빈 값=평문)
+#     json:
+#       stacktrace:
+#         root: last              # 코드 기본값 — 잘릴 때 근본 원인이 남는다
+#         max-length: 4096        # 코드 기본값
+#         max-throwable-depth: 24 # 코드 기본값
+#   level:
+#     # 런타임 변경은 할 수 없다 — actuator loggers 엔드포인트는 POST 로 상태를 바꾸는데
+#     # 이 앱에는 시큐리티가 없어 관리 포트에 열 수 없다(ObservabilityExposureConfig 가 거부한다).
+#     # 레벨을 바꾸려면 이 키나 LOGGING_LEVEL_COM_SAPARI_CHAT 을 주고 재시작한다.
+#     com.sapari.chat: INFO       # 부트 기본값
+#
+# spring:
+#   application:
+#     name: streaming-app         # 코드가 메인 클래스에서 유도한다. ECS 의 service.name 이 이 값이고,
+#                                 # 다섯 앱 로그가 한 스트림에 섞일 때 그걸로 갈린다.

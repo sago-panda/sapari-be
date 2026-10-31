@@ -23,6 +23,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
@@ -55,6 +56,18 @@ class ChatBroadcastSubscriberTest {
      */
     @Spy
     private ChatPermissionPolicy permissionPolicy = new ChatPermissionPolicy();
+
+    /**
+     * 관측 포트는 목이 아니라 NOOP 이다 — 이 테스트가 보는 것은 라우팅 생존이고, 지표 호출을
+     * 검증 대상에 넣으면 그 관심사가 섞인다. 지표는 {@code SubscriberLogContextTest} 와
+     * 어댑터 테스트가 따로 지킨다.
+     *
+     * <p>{@code @Spy} 로 두는 이유: {@code @InjectMocks} 는 생성자 인자를 타입으로 찾으므로
+     * 필드가 없으면 <b>null 을 넣고 조용히 통과</b>한다 — 그러면 fail-open 람다 안에서 NPE 가 나고
+     * 그 NPE 는 그 람다를 통째로 깨서 "흡수가 침묵이 된" 상태를 만든다(실제로 그렇게 깨졌다).
+     */
+    @Spy
+    private ChatMetrics metrics = ChatMetrics.NOOP;
 
     @InjectMocks
     private ChatBroadcastSubscriber subscriber;

@@ -173,7 +173,10 @@ public class RedisRateLimiter implements RateLimiter {
                     metrics.rateLimitDegraded(RateLimitDegradation.LOCAL_WINDOW);
                     long count = degradedCount.incrementAndGet();
                     if (shouldLogDegraded()) {
-                        log.error("rate limit Redis 장애 — 로컬 창으로 강등(누적 {}건)", count, err);
+                        // WARN — 집행이 사라진 것이 아니라 정확도만 잃었다(Pod 로컬 창). 사람이
+                        // 조치할 것은 Redis 쪽이고 그건 Redis 자체 알림의 몫이다. 이 경로의 규모는
+                        // chat.ratelimit.degraded{mode=local_window} 가 비율로 들고 있다.
+                        log.warn("rate limit Redis 장애 — 로컬 창으로 강등(누적 {}건)", count, err);
                     }
                     return Mono.just(localWindow(userId, System.nanoTime()));
                 });
@@ -227,7 +230,9 @@ public class RedisRateLimiter implements RateLimiter {
                         // <b>측정한 것은 그 한 모양뿐이다</b> — 커맨드 타임아웃이나 서버발 오류
                         // (WRONGTYPE 등)가 명령·키를 인용하는지는 재지 않았다. 그 경로가 생기면
                         // 여기서 err 를 그대로 싣는 선택을 다시 봐야 한다.
-                        log.error("거부 확정 뒤 잔여 TTL 조회 실패 — 창 전체로 답한다(누적 {}건)", count, err);
+                        // WARN — 거부 판정은 지켜지고 retryAfterSeconds 만 실제보다 길어진다.
+                        // 규모는 chat.ratelimit.degraded{mode=ttl_fallback} 가 들고 있다.
+                        log.warn("거부 확정 뒤 잔여 TTL 조회 실패 — 창 전체로 답한다(누적 {}건)", count, err);
                     }
                     return Mono.just(new RateLimitResult(false, WINDOW.toSeconds()));
                 });

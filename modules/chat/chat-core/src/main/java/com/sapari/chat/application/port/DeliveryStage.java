@@ -15,6 +15,14 @@ public enum DeliveryStage {
     REDIS_PUBLISH,
 
     /**
+     * 구독한 봉투를 로컬 세션들로 라우팅하다 실패해 그 봉투를 버렸다.
+     *
+     * <p>영향 범위가 가장 넓다 — <b>그 Pod 의 그 방 전원</b>이 그 메시지를 실시간으로 못 받는다.
+     * {@code SESSION_EMIT_CONTENTION} 이 세션 하나인 것과 대비된다.
+     */
+    ROOM_FANOUT,
+
+    /**
      * 세션 sink 발화가 경합 재시도를 소진해 그 세션분을 버렸다. 그 세션 하나만 못 받는다.
      */
     SESSION_EMIT_CONTENTION,

@@ -397,6 +397,55 @@ load through a separate connection factory dropped p99 from 113ms to 12ms. If th
 dedicated connection for this one read is the cheap answer — a maintained counter is the expensive answer to
 the wrong cause.
 
+## Logging — the level is the required response, and the field is the query
+
+Structured ECS JSON for every app, set as *default* properties from `common/global`
+(`StructuredLoggingDefaults`). Two measured traps live there: Boot 4 moved `EnvironmentPostProcessor` to
+`org.springframework.boot` and left a `@Deprecated` twin in `...boot.env`, so the old one compiles and
+silently never runs; and registration is `META-INF/spring.factories`, not `.imports`. A test asserts the
+actual console bytes, because the property can read `ecs` while the output is plain text.
+
+**Correlation is written to the Reactor Context, not MDC.** MDC is a `ThreadLocal`, and measured it is
+`null` after a `publishOn` and `null` inside `onErrorResume` — where nearly every degradation log in this
+module lives. `io.micrometer:context-propagation` plus `Hooks.enableAutomaticContextPropagation()` bridges
+it; `ChatWebSocketHandler` writes `session_id`/`room_id` for the handshake and `user_id` inside the verified
+session. Field names are snake_case and live only in `LogFields` — ECS lifts MDC straight to top-level JSON
+beside `log.level` and `error.stack_trace`, so camelCase would put two conventions in one object.
+
+- **No `request_id` on the reactive side.** A WS session, not a request, is the lifetime unit, and
+  `session.getId()` exists from the first line. A second identifier for the same thing just raises the
+  question of which one to group by.
+- **The Redis subscriber thread has no session scope**, so fan-out, room-end and account-event pipelines
+  write `room_id`/`user_id` themselves. Those three run only in streaming-app (live-app publishes and
+  excludes `com.sapari.chat` from scanning), so the hook is always on where they run.
+- `addKeyValue` (single-line fields) also reaches the JSON, verified — it is the only option where no scope
+  exists. Whether a key present in *both* MDC and `addKeyValue` stays valid JSON was **not** measured, so
+  nothing in this module creates that case.
+
+**Level discipline: ERROR means a human must act.** Now that the degradation metrics exist, "log it at ERROR
+or it disappears" is no longer a reason — the meter carries the rate, and alerting belongs there, not on
+individual lines.
+
+| Shape | Level | Why |
+|---|---|---|
+| Moderation read failed, request let through | WARN | heals when Redis returns; `chat.policy.open` has the rate |
+| Rate limit degraded / TTL fallback | WARN | enforcement continues, only accuracy is lost |
+| Publish or fan-out dropped | WARN | the message is persisted; only live delivery was lost |
+| **Key type conflict** (`WRONGTYPE`) | **ERROR** | retries never heal it; a human must clear the key |
+| Payload parse / deserialize failure | **ERROR** | a contract mismatch; it takes a deploy |
+| Room-end or account-event step failed | **ERROR** | control is lost — the room stays open, the ban is not applied |
+| Forced-close signal failed to emit | **ERROR** | that session can no longer be cut |
+
+The contrast is what matters, so it is pinned by a test: raising the transient branch to ERROR is a
+one-character change that breaks nothing otherwise, and it would bury the lines that need action.
+
+**Runtime log level changes are deliberately unavailable.** The actuator `loggers` endpoint would do it, but
+it mutates state over POST and this app has no Spring Security — exposing it on the unauthenticated
+management port would let anyone reachable there turn on DEBUG and flood the log pipeline. Until there is
+auth or a NetworkPolicy, levels change by `LOGGING_LEVEL_<PACKAGE>` and a restart. That is also why this
+module has **no DEBUG logging worth enabling** (measured: 0 of 143 statements repo-wide are DEBUG) — adding
+it only pays off once it can be switched on.
+
 ## Observability — what is measured is the policy *not* being enforced
 
 `ChatMetrics` (`application/port`, no micrometer) ← `infrastructure/metrics`. ArchUnit rule 16 already

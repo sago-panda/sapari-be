@@ -69,7 +69,7 @@ class CrossPodBroadcastTest {
 
         registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB), new ChatPermissionPolicy(),
                 ChatMetrics.NOOP);
-        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB), registryB, new ChatPermissionPolicy());
+        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB), registryB, new ChatPermissionPolicy(), ChatMetrics.NOOP);
     }
 
     @AfterAll

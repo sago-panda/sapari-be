@@ -347,6 +347,47 @@ class SendChatServiceTest {
                 });
     }
 
+    /**
+     * ⭐ 등급은 <b>사람이 조치할 것이 있는가</b>로 갈린다 — 둘을 함께 재야 대비가 지켜진다.
+     *
+     * <p>일시 장애는 Redis 가 돌아오면 저절로 낫고 규모는 지표가 들고 있으므로 WARN 이다. 키 타입
+     * 충돌만 ERROR 다 — 재시도해도, Redis 가 되살아나도 낫지 않고 사람이 그 키를 치워야 한다.
+     *
+     * <p>이 대비를 테스트로 두는 이유: 둘을 같은 등급으로 올리는 것이 <b>가장 하기 쉬운 변경</b>이고
+     * (한 글자다) 그러면 아무것도 깨지지 않은 채 조치가 필요한 신호가 일시 장애의 잡음에 묻힌다.
+     * 위 테스트는 ERROR 쪽만 보므로 전부 ERROR 로 올려도 통과한다.
+     */
+    @Test
+    @DisplayName("⭐ 일시 장애는 WARN, 낫지 않는 실패는 ERROR — 전부 ERROR 로 올리면 이 단언이 깨진다")
+    void transientFailuresLogAtWarnAndPermanentOnesAtError() {
+        // given
+        Logger logger = (Logger) LoggerFactory.getLogger(SendChatService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
+                .given(chatMessageRepository).save(any());
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        given(kickRepository.isKicked(any(), any()))
+                .willReturn(Mono.error(new IllegalStateException("Redis down")));
+
+        // when
+        try {
+            StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                    .expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        // then
+        assertThat(appender.list).hasSize(1);
+        assertThat(appender.list.get(0).getLevel())
+                .as("일시 장애를 ERROR 로 두면 조치가 필요한 ERROR 가 그 잡음에 묻힌다")
+                .isEqualTo(Level.WARN);
+        assertThat(appender.list.get(0).getFormattedMessage()).contains("강퇴 조회 실패");
+    }
+
     @Test
     @DisplayName("BUYER rate limit 초과 → ChatRateLimitException, 저장 미호출")
     void buyer_rate_limited() {
