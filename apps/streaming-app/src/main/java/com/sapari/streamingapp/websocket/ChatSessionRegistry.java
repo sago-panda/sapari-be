@@ -171,7 +171,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private final Map<String, LocalSession> local = new ConcurrentHashMap<>();
 
     /** Pod 전체의 재등록 타이머 — 세션당 하나가 아니다. 종료 시 해제한다. */
-    private Disposable heartbeat;
+    // volatile — @PostConstruct 가 쓰고 @PreDestroy 가 읽는데 둘이 같은 스레드라는 보장이 계약에
+    // 없다. 비용이 0 이라 의심을 남기지 않는 쪽으로 둔다.
+    private volatile Disposable heartbeat;
 
     /** 재등록 실패 누적 — 전 세션의 재등록이 조용히 멈춘 상태를 로그 한 줄로만 남기지 않기 위한 값. */
     private final AtomicLong heartbeatFailures = new AtomicLong();
@@ -205,6 +207,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p>{@code concatMap} 이다 — 한 주기가 끝나기 전에 다음 주기가 겹쳐 들어오면 Redis 쓰기가 두 배로
      * 간다. 느린 Redis 가 그 모양을 만들고, 그때 더 쓰는 것이 가장 나쁜 대응이다.
+     *
+     * <p>그래서 밀린 tick 은 <b>버린다</b>({@code onBackpressureDrop}). 버린 회차만큼 재등록이 늦는데,
+     * 그걸 흡수하는 것이 낡음 상한의 여유다 — 상한이 주기의 네 배라 연속 세 회차를 잃어도 살아 있는
+     * 세션이 집계에서 빠지지 않는다. 그 비율이 이 드롭의 안전 마진이고, 둘 중 하나를 바꾸면 다른
+     * 쪽도 같이 봐야 한다(어댑터의 정적 가드가 그 관계를 부팅에서 지킨다).
      */
     @PostConstruct
     void startHeartbeat() {
@@ -228,10 +235,27 @@ public class ChatSessionRegistry implements ChatSessionManager {
         }
     }
 
-    /** 한 세션의 재등록. 실패는 흡수하고 규모만 남긴다(테스트 진입점). */
+    /**
+     * 한 세션의 재등록. 실패는 흡수하고 규모만 남긴다(테스트 진입점).
+     *
+     * <p><b>쓰기 직전에 로컬 명부를 다시 본다.</b> 재등록은 TTL touch 가 아니라 등재와 같은 upsert 라
+     * (그게 Redis 데이터 유실 뒤 복구를 가능하게 하는 선택이다), 이미 끊긴 세션에 늦게 착지하면
+     * {@code unregister} 의 HDEL 이 지운 필드를 <b>되살린다</b>. 되살아난 필드는 그 순간의 시각을
+     * 달고 있어 살아 있는 것으로 집계되고, 더 갱신되지 않으므로 상한만큼 지나 빠진다 — 그동안 시청자
+     * 수가 하나 많다. 방 종료의 {@code clearRoom} 뒤에 착지하면 키 자체를 TTL 과 함께 되살린다.
+     *
+     * <p>이 확인이 창을 <b>없애지는 못한다</b>(확인과 쓰기 사이는 여전히 열려 있다). 다만 창을 "한
+     * 회차 전체" 에서 "Redis 왕복 한 번" 으로 줄인다 — 세션이 많으면 그 차이가 수 초 대 수 밀리초다.
+     * 완전히 닫으려면 세션별 직렬화가 필요하고, 유계·자가치유인 과다계수에 그 값은 과하다.
+     */
     Mono<Void> reregister(LocalSession ls) {
-        return sessionRepository.heartbeat(
-                        ls.session().roomId(), ls.sessionId(), ls.session().userId())
+        return Mono.defer(() -> {
+                    if (!local.containsKey(ls.sessionId())) {
+                        return Mono.<Void>empty();
+                    }
+                    return sessionRepository.heartbeat(
+                            ls.session().roomId(), ls.sessionId(), ls.session().userId());
+                })
                 .onErrorResume(e -> {
                     long failures = heartbeatFailures.incrementAndGet();
                     if (shouldLogDrop()) {
@@ -285,6 +309,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return sessionRepository.count(roomId)
                 .flatMap(count -> {
                     Long previous = lastPushedCount.put(roomId, count);
+                    if (!roomSessions.containsKey(roomId)) {
+                        // 이 회차의 조회가 도는 사이에 방의 마지막 세션이 빠졌다. unregister 가 이미
+                        // 항목을 회수했는데 위 put 이 그걸 되살린 것이고, 아무도 재입장하지 않으면
+                        // 영구히 남는다 — 방송마다 하나씩 쌓이는 누수다. 자기 쓰기를 되돌린다.
+                        lastPushedCount.remove(roomId);
+                        return Mono.<Void>empty();
+                    }
                     if (previous == null || previous.equals(count)) {
                         // previous == null 은 이 Pod 가 그 방을 처음 보는 회차다. 보내지 않는다 —
                         // 입장 시 핸들러가 이미 ROOM_INFO 를 보냈고 그것이 기준선이다. 여기서 또

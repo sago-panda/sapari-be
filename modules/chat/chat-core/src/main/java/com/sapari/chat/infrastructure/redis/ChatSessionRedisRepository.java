@@ -60,7 +60,8 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
      * <p><b>줄이지 말 것</b>: 갱신은 입장(add) 때만 일어나고 기존 세션을 다시 등록하는 경로가 없다.
      * 그래서 만료 조건은 "방송이 길다"가 아니라 <b>마지막 입장 이후 이 값만큼 신규 입장이 없다</b>이다 —
      * 한산한 방일수록 먼저 걸리고, 걸리면 그 방송 내내 시청자 수가 어긋난다.
-     * (주기적 재등록이 생기기 전까지는 이 여유가 유일한 방어다.)
+     * (주기적 재등록이 생긴 뒤로는 이 여유가 유일한 방어가 아니다 — 재등록이 TTL 을 계속 밀고,
+     * 이 상한은 그 재등록마저 멈춘 Pod 가 남긴 항목을 걷는 마지막 그물이다.)
      */
     private static final Duration SESSIONS_TTL = Duration.ofHours(24);
 

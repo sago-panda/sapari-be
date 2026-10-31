@@ -173,4 +173,22 @@ class ViewerCountPushTest {
         // then
         assertThat(registry.trackedViewerCounts()).isZero();
     }
+
+    @Test
+    @DisplayName("⭐ 조회 중에 방이 비면 마지막 값을 되살리지 않는다 — 되살리면 아무도 회수하지 않아 영구 잔존이다")
+    void aLateWriteDoesNotResurrectTheReclaimedEntry() {
+        // given: 조회가 해소되는 순간에 방이 비게 만든다 — unregister 의 회수가 먼저 일어나고
+        // 이 회차의 쓰기가 그 뒤에 도착하는 모양이다. 방송마다 항목 하나가 쌓이는 누수였다.
+        register("s1", buyerId, false);
+        given(sessionRepository.count(roomId)).willReturn(Mono.fromCallable(() -> {
+            registry.unregister(roomId, "s1").block(VERIFY_CEILING);
+            return 1L;
+        }));
+
+        // when
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+
+        // then
+        assertThat(registry.trackedViewerCounts()).isZero();
+    }
 }
