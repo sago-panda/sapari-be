@@ -38,6 +38,20 @@ public class ChatMessageRepositoryImpl implements ChatMessageRepository {
                 .map(mapper::toDomain);
     }
 
+    /**
+     * 커서 역방향 조회.
+     *
+     * <p>⚠️ <b>이 결과를 {@code CursorPage.of(rows, size, …)} 에 그대로 올리지 말 것.</b> 여기는
+     * {@code limit(size)} 로 <b>정확히</b> {@code size} 개를 읽으므로 "하나 더 읽어 다음 페이지 유무를
+     * 안다" 가 성립하지 않는다 — 그대로 올리면 {@code hasNext} 가 false 에 고정된다. 커서도 공용
+     * {@code CursorCodec} 이 아니라 {@code ObjectId.isValid} 로 직접 검사하므로, 잘못된 커서가
+     * 공용 경로의 400 이 아니라 여기서 {@code IllegalArgumentException} 으로 나가 전역 핸들러의
+     * 마지막 그물(500)에 걸린다.
+     *
+     * <p>지금은 위반이 아니다 — 이 메서드에 운영 호출자가 없고 이력 조회가 미구현이다. VOD 이력이
+     * 붙을 때 {@code size + 1} 을 읽고 커서를 공용 코덱으로 옮기는 것이 그 자리의 일이다
+     * (근거: {@code common/AGENTS.md} 의 커서 페이징 규약).
+     */
     @Override
     public Flux<ChatMessage> findByRoomIdBefore(UUID roomId, String beforeId, int size) {
         // Mongo limit(0) = 무제한 — size<=0이 들어오면 방 전체를 이벤트루프로 긁어오므로 loud failure로 차단

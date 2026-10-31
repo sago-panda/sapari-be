@@ -72,6 +72,14 @@ Throttled logs are **interval-based, never count-based**: a count threshold sile
 first, which is backwards. Reasons are counted separately so one does not bury another's first occurrence.
 **Never let a metric or audit call throw inside a fail-open handler** — the policy inverts.
 
+**Never hand a record to a logger.** `ChatSession`'s default `toString()` prints `email`, so one
+`log.info("... {}", chatSession)` leaks PII that every call site is currently careful to avoid — the 12
+production log statements all pass `sessionId`/`roomId`/`userId`/`role` scalars. The same holds for any
+record that carries `email` or an unmasked body. Absorbing a failure is also not the same as silencing
+it: when a handler swallows to keep a verdict, it still owes a counter and an interval-throttled log
+(`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
+put back).
+
 ## Redis keys — one source, and it is package-private
 
 `ChatRedisKeys` (package-private, `infrastructure/redis`) owns every key string. Blocking and reactive
@@ -408,10 +416,16 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     worker exit cleanly, measured). The reason is that the stuck thread keeps hammering the sinks and
     registry and so pollutes the *next* test in the same JVM. All 7 sites take `await(30, SECONDS)` and
     throw with a reason.
-  - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded. The
-    cost shows up only under a break that stalls *every* `block`: the suite then takes ceiling × call
-    sites (≈94 × 10s in `ChatSessionRegistryTest` alone) before it reports. Slow, but it *reports* — that
-    is the trade this rule buys.
+  - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded, and
+    the worst case is **not** ceiling × call sites. An exceeded `block(Duration)` *throws*
+    (`IllegalStateException: Timeout on blocking read…`), which aborts that test method, so the remaining
+    calls in it never run. The bound is ceiling × (methods and worker threads that reach a stall) —
+    measured distribution: 95 call sites across ~50 methods, with worker threads catching `Throwable`
+    outside the loop, so ≈500s rather than ≈940s. Slow, but it *reports* — that is the trade.
+  - **Scope of "every hang is bounded"**: that claim covers `modules/chat` + `apps/streaming-app` only.
+    `modules/live` still has one (`ActiveRoomGaugeTest` — a bare `await()` plus an unbounded
+    `Future.get()`), and live is outside this ticket's reach. State the scope whenever the claim is
+    repeated; a count or a claim taken over a narrower scope does not verify a repo-wide sentence.
   - **Don't size a ceiling off a test case's reported time.** The ceiling bounds the *terminator's wait*,
     not the case — setup, `Thread.sleep` before `StepVerifier.create`, and an inner `.timeout(...)` all sit
     outside it. Picking values off per-case durations once produced a "raise the ceiling" commit whose slow

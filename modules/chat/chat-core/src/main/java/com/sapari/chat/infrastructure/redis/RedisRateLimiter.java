@@ -48,8 +48,17 @@ public class RedisRateLimiter implements RateLimiter {
      * 상한 우회가 아니라 가용성 박탈이고, 그건 이 어댑터가 내세운 "가용성 우선"의 반대 방향이다.
      *
      * <p>값은 창의 1/15 다. 정상 왕복은 ms 아래라 평소 지터·GC 로는 걸리지 않고, 걸렸을 때 잃는 것은
-     * 그 한 건의 Pod 간 정확도뿐이다(= 강등과 같은 대가). 거부 경로의 TTL 조회까지 함께 덮도록
-     * 체인 전체에 건다.
+     * 그 한 건의 Pod 간 정확도뿐이다(= 강등과 같은 대가).
+     *
+     * <p><b>체인 전체에 걸지 말 것.</b> 한때 이 자리에 "거부 경로의 TTL 조회까지 함께 덮도록 체인
+     * 전체에 건다" 고 적혀 있었는데, 그렇게 걸면 {@code SET NX} 가 이미 false 를 줘서 판정이 끝난
+     * 뒤에 TTL 조회만 느릴 때도 아래 강등으로 떨어지고, 강등의 첫 판정은 허용이다 — <b>확정된
+     * 거부가 허용으로 바뀐다</b>(실측: allowed=true retryAfter=0). 판정을 내리는 호출에만 걸고,
+     * 거부 뒤의 조회는 {@link #denied} 가 따로 유계로 만든다.
+     *
+     * <p>그래서 {@code tryAcquire} 한 건의 최악 경계는 이 값이 아니라 <b>그 두 배(400ms)</b>다 —
+     * {@code SET NX} 200ms + {@code denied()} 200ms. 전송 경로가 {@code concatMap} 으로 직렬화돼
+     * 있으므로 그 값이 세션당 프레임 간격의 하한이 된다.
      *
      * <p>⚠️ <b>이 상한이 고치는 것은 이 호출 하나다.</b> 증상 자체는 더 넓다 — <b>느린 Redis 가
      * {@code concatMap} 위에서 그 세션을 멈춘다.</b> 같은 모양의 호출이 전송 경로의 강퇴·밴 조회와
@@ -148,7 +157,40 @@ public class RedisRateLimiter implements RateLimiter {
         return remainingSeconds(key)
                 .map(remaining -> new RateLimitResult(false, remaining))
                 .timeout(REDIS_CALL_LIMIT)
-                .onErrorReturn(new RateLimitResult(false, WINDOW.toSeconds()));
+                // ⚠️ <b>흡수하되 침묵하지 않는다.</b> 한때 여기가 onErrorReturn 한 줄이었는데, 그러면
+                // 거부 경로의 Redis 열화가 카운터도 로그도 없이 사라진다 — 이 상한이 생기기 전에는
+                // 같은 실패가 바깥 onErrorResume 으로 흘러 강등 카운터와 솎은 로그를 남겼으므로,
+                // 판정을 지키는 대가로 관측을 잃은 셈이었다. 판정은 그대로 두고 신호만 되돌린다.
+                .onErrorResume(err -> {
+                    long count = deniedTtlFallbackCount.incrementAndGet();
+                    if (shouldLogDeniedTtlFallback()) {
+                        log.error("거부 확정 뒤 잔여 TTL 조회 실패 — 창 전체로 답한다(누적 {}건)", count, err);
+                    }
+                    return Mono.just(new RateLimitResult(false, WINDOW.toSeconds()));
+                });
+    }
+
+    /**
+     * 거부 뒤 TTL 조회 실패 누적. <b>강등과 따로 센다</b> — 한쪽의 첫 발생을 다른 쪽이 묻지 않게
+     * 하라는 정본 규율이고, 두 사건의 대응도 다르다(이쪽은 판정이 유지되므로 덜 급하다).
+     */
+    private final AtomicLong deniedTtlFallbackCount = new AtomicLong();
+
+    /** 그 로그의 마지막 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
+    private final AtomicLong lastDeniedTtlLogNanos =
+            new AtomicLong(System.nanoTime() - DEGRADED_LOG_INTERVAL_NANOS);
+
+    /** 강등 로그와 같은 규율 — 간격 기반, 경쟁 시 한 스레드만 통과. */
+    private boolean shouldLogDeniedTtlFallback() {
+        long now = System.nanoTime();
+        long last = lastDeniedTtlLogNanos.get();
+        return now - last >= DEGRADED_LOG_INTERVAL_NANOS
+                && lastDeniedTtlLogNanos.compareAndSet(last, now);
+    }
+
+    /** 거부 뒤 TTL 조회 실패 누적 수. (테스트 진입점 — 흡수가 침묵이 아닌지 재는 데 쓴다) */
+    long deniedTtlFallbacks() {
+        return deniedTtlFallbackCount.get();
     }
 
     /**

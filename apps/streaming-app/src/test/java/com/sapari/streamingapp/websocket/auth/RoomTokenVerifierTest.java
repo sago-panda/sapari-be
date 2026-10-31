@@ -19,7 +19,7 @@ import reactor.test.StepVerifier;
 class RoomTokenVerifierTest {
 
 
-    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private static KeyPair liveKeys;     // live 발급용(개인키 서명)
     private static KeyPair otherKeys;    // 위조 서명 테스트용 (다른 키쌍)

@@ -35,7 +35,7 @@ import reactor.core.publisher.Mono;
 class RedisRateLimiterDegradedTest {
 
 
-    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private RedisRateLimiter rateLimiter;
 
@@ -104,6 +104,37 @@ class RedisRateLimiterDegradedTest {
         assertThat(result).isNotNull();
         assertThat(result.allowed()).as("확정된 거부가 허용으로 바뀌었다").isFalse();
         assertThat(result.retryAfterSeconds()).as("모르는 잔여는 창 전체로").isEqualTo(3);
+    }
+
+    /**
+     * ⭐ 거부 뒤 TTL 조회 실패를 흡수하되 <b>침묵하지 않는다.</b>
+     *
+     * <p>판정을 지키려 흡수하는 것은 맞지만, 그 대가로 거부 경로의 Redis 열화가 카운터도 로그도 없이
+     * 사라지면 안 된다 — 상한이 생기기 전에는 같은 실패가 강등 카운터에 잡혔다. 판정은 그대로,
+     * 신호만 되돌린 것이 맞는 모양이다.
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("⭐ 거부 뒤 TTL 조회 실패가 세어진다 — 흡수가 침묵이 되지 않게")
+    void a_denied_ttl_fallback_is_counted() {
+        // given
+        ReactiveStringRedisTemplate template = mock(ReactiveStringRedisTemplate.class);
+        ReactiveValueOperations<String, String> operations = mock(ReactiveValueOperations.class);
+        given(template.opsForValue()).willReturn(operations);
+        given(operations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+                .willReturn(Mono.just(false));
+        given(template.getExpire(anyString()))
+                .willReturn(Mono.error(new IllegalStateException("TTL 조회 실패")));
+        RedisRateLimiter limiter = new RedisRateLimiter(template);
+
+        // when
+        RateLimitResult result = limiter.tryAcquire(UUID.randomUUID()).block(Duration.ofSeconds(5));
+
+        // then: 판정은 거부로 남고, 그 열화가 숫자로 남는다
+        assertThat(result).isNotNull();
+        assertThat(result.allowed()).isFalse();
+        assertThat(limiter.deniedTtlFallbacks())
+                .as("거부 뒤 TTL 조회 실패가 세어지지 않았다 — 흡수가 침묵이 됐다").isEqualTo(1);
     }
 
     @Test

@@ -45,7 +45,7 @@ import reactor.core.publisher.Mono;
 class PrivilegedEntryAuditTest {
 
 
-    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private static final UUID ROOM = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID ADMIN = UUID.fromString("22222222-2222-2222-2222-222222222222");

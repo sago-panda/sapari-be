@@ -27,7 +27,15 @@ import reactor.test.StepVerifier;
 class ChatKickRedisRepositoryTest {
 
 
-    /** StepVerifier 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    /**
+     * 반응형 종결자({@code .block()} / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신
+     * <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md).
+     *
+     * <p>이 파일에 인라인 2s·3s·5s 가 섞여 있는 것은 <b>의도다.</b> 그 값들은 이 상수보다 먼저
+     * 있었고 더 조여 있다. 스윕은 상한이 <b>없던 자리</b>에만 이 상수를 넣었고 기존 값을 완화하지
+     * 않았다 — "정규화" 로 10s 로 맞추면 그 조임이 사라진다. 그 자리들의 종결자 대기는 선행
+     * 실체화된 신호({@code Mono.error}·즉시 응답)라 사실상 0 이므로 5s 도 넉넉하다.
+     */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
