@@ -27,6 +27,11 @@ import reactor.test.StepVerifier;
  */
 class ChatSessionRedisRepositoryAtomicityTest {
 
+    /** 이 테스트들은 낡음 판정을 재지 않는다 — 실제 시계로 충분하다(그 판정은
+     * ChatSessionHeartbeatTest 가 합성 시계로 잰다). */
+    private static final com.sapari.global.time.TimeProvider SYSTEM_TIME =
+            new com.sapari.global.time.TimeProvider(java.time.Clock.systemUTC());
+
 
     /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
@@ -42,7 +47,7 @@ class ChatSessionRedisRepositoryAtomicityTest {
         given(redis.execute(any(RedisScript.class), anyList(), anyList())).willReturn(Flux.just(1L));
 
         // when
-        StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
+        StepVerifier.create(new ChatSessionRedisRepository(redis, SYSTEM_TIME).add(roomId, "s1", userId))
                 .expectComplete().verify(VERIFY_CEILING);
 
         // then
@@ -51,8 +56,13 @@ class ChatSessionRedisRepositoryAtomicityTest {
         then(redis).should(times(1)).execute(any(RedisScript.class), keys.capture(), args.capture());
 
         assertThat(keys.getValue()).containsExactly("chat:room:" + roomId + ":sessions");
-        // TTL이 인자에 실려 같은 호출로 나가는지 — 두 번의 왕복으로 나뉘면 그 사이가 빈다
-        assertThat(args.getValue()).containsExactly("s1", userId.toString(), "86400");
+        // TTL이 인자에 실려 같은 호출로 나가는지 — 두 번의 왕복으로 나뉘면 그 사이가 빈다.
+        // 값은 userId:마지막확인시각 이다 — 좀비 항목을 집계에서 빼려면 그 시각이 값에 있어야 한다
+        // (ChatSessionHeartbeatTest 가 그 판정을 잰다). 여기서는 형식만 본다.
+        assertThat(args.getValue()).hasSize(3);
+        assertThat(String.valueOf(args.getValue().get(0))).isEqualTo("s1");
+        assertThat(String.valueOf(args.getValue().get(1))).matches(userId + ":\\d+");
+        assertThat(String.valueOf(args.getValue().get(2))).isEqualTo("86400");
     }
 
     @Test
@@ -65,7 +75,7 @@ class ChatSessionRedisRepositoryAtomicityTest {
                 .willReturn(Flux.error(new RuntimeException("redis blip")));
 
         // when & then
-        StepVerifier.create(new ChatSessionRedisRepository(redis).add(roomId, "s1", userId))
+        StepVerifier.create(new ChatSessionRedisRepository(redis, SYSTEM_TIME).add(roomId, "s1", userId))
                 .expectErrorMessage("redis blip").verify(VERIFY_CEILING);
     }
 }

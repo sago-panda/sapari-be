@@ -38,6 +38,11 @@ import reactor.test.StepVerifier;
 @Testcontainers
 class CrossPodBroadcastTest {
 
+    /** 이 테스트들은 낡음 판정을 재지 않는다 — 실제 시계로 충분하다(그 판정은
+     * ChatSessionHeartbeatTest 가 합성 시계로 잰다). */
+    private static final com.sapari.global.time.TimeProvider SYSTEM_TIME =
+            new com.sapari.global.time.TimeProvider(java.time.Clock.systemUTC());
+
 
     /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
@@ -67,7 +72,7 @@ class CrossPodBroadcastTest {
 
         broadcasterA = new RedisChatBroadcaster(templateA);
 
-        registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB), new ChatPermissionPolicy(),
+        registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB, SYSTEM_TIME), new ChatPermissionPolicy(),
                 ChatMetrics.NOOP);
         subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB), registryB, new ChatPermissionPolicy(), ChatMetrics.NOOP);
     }

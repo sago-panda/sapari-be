@@ -24,6 +24,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 class ChatSessionRedisRepositoryTest {
 
+    /** 이 테스트들은 낡음 판정을 재지 않는다 — 실제 시계로 충분하다(그 판정은
+     * ChatSessionHeartbeatTest 가 합성 시계로 잰다). */
+    private static final com.sapari.global.time.TimeProvider SYSTEM_TIME =
+            new com.sapari.global.time.TimeProvider(java.time.Clock.systemUTC());
+
 
     /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
@@ -52,7 +57,7 @@ class ChatSessionRedisRepositoryTest {
 
     @BeforeEach
     void setUp() {
-        repository = new ChatSessionRedisRepository(redisTemplate);
+        repository = new ChatSessionRedisRepository(redisTemplate, SYSTEM_TIME);
         redisTemplate.delete("chat:room:" + roomId + ":sessions").block(VERIFY_CEILING);
     }
 
@@ -65,8 +70,9 @@ class ChatSessionRedisRepositoryTest {
         Object stored = redisTemplate.opsForHash()
                 .get("chat:room:" + roomId + ":sessions", "session-1").block(VERIFY_CEILING);
 
-        // when & then
-        assertThat(stored).isEqualTo(userId.toString());
+        // when & then: 값은 userId:마지막확인시각 이다 — 그 시각이 없으면 Pod 크래시로 남은 항목을
+        // 집계에서 뺄 근거가 사라지고, 시청자 수가 방송 내내 부푼다.
+        assertThat(String.valueOf(stored)).matches(userId + ":\\d+");
     }
 
     @Test

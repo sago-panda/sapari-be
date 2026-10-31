@@ -88,7 +88,7 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | Key | Type | Notes |
 |---|---|---|
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
-| `chat:room:{id}:sessions` | HASH | 24h TTL is a backstop; expiry means *no new joins* for 24h, not a long broadcast |
+| `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
 | `chat:room:{id}:ended` | String | 30m — floor = longest room token, ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
@@ -396,6 +396,40 @@ shares a single native connection, so a large `HVALS` head-of-line-blocks the co
 load through a separate connection factory dropped p99 from 113ms to 12ms. If this tail ever matters, a
 dedicated connection for this one read is the cheap answer — a maintained counter is the expensive answer to
 the wrong cause.
+
+## Viewer roster — a zombie entry is worse than a missing one, and both are possible
+
+`chat:room:{id}:sessions` holds `sessionId → userId:lastSeenMillis`. A pod crash skips `remove`, so its
+entries stay; counting them inflates the room's viewer count **for the rest of the broadcast**, because the
+only reclaim was the 24h key TTL. And the key's expiry was refreshed only on join, so its real condition was
+"24h since the last *new* join" — a quiet room could expire mid-broadcast.
+
+- **The heartbeat is a re-registration (`HSET`), never a TTL touch.** A touch cannot bring back an entry that
+  Redis lost (replica promotion), so the count would stay short for the whole broadcast. Pinned by a test that
+  deletes the field and asserts the heartbeat restores it — a touch implementation cannot pass it.
+- **Staleness is 4 × the heartbeat interval**, so three missed beats still count a live viewer. Two would
+  drop a healthy viewer the moment Redis wobbles — the same trap the liveness check already sprang once
+  (2 lost pings cut healthy sessions in the first window). A static guard refuses to load if the ratio drops
+  below 3×.
+- **Counting never writes.** Stale entries are skipped on read and reclaimed by the key TTL or `clearRoom`;
+  making the count a write path would put a write on every join.
+- **Values with no separator count as live.** That is the pre-format shape, and old pods keep writing it during
+  a rolling deploy — treating it as stale would erase *that pod's entire audience* from the count. The other
+  direction (a zombie surviving to TTL) heals once the deploy finishes.
+- **One timer per pod, not per session.** The registry already knows every local session, and each session
+  already owns a liveness interval — per-session would double that. The interval comes from the port
+  (`heartbeatInterval()`), because "how often must I re-register to stay counted" is that adapter's contract;
+  split across two places, one side changes and live viewers vanish from the count.
+- **A single session's failure is absorbed.** If it ended the stream, the pod would stop re-registering
+  *everything* and the whole audience would disappear after the staleness window — worse than the bug being
+  fixed. `concatMap` also keeps a slow Redis from overlapping rounds and doubling the writes.
+- Staleness is judged against the **reader's** wall clock, so cross-pod clock skew applies; the 3-beat margin
+  swallows second-scale skew. Moving the comparison into Lua would use Redis's single clock but would also
+  move a full scan onto its single thread, and that cost is measured to be fine where it is.
+- **`HEXPIRE` (field TTL) is deliberately unused.** It is simpler — no timestamp parsing, no bounded
+  arithmetic — and `redis:7` resolved to 7.4.11 here, which has it (measured). But the test tag floats, so a
+  machine that pulled 7.2 lacks it, and production's version is not visible from this repo. That is a
+  "green locally, broken in production" shape. Revisit when 7.4+ is guaranteed.
 
 ## History (VOD) — the gate is one predicate and the exclusion is in the query
 

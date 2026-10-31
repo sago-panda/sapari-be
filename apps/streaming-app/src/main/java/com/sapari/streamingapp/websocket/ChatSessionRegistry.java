@@ -17,6 +17,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.CloseStatus;
 
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.DeliveryStage;
@@ -27,6 +30,7 @@ import com.sapari.chat.domain.repository.ChatSessionRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 
 import lombok.extern.slf4j.Slf4j;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
@@ -164,6 +168,71 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
     private final Map<String, LocalSession> local = new ConcurrentHashMap<>();
+
+    /** Pod 전체의 재등록 타이머 — 세션당 하나가 아니다. 종료 시 해제한다. */
+    private Disposable heartbeat;
+
+    /** 재등록 실패 누적 — 전 세션의 재등록이 조용히 멈춘 상태를 로그 한 줄로만 남기지 않기 위한 값. */
+    private final AtomicLong heartbeatFailures = new AtomicLong();
+
+    /**
+     * Pod 안의 모든 로컬 세션을 주기적으로 <b>재등록</b>한다.
+     *
+     * <p>이게 없으면 세션 명부가 "마지막 입장 이후" 기준으로만 갱신돼, Pod 가 크래시한 뒤 남은 항목이
+     * 키 TTL(24시간)까지 시청자 수를 부풀린다. 그리고 한산한 방은 신규 입장이 없어 방송 중에 키가
+     * 만료되기도 했다 — 둘 다 방송 내내 틀린 수가 보이는 모양이다.
+     *
+     * <p><b>세션당 타이머가 아니라 Pod 당 하나다.</b> 세션당으로 두면 수천 개 타이머가 생기고, 이미
+     * 세션마다 생존 확인 인터벌이 하나 있어 그걸 두 배로 만든다. 레지스트리는 로컬 세션 전부를 알고
+     * 있으므로 한 타이머가 전부 돌면 된다.
+     *
+     * <p>주기는 <b>포트가 정한다</b>({@code heartbeatInterval}) — "얼마나 자주 재등록해야 집계에
+     * 남는가" 는 그 어댑터의 계약이고, 여기서 따로 정하면 한쪽을 바꿀 때 다른 쪽이 따라가지 않는다.
+     *
+     * <p>실패는 <b>그 세션만</b> 흡수한다. 한 세션의 재등록 실패가 스트림을 끝내면 그 뒤로 이 Pod 의
+     * 재등록이 통째로 멈추고, 그러면 살아 있는 시청자 전원이 상한 뒤에 집계에서 사라진다 — 고치려던
+     * 것보다 나쁘다. 다음 주기가 받아 주므로 건당 실패는 유실이 아니다.
+     *
+     * <p>{@code concatMap} 이다 — 한 주기가 끝나기 전에 다음 주기가 겹쳐 들어오면 Redis 쓰기가 두 배로
+     * 간다. 느린 Redis 가 그 모양을 만들고, 그때 더 쓰는 것이 가장 나쁜 대응이다.
+     */
+    @PostConstruct
+    void startHeartbeat() {
+        Duration interval = sessionRepository.heartbeatInterval();
+        heartbeat = Flux.interval(interval, interval)
+                .onBackpressureDrop(tick -> { })
+                .concatMap(tick -> Flux.fromIterable(local.values())
+                        .flatMap(this::reregister)
+                        .then())
+                .subscribe();
+    }
+
+    @PreDestroy
+    void stopHeartbeat() {
+        if (heartbeat != null) {
+            heartbeat.dispose();
+        }
+    }
+
+    /** 한 세션의 재등록. 실패는 흡수하고 규모만 남긴다(테스트 진입점). */
+    Mono<Void> reregister(LocalSession ls) {
+        return sessionRepository.heartbeat(
+                        ls.session().roomId(), ls.sessionId(), ls.session().userId())
+                .onErrorResume(e -> {
+                    long failures = heartbeatFailures.incrementAndGet();
+                    if (shouldLogDrop()) {
+                        log.warn("세션 명부 재등록 실패 — 다음 주기가 받는다(누적 {}건) 표본 sessionId={} "
+                                        + "표본 roomId={} cause={}", failures, ls.sessionId(),
+                                ls.session().roomId(), e.getClass().getSimpleName());
+                    }
+                    return Mono.empty();
+                });
+    }
+
+    /** 재등록 실패 누적 — 테스트 진입점. */
+    long heartbeatFailures() {
+        return heartbeatFailures.get();
+    }
 
     /**
      * roomId → 그 방의 sessionId 집합. {@link #local}의 보조 인덱스다.
