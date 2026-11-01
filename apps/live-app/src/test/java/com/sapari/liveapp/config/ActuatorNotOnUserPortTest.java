@@ -70,6 +70,11 @@ class ActuatorNotOnUserPortTest {
     @DynamicPropertySource
     static void requiredConfig(DynamicPropertyRegistry registry) {
         LiveAppContextFixture.register(registry);
+        // ⭐ env 를 <b>일부러</b> 노출 목록에 넣는다(픽스처는 health,prometheus 만 준다).
+        // 그래야 핸들러가 매핑되고, 그때 그걸 막는 것은 actuatorFilterChain 의 denyAll 하나다 —
+        // 즉 이 한 줄이 denyAll 분기를 테스트 사정권으로 끌어온다. 노출 가드가 live-app 에서
+        // include: "*" 를 통과시키는 근거가 그 denyAll 인데, 그 근거를 밟는 테스트가 없었다.
+        registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus,env");
     }
 
     @LocalServerPort
@@ -95,14 +100,30 @@ class ActuatorNotOnUserPortTest {
     }
 
     @Test
-    @DisplayName("관리 포트에서도 노출 목록 밖은 막힌다 — 401(미매핑)이든 403(denyAll)이든 200 이 아니다")
-    void managementPort_deniesEverythingElse() throws Exception {
-        // 차단 코드가 설정에 따라 갈린다. 노출 목록에 없으면 핸들러가 매핑되지 않아 기본 체인의
-        // authenticated() 에 걸려 401 이고, 목록에 넣으면 액추에이터 체인의 denyAll 이 잡아 403 이다.
-        // 여기서 중요한 건 코드가 아니라 "둘 중 무엇이든 200 이 아니다" 이므로 둘 다 받는다 —
-        // 하나로 못박으면 노출 설정을 만질 때마다 이 테스트가 엉뚱하게 깨진다.
-        assertThat(status(managementPort, "/actuator/env")).isIn(401, 403);
-        assertThat(status(managementPort, "/actuator")).isIn(401, 403);
+    @DisplayName("⭐ 노출 목록에 든 것도 체인이 막는다 — denyAll 이 유일한 방어이고 이 단언이 그걸 밟는다")
+    void managementPort_deniesAnExposedEndpointThatIsNotPermitted() throws Exception {
+        // env 는 위 @DynamicPropertySource 가 일부러 노출했다. 핸들러가 매핑됐으므로 기본 체인의
+        // authenticated() 가 아니라 액추에이터 체인의 denyAll 이 잡아야 한다 → 403.
+        //
+        // 전에는 이 자리가 isIn(401, 403) 이었고 env 가 미매핑이라 401 로 통과했다. 그래서
+        // denyAll 을 지워도 빌드가 초록이었다 — 그 응답에는 JWT HMAC 시크릿과 LiveKit API
+        // 시크릿이 담긴다. 넓게 받는 단언이 "둘 중 아무거나" 를 넘어 "둘 다 아니어도" 를 허용한 셈이다.
+        assertThat(status(managementPort, "/actuator/env")).isEqualTo(403);
+        // 액추에이터 <b>기본 경로</b>(링크 목록)도 같은 체인에 걸린다 — 실측: 403. 노출 목록에
+        // 없어도 toAnyEndpoint() 가 기본 경로 자체를 매칭하기 때문이다. 링크 목록은 어떤
+        // 엔드포인트가 사는지를 알려 주므로 이쪽도 열려서는 안 된다.
+        assertThat(status(managementPort, "/actuator")).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("노출 목록 밖은 매핑조차 안 된다 — 기본 체인의 authenticated() 에 걸려 401")
+    void managementPort_deniesAnUnexposedEndpoint() throws Exception {
+        // 위 테스트와 차단 주체가 다르다. 여기는 핸들러가 없어서 막히고, 위는 핸들러가 있는데
+        // 막힌다 — 두 방어를 한 단언에 섞으면 둘 중 하나가 사라진 것을 알 수 없다.
+        // 실측: beans 401(존재하지만 미노출) · nope 401(없는 경로). 둘이 같은 코드인 것이 이 방어의
+        // 성질이다 — 미노출 엔드포인트와 오타를 구별해 주지 않으므로 엔드포인트 열거가 안 된다.
+        assertThat(status(managementPort, "/actuator/beans")).isEqualTo(401);
+        assertThat(status(managementPort, "/actuator/nope")).isEqualTo(401);
     }
 
     private int status(int port, String path) throws Exception {
