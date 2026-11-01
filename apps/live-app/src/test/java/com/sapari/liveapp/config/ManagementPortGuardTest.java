@@ -147,4 +147,41 @@ class ManagementPortGuardTest {
 
         assertThatCode(() -> config.requiredEndpointsMustBeExposed(absent)).doesNotThrowAnyException();
     }
+
+    /** 주어진 id 들을 노출한다고 답하는 공급자. */
+    private static WebEndpointsSupplier supplierOf(String... ids) {
+        List<ExposableWebEndpoint> endpoints = java.util.Arrays.stream(ids).map(id -> {
+            ExposableWebEndpoint endpoint = mock(ExposableWebEndpoint.class);
+            given(endpoint.getEndpointId()).willReturn(EndpointId.of(id));
+            return endpoint;
+        }).toList();
+        WebEndpointsSupplier supplier = mock(WebEndpointsSupplier.class);
+        given(supplier.getEndpoints()).willReturn(endpoints);
+        return supplier;
+    }
+
+    private static ObjectProvider<WebEndpointsSupplier> providing(WebEndpointsSupplier supplier) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<WebEndpointsSupplier> provider = mock(ObjectProvider.class);
+        given(provider.getIfAvailable()).willReturn(supplier);
+        return provider;
+    }
+
+    @Test
+    @DisplayName("⭐ 빈이 공급자를 받으면 실제로 검사한다 — 이 단언이 없으면 가드를 떼도 전부 초록이다")
+    void theBeanActuallyChecksWhenASupplierIsPresent() {
+        // 검사를 호출하는 네 줄(getIfAvailable → null 아니면 verifyExposed)에 단언이 없었다.
+        // 실측: 그 네 줄만 지우면 이 앱 113건이 전부 초록이었다 — 집합 산술 단위 테스트는
+        // verifyExposed 를 직접 부르므로 배선이 빠진 것을 보지 못한다.
+        assertThatThrownBy(() -> config.requiredEndpointsMustBeExposed(providing(supplierOf("health"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("[prometheus] 가 실제로 노출되지 않았다");
+    }
+
+    @Test
+    @DisplayName("빈이 올바른 노출을 통과시킨다 — 거부만 재면 \"항상 던진다\" 도 통과한다")
+    void theBeanPassesAValidExposure() {
+        assertThatCode(() -> config.requiredEndpointsMustBeExposed(
+                providing(supplierOf("health", "prometheus")))).doesNotThrowAnyException();
+    }
 }

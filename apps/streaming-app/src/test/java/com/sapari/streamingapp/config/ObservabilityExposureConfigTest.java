@@ -12,9 +12,14 @@ import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.autoconfigure.endpoint.EndpointAutoConfiguration;
+import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointAutoConfiguration;
+import org.springframework.boot.actuate.autoconfigure.info.InfoEndpointAutoConfiguration;
 import org.springframework.boot.actuate.endpoint.EndpointId;
 import org.springframework.boot.actuate.endpoint.web.ExposableWebEndpoint;
 import org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ReactiveWebApplicationContextRunner;
 
 /**
  * 관측 가드 — 포트와 <b>실제 노출</b>.
@@ -124,13 +129,15 @@ class ObservabilityExposureConfigTest {
     }
 
     @Test
-    @DisplayName("⭐ 전부 열린 상태는 넘친 것을 전부 이름으로 말한다 — heapdump 가 그 안에 있다")
+    @DisplayName("⭐ 전부 열린 상태는 넘친 것을 전부 이름으로 말한다")
     void aWideOpenExposureNamesEveryExtra() {
+        // 실측한 include="*" 의 노출 13종 중 일부다. heapdump 는 그 13종에 들지 않는다
+        // (@WebEndpoint defaultAccess=NONE — include 만으로는 생기지 않고 실측에서 401).
         assertThatThrownBy(() -> ObservabilityExposureConfig.verifyExposure(
-                Set.of("beans", "env", "health", "heapdump", "prometheus")))
+                Set.of("beans", "configprops", "env", "health", "prometheus", "threaddump")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("더 열린 것: [beans, env, heapdump]")
-                .hasMessageContaining("heapdump 는 메모리 이미지");
+                .hasMessageContaining("더 열린 것: [beans, configprops, env, threaddump]")
+                .hasMessageContaining("/actuator/env 는 프로퍼티 이름과 소스 전부를 내보낸다");
     }
 
     @Test
@@ -169,4 +176,110 @@ class ObservabilityExposureConfigTest {
 
         assertThatCode(() -> config.exposedEndpointsMustMatchRequired(absent)).doesNotThrowAnyException();
     }
+
+    // ---------- 빈 배선 ----------
+
+    /** 주어진 id 들을 노출한다고 답하는 공급자. */
+    private static WebEndpointsSupplier supplierOf(String... ids) {
+        List<ExposableWebEndpoint> endpoints = java.util.Arrays.stream(ids).map(id -> {
+            ExposableWebEndpoint endpoint = mock(ExposableWebEndpoint.class);
+            given(endpoint.getEndpointId()).willReturn(EndpointId.of(id));
+            return endpoint;
+        }).toList();
+        WebEndpointsSupplier supplier = mock(WebEndpointsSupplier.class);
+        given(supplier.getEndpoints()).willReturn(endpoints);
+        return supplier;
+    }
+
+    private static ObjectProvider<WebEndpointsSupplier> providing(WebEndpointsSupplier supplier) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<WebEndpointsSupplier> provider = mock(ObjectProvider.class);
+        given(provider.getIfAvailable()).willReturn(supplier);
+        return provider;
+    }
+
+    @Test
+    @DisplayName("⭐ 빈이 공급자를 받으면 실제로 검사한다 — 이 단언이 없으면 가드를 떼도 전부 초록이다")
+    void theBeanActuallyChecksWhenASupplierIsPresent() {
+        // 검사를 호출하는 네 줄(getIfAvailable → null 아니면 verifyExposure)에 단언이 없었다.
+        // 그래서 그 네 줄만 지우면 가드가 통째로 무장해제되는데 이 앱의 테스트가 전부 초록이었다 —
+        // 집합 산술 단위 테스트는 verifyExposure 를 직접 부르므로 배선이 빠진 것을 보지 못한다.
+        assertThatThrownBy(() -> config.exposedEndpointsMustMatchRequired(providing(supplierOf("health"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("사라진 것: [prometheus]");
+    }
+
+    @Test
+    @DisplayName("빈이 올바른 노출을 통과시킨다 — 거부만 재면 \"항상 던진다\" 도 통과한다")
+    void theBeanPassesAValidExposure() {
+        assertThatCode(() -> config.exposedEndpointsMustMatchRequired(
+                providing(supplierOf("health", "prometheus")))).doesNotThrowAnyException();
+    }
+
+    // ---------- 가드의 하중 지점: getEndpoints() 가 설정 축을 반영하는가 ----------
+
+    /**
+     * 액추에이터 자동설정만 올린 최소 컨텍스트 — 이 가드가 기대는 <b>단 하나의 사실</b>을 잰다.
+     *
+     * <p>가드는 "설정 축이 엔드포인트를 없애면 {@code getEndpoints()} 가 그걸 보여 준다" 에 전부를
+     * 걸고 있다. 그 사실이 틀리면(예: Boot 가 "엔드포인트는 남고 operation 만 0" 으로 바뀌면)
+     * 가드는 조용히 통과하고 지표만 빈다 — 전 스위트가 초록인 채로. 그래서 그 하나를 고정한다.
+     *
+     * <p>관측 대상으로 {@code info} 를 쓰는 이유는 가볍고 외부 의존이 없기 때문이다. 앱을 띄우지
+     * 않으므로 컨테이너도 필요 없다.
+     */
+    private final ReactiveWebApplicationContextRunner actuatorOnly = new ReactiveWebApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(
+                    EndpointAutoConfiguration.class,
+                    WebEndpointAutoConfiguration.class,
+                    InfoEndpointAutoConfiguration.class));
+
+    @Test
+    @DisplayName("⭐ include 가 노출을 만든다 — 기준선")
+    void theIncludeKeyProducesTheExposure() {
+        actuatorOnly.withPropertyValues("management.endpoints.web.exposure.include=info")
+                .run(context -> assertThat(ObservabilityExposureConfig.exposedIds(
+                        context.getBean(WebEndpointsSupplier.class))).containsExactly("info"));
+    }
+
+    @Test
+    @DisplayName("⭐ endpoint.<id>.enabled=false 가 노출을 지우고 getEndpoints() 가 그걸 보여 준다")
+    void theEnabledAxisRemovesTheExposure() {
+        actuatorOnly.withPropertyValues("management.endpoints.web.exposure.include=info",
+                        "management.endpoint.info.enabled=false")
+                .run(context -> assertThat(ObservabilityExposureConfig.exposedIds(
+                        context.getBean(WebEndpointsSupplier.class))).isEmpty());
+    }
+
+    @Test
+    @DisplayName("⭐ enabled-by-default=false 도 같다 — include 에 적혀 있어도 사라진다")
+    void theEnabledByDefaultAxisRemovesTheExposure() {
+        // 이 축이 가장 위험하다: include 를 제대로 적은 설정이 엔드포인트 0개로 부팅한다.
+        actuatorOnly.withPropertyValues("management.endpoints.web.exposure.include=info",
+                        "management.endpoints.enabled-by-default=false")
+                .run(context -> assertThat(ObservabilityExposureConfig.exposedIds(
+                        context.getBean(WebEndpointsSupplier.class))).isEmpty());
+    }
+
+    @Test
+    @DisplayName("⭐ exclude 도 같다 — 파싱을 버렸어도 이 축은 여전히 노출을 지운다")
+    void theExcludeAxisRemovesTheExposure() {
+        actuatorOnly.withPropertyValues("management.endpoints.web.exposure.include=info",
+                        "management.endpoints.web.exposure.exclude=info")
+                .run(context -> assertThat(ObservabilityExposureConfig.exposedIds(
+                        context.getBean(WebEndpointsSupplier.class))).isEmpty());
+    }
+
+    /*
+     * ⚠️ access 두 축({@code endpoint.<id>.access=none}, {@code endpoints.access.default=none})은 이
+     * 러너로 고정하지 못했다. 접근을 끄면 @ConditionalOnAvailableEndpoint 가 그 엔드포인트 빈을
+     * 없애고, 엔드포인트가 그것뿐인 최소 컨텍스트는 아예 뜨지 못한다(실측). 대신 <b>실제 앱으로</b>
+     * 쟀고 결과는 위 축들과 동형이다:
+     *
+     *   management.endpoint.prometheus.access=none   부팅 성공   노출 [health]
+     *   management.endpoints.access.default=none     부팅 성공   노출 []
+     *
+     * 즉 그 두 축도 getEndpoints() 에 그대로 보인다. 앱을 띄우는 가드 테스트를 따로 만들면 고정할
+     * 수 있고, 그건 컨테이너 한 벌을 더 쓰는 선택이라 여기 적어만 둔다.
+     */
 }
