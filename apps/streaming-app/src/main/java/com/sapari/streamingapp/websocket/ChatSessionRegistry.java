@@ -1424,6 +1424,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 않는다). <b>8s ≪ 90s</b> 라 정상 상태 상한이 10 에서 멈추고, 그 위로 쌓이지 않는다.
      * ⚠️ 이 결론은 그 비에 매달려 있다 — {@code liveness-deadline} 을 8초 밑으로 내리거나 종료
      * 상한을 키우면 선형으로 증가한다(실측: 정리 없이 사이클 4회 → local 5·10·15·20).
+     *
+     * <p>그 창이 파생시키는 것 둘, 알고 둔다. 첫째, 거둔 세션이 아직 {@link #local} 에 있으므로
+     * {@link #reregister} 의 {@code containsKey} 가드를 통과해 하트비트를 한두 주기 더 받는다.
+     * 둘째, 그래서 같은 창의 Redis 명부도 최대 2배를 들어 시청자 수가 그만큼 부푼다. 둘 다 유계이고
+     * (≤8초) 자가치유라 손대지 않는다 — 이 파일이 하트비트 과다계수를 두고 세운 판단과 같다
+     * ("완전히 닫으려면 세션별 직렬화가 필요하고, 유계·자가치유인 과다계수에 그 값은 과하다").
+     * 시청자 수는 {@code HVALS distinct} 라 <b>같은 유저의</b> 중복은 수를 바꾸지 않는다는 점도 있다.
      */
     public int reapUnresponsiveIfFull(UUID userId, UUID roomId, Duration livenessDeadline) {
         UserInRoom key = new UserInRoom(userId, roomId);
