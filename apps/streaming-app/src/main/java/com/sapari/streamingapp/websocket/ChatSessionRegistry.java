@@ -43,7 +43,9 @@ import reactor.util.concurrent.Queues;
  *
  * <p><b>왜 transport(streaming-app)에 두나</b>: 실제 송신 채널을 쥐는 유일한 곳이라서. chat-core 포트는
  * reactor Sink·WS 채널을 모르고(레이어 누수 방지) 도메인 {@link ChatSession}만 다룬다. 그래서 채널(Sink)은
- * 이 구현체가 소유하고, 핸들러는 {@link #outbound(String)}로 아웃바운드 스트림을 받아 session.send()에 연결한다.
+ * 이 구현체가 소유하고, 핸들러는 {@link #outboundFrames(String)}로 아웃바운드 스트림을 받아
+ * session.send()에 연결한다({@code outbound(String)} 은 같은 스트림을 메시지로만 본 package-private
+ * 뷰다 — 공개 구독 진입점은 하나다).
  *
  * <p><b>Sink</b>: 외부(이 레지스트리)에서 임의 시점에 값을 밀어넣는 통로. T10 구독자가 메시지를 받으면
  * {@code sendToSession}으로 해당 세션 Sink에 emit → 그 WS로 흘러나간다. unicast+버퍼라 구독(=session.send) 전
@@ -536,8 +538,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /**
      * transport 전용: 핸들러가 {@code session.send()} 에 연결할 아웃바운드 스트림. (포트 아님 — chat-core는 안 씀)
      *
-     * <p>프레임을 그대로 흘린다 — 핸들러가 {@code frame.wire(..)} 로 직렬화를 한 번만 하게 하려면
-     * 공유 객체가 소비 지점까지 와야 한다({@link OutboundFrame} 에 이유가 적혀 있다).
+     * <p>프레임을 그대로 흘린다 — 핸들러가 {@code frame.utf8(..)} 로 직렬화·인코딩을 한 번만 하게
+     * 하려면 공유 객체가 소비 지점까지 와야 한다({@link OutboundFrame} 에 이유가 적혀 있다).
      */
     public Flux<OutboundFrame> outboundFrames(String sessionId) {
         LocalSession ls = local.get(sessionId);
@@ -549,8 +551,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p>Sink 가 unicast 라 구독자는 하나뿐인데, 이건 <b>두 번째 구독이 아니라 매핑 뷰</b>다.
      * 구독 경로가 하나이므로 둘 중 어느 쪽을 쓰든 구독은 한 번만 일어난다.
+     *
+     * <p><b>package-private 이다.</b> 공개 구독 진입점은 {@link #outboundFrames(String)} 하나로 둔다 —
+     * unicast sink 에 공개 진입점이 둘이면 "둘 다 구독하면 하나가 실패한다" 를 호출 관례로만 지키게
+     * 되고, 그 관례는 모듈 밖에서 안 보인다. 이쪽은 같은 패키지 테스트가 와이어 모양에 관심 없을 때
+     * 쓰는 편의다.
      */
-    public Flux<OutboundMessage> outbound(String sessionId) {
+    Flux<OutboundMessage> outbound(String sessionId) {
         return outboundFrames(sessionId).map(OutboundFrame::message);
     }
 
@@ -707,7 +714,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // resolver 가 돌려주는 서로 다른 메시지마다 프레임 하나 — 같은 메시지를 받는 세션들은
             // 그 프레임을 공유하므로 직렬화가 세션 수가 아니라 <b>종류 수</b>에 비례한다.
             // 동치가 아니라 동일성으로 묶는다: fanOutChat 이 뷰 4종을 미리 만들어 재사용하므로
-            // 동일성으로 충분하고, 빗나가도 직렬화 한 번을 더 하는 것뿐이라 틀릴 수가 없다.
+            // 동일성으로 충분하고, record equals 는 15 필드를 비교하므로 이쪽이 싸다.
+            //
+            // ⚠️ "빗나가도 직렬화 한 번 더 하는 것뿐" 이라고 적었는데 <b>틀렸다</b>. 이 맵은 위
+            // STALE 예산 javadoc 이 "예산 소비자를 더 붙이지 말라" 고 못 박은 바로 그 루프 안에 있다 —
+            // 12,000 세션 fan-out 이 이미 예산의 79%(3.96ms/5ms)다. 계약이 지켜지면 엔트리 4개라
+            // 무시할 값이지만, 빗나가면 12,000 distinct 엔트리(table 65,536 · refs 약 524KB)로
+            // 실측 +0.94ms 가 그 위에 얹힌다. 그때 꼬리 세션은 재시도 없이 한 번만 시도하고,
+            // 결과는 조용한 유실이 아니라 metrics.deliveryDropped(SESSION_EMIT_CONTENTION) 로
+            // 세어지는 드롭이다(세션은 끊기지 않는다 — consumerCannotKeepUp 이 그 결과를 안 본다).
+            // 그래서 계약은 javadoc 이 아니라 테스트가 지킨다
+            // (ChatBroadcastSubscriberTest.theResolverReturnsTheSameInstancePerView).
             // (record equals 는 15 필드를 비교하므로 이쪽이 싸다.)
             Map<OutboundMessage, OutboundFrame> frames = new IdentityHashMap<>(4);
             forEachInRoom(roomId, ls -> {

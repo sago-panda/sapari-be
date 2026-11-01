@@ -65,9 +65,11 @@ public class ChatMongoConfig {
      * 이 가드의 의도("시끄럽게 죽는다")가 <b>조용한 멈춤</b>으로 뒤집힌다. 최악 대기는 그 값 하나다
      * (첫 던짐에서 메서드가 끝나므로 인덱스 수에 비례하지 않는다).
      *
-     * <p>누적은 하지 않는다 — 이 클래스에 {@code catch} 가 0건이고 인덱스 생성은 {@code .block()}
-     * 순차 대입 넷이라, 첫 {@code block()} 이 던지면 메서드가 그 자리에서 끝난다(나머지 셋은 평가조차
-     * 되지 않는다). "4종이면 120초" 도 "하나 더 만들면 30초 늘어난다" 도 그래서 성립하지 않는다.
+     * <p>상한은 네 인덱스 <b>전체</b>에 하나로 걸린다({@link #INDEX_CREATE_CEILING}) — 데드라인을
+     * 한 번 잡고 각 호출에 남은 시간을 넘긴다. 호출마다 따로 걸면 던지지 않는 느린 건들이 누적돼
+     * 최악이 건수에 비례한다(실측: 상한 400ms × 4건, 각 300ms → 총 1,279ms, 던짐 0). "4종이면
+     * 120초" 도 "하나 더 만들면 30초 늘어난다" 도 그래서 성립하지 않는다 — 이 수는 인덱스 수와
+     * 무관하다.
      *
      * <p><b>그 창에는 아무것도 listen 하지 않는다</b>(한때 "이 앱에는 actuator/health 가 없어 TCP
      * 점검뿐이라 그 창 내내 Ready 로 답한다" 고 적었는데 지금은 양쪽 다 거짓이다 — 이 앱은
@@ -111,11 +113,36 @@ public class ChatMongoConfig {
      * 윈도우 조회처럼 느려도 되는 경로가 같은 상한에 걸리고, 그 값을 잘못 고르면 부팅이 아니라
      * 서비스가 깨진다. 여기서 막으려는 것은 <b>부팅 경로</b> 하나라 상한도 그 자리에만 둔다.
      *
-     * <p>값은 서버 선택 상한(30초)에 실제 생성 시간을 더한 여유다. 한 건이 이걸 넘기면 다음 건은
-     * 평가되지 않는다({@code catch} 가 없어 첫 던짐에서 메서드가 끝난다) — 그래서 최악 대기는
-     * 이 값 하나이고 인덱스 수에 비례하지 않는다.
+     * <p><b>값을 10분으로 둔 근거</b>(Testcontainers mongo:7.0 실측):
+     * <pre>
+     * 빈 컬렉션에 4종 신규 생성          126 ms
+     * 이미 있는 상태로 재실행(재부팅)      3 ms   ← 평소 부팅은 사실상 0 이다
+     * 20만건에 4종 신규 생성           1,140 ms   → 건당 0.0057 ms
+     * </pre>
+     * 그 비율로 1,000만건이면 4종 신규 생성이 약 <b>57초</b>, 1억건에 <b>새 인덱스 하나</b>만 추가해도
+     * 약 2.3분이다. 처음 60초로 뒀는데 그 값이면 "큰 컬렉션에 인덱스를 처음 추가하는 배포" 가
+     * <b>CrashLoopBackOff</b> 가 된다 — 그건 막으려던 멈춤보다 나쁘다(재시작마다 인덱스 빌드를 다시
+     * 쏜다). 반면 평소 부팅은 3ms 라 상한을 넉넉히 둬도 잃는 것이 없다.
+     *
+     * <p>시간만으로는 "멈춘 소켓" 과 "느리지만 진행 중인 빌드" 를 가를 수 없다 — 전자는 영구적이고
+     * 후자는 유한하다는 차이뿐이다. 그래서 상한은 <b>유한한 쪽을 넉넉히 덮고 무한한 쪽만 잡는</b>
+     * 크기로 둔다. 자기 데이터 규모에 맞게 다시 고를 때는 위 "건당 0.0057 ms" 를 쓰면 된다.
+     *
+     * <p><b>이 값은 메서드 <u>전체</u>의 상한이다 — 건당이 아니다.</b> 처음에는 네 호출에 각각
+     * 걸었는데, 그때 "첫 던짐에서 메서드가 끝나므로 최악은 이 값 하나" 라고 적은 것이 <b>틀렸다</b>:
+     * 그 논증은 <b>던지는 모드만</b> 덮는다. 네 건이 각각 상한 <b>바로 아래</b>로 끝나면 아무것도
+     * 던지지 않고 전부 누적된다. 실측(상한 400ms × 4건, 각 건 300ms): 총 경과 <b>1,279ms</b>, 던진
+     * 횟수 <b>0</b> — 상한 하나로 묶이지 않고 건수에 비례했다.
+     *
+     * <p>그래서 호출마다 거는 대신 <b>데드라인을 한 번 잡고 남은 시간을 넘긴다</b>. 그러면 "최악
+     * 대기 = 이 값" 이 구조로 참이 되고, 인덱스를 하나 더 만들어도 이 수가 변하지 않는다. 그게
+     * startupProbe 사이징의 근거로 쓰이는 수라서 건당/전체 구분이 중요하다 — 건당으로 두면 10분
+     * 상한이 최악 40분 부팅이 된다.
+     *
+     * <p>이 줄의 수가 네 번 틀렸다(90s → 120s → ~30s → 건당/전체 혼동). 앞의 셋은 <b>무엇이 그 수를
+     * 묶는지</b>를 안 재서였고, 네 번째는 <b>묶이는 단위</b>를 안 재서였다 — 건당인지 전체인지.
      */
-    private static final Duration INDEX_CREATE_CEILING = Duration.ofSeconds(60);
+    private static final Duration INDEX_CREATE_CEILING = Duration.ofMinutes(10);
 
     /**
      * 인덱스 4종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
@@ -123,24 +150,36 @@ public class ChatMongoConfig {
      * clientMsgId=null 2건째에 DuplicateKey가 터진다. 생성된 인덱스 이름 목록 반환(테스트 검증용).
      */
     public static List<String> createChatMessagesIndexes(ReactiveMongoTemplate mongoTemplate) {
+        return createChatMessagesIndexes(mongoTemplate, INDEX_CREATE_CEILING);
+    }
+
+    /**
+     * 상한을 받는 오버로드 — 테스트가 그 상한이 <b>실제로 걸리는지</b> 재려면 10분을 기다릴 수 없다.
+     *
+     * <p>상한만 바꿔 끼울 수 있게 두는 것이 요점이다. 운영 경로는 위 메서드가 상수를 넘긴다.
+     */
+    static List<String> createChatMessagesIndexes(ReactiveMongoTemplate mongoTemplate, Duration ceiling) {
         ReactiveIndexOperations ops = mongoTemplate.indexOps(ChatMessageDocument.class);
+        // 데드라인을 한 번 잡는다 — 호출마다 상한을 걸면 던지지 않는 느린 건들이 누적돼 최악이
+        // 건수에 비례한다(실측: 상한 400ms × 4건, 각 300ms → 총 1,279ms, 던짐 0).
+        long deadline = System.nanoTime() + ceiling.toNanos();
 
-        String paging = ops.createIndex(new Index()
+        String paging = awaitIndex(ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
-                .on("_id", Sort.Direction.ASC)).block(INDEX_CREATE_CEILING);
+                .on("_id", Sort.Direction.ASC)), deadline, ceiling, "roomId+_id(페이징)");
 
-        String dedup = ops.createIndex(new Index()
+        String dedup = awaitIndex(ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
                 .on("senderId", Sort.Direction.ASC)
                 .on("clientMsgId", Sort.Direction.ASC)
                 .unique()
                 .partial(PartialIndexFilter.of(
-                        new org.bson.Document("clientMsgId", new org.bson.Document("$type", "string")))))
-                .block(INDEX_CREATE_CEILING);
+                        new org.bson.Document("clientMsgId", new org.bson.Document("$type", "string"))))),
+                deadline, ceiling, "clientMsgId unique partial(중복 제거)");
 
-        String ttl = ops.createIndex(new Index()
+        String ttl = awaitIndex(ops.createIndex(new Index()
                 .on("createdAt", Sort.Direction.ASC)
-                .expire(Duration.ofDays(730))).block(INDEX_CREATE_CEILING);   // 2년 자동 삭제
+                .expire(Duration.ofDays(730))), deadline, ceiling, "createdAt TTL(2년 자동 삭제)");
 
         // VOD 윈도우(roomId 등치 + createdAt 범위)의 범위 필드를 인덱스 경계로 묶는다.
         //
@@ -150,10 +189,40 @@ public class ChatMongoConfig {
         //
         // 방향은 ASC 다. 정렬 키가 _id 라 두 번째 필드의 방향이 경계에 영향을 주지 않는다(실측: ASC·DESC
         // 모두 112/112). 나머지 인덱스가 전부 ASC 라 그쪽에 맞춘다.
-        String window = ops.createIndex(new Index()
+        String window = awaitIndex(ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
-                .on("createdAt", Sort.Direction.ASC)).block(INDEX_CREATE_CEILING);
+                .on("createdAt", Sort.Direction.ASC)), deadline, ceiling, "roomId+createdAt(VOD 윈도우)");
 
         return List.of(paging, dedup, ttl, window);
+    }
+
+    /**
+     * 인덱스 생성 하나를 상한 안에서 기다린다 — 넘기면 <b>무엇을 어떻게 하라</b>까지 담아 번역한다.
+     *
+     * <p>{@code .block(Duration)} 이 던지는 것은
+     * {@code IllegalStateException: Timeout on blocking read} 다. 그 문장만 보면 당직자가
+     * "Mongo 가 죽었나" 와 "큰 컬렉션에 인덱스를 새로 만드는 중이었나" 를 가를 수 없는데, 조치가
+     * 정반대다 — 전자는 Mongo 를 보고 후자는 <b>기다리거나 상한을 올려야</b> 한다. 저장소의 다른
+     * 부팅 가드도 같은 이유로 전부 번역한다({@code ObservabilityExposureConfig} 의 포트 파싱 실패).
+     */
+    private static String awaitIndex(reactor.core.publisher.Mono<String> creation,
+            long deadline, Duration ceiling, String label) {
+        // 남은 시간이 0 이하면 아주 짧은 값을 넘긴다 — Duration.ZERO 는 block 의 의미가 "무한" 이라
+        // 데드라인을 넘긴 순간 오히려 상한이 사라진다(실측으로 밟기 전에 코드로 막는다).
+        long remainingNanos = deadline - System.nanoTime();
+        Duration remaining = remainingNanos > 0 ? Duration.ofNanos(remainingNanos) : Duration.ofMillis(1);
+        try {
+            return creation.block(remaining);
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException(
+                    "chat_messages 인덱스 생성이 " + ceiling + " 안에 끝나지 않았다(이 상한은 "
+                            + "네 인덱스 <b>전체</b>에 걸린다) — " + label
+                            + ". 둘 중 하나다: (1) Mongo 가 응답하지 않는다(드라이버 기본값이 "
+                            + "socketReadTimeoutMs=0 이라 이 상한이 유일한 경계다) — Mongo 를 볼 것. "
+                            + "(2) 큰 컬렉션에 이 인덱스를 처음 만드는 중이다 — 실측 건당 0.0057ms 로 "
+                            + "환산해 상한(INDEX_CREATE_CEILING)을 올리거나, 인덱스를 운영 절차로 "
+                            + "미리 만들고 배포할 것. 이 상한으로 죽으면 재시작마다 빌드를 다시 쏘므로 "
+                            + "CrashLoopBackOff 가 된다.", e);
+        }
     }
 }

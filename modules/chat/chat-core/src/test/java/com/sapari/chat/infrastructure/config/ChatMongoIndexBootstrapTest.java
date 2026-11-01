@@ -29,8 +29,9 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
  * <p>한때 인덱스를 {@code ApplicationRunner}에서 만들었다. 러너는 컨텍스트 refresh 가 <b>끝난 뒤</b>
  * 돌고, 리액티브 웹서버는 그 refresh 안에서 포트를 bind 한다 — 그래서 러너가 Mongo 를 기다리는 동안
  * 포트는 이미 열려 있었다(실측: {@code EagerSingletonsRunBeforeThePortBindsTest}). 인덱스 셋에
- * 서버 선택 상한 30초가 각각 걸리므로 최악 90초 동안, 이 Pod 는 TCP 프로브에 멀쩡히 Ready 로
- * 답하면서 인덱스 없는 컬렉션으로 들어온 요청을 받는다.
+ * 그 창 동안 이 Pod 는 인덱스 없는 컬렉션으로 들어온 요청을 받았다. 창의 길이는 한때 "최악 90초"
+ * 라고 적었는데 드라이버 기본값이 {@code socketReadTimeoutMs=0}(무한)이라 상한이 없었고, 지금은
+ * {@code ChatMongoConfig.INDEX_CREATE_CEILING} 이 네 인덱스 <b>전체</b>에 하나로 걸린다.
  *
  * <p>그래서 단언을 "컨텍스트가 뜬 뒤 인덱스가 있다"로 두지 않는다 — 러너 버전도 그건 통과한다.
  * <b>phase {@code MIN_VALUE} lifecycle 이 start 될 때</b> 이미 있었는지를 본다. lifecycle 은 phase

@@ -50,11 +50,13 @@ public interface ChatSessionManager {
      */
     Mono<Void> sendToUserEverywhere(UUID userId, OutboundMessage message);
 
-    // 방 로컬 세션마다 resolver로 메시지를 만들어 송신 — 세션별 차등 fan-out(CHAT의 방주인 PII 게이팅, KICK의
-    // 당사자/타인 분기). resolver가 null을 반환한 세션은 skip. (ChatBroadcastSubscriber 사용)
-    // ※ 단일-메시지 sendToRoomLocal과 이름을 분리해 오버로드 모호성(any() 매처)을 피한다.
     /**
      * 세션별 차등 팬아웃 — {@code resolver} 가 세션마다 보낼 메시지를 고른다({@code null} 이면 skip).
+     * CHAT 의 방주인 PII 게이팅, KICK 의 당사자/타인 분기가 이걸 쓴다
+     * ({@code ChatBroadcastSubscriber}).
+     *
+     * <p>단일 메시지를 받는 {@code sendToRoomLocal} 과 <b>이름을 분리한 것은 의도다</b> — 오버로드로
+     * 두면 {@code any()} 매처가 어느 쪽인지 가리지 못해 테스트가 엉뚱한 쪽을 스텁한다.
      *
      * <p>⚠️ <b>resolver 는 같은 뷰에 대해 같은 인스턴스를 돌려줘야 한다.</b> 구현(transport)이 서로
      * 다른 메시지마다 와이어 문자열을 <b>한 번만</b> 만드는데, 그 묶음을 <b>객체 동일성</b>으로

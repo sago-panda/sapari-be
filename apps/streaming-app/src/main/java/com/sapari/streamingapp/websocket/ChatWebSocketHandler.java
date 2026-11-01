@@ -226,15 +226,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // {@code Mono.never()} 를 주므로 ping 이 영원히 돌고, 클라가 스스로 끊지 않으면 그 세션이 남는다.
         Sinks.Empty<Void> dataChannelDone = Sinks.empty();
         Flux<WebSocketMessage> data = Flux.defer(() -> registry.outboundFrames(sid))
-                // 프레임이 인코딩된 와이어 바이트를 들고 있다 — 같은 팬아웃의 다른 세션이 이미
-                // 만들어 뒀으면 그걸 쓴다. 방에 N 세션이면 직렬화와 UTF-8 인코딩을 N 번 하던
-                // 자리다(실측: 12,000 세션에 각각 9.23ms · 2.09ms).
-                //
-                // textMessage(String) 를 쓰지 않는 이유가 그 인코딩이다 — 그 구현이 문자열을
-                // 인코딩해 버퍼로 감싸므로, 바이트를 들고 있어도 다시 인코딩한다. 감싸는 것만
-                // 세션마다 하면 되고, 그게 이 생성자다.
-                .map(frame -> new WebSocketMessage(WebSocketMessage.Type.TEXT,
-                        session.bufferFactory().wrap(frame.utf8(this::serialize))))
+                .map(frame -> toWireMessage(session, frame))
                 .doFinally(signal -> dataChannelDone.tryEmitEmpty());
         // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
         // onBackpressureDrop: 요청이 없을 때 틱을 버린다. 안 버리면 prefetch 가 차는 순간 send 가
@@ -686,6 +678,27 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             case BANNED -> SystemMessageCode.BANNED;
             case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED;
         };
+    }
+
+    /**
+     * 프레임 하나를 그 세션이 보낼 WS 프레임으로 감싼다.
+     *
+     * <p><b>여기가 이 변경의 하중 지점이다.</b> 프레임이 인코딩된 와이어 바이트를 들고 있으므로,
+     * 같은 팬아웃의 다른 세션이 이미 만들어 뒀으면 그걸 쓴다 — 방에 N 세션이면 직렬화와 UTF-8
+     * 인코딩을 N 번 하던 자리다(실측: 12,000 세션에 직렬화 9.23ms, 인코딩은 encode+wrap 2.09ms 중
+     * encode 몫 약 1.4ms — wrap 자체는 세션마다 남는다).
+     *
+     * <p>{@code session.textMessage(String)} 을 쓰지 않는 이유가 그 인코딩이다 — 그 구현이 문자열을
+     * 인코딩해 버퍼로 감싸므로, 바이트를 들고 있어도 <b>다시</b> 인코딩한다. 세션마다 해야 하는 것은
+     * 감싸는 것뿐이고, 그게 이 생성자다.
+     *
+     * <p>package-private 인 이유: 파이프라인 람다 안에 두면 "두 세션이 같은 배열을 본다" 를 재는
+     * 테스트가 핸들러의 입장 흐름 전체를 흉내 내야 한다. 이 자리를 떼어 두면 그 하나만 밟을 수 있다 —
+     * 그 단언이 없던 동안 이 줄을 {@code textMessage(serialize(..))} 로 되돌려도 전 스위트가 초록이었다.
+     */
+    WebSocketMessage toWireMessage(WebSocketSession session, OutboundFrame frame) {
+        return new WebSocketMessage(WebSocketMessage.Type.TEXT,
+                session.bufferFactory().wrap(frame.utf8(this::serialize)));
     }
 
     String serialize(OutboundMessage message) {   // 테스트가 와이어 직렬화까지 태울 수 있게 package-private

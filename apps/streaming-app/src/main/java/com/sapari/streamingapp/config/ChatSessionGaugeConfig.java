@@ -62,6 +62,13 @@ public class ChatSessionGaugeConfig {
      *
      * <p>표식 빈을 돌려주는 이유는 등록이 <b>부수효과</b>라서다 — 반환값이 없으면 이 메서드가
      * 언젠가 "안 쓰이는 빈" 으로 보여 지워질 수 있고, 그러면 관측이 조용히 사라진다.
+     *
+     * <p>⚠️ <b>Micrometer 게이지는 대상을 weak reference 로 들고 있다</b>(바이트코드 확인: 게이지가
+     * {@code WeakReference<T>} 를 들고 {@code value()} 가 {@code ref.get()} 이 {@code null} 이면
+     * {@code NaN} 을 돌려준다). 여기서 안전한 이유는 넘기는 것이 {@code @Component} 싱글톤이라
+     * 스프링이 강하게 들고 있기 때문이고 — <b>그 하나가 전부다</b>. 이 자리에서 어댑터나 임시 객체를
+     * 만들어 넘기는 변경이 들어오면 게이지가 <b>조용히 NaN</b> 이 되고, 테스트는 레지스트리를 필드로
+     * 강하게 들고 있어서 그 회귀를 잡지 못한다. 넘기는 것이 싱글톤인지를 변경 때 다시 볼 것.
      */
     @Bean
     public SessionGauges chatSessionGauges(

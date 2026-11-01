@@ -2,11 +2,16 @@ package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 
 import java.time.Duration;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -22,6 +27,13 @@ import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+
+import io.netty.buffer.UnpooledByteBufAllocator;
+
+import org.springframework.core.io.buffer.NettyDataBuffer;
+import org.springframework.core.io.buffer.NettyDataBufferFactory;
+import org.springframework.web.reactive.socket.WebSocketMessage;
+import org.springframework.web.reactive.socket.WebSocketSession;
 
 import reactor.core.publisher.Mono;
 
@@ -100,13 +112,21 @@ class OutboundFrameSharingTest {
         // ⭐ 같은 뷰를 받는 세션들은 <b>같은 배열 인스턴스</b>를 받는다. 그게 이 변경의 하중 지점이다 —
         // 세션은 그 배열을 자기 버퍼로 감싸기만 하므로 UTF-8 인코딩도 종류 수만큼만 돈다.
         // 인스턴스 동일성으로 재는 이유: 내용 비교는 "따로 만들어 같은 값" 과 구분되지 않는다.
-        byte[] ownerBytes = frames.get(0).utf8(counting);
-        byte[] viewerBytes = frames.get(1).utf8(counting);
-        assertThat(frames.get(2).utf8(counting)).as("방 주인 세션들이 배열을 공유하지 않았다")
-                .isSameAs(ownerBytes);
-        assertThat(frames.get(3).utf8(counting)).as("일반 세션들이 배열을 공유하지 않았다")
-                .isSameAs(viewerBytes);
-        assertThat(ownerBytes).as("뷰가 다르면 바이트도 달라야 한다").isNotSameAs(viewerBytes);
+        //
+        // 순서에 의존하지 않는다. 팬아웃이 ConcurrentHashMap 기반 인덱스를 순회하므로 frames 의
+        // 순서는 해시에 달려 있다 — frames.get(0) 을 "방 주인 것" 으로 읽으면 세션 id 작명이나
+        // 세트 크기가 바뀔 때 엉뚱하게 깨진다. 그래서 뷰별로 묶어서 센다.
+        Map<OutboundMessage, Set<byte[]>> arraysByView = new IdentityHashMap<>();
+        for (OutboundFrame frame : frames) {
+            arraysByView
+                    .computeIfAbsent(frame.message(),
+                            view -> Collections.newSetFromMap(new IdentityHashMap<>()))
+                    .add(frame.utf8(counting));
+        }
+        assertThat(arraysByView).as("뷰가 둘이어야 한다").hasSize(2);
+        assertThat(arraysByView.values())
+                .as("한 뷰를 받는 세션들이 서로 다른 배열을 받았다 — 공유가 안 됐다")
+                .allSatisfy(arrays -> assertThat(arrays).hasSize(1));
         assertThat(serializations).as("이미 만들어 둔 것을 다시 만들었다").hasValue(2);
     }
 
@@ -137,12 +157,94 @@ class OutboundFrameSharingTest {
     @Test
     @DisplayName("아무도 소비하지 않은 프레임은 직렬화되지 않는다 — 끊긴 세션의 비용을 내지 않는다")
     void anUnconsumedFrameIsNeverSerialized() {
-        // 구독하지 않은 세션에게만 보낸다 — 프레임은 버퍼에 남고 wire 는 불리지 않는다
+        // 구독하지 않은 세션에게만 보낸다 — 프레임은 버퍼에 남고 utf8 은 불리지 않는다
         registry.register("lonely", new ChatSession(roomId, UUID.randomUUID(),
                 ChatRole.BUYER, "닉", "e@example.com", false)).block(VERIFY_CEILING);
 
         registry.sendToRoomLocal(roomId, OutboundMessage.roomInfo(1L, false)).block(VERIFY_CEILING);
 
         assertThat(serializations).hasValue(0);
+    }
+
+    // ---------- 핸들러 절반: 세션들이 같은 배열을 본다 ----------
+
+    /**
+     * 운영과 같은 버퍼 팩토리를 쓰는 세션 목.
+     *
+     * <p>{@code NettyDataBufferFactory} 여야 한다 — 운영 경로가 타입으로 그걸 강제한다
+     * ({@code ReactorNettyRequestUpgradeStrategy} 가 {@code bufferFactory()} 뒤에
+     * {@code NettyDataBufferFactory} 로 checkcast 하고, {@code ReactorNettyWebSocketSession} 생성자
+     * 시그니처도 그 타입이다). {@code DefaultDataBufferFactory} 로 재면 이 티켓에서 이미 한 번 틀린
+     * "어느 팩토리로 쟀나" 를 또 밟는다.
+     */
+    private static WebSocketSession sessionWithRealBufferFactory() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.bufferFactory())
+                .willReturn(new NettyDataBufferFactory(new UnpooledByteBufAllocator(false)));
+        return session;
+    }
+
+    /**
+     * 와이어 매핑만 재는 핸들러 — 나머지 협력자는 쓰이지 않으므로 목으로 둔다.
+     *
+     * <p>{@code toWireMessage} 가 쓰는 것은 {@code serialize}(= 자기 ObjectMapper)와 인자로 받은
+     * 세션의 버퍼 팩토리뿐이다. 입장 흐름을 흉내 내지 않아도 그 자리를 밟을 수 있어서 이 테스트가
+     * 성립한다.
+     */
+    private static ChatWebSocketHandler handlerForWireMapping() {
+        return new ChatWebSocketHandler(
+                mock(com.sapari.streamingapp.websocket.auth.RoomTokenVerifier.class),
+                mock(EntryGate.class),
+                mock(ChatSessionRegistry.class),
+                mock(com.sapari.chat.port.SendChatUseCase.class),
+                mock(com.sapari.chat.application.handler.ChatBroadcastSubscriber.class),
+                mock(NettyConnectionRegistry.class),
+                mock(com.sapari.chat.application.service.SystemMessageService.class),
+                new SessionTimeouts(Duration.ofHours(1), Duration.ofSeconds(30), Duration.ofSeconds(90)),
+                ChatMetrics.NOOP);
+    }
+
+    @Test
+    @DisplayName("⭐ 같은 프레임을 받은 두 세션의 WS payload 가 같은 배열을 본다 — 3배 이득이 여기서 난다")
+    void twoSessionsWrapTheSameArray() {
+        // given: 한 팬아웃이 두 세션에 싣는 같은 프레임
+        OutboundFrame shared = new OutboundFrame(OutboundMessage.roomInfo(7L, false));
+        ChatWebSocketHandler handler = handlerForWireMapping();
+        WebSocketSession first = sessionWithRealBufferFactory();
+        WebSocketSession second = sessionWithRealBufferFactory();
+
+        // when: 핸들러가 세션마다 하는 일
+        WebSocketMessage one = handler.toWireMessage(first, shared);
+        WebSocketMessage two = handler.toWireMessage(second, shared);
+
+        // then: 배열을 공유한다. 내용 비교로는 "따로 인코딩해 같은 값" 과 구분되지 않으므로
+        // 네이티브 버퍼의 배열 인스턴스를 본다 — textMessage(serialize(..)) 로 되돌리면 세션마다
+        // 새로 인코딩하므로 이 단언이 깨진다(그 단언이 없던 동안 되돌려도 전 스위트가 초록이었다).
+        byte[] firstArray = ((NettyDataBuffer) one.getPayload()).getNativeBuffer().array();
+        byte[] secondArray = ((NettyDataBuffer) two.getPayload()).getNativeBuffer().array();
+        assertThat(secondArray)
+                .as("두 세션이 서로 다른 배열을 받았다 — 세션마다 인코딩한 것이다")
+                .isSameAs(firstArray);
+
+        // 프레임 모양도 함께 — TEXT 가 아니면 클라가 못 읽는다
+        assertThat(one.getType()).isEqualTo(WebSocketMessage.Type.TEXT);
+        assertThat(one.getPayloadAsText()).isEqualTo(two.getPayloadAsText());
+    }
+
+    @Test
+    @DisplayName("세션마다 자기 버퍼를 받는다 — 같은 ByteBuf 를 공유하면 한쪽이 읽으면 다른 쪽이 빈다")
+    void eachSessionGetsItsOwnBuffer() {
+        OutboundFrame shared = new OutboundFrame(OutboundMessage.roomInfo(7L, false));
+        ChatWebSocketHandler handler = handlerForWireMapping();
+
+        WebSocketMessage one = handler.toWireMessage(sessionWithRealBufferFactory(), shared);
+        WebSocketMessage two = handler.toWireMessage(sessionWithRealBufferFactory(), shared);
+
+        // 배열은 공유하지만 버퍼(= readerIndex)는 따로여야 한다
+        assertThat(two.getPayload()).isNotSameAs(one.getPayload());
+        one.getPayloadAsText();
+        assertThat(two.getPayloadAsText())
+                .as("한쪽이 읽자 다른 쪽이 비었다 — 같은 ByteBuf 를 공유한 것이다")
+                .isNotEmpty();
     }
 }

@@ -120,7 +120,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         // 기한이 지났다고 레지스트리가 답한다 — 시계 자체는 레지스트리 단위 테스트가 지킨다.
@@ -157,7 +157,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(true);
@@ -195,7 +195,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false, true);
@@ -282,7 +282,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
@@ -342,7 +342,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
@@ -370,7 +370,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);

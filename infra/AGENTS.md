@@ -337,9 +337,19 @@ that on.
   boots (see the bullet above). The template no longer calls that line optional (it did for one day, while the guard already
   required it — follow that stale template and the pod CrashLoopBackOffs). Developers running locally copy
   the `management` block from `application.yml.example`.
-- **What the metrics carry**: `chat.policy.open`, `chat.ratelimit.degraded`, `chat.delivery.dropped`,
-  `chat.session.cut` — every one of them is a *policy not being enforced* right now, which is exactly what
-  alerting should watch. They are 0 in the healthy case. Details in `modules/chat/AGENTS.md`.
+- **What the metrics carry** — two kinds, and they want different alerts.
+  - **Counters that are 0 when healthy**: `chat.policy.open`, `chat.ratelimit.degraded`,
+    `chat.delivery.dropped`, `chat.session.cut`. Every one of them is a *policy not being enforced* right
+    now, so any non-zero rate is worth watching. Details in `modules/chat/AGENTS.md`.
+  - **Gauges that are *not* 0 when healthy** (added 2026-11-01): `chat.sessions.local` ·
+    `chat.rooms.local` — this pod's live WebSocket sessions and the rooms it relays. These are capacity
+    signals, not failure signals, so "non-zero = problem" does not apply; they want a **threshold**.
+    They exist because this app has **no connection-count cap** (frame size, outbound buffer and slow
+    clients are all bounded; the count is not), and a cap cannot be chosen from a number nobody can see.
+    App-side cost per session is measured at **2,349 bytes** (12,000 sessions ≈ 26.9 MB) — *with an empty
+    outbound buffer*, so a pod with backed-up sessions costs more — which means the app side is not the
+    constraint and the cap has to come from transport-side load testing. Order: gauge → threshold alert
+    → cap.
 - **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
   network restrictions above are enforced from here.
 

@@ -8,8 +8,8 @@ import com.sapari.chat.application.protocol.OutboundMessage;
 /**
  * 한 팬아웃이 여러 세션에 싣는 <b>같은</b> 프레임 — 와이어 문자열을 한 번만 만들기 위한 그릇이다.
  *
- * <p><b>왜 필요한가.</b> 직렬화는 세션별 아웃바운드 파이프라인에서 일어난다
- * ({@code ChatWebSocketHandler} 가 {@code session.textMessage(serialize(..))} 로 감싼다). 그래서 방에
+ * <p><b>왜 필요한가.</b> 직렬화가 세션별 아웃바운드 파이프라인에서 일어<b>났다</b>
+ * (전에는 {@code ChatWebSocketHandler} 가 {@code session.textMessage(serialize(..))} 로 감쌌다). 그래서 방에
  * N 세션이 있으면 <b>같은 문자열을 N 번</b> 만든다. 반면 서로 다른 payload 는 몇 종뿐이다 —
  * {@code ChatBroadcastSubscriber.fanOutChat} 은 특권 뷰 × 발신자 축으로 <b>4종</b>을 미리 만들어
  * 세션마다 그중 하나를 고를 뿐이다. 객체 생성은 이미 O(종류)인데 직렬화만 O(세션)으로 남아 있었다.
@@ -27,7 +27,7 @@ import com.sapari.chat.application.protocol.OutboundMessage;
  * "먼저 소비한 세션이 만들고 나머지는 그걸 쓴다" 가 된다. 덤으로 아무도 소비하지 않은 프레임은
  * 직렬화되지 않는다(버퍼 초과로 끊긴 세션 등).
  *
- * <p><b>경합은 무해하다.</b> {@code wire} 는 {@code volatile} 이고 <b>같은 값으로 한 번만</b> 쓰인다 —
+ * <p><b>경합은 무해하다.</b> {@code utf8} 필드는 {@code volatile} 이고 <b>같은 값으로 한 번만</b> 쓰인다 —
  * 두 세션이 동시에 들어오면 둘 다 만들 수 있지만 결과가 같다(같은 매퍼·같은 객체). 최악이 "N 번"
  * 대신 "몇 번" 이므로 잠금을 걸 이유가 없고, 잠금을 걸면 그게 이벤트루프에서 직렬화 지점이 된다.
  *
@@ -40,11 +40,18 @@ import com.sapari.chat.application.protocol.OutboundMessage;
  * NettyDataBufferFactory(운영)      174 ns             151.8 ns          56.1 ns
  * </pre>
  * 운영 팩토리에서 <b>복사 변형은 13% 밖에 못 줄인다</b>(복사가 인코딩보다 비싸다). 3배 이득은
- * 배열을 세션 간 <b>공유</b>하는 쪽에만 있다. ⚠️ 테스트용 팩토리만 보면 {@code 129 → 28.5}(4.5배)로
+ * 배열을 세션 간 <b>공유</b>하는 쪽에만 있다.
+ *
+ * <p>표의 174ns 는 <b>encode + wrap</b> 이고 wrap(56.1ns)은 세션마다 남는다 — 그래서 실제로 걷은
+ * 몫은 12,000 세션 기준 2.09ms 가 아니라 약 <b>1.4ms</b> 다(2.09 − 0.67). 숫자를 "인코딩을 N 번
+ * 하던 비용" 으로 라벨링하면 과대평가가 된다. ⚠️ 테스트용 팩토리만 보면 {@code 129 → 28.5}(4.5배)로
  * 보이는데 그 수로 판단하면 운영에서 효과 없는 변경을 넣는다 — 다시 잴 때 <b>어느 팩토리로
  * 재는지</b>를 먼저 정할 것.
  *
- * <p><b>공유가 안전한 근거</b>(바이트코드로 확인, Netty 4.2.12 / spring-core 7.0.9):
+ * <p><b>공유가 안전한 근거</b>(바이트코드로 확인 — netty-buffer 4.2.12 / spring-core <b>7.0.7</b>.
+ * 처음 7.0.9 라고 적었는데 그건 캐시에 같이 있던 jar 였다. 이 앱의 {@code runtimeClasspath} 가 고르는
+ * 것은 7.0.7 이다(두 버전의 {@code wrap(byte[])} 바이트코드는 동일해 결론은 같다). 이 티켓에서
+ * "어느 팩토리로 쟀나" 를 한 번 틀렸는데 "어느 jar 를 열었나" 가 같은 종이다):
  * <pre>
  * NettyDataBufferFactory.wrap(byte[])  → Unpooled.wrappedBuffer(byte[])
  *                                      → new UnpooledHeapByteBuf(ALLOC, array, len)   배열 공유(복사 없음)
@@ -54,7 +61,7 @@ import com.sapari.chat.application.protocol.OutboundMessage;
  * 간섭하지 않고, 한 세션의 버퍼를 해제해도 배열은 건드려지지 않는다({@code freeArray} 가 no-op).
  * 그래서 끊긴 세션이 다른 세션의 payload 를 망가뜨리는 경로가 없다.
  */
-final class OutboundFrame {
+public final class OutboundFrame {
 
     private final OutboundMessage message;
 
@@ -66,7 +73,7 @@ final class OutboundFrame {
     }
 
     /** 이 프레임이 나르는 메시지 — 기존 호출부·테스트가 보는 모양이다. */
-    OutboundMessage message() {
+    public OutboundMessage message() {
         return message;
     }
 
@@ -77,7 +84,7 @@ final class OutboundFrame {
      * 배열을 감싸고 있어서, 한 곳에서 쓰면 그 방 전원의 payload 가 바뀐다. 읽기 전용으로만 쓴다
      * (버퍼로 감싸는 것은 읽기다 — 위 javadoc 의 근거 참조).
      */
-    byte[] utf8(Function<OutboundMessage, String> serializer) {
+    public byte[] utf8(Function<OutboundMessage, String> serializer) {
         byte[] cached = utf8;
         if (cached == null) {
             cached = serializer.apply(message).getBytes(StandardCharsets.UTF_8);

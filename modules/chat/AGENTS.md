@@ -694,16 +694,24 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
     throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is an **unbounded stall, which does not accumulate across indexes**. Measured driver defaults
+    cost is a stall bounded by **`ChatMongoConfig.INDEX_CREATE_CEILING`** (SPR-152; 10 min, and it is a
+    deadline over **all four** index creations, not per call). Measured driver defaults
     (`MongoClientSettings.builder().build()`): `serverSelectionTimeoutMs=30000`,
     **`socketReadTimeoutMs=0` (infinite)**, `socketConnectTimeoutMs=10000`, global `timeoutMs=null` — and
-    this repo sets no Mongo timeout anywhere, so those defaults apply. So 30s bounds only the "never picks
-    a server" mode; once a server *is* picked and `createIndex` does not answer, `.block()` waits forever.
-    Want a bound? Set `timeoutMs`. It does not accumulate because the class has no `catch` and the four
-    `createIndex(...).block()` calls are sequential assignments — the first to throw ends the method and the
-    other three are never evaluated. **This line has been wrong three times**: 90s, then "120s for the
-    four … a fifth adds 30s", then "~30s". Each correction fixed the *number* without measuring what bounds
-    it. State what bounds it, not how long it is. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
+    the repo sets no Mongo *client* timeout anywhere, so those defaults apply. So 30s bounds only the
+    "never picks a server" mode; once a server *is* picked and `createIndex` does not answer, the driver
+    has nothing that would cut it — which is why the bound lives at the call site instead.
+    - **This line has been wrong four times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
+      "worst wait is that one value" while the ceiling was still **per call**. The first three fixed the
+      *number* without measuring **what bounds it**; the fourth measured what bounds it but not the
+      **unit** — per call or per method. Measured: ceiling 400ms × 4 calls at 300ms each → total
+      **1,279 ms**, **0 throws** — a per-call ceiling does not bound the method, it scales with the count.
+      That number is read as startupProbe sizing, so the unit is the load-bearing part.
+    - Earlier versions of this bullet also said *"Want a bound? Set `timeoutMs`"* and *"a
+      `VERIFY_CEILING`-style value is not the lever here — the probe configuration is (`infra/`), so this
+      is recorded, not changed."* SPR-152 pulled exactly that lever, at the call site rather than through
+      `timeoutMs` (a global `timeoutMs` would bound runtime queries too, and getting that value wrong
+      breaks serving rather than boot). `ChatMongoIndexCeilingTest` pins both the bound and its unit. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
     serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
     (`infra/`), so this is recorded, not changed.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
