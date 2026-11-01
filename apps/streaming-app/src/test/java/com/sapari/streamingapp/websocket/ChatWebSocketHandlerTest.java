@@ -98,6 +98,50 @@ class ChatWebSocketHandlerTest {
     }
 
     /**
+     * ⭐ 죽은 자리 수거가 <b>배선돼 있는지</b> — 등록보다 먼저, 핸들러의 기한으로 불리는지.
+     *
+     * <p>수거 자체는 {@code SessionAdmissionCapTest} 가 네 건으로 고정한다. 그런데 그 보장은
+     * <b>핸들러가 그것을 부를 때만</b> 값이 있고, 그 한 줄을 지워도 레지스트리 테스트는 전부 초록이다 —
+     * {@code runSession} 자신의 javadoc 이 경고한 "분기만 따로 재면 배선이 빠진 것을 아무도 묻지
+     * 않는다" 가 이 경우다.
+     *
+     * <p><b>순서가 하중이다.</b> 등록 뒤에 부르면 이미 거부된 뒤라 아무것도 구하지 못하고, 거부를
+     * 받고 재시도하는 모양으로 바꾸면 거부 카운터가 집행 아닌 것을 집행으로 센다. 그래서
+     * {@code InOrder} 로 "수거 → 등록" 을 고정한다.
+     *
+     * <p>기한을 {@code any()} 로 지우지 않는 이유는 위 생존 확인 테스트와 같다 — 핸들러가 수명 상한을
+     * 기한으로 넘기는 뮤턴트가 통과하면, 60분 침묵에서만 자리가 비어 수거가 사실상 무효가 된다.
+     */
+    @Test
+    @DisplayName("⭐ 죽은 자리 수거가 등록보다 먼저 배선돼 있다 — 안 부르면 상한이 정상 재접속을 막는다")
+    void dead_slot_reaping_is_wired_before_register() {
+        // given
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(Duration.ofSeconds(1))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+
+        // then
+        InOrder order = inOrder(registry);
+        order.verify(registry).reapUnresponsiveIfFull(userId, roomId, LIVENESS_DEADLINE);
+        order.verify(registry).register(eq("s1"), any());
+    }
+
+    /**
      * ⭐ 수명 상한이 <b>배선돼 있는지</b>를 {@code runSession}으로 직접 구동해 확인한다.
      *
      * <p>분기만 따로 재면 안 된다 — 그 분기를 {@code firstWithSignal}에서 빼도 아무 테스트가 깨지지
