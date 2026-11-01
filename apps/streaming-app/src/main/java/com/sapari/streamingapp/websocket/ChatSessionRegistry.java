@@ -1,7 +1,9 @@
 package com.sapari.streamingapp.websocket;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -42,7 +44,9 @@ import reactor.util.concurrent.Queues;
  *
  * <p><b>왜 transport(streaming-app)에 두나</b>: 실제 송신 채널을 쥐는 유일한 곳이라서. chat-core 포트는
  * reactor Sink·WS 채널을 모르고(레이어 누수 방지) 도메인 {@link ChatSession}만 다룬다. 그래서 채널(Sink)은
- * 이 구현체가 소유하고, 핸들러는 {@link #outbound(String)}로 아웃바운드 스트림을 받아 session.send()에 연결한다.
+ * 이 구현체가 소유하고, 핸들러는 {@link #outboundFrames(String)}로 아웃바운드 스트림을 받아
+ * session.send()에 연결한다({@code outbound(String)} 은 같은 스트림을 메시지로만 본 package-private
+ * 뷰다 — 공개 구독 진입점은 하나다).
  *
  * <p><b>Sink</b>: 외부(이 레지스트리)에서 임의 시점에 값을 밀어넣는 통로. T10 구독자가 메시지를 받으면
  * {@code sendToSession}으로 해당 세션 Sink에 emit → 그 WS로 흘러나간다. unicast+버퍼라 구독(=session.send) 전
@@ -351,8 +355,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
                         // 보내면 방마다 한 번씩 전원에게 같은 숫자가 중복으로 간다.
                         return Mono.empty();
                     }
+                    // 뷰 둘을 미리 만들어 세션마다 고르기만 한다. 세션마다 새로 만들면 같은 내용인
+                    // 객체가 세션 수만큼 생기고, 그러면 팬아웃의 직렬화 메모가 한 건도 안 걸려
+                    // 직렬화가 다시 세션 수에 비례한다(OutboundFrame 참조).
+                    OutboundMessage ownerInfo = OutboundMessage.roomInfo(count, true);
+                    OutboundMessage viewerInfo = OutboundMessage.roomInfo(count, false);
                     return sendToRoomGated(roomId,
-                            session -> OutboundMessage.roomInfo(count, session.isRoomOwner()));
+                            session -> session.isRoomOwner() ? ownerInfo : viewerInfo);
                 })
                 .onErrorResume(e -> {
                     // 수를 모르면 보내지 않는다 — 다음 회차가 받는다. 여기서 터뜨리면 그 뒤로 이 Pod 의
@@ -378,6 +387,116 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 서로 끼어들지 않게 하고, 방이 비면 항목 자체를 지운다(죽은 방 누적 방지).
      */
     private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
+
+    /**
+     * 같은 사람이 같은 방에 동시에 열 수 있는 세션 수의 상한.
+     *
+     * <p><b>왜 (유저, 방) 단위인가.</b> 막으려는 것은 "유효한 룸 토큰 한 장으로 세션을 계속 여는 것"
+     * 이고, 룸 토큰은 한 방에 묶여 있다({@code role}·{@code owner}·{@code roomId} 가 클레임이다).
+     * 토큰이 단건용이 아니라 TTL(약 90초) 안에서 재사용 가능하므로({@code modules/live/AGENTS.md} —
+     * "Not single-use — replayable within the TTL") 그 창 안에 같은 토큰으로 몇 번이고 핸드셰이크할 수
+     * 있다. 그 창을 닫는 가장 좁은 단위가 (유저, 방)이다. 유저 단위로 넓히면 방을 여러 개 보는
+     * 관리자를 막고, 방 단위로 넓히면 인기 방의 정상 시청자를 막는다.
+     *
+     * <p><b>왜 5 인가.</b> 정상 사용자가 같은 방에 동시에 여는 수에서 나온 값이다 — 휴대폰 + 데스크톱
+     * + 새로고침 경합(앞 세션이 아직 안 걷혔다)까지 세도 3 을 넘지 않는다. <b>한때 그 셋만 셌다</b>:
+     * 소켓이 조용히 끊긴 자리가 생존 확인의 첫 점검(기한 + 간격, 기본 약 2분)까지 남는다는 것을
+     * 세지 않아, 모바일 핸드오버로 조용히 다섯 번 끊긴 사람이 거부되는 경로가 열려 있었다. 그 창은
+     * 값을 키워서가 아니라 {@link #reapUnresponsiveIfFull} 로 닫았다 — 값을 키우면 남용 한도가
+     * 같이 커지는데 그 창은 몇 개가 필요한지 정해지지 않는다. 용량에서 나온 값이
+     * <b>아니다</b>: 앱 쪽 세션당 2,349 bytes 라 5 든 50 든 메모리는 구분되지 않는다
+     * ({@code ChatSessionGaugeConfig} 에 실측이 있다). 그래서 이 값은 부하 테스트를 기다릴 이유가
+     * 없었고, 한때 용량 상한과 한 덩이로 묶여 미뤄져 있었다.
+     *
+     * <p>⚠️ <b>게스트에는 걸리지 않는다.</b> 비로그인 입장은 <b>입장마다 새 임의 userId</b>를 받으므로
+     * ({@code EnterLiveService} — "매 입장마다 새 임의 userId를 부여하고 role=GUEST") 게스트 연결은
+     * 전부 다른 키가 되어 이 상한에 닿지 않는다. 즉 이 상한이 닫는 것은 <b>회원 토큰 재사용</b>
+     * 한 갈래이고, 인증 없이 {@code enter} 를 반복해 토큰을 받아 가는 갈래는 그대로 열려 있다.
+     * 그쪽은 발급 측(live)의 레이트리밋 문제라 이 자리에서 닫을 수 없다 — "연결 수 상한이 생겼다" 로
+     * 읽히면 안 되는 이유다.
+     *
+     * <p>⚠️ <b>파드 로컬이다 — 전역 상한이 아니다.</b> {@link #userRoomSessions} 는 이 싱글톤의
+     * 인스턴스 필드라 실효 상한은 <b>5 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
+     * 핸드셰이크가 흩어지면 각 파드의 {@code compute} 가 서로 다른 맵을 봐서 전부 통과한다. 이 파일은
+     * 다중 파드를 설계 전제로 못 박고 있고(아래 계정 팬아웃 비용이 "파드 6개" 기준이다), 크로스 파드
+     * 데이터도 이미 있다({@code ChatSessionRepository.add} 가 Redis HASH 에 userId 를 적는다).
+     * 즉 파드 로컬은 <b>제약이 아니라 선택</b>이다 — 전역으로 올리면 입장마다 Redis 왕복이 하나 붙고,
+     * 남용 한도를 5 에서 5×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
+     *
+     * <p>⚠️ <b>이 상한이 "피해자 입장 차단" 이라는 능력을 새로 만들었다.</b> 상한 키가 토큰에서만
+     * 오고({@code RoomTokenVerifier} 의 {@code claims.getSubject()} 하나), 토큰이 TTL 안에서 재사용
+     * 가능하고, 세션이 토큰보다 훨씬 오래 살고(기본 수명 60분, 세션 중 재검증 없음 — {@code verify}
+     * 호출부는 핸드셰이크 하나다), 상한이 <b>새 연결을 거부</b>하므로 — 90초짜리 자격증명으로 자리를
+     * 채워 두면 정당한 소유자가 그 파드에서 최대 수명만큼 입장 거부된다. 그 토큰 재사용은
+     * {@code RoomTokenVerifier} 가 <b>이미 알고 받아들인</b> 것인데, 그 수용은 "결과가 엿듣기로
+     * 한정된다" 는 전제에서 나왔고 이 상한이 그 전제를 바꿨다.
+     *
+     * <p>그래서 <b>가장 오래된 세션을 밀어내지 않는다.</b> 한때 이 비교가 능력의 <b>종류</b>만
+     * 봤는데, 리뷰가 두 칸을 더 적게 했다 — 그 둘이 거부 쪽에 불리하다:
+     * <pre>
+     *                  거부(현재)                        evict-oldest
+     * 공격자 능력      그 (유저, 방) 입장을 결정론적 차단   피해자의 살아 있는 세션 1개를 끊음
+     * 지속             51~60분 (세션 수명, 지터 −15%)      ≤90초 (재점유마다 유효 토큰이 필요)
+     * 피해자 수단      없음* — 자리가 빌 때까지 전부 1008   항상 — 재접속하면 최신 자리를 되찾음
+     * </pre>
+     * (*"없음" 은 <b>공격자가 5 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
+     * 완주 전에는 피해자의 재접속도 흩어져 남은 파드에 붙는다. 핸드셰이크에 레이트리밋이 없어 토큰
+     * TTL 안에 완주가 가능하므로 표에는 완주 후 값을 적는다. LB 어피니티가 그걸 막는지는 <b>이
+     * 저장소에서 확인할 수 없다</b> — 매니페스트가 여기 없다. 표의 "≤90초" 는 <b>불변식이 아니라
+     * 배포 설정값</b>이다 — 룸 토큰 만료가 설정이고 그 쪽
+     * 검증은 양수까지만 본다. 설정을 길게 잡으면 그 칸이 같이 늘어난다.)
+     * 비대칭의 원인은 <b>토큰 TTL 이 evict 쪽만 묶는다</b>는 것이다 — 거부의 피해는 이미 성립한
+     * 세션이 나르므로 토큰이 죽은 뒤에도 수명만큼 간다.
+     *
+     * <p>그래도 거부를 택한 이유는 <b>하나</b>다 — 능력의 종류가 다르다. 지금은 "못 들어온다" 이고
+     * 그쪽은 "쫓겨난다" 이며, 후자는 방송을 보는 중에 끊기는 것이다. 위 표와 이 한 줄이 결정의
+     * 전부이고, 표의 두 칸이 거부 쪽에 불리하다는 것도 그대로 둔다.
+     *
+     * <p>⚠️ 한때 근거를 셋으로 적었는데 <b>둘이 틀렸다.</b> (2) 로 "evict 는 살아 있는 소켓의
+     * flush 를 접속 경로에 올린다" 고 적었는데, {@code terminate} 는 <b>소켓 I/O 를 하지 않는다</b> —
+     * closeStatus CAS · sink {@code tryEmitComplete} · 제어 채널 {@code tryEmitValue} 뿐이고 실제
+     * {@code session.close()} 는 피해자 자신의 체인에서 다른 스레드가 쓴다. 배수도 반대다: 빼낸
+     * reap 은 최대 5건 × 50ms 였고 evict 는 1건 × 50ms 다. (3) 으로 "정상 사용자가 걸리는 경로는
+     * evict 없이도 닫힌다" 고 적었는데, {@link #reapUnresponsiveIfFull} 이 그 창을 닫지 못한다는
+     * 사실(그 javadoc 참고)이 그 근거를 없앴다. 재지 않고 지어낸 논증이라 지운다 — 남는 하나로도
+     * 결정은 서지만, 셋이라고 적어 둔 동안 그 결정이 실제보다 단단해 보였다.
+     *
+     * <p>근본 수정은 live 가 룸 토큰에 {@code jti} 를 넣어 단건용으로 만드는
+     * 것이고 그건 이 저장소 밖이다 — 완화는 토큰이 쿼리가 아니라 헤더로 다니는 것과 차단이 파드
+     * 범위라는 것, 둘뿐이다.
+     *
+     * <p><b>이 검사는 입장 게이트 뒤에 있다</b> — 거부되는 연결도 게이트의 Redis 왕복(종료·강퇴 마커)을
+     * 이미 쓴 상태다. 게이트 앞으로 옮기면 그 왕복을 아낄 수 있고 userId 는 토큰 검증(로컬)만으로
+     * 나오므로 기술적으로 가능하지만, <b>옮기지 마라</b>: 검사와 등재가 쪼개지면 동시 접속 여럿이
+     * 같은 수를 읽고 다 통과한다(순수 분리 되돌림 실측: 1라운드 20스레드에서 탐지 42%, 서명
+     * {@code was: 6} — 한때 여기 "20개가 전부 들어왔다" 로 적었는데 그 수는 창을 {@code sleep} 으로
+     * 넓힌 변형의 것이고, {@code SessionAdmissionCapTest} 가 그 숫자를 철회했다). 아끼는 것은 왕복 셋이고
+     * 잃는 것은 상한 자체다.
+     */
+    static final int MAX_SESSIONS_PER_USER_PER_ROOM = 5;
+
+    /** 상한을 세는 키. (유저, 방) 쌍이다 — 상한의 단위가 그것이라는 사실을 타입으로 남긴다. */
+    private record UserInRoom(UUID userId, UUID roomId) {
+    }
+
+    /**
+     * (유저, 방) → 그 조합의 sessionId 집합. {@link #roomSessions} 와 같은 종류의 보조 인덱스다.
+     *
+     * <p>세지 않고 {@link #local} 을 훑으면 접속 1건이 Pod 전체 세션 수에 비례한다 — 재접속 폭풍이
+     * 정확히 그 둘(접속 수 × 세션 수)이 동시에 큰 구간이라, 상한을 넣으려고 만든 코드가 그 구간의
+     * 비용이 된다. 방이 비면 항목을 걷어내는 것도 같은 이유다(죽은 키 누적 방지).
+     */
+    private final Map<UserInRoom, Set<String>> userRoomSessions = new ConcurrentHashMap<>();
+
+    /** 상한으로 거부한 누적 수. 로그를 솎아도 규모는 남긴다 — 정상 시청자를 막고 있는지는 이 수로 본다. */
+    private final AtomicLong admissionCapped = new AtomicLong();
+
+    /** 죽은 소켓이 들고 있던 자리를 거둔 누적 수. 거부와 짝으로 봐야 공격과 핸드오버가 갈린다. */
+    private final AtomicLong slotsReaped = new AtomicLong();
+
+    /** 상한 거부 로그를 마지막으로 남긴 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
+    private final AtomicLong lastAdmissionCapLogNanos =
+            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
 
     /**
      * 방별 시청자 수 캐시. 입장할 때마다 Redis HASH를 통째로 읽어오는 비용을 끊는다.
@@ -429,7 +548,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>{@code closeStatus}는 종료 사유 — complete로 곱게 닫히든 제어 채널로 끊기든 같은 코드로 닫기 위해
      * 따로 보관한다(complete 신호엔 코드를 실을 수 없다).
      */
-    private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
+    private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundFrame> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
             AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
             AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded,
@@ -478,22 +597,42 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> register(String sessionId, ChatSession session) {
-        // 관리자 입장만 남긴다. 이 세션은 방 주인과 같은 것을 받는다 — 마스킹 전 원문과 발신자
-        // 이메일이다. 방 주인은 자기 방에 묶이지만 관리자는 진행 중인 아무 방이나 들어갈 수 있어
-        // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
-        // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
-        // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
-        // 문구가 '관리자'가 아닌 것은 판정이 역할을 가리지 않기 때문이다 — 특권 뷰가 넓어지는 날
-        // 감사가 자동으로 따라오는 것이 이 설계의 값인데, 그때 비-관리자를 관리자로 기록하면 안 된다.
-        // 그래서 role을 값으로 싣는다(오늘은 언제나 ADMIN이다).
-        if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(session.role(), session.isRoomOwner())) {
-            log.info("특권 뷰 입장 — role={} sessionId={} userId={} roomId={}",
-                    session.role(), sessionId, session.userId(), session.roomId());
-        }
-        // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
-        // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
-        local.put(sessionId, new LocalSession(sessionId, session,
-                Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get()),
+        // 상한 검사와 등재를 <b>한 원자 구간</b>에 묶는다. 세어 보고 나중에 넣으면 동시 접속 둘이
+        // 같은 수를 읽고 둘 다 통과해 상한을 넘긴다 — compute 의 재매핑 함수는 그 키에 대해 직렬화되므로
+        // "셋을 보고 넣는다" 가 쪼개지지 않는다. 판정을 배열로 받는 것은 그 안에서만 쓰는 값이라서다
+        // (같은 키에 동시 실행이 없으므로 가시성 문제도 없다).
+        //
+        // ⚠️ 이 메서드는 {@code Mono.defer} 로 감싸여 있지 않다 — 자리 증가는 <b>조립 시점에 즉시</b>
+        // 일어난다. 한때 여기 "그 구간은 Mono 조립뿐이라 도달 불가" 라고 적었는데 <b>두 문장이 다
+        // 틀렸다</b>: 그 구간에는 local.put 과 주입 협력자 호출(특권 뷰 감사)과 roomSessions.compute
+        // 가 있고, 이 파일의 테스트가 그 협력자를 던지게 해 실제로 그 구간을 밟는다. 그리고 "항목이
+        // 영구히 남는다" 도 이제 아래 try/finally 가 되돌린다 — 불변식이 "도달 불가" 에서 "집행" 으로
+        // 바뀐 것이 이 설계의 내용이다. 다음 사람이 "도달 불가" 를 읽고 그 가드를 걷으면 안 된다.
+        //
+        // local.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 local 에 들어가 있어
+        // 게이지·팬아웃이 그 세션을 한 번 보고, cleanup 이 지우기 전까지 시청자 수가 틀린다.
+        // ⚠️ <b>세션 레코드를 자리 확보 앞에서 만든다.</b> 한때 자리를 넣은 뒤 이 자리에서 만들었고,
+        // 그러면 자리 추가와 {@code local.put} 사이에 <b>할당</b>이 들어와 OutOfMemoryError 로 던질 수
+        // 있는 창이 생긴다. 그 창은 테스트로 밟을 수단이 없어(남는 것이 Error 뿐이다) 그 구간의
+        // 보상은 CI 가 영원히 확인해 주지 않는다 — 실제로 그 보상이 세 라운드에 걸쳐 두 번
+        // 좁아졌고 두 번 다 스위트가 초록이었다.
+        //
+        // ⚠️ 대가로 <b>불변식이 바뀌었다.</b> 아래 레코드는 nanoTime 셋을 들고 있고 그 원점이 이제
+        // 자리 확보·거부 판정보다 앞선다. 포함관계는 보존된다 — 생존 확인의 두 술어가 같은 필드를
+        // 읽으므로 원점이 δ 앞당겨지면 둘이 같이 δ 앞당겨진다. 실제로 앞당겨지는 것은 30s·90s 창
+        // 둘이고 그 사이 구간은 맵 compute 하나와 분기(마이크로초)다. 나머지 둘(거부 응답 간격·
+        // 레이트리밋)은 원점이 앞설수록 더 안전한 방향이다.
+        //
+        // 그래서 금지가 "던질 수 있는 코드" 에서 <b>"느린 코드"</b> 로 바뀌었다 — 이 생성과
+        // local.put 사이에 I/O 나 락을 넣으면 그 창 둘이 그만큼 짧아진다.
+        //
+        // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ local.put 사이에
+        // 할당이 없다. 대가는 거부 1건마다 버려지는 아웃바운드 큐 하나(256슬롯, 약 2.3KB)이고,
+        // 거부 경로가 남용 경로라 공짜가 아니다 — 다만 그 1건은 이미 WS 핸드셰이크와 토큰 검증과
+        // 입장 게이트의 Redis 왕복 셋을 쓴 뒤다.
+        LocalSession pending = new LocalSession(sessionId, session,
+                Sinks.many().unicast().onBackpressureBuffer(
+                        Queues.<OutboundFrame>get(OUTBOUND_BUFFER_SIZE).get()),
                 Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
                 // 둘 다 nanoTime 기준이라 0을 센티널로 쓰면 안 된다 — nanoTime 원점은 임의고 음수일 수 있어,
                 // 0과 비교하면 등록 직후부터 "창 안"으로 오판해 전송이 통째로 막힌다.
@@ -503,49 +642,180 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 new AtomicLong(System.nanoTime()),
                 new AtomicBoolean(),
                 // 생존 시계도 지금부터 — 방금 핸드셰이크를 마쳤으므로 응답이 없는 상태가 아니다.
-                new AtomicLong(System.nanoTime())));
-        // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
-        // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
-        roomSessions.compute(session.roomId(), (room, sessionIds) -> {
+                new AtomicLong(System.nanoTime()));
+
+        boolean[] admitted = {false};
+        userRoomSessions.compute(new UserInRoom(session.userId(), session.roomId()), (key, sessionIds) -> {
             Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
-            ids.add(sessionId);
+            if (ids.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+                ids.add(sessionId);
+                admitted[0] = true;
+            }
             return ids;
         });
-        // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·
-        // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
+        // ⚠️ <b>자리를 넣은 다음부터 반환까지 전부 이 try 안이다.</b> 그 구간에서 던지면 회수 경로
+        // 둘이 다 못 걷기 때문이다 — unregister 는 local.get 이 null 이라 블록을 건너뛰고,
+        // reapUnresponsiveIfFull 은 isUnresponsive 가 local 에 없는 sessionId 에 "살아 있음" 을
+        // 준다. 그러면 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다 — 이 파일이 스스로
+        // "상한 코드가 만들 수 있는 최악의 결함" 이라 부른 그것이다.
         //
-        // 다만 이 관용이 실제로 값을 내는 건 <b>일시적·부분적</b> 실패일 때다. Redis가 통째로 죽으면 전달
-        // 자체가 Pub/Sub이라 아무도 못 받고, 그때 남는 건 "저장은 되고 발신자만 ack 받는" 상태다 —
-        // 강퇴·밴·종료 마커가 같이 열려 있어 그 창의 전송이 이력에 그대로 쌓인다(레이트리밋은
-        // 아니다 — 그쪽은 Pod 로컬 창으로 강등해 상한이 남는다). 그 구간을 막을지는
-        // 전송 경로(publish 실패 처리)의 정책 문제라 여기서 결정하지 않는다.
-        return sessionRepository.add(session.roomId(), sessionId, session.userId())
-                .onErrorResume(e -> {
-                    log.warn("세션 명부 등재 실패 — 접속은 진행(시청자 수만 부정확) roomId={} cause={}",
-                            session.roomId(), e.getClass().getSimpleName());
-                    return Mono.empty();
-                });
+        // ⚠️ "실패하면 되돌린다" 의 대상은 <b>넷</b>이다 — 자리·local·방 항목·캐시 둘.
+        // 한때 이 try 가 <b>local.put 하나만</b> 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
+        // (put 과 생성자들은 Error 외에 던질 경로가 없다) 정작 던질 수 있는 둘 — 주입 협력자를
+        // 부르는 감사 블록과 roomSessions.compute — 이 가드 <b>밖</b>에 남았다. 그 상태가 더
+        // 나빴다: 거기서 던지면 자리뿐 아니라 local 항목까지 남는다.
+        //
+        // ⚠️ 근거가 한 번 낡았다. 한때 "호출부가 register(...).then(...).doFinally(cleanup) 이라
+        // doFinally 가 애초에 조립되지 않는다" 고 적었는데, 호출부가 Mono.defer{...}.doFinally(...)
+        // 로 바뀌어 <b>동기 예외에서도 doFinally 는 돈다</b>(실측). 가드가 여전히 필요한 이유는
+        // 다른 것이다 — 그 cleanup 이 부르는 unregister 가 local.get 으로 키를 만들고, 이 구간에서
+        // 던지면 local 에 항목이 없어 자리를 못 걷는다. 결론은 같고 근거만 교체됐다.
+        //
+        // 거부 분기도 이 안에 둔다 — 자리 추가와 가드 사이에 <b>한 줄도 들어가지 않게</b> 하려는
+        // 것이고, 인접성에 기대지 않는다는 것이 이 배치의 값이다.
+        //
+        // 그 경로의 finally 가 무해한 근거는 "remove 가 무연산" 한 단계가 아니다 — finally 는 자리와
+        // local 과 방 항목과 캐시 둘을 되돌리고, 그중 <b>방 항목 삭제와 캐시 둘은 remove 의 무연산
+        // 여부와 무관하게 {@code sessionIds.isEmpty()} 하나로 갈린다.</b> 성립하는 근거는 더 센
+        // 불변식이다: <b>{@code roomSessions} 에 항목이 있으면 그 집합은 비어 있지 않다</b>(값 집합을
+        // 바꾸는 지점이 등록과 되돌리기 둘뿐이고 둘 다 같은 키의 compute 안이며, 비는 즉시 매핑을
+        // 걷는다). 그래서 "키는 있는데 집합이 빈" 상태가 구성 자체가 되지 않는다.
+        boolean registered = false;
+        try {
+            if (!admitted[0]) {
+                long capped = admissionCapped.incrementAndGet();
+                if (shouldLogAdmissionCap()) {
+                    // 표본 하나와 Pod 누적을 함께 적는다 — 드롭 로그와 같은 표기다. 이 줄이 늘어나면
+                    // 공격이 아니라 상한이 낮은 것일 수 있으니, 사람이 그 둘을 가를 수 있게 둘 다 남긴다.
+                    log.warn("동시 세션 상한 초과로 입장 거부 — 표본 userId={} 표본 roomId={} 상한={} 누적거부={}",
+                            session.userId(), session.roomId(), MAX_SESSIONS_PER_USER_PER_ROOM, capped);
+                }
+                // 던지지 않고 Mono.error 로 돌려준다 — 핸들러의 onErrorResume(EntryDeniedException) 이
+                // SYSTEM code 를 실어 1008 로 닫는 경로를 이미 갖고 있고, 거부는 그 모양이 맞다.
+                return Mono.error(new EntryDeniedException(EntryDeniedException.Reason.TOO_MANY_SESSIONS));
+            }
+
+            // ⚠️ <b>자리 증가와 local.put 사이에서 던지면 자리가 영구히 남는다.</b> 회수 경로 둘이
+            // 다 못 걷기 때문이다 — unregister 는 local.get 이 null 이라 블록을 건너뛰고,
+            // reapUnresponsiveIfFull 은 isUnresponsive 가 local 에 없는 sessionId 에 "살아 있음" 을
+            // 준다. 그러면 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다 — 이 파일이 스스로
+            // "상한 코드가 만들 수 있는 최악의 결함" 이라 부른 그것이다.
+            //
+            // 한때 "그 구간은 비어 있어 도달 불가" 로 두었는데 그 추론은 두 번 깨졌다: 특권 뷰 감사
+            // 블록이 그 사이로 들어왔고(그래서 아래로 옮겼다), 아래 할당 자체도 OutOfMemoryError 로
+            // 던질 수 있다. 추론으로 지키는 대신 <b>집행</b>한다 — 실패하면 자리를 되돌린다.
+            // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
+            // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
+            local.put(sessionId, pending);
+
+            // ⚠️ 감사 로그가 <b>상한 검사 뒤</b>에 있다. 한때 register 첫 줄이었는데, 그러면 상한으로
+            // 거부된 접속도 "특권 뷰 입장" 으로 남아 감사가 실제 특권 뷰보다 많아진다 — 이 줄의 값이
+            // "누가 언제 어느 방을 봤는가" 에 답하는 것이라, 보지 못한 접속이 섞이면 그 답이 틀린다.
+            // 관리자 입장만 남긴다. 이 세션은 방 주인과 같은 것을 받는다 — 마스킹 전 원문과 발신자
+            // 이메일이다. 방 주인은 자기 방에 묶이지만 관리자는 진행 중인 아무 방이나 들어갈 수 있어
+            // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
+            // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
+            // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
+            // 문구가 '관리자'가 아닌 것은 판정이 역할을 가리지 않기 때문이다 — 특권 뷰가 넓어지는 날
+            // 감사가 자동으로 따라오는 것이 이 설계의 값인데, 그때 비-관리자를 관리자로 기록하면 안 된다.
+            // 그래서 role을 값으로 싣는다(오늘은 언제나 ADMIN이다).
+            if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(session.role(), session.isRoomOwner())) {
+                log.info("특권 뷰 입장 — role={} sessionId={} userId={} roomId={}",
+                        session.role(), sessionId, session.userId(), session.roomId());
+            }
+
+            // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
+            // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
+            roomSessions.compute(session.roomId(), (room, sessionIds) -> {
+                Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
+                ids.add(sessionId);
+                return ids;
+            });
+            // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·
+            // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
+            //
+            // 다만 이 관용이 실제로 값을 내는 건 <b>일시적·부분적</b> 실패일 때다. Redis가 통째로 죽으면 전달
+            // 자체가 Pub/Sub이라 아무도 못 받고, 그때 남는 건 "저장은 되고 발신자만 ack 받는" 상태다 —
+            // 강퇴·밴·종료 마커가 같이 열려 있어 그 창의 전송이 이력에 그대로 쌓인다(레이트리밋은
+            // 아니다 — 그쪽은 Pod 로컬 창으로 강등해 상한이 남는다). 그 구간을 막을지는
+            // 전송 경로(publish 실패 처리)의 정책 문제라 여기서 결정하지 않는다.
+            Mono<Void> registration = sessionRepository.add(session.roomId(), sessionId, session.userId())
+                    .onErrorResume(e -> {
+                        log.warn("세션 명부 등재 실패 — 접속은 진행(시청자 수만 부정확) roomId={} cause={}",
+                                session.roomId(), e.getClass().getSimpleName());
+                        return Mono.empty();
+                    });
+            registered = true;
+            return registration;
+        } finally {
+            if (!registered) {
+                // 자리만 되돌려서는 모자란다 — local 항목과 방 색인도 이미 들어가 있을 수 있고,
+                // 등록이 던지면 그 뒤 단계가 돌지 않아 반쪽 상태가 남는다(호출부의 doFinally 는
+                // 돌지만, 그것이 부르는 unregister 는 local.get 으로 키를 만들어 자리를 못 걷는다).
+                //
+                // ⚠️ 이 가드가 못 덮는 갈래가 하나 있다: 등록이 성공한 뒤 호출부의 다음 단계가
+                // <b>영원히 끝나지 않는</b> 경우다(그러면 doFinally 가 돌지 않아 local 잔류가
+                // 유계가 아니다). 실제로는 Lettuce 명령 타임아웃이 묶지만 그 값이 추적되는 설정에
+                // 없어 라이브러리 기본값에 기댄다. 능력 증가는 없고(구독 전이라 프레임도 받지
+                // 못한다) 자원 누수다 — 여기서 고칠 자리가 아니라 적어 둔다.
+                // 자리는 <b>인자에서 키를 만들어 무조건</b> 되돌린다 — local 조회로 키를 만들면
+                // 자리가 들어간 뒤 local.put 전에 던지는 구간에서 반납이 통째로 빠진다(실측).
+                // 그 구간이 이 가드가 존재하는 유일한 이유다. 멱등이라 두 번 불려도 무해하다.
+                releaseSlot(session.userId(), session.roomId(), sessionId);
+                rollbackLocalIndexes(sessionId, session.roomId());
+            }
+        }
     }
 
-    /** transport 전용: 핸들러가 session.send()에 연결할 아웃바운드 스트림. (포트 아님 — chat-core는 안 씀) */
-    public Flux<OutboundMessage> outbound(String sessionId) {
+    /**
+     * transport 전용: 핸들러가 {@code session.send()} 에 연결할 아웃바운드 스트림. (포트 아님 — chat-core는 안 씀)
+     *
+     * <p>프레임을 그대로 흘린다 — 핸들러가 {@code frame.utf8(..)} 로 직렬화·인코딩을 한 번만 하게
+     * 하려면 공유 객체가 소비 지점까지 와야 한다({@link OutboundFrame} 에 이유가 적혀 있다).
+     */
+    public Flux<OutboundFrame> outboundFrames(String sessionId) {
         LocalSession ls = local.get(sessionId);
         return ls == null ? Flux.empty() : ls.sink().asFlux();
     }
 
+    /**
+     * 같은 스트림을 메시지로만 본 것 — 와이어 모양에 관심이 없는 호출부·테스트용이다.
+     *
+     * <p>Sink 가 unicast 라 구독자는 하나뿐인데, 이건 <b>두 번째 구독이 아니라 매핑 뷰</b>다.
+     * 구독 경로가 하나이므로 둘 중 어느 쪽을 쓰든 구독은 한 번만 일어난다.
+     *
+     * <p><b>package-private 이다.</b> 공개 구독 진입점은 {@link #outboundFrames(String)} 하나로 둔다 —
+     * unicast sink 에 공개 진입점이 둘이면 "둘 다 구독하면 하나가 실패한다" 를 호출 관례로만 지키게
+     * 되고, 그 관례는 모듈 밖에서 안 보인다. 이쪽은 같은 패키지 테스트가 와이어 모양에 관심 없을 때
+     * 쓰는 편의다.
+     */
+    Flux<OutboundMessage> outbound(String sessionId) {
+        return outboundFrames(sessionId).map(OutboundFrame::message);
+    }
+
     @Override
     public Mono<Void> unregister(UUID roomId, String sessionId) {
-        local.remove(sessionId);
-        // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
-        roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
-            sessionIds.remove(sessionId);
-            if (sessionIds.isEmpty()) {
-                activeCountCache.remove(roomId);   // 인덱스와 같은 수명 — 남기면 이쪽이 누수원이 된다
-                lastPushedCount.remove(roomId);    // 같은 이유 — 방이 사라지면 마지막 값도 쓸모가 없다
-                return null;
-            }
-            return sessionIds;
-        });
+        // 상한 인덱스를 <b>local 을 지우기 전에</b> 걷는다 — 세션 레코드에서 userId 를 읽어야 키를
+        // 만들 수 있다. 먼저 지우면 키를 못 만들어 항목이 남고, 그 유저는 그 방에 다시 들어올 수
+        // 없게 된다(상한이 영구히 찬 상태로 고정된다). 상한 코드가 만들 수 있는 최악의 결함이다.
+        // 자리도 방 색인도 <b>세션 자신의 roomId</b> 로 걷는다 — 등재를 session.roomId() 로 했으므로
+        // 그래야 같은 키다. 포트 계약({@code ChatSessionManager.unregister})에 인자와 세션의 방이
+        // 같아야 한다는 보장이 없고, 어긋나는 호출이 들어오면 둘이 다 영구히 남는다.
+        //
+        // 방 색인 쪽 손실이 "순수 누수" 보다 나쁘다 — 죽은 sessionId 가 남은 방 항목이 존재하는 동안
+        // pushViewerCount 의 자가치유(항목 부재 검사)가 발동하지 않아, 하트비트 회차마다 그 유령
+        // 방에 Redis 왕복이 하나 영구히 붙는다(게이지와 캐시 둘도 같이 부푼다).
+        //
+        // 세션이 local 에 없으면 인자를 쓴다. 그 경우 방 색인에도 넣은 것이 없으므로(등록 순서가
+        // local.put → roomSessions.compute 다) 어느 쪽을 써도 무연산이다 — 한때 "보상 경로에서
+        // leaving 이 null 일 수 있어 인자가 필요하다" 를 제약으로 적었는데, 그 순서를 보면 제약이
+        // 아니다.
+        LocalSession leaving = local.get(sessionId);
+        UUID indexRoom = leaving != null ? leaving.session().roomId() : roomId;
+        if (leaving != null) {
+            releaseSlot(leaving.session().userId(), leaving.session().roomId(), sessionId);
+        }
+        rollbackLocalIndexes(sessionId, indexRoom);
         // 로컬 정리는 끝났고, Redis 필드는 아래 HDEL이 지운다 — 그게 정상 회수 경로다.
         // 실패하면 방 종료의 clearRoom이, 그마저 놓치면 키 TTL이 받는다(3단 폴백).
         //
@@ -665,14 +935,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> sendToSession(String sessionId, OutboundMessage message) {
-        return Mono.fromRunnable(() -> emit(local.get(sessionId), message));
+        return Mono.fromRunnable(() -> emit(local.get(sessionId), new OutboundFrame(message)));
     }
 
     @Override
     public Mono<Void> sendToRoomLocal(UUID roomId, OutboundMessage message) {
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
-            forEachInRoom(roomId, ls -> emit(ls, message, budget));
+            // 전원이 같은 메시지를 받는다 — 프레임 하나를 공유하므로 직렬화도 한 번이다.
+            OutboundFrame frame = new OutboundFrame(message);
+            forEachInRoom(roomId, ls -> emit(ls, frame, budget));
         });
     }
 
@@ -681,10 +953,25 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 세션별 차등 fan-out — resolver가 세션마다 메시지 생성(방주인 PII 게이팅·kick 분기). null이면 그 세션 skip.
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
+            // resolver 가 돌려주는 서로 다른 메시지마다 프레임 하나 — 같은 메시지를 받는 세션들은
+            // 그 프레임을 공유하므로 직렬화가 세션 수가 아니라 <b>종류 수</b>에 비례한다.
+            // 동치가 아니라 동일성으로 묶는다: fanOutChat 이 뷰 4종을 미리 만들어 재사용하므로
+            // 동일성으로 충분하고, record equals 는 15 필드를 비교하므로 이쪽이 싸다.
+            //
+            // ⚠️ "빗나가도 직렬화 한 번 더 하는 것뿐" 이라고 적었는데 <b>틀렸다</b>. 이 맵은 위
+            // STALE 예산 javadoc 이 "예산 소비자를 더 붙이지 말라" 고 못 박은 바로 그 루프 안에 있다 —
+            // 12,000 세션 fan-out 이 이미 예산의 79%(3.96ms/5ms)다. 계약이 지켜지면 엔트리 4개라
+            // 무시할 값이지만, 빗나가면 12,000 distinct 엔트리(table 65,536 · refs 약 524KB)로
+            // 실측 +0.94ms 가 그 위에 얹힌다. 그때 꼬리 세션은 재시도 없이 한 번만 시도하고,
+            // 결과는 조용한 유실이 아니라 metrics.deliveryDropped(SESSION_EMIT_CONTENTION) 로
+            // 세어지는 드롭이다(세션은 끊기지 않는다 — consumerCannotKeepUp 이 그 결과를 안 본다).
+            // 그래서 계약은 javadoc 이 아니라 테스트가 지킨다
+            // (ChatBroadcastSubscriberTest.theResolverReturnsTheSameInstancePerView).
+            Map<OutboundMessage, OutboundFrame> frames = new IdentityHashMap<>(4);
             forEachInRoom(roomId, ls -> {
                 OutboundMessage message = resolver.apply(ls.session());
                 if (message != null) {
-                    emit(ls, message, budget);
+                    emit(ls, frames.computeIfAbsent(message, OutboundFrame::new), budget);
                 }
             });
         });
@@ -708,7 +995,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> sendToUserEverywhere(UUID userId, OutboundMessage message) {
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
-            forEachSessionOf(userId, ls -> emit(ls, message, budget));
+            // 한 사람의 모든 탭이 같은 메시지를 받는다 — 위와 같은 이유로 프레임 하나를 공유한다.
+            OutboundFrame frame = new OutboundFrame(message);
+            forEachSessionOf(userId, ls -> emit(ls, frame, budget));
         });
     }
 
@@ -729,8 +1018,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>방 색인을 못 쓴다</b> — 계정 조치는 방을 모른 채로 오고, {@code userId → 세션} 색인은 두지
      * 않았다. 두면 {@code register}/{@code unregister}마다 동기화 대상이 하나 늘고 그 어긋남이 조용한
-     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다. 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
-     * 방 fan-out이 색인을 갖는 것은 <b>메시지마다</b> 돌기 때문이고, 이쪽은 시간당 몇 건이다.
+     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다.
+     *
+     * <p>⚠️ <b>{@link #userRoomSessions} 가 생겼지만 이 경로는 여전히 훑는다.</b> 그 색인의 키는
+     * {@code (userId, roomId)} 쌍이라 "이 사람의 세션 전부" 를 물으면 방을 모르는 채로 전체 항목을
+     * 뒤져야 한다 — 이 스캔보다 싸지 않다. 위 문단의 경고가 틀렸다는 뜻도 아니다: 그 색인에
+     * 정확히 그 조용한 버그가 생길 수 있고(퇴장이 항목을 걷지 않으면 그 유저가 그 방에 영구히
+     * 못 들어온다), 그래서 {@code SessionAdmissionCapTest} 가 그 한 가지를 따로 고정한다. 색인을
+     * 하나 더 두는 값은 <b>메시지마다 도는 경로</b>에서만 나오고, 이 경로는 시간당 몇 건이다.
+     * 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
      *
      * <p><b>비용을 폭발시키는 변수는 이벤트 빈도가 아니라 파드당 세션 수다.</b> 스캔은 선형이 아니다 —
      * 12,000에서 58µs인데 100,000에서 4.2ms로, 8.3배 입력에 70배 넘게 든다(캐시 미스). 시간당 한 건이어도
@@ -1067,6 +1363,25 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
+     * 이 Pod 가 지금 들고 있는 세션 수.
+     *
+     * <p>{@code public} 인 이유는 게이지 배선이 쓰기 때문이다({@code ChatSessionGaugeConfig}).
+     * 이 수가 보이지 않으면 "파드 하나가 몇 세션까지 버티는가" 를 물을 수 없고, 그러면 <b>파드 용량
+     * 상한</b>을 고를 근거가 없다 — 그래서 그 상한보다 이 게이지가 먼저다. 남용 상한
+     * ({@link #MAX_SESSIONS_PER_USER_PER_ROOM})은 이 수를 기다리지 않았다: 그쪽 값은 용량이 아니라
+     * "정상 사용자가 동시에 몇 개를 여는가" 에서 나온다. 한때 이 문장이 "연결 수 상한" 으로 적혀
+     * 그 둘을 한 덩이로 묶었다.
+     */
+    public int localSessionCount() {
+        return local.size();
+    }
+
+    /** 이 Pod 가 중계 중인 방 수 — 게이지용. 세션 수와 함께 봐야 "방당 세션" 이 나온다. */
+    public int localRoomCount() {
+        return roomSessions.size();
+    }
+
+    /**
      * 세션 Sink로 1건 밀어넣기. null 세션은 무시.
      *
      * <p>실패 종류에 따라 처분이 다르다. 버퍼가 찼다는 건 <b>그 클라가 못 따라온다</b>는 뜻이라 세션을 끊고,
@@ -1077,11 +1392,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>아웃바운드 종료 신호는 버퍼에 쌓인 메시지 뒤에 줄을 서므로 소켓을 읽지 않는 클라에겐 닿지 않는다.
      * 그 경우를 위해 {@code terminate}가 별도 제어 채널을 함께 발화한다(핸들러가 그걸로 연결을 끊는다).
      */
-    private void emit(LocalSession ls, OutboundMessage message, FanOutBudget budget) {
+    private void emit(LocalSession ls, OutboundFrame frame, FanOutBudget budget) {
         if (ls == null) {
             return;
         }
-        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), budget.emitDeadline());
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(frame), budget.emitDeadline());
         if (consumerCannotKeepUp(result)) {
             // 1013(SERVICE_OVERLOAD) — 정상 종료(1000)로 닫으면 프론트가 곧장 다시 붙는다. 버퍼가 넘친 건
             // 그 클라가 못 따라온다는 뜻이라, 즉시 재접속은 같은 결과를 부르고 부하 상황일수록 스스로 번진다.
@@ -1109,8 +1424,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /** 단건 전송용 — 이 emit 하나가 예산을 독차지한다. */
-    private void emit(LocalSession ls, OutboundMessage message) {
-        emit(ls, message, newBudget());
+    private void emit(LocalSession ls, OutboundFrame frame) {
+        emit(ls, frame, newBudget());
     }
 
     /**
@@ -1129,6 +1444,194 @@ public class ChatSessionRegistry implements ChatSessionManager {
         long last = lastLifetimeExpiryLogNanos.get();
         return now - last >= DROP_LOG_INTERVAL_NANOS
                 && lastLifetimeExpiryLogNanos.compareAndSet(last, now);
+    }
+
+    /**
+     * {@link #local} 과 방 색인(과 그 수명을 따르는 캐시 둘)을 되돌린다. <b>자리는 건드리지 않는다.</b>
+     *
+     * <p>퇴장과 <b>등록 실패 보상</b>이 같은 걷기를 쓰도록 한 곳에 둔다. 둘이 따로 있으면 한쪽만
+     * 빠뜨리는 변경이 조용히 들어온다 — 실제로 그랬다: 보상이 자리만 되돌리던 동안 {@code local}
+     * 항목이 남았다 — 호출부의 {@code doFinally} 는 돌지만 그것이 부르는 {@code unregister} 가
+     * {@code local.get} 으로 키를 만들어 자리를 못 걷는다(테스트가 7건 누출로 잡았다).
+     *
+     * <p>⚠️ <b>자리를 여기 두지 않는 이유가 있다.</b> 한때 이 메서드가 자리까지 되돌렸고 그 키를
+     * {@code local.get(sessionId)} 으로 만들었다. 그러면 자리 반납이 "{@code local} 에 항목이 있을
+     * 때" 로 좁아진다. 실측: 그 상태에서 {@code local.put} 직전에 던지게 하면 자리 다섯이 새고 그
+     * 뒤 거부가 {@code TOO_MANY_SESSIONS} 로 바뀐다. 자리는 호출부가 <b>인자에서 키를 만들어</b>
+     * 무조건 되돌린다 — 던진 지점이 어디든 같은 키가 나오므로 그 조건에 기대지 않는다.
+     *
+     * <p>⚠️ <b>이 구분에 테스트는 없다.</b> 그 둘이 갈리는 유일한 지점이 "자리 추가 ~
+     * {@code local.put} 사이의 던짐" 인데, 세션 레코드를 자리 확보 앞으로 옮긴 뒤로 그 사이에
+     * <b>명시적</b> 할당이 없어졌다. 한때 여기 "잡을 회귀가 없다" 고 적었는데 <b>한 칸 과했다</b> —
+     * {@code local.put} <b>자신이</b> 그 창 안이고 그것이 할당한다(JDK 24 {@code src.zip} 확인:
+     * {@code ConcurrentHashMap.putVal} 이 {@code new Node<>(..)} 를 두 자리에서 만들고
+     * {@code addCount} 가 테이블 전이로 {@code Node[]} 를 새로 잡을 수 있다). 그 할당이 OOM 으로
+     * 떨어지면 <b>자리는 들어갔고 {@code local} 에는 항목이 없다</b> — 좁은 키가 정확히 못 걷는 그
+     * 상태다. 그래서 인자 키는 보험이 아니라 <b>여전히 하중</b>이다.
+     *
+     * <p>그 OOM 갈래에 테스트를 붙이지 않는 이유는 따로다 — 시임을 만들려면 <b>불변식이 금지한
+     * 코드를 그 구간에 넣어야</b> 한다. 보증은 테스트가 아니라 "던진 지점이 어디든 같은 키가
+     * 나온다" 는 구조이고, 실측은 1회(좁은 키 + {@code local.put} 직전 던짐 → 자리 다섯 누출)다.
+     *
+     * @param roomId 방 색인에서 걷을 방 — 세션이 {@code local} 에 있으면 <b>세션 자신의</b> 방이어야
+     *               한다(등재를 그 값으로 했으므로).
+     */
+    private void rollbackLocalIndexes(String sessionId, UUID roomId) {
+        local.remove(sessionId);
+        // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
+        roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
+            sessionIds.remove(sessionId);
+            if (sessionIds.isEmpty()) {
+                activeCountCache.remove(roomId);   // 인덱스와 같은 수명 — 남기면 이쪽이 누수원이 된다
+                lastPushedCount.remove(roomId);    // 같은 이유 — 방이 사라지면 마지막 값도 쓸모가 없다
+                return null;
+            }
+            return sessionIds;
+        });
+    }
+
+    /**
+     * (유저, 방) 자리 하나를 되돌린다. 빈 항목은 걷는다 — 남기면 그것이 누수원이다.
+     *
+     * <p>호출부가 둘이다 — 퇴장({@code unregister})과 등록 실패 보상. 둘이 각자 걷으면 한쪽만
+     * "빈 항목 걷기" 를 빠뜨리는 변경이 조용히 들어온다. 다만 <b>키를 만드는 방식은 다르다</b>:
+     * 퇴장은 세션 레코드에서 읽고, 보상은 인자에서 만든다({@link #rollbackLocalIndexes} 참고).
+     */
+    private void releaseSlot(UUID userId, UUID roomId, String sessionId) {
+        userRoomSessions.computeIfPresent(new UserInRoom(userId, roomId), (userInRoom, sessionIds) -> {
+            sessionIds.remove(sessionId);
+            return sessionIds.isEmpty() ? null : sessionIds;
+        });
+    }
+
+    /**
+     * 자리가 꽉 찼을 때만 그 (유저, 방)의 <b>응답 없는</b> 세션을 거둔다. 거둔 수를 돌려준다.
+     *
+     * <p><b>왜 필요한가 — 그리고 무엇을 닫지 못하는가.</b> 소켓이 조용히 끊겨도 그 세션은 생존
+     * 확인이 돌 때까지 자리를 들고 있다. 닫는 것은 그중 <b>마지막 구간 하나</b>다: 생존 루프가
+     * 종료를 발화한 뒤 {@code cleanup} 이 자리를 걷기까지의 ≤8초.
+     *
+     * <p>⚠️ <b>첫 점검까지의 약 2분은 닫지 못한다 — 원리적으로 닫을 수 없다.</b> 한때 이 문단이
+     * 그 2분을 reap 의 근거로 적었는데, 기한에 {@code pingInterval} 을 더해 넘기도록 고친 뒤로는
+     * 거짓이다(그 수정이 없으면 살아 있는 세션을 끊는다 — 아래 참고). 더 근본적으로, 생존 시계가
+     * <b>등록 시각으로 초기화</b>되므로 등록 직후 죽은 소켓은 첫 점검 전까지 "살아 있지만 조용한"
+     * 시청자와 <b>구분 자체가 불가능</b>하다. 모바일 핸드오버로 조용히 끊기고 재접속하는 그
+     * 시나리오가 정확히 그 구별 불가능한 경우다. 그 창을 닫으려면 "살아 있는 자리를 끊지 않는다" 를
+     * 포기해야 하고, 그래서 포기하지 않는 쪽을 택했다.
+     *
+     * <p>상한의 "왜 5인가" 근거가 탭·새로고침 경합만 셌던 것은 사실이고, 그 창이 남아 있다는 것도
+     * 사실이다. 즉 이 메서드는 그 문제를 <b>줄이지만 없애지 않는다</b> — 다음 사람이 그 창을 근거로
+     * 기한을 되돌리지 않도록 적어 둔다.
+     *
+     * <p><b>왜 이 방식인가.</b> 대안은 "가장 오래된 세션을 밀어내기"였는데 그건 공격자에게
+     * <b>남의 살아 있는 세션을 끊는 능력</b>을 준다(토큰 한 장으로 상한만큼 붙으면 정당한 사용자가
+     * 쫓겨난다). 여기서 밀어내는 것은 이미 생존 기한을 넘긴 세션뿐이므로 그 능력이 생기지 않는다 —
+     * 자리를 비우는 유일한 근거가 "그 소켓은 이미 죽었다" 다.
+     *
+     * <p>꽉 차지 않았으면 맵 조회 하나로 끝난다 — 접속마다 도는 자리라 그 경로에 비용을 두지 않는다.
+     * 그 바깥 검사는 <b>권고일 뿐</b>이다: {@code computeIfPresent} 안에 full 재확인이 없으므로,
+     * 사이에 다른 스레드의 퇴장이 자리를 비우면 꽉 차지 않은 집합에서도 죽은 자리를 거둔다. 거두는
+     * 대상이 어차피 생존 확인이 가져갈 세션이고 자리 걷기가 멱등이라 피해가 없어 그대로 둔다 —
+     * 안쪽 재확인을 넣으면 "꽉 찼을 때만" 이 두 곳에 생겨 둘이 어긋날 수 있다.
+     *
+     * <p>⚠️ <b>자리만 비운다 — 종료는 하지 않는다.</b> 한때 여기서 {@code terminateUnresponsive} 를
+     * 불렀는데, 그러면 <b>Lettuce NIO 이벤트루프에서 최대 250ms spin</b> 하는 경로가 된다. 이 메서드는
+     * {@code runSession} 안에서 돌고 그 upstream 마지막 신호가 입장 게이트의 Redis 응답이며
+     * (streaming-app main 에 스케줄러 전환이 <b>0건</b>이다) 종료 하나가
+     * {@link #DEFAULT_COMPLETE_SPIN_NANOS}(50ms)짜리 예산을 <b>세션마다 새로</b> 받으므로 5건이면
+     * 250ms 다. 이 파일이 두 자리에서 금지한 모양이다 — 1013 종료가 공유 예산을 쓰는 이유도,
+     * "기다리는 쪽은 Netty 이벤트루프에서 spin할 수 있다 — 그 루프에 붙은 다른 커넥션까지 함께
+     * 멈춘다" 도 같은 사실이다. 하필 이 메서드의 발동 조건(자리가 꽉 차고 전부 죽음)이 재접속 폭주
+     * 구간이라, 그 구간에 이 파드의 모든 Redis 응답이 함께 멈춘다.
+     *
+     * <p>종료는 각 세션의 생존 확인이 이미 맡고 있다 — 그쪽은 {@code Schedulers.parallel()} 에서
+     * 세션 하나씩 돈다. 자리를 선반납해도 그 수거가 늦어지지 않는다(다음 틱이 간격 하나 안에 온다).
+     * 자리 회계와 종료를 가른 것이 이 설계의 값이다.
+     *
+     * <p>그래서 거둔 세션이 {@link #local} 에는 잠깐 남는다 — {@code (유저, 방)}당 실제 세션 수가
+     * <b>최대 2배(10), 지속 ≤8초</b>가 된다. 그 수는 종료 상한 둘에서 나온다:
+     * {@code FORCED_CLOSE_GRACE 3s + CLOSE_FLUSH_TIMEOUT 5s}. 그리고 reap 은 키당
+     * <b>{@code livenessDeadline + pingInterval}</b>(기본 120초)에 한 번보다 자주 발동할 수 없다 —
+     * 새로 들어온 다섯이 그 기한 전에는 unresponsive 가 되지 않는다. <b>8s ≪ 120s</b> 라 정상 상태
+     * 상한이 10 에서 멈추고, 그 위로 쌓이지 않는다.
+     * ⚠️ 이 결론은 그 비에 매달려 있고 <b>묶는 양은 기한 하나가 아니라 기한 + 간격이다</b>(한때
+     * "90초" 와 "liveness-deadline 을 8초 밑으로" 로 적어 손잡이를 잘못 가리켰다). 그 합을 8초
+     * 밑으로 내리거나 종료 상한을 키우면 선형으로 증가한다(실측: 정리 없이 사이클 4회 →
+     * local 5·10·15·20).
+     * ⚠️ 그리고 이 ≤8초에는 <b>틱 지연 항이 없다</b> — 뺀 250ms spin 이 사라진 것이 아니라
+     * {@code Schedulers.parallel} 로 옮겨 갔고, 그 풀이 밀리면 그만큼 이 창에 더해진다. 그 교환을
+     * 택한 이유는 재접속 폭주에 이 파드의 Redis 응답 전체를 세우는 쪽이 더 나쁘기 때문이다.
+     * ⚠️ 그리고 그 하한은 <b>강제되지 않는다</b> — {@code SessionTimeouts} 의 가드 셋(양수 ·
+     * 기한 ≥ 2×간격 · 최소 수명 > 첫 점검)을 {@code (기한 2s, 간격 1s)} 가 전부 통과한다(실측).
+     * 가드를 더하지 않는 이유는 {@code ChatSessionLivenessTest} 가 기한 {@code 3s} 를 <b>의도적으로</b>
+     * 써서 기다리지 않기 때문이다 — 그 구성에서는 세션이 한 개라 위 증가가 문제가 되지 않는다.
+     * 즉 위 수는 <b>운영 기본값에서의</b> 것이다.
+     *
+     * <p>그 창이 파생시키는 것 둘, 알고 둔다. 첫째, 거둔 세션이 아직 {@link #local} 에 있으므로
+     * {@link #reregister} 의 {@code containsKey} 가드를 통과해 하트비트를 한두 주기 더 받는다.
+     * 둘째, 그래서 같은 창의 Redis 명부가 최대 2배의 항목을 든다 — 다만 <b>보고되는 시청자 수는
+     * 바뀌지 않는다</b>(그 수가 {@code HVALS distinct} 라 같은 유저의 중복은 세지 않고, 이 창의
+     * 중복은 정의상 같은 (유저, 방)이다). 한때 이 줄이 "시청자 수가 그만큼 부푼다" 로 적혀 바로
+     * 뒤 문장과 모순이었다. 둘 다 유계이고
+     * (≤8초) 자가치유라 손대지 않는다 — 이 파일이 하트비트 과다계수를 두고 세운 판단과 같다
+     * ("완전히 닫으려면 세션별 직렬화가 필요하고, 유계·자가치유인 과다계수에 그 값은 과하다").
+     * 시청자 수는 {@code HVALS distinct} 라 <b>같은 유저의</b> 중복은 수를 바꾸지 않는다는 점도 있다.
+     */
+    public int reapUnresponsiveIfFull(UUID userId, UUID roomId, Duration livenessDeadline) {
+        UserInRoom key = new UserInRoom(userId, roomId);
+        Set<String> occupied = userRoomSessions.get(key);
+        if (occupied == null || occupied.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+            return 0;
+        }
+        List<String> dead = new ArrayList<>();
+        userRoomSessions.computeIfPresent(key, (userInRoom, sessionIds) -> {
+            for (String sessionId : sessionIds) {
+                if (isUnresponsive(sessionId, livenessDeadline)) {
+                    dead.add(sessionId);
+                }
+            }
+            sessionIds.removeAll(dead);
+            return sessionIds.isEmpty() ? null : sessionIds;
+        });
+        if (!dead.isEmpty()) {
+            // 센다 — 거부와 수거를 가르지 못하면 "공격" 과 "모바일 핸드오버" 를 가를 수 없고,
+            // 그 둘을 가르는 것이 이 상한을 운영하는 사람의 일이다. sessionCut(LIVENESS) 로는
+            // 안 된다(태그가 사유 하나라 생존 루프가 거둔 것과 구분되지 않는다).
+            slotsReaped.addAndGet(dead.size());
+        }
+        return dead.size();
+    }
+
+    /**
+     * 죽은 자리를 거둔 누적 수.
+     *
+     * <p>{@code public} 인 이유는 지표 배선이 쓰기 때문이다
+     * ({@code ChatSessionGaugeConfig} 의 {@code chat.sessions.reaped}). 한때 이 문장이 참이 아니었다 —
+     * 접근자만 만들고 미터를 등록하지 않은 채 {@code .md} 두 곳({@code infra/AGENTS.md} ·
+     * {@code modules/chat/AGENTS.md})이 그 지표를 사실로 적었다. "세 곳" 으로 센 적이 있는데 그
+     * 셋째는 <b>이 javadoc 자신</b>이었다.
+     */
+    public long slotsReaped() {
+        return slotsReaped.get();
+    }
+
+    /** 마지막 상한 거부 로그로부터 간격이 지났으면 true. {@link #shouldLogDrop()} 과 같은 꼴이다. */
+    private boolean shouldLogAdmissionCap() {
+        long now = System.nanoTime();
+        long last = lastAdmissionCapLogNanos.get();
+        return now - last >= DROP_LOG_INTERVAL_NANOS
+                && lastAdmissionCapLogNanos.compareAndSet(last, now);
+    }
+
+    /**
+     * 동시 세션 상한으로 거부한 누적 수.
+     *
+     * <p>{@code public} 인 이유는 지표 배선이 쓰기 때문이다({@code ChatSessionGaugeConfig}). 집행이
+     * 보이지 않으면 "상한이 공격을 막고 있다" 와 "상한이 정상 시청자를 막고 있다" 를 가를 수 없고,
+     * 후자는 우리가 만든 장애다 — 그래서 집행과 그 관측을 같은 커밋에 둔다.
+     */
+    public long admissionCapped() {
+        return admissionCapped.get();
     }
 
     /** 마지막 드롭 로그로부터 간격이 지났으면 true. 경쟁 시 CAS로 한 스레드만 통과한다. */

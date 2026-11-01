@@ -325,6 +325,40 @@ that on.
   the reason spelled out in the live-app section. Note this app previously had **no health endpoint at all**,
   so a TCP socket check was the only probe available — and that check answered `Ready` while startup work was
   still blocked. A real readiness probe is now possible and the manifest should use one.
+  - **Size the `startupProbe` for 10 minutes of nothing, measured.** Boot index creation on
+    `chat_messages` runs in an **eager singleton** (`ChatMongoConfig`), which is **before the port
+    binds** — so for the whole of that window `httpGet` and `tcpSocket` both get **connection refused**,
+    not a false `Ready` (asserted by a raw TCP connect in
+    `EagerSingletonsRunBeforeThePortBindsTest`). The window's length is bounded by
+    **`ChatMongoConfig.INDEX_CREATE_CEILING` = 10 min** (SPR-152), and that is **one deadline over all
+    four index creations**, not per call — a fifth index does not add to it. Nothing in the driver bounds
+    it otherwise: `socketReadTimeoutMs` defaults to **0 (infinite)** and the repo sets no Mongo client
+    timeout anywhere (measured).
+    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min**. Under that and
+      Kubernetes kills the pod before the app's own ceiling fires — which throws away the one message
+      that tells the operator *which* of the two causes it was (Mongo silent vs. first build on a large
+      collection). `livenessProbe`/`readinessProbe` are not the lever here; a `startupProbe` is, because
+      it is the only one that suspends the other two.
+    - Two different deaths, two different waits: an **unreachable** Mongo address dies at
+      **30,053 ms** (measured — driver `serverSelectionTimeout` default, surfaced as
+      `DataAccessResourceFailureException`), not at the ceiling. The ceiling only covers the mode where
+      a server *was* selected and `createIndex` does not answer.
+    - Dying at the ceiling reads as `CrashLoopBackOff` rather than one loud failure — but **the restart
+      does not re-fire the build; the server-side build survives and the new call waits on it** (measured
+      on **standalone mongo 7** with the `hangAfterInitializingIndexBuild` failpoint: a second identical
+      `createIndexes` **blocks** instead of returning `IndexBuildAlreadyInProgress`; a hard client
+      disconnect leaves the server-side build in place — `createIndexes` op still listed,
+      `IndexBuildsCoordinatorMongod-0` still running — and the index finishes with no client attached).
+      So restarting does not undo progress and the loop is **not permanent**: a build taking N× the
+      ceiling costs roughly N restarts, and the wall clock is N × 10 min **plus Kubernetes'
+      `CrashLoopBackOff` backoff**, which grows 10s → 20s → … up to a 5 min cap between restarts.
+      - Scope, because this claim keeps getting repeated: **standalone**. A replica set builds in phases
+        with a commit quorum and DocumentDB is a compatibility layer, and this repo does not record which
+        one production runs — so neither is covered. "Blocks" is also not the same as "joins": the
+        measurement cannot tell a registered joiner from a lock wait, and the conclusion rests on the
+        survival half alone.
+      - It is a full outage for that pod while it lasts, so the fix is unchanged: build the indexes out
+        of band, or raise the ceiling to cover the build.
 - **Deployment prerequisite**: the set of endpoints that are **actually exposed** must be exactly
   `{health, prometheus}` — without that the app refuses to start, by design (`health` missing means the k8s
   probes 404; `prometheus` missing means the metrics are silently empty).
@@ -337,9 +371,27 @@ that on.
   boots (see the bullet above). The template no longer calls that line optional (it did for one day, while the guard already
   required it — follow that stale template and the pod CrashLoopBackOffs). Developers running locally copy
   the `management` block from `application.yml.example`.
-- **What the metrics carry**: `chat.policy.open`, `chat.ratelimit.degraded`, `chat.delivery.dropped`,
-  `chat.session.cut` — every one of them is a *policy not being enforced* right now, which is exactly what
-  alerting should watch. They are 0 in the healthy case. Details in `modules/chat/AGENTS.md`.
+- **What the metrics carry** — two kinds, and they want different alerts.
+  - **Counters that are 0 when healthy**: `chat.policy.open`, `chat.ratelimit.degraded`,
+    `chat.delivery.dropped`, `chat.session.cut`. Every one of them is a *policy not being enforced* right
+    now, so any non-zero rate is worth watching. Details in `modules/chat/AGENTS.md`.
+  - **Counters that are 0 when nobody is abusing** (added SPR-152): `chat.sessions.admission_capped` ·
+    `chat.sessions.reaped` — the per-`(user, room)` session cap denying a connect, and the same cap
+    reclaiming a slot whose socket had already gone silent. These are a different kind from the four
+    above: a non-zero rate there is a policy *failing*, here it is a policy **firing**. Watch them as a
+    **pair** — denials rising while reclaims stay flat reads as abuse, or as a cap set too low; both
+    rising together reads as clients dropping sockets without closing them, which is ordinary mobile
+    behaviour. Neither question can be answered from `chat.session.cut{liveness}`, whose only tag is the
+    reason.
+  - **Gauges that are *not* 0 when healthy** (added 2026-11-01): `chat.sessions.local` ·
+    `chat.rooms.local` — this pod's live WebSocket sessions and the rooms it relays. These are capacity
+    signals, not failure signals, so "non-zero = problem" does not apply; they want a **threshold**.
+    They exist because this app has **no connection-count cap** (frame size, outbound buffer and slow
+    clients are all bounded; the count is not), and a cap cannot be chosen from a number nobody can see.
+    App-side cost per session is measured at **2,349 bytes** (12,000 sessions ≈ 26.9 MB) — *with an empty
+    outbound buffer*, so a pod with backed-up sessions costs more — which means the app side is not the
+    constraint and the cap has to come from transport-side load testing. Order: gauge → threshold alert
+    → cap.
 - **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
   network restrictions above are enforced from here.
 

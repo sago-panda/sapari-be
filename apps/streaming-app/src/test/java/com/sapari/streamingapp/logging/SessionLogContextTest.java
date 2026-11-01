@@ -164,7 +164,7 @@ class SessionLogContextTest {
                 .willReturn(Mono.<Long>error(new IllegalStateException("Redis down"))
                         .subscribeOn(Schedulers.boundedElastic()));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound(anyString())).willReturn(Flux.never());
+        given(registry.outboundFrames(anyString())).willReturn(Flux.never());
         given(registry.terminationSignal(anyString())).willReturn(Mono.never());
         given(registry.closeStatusOf(anyString())).willReturn(CloseStatus.NORMAL);
 

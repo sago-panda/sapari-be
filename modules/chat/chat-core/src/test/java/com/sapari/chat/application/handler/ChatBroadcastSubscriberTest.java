@@ -100,6 +100,50 @@ class ChatBroadcastSubscriberTest {
     }
 
     @Test
+    @DisplayName("⭐ 같은 뷰의 세션에는 같은 인스턴스를 돌려준다 — 전송 계층이 이걸로 직렬화를 묶는다")
+    void theResolverReturnsTheSameInstancePerView() {
+        // given
+        given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).willReturn(Mono.empty());
+        ChatMessage message = new ChatMessage(
+                "65a1f2c3d4e5f60718293a4b", roomId, buyerId, "구매자", "buyer@example.com",
+                ChatRole.BUYER, new ChatMessageType.Normal(),
+                "원본바보", "원본**", null, Instant.parse("2026-06-11T00:00:00Z"));
+
+        // when
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message)))
+                .expectComplete().verify(VERIFY_CEILING);
+        ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
+        then(sessionManager).should(times(1)).sendToRoomGated(eq(roomId), cap.capture());
+        Function<ChatSession, OutboundMessage> resolver = cap.getValue();
+
+        // then: 전송 계층({@code ChatSessionManager.sendToRoomGated} 계약)이 서로 다른 메시지를
+        // <b>객체 동일성</b>으로 묶어 직렬화·인코딩을 종류 수만큼만 한다. 그래서 같은 뷰의 두 세션이
+        // 같은 인스턴스를 받아야 한다 — 세션마다 new 로 만들면 내용이 같아도 묶이지 않고, 팬아웃
+        // 비용이 다시 세션 수에 비례한다(실측: 12,000 세션 한 메시지에 직렬화 9.23ms + 인코딩 2.09ms).
+        //
+        // 그 회귀는 <b>조용하다</b> — 응답 내용이 같으니 어떤 내용 단언도 깨지지 않는다. 그래서
+        // 동치(isEqualTo)가 아니라 동일성(isSameAs)으로 재야 한다.
+        // 축이 <b>둘</b>이다 — 특권 여부 × 발신자 여부. "같은 뷰" 는 둘 다 같아야 한다.
+        // (이 테스트를 처음 쓸 때 viewer(buyerId) 와 랜덤 id 를 같은 뷰로 봤는데, 전자는 발신자라
+        //  senderView·후자는 normalView 다. 코드가 아니라 단언이 틀렸다.)
+        assertThat(resolver.apply(viewer(UUID.randomUUID())))
+                .as("같은 뷰(비특권·비발신자)의 두 세션이 서로 다른 인스턴스를 받았다 — "
+                        + "팬아웃 비용이 세션 수에 비례한다")
+                .isSameAs(resolver.apply(viewer(UUID.randomUUID())));
+        assertThat(resolver.apply(owner()))
+                .as("같은 뷰(특권·비발신자)인 방 주인과 관리자가 인스턴스를 공유하지 않았다")
+                .isSameAs(resolver.apply(admin()));
+
+        // 그리고 축이 다르면 인스턴스도 달라야 한다 — 같으면 마스킹이나 clientMsgId 가 섞인다.
+        assertThat(resolver.apply(owner()))
+                .as("특권 뷰와 일반 뷰가 같은 인스턴스다 — 마스킹이 섞인다")
+                .isNotSameAs(resolver.apply(viewer(UUID.randomUUID())));
+        assertThat(resolver.apply(viewer(buyerId)))
+                .as("발신자 뷰와 일반 뷰가 같은 인스턴스다 — 남의 clientMsgId 가 실린다")
+                .isNotSameAs(resolver.apply(viewer(UUID.randomUUID())));
+    }
+
+    @Test
     @DisplayName("CHAT 팬아웃: 방주인·관리자에겐 email·원문을, 시청자와 방문 판매자에겐 마스킹 본문만")
     void routeChat_Success() {
         // given

@@ -14,6 +14,24 @@ import reactor.core.publisher.Mono;
  */
 public interface ChatSessionManager {
 
+    /**
+     * 세션을 등재한다. <b>거부할 수 있다.</b>
+     *
+     * <p>성공만 하는 호출이 아니다 — 같은 (유저, 방)의 동시 세션이 구현체의 상한을 넘으면 거부로
+     * 끝난다 — 던지는 것이 아니라 <b>{@code Mono.error} 로 돌려준다</b>(구현체가 전송 계층의 입장
+     * 거부 예외를 싣는다). 그 차이가 호출자에게 하중이다: 조립 시점에 던지지 않으므로 호출자가
+     * {@code onErrorResume} 으로 받을 수 있고, 그래서 거부 처리를 체인 안에 둘 수 있다.
+     * 거부는 그 사람의 자리가 비면 스스로
+     * 풀리는 <b>일시 상태</b>이고, 강퇴·밴 같은 영구 상태가 아니다.
+     *
+     * <p>이 계약이 여기 적혀 있어야 하는 이유는 거부가 <b>부작용 없이</b> 끝난다는 것까지가 계약이기
+     * 때문이다 — 거부된 호출은 로컬 색인·Redis 명부에 아무것도 남기지 않으므로, 호출자가 거부를
+     * 받고 정리 작업을 따로 할 필요가 없다.
+     *
+     * <p>반대쪽도 계약이다 — <b>허용되면 호출자가 반드시 {@link #unregister} 로 짝을 맞춰야 한다.</b>
+     * 이 호출은 자리를 점유하고 그 해제는 호출자의 종료 처리에 달려 있다. 짝을 빠뜨리면 그 자리가
+     * 남아 같은 사람이 같은 방에 다시 들어올 수 없게 된다 — 조용히 틀리는 쪽이라 계약으로 적는다.
+     */
     Mono<Void> register(String sessionId, ChatSession session);
 
     Mono<Void> unregister(UUID roomId, String sessionId);
@@ -50,8 +68,21 @@ public interface ChatSessionManager {
      */
     Mono<Void> sendToUserEverywhere(UUID userId, OutboundMessage message);
 
-    // 방 로컬 세션마다 resolver로 메시지를 만들어 송신 — 세션별 차등 fan-out(CHAT의 방주인 PII 게이팅, KICK의
-    // 당사자/타인 분기). resolver가 null을 반환한 세션은 skip. (ChatBroadcastSubscriber 사용)
-    // ※ 단일-메시지 sendToRoomLocal과 이름을 분리해 오버로드 모호성(any() 매처)을 피한다.
+    /**
+     * 세션별 차등 팬아웃 — {@code resolver} 가 세션마다 보낼 메시지를 고른다({@code null} 이면 skip).
+     * CHAT 의 방주인 PII 게이팅, KICK 의 당사자/타인 분기가 이걸 쓴다
+     * ({@code ChatBroadcastSubscriber}).
+     *
+     * <p>단일 메시지를 받는 {@code sendToRoomLocal} 과 <b>이름을 분리한 것은 의도다</b> — 오버로드로
+     * 두면 {@code any()} 매처가 어느 쪽인지 가리지 못해 테스트가 엉뚱한 쪽을 스텁한다.
+     *
+     * <p>⚠️ <b>resolver 는 같은 뷰에 대해 같은 인스턴스를 돌려줘야 한다.</b> 구현(transport)이 서로
+     * 다른 메시지마다 와이어 문자열을 <b>한 번만</b> 만드는데, 그 묶음을 <b>객체 동일성</b>으로
+     * 가른다. 세션마다 {@code new} 로 만들면 내용이 같아도 다른 객체라 묶이지 않고, 직렬화가 다시
+     * 세션 수에 비례한다 — 실측으로 12,000 세션 한 메시지에 9.23ms 차이다.
+     *
+     * <p>그래서 호출부는 뷰 조합을 <b>미리 만들어 두고 고르기만</b> 한다. 예:
+     * {@code ChatBroadcastSubscriber.fanOutChat} 은 특권 × 발신자 축으로 4종을 먼저 만든다.
+     */
     Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver);
 }

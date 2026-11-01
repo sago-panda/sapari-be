@@ -63,11 +63,12 @@ spring:
   # ⚠️ 접두가 spring.data.mongodb 가 아니라 spring.mongodb 다.
   #    Boot 4.0.0에서 spring.data.mongodb.* 가 제거됐고(replacement: spring.mongodb.*),
   #    옛 이름으로 적으면 값이 바인딩되지 않아 MONGODB_URI를 넣어도 조용히 무시되고
-  #    기본값 localhost:27017 로 붙는다. 그 상태로 뜨면 인덱스 생성 러너가 타임아웃으로 죽는다.
+  #    기본값 localhost:27017 로 붙는다. 그 상태로 뜨면 부팅 인덱스 생성(ChatMongoConfig)이
+  #    30,053ms(실측 — 드라이버 serverSelectionTimeout 기본값) 뒤에 죽는다.
   #    (redis 쪽 접두 spring.data.redis 는 바뀌지 않았다 — 둘이 달라 보이는 게 정상이다)
   #
   # ⚠️ 기본값을 두지 않는다. 위 범례가 적은 대로 REQUIRED 에 기본값을 두면 그 값으로 조용히 뜨는데,
-  #    여기서는 그 조용함이 두 갈래다 — 운영 호스트에 localhost Mongo 가 없으면 인덱스 생성 러너가
+  #    여기서는 그 조용함이 두 갈래다 — 운영 호스트에 localhost Mongo 가 없으면 부팅 인덱스 생성이
   #    죽어 부팅이 실패하고(시끄럽다), 무언가 떠 있으면 <b>입장도 되고 실시간 전달도 되는데 메시지만
   #    엉뚱한 DB 에 쌓인다</b>. 이 설계가 "실시간 전달 best-effort, 영속만 보장"이라고 못 박은 바로
   #    그 보장 쪽이라, 두 번째 갈래가 특히 나쁘다.

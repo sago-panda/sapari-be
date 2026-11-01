@@ -9,9 +9,13 @@ import java.security.PrivateKey;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Date;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -29,6 +33,7 @@ import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
@@ -425,6 +430,62 @@ class ChatWebSocketIntegrationTest {
         assertThat(observed.get().getCode())
                 .as("상한 초과 처분이 1009(TOO_BIG_TO_PROCESS)가 아니다 — 프론트가 사유를 가릴 수 없다")
                 .isEqualTo(1009);
+    }
+
+    /**
+     * 동시 세션 상한을 <b>와이어에서</b> 실증한다 — 단위 테스트는 레지스트리를 직접 부르므로
+     * 핸드셰이크·게이트·거부 프레임·종료가 실제로 그 순서로 일어나는지는 여기서만 보인다.
+     *
+     * <p>상한만큼의 연결을 <b>열어 둔 채로</b> 하나 더 붙이는 것이 요점이다. 앞의 것들이 닫히면
+     * 자리가 돌아오므로, 그것들이 실제로 성립했는지(ROOM_INFO 수신)를 기다린 뒤에 잰다.
+     *
+     * <p>ROOM_INFO 를 세는 대신 <b>연결마다 첫 건만</b> 세는 이유는 입장 때마다 시청자 수가
+     * 다시 밀려 같은 연결이 ROOM_INFO 를 여러 번 받기 때문이다 — 그냥 세면 다섯이 다 서기 전에
+     * 래치가 0 이 되고, 그러면 아직 자리가 남은 상태에서 "거부되지 않았다" 로 깨진다.
+     */
+    @Test
+    @DisplayName("동시 세션 상한 — 같은 (유저, 방)의 상한 초과 연결은 SYSTEM(TOO_MANY_SESSIONS) 후 닫힌다")
+    void admission_cap_rejects_the_session_over_the_limit() throws InterruptedException {
+        // given: 같은 토큰으로 상한만큼 붙여 둔다. 토큰이 TTL 안에서 재사용 가능하다는 것이
+        // 이 상한이 막으려는 조건 자체다 — 그래서 픽스처도 토큰 하나를 그대로 재사용한다.
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+
+        int cap = ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM;
+        CountDownLatch admitted = new CountDownLatch(cap);
+        List<Disposable> held = new ArrayList<>();
+        try {
+            for (int i = 0; i < cap; i++) {
+                AtomicBoolean counted = new AtomicBoolean();
+                held.add(new ReactorNettyWebSocketClient()
+                        .execute(wsUri(roomId), tokenHeaders(token), session ->
+                                session.receive().map(WebSocketMessage::getPayloadAsText)
+                                        .doOnNext(frame -> {
+                                            if (frame.contains("ROOM_INFO") && counted.compareAndSet(false, true)) {
+                                                admitted.countDown();
+                                            }
+                                        })
+                                        .then())
+                        .subscribe());
+            }
+            assertThat(admitted.await(20, TimeUnit.SECONDS))
+                    .as("상한만큼의 연결이 먼저 성립해야 그 다음 하나를 잴 수 있다").isTrue();
+
+            // when: 하나 더
+            List<String> frames = collect(roomId, token, null, Duration.ofSeconds(3));
+
+            // then: 거부 사유가 와이어에 실려야 한다. close 는 강퇴·밴과 같은 1008 이라,
+            // 클라가 "제재" 와 "탭을 닫으면 들어올 수 있다" 를 가르는 수단이 이 code 하나다.
+            assertThat(frames)
+                    .as("상한 초과 연결이 거부되지 않았거나 사유를 싣지 않았다")
+                    .anyMatch(f -> f.contains("\"type\":\"SYSTEM\"") && f.contains("TOO_MANY_SESSIONS"));
+            assertThat(frames)
+                    .as("거부된 연결이 ROOM_INFO 를 받았다 — 세션이 성립해 버렸다")
+                    .noneMatch(f -> f.contains("ROOM_INFO"));
+        } finally {
+            held.forEach(Disposable::dispose);
+        }
     }
 
     /** WS 접속(토큰=서브프로토콜) → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */

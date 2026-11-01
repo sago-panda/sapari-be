@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -9,6 +10,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
@@ -98,6 +100,232 @@ class ChatWebSocketHandlerTest {
     }
 
     /**
+     * ⭐ 조립 중 동기 예외가 나도 방 구독 refcount 가 남지 않는다.
+     *
+     * <p>{@code acquireRoom} 은 조립 첫 줄이고 해제는 {@code doFinally} 의 {@code cleanup} 이 한다.
+     * 그 둘 사이에서 동기 예외가 나면 <b>doFinally 가 붙은 Mono 가 애초에 반환되지 않아</b> 방
+     * 구독이 영구히 남는다 — 그 방에 아무도 없는데 이 파드가 계속 그 방의 모든 메시지를 받는다.
+     *
+     * <p>{@code Mono.defer} 로 감싸는 것만으로는 안 닫힌다(실측: 그 모양도 {@code cleanup=0}). 닫히는
+     * 것은 {@code doFinally} 가 defer <b>밖</b>에 있을 때뿐이다. 이 테스트가 그 배치를 고정한다 —
+     * 안으로 옮기면 빨개진다.
+     */
+    @Test
+    @DisplayName("⭐ 조립 중 던져도 방 구독이 남지 않는다 — 남으면 빈 방을 영구히 중계한다")
+    void a_synchronous_throw_during_assembly_releases_the_room() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        // 조립 중 동기 예외 — register 의 즉시 실행 구간이 던지는 모양이다.
+        given(registry.register(eq("s1"), any()))
+                .willThrow(new IllegalStateException("프로브: 조립 중 던진다"));
+        // 뒷정리가 정상으로 돌게 둔다 — 이 테스트가 재는 것은 doFinally 의 <b>배치</b>다.
+        // (뒷정리 자신이 던지는 경우는 아래 테스트가 따로 본다.)
+        given(registry.unregister(roomId, "s1")).willReturn(Mono.empty());
+        // 방 구독 목이 Disposable 을 돌려줘야 한다 — null 이면 releaseRoom 안에서 dispose() 가 NPE 를
+        // 내고 항목이 남아, 이 테스트가 재려는 것과 무관한 이유로 빨개진다.
+        given(subscriber.subscribeRoom(roomId)).willReturn(() -> { });
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(handler.runSession(session, chatSession))
+                .expectErrorSatisfies(error -> assertThat(error).isInstanceOf(IllegalStateException.class))
+                .verify(VERIFY_CEILING);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("조립 중 던졌는데 방 구독이 남았다 — 빈 방을 영구히 중계한다").isFalse();
+    }
+
+    /**
+     * ⭐ 방을 못 얻었으면 해제하지 않는다 — 그러지 않으면 <b>남의 구독을 끊는다.</b>
+     *
+     * <p>{@code acquireRoom} 자신이 던지면 defer 가 그것을 {@code onError} 로 바꾸므로 얻지 않은
+     * 방에 대해 {@code doFinally} 가 돈다(실측: {@code acquired=0 released=1}). 그 사이 다른 세션이
+     * 같은 방을 {@code refs=1} 로 설치했으면 이 해제가 그걸 0 으로 내려 dispose 한다 — 살아 있는
+     * 세션이 크로스 파드 강퇴·밴·방 종료를 조용히 못 받게 된다.
+     *
+     * <p>교차를 실제로 만든다 — 뒷정리는 {@code unregister} 를 먼저 부르고 그 다음에 방을 해제하므로,
+     * 그 {@code unregister} 안에서 다른 세션의 획득을 끼워 넣으면 "던짐 → 설치 → 해제" 순서가 된다.
+     * 처음에는 그 교차 없이 "{@code dispose} 가 안 불린다" 만 단언했는데, 그러면 해제가 빈 맵에
+     * 떨어져 어차피 무연산이라 <b>플래그를 지워도 초록이었다</b>(실측).
+     */
+    @Test
+    @DisplayName("⭐ 방을 못 얻었으면 해제하지 않는다 — 해제하면 남의 구독을 끊는다")
+    void a_failed_acquire_does_not_release_the_room() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        Disposable disposable = mock(Disposable.class);
+        // 구독 자체가 실패한다 — 그러면 roomSubs 에 매핑이 설치되지 않는다. 두 번째 호출은 성공해
+        // "다른 세션" 의 설치가 된다.
+        given(subscriber.subscribeRoom(roomId))
+                .willThrow(new IllegalStateException("프로브: subscribeRoom 이 던진다"))
+                .willReturn(disposable);
+        // 던짐과 해제 <b>사이</b>에 다른 세션이 같은 방을 refs=1 로 설치한다. 뒷정리가 unregister 를
+        // 먼저 부르므로 그 안이 정확히 그 틈이다.
+        given(registry.unregister(roomId, "s1")).willAnswer(invocation -> {
+            handler.acquireRoom(roomId);
+            return Mono.empty();
+        });
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(handler.runSession(session, chatSession))
+                .expectError(IllegalStateException.class)
+                .verify(VERIFY_CEILING);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("실패한 접속의 뒷정리가 다른 세션의 방 구독을 걷어냈다").isTrue();
+        then(disposable).should(never()).dispose();
+
+        // ⚠️ 이 교차는 뒷정리의 <b>내부 순서</b>(unregister 먼저 → 방 해제 나중)에 기댄다. 순서를
+        // 뒤집으면 설치가 해제 뒤로 가서 이 테스트가 과다 해제를 <b>조용히 못 잡는다</b>(실측: 순서
+        // 뒤집기 + 플래그 무시 → 전 스위트 초록). 운영의 교차는 시간 기반이라 순서를 바꿔도 결함이
+        // 남으므로, 순서에 기대지 않는 걸쇠를 아래 테스트가 따로 건다 —
+        // {@code a_failed_acquire_never_calls_release}.
+        //
+        // 순서를 InOrder 로 못 박으려 했는데 그것도 공단언이었다: subscribeRoom 이 두 번 불려
+        // (A 의 실패 + B 의 설치) 역순에서도 "unregister 다음 subscribeRoom" 이 성립한다.
+    }
+
+    /**
+     * ⭐ 방을 못 얻었으면 {@code releaseRoom} 을 <b>부르지 않는다</b> — 순서와 무관한 걸쇠.
+     *
+     * <p>위 교차 테스트는 뒷정리의 내부 순서에 기대므로 그 순서를 바꾸면 조용히 효력을 잃는다. 이
+     * 테스트는 그 대신 불변식을 직접 잰다 — 획득이 실패했으면 해제 호출이 <b>0회</b>여야 한다. 핸들러
+     * 자신을 spy 로 감싸는 이유가 그것이다: 해제는 같은 객체의 메서드라 목으로는 안 보인다.
+     */
+    @Test
+    @DisplayName("⭐ 방을 못 얻으면 해제를 아예 부르지 않는다 — 뒷정리 순서와 무관한 걸쇠")
+    void a_failed_acquire_never_calls_release() {
+        ChatWebSocketHandler spied = spy(handlerWithLifetime(Duration.ofHours(1)));
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.unregister(roomId, "s1")).willReturn(Mono.empty());
+        given(subscriber.subscribeRoom(roomId))
+                .willThrow(new IllegalStateException("프로브: subscribeRoom 이 던진다"));
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(spied.runSession(session, chatSession))
+                .expectError(IllegalStateException.class)
+                .verify(VERIFY_CEILING);
+
+        then(spied).should(never()).releaseRoom(roomId);
+    }
+
+    /**
+     * ⭐ {@code dispose()} 가 던져도 <b>맵 상태가 일관된다</b>, 그리고 그 던짐이 한 줄로 남는다.
+     *
+     * <p>두 가지를 한 번에 재는 이유는 둘이 같은 전제를 공유하기 때문이다 — 뒷정리가 그 던짐을 잡는
+     * catch 를 두어 "{@code dispose} 는 던질 수 있다" 를 전제로 채택했으므로, 그 전제 아래 남는
+     * 맵 상태도 복구돼야 한다. 한때 {@code dispose()} 를 재매핑 함수 안에서 불러 던지면
+     * <b>{@code refs=0} 항목이 남았고</b>, 그러면 다음 세션이 구독 없이 그 항목만 올려 그 방의
+     * 크로스 파드 채널이 죽은 채로 영구히 간다.
+     */
+    @Test
+    @DisplayName("⭐ dispose 가 던져도 방 항목은 걷힌다 — 남으면 다음 세션이 구독 없이 그 방을 쓴다")
+    void a_throwing_dispose_still_removes_the_room_entry() {
+        Disposable throwing = mock(Disposable.class);
+        org.mockito.BDDMockito.willThrow(new IllegalStateException("프로브: dispose 가 던진다"))
+                .given(throwing).dispose();
+        given(subscriber.subscribeRoom(roomId)).willReturn(throwing);
+
+        handler.acquireRoom(roomId);
+        // 던짐은 호출부로 올라간다(그 catch 는 cleanup 에 있고 이건 직접 호출이다). 재는 것은
+        // 그 던짐 뒤에 <b>맵 상태가 일관된가</b>다.
+        assertThatThrownBy(() -> handler.releaseRoom(roomId))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("dispose 가 던지자 refs=0 항목이 남았다 — 다음 세션이 구독 없이 그 방을 쓴다")
+                .isFalse();
+        // 그 뒤 새 세션은 구독을 <b>새로</b> 만들 수 있어야 한다.
+        given(subscriber.subscribeRoom(roomId)).willReturn(mock(Disposable.class));
+        handler.acquireRoom(roomId);
+        assertThat(handler.isSubscribed(roomId)).isTrue();
+        then(subscriber).should(times(2)).subscribeRoom(roomId);
+    }
+
+    @Test
+    @DisplayName("⭐ 뒷정리가 던져도 방 구독은 해제된다 — 마지막 보상이 자기 안에서 순서에 기대면 안 된다")
+    void a_throwing_cleanup_still_releases_the_room() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any()))
+                .willThrow(new IllegalStateException("프로브: 조립 중 던진다"));
+        // 뒷정리의 첫 줄이 던진다. 그 뒤 방 구독 해제가 건너뛰어지면 refcount 가 영구히 남는다.
+        given(registry.unregister(roomId, "s1"))
+                .willThrow(new IllegalStateException("프로브: 뒷정리가 던진다"));
+        // 방 구독 목이 Disposable 을 돌려줘야 한다 — null 이면 releaseRoom 안에서 dispose() 가 NPE 를
+        // 내고 항목이 남아, 이 테스트가 재려는 것과 무관한 이유로 빨개진다.
+        given(subscriber.subscribeRoom(roomId)).willReturn(() -> { });
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(handler.runSession(session, chatSession))
+                .expectError(IllegalStateException.class)
+                .verify(VERIFY_CEILING);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("뒷정리가 던지자 방 구독이 남았다 — 해제가 finally 에 없다").isFalse();
+    }
+
+    /**
+     * ⭐ 죽은 자리 수거가 <b>배선돼 있는지</b> — 등록보다 먼저, 핸들러의 기한으로 불리는지.
+     *
+     * <p>수거 자체는 {@code SessionAdmissionCapTest} 가 네 건으로 고정한다. 그런데 그 보장은
+     * <b>핸들러가 그것을 부를 때만</b> 값이 있고, 그 한 줄을 지워도 레지스트리 테스트는 전부 초록이다 —
+     * {@code runSession} 자신의 javadoc 이 경고한 "분기만 따로 재면 배선이 빠진 것을 아무도 묻지
+     * 않는다" 가 이 경우다.
+     *
+     * <p><b>순서가 하중이다.</b> 등록 뒤에 부르면 이미 거부된 뒤라 아무것도 구하지 못하고, 거부를
+     * 받고 재시도하는 모양으로 바꾸면 거부 카운터가 집행 아닌 것을 집행으로 센다. 그래서
+     * {@code InOrder} 로 "수거 → 등록" 을 고정한다.
+     *
+     * <p>기한을 {@code any()} 로 지우지 않는 이유는 위 생존 확인 테스트와 같다 — 핸들러가 수명 상한을
+     * 기한으로 넘기는 뮤턴트가 통과하면, 60분 침묵에서만 자리가 비어 수거가 사실상 무효가 된다.
+     */
+    @Test
+    @DisplayName("⭐ 죽은 자리 수거가 등록보다 먼저 배선돼 있다 — 안 부르면 상한이 정상 재접속을 막는다")
+    void dead_slot_reaping_is_wired_before_register() {
+        // given
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(Duration.ofSeconds(1))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+
+        // then
+        InOrder order = inOrder(registry);
+        // 기한 + 간격이다. 기한만 넘기면 생존 루프의 격자에서는 살아남는 구간(기한~기한+간격)에
+        // 있던 멀쩡한 세션을 reap 이 죽이고 그 자리를 이 접속이 가져간다 — 그 값이 이 호출의
+        // 하중이라 any() 로 지우지 않는다.
+        order.verify(registry).reapUnresponsiveIfFull(
+                userId, roomId, LIVENESS_DEADLINE.plus(PING_INTERVAL));
+        order.verify(registry).register(eq("s1"), any());
+    }
+
+    /**
      * ⭐ 수명 상한이 <b>배선돼 있는지</b>를 {@code runSession}으로 직접 구동해 확인한다.
      *
      * <p>분기만 따로 재면 안 된다 — 그 분기를 {@code firstWithSignal}에서 빼도 아무 테스트가 깨지지
@@ -120,7 +348,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         // 기한이 지났다고 레지스트리가 답한다 — 시계 자체는 레지스트리 단위 테스트가 지킨다.
@@ -157,7 +385,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(true);
@@ -195,7 +423,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false, true);
@@ -282,7 +510,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
@@ -342,7 +570,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
@@ -370,7 +598,7 @@ class ChatWebSocketHandlerTest {
         given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
         given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
         given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
-        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);

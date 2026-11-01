@@ -112,6 +112,41 @@ class PrivilegedEntryAuditTest {
     }
 
     @Test
+    @DisplayName("⭐ 상한으로 거부된 접속은 감사에 남지 않는다 — 보지 못한 접속이 섞이면 감사가 틀린다")
+    void deniedEntriesAreNotRecorded() {
+        // given: 같은 (유저, 방)으로 상한만큼 채운다. 감사 줄이 상한만큼 남는 것이 정상이다.
+        int admitted = 0;
+        for (int i = 0; i < 20; i++) {
+            try {
+                registry.register("s" + i, new ChatSession(ROOM, ADMIN, ChatRole.ADMIN, NICKNAME, EMAIL, false))
+                        .block(VERIFY_CEILING);
+                admitted++;
+            } catch (EntryDeniedException denied) {
+                break;   // 상한에 걸렸다 — 이 뒤가 재려는 상태다
+            }
+        }
+        assertThat(admitted).as("상한이 걸리지 않아 거부를 만들 수 없다").isPositive();
+        long before = messages().stream().filter(m -> m.contains("특권 뷰 입장")).count();
+
+        // when: 상한을 넘겨 한 번 더
+        assertThatThrownBy(() -> registry.register("denied",
+                new ChatSession(ROOM, ADMIN, ChatRole.ADMIN, NICKNAME, EMAIL, false)).block(VERIFY_CEILING))
+                .isInstanceOf(EntryDeniedException.class);
+
+        // then: 그 접속은 특권 뷰를 한 건도 받지 못한다(local 에 들어가지 않으므로 팬아웃이 닿지
+        // 않는다). 감사에 남으면 "누가 무엇을 봤는가" 가 실제보다 많아진다 — 감사 로그가 과다
+        // 계수되는 쪽은 과소보다 덜 위험해 보이지만, 그 수로 특권 사용을 판단하므로 똑같이 틀린다.
+        assertThat(messages().stream().filter(m -> m.contains("특권 뷰 입장")).count())
+                .as("거부된 접속이 감사에 남았다 — 감사 로그가 상한 검사보다 앞에 있다")
+                .isEqualTo(before);
+        assertThat(messages()).noneSatisfy(message -> assertThat(message).contains("denied"));
+
+        // 이 테스트가 재는 것은 <b>과다계수</b> 한 방향뿐이다 — 감사가 아예 안 남는 변이는
+        // adminEntryIsRecorded 가 받는다. 둘을 한 테스트로 묶지 않는 이유는 실패 시 어느 방향이
+        // 깨졌는지가 이름에서 바로 보여야 하기 때문이다.
+    }
+
+    @Test
     @DisplayName("판매자·구매자 입장은 남기지 않는다 — 남기면 모든 입장이 감사 로그가 된다")
     void ordinaryEntriesAreNotRecorded() {
         // when

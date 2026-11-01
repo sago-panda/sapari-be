@@ -178,6 +178,12 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   — see below), **1008** entry denial / kick / account-level ban, **1009** inbound frame over the 4 KB limit
   (Netty's decoder closes; the reason string leaks the configured limit), **1013** buffer overflow.
   1013 rather than 1000 exists to stop instant reconnect.
+- **1008 no longer implies "do not reconnect" — the SYSTEM code decides.** `KICKED`, `BANNED` and
+  `ROOM_ENDED` are states a person cannot clear by retrying. `TOO_MANY_SESSIONS` (SPR-152) is the
+  opposite: it clears as soon as one of that user's sessions in that room goes away, and a dead slot is
+  reclaimed on the next attempt. So the client **may** retry it after a backoff, and must not fold it into
+  the "denied, give up" branch. Splitting the close code instead (1013-style) was rejected: 1008 is
+  already the front end's "entry denial" bucket and splitting it changes how every denial is handled.
 - ⚠️ **1000 now means three different things, and only one of them carries an explanation.** Room end is
   preceded by `SYSTEM(ROOM_ENDED)`; lifetime expiry and liveness failure send no frame at all, because the
   only thing the client should do is reconnect. **That makes "did a SYSTEM(ROOM_ENDED) arrive just before the
@@ -433,11 +439,58 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
 
 ## Scale axis — what is measured, and what the numbers must still come from
 
-Two items are deliberately **not** implemented here. Both were investigated; the reasons differ.
+Two items were deliberately **not** implemented here; SPR-152 then split the first in two and enforced
+one half. Both were investigated; the reasons differ.
 
-**Connection cap** — nothing limits accepted connections (`1013` closes an individual slow session, it is not a
-cap). The failure it would prevent is cascading: a pod takes more than it can serve, GCs to death, and its
-whole audience reconnects onto the next pod.
+**Connection cap** — **split into two axes in SPR-152; one is now enforced, the other is not.**
+
+- **Abuse cap — enforced.** `ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM` (5) bounds concurrent
+  sessions per `(userId, roomId)`; over it, `register` denies with `EntryDeniedException.TOO_MANY_SESSIONS`
+  → `SystemMessageCode.TOO_MANY_SESSIONS` + close 1008, counted by `chat.sessions.admission_capped`. The
+  unit is `(user, room)` because a room token is scoped to one room and is **replayable within its ~90s
+  TTL** (`modules/live/AGENTS.md`), so that pair is the narrowest thing that closes the replay window.
+  Three things it does **not** do, all deliberate and all recorded at the constant:
+  - **It does not cover guests.** Unauthenticated entry mints a **fresh random `userId` per entry**
+    (`EnterLiveService`), so guest connections never collide on the key. That branch is an issuing-side
+    rate limit in live, outside this repo.
+  - **It is pod-local**, so the effective bound is `5 × replicas`. Going global would add a Redis round
+    trip to every connect; the data is already there (`ChatSessionRepository.add` writes userId), so this
+    is a choice, not a constraint.
+  - **It created a new capability: locking the rightful owner out.** A replayed token can fill the slots,
+    and sessions outlive tokens (default lifetime 60m, no mid-session re-verification). Evicting the
+    *oldest* session would fix the UX and hand the attacker a worse primitive — cutting someone's **live**
+    session — so only **dead** slots are reclaimed (`reapUnresponsiveIfFull`, needed because a silently
+    dropped socket holds its slot until the first liveness check at `deadline + interval` ≈ 2 min). The
+    root fix is `jti` on the room token, in live.
+    - ⚠️ **It does not close the ~2 min window, and that window cannot be closed.** An earlier version
+      of this section claimed it did. Since the reap is handed `deadline + interval` (it has to be — see
+      the next bullet), its threshold is exactly when the liveness loop fires anyway, so what it buys is
+      the **≤8 s tail** between the loop firing and `cleanup` sweeping the slot. More fundamentally the
+      liveness clock starts at registration, so a socket that dies right after connecting is
+      **indistinguishable** from a quiet-but-alive viewer until the first check — and the mobile-handover
+      scenario is exactly that case. Closing it would mean giving up "never cut a live session". The
+      mitigation is real but partial; do not read the old claim as a reason to lower the threshold.
+    - That reap **frees the slot and does not terminate**. Terminating there would spin on the Lettuce
+      NIO event loop — the connect path's thread, since nothing in streaming-app switches schedulers —
+      for up to 5 × 50 ms, which is the thing this file forbids twice. Each session's own liveness watch
+      does the terminating on `Schedulers.parallel()` within one interval.
+    - It is handed `deadline + interval`, not `deadline`: the liveness loop delays its first evaluation
+      by exactly that buffer, and a reap evaluating the same predicate at an **arbitrary** moment without
+      it would kill a session that the loop's 30 s grid would have spared — then hand the freed slot to
+      the caller. That would make "only dead slots" false in the window the buffer exists for.
+    - Consequence, with the derivation because the number hangs on a ratio: live sessions per
+      `(user, room)` can reach **2× the cap (10) for ≤8 s** — `FORCED_CLOSE_GRACE 3s +
+      CLOSE_FLUSH_TIMEOUT 5s` — and a reap cannot fire more than once per 90 s per key (the five new
+      sessions are not unresponsive before `livenessDeadline`). **8 s ≪ 90 s**, so it settles at 10 and
+      does not stack. Drop `liveness-deadline` below 8 s, or raise the close ceilings, and it grows
+      linearly instead (measured without cleanup: 5 · 10 · 15 · 20 over four cycles).
+    - It reclaims **nothing** against an attacker who answers pings, and its count is exposed separately
+      (`chat.sessions.reaped`) because `chat.session.cut{liveness}` cannot tell "the cap freed a dead
+      slot" from "the liveness loop collected one" — exactly the axis that separates an attack from a
+      mobile handover.
+- **Capacity cap — still not implemented**, and its number still has to come from a real pod. The failure
+  it would prevent is cascading: a pod takes more than it can serve, GCs to death, and its whole audience
+  reconnects onto the next pod. (`1013` closes an individual slow session; it was never a cap.)
 
 Measured (in-process, 20,000 sessions, three register/unregister cycles):
 
@@ -691,21 +744,48 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     those four numbers landed on 201 by different routes — **the counts matching is not evidence that the
     same thing was counted.**
   - **Production has 4 of its own, and they are a different kind of bounded** — do not read them as part
-    of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
-    throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
+    of the rule above. The test ceilings buy "the suite goes red and reports"; these four buy "the pod
+    dies instead of serving". `ChatMongoConfig`'s startup index creation blocks, and against a closed
+    address it throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is an **unbounded stall, which does not accumulate across indexes**. Measured driver defaults
+    cost is a stall bounded by **`ChatMongoConfig.INDEX_CREATE_CEILING`** (SPR-152; 10 min, and it is a
+    deadline over **all four** index creations, not per call). Measured driver defaults
     (`MongoClientSettings.builder().build()`): `serverSelectionTimeoutMs=30000`,
     **`socketReadTimeoutMs=0` (infinite)**, `socketConnectTimeoutMs=10000`, global `timeoutMs=null` — and
-    this repo sets no Mongo timeout anywhere, so those defaults apply. So 30s bounds only the "never picks
-    a server" mode; once a server *is* picked and `createIndex` does not answer, `.block()` waits forever.
-    Want a bound? Set `timeoutMs`. It does not accumulate because the class has no `catch` and the four
-    `createIndex(...).block()` calls are sequential assignments — the first to throw ends the method and the
-    other three are never evaluated. **This line has been wrong three times**: 90s, then "120s for the
-    four … a fifth adds 30s", then "~30s". Each correction fixed the *number* without measuring what bounds
-    it. State what bounds it, not how long it is. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
-    serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
-    (`infra/`), so this is recorded, not changed.
+    the repo sets no Mongo *client* timeout anywhere, so those defaults apply. So 30s bounds only the
+    "never picks a server" mode; once a server *is* picked and `createIndex` does not answer, the driver
+    has nothing that would cut it — which is why the bound lives at the call site instead.
+    - **This line has been wrong four times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
+      "worst wait is that one value" while the ceiling was still **per call**. The first three fixed the
+      *number* without measuring **what bounds it**; the fourth measured what bounds it but not the
+      **unit** — per call or per method. Measured: ceiling 400ms × 4 calls at 300ms each → total
+      **1,279 ms**, **0 throws** — a per-call ceiling does not bound the method, it scales with the count.
+      That number is read as startupProbe sizing, so the unit is the load-bearing part — and the
+      sizing itself now lives where an operator would look for it (`infra/AGENTS.md`, streaming-app
+      Probes), with the window's "nothing is listening" half beside it.
+    - Earlier versions of this bullet also said *"Want a bound? Set `timeoutMs`"* and *"a
+      `VERIFY_CEILING`-style value is not the lever here — the probe configuration is (`infra/`), so this
+      is recorded, not changed."* SPR-152 pulled exactly that lever, at the call site rather than through
+      `timeoutMs` (a global `timeoutMs` would bound runtime queries too, and getting that value wrong
+      breaks serving rather than boot). `ChatMongoIndexCeilingTest` pins both the bound and its unit.
+    - **Dying at that ceiling does not restart the work** (measured on **standalone** mongo 7 via the
+      `hangAfterInitializingIndexBuild` failpoint — the one remaining "uncertain" on this bullet, and the
+      answer turned out to be the opposite of what the code said). A second identical `createIndexes`
+      issued while a build is in progress **waits** rather than returning `IndexBuildAlreadyInProgress`;
+      killing the client outright (its container removed) leaves the server-side build running
+      (`createIndexes` op still listed, `IndexBuildsCoordinatorMongod-0` alive) and the index completes
+      with nobody attached. So the pod's death does not undo progress — N× the ceiling costs ~N restarts,
+      then it boots. **Say "waits", not "joins".** What was observed is that the re-issued call blocks
+      instead of erroring; that does not distinguish "registered as a joiner" from "waiting on a lock",
+      and the operational conclusion rests on the *survival* half alone. Two gaps remain: a restarted
+      pod's `createIndexes` has never been observed **returning success** after the build finished (no
+      client was attached in the measured runs), and the topology is standalone — a replica set builds in
+      phases with a commit quorum, and DocumentDB is a compatibility layer. The repo does not say which
+      one production runs (`documentdb|replicaSet|mongodb+srv`: 0 hits, while `mongodb` has 16), so that
+      branch is unmeasured, not measured-and-fine. Two places said "every restart re-fires
+      the build" (the constant's javadoc and the operator-facing exception message); both were guesses
+      and both are corrected. The sizing advice does not change — it is still a full outage while it
+      lasts — but "permanent CrashLoopBackOff" was wrong.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
     forever when the main thread throws before `countDown()`. The reason is **not** that a non-daemon
     thread holds the worker JVM open: it does not (a thread sleeping 10 minutes still lets the Gradle test
@@ -719,6 +799,22 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     earlier version of this line said "all 7 sites take `await(30, SECONDS)` and throw with a reason" —
     wrong on the count, the uniformity and the throwing, and with no baseline commit, which is what the
     rule two bullets up asks for.
+    - **Re-measured at SPR-152's session-cap commits: 18 in the same scope, 0 unbounded.** The count is
+      right; **the attribution was wrong three times over** and is corrected here, because this bullet is
+      the one that records "an earlier version was wrong on the count" — the repo's own rule is that
+      *matching counts are not evidence the same thing was counted*, and that applies to its own
+      corrections. The genuinely new site is `ChatWebSocketIntegrationTest`'s admitted-latch;
+      `SessionAdmissionCapTest`'s start and finish latches were already in the delta's base commit
+      — **`c72dbc5e`**, named because "base" read as pre-SPR-152 and the file itself is new in that
+      commit (the start latch was a bare→bounded **conversion** there, not an addition) — and
+      `ChatSessionGaugeConfigTest` has **no**
+      `await(` at all — what grew there was `block(VERIFY_CEILING)`.
+    - A fourth statement-form site shows up in the discard list (`RedisRateLimiterDegradedTest:337`) and
+      it is **not** the same defect: that one is a `CyclicBarrier`, whose `await(timeout, unit)`
+      **throws** `TimeoutException` instead of returning a boolean, so discarding its result loses
+      nothing. Only `CountDownLatch.await` is silent on timeout. Do not "fix" the barrier site.
+    - The scope sentence says `modules/chat` + `apps/streaming-app`, so it is incomplete rather than
+      wrong: `apps/live-app`'s `ReconcileSchedulerLockTest` still has an unbounded one, outside it.
   - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded, and
     the worst case is **not** ceiling × call sites. An exceeded `block(Duration)` *throws*
     (`IllegalStateException: Timeout on blocking read…`), which aborts that test method, so the remaining
