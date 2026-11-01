@@ -439,7 +439,8 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
 
 ## Scale axis — what is measured, and what the numbers must still come from
 
-Two items are deliberately **not** implemented here. Both were investigated; the reasons differ.
+Two items were deliberately **not** implemented here; SPR-152 then split the first in two and enforced
+one half. Both were investigated; the reasons differ.
 
 **Connection cap** — **split into two axes in SPR-152; one is now enforced, the other is not.**
 
@@ -461,6 +462,24 @@ Two items are deliberately **not** implemented here. Both were investigated; the
     session — so only **dead** slots are reclaimed (`reapUnresponsiveIfFull`, needed because a silently
     dropped socket holds its slot until the first liveness check at `deadline + interval` ≈ 2 min). The
     root fix is `jti` on the room token, in live.
+    - That reap **frees the slot and does not terminate**. Terminating there would spin on the Lettuce
+      NIO event loop — the connect path's thread, since nothing in streaming-app switches schedulers —
+      for up to 5 × 50 ms, which is the thing this file forbids twice. Each session's own liveness watch
+      does the terminating on `Schedulers.parallel()` within one interval.
+    - It is handed `deadline + interval`, not `deadline`: the liveness loop delays its first evaluation
+      by exactly that buffer, and a reap evaluating the same predicate at an **arbitrary** moment without
+      it would kill a session that the loop's 30 s grid would have spared — then hand the freed slot to
+      the caller. That would make "only dead slots" false in the window the buffer exists for.
+    - Consequence, with the derivation because the number hangs on a ratio: live sessions per
+      `(user, room)` can reach **2× the cap (10) for ≤8 s** — `FORCED_CLOSE_GRACE 3s +
+      CLOSE_FLUSH_TIMEOUT 5s` — and a reap cannot fire more than once per 90 s per key (the five new
+      sessions are not unresponsive before `livenessDeadline`). **8 s ≪ 90 s**, so it settles at 10 and
+      does not stack. Drop `liveness-deadline` below 8 s, or raise the close ceilings, and it grows
+      linearly instead (measured without cleanup: 5 · 10 · 15 · 20 over four cycles).
+    - It reclaims **nothing** against an attacker who answers pings, and its count is exposed separately
+      (`chat.sessions.reaped`) because `chat.session.cut{liveness}` cannot tell "the cap freed a dead
+      slot" from "the liveness loop collected one" — exactly the axis that separates an attack from a
+      mobile handover.
 - **Capacity cap — still not implemented**, and its number still has to come from a real pod. The failure
   it would prevent is cascading: a pod takes more than it can serve, GCs to death, and its whole audience
   reconnects onto the next pod. (`1013` closes an individual slow session; it was never a cap.)
@@ -772,13 +791,20 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     earlier version of this line said "all 7 sites take `await(30, SECONDS)` and throw with a reason" —
     wrong on the count, the uniformity and the throwing, and with no baseline commit, which is what the
     rule two bullets up asks for.
-    - **Re-measured at SPR-152's session-cap commits: 18 in the same scope, 0 unbounded.** Count it
-      against the commit, as the rule above says — the three added are `SessionAdmissionCapTest`'s start
-      and finish latches and the gauge test's context round. A fourth statement-form site has since shown
-      up in the discard list (`RedisRateLimiterDegradedTest:337`) and it is **not** the same defect: that
-      one is a `CyclicBarrier`, whose `await(timeout, unit)` **throws** `TimeoutException` instead of
-      returning a boolean, so discarding its result loses nothing. Only `CountDownLatch.await` is silent
-      on timeout. Do not "fix" the barrier site.
+    - **Re-measured at SPR-152's session-cap commits: 18 in the same scope, 0 unbounded.** The count is
+      right; **the attribution was wrong three times over** and is corrected here, because this bullet is
+      the one that records "an earlier version was wrong on the count" — the repo's own rule is that
+      *matching counts are not evidence the same thing was counted*, and that applies to its own
+      corrections. The genuinely new site is `ChatWebSocketIntegrationTest`'s admitted-latch;
+      `SessionAdmissionCapTest`'s start and finish latches were already in the base commit (the start one
+      was a bare→bounded **conversion**, not an addition), and `ChatSessionGaugeConfigTest` has **no**
+      `await(` at all — what grew there was `block(VERIFY_CEILING)`.
+    - A fourth statement-form site shows up in the discard list (`RedisRateLimiterDegradedTest:337`) and
+      it is **not** the same defect: that one is a `CyclicBarrier`, whose `await(timeout, unit)`
+      **throws** `TimeoutException` instead of returning a boolean, so discarding its result loses
+      nothing. Only `CountDownLatch.await` is silent on timeout. Do not "fix" the barrier site.
+    - The scope sentence says `modules/chat` + `apps/streaming-app`, so it is incomplete rather than
+      wrong: `apps/live-app`'s `ReconcileSchedulerLockTest` still has an unbounded one, outside it.
   - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded, and
     the worst case is **not** ceiling × call sites. An exceeded `block(Duration)` *throws*
     (`IllegalStateException: Timeout on blocking read…`), which aborts that test method, so the remaining

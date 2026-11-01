@@ -328,7 +328,17 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         //
         // 거부 뒤 재시도가 아니라 <b>등록 전</b>인 이유는 거부 카운터다 — 거부했다가 재시도로
         // 성공하면 chat.sessions.admission_capped 가 집행이 아닌 것을 집행으로 센다.
-        registry.reapUnresponsiveIfFull(chatSession.userId(), roomId, timeouts.livenessDeadline());
+        //
+        // ⚠️ 기한에 <b>간격을 더해</b> 넘긴다 — 생존 루프가 쓰는 것과 같은 값이어야 한다. 그 루프는
+        // 같은 술어를 쓰면서 첫 평가를 기한 + 간격으로 늦추는데, 그 근거가 이 파일에 적혀 있다:
+        // 기한에 바로 점검하면 ping 두 번이 연속 유실된 t=기한 시점에 last 가 아직 등록 시각이라
+        // "멀쩡한 시청자가 끊긴다". reap 은 그 완충 없이 <b>임의 시점</b>에 같은 술어를 평가하므로,
+        // 기한만 넘기면 생존 루프의 격자에서는 살아남는 구간(기한~기한+간격)에 있던 세션을 죽인다 —
+        // 그리고 비워진 자리를 이 호출이 즉시 가져간다. 그러면 "죽은 자리만 거둔다" 가 그 구간에서
+        // 거짓이 되고, evict-oldest 를 기각한 근거("남의 살아 있는 세션을 끊지 않는다")도 같이
+        // 무너진다. 상한이 5라 창이 간격 하나만큼 길어지는 비용은 사실상 없다.
+        registry.reapUnresponsiveIfFull(chatSession.userId(), roomId,
+                timeouts.livenessDeadline().plus(timeouts.pingInterval()));
         return registry.register(sid, chatSession)
                 .then(roomInfoFor(roomId, chatSession))
                 .flatMap(info -> registry.sendToSession(sid, info))

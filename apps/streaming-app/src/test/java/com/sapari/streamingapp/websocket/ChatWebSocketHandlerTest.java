@@ -137,7 +137,11 @@ class ChatWebSocketHandlerTest {
 
         // then
         InOrder order = inOrder(registry);
-        order.verify(registry).reapUnresponsiveIfFull(userId, roomId, LIVENESS_DEADLINE);
+        // 기한 + 간격이다. 기한만 넘기면 생존 루프의 격자에서는 살아남는 구간(기한~기한+간격)에
+        // 있던 멀쩡한 세션을 reap 이 죽이고 그 자리를 이 접속이 가져간다 — 그 값이 이 호출의
+        // 하중이라 any() 로 지우지 않는다.
+        order.verify(registry).reapUnresponsiveIfFull(
+                userId, roomId, LIVENESS_DEADLINE.plus(PING_INTERVAL));
         order.verify(registry).register(eq("s1"), any());
     }
 

@@ -49,8 +49,13 @@ class SessionAdmissionCapTest {
 
     private static final int CAP = ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM;
 
-    /** 운영 기본값과 같은 생존 기한 — 테스트는 기다리지 않고 expireLiveness 로 시계를 민다. */
-    private static final Duration LIVENESS_DEADLINE = Duration.ofSeconds(90);
+    /**
+     * reap 에 넘기는 기한 — 운영 기본값의 <b>기한 + 간격</b>(90s + 30s)이다.
+     *
+     * <p>기한만 쓰면 안 된다: 생존 루프가 첫 평가를 그만큼 늦추므로, reap 이 기한만으로 판정하면
+     * 그 격자에서는 살아남는 구간의 멀쩡한 세션을 죽인다. 핸들러가 넘기는 값과 같아야 한다.
+     */
+    private static final Duration REAP_DEADLINE = Duration.ofSeconds(120);
 
     private ChatSessionRepository sessionRepository;
     private ChatSessionRegistry registry;
@@ -136,15 +141,41 @@ class SessionAdmissionCapTest {
         // (기본 약 2분) 뒤라, 그 창 안의 재접속은 "살아 있는 자리" 로 오판된 죽은 자리에 막힌다.
         fillToCap();
         for (int i = 0; i < CAP; i++) {
-            registry.expireLiveness("s" + i, LIVENESS_DEADLINE);
+            registry.expireLiveness("s" + i, REAP_DEADLINE);
         }
 
-        assertThat(registry.reapUnresponsiveIfFull(userId, roomId, LIVENESS_DEADLINE))
+        assertThat(registry.reapUnresponsiveIfFull(userId, roomId, REAP_DEADLINE))
                 .as("죽은 자리를 거두지 않았다 — 그러면 재접속이 2분간 거부된다").isEqualTo(CAP);
 
         admit("reconnected", roomId, userId);
         assertThat(registry.admissionCapped())
                 .as("자리를 거뒀는데도 거부됐다").isZero();
+        assertThat(registry.slotsReaped())
+                .as("거둔 수가 지표에 안 들어오면 공격과 모바일 핸드오버를 가를 수 없다").isEqualTo(CAP);
+
+        // ⭐ 거둔 세션을 <b>종료하지는 않는다.</b> 종료는 Lettuce NIO 이벤트루프에서 세션마다
+        // 50ms 예산을 새로 받는 spin 이라, 5건이면 그 루프가 최대 250ms 멈춘다 — 이 파일이 두 자리에서
+        // 금지한 모양이고 하필 발동 조건이 재접속 폭주 구간이다. 수거는 각 세션의 생존 확인
+        // (Schedulers.parallel)이 다음 틱에 가져간다. 그래서 거둔 세션은 local 에 잠깐 남는다.
+        assertThat(registry.localSessionCount())
+                .as("reap 이 종료까지 했다 — 접속 경로에서 이벤트루프가 그만큼 멈춘다")
+                .isEqualTo(CAP + 1);
+    }
+
+    @Test
+    @DisplayName("⭐ 퇴장이 세션 자신의 방으로 자리를 걷는다 — 인자를 믿으면 영구 차단이 된다")
+    void leavingUsesTheSessionsOwnRoomForTheSlotKey() {
+        // 등재는 session.roomId() 로 하는데 unregister 는 인자 roomId 를 받는다. 포트 계약
+        // (ChatSessionManager.unregister)에 둘이 같아야 한다는 보장이 없어, 키를 인자로 만들면
+        // 어긋나는 호출 하나가 자리를 영구히 남긴다 — 그 유저는 프로세스 재시작 전까지 그 방에
+        // 못 들어온다. 오늘 호출부는 하나이고 값이 같지만, 그 사실에 기대지 않는다.
+        fillToCap();
+        registry.unregister(UUID.randomUUID(), "s0").block(VERIFY_CEILING);   // 엉뚱한 방을 넘긴다
+
+        assertThatCode(() -> admit("reconnected", roomId, userId))
+                .as("어긋난 roomId 로 퇴장하자 자리가 새어 영구히 찬 상태가 됐다")
+                .doesNotThrowAnyException();
+        assertThat(registry.admissionCapped()).isZero();
     }
 
     @Test
@@ -155,7 +186,7 @@ class SessionAdmissionCapTest {
         // 여기서 자리를 비우는 유일한 근거는 "그 소켓은 이미 죽었다" 다.
         fillToCap();
 
-        assertThat(registry.reapUnresponsiveIfFull(userId, roomId, LIVENESS_DEADLINE))
+        assertThat(registry.reapUnresponsiveIfFull(userId, roomId, REAP_DEADLINE))
                 .as("살아 있는 세션을 밀어냈다 — 토큰 재사용이 세션 종료 능력이 된다").isZero();
         assertThat(registry.localSessionCount()).isEqualTo(CAP);
 
@@ -168,9 +199,9 @@ class SessionAdmissionCapTest {
     @DisplayName("자리가 꽉 차지 않았으면 거두지 않는다 — 접속마다 도는 자리라 비용을 두지 않는다")
     void nothingIsReapedWhileSlotsRemain() {
         admit("s0", roomId, userId);
-        registry.expireLiveness("s0", LIVENESS_DEADLINE);
+        registry.expireLiveness("s0", REAP_DEADLINE);
 
-        assertThat(registry.reapUnresponsiveIfFull(userId, roomId, LIVENESS_DEADLINE))
+        assertThat(registry.reapUnresponsiveIfFull(userId, roomId, REAP_DEADLINE))
                 .as("자리가 남았는데 죽은 세션을 거뒀다 — 수거는 생존 확인의 몫이다").isZero();
         assertThat(registry.localSessionCount()).isEqualTo(1);
     }

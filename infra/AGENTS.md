@@ -375,6 +375,14 @@ that on.
   - **Counters that are 0 when healthy**: `chat.policy.open`, `chat.ratelimit.degraded`,
     `chat.delivery.dropped`, `chat.session.cut`. Every one of them is a *policy not being enforced* right
     now, so any non-zero rate is worth watching. Details in `modules/chat/AGENTS.md`.
+  - **Counters that are 0 when nobody is abusing** (added SPR-152): `chat.sessions.admission_capped` ·
+    `chat.sessions.reaped` — the per-`(user, room)` session cap denying a connect, and the same cap
+    reclaiming a slot whose socket had already gone silent. These are a different kind from the four
+    above: a non-zero rate there is a policy *failing*, here it is a policy **firing**. Watch them as a
+    **pair** — denials rising while reclaims stay flat reads as abuse, or as a cap set too low; both
+    rising together reads as clients dropping sockets without closing them, which is ordinary mobile
+    behaviour. Neither question can be answered from `chat.session.cut{liveness}`, whose only tag is the
+    reason.
   - **Gauges that are *not* 0 when healthy** (added 2026-11-01): `chat.sessions.local` ·
     `chat.rooms.local` — this pod's live WebSocket sessions and the rooms it relays. These are capacity
     signals, not failure signals, so "non-zero = problem" does not apply; they want a **threshold**.
