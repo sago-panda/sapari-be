@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.springframework.web.reactive.socket.CloseStatus;
@@ -200,11 +201,23 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // Error 는 throwIfFatal 이 그대로 다시 던져 이 모양으로도 안 덮인다 — 그쪽 보상은
         // 레지스트리의 register 안 try/finally 가 맡는다(자리·local·방 색인).
         //
-        // 과다 해제 창이 생기지 않는지 재 봤다: 즉시 취소에서도 supplier/doFinally 가 1/1 이고,
-        // 미구독과 '상류가 먼저 에러' 는 둘 다 0/0 이다 — doFinally 가 supplier 보다 먼저 도는
-        // 창이 없으므로 acquireRoom 없이 releaseRoom 이 불리는 일은 없다.
+        // ⚠️ <b>이 모양이 과다 해제 방향을 열었다 — 그래서 플래그로 막는다.</b> acquireRoom 자신이
+        // 던지면 defer 가 그것을 onError 로 바꾸므로 <b>얻지 않은 방에 대해</b> doFinally 가 돈다
+        // (실측: acquired=0 released=1). 그 사이 다른 세션이 같은 방을 refs=1 로 설치했으면 이
+        // 해제가 그걸 0 으로 내려 dispose 한다 — <b>살아 있는 세션이 크로스 파드 강퇴·밴·방 종료를
+        // 조용히 못 받게 된다.</b> 이전 모양에서는 같은 실패가 "아무것도 얻지 않고 아무것도 해제
+        // 안 함" 으로 균형이 맞았으니, 이 방향은 defer 모양이 만든 것이다.
+        //
+        // 한때 여기 "doFinally 가 supplier 보다 먼저 도는 창이 없으므로 acquireRoom 없이
+        // releaseRoom 이 불리는 일은 없다" 고 적었다. <b>거짓이다</b> — 그 문장이 센 세 갈래
+        // (즉시 취소 1/1, 미구독 0/0, 상류 선행 에러 0/0)는 실측으로 맞지만 <b>네 번째 0/1</b> 을
+        // 빠뜨렸다. 과다 해제가 그동안 없던 실제 이유는 "창이 없다" 가 아니라 acquireRoom 이 defer
+        // 첫 줄이고 releaseRoom 이 computeIfPresent 라는 <b>두 우연</b>이었다 — 첫 줄에 지표나 로그
+        // 한 줄을 끼우는 흔한 변경이 그 하나를 깬다. 플래그는 그 둘에 기대지 않는다.
+        AtomicBoolean roomAcquired = new AtomicBoolean();
         return Mono.<Void>defer(() -> {
             acquireRoom(roomId);
+            roomAcquired.set(true);   // 여기 도달했다 = 얻었다. 던졌으면 해제하지 않는다.
 
             // Flux.defer: outboundFrames()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
             // 아웃바운드에 ping 을 합류시킨다. 별도 send 로 두면 같은 소켓에 두 publisher 가 붙어 프레임
@@ -361,7 +374,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
                             forcedClose.then(closeWithReason), lifetimeExpiry, livenessWatch));
         })
-                .doFinally(signal -> cleanup(roomId, sid));
+                .doFinally(signal -> cleanup(roomId, sid, roomAcquired.get()));
     }
 
     /**
@@ -697,11 +710,21 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * {@code doFinally} 안에서 도는 <b>마지막 보상</b>이라 자기 안에서 순서에 기대면 안 된다.
      * 테스트가 그 모양을 실제로 밟았다(목 레지스트리가 던지는 회차에서 구독이 남았다).
      */
-    private void cleanup(UUID roomId, String sid) {
+    private void cleanup(UUID roomId, String sid, boolean roomAcquired) {
         try {
             registry.unregister(roomId, sid).subscribe();
         } finally {
-            releaseRoom(roomId);
+            if (roomAcquired) {
+                try {
+                    releaseRoom(roomId);
+                } catch (RuntimeException e) {
+                    // 여기서 던지면 <b>원래 예외를 가린다</b> — 그리고 이 메서드는 doFinally 콜백
+                    // 안이라 reactor 가 그 던짐을 drop 한다. 즉 안 적으면 아무 데도 안 남는다.
+                    // 구독이 남는 것은 사실이므로 삼키는 것이 아니라 한 줄로 남긴다.
+                    log.warn("방 구독 해제 실패 — 구독이 남는다 roomId={} cause={}",
+                            roomId, e.getClass().getSimpleName());
+                }
+            }
         }
     }
 

@@ -135,6 +135,50 @@ class ChatWebSocketHandlerTest {
                 .as("조립 중 던졌는데 방 구독이 남았다 — 빈 방을 영구히 중계한다").isFalse();
     }
 
+    /**
+     * ⭐ 방을 못 얻었으면 해제하지 않는다 — 그러지 않으면 <b>남의 구독을 끊는다.</b>
+     *
+     * <p>{@code acquireRoom} 자신이 던지면 defer 가 그것을 {@code onError} 로 바꾸므로 얻지 않은
+     * 방에 대해 {@code doFinally} 가 돈다(실측: {@code acquired=0 released=1}). 그 사이 다른 세션이
+     * 같은 방을 {@code refs=1} 로 설치했으면 이 해제가 그걸 0 으로 내려 dispose 한다 — 살아 있는
+     * 세션이 크로스 파드 강퇴·밴·방 종료를 조용히 못 받게 된다.
+     *
+     * <p>교차를 실제로 만든다 — 뒷정리는 {@code unregister} 를 먼저 부르고 그 다음에 방을 해제하므로,
+     * 그 {@code unregister} 안에서 다른 세션의 획득을 끼워 넣으면 "던짐 → 설치 → 해제" 순서가 된다.
+     * 처음에는 그 교차 없이 "{@code dispose} 가 안 불린다" 만 단언했는데, 그러면 해제가 빈 맵에
+     * 떨어져 어차피 무연산이라 <b>플래그를 지워도 초록이었다</b>(실측).
+     */
+    @Test
+    @DisplayName("⭐ 방을 못 얻었으면 해제하지 않는다 — 해제하면 남의 구독을 끊는다")
+    void a_failed_acquire_does_not_release_the_room() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        Disposable disposable = mock(Disposable.class);
+        // 구독 자체가 실패한다 — 그러면 roomSubs 에 매핑이 설치되지 않는다. 두 번째 호출은 성공해
+        // "다른 세션" 의 설치가 된다.
+        given(subscriber.subscribeRoom(roomId))
+                .willThrow(new IllegalStateException("프로브: subscribeRoom 이 던진다"))
+                .willReturn(disposable);
+        // 던짐과 해제 <b>사이</b>에 다른 세션이 같은 방을 refs=1 로 설치한다. 뒷정리가 unregister 를
+        // 먼저 부르므로 그 안이 정확히 그 틈이다.
+        given(registry.unregister(roomId, "s1")).willAnswer(invocation -> {
+            handler.acquireRoom(roomId);
+            return Mono.empty();
+        });
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(handler.runSession(session, chatSession))
+                .expectError(IllegalStateException.class)
+                .verify(VERIFY_CEILING);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("실패한 접속의 뒷정리가 다른 세션의 방 구독을 걷어냈다").isTrue();
+        then(disposable).should(never()).dispose();
+    }
+
     @Test
     @DisplayName("⭐ 뒷정리가 던져도 방 구독은 해제된다 — 마지막 보상이 자기 안에서 순서에 기대면 안 된다")
     void a_throwing_cleanup_still_releases_the_room() {

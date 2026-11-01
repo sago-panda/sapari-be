@@ -611,6 +611,30 @@ public class ChatSessionRegistry implements ChatSessionManager {
         //
         // local.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 local 에 들어가 있어
         // 게이지·팬아웃이 그 세션을 한 번 보고, cleanup 이 지우기 전까지 시청자 수가 틀린다.
+        // ⚠️ <b>세션 레코드를 자리 확보 앞에서 만든다.</b> 한때 자리를 넣은 뒤 이 자리에서 만들었고,
+        // 그러면 자리 추가와 {@code local.put} 사이에 <b>할당</b>이 들어와 OutOfMemoryError 로 던질 수
+        // 있는 창이 생긴다. 그 창은 테스트로 밟을 수단이 없어(남는 것이 Error 뿐이다) 그 구간의
+        // 보상은 CI 가 영원히 확인해 주지 않는다 — 실제로 그 보상이 세 라운드에 걸쳐 두 번
+        // 좁아졌고 두 번 다 스위트가 초록이었다.
+        //
+        // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ local.put 사이에
+        // 할당이 없다. 대가는 거부 1건마다 버려지는 아웃바운드 큐 하나(256슬롯, 약 2.3KB)이고,
+        // 거부 경로가 남용 경로라 공짜가 아니다 — 다만 그 1건은 이미 WS 핸드셰이크와 토큰 검증과
+        // 입장 게이트의 Redis 왕복 셋을 쓴 뒤다.
+        LocalSession pending = new LocalSession(sessionId, session,
+                Sinks.many().unicast().onBackpressureBuffer(
+                        Queues.<OutboundFrame>get(OUTBOUND_BUFFER_SIZE).get()),
+                Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
+                // 둘 다 nanoTime 기준이라 0을 센티널로 쓰면 안 된다 — nanoTime 원점은 임의고 음수일 수 있어,
+                // 0과 비교하면 등록 직후부터 "창 안"으로 오판해 전송이 통째로 막힌다.
+                new AtomicLong(System.nanoTime() - REJECTION_REPLY_INTERVAL_NANOS),
+                new AtomicLong(System.nanoTime()),
+                // 입장 게이트가 방금 확인했으므로 창을 지금부터 연다 — 첫 프레임에서 또 묻지 않는다.
+                new AtomicLong(System.nanoTime()),
+                new AtomicBoolean(),
+                // 생존 시계도 지금부터 — 방금 핸드셰이크를 마쳤으므로 응답이 없는 상태가 아니다.
+                new AtomicLong(System.nanoTime()));
+
         boolean[] admitted = {false};
         userRoomSessions.compute(new UserInRoom(session.userId(), session.roomId()), (key, sessionIds) -> {
             Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
@@ -630,10 +654,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 한때 이 try 가 <b>local.put 하나만</b> 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
         // (put 과 생성자들은 Error 외에 던질 경로가 없다) 정작 던질 수 있는 둘 — 주입 협력자를
         // 부르는 감사 블록과 roomSessions.compute — 이 가드 <b>밖</b>에 남았다. 그 상태가 더
-        // 나빴다: 거기서 던지면 register 가 동기 예외로 빠지고, 호출부의
-        // register(...).then(...).doFinally(cleanup) 에서 Java 가 register(...) 를 먼저 평가하므로
-        // <b>doFinally 가 애초에 조립되지 않는다</b> — 자리뿐 아니라 local 항목과 acquireRoom 의
-        // 방 구독 refcount 까지 영구 누출이다.
+        // 나빴다: 거기서 던지면 자리뿐 아니라 local 항목까지 남는다.
+        //
+        // ⚠️ 근거가 한 번 낡았다. 한때 "호출부가 register(...).then(...).doFinally(cleanup) 이라
+        // doFinally 가 애초에 조립되지 않는다" 고 적었는데, 호출부가 Mono.defer{...}.doFinally(...)
+        // 로 바뀌어 <b>동기 예외에서도 doFinally 는 돈다</b>(실측). 가드가 여전히 필요한 이유는
+        // 다른 것이다 — 그 cleanup 이 부르는 unregister 가 local.get 으로 키를 만들고, 이 구간에서
+        // 던지면 local 에 항목이 없어 자리를 못 걷는다. 결론은 같고 근거만 교체됐다.
         //
         // 거부 분기도 이 안에 둔다 — 자리 추가와 가드 사이에 <b>한 줄도 들어가지 않게</b> 하려는
         // 것이고, 인접성에 기대지 않는다는 것이 이 배치의 값이다.
@@ -670,19 +697,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 던질 수 있다. 추론으로 지키는 대신 <b>집행</b>한다 — 실패하면 자리를 되돌린다.
             // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
             // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
-            local.put(sessionId, new LocalSession(sessionId, session,
-                    Sinks.many().unicast().onBackpressureBuffer(
-                            Queues.<OutboundFrame>get(OUTBOUND_BUFFER_SIZE).get()),
-                    Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
-                    // 둘 다 nanoTime 기준이라 0을 센티널로 쓰면 안 된다 — nanoTime 원점은 임의고 음수일 수 있어,
-                    // 0과 비교하면 등록 직후부터 "창 안"으로 오판해 전송이 통째로 막힌다.
-                    new AtomicLong(System.nanoTime() - REJECTION_REPLY_INTERVAL_NANOS),
-                    new AtomicLong(System.nanoTime()),
-                    // 입장 게이트가 방금 확인했으므로 창을 지금부터 연다 — 첫 프레임에서 또 묻지 않는다.
-                    new AtomicLong(System.nanoTime()),
-                    new AtomicBoolean(),
-                    // 생존 시계도 지금부터 — 방금 핸드셰이크를 마쳤으므로 응답이 없는 상태가 아니다.
-                    new AtomicLong(System.nanoTime())));
+            local.put(sessionId, pending);
 
             // ⚠️ 감사 로그가 <b>상한 검사 뒤</b>에 있다. 한때 register 첫 줄이었는데, 그러면 상한으로
             // 거부된 접속도 "특권 뷰 입장" 으로 남아 감사가 실제 특권 뷰보다 많아진다 — 이 줄의 값이
@@ -1431,10 +1446,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p>⚠️ <b>자리를 여기 두지 않는 이유가 있다.</b> 한때 이 메서드가 자리까지 되돌렸고 그 키를
      * {@code local.get(sessionId)} 으로 만들었다. 그러면 자리 반납이 "{@code local} 에 항목이 있을
-     * 때" 로 좁아지는데, <b>자리가 들어간 뒤 {@code local.put} 전에 던지는 구간</b>이 정확히 그
-     * 조건을 못 만족한다 — 그리고 그 구간이 보상이 존재하는 유일한 이유다. 실측: 그 자리에서 던지게
-     * 하면 자리 다섯이 새고 그 뒤 거부가 {@code TOO_MANY_SESSIONS} 로 바뀐다. 자리는 호출부가
-     * <b>인자에서 키를 만들어</b> 무조건 되돌린다.
+     * 때" 로 좁아진다. 실측: 그 상태에서 {@code local.put} 직전에 던지게 하면 자리 다섯이 새고 그
+     * 뒤 거부가 {@code TOO_MANY_SESSIONS} 로 바뀐다. 자리는 호출부가 <b>인자에서 키를 만들어</b>
+     * 무조건 되돌린다 — 던진 지점이 어디든 같은 키가 나오므로 그 조건에 기대지 않는다.
+     *
+     * <p>⚠️ <b>그래도 이 구분에 테스트는 없고, 없는 것이 맞다.</b> 그 둘이 갈리는 유일한 지점이
+     * "자리 추가 ~ {@code local.put} 사이의 던짐" 인데, 세션 레코드를 자리 확보 앞으로 옮긴 뒤로는
+     * 그 사이에 던질 수 있는 것이 남아 있지 않다({@code register} 의 그 자리 주석 참고). 즉 지금은
+     * <b>좁은 키로 되돌려도 결과가 같다</b> — 테스트가 그 회귀를 못 잡는 것이 아니라 잡을 회귀가
+     * 없다. 인자 키를 그대로 두는 것은 그 사실에 기대지 않기 위해서다: 누가 그 구간에 코드를 다시
+     * 넣으면 창이 돌아오는데, 그때 이 키는 이미 맞다. 시임을 만들어 테스트를 붙이는 쪽은 <b>불변식이
+     * 금지한 코드를 그 구간에 넣는 것</b>이라 택하지 않았다.
      *
      * @param roomId 방 색인에서 걷을 방 — 세션이 {@code local} 에 있으면 <b>세션 자신의</b> 방이어야
      *               한다(등재를 그 값으로 했으므로).
@@ -1570,7 +1592,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p>{@code public} 인 이유는 지표 배선이 쓰기 때문이다
      * ({@code ChatSessionGaugeConfig} 의 {@code chat.sessions.reaped}). 한때 이 문장이 참이 아니었다 —
-     * 접근자만 만들고 미터를 등록하지 않은 채 저장소 문서 세 곳이 그 지표를 사실로 적었다.
+     * 접근자만 만들고 미터를 등록하지 않은 채 {@code .md} 두 곳({@code infra/AGENTS.md} ·
+     * {@code modules/chat/AGENTS.md})이 그 지표를 사실로 적었다. "세 곳" 으로 센 적이 있는데 그
+     * 셋째는 <b>이 javadoc 자신</b>이었다.
      */
     public long slotsReaped() {
         return slotsReaped.get();
