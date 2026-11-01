@@ -56,11 +56,14 @@ public class ChatMongoConfig {
      * socketConnectTimeoutMs    10000
      * 전역 timeoutMs             null
      * </pre>
-     * 그리고 이 저장소에는 Mongo 타임아웃 설정이 <b>0건</b>이라(운영 소스·추적 템플릿 전부) 기본값이
-     * 그대로 적용된다. 그래서 30초가 묶는 것은 "<b>서버를 영영 못 고르는</b>" 한 가지 모드뿐이고,
-     * 서버가 선택된 뒤 {@code createIndex} 가 답하지 않으면(큰 컬렉션의 신규 인덱스, 끊겼는데 살아
-     * 있는 소켓) {@code .block()} 은 <b>무한히</b> 기다린다. 상한을 원하면 {@code timeoutMs} 를
-     * 설정해야 한다.
+     * 그리고 이 저장소에는 Mongo 클라이언트 타임아웃 설정이 <b>0건</b>이라 기본값이 그대로 적용된다.
+     * 그래서 30초가 묶는 것은 "<b>서버를 영영 못 고르는</b>" 한 가지 모드뿐이고, 서버가 선택된 뒤
+     * {@code createIndex} 가 답하지 않으면(큰 컬렉션의 신규 인덱스, 끊겼는데 살아 있는 소켓)
+     * 드라이버 쪽에는 그걸 끊을 것이 없다.
+     *
+     * <p>그래서 <b>이 호출부에서 상한을 건다</b> — {@link #INDEX_CREATE_CEILING}. 그 상한이 없으면
+     * 이 가드의 의도("시끄럽게 죽는다")가 <b>조용한 멈춤</b>으로 뒤집힌다. 최악 대기는 그 값 하나다
+     * (첫 던짐에서 메서드가 끝나므로 인덱스 수에 비례하지 않는다).
      *
      * <p>누적은 하지 않는다 — 이 클래스에 {@code catch} 가 0건이고 인덱스 생성은 {@code .block()}
      * 순차 대입 넷이라, 첫 {@code block()} 이 던지면 메서드가 그 자리에서 끝난다(나머지 셋은 평가조차
@@ -96,6 +99,25 @@ public class ChatMongoConfig {
     }
 
     /**
+     * 부팅 시 인덱스 생성 한 건에 거는 상한.
+     *
+     * <p><b>왜 필요한가.</b> 드라이버 기본값이 {@code socketReadTimeoutMs=0}(무한)이고 전역
+     * {@code timeoutMs} 도 {@code null} 이라(실측), 서버가 선택된 뒤 {@code createIndex} 가 응답하지
+     * 않으면 {@code .block()} 이 <b>영원히</b> 기다린다. 그러면 이 가드의 의도("인덱스 없이 뜨지
+     * 않는다 — 시끄럽게 죽는다")가 <b>조용한 멈춤</b>으로 뒤집힌다: 파드는 Ready 가 되지 않고,
+     * 로그에는 아무 사유도 남지 않으며, "느린 시작" 과 구분되지 않는다.
+     *
+     * <p><b>왜 전역 {@code timeoutMs} 를 쓰지 않는가.</b> 그건 런타임 질의까지 전부 묶는다 — VOD
+     * 윈도우 조회처럼 느려도 되는 경로가 같은 상한에 걸리고, 그 값을 잘못 고르면 부팅이 아니라
+     * 서비스가 깨진다. 여기서 막으려는 것은 <b>부팅 경로</b> 하나라 상한도 그 자리에만 둔다.
+     *
+     * <p>값은 서버 선택 상한(30초)에 실제 생성 시간을 더한 여유다. 한 건이 이걸 넘기면 다음 건은
+     * 평가되지 않는다({@code catch} 가 없어 첫 던짐에서 메서드가 끝난다) — 그래서 최악 대기는
+     * 이 값 하나이고 인덱스 수에 비례하지 않는다.
+     */
+    private static final Duration INDEX_CREATE_CEILING = Duration.ofSeconds(60);
+
+    /**
      * 인덱스 4종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
      * 인덱스 정의 전체를 여기로 일원화한다. $type을 쓰는 이유: $exists:true는 null 저장 필드도 매칭해
      * clientMsgId=null 2건째에 DuplicateKey가 터진다. 생성된 인덱스 이름 목록 반환(테스트 검증용).
@@ -105,7 +127,7 @@ public class ChatMongoConfig {
 
         String paging = ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
-                .on("_id", Sort.Direction.ASC)).block();
+                .on("_id", Sort.Direction.ASC)).block(INDEX_CREATE_CEILING);
 
         String dedup = ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
@@ -113,11 +135,12 @@ public class ChatMongoConfig {
                 .on("clientMsgId", Sort.Direction.ASC)
                 .unique()
                 .partial(PartialIndexFilter.of(
-                        new org.bson.Document("clientMsgId", new org.bson.Document("$type", "string"))))).block();
+                        new org.bson.Document("clientMsgId", new org.bson.Document("$type", "string")))))
+                .block(INDEX_CREATE_CEILING);
 
         String ttl = ops.createIndex(new Index()
                 .on("createdAt", Sort.Direction.ASC)
-                .expire(Duration.ofDays(730))).block();   // 2년 자동 삭제
+                .expire(Duration.ofDays(730))).block(INDEX_CREATE_CEILING);   // 2년 자동 삭제
 
         // VOD 윈도우(roomId 등치 + createdAt 범위)의 범위 필드를 인덱스 경계로 묶는다.
         //
@@ -129,7 +152,7 @@ public class ChatMongoConfig {
         // 모두 112/112). 나머지 인덱스가 전부 ASC 라 그쪽에 맞춘다.
         String window = ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
-                .on("createdAt", Sort.Direction.ASC)).block();
+                .on("createdAt", Sort.Direction.ASC)).block(INDEX_CREATE_CEILING);
 
         return List.of(paging, dedup, ttl, window);
     }
