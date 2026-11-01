@@ -79,10 +79,14 @@ public class LiveSecurityConfig {
      *
      * <p><b>여는 것은 두 엔드포인트뿐이고 나머지는 코드에서 막는다.</b> 노출 범위를 yaml 한 줄
      * ({@code exposure.include})에만 맡기면 거기에 {@code env} 나 {@code "*"} 를 더하는 순간
-     * {@code /actuator/env}·{@code /heapdump} 가 무인증으로 열린다. 둘의 무게가 다르다:
+     * {@code /actuator/env} 같은 것이 무인증으로 열린다({@code include: "*"} 한 줄로 13종이 뜬다 —
+     * 실측). 무게가 다른 둘을 구분해 둔다:
      *
      * <p>{@code /heapdump} 는 <b>메모리 이미지</b>라 마스킹이라는 개념이 없다 — JWT 서명키와 LiveKit
-     * API 시크릿이 그 안에 평문으로 있다.
+     * API 시크릿이 그 안에 평문으로 있다. 다만 {@code include: "*"} 만으로는 <b>생기지 않는다</b>:
+     * {@code @WebEndpoint} 의 {@code defaultAccess} 가 {@code NONE} 이라 access 축을 함께 뒤집어야
+     * 하고, 실측에서 그 경로는 13종에 없고 401 이었다. 즉 이 체인이 막는 최악은 heapdump 가 아니라
+     * 그걸 열려면 설정을 두 군데 뒤집어야 한다는 쪽이다.
      *
      * <p>{@code /actuator/env} 는 <b>값이 가려진다</b>(실측, 바이트코드):
      * {@code management.endpoint.env.show-values} 기본값이 {@code Show.NEVER} 이고

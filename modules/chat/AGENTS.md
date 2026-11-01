@@ -608,11 +608,16 @@ conditional variant really does fall back to NOOP.
 - The Prometheus registry rejects same-name-different-tag-key meters, so a call that omits a tag makes that
   series vanish silently at runtime. A scrape test walks every enum value; add a line when adding a meter.
 - **Exposure is locked in code, because this app has no Spring Security.** `ObservabilityExposureConfig`
-  refuses to boot unless `management.server.port` is set and differs from `server.port`, and unless
-  `exposure.include` is a subset of `{health, prometheus}`. It reads that key with `Binder`, not the base
-  property: written as a YAML list the key lands as `include[0]`, and a base-key read lets a list-form `"*"`
-  through (measured). `"*"` would serve `/actuator/env` and `/heapdump` unauthenticated. `/heapdump` is a
-  memory image, so Mongo credentials and the Redis password are in it in the clear. `/actuator/env` masks
+  refuses to boot unless `management.server.port` is set and differs from `server.port`, and unless the set
+  of endpoints that are **actually exposed** is exactly `{health, prometheus}` — note **exactly**, so one
+  extra endpoint is also a boot failure. It does **not** read `exposure.include`/`exclude` any more: it asks
+  `WebEndpointsSupplier.getEndpoints()`, which covers six config axes at once (`include`, `exclude`,
+  `endpoint.<id>.enabled`, `endpoints.enabled-by-default`, `endpoint.<id>.access`,
+  `endpoints.access.default`) — measured, each of the last four booting successfully while the old
+  key-reading guard passed. An earlier version of this bullet described the deleted implementation: a
+  *subset* check, a `Binder` read, and a YAML-list-vs-scalar notation axis. All three are gone — parsing is
+  gone, so notation is not an axis.
+  A wide-open exposure would serve `/actuator/env` unauthenticated. `/actuator/env` masks
   its values (measured from bytecode: `show-values` defaults to `Show.NEVER`, and `Sanitizer.sanitize`
   then returns `"******"` unconditionally) — it leaks the property *names* and sources, and that masking is
   a default one line can flip. An earlier version of this line claimed `env` itself carried the secrets.
@@ -689,12 +694,16 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
     throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is a **~30s stall, and it does not accumulate across indexes** — the class has no `catch` and the
-    four `createIndex(...).block()` calls are sequential assignments, so the first one to burn the timeout
-    throws and the method ends; the other three are never evaluated. A readiness probe can still turn that
-    one stall into a restart loop. An earlier version of this line said "up to ~120s for the four … adding
-    a fifth adds another 30s": wrong, and self-contradicting — the very measurement it cited (timeout burned
-    → **throws**) is what makes accumulation impossible. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
+    cost is an **unbounded stall, which does not accumulate across indexes**. Measured driver defaults
+    (`MongoClientSettings.builder().build()`): `serverSelectionTimeoutMs=30000`,
+    **`socketReadTimeoutMs=0` (infinite)**, `socketConnectTimeoutMs=10000`, global `timeoutMs=null` — and
+    this repo sets no Mongo timeout anywhere, so those defaults apply. So 30s bounds only the "never picks
+    a server" mode; once a server *is* picked and `createIndex` does not answer, `.block()` waits forever.
+    Want a bound? Set `timeoutMs`. It does not accumulate because the class has no `catch` and the four
+    `createIndex(...).block()` calls are sequential assignments — the first to throw ends the method and the
+    other three are never evaluated. **This line has been wrong three times**: 90s, then "120s for the
+    four … a fifth adds 30s", then "~30s". Each correction fixed the *number* without measuring what bounds
+    it. State what bounds it, not how long it is. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
     serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
     (`infra/`), so this is recorded, not changed.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked

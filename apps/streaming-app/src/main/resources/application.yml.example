@@ -172,12 +172,16 @@ management:
     web:
       exposure:
         # 액추에이터 기본 노출은 health 하나뿐이다 — 이건 좁힌 값이 아니라 prometheus 를 더한 값이다.
-        # 넓히지 말 것: "*" 는 /actuator/env·/heapdump 까지 열고 시큐리티가 없어 둘 다 무인증이다.
-        # /heapdump 는 메모리 이미지라 Mongo URI 자격증명과 Redis 비밀번호가 평문이다. /actuator/env
-        # 는 값이 가려지지만(기본값 show-values=NEVER) 프로퍼티 이름·소스 전부를 내보내고, 그
-        # 마스킹은 설정 한 줄로 뒤집힌다. 가드가 허용 집합
-        # {health, prometheus} 밖을 거부하므로 추가하려면 코드도 함께 고쳐야 한다 = 리뷰에 보인다.
-        # (스칼라·YAML 리스트 두 표기 모두 검사한다 — 리스트만 읽히지 않는 구현이면 통과했었다)
+        # 넓히지 말 것: "*" 는 env·beans·configprops·threaddump 등 13종을 열고, 이 앱에는 시큐리티가
+        # 없어 그게 곧 무인증 공개다. /actuator/env 는 값이 가려지지만(기본값 show-values=NEVER)
+        # 프로퍼티 이름·소스 전부를 내보내고, 그 마스킹은 설정 한 줄로 뒤집힌다.
+        # ⚠️ heapdump 는 "*" 만으로는 생기지 않는다(실측: include="*" 의 노출 13종에 heapdump 없음,
+        #    /actuator/heapdump 는 401). @WebEndpoint(defaultAccess=NONE) 이라 access 축을 함께
+        #    뒤집어야 한다 — 종전 주석이 "*" 하나로 열린다고 과장했다.
+        # 가드는 이 키를 읽지 않고 실제 노출을 묻는다 — 정확히 {health, prometheus} 가 아니면 부팅을
+        # 거부하므로 하나 더 열려면 코드도 함께 고쳐야 한다 = 리뷰에 보인다. 그래서 include 만
+        # 지키는 것으로는 부족하다: endpoint.<id>.enabled / endpoints.enabled-by-default /
+        # endpoint.<id>.access / endpoints.access.default 로 끄는 것도 전부 부팅 실패가 된다.
         include: health,prometheus     # REQUIRED(운영) — prometheus 가 빠지면 부팅이 실패한다
                                        # (ObservabilityExposureConfig). 액추에이터 기본 노출은 health
                                        # 하나라, 빠뜨리면 지표 엔드포인트가 아예 생기지 않는다. 이 앱에는

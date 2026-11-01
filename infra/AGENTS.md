@@ -96,7 +96,8 @@ so the port split is the only thing standing between an anonymous scraper and th
   `WebEndpointsSupplier.getEndpoints()`, because six config axes can remove an endpoint and a key-reading
   guard only saw two. Measured, each booting successfully while the old guard passed:
   `endpoint.<id>.enabled=false`, `endpoints.enabled-by-default=false`, `endpoint.<id>.access=none`,
-  `endpoints.access.default=none` (the last two of those leave **no endpoints at all**). Actuator's
+  `endpoints.access.default=none`. The two *default*-scoped ones (`enabled-by-default`, `access.default`)
+  leave **no endpoints at all**; the two id-scoped ones remove just that endpoint. Actuator's
   default exposure is `health` alone, so omitting that line leaves no metrics endpoint at all; the path then
   misses the actuator chain, falls to `authenticated()`, and the scraper gets **401** — metrics silently
   empty, indistinguishable from "no broadcasts". Measured: the first CI run of the port test failed exactly
@@ -324,10 +325,15 @@ that on.
   the reason spelled out in the live-app section. Note this app previously had **no health endpoint at all**,
   so a TCP socket check was the only probe available — and that check answered `Ready` while startup work was
   still blocked. A real readiness probe is now possible and the manifest should use one.
-- **Deployment prerequisite**: a `management.endpoints.web.exposure.include` containing **both** `health`
-  and `prometheus`, and no `exposure.exclude` revoking either — without that the app refuses to start, by
-  design (`health` missing means the k8s probes 404; `prometheus` missing means the metrics are silently
-  empty). `MANAGEMENT_PORT` is **not** in the same category: the template defaults it, so an unset env var
+- **Deployment prerequisite**: the set of endpoints that are **actually exposed** must be exactly
+  `{health, prometheus}` — without that the app refuses to start, by design (`health` missing means the k8s
+  probes 404; `prometheus` missing means the metrics are silently empty).
+  - ⚠️ **Exactly**, so **adding one more endpoint is also a boot failure** — `include: health,prometheus,info`
+    looks reasonable and CrashLoopBackOffs (measured: `더 열린 것: [info]`). An earlier version of this
+    bullet stated only the containment half, which is what an operator would follow.
+  - The guard does not read `exposure.include`/`exclude`. Keys to check when it fires:
+    `exposure.include`/`exclude`, `endpoint.<id>.enabled`, `endpoints.enabled-by-default`,
+    `endpoint.<id>.access`, `endpoints.access.default`. `MANAGEMENT_PORT` is **not** in the same category: the template defaults it, so an unset env var
   boots (see the bullet above). The template no longer calls that line optional (it did for one day, while the guard already
   required it — follow that stale template and the pod CrashLoopBackOffs). Developers running locally copy
   the `management` block from `application.yml.example`.

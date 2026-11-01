@@ -16,10 +16,17 @@ import org.springframework.context.annotation.Configuration;
  * 액추에이터 전용 필터체인에서 두 엔드포인트만 {@code permitAll} 하고 나머지를 {@code denyAll} 로
  * 막는데, 여기엔 그 체인을 걸 자리가 없다 — 즉 <b>설정이 유일한 관문</b>이다.
  *
- * <p>그 설정이 틀리면 결과가 설정 실수의 수준을 넘는다. 전부 열리는 순간
- * {@code /actuator/env} 와 {@code /heapdump} 가 <b>인증 없이</b> 열린다.
- * {@code /heapdump} 는 메모리 이미지라 Mongo URI 자격증명과 Redis 비밀번호가 평문으로 들어 있다.
- * {@code /actuator/env} 는 값이 가려진다 — <b>실측</b>(바이트코드):
+ * <p>그 설정이 틀리면 결과가 설정 실수의 수준을 넘는다. {@code include: "*"} 한 줄로
+ * {@code env}·{@code beans}·{@code configprops}·{@code threaddump} 등 <b>13종</b>이 인증 없이
+ * 열린다(실측).
+ *
+ * <p>⚠️ {@code /heapdump} 는 그 13종에 <b>들지 않는다</b> — {@code @WebEndpoint} 의
+ * {@code defaultAccess} 가 {@code NONE} 이라 {@code include} 만으로는 생기지 않고, 실측에서
+ * {@code /actuator/heapdump} 는 401 이었다. 여는 데는 access 축을 함께 뒤집어야 한다. 한때 이 자리에
+ * "{@code "*"} 가 {@code /heapdump} 까지 열어 평문 자격증명을 내보낸다" 고 적었는데 그 전제가
+ * 과장이었다 — 메모리 이미지라는 성질은 맞지만 그 한 줄로 열리지는 않는다.
+ *
+ * <p>{@code /actuator/env} 는 값이 가려진다 — <b>실측</b>(바이트코드):
  * {@code management.endpoint.env.show-values} 기본값이 {@code Show.NEVER} 이고
  * {@code Sanitizer.sanitize} 는 그때 {@code "******"} 를 무조건 돌려준다. 그래서 그쪽이 내보내는
  * 것은 값이 아니라 프로퍼티 이름·소스 전부다. 다만 그 마스킹은 <b>기본값</b>이라
@@ -139,7 +146,25 @@ public class ObservabilityExposureConfig {
         return new ExposureGuard();
     }
 
-    /** 실제로 노출된 web 엔드포인트 id 들. 정렬해 둬서 실패 메시지가 안정적으로 읽힌다. */
+    /**
+     * 실제로 노출된 web 엔드포인트 id 들. 정렬해 둬서 실패 메시지가 안정적으로 읽힌다.
+     *
+     * <p><b>이 가드가 보는 범위는 {@code @Endpoint}/{@code @WebEndpoint} 다.</b> 액추에이터에는 id 를
+     * 공급하는 타입이 셋 있고({@code WebEndpointsSupplier} ·
+     * {@code ControllerEndpointsSupplier} · {@code ServletEndpointsSupplier}) 뒤 둘은 이 집합에
+     * 나타나지 않는다. 그래서 "뒤 둘로 만든 엔드포인트가 상한을 비껴간다" 는 의심이 나올 자리인데,
+     * <b>Boot 4.0.6 에서는 비껴갈 엔드포인트 자체가 생기지 않는다</b>(실측):
+     * <ul>
+     *   <li>{@code ControllerEndpointHandlerMapping} 류가 actuator jar 에 <b>0건</b> — 서블릿도
+     *       리액티브도 없다. 매핑이 없으면 그 엔드포인트는 어느 포트에도 뜨지 않는다.</li>
+     *   <li>{@code actuator-autoconfigure} jar 에 그 자동설정이 <b>0건</b> —
+     *       {@code controllerEndpointDiscoverer} 빈이 아예 만들어지지 않는다.</li>
+     *   <li>{@code ControllerEndpointsSupplier} 자체가 {@code @Deprecated(forRemoval = true)} 다.</li>
+     * </ul>
+     * 그래서 그 공급자를 합집합으로 받지 않는다 — 받으면 항상 {@code null} 인 죽은 코드이고, 사라질
+     * API 에 운영 코드를 묶는 비용만 남는다. Boot 가 그 매핑을 되살리면 이 결정을 다시 봐야 하고,
+     * 그 신호는 위 세 줄 중 하나가 깨지는 것이다.
+     */
     static Set<String> exposedIds(WebEndpointsSupplier supplier) {
         Set<String> ids = new TreeSet<>();
         supplier.getEndpoints().forEach(endpoint -> ids.add(endpoint.getEndpointId().toString()));
@@ -165,10 +190,11 @@ public class ObservabilityExposureConfig {
         StringBuilder message = new StringBuilder("실제로 노출된 액추에이터 엔드포인트가 "
                 + new TreeSet<>(REQUIRED_ENDPOINTS) + " 와 다르다 — 현재 " + actual + ".");
         if (!extra.isEmpty()) {
+            // heapdump 를 여기서 말하지 않는다 — extra 가 [env] 일 때도 붙어 나가던 과장이었고,
+            // 애초에 include 만으로는 생기지 않는 엔드포인트다(defaultAccess=NONE, 실측 401).
             message.append(" 더 열린 것: ").append(extra)
                     .append(". 이 앱에는 액추에이터를 막을 시큐리티가 없어서 열린 것이 곧 무인증")
-                    .append(" 공개다 — /heapdump 는 메모리 이미지라 Mongo URI 자격증명과 Redis")
-                    .append(" 비밀번호가 평문으로 들어 있다.");
+                    .append(" 공개다 — 예: /actuator/env 는 프로퍼티 이름과 소스 전부를 내보낸다.");
         }
         if (!missing.isEmpty()) {
             message.append(" 사라진 것: ").append(missing)
