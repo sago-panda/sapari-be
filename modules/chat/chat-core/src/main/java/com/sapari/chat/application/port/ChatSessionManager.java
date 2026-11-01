@@ -53,5 +53,16 @@ public interface ChatSessionManager {
     // 방 로컬 세션마다 resolver로 메시지를 만들어 송신 — 세션별 차등 fan-out(CHAT의 방주인 PII 게이팅, KICK의
     // 당사자/타인 분기). resolver가 null을 반환한 세션은 skip. (ChatBroadcastSubscriber 사용)
     // ※ 단일-메시지 sendToRoomLocal과 이름을 분리해 오버로드 모호성(any() 매처)을 피한다.
+    /**
+     * 세션별 차등 팬아웃 — {@code resolver} 가 세션마다 보낼 메시지를 고른다({@code null} 이면 skip).
+     *
+     * <p>⚠️ <b>resolver 는 같은 뷰에 대해 같은 인스턴스를 돌려줘야 한다.</b> 구현(transport)이 서로
+     * 다른 메시지마다 와이어 문자열을 <b>한 번만</b> 만드는데, 그 묶음을 <b>객체 동일성</b>으로
+     * 가른다. 세션마다 {@code new} 로 만들면 내용이 같아도 다른 객체라 묶이지 않고, 직렬화가 다시
+     * 세션 수에 비례한다 — 실측으로 12,000 세션 한 메시지에 9.23ms 차이다.
+     *
+     * <p>그래서 호출부는 뷰 조합을 <b>미리 만들어 두고 고르기만</b> 한다. 예:
+     * {@code ChatBroadcastSubscriber.fanOutChat} 은 특권 × 발신자 축으로 4종을 먼저 만든다.
+     */
     Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver);
 }

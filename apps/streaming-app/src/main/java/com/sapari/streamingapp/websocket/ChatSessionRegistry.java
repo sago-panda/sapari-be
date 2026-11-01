@@ -2,6 +2,7 @@ package com.sapari.streamingapp.websocket;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -351,8 +352,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
                         // 보내면 방마다 한 번씩 전원에게 같은 숫자가 중복으로 간다.
                         return Mono.empty();
                     }
+                    // 뷰 둘을 미리 만들어 세션마다 고르기만 한다. 세션마다 새로 만들면 같은 내용인
+                    // 객체가 세션 수만큼 생기고, 그러면 팬아웃의 직렬화 메모가 한 건도 안 걸려
+                    // 직렬화가 다시 세션 수에 비례한다(OutboundFrame 참조).
+                    OutboundMessage ownerInfo = OutboundMessage.roomInfo(count, true);
+                    OutboundMessage viewerInfo = OutboundMessage.roomInfo(count, false);
                     return sendToRoomGated(roomId,
-                            session -> OutboundMessage.roomInfo(count, session.isRoomOwner()));
+                            session -> session.isRoomOwner() ? ownerInfo : viewerInfo);
                 })
                 .onErrorResume(e -> {
                     // 수를 모르면 보내지 않는다 — 다음 회차가 받는다. 여기서 터뜨리면 그 뒤로 이 Pod 의
@@ -429,7 +435,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>{@code closeStatus}는 종료 사유 — complete로 곱게 닫히든 제어 채널로 끊기든 같은 코드로 닫기 위해
      * 따로 보관한다(complete 신호엔 코드를 실을 수 없다).
      */
-    private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundMessage> sink,
+    private record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundFrame> sink,
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
             AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
             AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded,
@@ -493,7 +499,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
         local.put(sessionId, new LocalSession(sessionId, session,
-                Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundMessage>get(OUTBOUND_BUFFER_SIZE).get()),
+                Sinks.many().unicast().onBackpressureBuffer(Queues.<OutboundFrame>get(OUTBOUND_BUFFER_SIZE).get()),
                 Sinks.one(), new AtomicReference<>(),    // closeStatus는 종료가 정해질 때 채워진다(null=미정)
                 // 둘 다 nanoTime 기준이라 0을 센티널로 쓰면 안 된다 — nanoTime 원점은 임의고 음수일 수 있어,
                 // 0과 비교하면 등록 직후부터 "창 안"으로 오판해 전송이 통째로 막힌다.
@@ -527,10 +533,25 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 });
     }
 
-    /** transport 전용: 핸들러가 session.send()에 연결할 아웃바운드 스트림. (포트 아님 — chat-core는 안 씀) */
-    public Flux<OutboundMessage> outbound(String sessionId) {
+    /**
+     * transport 전용: 핸들러가 {@code session.send()} 에 연결할 아웃바운드 스트림. (포트 아님 — chat-core는 안 씀)
+     *
+     * <p>프레임을 그대로 흘린다 — 핸들러가 {@code frame.wire(..)} 로 직렬화를 한 번만 하게 하려면
+     * 공유 객체가 소비 지점까지 와야 한다({@link OutboundFrame} 에 이유가 적혀 있다).
+     */
+    public Flux<OutboundFrame> outboundFrames(String sessionId) {
         LocalSession ls = local.get(sessionId);
         return ls == null ? Flux.empty() : ls.sink().asFlux();
+    }
+
+    /**
+     * 같은 스트림을 메시지로만 본 것 — 와이어 모양에 관심이 없는 호출부·테스트용이다.
+     *
+     * <p>Sink 가 unicast 라 구독자는 하나뿐인데, 이건 <b>두 번째 구독이 아니라 매핑 뷰</b>다.
+     * 구독 경로가 하나이므로 둘 중 어느 쪽을 쓰든 구독은 한 번만 일어난다.
+     */
+    public Flux<OutboundMessage> outbound(String sessionId) {
+        return outboundFrames(sessionId).map(OutboundFrame::message);
     }
 
     @Override
@@ -665,14 +686,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> sendToSession(String sessionId, OutboundMessage message) {
-        return Mono.fromRunnable(() -> emit(local.get(sessionId), message));
+        return Mono.fromRunnable(() -> emit(local.get(sessionId), new OutboundFrame(message)));
     }
 
     @Override
     public Mono<Void> sendToRoomLocal(UUID roomId, OutboundMessage message) {
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
-            forEachInRoom(roomId, ls -> emit(ls, message, budget));
+            // 전원이 같은 메시지를 받는다 — 프레임 하나를 공유하므로 직렬화도 한 번이다.
+            OutboundFrame frame = new OutboundFrame(message);
+            forEachInRoom(roomId, ls -> emit(ls, frame, budget));
         });
     }
 
@@ -681,10 +704,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 세션별 차등 fan-out — resolver가 세션마다 메시지 생성(방주인 PII 게이팅·kick 분기). null이면 그 세션 skip.
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
+            // resolver 가 돌려주는 서로 다른 메시지마다 프레임 하나 — 같은 메시지를 받는 세션들은
+            // 그 프레임을 공유하므로 직렬화가 세션 수가 아니라 <b>종류 수</b>에 비례한다.
+            // 동치가 아니라 동일성으로 묶는다: fanOutChat 이 뷰 4종을 미리 만들어 재사용하므로
+            // 동일성으로 충분하고, 빗나가도 직렬화 한 번을 더 하는 것뿐이라 틀릴 수가 없다.
+            // (record equals 는 15 필드를 비교하므로 이쪽이 싸다.)
+            Map<OutboundMessage, OutboundFrame> frames = new IdentityHashMap<>(4);
             forEachInRoom(roomId, ls -> {
                 OutboundMessage message = resolver.apply(ls.session());
                 if (message != null) {
-                    emit(ls, message, budget);
+                    emit(ls, frames.computeIfAbsent(message, OutboundFrame::new), budget);
                 }
             });
         });
@@ -708,7 +737,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public Mono<Void> sendToUserEverywhere(UUID userId, OutboundMessage message) {
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
-            forEachSessionOf(userId, ls -> emit(ls, message, budget));
+            // 한 사람의 모든 탭이 같은 메시지를 받는다 — 위와 같은 이유로 프레임 하나를 공유한다.
+            OutboundFrame frame = new OutboundFrame(message);
+            forEachSessionOf(userId, ls -> emit(ls, frame, budget));
         });
     }
 
@@ -1077,11 +1108,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>아웃바운드 종료 신호는 버퍼에 쌓인 메시지 뒤에 줄을 서므로 소켓을 읽지 않는 클라에겐 닿지 않는다.
      * 그 경우를 위해 {@code terminate}가 별도 제어 채널을 함께 발화한다(핸들러가 그걸로 연결을 끊는다).
      */
-    private void emit(LocalSession ls, OutboundMessage message, FanOutBudget budget) {
+    private void emit(LocalSession ls, OutboundFrame frame, FanOutBudget budget) {
         if (ls == null) {
             return;
         }
-        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(message), budget.emitDeadline());
+        Sinks.EmitResult result = emitSerially(() -> ls.sink().tryEmitNext(frame), budget.emitDeadline());
         if (consumerCannotKeepUp(result)) {
             // 1013(SERVICE_OVERLOAD) — 정상 종료(1000)로 닫으면 프론트가 곧장 다시 붙는다. 버퍼가 넘친 건
             // 그 클라가 못 따라온다는 뜻이라, 즉시 재접속은 같은 결과를 부르고 부하 상황일수록 스스로 번진다.
@@ -1109,8 +1140,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /** 단건 전송용 — 이 emit 하나가 예산을 독차지한다. */
-    private void emit(LocalSession ls, OutboundMessage message) {
-        emit(ls, message, newBudget());
+    private void emit(LocalSession ls, OutboundFrame frame) {
+        emit(ls, frame, newBudget());
     }
 
     /**

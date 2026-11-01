@@ -225,8 +225,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 세션이 닫힌다. 제어 채널에 묶으면 {@code terminationSignal} 이 모르는 세션에
         // {@code Mono.never()} 를 주므로 ping 이 영원히 돌고, 클라가 스스로 끊지 않으면 그 세션이 남는다.
         Sinks.Empty<Void> dataChannelDone = Sinks.empty();
-        Flux<WebSocketMessage> data = Flux.defer(() -> registry.outbound(sid))
-                .map(message -> session.textMessage(serialize(message)))
+        Flux<WebSocketMessage> data = Flux.defer(() -> registry.outboundFrames(sid))
+                // 프레임이 와이어 문자열을 들고 있다 — 같은 팬아웃의 다른 세션이 이미 만들어 뒀으면
+                // 그걸 쓴다. 방에 N 세션이면 N 번 직렬화하던 자리다(실측: 12,000 세션 9.23ms).
+                .map(frame -> session.textMessage(frame.wire(this::serialize)))
                 .doFinally(signal -> dataChannelDone.tryEmitEmpty());
         // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
         // onBackpressureDrop: 요청이 없을 때 틱을 버린다. 안 버리면 prefetch 가 차는 순간 send 가
