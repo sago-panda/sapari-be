@@ -29,13 +29,22 @@ import org.springframework.core.env.MapPropertySource;
  * <p>{@code EnvironmentPostProcessor} 인 것도 필요 조건이다 — 로깅 시스템은 환경이 준비된 직후
  * 초기화되므로, 빈으로는 이미 늦다.
  *
- * <p>⚠️ <b>구현하는 인터페이스가 {@code org.springframework.boot.EnvironmentPostProcessor} 여야 한다</b>
- * ({@code ...boot.env.} 이 아니다). Boot 4 에 <b>같은 모양의 인터페이스가 두 경로에 공존하고</b>,
- * 등록은 새 경로의 이름으로만 조회된다 — 구 경로로 써도 <b>컴파일이 통과하고 이 클래스만 조용히
- * 안 돈다</b>(실측: 프로퍼티가 심기지 않아 출력이 평문이었고, 아무 에러도 없었다).
- * 등록 파일 이름도 같은 FQCN 이라 함께 틀린다:
- * {@code META-INF/spring/org.springframework.boot.EnvironmentPostProcessor.imports}.
- * 그 조용한 실패를 {@code StructuredLoggingEndToEndTest} 가 실제 출력으로 잡는다.
+ * <p>⚠️ <b>인터페이스와 등록 키가 모두 {@code org.springframework.boot.EnvironmentPostProcessor} 여야
+ * 한다</b> ({@code ...boot.env.} 이 아니다). Boot 4 에 같은 모양의 인터페이스가 두 경로에 공존해서
+ * 구 경로로 써도 컴파일이 통과한다.
+ *
+ * <p><b>등록 파일은 {@code META-INF/spring.factories} 다</b> — Boot 4 의 자동설정이 쓰는
+ * {@code .imports} 가 아니다. {@code EnvironmentPostProcessor} 를 읽는 유일한 로더가
+ * {@code spring.factories} 쪽이고, Boot 자신도 자기 EPP 들을 같은 키로 거기에 등록한다.
+ * <b>진짜 조용한 실패는 이 파일 이름 쪽이다</b> — {@code .imports} 에 적으면 아무도 읽지 않으므로
+ * 에러 없이 이 클래스만 안 돈다.
+ *
+ * <p><b>실측(Boot 4.0.6)</b>: 신 인터페이스를 구 키({@code ...boot.env.EnvironmentPostProcessor})로
+ * 등록하면 <b>조용하지 않다 — 던진다</b>:
+ * {@code IllegalArgumentException: Unable to instantiate factory class [...] for factory type
+ * [org.springframework.boot.env.EnvironmentPostProcessor]}. 한때 이 자리에 "구 경로로 써도 조용히 안
+ * 돈다" 고 적혀 있었는데 그건 틀렸다. 같은 조합으로 {@code StructuredLoggingEndToEndTest} 2건도
+ * 깨진다(실측) — 즉 이 오등록은 그물이 둘이다.
  */
 public class StructuredLoggingDefaults implements EnvironmentPostProcessor {
 
@@ -93,8 +102,15 @@ public class StructuredLoggingDefaults implements EnvironmentPostProcessor {
      * {@code @SpringBootApplication} 클래스를 돌려준다(실측).
      *
      * <p>{@code Application} 로 끝나는 클래스가 <b>정확히 하나</b>일 때만 짓는다. 여럿이거나 없으면
-     * 짓지 않는다 — 추측한 이름이 붙는 것보다 비어 있는 편이 낫다(비면 설정으로 채우면 되고,
-     * 틀린 이름은 그게 틀렸다는 사실조차 안 보인다).
+     * 짓지 않는다 — 추측한 이름이 붙는 것보다 비어 있는 편이 낫다. 틀린 이름은 그게 틀렸다는 사실조차
+     * 드러나지 않는 반면, 빈 값은 {@code spring.application.name} 을 설정으로 채우면 끝이다.
+     *
+     * <p>⚠️ 한때 그 근거를 "<b>비어 있으면 눈에 보인다</b>" 로 적었는데, 그걸 보이게 할 소비자가 이
+     * 저장소에 없다 — 로그 적재·수집기 매니페스트 0건, {@code infra/AGENTS.md} 의 OpenSearch 언급은
+     * 공유 상태 한 줄이고 로그 파이프라인과 무관하다({@code LogFields} 자신도 "아직 수집기가 붙어
+     * 있지 않다" 고 적는다). 빈 {@code service.name} 이 드롭되는지 {@code unknown} 으로 색인되는지는
+     * 여기서 답할 수 없다. 그래서 이 결정의 근거는 "보인다" 가 아니라 <b>"소비자가 붙는 날 확인한다"</b>
+     * 다 — 결정 자체는 그대로 둔다(틀린 이름이 붙는 쪽이 여전히 더 나쁘다).
      */
     private static java.util.Optional<String> deriveApplicationName(SpringApplication application) {
         if (application == null) {

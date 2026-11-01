@@ -662,9 +662,14 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   `verifyComplete()`, bare `verify()`, `verifyError(...)`, `verifyErrorMessage(...)` — waits forever for a
   signal that a regression may have removed, so the test *hangs* instead of failing (measured: 110s and still
   running on a missing close, 2m34s on a `thenCancel().verify()` whose `expectNext` never arrived).
-  **Every call site now carries one** — 117 of them across 15 files were converted to
-  `expectXxx().verify(VERIFY_CEILING)`, with `VERIFY_CEILING = Duration.ofSeconds(10)` declared per test
-  class. Verified end to end: making a signal never arrive now fails in 12s with
+  **Every call site now carries one** — measured on the commit this line lands on: **139 sites across 17
+  files** carry `expectXxx().verify(VERIFY_CEILING)`, with `VERIFY_CEILING = Duration.ofSeconds(10)`
+  declared per test class, counted over `modules/chat` + `apps/streaming-app` tests. `block(VERIFY_CEILING)`
+  is 246 in the same scope. (This line read "117 across 15 files" for a while with no base commit — the
+  rule two bullets down, which this very number broke. 117 → 128 was tests added in between; 128 → 139 is
+  the 11 sites `SendChatServiceMetricsTest` and `EntryGateMetricsTest` carried *unbounded* while both files
+  already declared a `VERIFY_CEILING` they used elsewhere. Re-measure with the scope spelled out; do not
+  patch the old number.) Verified end to end: making a signal never arrive now fails in 12s with
   `VerifySubscriber timed out` instead of hanging. Keep it that way — a ceiling-less terminator does not
   just hide one bug, it voids **every mutation verdict in that run**, because the suite cannot report at
   all. "passing ≠ catching" has a twin in "failing ≠ telling".
@@ -677,12 +682,13 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     whole repo adds two *comment* lines in `architecture-test` that merely mention `.block()`. Two of
     those four numbers landed on 201 by different routes — **the counts matching is not evidence that the
     same thing was counted.**
-  - **Production has 3 of its own, and they are a different kind of bounded** — do not read them as part
+  - **Production has 4 of its own, and they are a different kind of bounded** — do not read them as part
     of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
     throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is a **30s stall per index, up to ~90s for the three**, which a readiness probe can turn into a
-    restart loop. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
+    cost is a **30s stall per index, up to ~120s for the four** (it was three until the VOD-window index
+    landed — `ChatMongoConfig` has four `createIndex(...).block()` calls and returns four), which a
+    readiness probe can turn into a restart loop. Adding a fifth index adds another 30s to this number. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
     serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
     (`infra/`), so this is recorded, not changed.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked

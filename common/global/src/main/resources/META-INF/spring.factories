@@ -3,6 +3,10 @@
 # ⚠️ .imports 파일이 아니라 spring.factories 다. Boot 4.0.6 은 자기 EnvironmentPostProcessor 들을
 #    여기에 등록하고(실측: spring-boot-4.0.6.jar 의 META-INF/spring.factories), 키가
 #    org.springframework.boot.EnvironmentPostProcessor 다 — 구 경로(...boot.env.)가 아니다.
-#    두 인터페이스가 같은 모양으로 공존해서 구 경로로 써도 컴파일이 통과하고 조용히 안 돈다.
+#    두 인터페이스가 같은 모양으로 공존해서 구 경로로 써도 컴파일은 통과한다. 다만 런타임은
+#    조용하지 않다 — 실측: 구 키로 등록하면 IllegalArgumentException("Unable to instantiate
+#    factory class [...] for factory type [org.springframework.boot.env.EnvironmentPostProcessor]")
+#    를 던지고, StructuredLoggingEndToEndTest 2건도 함께 깨진다.
+#    조용한 실패는 키가 아니라 파일 이름 쪽이다: .imports 에 적으면 아무도 읽지 않는다.
 org.springframework.boot.EnvironmentPostProcessor=\
 com.sapari.global.logging.StructuredLoggingDefaults
