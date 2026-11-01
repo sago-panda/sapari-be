@@ -95,8 +95,19 @@ class ActuatorNotOnUserPortTest {
     void managementPort_servesMetricsWithoutAuth() throws Exception {
         // 음성 방향(위 테스트)만 있으면 "둘 다 막힘" 도 통과한다. 그건 지표가 조용히 비는 상태이고,
         // 대시보드가 빈 것이 "방송이 없어서" 와 구분되지 않는다 — 이 설계가 가장 두려워한 실패다.
+        //
+        // prometheus 는 200 을 못박는다 — 외부 의존이 없어서 "닿는가" 와 "200 인가" 가 같은 질문이다.
         assertThat(status(managementPort, "/actuator/prometheus")).isEqualTo(200);
-        assertThat(status(managementPort, "/actuator/health")).isEqualTo(200);
+        // health 는 200 을 요구하지 않는다. 이 집계는 컨테이너 기반 지표(DB·Redis·Mongo)를 포함해서
+        // 의존 하나가 일시적으로 DOWN 이면 503 이 되는데, 그건 <b>인증 문제가 아니다</b> — 실측:
+        // 단독 실행은 200(UP)이고 전체 빌드에서 컨테이너가 경합할 때 503 이 나왔다. 200 을 못박으면
+        // 이 테스트가 재려는 것(무인증 접근)과 무관한 이유로 빨개진다.
+        //
+        // 그래도 넓게 받지 않는다: 401·403 은 인증 실패라서 이 테스트의 대상이고, 404 는 엔드포인트가
+        // 사라진 것이다. 둘 다 여기서 걸린다. 의존이 실제로 UP 인지는 LiveAppApplicationTests 가 본다.
+        assertThat(status(managementPort, "/actuator/health"))
+                .as("health 가 401·403 이면 스크레이퍼·프로브가 막힌 것이고, 404 면 엔드포인트가 없다")
+                .isIn(200, 503);
     }
 
     @Test
@@ -106,8 +117,14 @@ class ActuatorNotOnUserPortTest {
         // authenticated() 가 아니라 액추에이터 체인의 denyAll 이 잡아야 한다 → 403.
         //
         // 전에는 이 자리가 isIn(401, 403) 이었고 env 가 미매핑이라 401 로 통과했다. 그래서
-        // denyAll 을 지워도 빌드가 초록이었다 — 그 응답에는 JWT HMAC 시크릿과 LiveKit API
-        // 시크릿이 담긴다. 넓게 받는 단언이 "둘 중 아무거나" 를 넘어 "둘 다 아니어도" 를 허용한 셈이다.
+        // denyAll 을 지워도 빌드가 초록이었다 — 넓게 받는 단언이 "둘 중 아무거나" 를 넘어 "둘 다
+        // 아니어도" 를 허용한 셈이다.
+        //
+        // 무엇을 막는 것인가(이 커밋의 앞 버전이 틀리게 적었다): /actuator/env 응답의 값은
+        // 가려진다 — 실측(바이트코드): show-values 기본값이 Show.NEVER 이고 Sanitizer 는 그때
+        // "******" 를 무조건 돌려준다. 그래서 여기서 막는 것은 시크릿 값이 아니라 프로퍼티
+        // 이름·소스 전부이고, 그 마스킹 자체가 설정 한 줄로 뒤집히는 기본값이다. 평문 시크릿은
+        // /heapdump 쪽이고 그것도 같은 denyAll 이 막는다.
         assertThat(status(managementPort, "/actuator/env")).isEqualTo(403);
         // 액추에이터 <b>기본 경로</b>(링크 목록)도 같은 체인에 걸린다 — 실측: 403. 노출 목록에
         // 없어도 toAnyEndpoint() 가 기본 경로 자체를 매칭하기 때문이다. 링크 목록은 어떤
