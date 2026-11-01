@@ -1,24 +1,22 @@
 package com.sapari.streamingapp.config;
 
-import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.context.properties.bind.Bindable;
-import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
 
 /**
  * 관측 엔드포인트를 <b>어디에 열고 무엇만 열지</b>를 부팅 시점에 강제한다.
  *
  * <p>이 앱에는 Spring Security 가 없다(확인: {@code SecurityWebFilterChain} 0건). live-app 은
  * 액추에이터 전용 필터체인에서 두 엔드포인트만 {@code permitAll} 하고 나머지를 {@code denyAll} 로
- * 막는데, 여기엔 그 체인을 걸 자리가 없다 — 즉 <b>yaml 한 줄이 유일한 관문</b>이다.
+ * 막는데, 여기엔 그 체인을 걸 자리가 없다 — 즉 <b>설정이 유일한 관문</b>이다.
  *
- * <p>그 한 줄이 틀리면 결과가 설정 실수의 수준을 넘는다. {@code include: "*"} 를 쓰는 순간
+ * <p>그 설정이 틀리면 결과가 설정 실수의 수준을 넘는다. 전부 열리는 순간
  * {@code /actuator/env} 와 {@code /heapdump} 가 <b>인증 없이</b> 열린다.
  * {@code /heapdump} 는 메모리 이미지라 Mongo URI 자격증명과 Redis 비밀번호가 평문으로 들어 있다.
  * {@code /actuator/env} 는 값이 가려진다 — <b>실측</b>(바이트코드):
@@ -26,8 +24,11 @@ import org.springframework.core.env.Environment;
  * {@code Sanitizer.sanitize} 는 그때 {@code "******"} 를 무조건 돌려준다. 그래서 그쪽이 내보내는
  * 것은 값이 아니라 프로퍼티 이름·소스 전부다. 다만 그 마스킹은 <b>기본값</b>이라
  * {@code show-values} 한 줄로 뒤집히고, 추적되는 템플릿에는 그 키가 없다 — 방어가 코드 밖에 있다는
- * 뜻이라 오히려 코드에서 잠글 이유가 된다. 그 사이에 아무 신호가 없어 아무도 모른 채로 굴러가므로,
- * 조용히 뜨는 대신 시끄럽게 죽는 쪽을 택한다.
+ * 뜻이라 오히려 코드에서 잠글 이유가 된다.
+ *
+ * <p>반대 방향도 같은 무게다. 엔드포인트가 조용히 <b>사라지면</b> 스크레이퍼와 k8s 프로브가 404 를
+ * 받고, 부팅은 성공하므로 아무 신호가 없다. 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다.
+ * 그래서 이 가드는 양방향이다 — 넘치는 것과 모자라는 것을 같이 막는다.
  *
  * <p>네트워크가 실제 방어라는 점은 live 와 같다 — 스크레이퍼는 로그인 수단이 없으므로 관리 포트는
  * 클러스터 안에만 둬야 한다. 이 가드는 그 전제가 깨졌을 때 <b>깨진 줄 모르는 상태</b>를 막는 것이다.
@@ -36,25 +37,14 @@ import org.springframework.core.env.Environment;
 public class ObservabilityExposureConfig {
 
     /**
-     * 이 앱이 열어도 되는 엔드포인트. {@code health} 는 프로브용, {@code prometheus} 는 스크레이프용이다.
-     * 늘리려면 이 상수를 고쳐야 하고, 그러면 변경이 diff 에 보인다.
+     * 열려야 하는 엔드포인트 — 그리고 <b>이것만</b> 열려야 한다.
      *
-     * <p>이 집합은 <b>상한이면서 하한</b>이다 — 둘 다 없어도 되는 것이 아니라 둘 다 있어야 한다.
-     * 하나는 파드가 Ready 가 되는 조건이고 하나는 지표가 존재하는 조건이라, 빠진 쪽이 조용히 죽는다.
+     * <p>{@code health} 는 k8s 프로브용, {@code prometheus} 는 스크레이프용이다. 이 집합은
+     * <b>상한이면서 하한</b>이다: 하나는 파드가 Ready 가 되는 조건이고 하나는 지표가 존재하는
+     * 조건이라 빠진 쪽이 조용히 죽고, 더 열린 쪽은 시큐리티가 없어 곧 무인증 공개다. 늘리려면 이
+     * 상수를 고쳐야 하고, 그러면 변경이 diff 에 보인다.
      */
-    private static final Set<String> ALLOWED_ENDPOINTS = Set.of("health", "prometheus");
-
-    private static final String EXPOSURE_KEY = "management.endpoints.web.exposure.include";
-
-    /**
-     * 노출을 <b>뒤에서 되돌리는</b> 키.
-     *
-     * <p>{@code include} 만 보는 가드는 반쪽이다 — {@code exclude} 가 {@code include} 를 이긴다.
-     * <b>실측</b>: 이 앱을 {@code include: health,prometheus} + {@code exclude: prometheus} 로 띄우면
-     * 부팅은 <b>성공하고</b> 노출된 엔드포인트는 {@code health} 하나다. include 만 읽는 가드는 그
-     * 설정을 통과시키고 지표는 조용히 빈다 — 가드를 둔 이유가 바로 그 침묵이었다.
-     */
-    private static final String EXCLUSION_KEY = "management.endpoints.web.exposure.exclude";
+    private static final Set<String> REQUIRED_ENDPOINTS = Set.of("health", "prometheus");
 
     /**
      * 관리 포트가 사용자 포트와 같으면 <b>부팅을 실패시킨다</b>.
@@ -66,8 +56,7 @@ public class ObservabilityExposureConfig {
     @Bean
     public ObservabilityGuard managementPortMustDiffer(
             @Value("${server.port:8080}") int serverPort,
-            @Value("${management.server.port:}") String managementPort,
-            Environment environment) {
+            @Value("${management.server.port:}") String managementPort) {
 
         if (managementPort == null || managementPort.isBlank()) {
             throw new IllegalStateException(
@@ -103,88 +92,93 @@ public class ObservabilityExposureConfig {
                             + "MANAGEMENT_PORT 를 다른 값으로 줄 것.");
         }
 
-        verifyExposure(environment);
         return new ObservabilityGuard();
     }
 
     /**
-     * 노출 목록이 <b>정확히</b> 허용 집합인지, 그리고 그것을 되돌리는 설정이 없는지 본다.
+     * <b>실제로 노출된</b> 엔드포인트가 필수 집합과 정확히 같아야 부팅한다.
      *
-     * <p>{@code Binder} 로 읽는 이유: 이 키는 {@code include: health,prometheus} 로도, YAML 리스트로도
-     * 쓸 수 있다. 후자는 프로퍼티 소스에 {@code include[0]} 으로 들어가므로 {@code @Value} 로 기본 키를
-     * 읽으면 해결에 실패한다 — 그러면 <b>리스트로 쓴 설정을 이 가드가 못 보고 통과시킨다</b>. 두 모양을
-     * 다 받는 쪽이 {@code Binder} 다(실측으로 확인했다).
+     * <p>⚠️ <b>설정 키를 읽지 않는다.</b> 전에는 {@code exposure.include} 와
+     * {@code exposure.exclude} 두 키를 파싱했는데, 엔드포인트를 조용히 없애는 축이 그 둘뿐이 아니다.
+     * <b>실측</b>(이 앱을 실제로 띄워 {@code WebEndpointsSupplier} 를 조회):
+     * <pre>
+     * management.endpoint.prometheus.enabled=false    부팅 성공   노출 [health]
+     * management.endpoint.health.enabled=false        부팅 성공   노출 [prometheus]
+     * management.endpoints.enabled-by-default=false   부팅 성공   노출 []
+     * management.endpoint.prometheus.access=none      부팅 성공   노출 [health]
+     * management.endpoints.access.default=none        부팅 성공   노출 []
+     * </pre>
+     * 다섯 줄 모두 두 키만 보는 가드를 <b>통과했다</b>. 특히 셋째·다섯째는 엔드포인트가 하나도
+     * 없는데 부팅에 성공한다 — 이 가드가 존재하는 이유 그 자체다. 축을 더 열거하는 길은 끝이 없어서
+     * (Boot 가 축을 하나 더 만들면 또 새는) <b>실제 노출을 묻는 쪽</b>으로 바꿨다.
      *
-     * <p><b>세 방향을 다 본다.</b> 위로 넘치면(허용 밖) 무인증 공개가 되고, 아래로 모자라면(필수 누락)
-     * 관측과 프로브가 조용히 사라진다. 그리고 {@code exclude} 는 그 둘을 다 통과한 설정을 뒤에서
-     * 되돌린다 — 한 방향만 보면 나머지 둘이 열린 문으로 남는다.
+     * <p>{@code WebEndpointsSupplier.getEndpoints()} 가 그 단일 출처다 — 위 다섯 조합과
+     * {@code include}/{@code exclude} 조합 모두에서 실제 노출과 일치했다(실측). 덤으로 YAML 리스트
+     * 표기({@code include[0]})를 따로 다룰 이유도 사라진다: 파싱을 안 하므로 표기 차이가 없다.
+     *
+     * <p>{@code ObjectProvider} 로 받는 이유: 액추에이터가 없는 컨텍스트에서는 이 검사를 건너뛴다.
+     * 이 앱에 액추에이터는 {@code implementation} 의존이라 운영에서는 항상 있고, 빼는 변경은
+     * {@code build.gradle} diff 에 보인다. 조각 테스트가 이 설정만 올릴 때 없는 빈을 요구해
+     * 엉뚱하게 깨지는 쪽을 막으려는 것이다.
      */
-    private static void verifyExposure(Environment environment) {
-        Set<String> declared = readNormalized(environment, EXPOSURE_KEY);
+    @Bean
+    public ExposureGuard exposedEndpointsMustMatchRequired(
+            ObjectProvider<WebEndpointsSupplier> webEndpoints) {
 
-        Set<String> rejected = new TreeSet<>(declared);
-        rejected.removeAll(ALLOWED_ENDPOINTS);
-        if (!rejected.isEmpty()) {
-            throw new IllegalStateException(
-                    EXPOSURE_KEY + " 에 허용되지 않은 값이 있다 — " + rejected + ". 이 앱에는 액추에이터를 "
-                            + "막을 시큐리티가 없어서 여기 적은 것이 곧 무인증 공개다. \"*\" 는 "
-                            + "/heapdump 까지 여는데 그건 메모리 이미지라 Mongo URI 자격증명과 Redis "
-                            + "비밀번호가 평문으로 들어 있다. /actuator/env 는 값이 가려지지만(기본값 "
-                            + "show-values=NEVER) 프로퍼티 이름과 소스 전부를 내보내고, 그 마스킹은 "
-                            + "설정 한 줄로 뒤집힌다. 허용: " + new TreeSet<>(ALLOWED_ENDPOINTS));
+        WebEndpointsSupplier supplier = webEndpoints.getIfAvailable();
+        if (supplier != null) {
+            verifyExposure(exposedIds(supplier));
+        }
+        return new ExposureGuard();
+    }
+
+    /** 실제로 노출된 web 엔드포인트 id 들. 정렬해 둬서 실패 메시지가 안정적으로 읽힌다. */
+    static Set<String> exposedIds(WebEndpointsSupplier supplier) {
+        Set<String> ids = new TreeSet<>();
+        supplier.getEndpoints().forEach(endpoint -> ids.add(endpoint.getEndpointId().toString()));
+        return ids;
+    }
+
+    /**
+     * 노출 집합을 필수 집합과 비교한다 — 넘치는 것과 모자라는 것을 따로 말해 준다.
+     *
+     * <p>스프링 없이 호출할 수 있게 집합만 받는다(빈 배선은 위에서 한다). 실패 메시지에 <b>어떤 키를
+     * 볼지</b>를 적는 이유는 이 가드가 더는 키를 읽지 않기 때문이다 — 원인이 되는 축이 여섯이고
+     * 운영자가 {@code access.default} 같은 건 알지 못한다.
+     */
+    static void verifyExposure(Set<String> actual) {
+        Set<String> extra = new TreeSet<>(actual);
+        extra.removeAll(REQUIRED_ENDPOINTS);
+        Set<String> missing = new TreeSet<>(REQUIRED_ENDPOINTS);
+        missing.removeAll(actual);
+        if (extra.isEmpty() && missing.isEmpty()) {
+            return;
         }
 
-        // 허용 밖을 막는 것만으로는 반쪽이다 — 목록이 비면 거부할 것도 없어 통과하는데, 그때
-        // 액추에이터 기본 노출은 health 하나라 /actuator/prometheus 가 아예 생기지 않는다. 이 앱에는
-        // 시큐리티가 없어 401 조차 나지 않고 404 다 — 어느 쪽이든 지표가 조용히 빈다. 빈 대시보드는
-        // "방송이 없어서" 와 구분되지 않는다.
-        //
-        // health 도 같은 무게로 요구한다. 실측: include 에 prometheus 만 적으면 부팅은 성공하고
-        // 노출은 prometheus 하나다 — k8s liveness/readiness 가 404 를 받아 파드가 Ready 가 되지
-        // 못하거나 되살아나기를 반복한다. 전에는 prometheus 만 보고 있어 이쪽이 열려 있었다.
-        Set<String> missing = new TreeSet<>(ALLOWED_ENDPOINTS);
-        missing.removeAll(declared);
+        StringBuilder message = new StringBuilder("실제로 노출된 액추에이터 엔드포인트가 "
+                + new TreeSet<>(REQUIRED_ENDPOINTS) + " 와 다르다 — 현재 " + actual + ".");
+        if (!extra.isEmpty()) {
+            message.append(" 더 열린 것: ").append(extra)
+                    .append(". 이 앱에는 액추에이터를 막을 시큐리티가 없어서 열린 것이 곧 무인증")
+                    .append(" 공개다 — /heapdump 는 메모리 이미지라 Mongo URI 자격증명과 Redis")
+                    .append(" 비밀번호가 평문으로 들어 있다.");
+        }
         if (!missing.isEmpty()) {
-            throw new IllegalStateException(
-                    EXPOSURE_KEY + " 에 " + missing + " 가 없다 — health 가 빠지면 k8s 프로브가 404 를 "
-                            + "받아 파드가 Ready 가 되지 못하고, prometheus 가 빠지면 chat 지표가 조용히 "
-                            + "빈다. 관측이나 프로브를 끄려면 이 가드를 지우는 변경이 리뷰에 보여야 한다. "
-                            + "현재 값=" + declared);
+            message.append(" 사라진 것: ").append(missing)
+                    .append(". health 가 없으면 k8s 프로브가 404 를 받아 파드가 Ready 가 되지 못하고,")
+                    .append(" prometheus 가 없으면 chat 지표가 조용히 빈다.");
         }
-
-        // include 를 통과한 설정을 exclude 가 되돌린다(실측: 둘 다 적으면 exclude 가 이긴다).
-        // "*" 는 전부 되돌리므로 필수 둘을 다 지운 것과 같다.
-        Set<String> excluded = readNormalized(environment, EXCLUSION_KEY);
-        Set<String> suppressed = new TreeSet<>(excluded);
-        suppressed.retainAll(ALLOWED_ENDPOINTS);
-        if (excluded.contains("*")) {
-            suppressed.addAll(ALLOWED_ENDPOINTS);
-        }
-        if (!suppressed.isEmpty()) {
-            throw new IllegalStateException(
-                    EXCLUSION_KEY + " 가 " + suppressed + " 를 되돌린다 — " + EXPOSURE_KEY + " 에 적혀 "
-                            + "있어도 exclude 가 이기므로 그 엔드포인트는 생기지 않는다. 부팅은 성공하고 "
-                            + "지표·프로브만 사라지는, 이 가드가 배제하려는 바로 그 침묵이다. "
-                            + "현재 값=" + excluded);
-        }
+        message.append(" 볼 키: management.endpoints.web.exposure.include/exclude,")
+                .append(" management.endpoint.<id>.enabled, management.endpoints.enabled-by-default,")
+                .append(" management.endpoint.<id>.access, management.endpoints.access.default.");
+        throw new IllegalStateException(message.toString());
     }
 
-    /** 키 하나를 읽어 소문자·공백 제거로 정규화한다 — 표기 차이로 가드를 비껴가지 못하게 한다. */
-    private static Set<String> readNormalized(Environment environment, String key) {
-        Set<String> raw = Binder.get(environment)
-                .bind(key, Bindable.setOf(String.class))
-                .orElseGet(Set::of);
-        Set<String> normalized = new TreeSet<>();
-        for (String value : raw) {
-            String trimmed = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-            if (!trimmed.isEmpty()) {
-                normalized.add(trimmed);
-            }
-        }
-        return normalized;
-    }
-
-    /** 위 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */
+    /** 포트 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */
     public static final class ObservabilityGuard {
+    }
+
+    /** 노출 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */
+    public static final class ExposureGuard {
     }
 }

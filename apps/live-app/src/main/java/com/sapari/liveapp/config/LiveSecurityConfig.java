@@ -4,14 +4,12 @@ import tools.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.DispatcherType;
 
-import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.context.properties.bind.Bindable;
-import org.springframework.boot.context.properties.bind.Binder;
-import org.springframework.core.env.Environment;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -125,8 +123,7 @@ public class LiveSecurityConfig {
     @Bean
     public ManagementPortGuard managementPortMustDiffer(
             @Value("${server.port:8080}") int serverPort,
-            @Value("${management.server.port:}") String managementPort,
-            Environment environment
+            @Value("${management.server.port:}") String managementPort
     ) {
         if (managementPort == null || managementPort.isBlank()) {
             throw new IllegalStateException(
@@ -158,7 +155,6 @@ public class LiveSecurityConfig {
                     "management.server.port(" + port + ") 가 server.port 와 같다 — 지표가 사용자 트래픽 포트에 "
                             + "노출된다. MANAGEMENT_PORT 를 다른 값으로 줄 것.");
         }
-        requireObservabilityExposed(environment);
         return new ManagementPortGuard();
     }
 
@@ -173,70 +169,84 @@ public class LiveSecurityConfig {
     /**
      * {@code health}·{@code prometheus} 가 <b>실제로</b> 노출돼야 부팅한다.
      *
-     * <p>액추에이터 기본 노출은 {@code health} 하나다. 그래서 {@code prometheus} 가 빠지면 그
-     * 엔드포인트가 아예 없고, 그 경로가 위 액추에이터 체인에 매칭되지 않아 기본 체인의
+     * <p>액추에이터 기본 노출은 {@code health} 하나다. 그래서 {@code prometheus} 가 없으면 그
+     * 엔드포인트가 생기지 않고, 그 경로가 위 액추에이터 체인에 매칭되지 않아 기본 체인의
      * {@code authenticated()} 에 걸려 <b>401</b> 이 된다 — 스크레이퍼는 로그인 수단이 없으므로
-     * <b>지표가 조용히 빈다</b>. 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다.
+     * <b>지표가 조용히 빈다</b>. 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다. {@code health} 가
+     * 없으면 같은 이유로 k8s 프로브가 401 을 받아 파드가 Ready 가 되지 못한다.
      *
      * <p>⚠️ <b>실측으로 드러났다.</b> 이 앱의 컨텍스트 테스트가 CI 에서 제외돼 있던 동안 그 줄은 운영
      * 템플릿의 {@code optional} 항목이었고, 테스트를 CI 로 옮긴 첫 실행이 정확히 401 로 깨졌다.
      * 설정 한 줄이 관측 전면 중단으로 이어지는데 그 사이에 아무 신호가 없어서, 조용히 뜨는 대신
      * 시끄럽게 죽는 쪽으로 바꿨다({@code streaming-app} 이 같은 이유로 같은 가드를 갖는다).
      *
-     * <p><b>include 만 보는 것은 반쪽이었다.</b> 실측: {@code include: health,prometheus} 에
-     * {@code exclude: prometheus} 를 더하면 부팅은 성공하고 노출은 {@code health} 하나다 —
-     * {@code exclude} 가 {@code include} 를 이긴다. 또 {@code health} 를 요구하지 않던 동안
-     * {@code include: prometheus} 만 적은 설정이 통과했는데, 그러면 프로브가 404 를 받아 파드가
-     * Ready 가 되지 못한다. 두 구멍 다 "부팅은 되고 조용히 고장나는" 모양이라 가드를 세운 이유와 같다.
+     * <p>⚠️ <b>설정 키를 읽지 않는다.</b> 전에는 {@code exposure.include}·{@code exposure.exclude} 두
+     * 키를 파싱했는데, 엔드포인트를 조용히 없애는 축이 그 둘뿐이 아니다. <b>실측</b>(같은 모양의
+     * streaming-app 을 실제로 띄워 {@code WebEndpointsSupplier} 를 조회):
+     * <pre>
+     * management.endpoint.prometheus.enabled=false    부팅 성공   노출 [health]
+     * management.endpoint.health.enabled=false        부팅 성공   노출 [prometheus]
+     * management.endpoints.enabled-by-default=false   부팅 성공   노출 []
+     * management.endpoint.prometheus.access=none      부팅 성공   노출 [health]
+     * management.endpoints.access.default=none        부팅 성공   노출 []
+     * </pre>
+     * 다섯 줄 모두 두 키만 보는 가드를 <b>통과했다</b>. 셋째·다섯째는 엔드포인트가 하나도 없는데
+     * 부팅에 성공한다 — 이 가드가 존재하는 이유 그 자체다. 축을 더 열거하는 길은 끝이 없어서
+     * 질문을 "설정이 무엇이라고 적혀 있나" 에서 "<b>무엇이 실제로 열려 있나</b>" 로 바꿨다.
      *
-     * <p>목록을 <b>좁히는</b> 검사는 여기 없다 — 이 앱은 액추에이터 체인이 {@code health}·
-     * {@code prometheus} 밖을 {@code denyAll} 로 막으므로 넓혀도 열리지 않는다. 시큐리티가 없는
-     * {@code streaming-app} 은 그 반대라 허용 집합까지 코드가 잠근다.
+     * <p>목록을 <b>좁히는</b> 검사는 여기 없다(필수 집합을 <b>포함</b>하면 통과한다) — 이 앱은
+     * 액추에이터 체인이 {@code health}·{@code prometheus} 밖을 {@code denyAll} 로 막으므로 넓혀도
+     * 열리지 않는다. 그 체인이 실제로 막는지는 {@code ActuatorNotOnUserPortTest} 가 {@code env} 를
+     * 일부러 노출해 403 으로 밟는다. 시큐리티가 없는 {@code streaming-app} 은 그 반대라 집합이
+     * <b>정확히</b> 같아야 한다.
+     *
+     * <p>{@code ObjectProvider} 로 받는 이유: 액추에이터가 없는 컨텍스트에서는 건너뛴다. 이 앱에
+     * 액추에이터는 {@code implementation} 의존이라 운영에서는 항상 있고 빼는 변경은
+     * {@code build.gradle} diff 에 보인다. 이 설정을 {@code @Import} 로 올리는 MVC 조각 테스트가
+     * 없는 빈을 요구해 엉뚱하게 깨지는 쪽을 막으려는 것이다.
      */
-    private static void requireObservabilityExposed(Environment environment) {
-        Set<String> included = readNormalized(environment, "management.endpoints.web.exposure.include");
-        Set<String> excluded = readNormalized(environment, "management.endpoints.web.exposure.exclude");
+    @Bean
+    public ObservabilityExposureGuard requiredEndpointsMustBeExposed(
+            ObjectProvider<WebEndpointsSupplier> webEndpoints) {
 
-        // "*" 는 양쪽에서 모두 와일드카드다 — include 의 "*" 는 전부 열고(이 앱은 체인이 막으므로
-        // 허용한다), exclude 의 "*" 는 전부 되돌린다.
-        Set<String> missing = new TreeSet<>();
-        Set<String> revoked = new TreeSet<>();
-        for (String required : REQUIRED_ENDPOINTS) {
-            if (!included.contains(required) && !included.contains("*")) {
-                missing.add(required);
-            } else if (excluded.contains(required) || excluded.contains("*")) {
-                revoked.add(required);
-            }
+        WebEndpointsSupplier supplier = webEndpoints.getIfAvailable();
+        if (supplier != null) {
+            verifyExposed(exposedIds(supplier));
         }
-        if (!missing.isEmpty()) {
-            throw new IllegalStateException(
-                    "management.endpoints.web.exposure.include 에 " + missing + " 가 없다 — prometheus 가 "
-                            + "빠지면 스크레이퍼가 401 을 받아 지표가 조용히 비고, health 가 빠지면 k8s "
-                            + "프로브가 404 를 받아 파드가 Ready 가 되지 못한다. 현재 값=" + included
-                            + " / 예시: health,prometheus");
-        }
-        if (!revoked.isEmpty()) {
-            throw new IllegalStateException(
-                    "management.endpoints.web.exposure.exclude 가 " + revoked + " 를 되돌린다 — include 에 "
-                            + "적혀 있어도 exclude 가 이기므로 그 엔드포인트는 생기지 않는다. 부팅은 "
-                            + "성공하고 지표·프로브만 사라지는, 이 가드가 배제하려는 바로 그 침묵이다. "
-                            + "현재 값=" + excluded);
-        }
+        return new ObservabilityExposureGuard();
     }
 
-    /** 키 하나를 읽어 소문자·공백 제거로 정규화한다 — 표기 차이로 가드를 비껴가지 못하게 한다. */
-    private static Set<String> readNormalized(Environment environment, String key) {
-        Set<String> raw = Binder.get(environment)
-                .bind(key, Bindable.setOf(String.class))
-                .orElseGet(Set::of);
-        Set<String> normalized = new TreeSet<>();
-        for (String value : raw) {
-            String trimmed = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-            if (!trimmed.isEmpty()) {
-                normalized.add(trimmed);
-            }
+    /** 실제로 노출된 web 엔드포인트 id 들. 정렬해 둬서 실패 메시지가 안정적으로 읽힌다. */
+    static Set<String> exposedIds(WebEndpointsSupplier supplier) {
+        Set<String> ids = new TreeSet<>();
+        supplier.getEndpoints().forEach(endpoint -> ids.add(endpoint.getEndpointId().toString()));
+        return ids;
+    }
+
+    /**
+     * 필수 집합이 실제 노출에 <b>들어 있는지</b>만 본다.
+     *
+     * <p>스프링 없이 호출할 수 있게 집합만 받는다. 실패 메시지에 <b>어떤 키를 볼지</b>를 적는 이유는
+     * 이 가드가 더는 키를 읽지 않기 때문이다 — 원인이 되는 축이 여섯이고 운영자가
+     * {@code access.default} 같은 건 알지 못한다.
+     */
+    static void verifyExposed(Set<String> actual) {
+        Set<String> missing = new TreeSet<>(REQUIRED_ENDPOINTS);
+        missing.removeAll(actual);
+        if (missing.isEmpty()) {
+            return;
         }
-        return normalized;
+        throw new IllegalStateException(
+                "액추에이터 엔드포인트 " + missing + " 가 실제로 노출되지 않았다 — 현재 " + actual
+                        + ". prometheus 가 없으면 스크레이퍼가 401 을 받아 지표가 조용히 비고, health 가 "
+                        + "없으면 k8s 프로브가 401 을 받아 파드가 Ready 가 되지 못한다. 볼 키: "
+                        + "management.endpoints.web.exposure.include/exclude, "
+                        + "management.endpoint.<id>.enabled, management.endpoints.enabled-by-default, "
+                        + "management.endpoint.<id>.access, management.endpoints.access.default.");
+    }
+
+    /** 노출 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */
+    public static final class ObservabilityExposureGuard {
     }
 
     /** 위 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */

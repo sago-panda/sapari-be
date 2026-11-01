@@ -1,205 +1,172 @@
 package com.sapari.streamingapp.config;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.mock;
 
-import java.util.Map;
+import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.core.env.Environment;
-import org.springframework.mock.env.MockEnvironment;
-import org.springframework.core.env.MapPropertySource;
-import org.springframework.core.env.StandardEnvironment;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.endpoint.EndpointId;
+import org.springframework.boot.actuate.endpoint.web.ExposableWebEndpoint;
+import org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier;
 
 /**
- * 관측 노출 가드.
+ * 관측 가드 — 포트와 <b>실제 노출</b>.
  *
- * <p>이 앱에는 Spring Security 가 없어서 노출 목록이 곧 무인증 공개다. 그래서 두 가지를 본다 —
- * 관리 포트가 사용자 포트와 다른지, 그리고 목록에 허용 밖 값이 없는지.
- *
- * <p><b>리스트 모양을 반드시 함께 본다.</b> 같은 설정을 {@code include: health,prometheus} 로도
- * YAML 리스트로도 쓸 수 있고, 후자는 프로퍼티 소스에 {@code include[0]} 으로 들어간다. 기본 키만
- * 읽는 구현이면 <b>리스트로 쓴 "*" 를 못 보고 통과시킨다</b> — 가장 위험한 입력이 가장 흔한 표기로
- * 통과하는 셈이다.
+ * <p>노출 검사가 설정 키를 읽지 않으므로 이 파일에도 키 표기 테스트가 없다. 전에는
+ * {@code include: a,b} 와 YAML 리스트({@code include[0]}) 두 표기를 각각 재야 했는데, 파싱을 버리면서
+ * 그 축이 통째로 사라졌다 — <b>실측</b>으로 드러난 것은 그 두 키를 다 읽어도 엔드포인트를 없애는
+ * 축이 넷 더 있다는 것이었고({@code endpoint.&lt;id&gt;.enabled} · {@code enabled-by-default} ·
+ * {@code endpoint.&lt;id&gt;.access} · {@code access.default}), 그래서 질문을 "설정이 무엇이라고
+ * 적혀 있나" 에서 "<b>무엇이 실제로 열려 있나</b>" 로 바꿨다.
  */
-@DisplayName("ObservabilityExposureConfig — 노출은 코드가 잠근다")
+@DisplayName("ObservabilityExposureConfig — 포트는 설정으로, 노출은 실제로 본다")
 class ObservabilityExposureConfigTest {
 
     private final ObservabilityExposureConfig config = new ObservabilityExposureConfig();
 
-    private Environment withExposure(String... includes) {
-        StandardEnvironment environment = new StandardEnvironment();
-        Map<String, Object> source = new java.util.HashMap<>();
-        for (int i = 0; i < includes.length; i++) {
-            source.put("management.endpoints.web.exposure.include[" + i + "]", includes[i]);
-        }
-        environment.getPropertySources().addFirst(new MapPropertySource("test", source));
-        return environment;
-    }
+    // ---------- 관리 포트 ----------
 
-    /**
-     * {@code include} 와 {@code exclude} 를 함께 세운다 — 노출은 두 키의 <b>차집합</b>이다.
-     *
-     * <p>스칼라 표기로 쓴다. 리스트 표기는 위 {@code withExposure} 가 이미 덮고, 여기서 보려는 것은
-     * 표기 해석이 아니라 "exclude 가 include 를 이긴다" 는 쪽이다.
-     */
-    private Environment withExposureAndExclusion(String include, String exclude) {
-        MockEnvironment environment = new MockEnvironment();
-        environment.setProperty("management.endpoints.web.exposure.include", include);
-        environment.setProperty("management.endpoints.web.exposure.exclude", exclude);
-        return environment;
-    }
-
-    private Environment withScalarExposure(String value) {
-        MockEnvironment environment = new MockEnvironment();
-        environment.setProperty("management.endpoints.web.exposure.include", value);
-        return environment;
+    @Test
+    @DisplayName("포트가 다르면 통과한다")
+    void differentPortsPass() {
+        assertThatCode(() -> config.managementPortMustDiffer(8080, "8092")).doesNotThrowAnyException();
     }
 
     @Test
-    @DisplayName("관리 포트가 비어 있으면 부팅을 막는다 — 비면 액추에이터가 사용자 포트에 열린다")
+    @DisplayName("⭐ 관리 포트가 비어 있으면 부팅을 막는다 — 액추에이터가 WS 포트에 열린다")
     void anEmptyManagementPortIsRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "", withScalarExposure("health")))
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, ""))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("management.server.port 가 없다");
     }
 
     @Test
-    @DisplayName("관리 포트가 사용자 포트와 같으면 부팅을 막는다")
+    @DisplayName("⭐ 사용자 포트와 같으면 막는다 — 이 앱에는 그걸 막을 시큐리티가 없다")
     void anIdenticalPortIsRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8080", withScalarExposure("health")))
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8080"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("server.port 와 같다");
     }
 
     @Test
-    @DisplayName("음수 포트는 부팅을 막는다 — -1 은 액추에이터를 끄는 값이라 지표가 조용히 사라진다")
+    @DisplayName("⭐ 음수(-1)는 막는다 — 액추에이터가 통째로 꺼져 지표가 조용히 사라진다")
     void aDisabledManagementPortIsRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "-1", withScalarExposure("health")))
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "-1"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("음수");
     }
 
     @Test
-    @DisplayName("숫자가 아니면 친절하게 막는다 — 스택트레이스만 남으면 원인이 오타라는 게 안 읽힌다")
+    @DisplayName("숫자가 아니면 그 값을 담아 막는다 — 원인이 오타라는 게 로그에서 읽혀야 한다")
     void aNonNumericPortIsRejectedWithItsValue() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "팔공구이", withScalarExposure("health")))
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "팔공구이"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("숫자가 아니다")
                 .hasMessageContaining("팔공구이");
     }
 
     @Test
-    @DisplayName("둘 다 0 이면 통과한다 — 0 은 포트가 아니라 \"빈 포트를 골라라\" 이고 통합 테스트가 그걸 쓴다")
+    @DisplayName("둘 다 0(랜덤 포트)이면 통과한다 — 실행 시점에 서로 다른 포트가 잡힌다")
     void bothRandomPortsAreAllowed() {
-        // 노출은 이 테스트의 주제가 아니다 — 가드가 prometheus 를 요구하므로 유효한 값을 준다.
-        assertThat(config.managementPortMustDiffer(0, "0", withScalarExposure("health,prometheus")))
-                .isNotNull();
+        assertThatCode(() -> config.managementPortMustDiffer(0, "0")).doesNotThrowAnyException();
+    }
+
+    // ---------- 실제 노출 ----------
+
+    @Test
+    @DisplayName("필수 둘만 열려 있으면 통과한다")
+    void exactlyTheRequiredPairPasses() {
+        assertThatCode(() -> ObservabilityExposureConfig.verifyExposure(Set.of("health", "prometheus")))
+                .doesNotThrowAnyException();
     }
 
     @Test
-    @DisplayName("health·prometheus 는 통과한다 — 좁힌 값이 아니라 기본값에 prometheus 를 더한 값이다")
-    void theAllowedPairPasses() {
-        assertThatCode(() -> config.managementPortMustDiffer(8080, "8092",
-                withScalarExposure("health,prometheus"))).doesNotThrowAnyException();
-    }
-
-    @Test
-    @DisplayName("⭐ prometheus 가 없으면 부팅을 막는다 — 엔드포인트가 생기지 않아 지표가 조용히 빈다")
-    void missingPrometheusExposureIsRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
-                withScalarExposure("health")))
+    @DisplayName("⭐ prometheus 가 사라지면 막는다 — 지표가 조용히 빈다")
+    void aMissingPrometheusIsRejected() {
+        // 실측: management.endpoint.prometheus.enabled=false 와 .access=none 이 각각 이 상태를 만들고
+        // 둘 다 부팅에 성공했다. 키를 읽는 가드는 둘 다 통과시켰다.
+        assertThatThrownBy(() -> ObservabilityExposureConfig.verifyExposure(Set.of("health")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("[prometheus] 가 없다");
+                .hasMessageContaining("사라진 것: [prometheus]");
     }
 
     @Test
-    @DisplayName("⭐ 노출을 아예 안 적어도 부팅을 막는다 — 거부할 값이 없다고 통과하면 가드가 반쪽이다")
-    void absentExposureIsRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092", new MockEnvironment()))
+    @DisplayName("⭐ health 가 사라지면 막는다 — 프로브가 404 를 받아 파드가 Ready 가 못 된다")
+    void aMissingHealthIsRejected() {
+        assertThatThrownBy(() -> ObservabilityExposureConfig.verifyExposure(Set.of("prometheus")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("[health, prometheus] 가 없다");
+                .hasMessageContaining("사라진 것: [health]");
     }
 
     @Test
-    @DisplayName("⭐ \"*\" 는 부팅을 막는다 — /actuator/env 가 무인증으로 Mongo 자격증명을 내보낸다")
-    void aWildcardExposureIsRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092", withScalarExposure("*")))
+    @DisplayName("⭐ 하나도 안 열렸으면 막는다 — enabled-by-default=false 가 부팅에 성공하며 만드는 상태다")
+    void anEmptyExposureIsRejected() {
+        // 실측: management.endpoints.enabled-by-default=false 와 access.default=none 이 각각
+        // 노출 []를 만들고 둘 다 부팅에 성공했다 — 이 가드가 존재하는 이유 그 자체다.
+        assertThatThrownBy(() -> ObservabilityExposureConfig.verifyExposure(Set.of()))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("허용되지 않은 값");
+                .hasMessageContaining("사라진 것: [health, prometheus]");
     }
 
     @Test
-    @DisplayName("⭐ env 를 하나 더해도 막는다 — 허용 집합 밖은 전부 걸린다")
+    @DisplayName("⭐ 하나라도 더 열렸으면 막는다 — 시큐리티가 없어 열린 것이 곧 무인증 공개다")
     void anExtraEndpointIsRejectedWithItsName() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
-                withScalarExposure("health,prometheus,env")))
+        assertThatThrownBy(() -> ObservabilityExposureConfig.verifyExposure(
+                Set.of("health", "prometheus", "env")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("env");
+                .hasMessageContaining("더 열린 것: [env]");
     }
 
     @Test
-    @DisplayName("⭐ YAML 리스트로 쓴 \"*\" 도 막는다 — 기본 키만 읽으면 이 모양이 통과한다")
-    void aWildcardWrittenAsAYamlListIsAlsoRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092", withExposure("*")))
-                .as("리스트 표기를 못 보면 가장 위험한 입력이 가장 흔한 표기로 통과한다")
+    @DisplayName("⭐ 전부 열린 상태는 넘친 것을 전부 이름으로 말한다 — heapdump 가 그 안에 있다")
+    void aWideOpenExposureNamesEveryExtra() {
+        assertThatThrownBy(() -> ObservabilityExposureConfig.verifyExposure(
+                Set.of("beans", "env", "health", "heapdump", "prometheus")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("허용되지 않은 값");
+                .hasMessageContaining("더 열린 것: [beans, env, heapdump]")
+                .hasMessageContaining("heapdump 는 메모리 이미지");
     }
 
     @Test
-    @DisplayName("YAML 리스트로 쓴 허용 쌍은 통과한다")
-    void theAllowedPairAsAYamlListPasses() {
-        assertThatCode(() -> config.managementPortMustDiffer(8080, "8092",
-                withExposure("health", "prometheus"))).doesNotThrowAnyException();
+    @DisplayName("실패 메시지가 볼 키 여섯을 다 적는다 — 가드는 더 이상 키를 읽지 않는다")
+    void theFailureNamesEveryConfigAxis() {
+        assertThatThrownBy(() -> ObservabilityExposureConfig.verifyExposure(Set.of()))
+                .hasMessageContaining("exposure.include/exclude")
+                .hasMessageContaining("management.endpoint.<id>.enabled")
+                .hasMessageContaining("management.endpoints.enabled-by-default")
+                .hasMessageContaining("management.endpoint.<id>.access")
+                .hasMessageContaining("management.endpoints.access.default");
+    }
+
+    // ---------- 실제 API 와의 다리 ----------
+
+    @Test
+    @DisplayName("⭐ WebEndpointsSupplier 의 엔드포인트 id 를 그대로 읽는다 — 이 다리가 틀리면 전부 무의미하다")
+    void theExposedIdsComeFromTheSupplier() {
+        ExposableWebEndpoint health = mock(ExposableWebEndpoint.class);
+        given(health.getEndpointId()).willReturn(EndpointId.of("health"));
+        ExposableWebEndpoint prometheus = mock(ExposableWebEndpoint.class);
+        given(prometheus.getEndpointId()).willReturn(EndpointId.of("prometheus"));
+        WebEndpointsSupplier supplier = mock(WebEndpointsSupplier.class);
+        given(supplier.getEndpoints()).willReturn(List.of(prometheus, health));
+
+        assertThat(ObservabilityExposureConfig.exposedIds(supplier))
+                .containsExactly("health", "prometheus");
     }
 
     @Test
-    @DisplayName("대소문자·공백은 가드를 우회하지 못한다")
-    void caseAndWhitespaceDoNotBypassTheGuard() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
-                withExposure(" ENV ")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("env");
-    }
+    @DisplayName("액추에이터가 없는 컨텍스트에서는 건너뛴다 — 조각 테스트가 없는 빈을 요구하지 않게")
+    void theCheckIsSkippedWithoutActuator() {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<WebEndpointsSupplier> absent = mock(ObjectProvider.class);
+        given(absent.getIfAvailable()).willReturn(null);
 
-    @Test
-    @DisplayName("⭐ health 가 없으면 부팅을 막는다 — 프로브가 404 를 받아 파드가 Ready 가 못 된다")
-    void missingHealthExposureIsRejected() {
-        // 실측: include 에 prometheus 만 적으면 부팅은 성공하고 노출은 prometheus 하나다.
-        // 전에는 prometheus 만 요구해서 이 설정이 가드를 그대로 통과했다.
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
-                withScalarExposure("prometheus")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("[health] 가 없다");
-    }
-
-    @Test
-    @DisplayName("⭐ exclude 가 prometheus 를 되돌리면 막는다 — include 에 적혀 있어도 exclude 가 이긴다")
-    void anExclusionThatRevokesPrometheusIsRejected() {
-        // 실측(실제 부팅): include=health,prometheus + exclude=prometheus 는 부팅에 성공하고
-        // 노출된 엔드포인트가 health 하나였다. include 만 읽는 가드는 이것을 통과시킨다.
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
-                withExposureAndExclusion("health,prometheus", "prometheus")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("[prometheus] 를 되돌린다");
-    }
-
-    @Test
-    @DisplayName("⭐ exclude 의 \"*\" 는 둘 다 되돌린다 — 한 줄로 관측과 프로브가 같이 사라진다")
-    void aWildcardExclusionIsRejected() {
-        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
-                withExposureAndExclusion("health,prometheus", "*")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("[health, prometheus] 를 되돌린다");
-    }
-
-    @Test
-    @DisplayName("필수와 무관한 값을 exclude 해도 통과한다 — 가드는 필요한 둘만 지킨다")
-    void anUnrelatedExclusionPasses() {
-        assertThatCode(() -> config.managementPortMustDiffer(8080, "8092",
-                withExposureAndExclusion("health,prometheus", "env"))).doesNotThrowAnyException();
+        assertThatCode(() -> config.exposedEndpointsMustMatchRequired(absent)).doesNotThrowAnyException();
     }
 }

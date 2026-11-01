@@ -55,7 +55,9 @@ import org.mockito.ArgumentCaptor;
 @WebMvcTest(controllers = ChatHistoryController.class,
         properties = {"management.server.port=9999",
                 // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아
-                // 지표가 조용히 빈다(LiveSecurityConfig.requirePrometheusExposed).
+                // 지표가 조용히 빈다(LiveSecurityConfig.requiredEndpointsMustBeExposed).
+                // 이 조각 테스트에는 액추에이터가 없어 그 가드가 건너뛰므로 사실 이 줄이 없어도 뜬다 —
+                // 전에는 필요했고, 남겨 두면 운영 설정과 같은 모양이라는 정보가 된다.
                 "management.endpoints.web.exposure.include=health,prometheus"})
 // GlobalExceptionHandler 를 명시로 올린다 — 이 슬라이스에는 컴포넌트 스캔이 없어서
 // @RestControllerAdvice 가 자동으로 잡히지 않는다. 없으면 도메인 예외가 매핑되지 않고
