@@ -22,6 +22,7 @@ import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
+import com.sapari.streamingapp.websocket.EntryDeniedException;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -145,6 +146,66 @@ class ChatSessionGaugeConfigTest {
                             .isNotNaN();
                     assertThat(contextMeters.get(ChatSessionGaugeConfig.ROOMS_GAUGE).gauge().value())
                             .isNotNaN();
+
+                });
+    }
+
+    /**
+     * 거부 카운터가 GC 뒤에도 <b>값을 따라오는지</b>.
+     *
+     * <p>게이지와 테스트를 나눈 이유는 실패 모양이 다르기 때문이다. 게이지는 대상을 잃으면
+     * {@code NaN} 이라 눈에 띄는데, {@code CumulativeFunctionCounter} 는 {@code WeakReference<T>} 를
+     * 들고 {@code count()} 가 {@code ref.get()==null} 이면 <b>마지막 값</b>을 돌려준다(javap:
+     * {@code ifnull → getfield last; dreturn}). 즉 얼어붙어 "그 뒤로 거부가 없었다" 와 구분되지
+     * 않는다 — 하필 집행을 세는 계열이다.
+     *
+     * <p>그래서 <b>0 을 단언해서는 못 잡는다.</b> 끊긴 카운터도 0 을 돌려준다. 거부를 먼저 만들어
+     * 값을 1 로 올린 뒤 GC 를 밀고 그 1 이 보이는지를 봐야 한다 — 끊긴 쪽은 {@code last} 가 아직
+     * 0 이라 그 자리에서 갈린다.
+     *
+     * <p>이 테스트는 레지스트리를 들 수밖에 없다(거부를 만들어야 한다). 그래서 "컨텍스트가 대상을
+     * 들고 있다" 는 쪽은 {@link #theGaugeTargetOutlivesGarbageCollection} 이 따로 본다 — 끊기는
+     * 것은 인라인 어댑터이고 그건 레지스트리를 들어도 수거된다.
+     */
+    @Test
+    @DisplayName("⭐ 거부 카운터가 GC 뒤에도 값을 따라온다 — 끊기면 NaN 이 아니라 얼어붙는다")
+    void theAdmissionCounterFollowsTheRegistryAfterGarbageCollection() {
+        new ApplicationContextRunner()
+                .withBean(ChatSessionRepository.class, ChatSessionGaugeConfigTest::stubRepository)
+                .withBean(ChatPermissionPolicy.class)
+                .withBean(ChatMetrics.class, () -> ChatMetrics.NOOP)
+                .withBean(ChatSessionRegistry.class)
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withUserConfiguration(ChatSessionGaugeConfig.class)
+                .run(context -> {
+                    ChatSessionRegistry contextRegistry = context.getBean(ChatSessionRegistry.class);
+                    MeterRegistry contextMeters = context.getBean(MeterRegistry.class);
+
+                    UUID room = UUID.randomUUID();
+                    UUID user = UUID.randomUUID();
+                    // 상한값을 모른 채 거부 1건을 만든다 — 이 테스트가 재는 것은 카운터이지 상한이
+                    // 아니고, 상수를 쓰려면 그 상수를 패키지 밖으로 넓혀야 한다.
+                    int attempts = 0;
+                    while (contextRegistry.admissionCapped() == 0 && attempts < 50) {
+                        try {
+                            contextRegistry.register("c" + attempts, new ChatSession(
+                                    room, user, ChatRole.BUYER, "닉", "e@example.com", false))
+                                    .block(VERIFY_CEILING);
+                        } catch (EntryDeniedException expected) {
+                            // 상한에 걸렸다 — 이 테스트가 필요한 상태다
+                        }
+                        attempts++;
+                    }
+                    assertThat(contextRegistry.admissionCapped())
+                            .as("거부가 한 건도 생기지 않았다 — 셀 것이 없으면 이 테스트는 무의미하다")
+                            .isEqualTo(1);
+
+                    forceWeakReferenceClearing();
+
+                    assertThat(contextMeters.get(ChatSessionGaugeConfig.ADMISSION_CAPPED_COUNTER)
+                            .functionCounter().count())
+                            .as("카운터가 대상을 잃고 얼어붙었다 — 얼어붙은 값은 '거부 없음'과 구분되지 않는다")
+                            .isEqualTo(1);
                 });
     }
 

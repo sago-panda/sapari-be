@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.IdentityHashMap;
 import java.util.Map;
@@ -398,7 +399,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 관리자를 막고, 방 단위로 넓히면 인기 방의 정상 시청자를 막는다.
      *
      * <p><b>왜 5 인가.</b> 정상 사용자가 같은 방에 동시에 여는 수에서 나온 값이다 — 휴대폰 + 데스크톱
-     * + 새로고침 경합(앞 세션이 아직 안 걷혔다)까지 세도 3 을 넘지 않는다. 용량에서 나온 값이
+     * + 새로고침 경합(앞 세션이 아직 안 걷혔다)까지 세도 3 을 넘지 않는다. <b>한때 그 셋만 셌다</b>:
+     * 소켓이 조용히 끊긴 자리가 생존 확인의 첫 점검(기한 + 간격, 기본 약 2분)까지 남는다는 것을
+     * 세지 않아, 모바일 핸드오버로 조용히 다섯 번 끊긴 사람이 거부되는 경로가 열려 있었다. 그 창은
+     * 값을 키워서가 아니라 {@link #reapUnresponsiveIfFull} 로 닫았다 — 값을 키우면 남용 한도가
+     * 같이 커지는데 그 창은 몇 개가 필요한지 정해지지 않는다. 용량에서 나온 값이
      * <b>아니다</b>: 앱 쪽 세션당 2,349 bytes 라 5 든 50 든 메모리는 구분되지 않는다
      * ({@code ChatSessionGaugeConfig} 에 실측이 있다). 그래서 이 값은 부하 테스트를 기다릴 이유가
      * 없었고, 한때 용량 상한과 한 덩이로 묶여 미뤄져 있었다.
@@ -409,6 +414,29 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 한 갈래이고, 인증 없이 {@code enter} 를 반복해 토큰을 받아 가는 갈래는 그대로 열려 있다.
      * 그쪽은 발급 측(live)의 레이트리밋 문제라 이 자리에서 닫을 수 없다 — "연결 수 상한이 생겼다" 로
      * 읽히면 안 되는 이유다.
+     *
+     * <p>⚠️ <b>파드 로컬이다 — 전역 상한이 아니다.</b> {@link #userRoomSessions} 는 이 싱글톤의
+     * 인스턴스 필드라 실효 상한은 <b>5 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
+     * 핸드셰이크가 흩어지면 각 파드의 {@code compute} 가 서로 다른 맵을 봐서 전부 통과한다. 이 파일은
+     * 다중 파드를 설계 전제로 못 박고 있고(아래 계정 팬아웃 비용이 "파드 6개" 기준이다), 크로스 파드
+     * 데이터도 이미 있다({@code ChatSessionRepository.add} 가 Redis HASH 에 userId 를 적는다).
+     * 즉 파드 로컬은 <b>제약이 아니라 선택</b>이다 — 전역으로 올리면 입장마다 Redis 왕복이 하나 붙고,
+     * 남용 한도를 5 에서 5×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
+     *
+     * <p>⚠️ <b>이 상한이 "피해자 입장 차단" 이라는 능력을 새로 만들었다.</b> 상한 키가 토큰에서만
+     * 오고({@code RoomTokenVerifier} 의 {@code claims.getSubject()} 하나), 토큰이 TTL 안에서 재사용
+     * 가능하고, 세션이 토큰보다 훨씬 오래 살고(기본 수명 60분, 세션 중 재검증 없음 — {@code verify}
+     * 호출부는 핸드셰이크 하나다), 상한이 <b>새 연결을 거부</b>하므로 — 90초짜리 자격증명으로 자리를
+     * 채워 두면 정당한 소유자가 그 파드에서 최대 수명만큼 입장 거부된다. 그 토큰 재사용은
+     * {@code RoomTokenVerifier} 가 <b>이미 알고 받아들인</b> 것인데, 그 수용은 "결과가 엿듣기로
+     * 한정된다" 는 전제에서 나왔고 이 상한이 그 전제를 바꿨다.
+     *
+     * <p>그래서 <b>가장 오래된 세션을 밀어내지 않는다.</b> 그 쪽이 UX 는 낫지만 공격자에게 더 나쁜
+     * 능력 — <b>남의 살아 있는 세션을 끊는 것</b> — 을 준다. 지금은 "못 들어온다" 이고 그쪽은
+     * "쫓겨난다" 다. 대신 {@link #reapUnresponsiveIfFull} 이 <b>죽은</b> 자리만 거둬 정상 사용자가
+     * 걸리는 경로를 닫는다. 근본 수정은 live 가 룸 토큰에 {@code jti} 를 넣어 단건용으로 만드는
+     * 것이고 그건 이 저장소 밖이다 — 완화는 토큰이 쿼리가 아니라 헤더로 다니는 것과 차단이 파드
+     * 범위라는 것, 둘뿐이다.
      *
      * <p><b>이 검사는 입장 게이트 뒤에 있다</b> — 거부되는 연결도 게이트의 Redis 왕복(종료·강퇴 마커)을
      * 이미 쓴 상태다. 게이트 앞으로 옮기면 그 왕복을 아낄 수 있고 userId 는 토큰 검증(로컬)만으로
@@ -537,22 +565,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> register(String sessionId, ChatSession session) {
-        // 관리자 입장만 남긴다. 이 세션은 방 주인과 같은 것을 받는다 — 마스킹 전 원문과 발신자
-        // 이메일이다. 방 주인은 자기 방에 묶이지만 관리자는 진행 중인 아무 방이나 들어갈 수 있어
-        // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
-        // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
-        // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
-        // 문구가 '관리자'가 아닌 것은 판정이 역할을 가리지 않기 때문이다 — 특권 뷰가 넓어지는 날
-        // 감사가 자동으로 따라오는 것이 이 설계의 값인데, 그때 비-관리자를 관리자로 기록하면 안 된다.
-        // 그래서 role을 값으로 싣는다(오늘은 언제나 ADMIN이다).
-        if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(session.role(), session.isRoomOwner())) {
-            log.info("특권 뷰 입장 — role={} sessionId={} userId={} roomId={}",
-                    session.role(), sessionId, session.userId(), session.roomId());
-        }
         // 상한 검사와 등재를 <b>한 원자 구간</b>에 묶는다. 세어 보고 나중에 넣으면 동시 접속 둘이
         // 같은 수를 읽고 둘 다 통과해 상한을 넘긴다 — compute 의 재매핑 함수는 그 키에 대해 직렬화되므로
         // "셋을 보고 넣는다" 가 쪼개지지 않는다. 판정을 배열로 받는 것은 그 안에서만 쓰는 값이라서다
         // (같은 키에 동시 실행이 없으므로 가시성 문제도 없다).
+        //
+        // ⚠️ 이 메서드는 {@code Mono.defer} 로 감싸여 있지 않다 — 자리 증가는 <b>조립 시점에 즉시</b>
+        // 일어나고, 감소는 호출자가 doFinally 를 붙인 뒤에만 보장된다. 그 사이에서 동기 예외가 나면
+        // 항목이 영구히 남아 그 유저가 그 방에 다시 못 들어온다. 오늘 그 구간은 Mono 조립뿐이라
+        // 도달 불가지만(호출부: ChatWebSocketHandler 의 register → then → doFinally), 그 구간에
+        // 즉시 실행되는 코드를 넣는 변경은 이 불변식을 깬다.
         //
         // local.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 local 에 들어가 있어
         // 게이지·팬아웃이 그 세션을 한 번 보고, cleanup 이 지우기 전까지 시청자 수가 틀린다.
@@ -576,6 +598,22 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 던지지 않고 Mono.error 로 돌려준다 — 핸들러의 onErrorResume(EntryDeniedException) 이
             // SYSTEM code 를 실어 1008 로 닫는 경로를 이미 갖고 있고, 거부는 그 모양이 맞다.
             return Mono.error(new EntryDeniedException(EntryDeniedException.Reason.TOO_MANY_SESSIONS));
+        }
+
+        // ⚠️ 감사 로그가 <b>상한 검사 뒤</b>에 있다. 한때 register 첫 줄이었는데, 그러면 상한으로
+        // 거부된 접속도 "특권 뷰 입장" 으로 남아 감사가 실제 특권 뷰보다 많아진다 — 이 줄의 값이
+        // "누가 언제 어느 방을 봤는가" 에 답하는 것이라, 보지 못한 접속이 섞이면 그 답이 틀린다.
+        // 관리자 입장만 남긴다. 이 세션은 방 주인과 같은 것을 받는다 — 마스킹 전 원문과 발신자
+        // 이메일이다. 방 주인은 자기 방에 묶이지만 관리자는 진행 중인 아무 방이나 들어갈 수 있어
+        // 범위 제한이 없고, 팬아웃에 기록을 붙이면 메시지마다 비용이 된다. 그래서 연결당 한 줄로
+        // "누가 언제 어느 방을 봤는가"만 답할 수 있게 둔다. 그 이상은 이 자리의 몫이 아니다.
+        // sessionId를 함께 남기는 건 탭 두 개를 가르고 이 파일의 종료·드롭 로그와 이어 붙이기 위해서다.
+        // 문구가 '관리자'가 아닌 것은 판정이 역할을 가리지 않기 때문이다 — 특권 뷰가 넓어지는 날
+        // 감사가 자동으로 따라오는 것이 이 설계의 값인데, 그때 비-관리자를 관리자로 기록하면 안 된다.
+        // 그래서 role을 값으로 싣는다(오늘은 언제나 ADMIN이다).
+        if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(session.role(), session.isRoomOwner())) {
+            log.info("특권 뷰 입장 — role={} sessionId={} userId={} roomId={}",
+                    session.role(), sessionId, session.userId(), session.roomId());
         }
 
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
@@ -648,7 +686,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 없게 된다(상한이 영구히 찬 상태로 고정된다). 상한 코드가 만들 수 있는 최악의 결함이다.
         LocalSession leaving = local.get(sessionId);
         if (leaving != null) {
-            UserInRoom key = new UserInRoom(leaving.session().userId(), roomId);
+            // 키를 인자 roomId 가 아니라 <b>세션 자신의 roomId</b> 로 만든다 — 등재가
+            // session.roomId() 로 했으므로 그래야 같은 키다. 포트 계약
+            // ({@code ChatSessionManager.unregister})에 둘이 같아야 한다는 보장이 없고, 어긋나는
+            // 호출이 들어오면 항목이 영구히 남아 그 유저가 그 방에 다시 못 들어온다.
+            UserInRoom key = new UserInRoom(leaving.session().userId(), leaving.session().roomId());
             userRoomSessions.computeIfPresent(key, (userInRoom, sessionIds) -> {
                 sessionIds.remove(sessionId);
                 return sessionIds.isEmpty() ? null : sessionIds;   // 빈 항목은 걷는다 — 남기면 누수원
@@ -874,8 +916,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 뒤져야 한다 — 이 스캔보다 싸지 않다. 위 문단의 경고가 틀렸다는 뜻도 아니다: 그 색인에
      * 정확히 그 조용한 버그가 생길 수 있고(퇴장이 항목을 걷지 않으면 그 유저가 그 방에 영구히
      * 못 들어온다), 그래서 {@code SessionAdmissionCapTest} 가 그 한 가지를 따로 고정한다. 색인을
-     * 하나 더 두는 값은 "메시지마다 도는 경로" 에서만 나오고, 이 경로는 시간당 몇 건이다. 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
-     * 방 fan-out이 색인을 갖는 것은 <b>메시지마다</b> 돌기 때문이고, 이쪽은 시간당 몇 건이다.
+     * 하나 더 두는 값은 <b>메시지마다 도는 경로</b>에서만 나오고, 이 경로는 시간당 몇 건이다.
+     * 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
      *
      * <p><b>비용을 폭발시키는 변수는 이벤트 빈도가 아니라 파드당 세션 수다.</b> 스캔은 선형이 아니다 —
      * 12,000에서 58µs인데 100,000에서 4.2ms로, 8.3배 입력에 70배 넘게 든다(캐시 미스). 시간당 한 건이어도
@@ -1290,6 +1332,48 @@ public class ChatSessionRegistry implements ChatSessionManager {
         long last = lastLifetimeExpiryLogNanos.get();
         return now - last >= DROP_LOG_INTERVAL_NANOS
                 && lastLifetimeExpiryLogNanos.compareAndSet(last, now);
+    }
+
+    /**
+     * 자리가 꽉 찼을 때만 그 (유저, 방)의 <b>응답 없는</b> 세션을 거둔다. 거둔 수를 돌려준다.
+     *
+     * <p><b>왜 필요한가.</b> 소켓이 조용히 끊겨도 그 세션은 생존 확인이 돌 때까지 자리를 들고 있고,
+     * 첫 점검은 {@code livenessDeadline + pingInterval} 뒤다(기본값 90s + 30s = <b>약 2분</b>).
+     * 그 창 안에 같은 사람이 조용히 끊기고 재접속하기를 상한만큼 반복하면 — 모바일 핸드오버가
+     * 정확히 그 모양이다 — 다음 접속이 <b>죽은 자리</b> 때문에 거부된다. 상한의 "왜 5인가" 근거는
+     * 탭·새로고침 경합만 셌고 이 창을 세지 않았다.
+     *
+     * <p><b>왜 이 방식인가.</b> 대안은 "가장 오래된 세션을 밀어내기"였는데 그건 공격자에게
+     * <b>남의 살아 있는 세션을 끊는 능력</b>을 준다(토큰 한 장으로 상한만큼 붙으면 정당한 사용자가
+     * 쫓겨난다). 여기서 밀어내는 것은 이미 생존 기한을 넘긴 세션뿐이므로 그 능력이 생기지 않는다 —
+     * 자리를 비우는 유일한 근거가 "그 소켓은 이미 죽었다" 다.
+     *
+     * <p>꽉 차지 않았으면 맵 조회 하나로 끝난다 — 접속마다 도는 자리라 그 경로에 비용을 두지 않는다.
+     * 종료는 {@code compute} <b>밖</b>에서 한다: 안에서 하면 맵 잠금 구간에 sink 발화와 로그가 들어온다.
+     *
+     * <p>자리를 먼저 비우고 종료를 뒤에 하므로, 종료가 늦는 세션이 있으면 {@link #local} 의 실제
+     * 세션 수가 잠깐 상한을 넘을 수 있다. 그 세션들은 이미 생존 기한을 넘겨 각자의 생존 확인이
+     * 거둬 가는 중이고, 상한이 묶으려던 것은 <b>살아 있는</b> 자리라 이 초과는 남용 한도를 넓히지 않는다.
+     */
+    public int reapUnresponsiveIfFull(UUID userId, UUID roomId, Duration livenessDeadline) {
+        UserInRoom key = new UserInRoom(userId, roomId);
+        Set<String> occupied = userRoomSessions.get(key);
+        if (occupied == null || occupied.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+            return 0;
+        }
+        List<String> dead = new ArrayList<>();
+        userRoomSessions.computeIfPresent(key, (userInRoom, sessionIds) -> {
+            for (String sessionId : sessionIds) {
+                if (isUnresponsive(sessionId, livenessDeadline)) {
+                    dead.add(sessionId);
+                }
+            }
+            sessionIds.removeAll(dead);
+            return sessionIds.isEmpty() ? null : sessionIds;
+        });
+        // 잠금 밖 — terminateUnresponsive 가 sink 를 발화하고 로그를 쓴다.
+        dead.forEach(this::terminateUnresponsive);
+        return dead.size();
     }
 
     /** 마지막 상한 거부 로그로부터 간격이 지났으면 true. {@link #shouldLogDrop()} 과 같은 꼴이다. */

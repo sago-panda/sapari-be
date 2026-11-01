@@ -344,14 +344,21 @@ that on.
       `DataAccessResourceFailureException`), not at the ceiling. The ceiling only covers the mode where
       a server *was* selected and `createIndex` does not answer.
     - Dying at the ceiling reads as `CrashLoopBackOff` rather than one loud failure — but **the restart
-      does not re-fire the build, it joins the one already running** (measured on mongo 7 with the
-      `hangAfterInitializingIndexBuild` failpoint: a second identical `createIndexes` **waits** instead
-      of returning `IndexBuildAlreadyInProgress`; a hard client disconnect leaves the server-side build
-      in place — `createIndexes` op still listed, `IndexBuildsCoordinatorMongod-0` still running — and
-      the index finishes with no client attached). So a build taking N× the ceiling costs about N
-      restarts and then boots; restarting does not undo progress, and the loop is **not permanent**.
-      It is still a full outage for that pod while it lasts, so the fix is the same: build the indexes
-      out of band, or raise the ceiling to cover the build.
+      does not re-fire the build; the server-side build survives and the new call waits on it** (measured
+      on **standalone mongo 7** with the `hangAfterInitializingIndexBuild` failpoint: a second identical
+      `createIndexes` **blocks** instead of returning `IndexBuildAlreadyInProgress`; a hard client
+      disconnect leaves the server-side build in place — `createIndexes` op still listed,
+      `IndexBuildsCoordinatorMongod-0` still running — and the index finishes with no client attached).
+      So restarting does not undo progress and the loop is **not permanent**: a build taking N× the
+      ceiling costs roughly N restarts, and the wall clock is N × 10 min **plus Kubernetes'
+      `CrashLoopBackOff` backoff**, which grows 10s → 20s → … up to a 5 min cap between restarts.
+      - Scope, because this claim keeps getting repeated: **standalone**. A replica set builds in phases
+        with a commit quorum and DocumentDB is a compatibility layer, and this repo does not record which
+        one production runs — so neither is covered. "Blocks" is also not the same as "joins": the
+        measurement cannot tell a registered joiner from a lock wait, and the conclusion rests on the
+        survival half alone.
+      - It is a full outage for that pod while it lasts, so the fix is unchanged: build the indexes out
+        of band, or raise the ceiling to cover the build.
 - **Deployment prerequisite**: the set of endpoints that are **actually exposed** must be exactly
   `{health, prometheus}` — without that the app refuses to start, by design (`health` missing means the k8s
   probes 404; `prometheus` missing means the metrics are silently empty).

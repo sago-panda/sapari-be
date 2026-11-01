@@ -14,6 +14,17 @@ import reactor.core.publisher.Mono;
  */
 public interface ChatSessionManager {
 
+    /**
+     * 세션을 등재한다. <b>거부할 수 있다.</b>
+     *
+     * <p>성공만 하는 호출이 아니다 — 같은 (유저, 방)의 동시 세션이 구현체의 상한을 넘으면 거부로
+     * 끝난다(구현체는 전송 계층의 입장 거부 예외를 낸다). 거부는 그 사람의 자리가 비면 스스로
+     * 풀리는 <b>일시 상태</b>이고, 강퇴·밴 같은 영구 상태가 아니다.
+     *
+     * <p>이 계약이 여기 적혀 있어야 하는 이유는 거부가 <b>부작용 없이</b> 끝난다는 것까지가 계약이기
+     * 때문이다 — 거부된 호출은 로컬 색인·Redis 명부에 아무것도 남기지 않으므로, 호출자가 거부를
+     * 받고 정리 작업을 따로 할 필요가 없다.
+     */
     Mono<Void> register(String sessionId, ChatSession session);
 
     Mono<Void> unregister(UUID roomId, String sessionId);

@@ -13,9 +13,12 @@ import io.micrometer.core.instrument.MeterRegistry;
 /**
  * 이 Pod 가 지금 들고 있는 <b>세션 수·방 수</b>를 게이지로 노출한다.
  *
- * <p><b>왜 지금 필요한가.</b> 이 앱에는 연결 수 상한이 없다 — 프레임 크기
+ * <p><b>왜 지금 필요한가.</b> 이 앱에는 <b>용량</b> 상한이 없다 — 프레임 크기
  * ({@code maxFramePayloadLength}), 아웃바운드 버퍼(256), 느린 클라(1013 종료)는 모두 막혀 있는데
- * <b>연결 개수만</b> 무제한이다. 그 상한을 정하려면 "파드 하나가 몇 세션을 들고 있는가" 를 알아야
+ * "이 파드가 몇 세션까지" 는 무제한이다. 남용 쪽은 그 뒤에
+ * {@code ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM} 이 (유저, 방) 단위로 막았다 — 이 문단이
+ * 한때 "연결 개수만 무제한이다" 라고만 적었고, 상한이 들어온 커밋에서 그 단정을 안 고쳐 아래
+ * 문단이 뒤늦게 철회하는 모양이 됐다. 그 상한을 정하려면 "파드 하나가 몇 세션을 들고 있는가" 를 알아야
  * 하는데, 지금 그 수를 <b>어디에서도 볼 수 없었다</b>(기존 chat 지표는 전부 카운터다 — 끊긴 건수,
  * 드롭 건수, fail-open 건수). 그래서 상한값보다 이 게이지가 먼저다: 못 보는 값을 상한으로 고를 수는
  * 없다.
@@ -51,7 +54,14 @@ import io.micrometer.core.instrument.MeterRegistry;
  * 여는가"(탭·기기 수)에서 나와 부하 측정이 필요 없다. 이 게이지가 그 숫자를 대신 주지도 않는다 —
  * 파드 합계라서 유저당 분포가 보이지 않는다. 즉 남용 상한은 이 순서를 기다릴 이유가 없고, 실제로
  * 기다리지 않았다 — {@code ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM} 이 (유저, 방) 단위로
- * 집행하고, 아래 {@code chat.sessions.admission_capped} 가 그 집행을 센다. 남은 것은 용량 쪽뿐이다.
+ * 집행하고, 아래 {@code chat.sessions.admission_capped} 가 그 집행을 센다.
+ *
+ * <p>⚠️ 다만 <b>"남은 것은 용량뿐" 이 아니다.</b> 남용 축에도 닫히지 않은 갈래가 있다 — 게스트는
+ * 입장마다 새 임의 userId 를 받아 그 상한에 닿지 않고, 그 갈래는 발급 측(live {@code enter})의
+ * 레이트리밋 문제다({@code ChatSessionRegistry} 의 상한 javadoc 에 적혀 있다). 그리고 그 상한은
+ * 파드 로컬이라 실효치가 <b>5 × 레플리카</b>다. 즉 남은 축은 <b>발급 측 레이트리밋 + 용량</b> 둘이다.
+ * 이 줄이 "용량뿐" 이라고만 적혀 있던 동안 같은 커밋의 레지스트리 javadoc 과 정면으로 모순이었고,
+ * 그쪽이 사실이다.
  *
  * <p>{@code ObjectProvider} 로 받는 이유는 {@code ChatMetricsConfig} 와 같다 —
  * {@code @ConditionalOnBean(MeterRegistry.class)} 은 사용자 {@code @Configuration} 이 자동 구성보다

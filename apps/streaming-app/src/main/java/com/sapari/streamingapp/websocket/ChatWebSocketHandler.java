@@ -321,6 +321,14 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .doOnNext(ignored -> registry.terminateUnresponsive(sid))
                 .then(Mono.never());
 
+        // 등록 전에 <b>자리가 꽉 찼을 때만</b> 죽은 소켓을 거둔다. 상한이 세는 자리는 소켓이 조용히
+        // 끊겨도 생존 확인이 돌 때까지 남고(첫 점검 = 기한 + 간격 = 기본 약 2분) 그 사이 재접속이
+        // 죽은 자리 때문에 거부된다 — 모바일 핸드오버가 그 모양이다. 기한을 아는 쪽이 여기(timeouts)
+        // 이므로 판단은 여기서 걸고, 자리 회계는 레지스트리가 한다.
+        //
+        // 거부 뒤 재시도가 아니라 <b>등록 전</b>인 이유는 거부 카운터다 — 거부했다가 재시도로
+        // 성공하면 chat.sessions.admission_capped 가 집행이 아닌 것을 집행으로 센다.
+        registry.reapUnresponsiveIfFull(chatSession.userId(), roomId, timeouts.livenessDeadline());
         return registry.register(sid, chatSession)
                 .then(roomInfoFor(roomId, chatSession))
                 .flatMap(info -> registry.sendToSession(sid, info))
@@ -666,7 +674,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 사유가 무엇이든 1008이다. 접속 중 방이 끝난 경우(terminateRoomEnded)는 1000인데 여기만 1008인 게
         // 비대칭으로 보이지만, 그쪽은 "성립해 있던 세션의 정상 종료"고 이쪽은 "세션이 성립하지 못한 거부"다.
         // 프론트 계약도 1008을 강퇴·밴과 함께 "입장 거부"로 묶어두고 있고, 무엇 때문인지는 함께 보낸
-        // SYSTEM code가 전달한다. 재접속 정책도 두 코드가 같아(둘 다 하지 않음) 실제 동작 차이가 없다.
+        // SYSTEM code가 전달한다.
+        //
+        // ⚠️ <b>재접속 정책은 이제 코드마다 다르다.</b> 한때 "두 코드가 같아(둘 다 하지 않음) 실제
+        // 동작 차이가 없다" 고 적었는데 그 "두 코드" 는 KICKED·BANNED 였고, TOO_MANY_SESSIONS 는
+        // <b>자가치유되는 일시 상태</b>다(자리가 비면 풀린다 — 죽은 자리는 reapUnresponsiveIfFull 이
+        // 거둔다). 그러니 1008 을 "재접속 금지" 로 뭉쳐 읽으면 새로고침 경합에 걸린 정상 사용자가
+        // 스스로 복구할 수 없다.
+        //
+        // close 코드를 1013 으로 가르지 않는 이유는 1008 이 프론트 계약에서 이미 "입장 거부" 묶음이고
+        // 그 묶음을 쪼개면 거부 전체의 분기가 바뀌기 때문이다. 대신 <b>정책을 SYSTEM code 가
+        // 싣는다</b> — 영구(KICKED·BANNED·ROOM_ENDED)는 재접속하지 않고, TOO_MANY_SESSIONS 는
+        // 백오프 후 재시도해도 된다. 그 구분은 modules/chat/AGENTS.md 의 close-code 계약에 적혀 있다.
         return session.send(Mono.just(session.textMessage(serialize(system))))
                 .then(session.close(CloseStatus.POLICY_VIOLATION));
     }

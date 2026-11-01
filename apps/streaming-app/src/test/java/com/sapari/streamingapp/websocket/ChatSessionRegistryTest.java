@@ -752,7 +752,9 @@ class ChatSessionRegistryTest {
         // 방을 가리지 않아 여전히 40 을 전부 훑고, 방 단위 팬아웃은 그 방의 상한만큼을 훑는다.
         // 세는 것이 예산 <b>개수</b>라 두 축 다 세션이 복수이면 회귀가 잡힌다(호출당 1 vs 세션 수).
         int rooms = 8;
-        int perRoom = ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM;
+        // 상한을 1 로 내리면 방 축 순회가 1 이 되어 "호출당 예산 1개" 되돌림이 1==1 로
+        // 조용히 통과한다 — 이빨이 사라지는 것을 상수 변경이 결정하지 않게 바닥을 둔다.
+        int perRoom = Math.max(2, ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM);
         for (int r = 0; r < rooms; r++) {
             UUID room = r == 0 ? roomId : UUID.randomUUID();
             for (int i = 0; i < perRoom; i++) {
