@@ -725,7 +725,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 세어지는 드롭이다(세션은 끊기지 않는다 — consumerCannotKeepUp 이 그 결과를 안 본다).
             // 그래서 계약은 javadoc 이 아니라 테스트가 지킨다
             // (ChatBroadcastSubscriberTest.theResolverReturnsTheSameInstancePerView).
-            // (record equals 는 15 필드를 비교하므로 이쪽이 싸다.)
             Map<OutboundMessage, OutboundFrame> frames = new IdentityHashMap<>(4);
             forEachInRoom(roomId, ls -> {
                 OutboundMessage message = resolver.apply(ls.session());

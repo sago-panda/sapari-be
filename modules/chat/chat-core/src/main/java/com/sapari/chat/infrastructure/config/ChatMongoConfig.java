@@ -48,7 +48,7 @@ public class ChatMongoConfig {
      * 동안 이 프로세스는 이미 TCP 를 받고 있었고, 그 창에 인덱스 없는 컬렉션으로 WS 핸드셰이크가
      * 라우팅됐다.
      *
-     * <p><b>그 창의 길이에 상한이 없다.</b> 이 줄은 세 번 틀렸으니 재서 적는다 — 드라이버 기본값
+     * <p><b>그 창의 길이를 드라이버가 묶지 않는다.</b> 이 줄은 세 번 틀렸으니 재서 적는다 — 기본값
      * <b>실측</b>({@code MongoClientSettings.builder().build()}):
      * <pre>
      * serverSelectionTimeoutMs  30000
@@ -62,8 +62,7 @@ public class ChatMongoConfig {
      * 드라이버 쪽에는 그걸 끊을 것이 없다.
      *
      * <p>그래서 <b>이 호출부에서 상한을 건다</b> — {@link #INDEX_CREATE_CEILING}. 그 상한이 없으면
-     * 이 가드의 의도("시끄럽게 죽는다")가 <b>조용한 멈춤</b>으로 뒤집힌다. 최악 대기는 그 값 하나다
-     * (첫 던짐에서 메서드가 끝나므로 인덱스 수에 비례하지 않는다).
+     * 이 가드의 의도("시끄럽게 죽는다")가 <b>조용한 멈춤</b>으로 뒤집힌다.
      *
      * <p>상한은 네 인덱스 <b>전체</b>에 하나로 걸린다({@link #INDEX_CREATE_CEILING}) — 데드라인을
      * 한 번 잡고 각 호출에 남은 시간을 넘긴다. 호출마다 따로 걸면 던지지 않는 느린 건들이 누적돼
@@ -101,7 +100,7 @@ public class ChatMongoConfig {
     }
 
     /**
-     * 부팅 시 인덱스 생성 한 건에 거는 상한.
+     * 부팅 시 인덱스 생성 <b>전체</b>에 거는 상한 — 건당이 아니다.
      *
      * <p><b>왜 필요한가.</b> 드라이버 기본값이 {@code socketReadTimeoutMs=0}(무한)이고 전역
      * {@code timeoutMs} 도 {@code null} 이라(실측), 서버가 선택된 뒤 {@code createIndex} 가 응답하지
@@ -127,6 +126,12 @@ public class ChatMongoConfig {
      * <p>시간만으로는 "멈춘 소켓" 과 "느리지만 진행 중인 빌드" 를 가를 수 없다 — 전자는 영구적이고
      * 후자는 유한하다는 차이뿐이다. 그래서 상한은 <b>유한한 쪽을 넉넉히 덮고 무한한 쪽만 잡는</b>
      * 크기로 둔다. 자기 데이터 규모에 맞게 다시 고를 때는 위 "건당 0.0057 ms" 를 쓰면 된다.
+     *
+     * <p>⚠️ 그 건당 값이 검증된 구간이 있다. 5만·20만·80만 건에서 건당 비용이 평평했고
+     * (0.00336 / 0.00326 / 0.00349 ms) 0.0057 은 그보다 보수적이다. 다만
+     * {@code maxIndexBuildMemoryUsageMegabytes} 기본값이 <b>200MB</b> 라, 수백만 건 위에서는 외부
+     * 정렬이 디스크로 흘러 <b>측정 구간을 벗어난다</b>. 그 위에서 상한을 다시 고를 때는 외삽하지 말고
+     * 자기 데이터로 한 번 재는 쪽이 맞다.
      *
      * <p><b>이 값은 메서드 <u>전체</u>의 상한이다 — 건당이 아니다.</b> 처음에는 네 호출에 각각
      * 걸었는데, 그때 "첫 던짐에서 메서드가 끝나므로 최악은 이 값 하나" 라고 적은 것이 <b>틀렸다</b>:
@@ -204,19 +209,44 @@ public class ChatMongoConfig {
      * "Mongo 가 죽었나" 와 "큰 컬렉션에 인덱스를 새로 만드는 중이었나" 를 가를 수 없는데, 조치가
      * 정반대다 — 전자는 Mongo 를 보고 후자는 <b>기다리거나 상한을 올려야</b> 한다. 저장소의 다른
      * 부팅 가드도 같은 이유로 전부 번역한다({@code ObservabilityExposureConfig} 의 포트 파싱 실패).
+     *
+     * <p>⚠️ <b>타입이 아니라 {@code cause} 로 가른다.</b> 처음엔 {@code IllegalStateException} 을
+     * 통째로 잡았는데, 그러면 <b>타임아웃이 아닌</b> ISE 까지 삼켜 "10분을 기다렸다" 로 라벨을 갈아
+     * 붙인다. 드라이버 자신이 그 타입을 만든다 — {@code mongodb-driver-core} 의
+     * {@code Assertions} 가 {@code new IllegalStateException("state should be: ...")} 를 던지고,
+     * {@code Mono.error(그 ISE).block(상한)} 은 그것을 <b>그대로 재던진다</b>({@code cause == null}).
+     * 그러면 0ms 에 죽은 것을 당직자가 10분 기다린 줄 알고 Mongo 를 본다.
+     *
+     * <p>갈라내는 수는 {@code cause} 다 — <b>타임아웃만</b>
+     * {@code cause = java.util.concurrent.TimeoutException} 이다(실측). 저장소 선례도 전부 갈라서
+     * 잡는다({@code ChatKickRedisRepository} 의 {@code onErrorMap(RedisWrongType::matches, ..)},
+     * {@code ObservabilityExposureConfig} 의 {@code catch (NumberFormatException)}).
+     *
+     * <p>이 번역이 실제로 덮는 갈래는 <b>소켓이 조용한 쪽 하나</b>다 — "서버를 영영 못 고르는" 모드는
+     * {@code DataAccessResourceFailureException} 이라 ISE 가 아니고 여기 걸리지 않는다. 메시지가 두
+     * 갈래를 적는 것은 당직자가 <b>무엇을 봐야 하는가</b>를 가리기 위해서이고, 이 catch 가 두 갈래를
+     * 구분해 잡는다는 뜻은 아니다.
      */
     private static String awaitIndex(reactor.core.publisher.Mono<String> creation,
             long deadline, Duration ceiling, String label) {
-        // 남은 시간이 0 이하면 아주 짧은 값을 넘긴다 — Duration.ZERO 는 block 의 의미가 "무한" 이라
-        // 데드라인을 넘긴 순간 오히려 상한이 사라진다(실측으로 밟기 전에 코드로 막는다).
-        long remainingNanos = deadline - System.nanoTime();
-        Duration remaining = remainingNanos > 0 ? Duration.ofNanos(remainingNanos) : Duration.ofMillis(1);
+        // 남은 시간을 그대로 넘긴다. 0 이나 음수에 보정을 두지 않는 이유는 실측이다 —
+        //   block(Duration.ZERO)        즉시 던진다 (Timeout on blocking read for 0 NANOSECONDS)
+        //   block(Duration.ofNanos(1))  즉시 던진다
+        //   block(Duration.ofMillis(-5)) 즉시 던진다
+        // 무한인 것은 <b>인자 없는</b> block() 뿐이다(CountDownLatch.await(0, ns) 가 바로 false).
+        // 한때 여기 ofMillis(1) 폴백을 두고 "ZERO 는 무한이라" 고 적었는데 그건 재지 않은 추측이었고,
+        // 그 폴백이 오히려 "최악 = 이 값" 을 "이 값 + (건수−1)×1ms" 로 만들었다 — 단위를 따진
+        // 커밋에서 같은 종류의 흠을 하나 더 만든 셈이다.
+        Duration remaining = Duration.ofNanos(deadline - System.nanoTime());
         try {
             return creation.block(remaining);
         } catch (IllegalStateException e) {
+            if (!(e.getCause() instanceof java.util.concurrent.TimeoutException)) {
+                throw e;   // 타임아웃이 아닌 ISE — 라벨을 갈아붙이지 않고 그대로 올린다
+            }
             throw new IllegalStateException(
-                    "chat_messages 인덱스 생성이 " + ceiling + " 안에 끝나지 않았다(이 상한은 "
-                            + "네 인덱스 <b>전체</b>에 걸린다) — " + label
+                    "chat_messages 인덱스 생성이 " + humanize(ceiling) + " 안에 끝나지 않았다"
+                            + "(이 상한은 네 인덱스 전체에 걸린다) — " + label
                             + ". 둘 중 하나다: (1) Mongo 가 응답하지 않는다(드라이버 기본값이 "
                             + "socketReadTimeoutMs=0 이라 이 상한이 유일한 경계다) — Mongo 를 볼 것. "
                             + "(2) 큰 컬렉션에 이 인덱스를 처음 만드는 중이다 — 실측 건당 0.0057ms 로 "
@@ -224,5 +254,23 @@ public class ChatMongoConfig {
                             + "미리 만들고 배포할 것. 이 상한으로 죽으면 재시작마다 빌드를 다시 쏘므로 "
                             + "CrashLoopBackOff 가 된다.", e);
         }
+    }
+
+    /**
+     * 상한을 사람이 읽는 꼴로 — {@code Duration.toString()} 은 {@code PT10M} 으로 찍힌다.
+     *
+     * <p>이 문장은 당직자가 장애 중에 읽는다. 공들여 쓴 메시지 안에 ISO-8601 기간 표기가 섞이면
+     * 그 공이 거기서 끊긴다.
+     *
+     * <p>분 단위가 따로 있는 이유도 같다 — 처음엔 초까지만 내렸는데 현재 상한
+     * ({@link #INDEX_CREATE_CEILING})이 그러면 <b>{@code "600초"}</b>로 찍힌다. 당직자가 상한을
+     * 올릴지 판단하는 수인데, 읽는 사람이 머리로 60 을 나눠야 하는 꼴로 주지 않는다. 테스트가 쓰는
+     * 400ms 가 {@code "400ms"} 로 남는 것도 같은 이유다({@code "0초"} 면 수가 사라진다).
+     */
+    private static String humanize(Duration ceiling) {
+        if (ceiling.toSecondsPart() == 0 && ceiling.toMillisPart() == 0 && ceiling.toMinutes() >= 1) {
+            return ceiling.toMinutes() + "분";
+        }
+        return ceiling.toSeconds() >= 1 ? ceiling.toSeconds() + "초" : ceiling.toMillis() + "ms";
     }
 }

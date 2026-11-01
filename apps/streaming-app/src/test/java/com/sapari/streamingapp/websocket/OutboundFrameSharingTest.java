@@ -218,8 +218,11 @@ class OutboundFrameSharingTest {
         WebSocketMessage two = handler.toWireMessage(second, shared);
 
         // then: 배열을 공유한다. 내용 비교로는 "따로 인코딩해 같은 값" 과 구분되지 않으므로
-        // 네이티브 버퍼의 배열 인스턴스를 본다 — textMessage(serialize(..)) 로 되돌리면 세션마다
-        // 새로 인코딩하므로 이 단언이 깨진다(그 단언이 없던 동안 되돌려도 전 스위트가 초록이었다).
+        // 네이티브 버퍼의 배열 인스턴스를 본다.
+        //
+        // 되돌림이 잡히는 자리: 운영 등가 회귀(세션마다 bufferFactory().wrap(serialize(..)))로
+        // 바꾸면 <b>이 공유 단언</b>에서 깨진다. 다만 session.textMessage(..) 로 되돌리면 목 세션에
+        // 그 스텁이 없어 단언보다 먼저 NPE 로 죽는다 — 보장은 서지만 실패 지점이 다르다.
         byte[] firstArray = ((NettyDataBuffer) one.getPayload()).getNativeBuffer().array();
         byte[] secondArray = ((NettyDataBuffer) two.getPayload()).getNativeBuffer().array();
         assertThat(secondArray)

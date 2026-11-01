@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 
+import java.lang.ref.WeakReference;
 import java.time.Duration;
 import java.util.UUID;
 
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.domain.model.ChatRole;
@@ -100,6 +102,58 @@ class ChatSessionGaugeConfigTest {
         // 방이 비면 항목째 사라진다 — 죽은 방이 쌓이면 게이지가 영원히 올라간다
         registry.unregister(roomB, "s3").block(VERIFY_CEILING);
         assertThat(gauge(ChatSessionGaugeConfig.ROOMS_GAUGE)).isEqualTo(1);
+    }
+
+    /**
+     * GC 가 weak 참조를 실제로 정리하는 지점까지 밀어 둔다 — 정리되지 않았으면 아래 단언은 아무것도
+     * 보장하지 않으므로, 조용히 통과시키지 않고 그 사실로 실패한다.
+     */
+    private static void forceWeakReferenceClearing() {
+        Object sentinel = new Object();
+        WeakReference<Object> probe = new WeakReference<>(sentinel);
+        sentinel = null;
+        for (int attempt = 0; attempt < 50 && probe.get() != null; attempt++) {
+            System.gc();
+        }
+        assertThat(probe.get())
+                .as("GC 가 weak 참조를 정리하지 않았다 — 이 테스트는 아무것도 보장하지 못한다")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("⭐ GC 뒤에도 값이 남는다 — 게이지 대상을 빈 아닌 것으로 바꾸면 조용히 NaN 이 된다")
+    void theGaugeTargetOutlivesGarbageCollection() {
+        // Micrometer 게이지는 대상을 weak 로 들고, 끊기면 값이 NaN 이 된다. 운영에서 안전한 이유는
+        // 넘기는 것이 싱글톤 빈이라 컨텍스트가 강하게 들고 있기 때문인데, 그 "이유" 가 지금까지
+        // 테스트로 고정돼 있지 않았다 — 위 테스트들은 레지스트리를 필드로 들고 있어서 어댑터나
+        // 임시 객체로 바뀌어도 같이 살아남는다. 그래서 여기서는 컨텍스트에만 들리게 두고 GC 를 민다.
+        new ApplicationContextRunner()
+                .withBean(ChatSessionRepository.class, ChatSessionGaugeConfigTest::stubRepository)
+                .withBean(ChatPermissionPolicy.class)
+                .withBean(ChatMetrics.class, () -> ChatMetrics.NOOP)
+                .withBean(ChatSessionRegistry.class)
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withUserConfiguration(ChatSessionGaugeConfig.class)
+                .run(context -> {
+                    // 의도적으로 ChatSessionRegistry 를 여기서 들지 않는다 — 들면 이 테스트가
+                    // 막으려는 바로 그 강참조를 테스트가 다시 만든다.
+                    MeterRegistry contextMeters = context.getBean(MeterRegistry.class);
+                    forceWeakReferenceClearing();
+
+                    assertThat(contextMeters.get(ChatSessionGaugeConfig.SESSIONS_GAUGE).gauge().value())
+                            .as("게이지가 NaN 이다 — 대상이 컨텍스트에 들리지 않는 객체로 바뀌었다")
+                            .isNotNaN();
+                    assertThat(contextMeters.get(ChatSessionGaugeConfig.ROOMS_GAUGE).gauge().value())
+                            .isNotNaN();
+                });
+    }
+
+    private static ChatSessionRepository stubRepository() {
+        ChatSessionRepository repository = mock(ChatSessionRepository.class);
+        lenient().when(repository.add(any(), any(), any())).thenReturn(Mono.empty());
+        lenient().when(repository.remove(any(), any())).thenReturn(Mono.empty());
+        lenient().when(repository.heartbeatInterval()).thenReturn(Duration.ofMinutes(10));
+        return repository;
     }
 
     @Test

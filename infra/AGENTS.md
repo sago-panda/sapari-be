@@ -325,6 +325,27 @@ that on.
   the reason spelled out in the live-app section. Note this app previously had **no health endpoint at all**,
   so a TCP socket check was the only probe available — and that check answered `Ready` while startup work was
   still blocked. A real readiness probe is now possible and the manifest should use one.
+  - **Size the `startupProbe` for 10 minutes of nothing, measured.** Boot index creation on
+    `chat_messages` runs in an **eager singleton** (`ChatMongoConfig`), which is **before the port
+    binds** — so for the whole of that window `httpGet` and `tcpSocket` both get **connection refused**,
+    not a false `Ready` (asserted by a raw TCP connect in
+    `EagerSingletonsRunBeforeThePortBindsTest`). The window's length is bounded by
+    **`ChatMongoConfig.INDEX_CREATE_CEILING` = 10 min** (SPR-152), and that is **one deadline over all
+    four index creations**, not per call — a fifth index does not add to it. Nothing in the driver bounds
+    it otherwise: `socketReadTimeoutMs` defaults to **0 (infinite)** and the repo sets no Mongo client
+    timeout anywhere (measured).
+    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min**. Under that and
+      Kubernetes kills the pod before the app's own ceiling fires — which throws away the one message
+      that tells the operator *which* of the two causes it was (Mongo silent vs. first build on a large
+      collection). `livenessProbe`/`readinessProbe` are not the lever here; a `startupProbe` is, because
+      it is the only one that suspends the other two.
+    - Two different deaths, two different waits: an **unreachable** Mongo address dies at
+      **30,053 ms** (measured — driver `serverSelectionTimeout` default, surfaced as
+      `DataAccessResourceFailureException`), not at the ceiling. The ceiling only covers the mode where
+      a server *was* selected and `createIndex` does not answer.
+    - Dying at the ceiling **re-fires the index build on every restart**, so it reads as
+      `CrashLoopBackOff` rather than one loud failure. If that is what you see, the fix is to build the
+      indexes out of band and redeploy — not to keep restarting.
 - **Deployment prerequisite**: the set of endpoints that are **actually exposed** must be exactly
   `{health, prometheus}` — without that the app refuses to start, by design (`health` missing means the k8s
   probes 404; `prometheus` missing means the metrics are silently empty).

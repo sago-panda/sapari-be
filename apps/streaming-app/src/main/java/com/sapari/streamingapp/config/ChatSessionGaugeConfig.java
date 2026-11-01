@@ -43,6 +43,14 @@ import io.micrometer.core.instrument.MeterRegistry;
  * 낮아서 인기 방송의 정상 시청자를 거부한다. 둘 다 "없는 것" 보다 나쁘다 — 후자는 장애를
  * <b>우리가 만든다</b>.
  *
+ * <p>⚠️ <b>다만 그 순서는 파드 용량 상한에만 적용된다.</b> 위 문단이 한때 "상한" 을 한 덩이로
+ * 적었는데 축이 둘이다 — <b>용량</b>(파드가 몇 세션을 버티나)은 전송 계층을 재야 나오지만,
+ * <b>유저당·방당 남용 상한</b>은 용량과 무관하다. 룸 토큰이 TTL 안에서 재사용 가능하므로 유효한
+ * 토큰 한 장으로 한 파드에 세션을 계속 열 수 있고, 그걸 막는 값은 "정상 사용자가 동시에 몇 개를
+ * 여는가"(탭·기기 수)에서 나와 부하 측정이 필요 없다. 이 게이지가 그 숫자를 대신 주지도 않는다 —
+ * 파드 합계라서 유저당 분포가 보이지 않는다. 즉 남용 상한은 이 순서를 기다릴 이유가 없고, 여기
+ * 미뤄 두지 않도록 축을 갈라 적는다.
+ *
  * <p>{@code ObjectProvider} 로 받는 이유는 {@code ChatMetricsConfig} 와 같다 —
  * {@code @ConditionalOnBean(MeterRegistry.class)} 은 사용자 {@code @Configuration} 이 자동 구성보다
  * 먼저 평가되는 탓에 registry 가 실제로는 있는데도 false 가 되는, 순서에 의존하는 함정이다. 그 실패는
@@ -67,8 +75,13 @@ public class ChatSessionGaugeConfig {
      * {@code WeakReference<T>} 를 들고 {@code value()} 가 {@code ref.get()} 이 {@code null} 이면
      * {@code NaN} 을 돌려준다). 여기서 안전한 이유는 넘기는 것이 {@code @Component} 싱글톤이라
      * 스프링이 강하게 들고 있기 때문이고 — <b>그 하나가 전부다</b>. 이 자리에서 어댑터나 임시 객체를
-     * 만들어 넘기는 변경이 들어오면 게이지가 <b>조용히 NaN</b> 이 되고, 테스트는 레지스트리를 필드로
-     * 강하게 들고 있어서 그 회귀를 잡지 못한다. 넘기는 것이 싱글톤인지를 변경 때 다시 볼 것.
+     * 만들어 넘기는 변경이 들어오면 게이지가 <b>조용히 NaN</b> 이 된다.
+     *
+     * <p>그 회귀는 이제 테스트가 잡는다 —
+     * {@code ChatSessionGaugeConfigTest.theGaugeTargetOutlivesGarbageCollection} 이 컨텍스트에만
+     * 들리게 둔 채 GC 를 밀고 값이 {@code NaN} 이 아닌지 본다. 다른 테스트들은 레지스트리를 필드로
+     * 강하게 들고 있어서 이 회귀를 못 잡는다 — 그래서 그 하나만 컨텍스트로 띄운다(되돌림 확인:
+     * 이 줄을 {@code Supplier} 어댑터로 바꾸면 그 테스트가 {@code actual: NaN} 으로 빨개진다).
      */
     @Bean
     public SessionGauges chatSessionGauges(

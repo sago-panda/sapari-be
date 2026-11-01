@@ -7,8 +7,10 @@ import static org.mockito.Mockito.mock;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -48,15 +50,30 @@ class ChatMongoIndexCeilingTest {
     /**
      * 인덱스 생성을 별 스레드에서 돌리고 <b>바깥에서</b> 기다린다 — 상한이 사라져도 이 테스트는
      * 멈추지 않고 사유와 함께 실패한다.
+     *
+     * <p>⚠️ <b>전용 데몬 executor 다 — {@code commonPool} 이 아니다.</b> 처음엔
+     * {@code CompletableFuture.supplyAsync} 로 commonPool 에 태우고 타임아웃에 {@code cancel(true)}
+     * 를 불렀는데, <b>{@code CompletableFuture.cancel} 은 워커를 인터럽트하지 않는다</b>(실측: 호출
+     * 뒤에도 {@code ForkJoinPool.commonPool-worker-1} 이 {@code WAITING}·{@code alive=true}).
+     * 되돌림 확인 한 회차마다 commonPool 워커 하나가 {@code Mono.never().block()} 에 영구히 남고,
+     * 같은 JVM 의 뒤 테스트가 commonPool 을 쓰면 그 오염을 물려받는다.
+     *
+     * <p>{@code shutdownNow()} 는 실제로 푼다(실측: Reactor 가
+     * {@code Exceptions$ReactiveException: InterruptedException} 을 던지고 executor 가
+     * {@code terminated}). 그래서 통과 경로든 실패 경로든 {@code finally} 에서 한 번 부른다.
      */
     private static Throwable failureOf(ReactiveMongoTemplate template, Duration ceiling) {
-        CompletableFuture<List<String>> call = CompletableFuture.supplyAsync(
-                () -> ChatMongoConfig.createChatMessagesIndexes(template, ceiling));
+        ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "index-ceiling-probe");
+            thread.setDaemon(true);
+            return thread;
+        });
         try {
+            Future<List<String>> call = worker.submit(
+                    () -> ChatMongoConfig.createChatMessagesIndexes(template, ceiling));
             List<String> created = call.get(5, TimeUnit.SECONDS);
             throw new AssertionError("상한에 걸리지 않고 끝났다 — 생성됨=" + created);
         } catch (TimeoutException e) {
-            call.cancel(true);
             throw new AssertionError(
                     "상한이 걸리지 않았다 — 5초 안에 끝나지 않았다. block(Duration) 이 아니라 "
                             + "block() 으로 돌아간 것이다(그러면 운영에서 파드가 조용히 멈춘다).", e);
@@ -65,6 +82,8 @@ class ChatMongoIndexCeilingTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AssertionError("기다리는 중 인터럽트됐다", e);
+        } finally {
+            worker.shutdownNow();
         }
     }
 
@@ -85,11 +104,15 @@ class ChatMongoIndexCeilingTest {
     }
 
     @Test
-    @DisplayName("⭐ 상한은 네 인덱스 <b>전체</b>에 걸린다 — 건당이면 최악이 건수에 비례한다")
+    @DisplayName("⭐ 상한은 네 인덱스 전체에 걸린다 — 건당이면 최악이 건수에 비례한다")
     void theCeilingBoundsTheWholeMethodNotEachCall() {
         // 네 호출이 각각 상한 바로 아래로 끝나면 아무것도 던지지 않고 누적된다 — 그게 건당 상한의
         // 함정이다(실측: 상한 400ms × 4건, 각 300ms → 총 1,279ms, 던짐 0). 데드라인을 한 번 잡으면
         // 총 경과가 상한에 묶인다.
+        //
+        // ⚠️ 건당으로 되돌렸을 때 실제로 잡는 자리는 아래 경과 단언이 아니라 failureOf 의
+        // "안 던졌다" 가드다 — 넷 다 상한 아래라 정상 반환하므로 경과 단언에는 도달하지 않는다.
+        // 경과 단언이 막는 것은 다른 변형이다: 던지기는 하는데 데드라인이 공유되지 않아 늦게 던지는 꼴.
         ReactiveIndexOperations ops = mock(ReactiveIndexOperations.class);
         given(ops.createIndex(any()))
                 .willReturn(Mono.delay(Duration.ofMillis(300)).thenReturn("slow"));

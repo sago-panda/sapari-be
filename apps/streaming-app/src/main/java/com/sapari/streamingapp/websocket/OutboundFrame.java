@@ -61,7 +61,7 @@ import com.sapari.chat.application.protocol.OutboundMessage;
  * 간섭하지 않고, 한 세션의 버퍼를 해제해도 배열은 건드려지지 않는다({@code freeArray} 가 no-op).
  * 그래서 끊긴 세션이 다른 세션의 payload 를 망가뜨리는 경로가 없다.
  */
-public final class OutboundFrame {
+final class OutboundFrame {
 
     private final OutboundMessage message;
 
@@ -73,18 +73,29 @@ public final class OutboundFrame {
     }
 
     /** 이 프레임이 나르는 메시지 — 기존 호출부·테스트가 보는 모양이다. */
-    public OutboundMessage message() {
+    OutboundMessage message() {
         return message;
     }
 
     /**
      * 와이어 바이트. 이 프레임을 공유하는 세션들 중 처음 부른 쪽이 만든다.
      *
+     * <p><b>package-private 이다.</b> 한때 {@code public} 으로 올렸는데, 그 근거("다른 패키지의
+     * 테스트가 {@code outboundFrames} 를 스텁하므로 반환 타입이 보여야 한다")가 <b>틀렸다</b> —
+     * 접근성 규칙은 소스에 <b>이름으로 쓴</b> 타입에 걸리고, 그 테스트는 이 타입을 이름으로 쓰지 않고
+     * 추론으로만 받는다(실측: 셋을 다 package-private 으로 되돌려도 {@code compileTestJava} 통과).
+     *
+     * <p>좁혀 두는 것이 중요한 이유는 아래 계약이다. {@code utf8()} 이 돌려주는 배열은 <b>한 팬아웃
+     * 전원이 감싸고 있는 같은 배열</b>이고 특권 뷰(원문·{@code senderEmail})를 담을 수 있는데, 그
+     * 읽기 전용 계약을 지키는 것이 javadoc 한 줄뿐이다. 노출면이 한 패키지면 그 한 줄로 되지만,
+     * {@code public} 이면 streaming-app 전체(+ {@code architecture-test} 의 test 의존)로 넓어진다.
+     * 위반 결과가 성능 회귀가 아니라 <b>방 전체 PII 노출</b>이라, 공짜로 닫히는 노출면은 닫는다.
+     *
      * <p>⚠️ <b>돌려주는 배열은 공유물이다 — 고치지 말 것.</b> 같은 팬아웃의 다른 세션들이 같은
      * 배열을 감싸고 있어서, 한 곳에서 쓰면 그 방 전원의 payload 가 바뀐다. 읽기 전용으로만 쓴다
      * (버퍼로 감싸는 것은 읽기다 — 위 javadoc 의 근거 참조).
      */
-    public byte[] utf8(Function<OutboundMessage, String> serializer) {
+    byte[] utf8(Function<OutboundMessage, String> serializer) {
         byte[] cached = utf8;
         if (cached == null) {
             cached = serializer.apply(message).getBytes(StandardCharsets.UTF_8);

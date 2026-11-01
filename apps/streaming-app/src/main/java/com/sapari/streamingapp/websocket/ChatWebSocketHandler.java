@@ -193,7 +193,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         UUID roomId = chatSession.roomId();
         acquireRoom(roomId);
 
-        // Flux.defer: outbound()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
+        // Flux.defer: outboundFrames()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
         // 아웃바운드에 ping 을 합류시킨다. 별도 send 로 두면 같은 소켓에 두 publisher 가 붙어 프레임
         // 순서 보장이 사라진다 — Reactor Netty 의 send 는 한 publisher 안에서만 직렬화한다.
         //
@@ -219,7 +219,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // (FAIL_TERMINATED)와 동시 발화(FAIL_NON_SERIALIZED)뿐인데, 레지스트리가 closeStatus CAS 로
         // 발화를 1회·1스레드로 고정하고 호출지가 한 곳이라 둘 다 생기지 않는다.
         //
-        // 성립하는 근거는 다른 것이다: {@code registry.outbound(sid)} 가 {@code Flux.empty()} 를
+        // 성립하는 근거는 다른 것이다: {@code registry.outboundFrames(sid)} 가 {@code Flux.empty()} 를
         // 돌려주는 경우 — 구독 시점에 그 세션이 이미 사라졌을 때다. 데이터 쪽에 묶으면 그 빈 스트림이
         // 곧 {@code doFinally} 를 돌려 {@code takeUntilOther} 가 ping 을 완료시키고 merge 가 끝나
         // 세션이 닫힌다. 제어 채널에 묶으면 {@code terminationSignal} 이 모르는 세션에

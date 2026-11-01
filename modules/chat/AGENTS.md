@@ -691,8 +691,9 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     those four numbers landed on 201 by different routes — **the counts matching is not evidence that the
     same thing was counted.**
   - **Production has 4 of its own, and they are a different kind of bounded** — do not read them as part
-    of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
-    throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
+    of the rule above. The test ceilings buy "the suite goes red and reports"; these four buy "the pod
+    dies instead of serving". `ChatMongoConfig`'s startup index creation blocks, and against a closed
+    address it throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
     cost is a stall bounded by **`ChatMongoConfig.INDEX_CREATE_CEILING`** (SPR-152; 10 min, and it is a
     deadline over **all four** index creations, not per call). Measured driver defaults
@@ -706,14 +707,14 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
       *number* without measuring **what bounds it**; the fourth measured what bounds it but not the
       **unit** — per call or per method. Measured: ceiling 400ms × 4 calls at 300ms each → total
       **1,279 ms**, **0 throws** — a per-call ceiling does not bound the method, it scales with the count.
-      That number is read as startupProbe sizing, so the unit is the load-bearing part.
+      That number is read as startupProbe sizing, so the unit is the load-bearing part — and the
+      sizing itself now lives where an operator would look for it (`infra/AGENTS.md`, streaming-app
+      Probes), with the window's "nothing is listening" half beside it.
     - Earlier versions of this bullet also said *"Want a bound? Set `timeoutMs`"* and *"a
       `VERIFY_CEILING`-style value is not the lever here — the probe configuration is (`infra/`), so this
       is recorded, not changed."* SPR-152 pulled exactly that lever, at the call site rather than through
       `timeoutMs` (a global `timeoutMs` would bound runtime queries too, and getting that value wrong
-      breaks serving rather than boot). `ChatMongoIndexCeilingTest` pins both the bound and its unit. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
-    serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
-    (`infra/`), so this is recorded, not changed.
+      breaks serving rather than boot). `ChatMongoIndexCeilingTest` pins both the bound and its unit.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
     forever when the main thread throws before `countDown()`. The reason is **not** that a non-daemon
     thread holds the worker JVM open: it does not (a thread sleeping 10 minutes still lets the Gradle test
