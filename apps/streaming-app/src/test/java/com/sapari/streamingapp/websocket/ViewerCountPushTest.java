@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -190,5 +191,39 @@ class ViewerCountPushTest {
 
         // then
         assertThat(registry.trackedViewerCounts()).isZero();
+    }
+
+    @Test
+    @DisplayName("⭐ 시청자 수 갱신이 하트비트 타이머에 얹혀 있다 — 떼면 수가 다시 고정 스냅샷이 된다")
+    void theHeartbeatTimerAlsoPushesViewerCounts() {
+        // given: 위 테스트들은 pushViewerCounts() 를 직접 불러서 <b>계산</b>만 보고 있었다. 그래서
+        // startHeartbeat() 에서 그 호출 한 줄을 떼도 이 앱의 테스트가 전부 초록이었다(실측). 갱신이
+        // 아무 주기에도 얹히지 않으면 ROOM_INFO 는 입장 시 1회로 돌아가고, 화면의 시청자 수는 다시
+        // 고정 스냅샷이 된다 — 계산은 정확한데 아무에게도 도달하지 않는 모양이다.
+        //
+        // 주기를 짧게 줘서 두 회차를 기다린다. 첫 회차가 기준선 1 을 잡고(변화 없음 → 안 보냄),
+        // 두 번째가 7 을 본다. 세 번째 이후는 다시 7 이라 변화가 없어 프레임이 하나로 끝난다.
+        given(sessionRepository.heartbeatInterval()).willReturn(Duration.ofMillis(30));
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(1L), Mono.just(7L));
+        register("s1", buyerId, false);
+        // 타이머 스레드가 쓰고 이 스레드가 읽으므로 ArrayList 로는 가시성 보장이 없다
+        List<OutboundMessage> frames = new CopyOnWriteArrayList<>();
+        registry.outbound("s1").subscribe(frames::add);
+
+        // when
+        registry.startHeartbeat();
+        try {
+            long deadline = System.nanoTime() + VERIFY_CEILING.toNanos();
+            while (frames.isEmpty() && System.nanoTime() - deadline < 0) {
+                Thread.onSpinWait();
+            }
+        } finally {
+            // 타이머를 끄지 않으면 이 테스트가 끝난 뒤에도 돌아 다음 테스트의 목을 건드린다
+            registry.stopHeartbeat();
+        }
+
+        // then
+        assertThat(frames).extracting(OutboundMessage::type).containsOnly("ROOM_INFO");
+        assertThat(frames).extracting(OutboundMessage::activeCount).containsExactly(7L);
     }
 }
