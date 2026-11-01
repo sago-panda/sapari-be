@@ -22,7 +22,16 @@ class StructuredLoggingDefaultsTest {
 
     private final StructuredLoggingDefaults processor = new StructuredLoggingDefaults();
 
-    /** 메인 클래스를 흉내 내기 위한 더미들 — 이름 유도만 쓴다. */
+    /**
+     * 메인 클래스를 흉내 내기 위한 더미들 — <b>유도 규칙</b>만 쓴다.
+     *
+     * <p>⚠️ 실제 앱 클래스가 아니다. 그래서 이 파일은 "규칙이 이름을 이렇게 만든다" 까지만 보고
+     * "<b>그 다섯 앱이 실제로 어떤 이름을 얻는가</b>" 는 보지 못한다 — 실제 클래스를 개명하면
+     * 유도값이 조용히 바뀌는데 여기는 더미를 보므로 그대로 초록이다.
+     *
+     * <p>그쪽은 {@code architecture-test} 의 {@code ServiceNameDerivationTest} 가 본다. 이 모듈은
+     * 앱을 의존할 수 없어서(방향이 반대다) 여기서는 불가능하다.
+     */
     static class StreamingAppApplication {
     }
 
@@ -78,7 +87,7 @@ class StructuredLoggingDefaultsTest {
     }
 
     @Test
-    @DisplayName("⭐ 앱 이름이 소스 클래스에서 유도된다 — 다섯 앱 로그가 섞여도 service.name 으로 갈린다")
+    @DisplayName("⭐ 앱 이름이 소스 클래스에서 유도된다 — 규칙만 본다(실제 다섯 앱은 ServiceNameDerivationTest)")
     void theServiceNameIsDerivedFromTheSourceClass() {
         assertThat(process(StreamingAppApplication.class).getProperty("spring.application.name"))
                 .isEqualTo("streaming-app");
