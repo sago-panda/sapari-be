@@ -217,6 +217,45 @@ class ChatSessionGaugeConfigTest {
         return repository;
     }
 
+    /**
+     * 거둔 자리 카운터가 <b>값을 따라오는지</b>.
+     *
+     * <p>집합 단언({@link #theRegisteredMeterSetIsPinned})은 "안 만든 미터" 를 잡고 <b>엉뚱하게
+     * 배선된 미터" 는 못 잡는다 — 접근자를 형제 것으로 바꿔도 이름은 그대로라 집합이 같다. 실측:
+     * 그렇게 바꾸면 두 클래스 15건이 전부 초록이었다.
+     *
+     * <p>하필 이 둘은 당직자가 <b>짝으로</b> 읽도록 저장소 문서가 지시하는 쌍이다. 짝의 한쪽이
+     * 형제 값을 보고하면 "거부는 오르는데 수거는 평평" 이라는 공격 서명이 그대로 만들어진다.
+     */
+    @Test
+    @DisplayName("⭐ 거둔 자리 카운터가 값을 따라온다 — 엉뚱하게 배선돼도 집합 단언은 초록이다")
+    void theReapedCounterFollowsTheRegistry() {
+        UUID room = UUID.randomUUID();
+        UUID user = UUID.randomUUID();
+        int admitted = 0;
+        for (int i = 0; i < 50; i++) {
+            try {
+                registry.register("r" + i, new ChatSession(
+                        room, user, ChatRole.BUYER, "닉", "e@example.com", false)).block(VERIFY_CEILING);
+                admitted++;
+            } catch (EntryDeniedException denied) {
+                break;   // 상한에 닿았다 — 이제 전부 죽은 것으로 만든다
+            }
+        }
+        assertThat(admitted).as("상한에 닿지 않아 거둘 자리를 만들 수 없다").isPositive();
+        // 기한 ZERO 를 넘긴다 — isUnresponsive 가 "now - last >= 기한" 이라 0 이면 전부 참이다.
+        // 생존 시계를 미는 진입점(expireLiveness)은 websocket 패키지 전용이고, 그걸 이 테스트
+        // 때문에 넓히지 않는다. 여기서 재는 것은 수거의 판정이 아니라 카운터의 배선이다.
+        int reaped = registry.reapUnresponsiveIfFull(user, room, Duration.ZERO);
+        assertThat(reaped).isEqualTo(admitted);
+
+        assertThat(meters.get(ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER).functionCounter().count())
+                .as("거둔 수가 아닌 값을 보고한다 — 짝으로 읽는 당직 판독이 통째로 틀린다")
+                .isEqualTo(reaped);
+        assertThat(meters.get(ChatSessionGaugeConfig.ADMISSION_CAPPED_COUNTER).functionCounter().count())
+                .as("거부 카운터가 거둔 수에 끌려갔다").isEqualTo(1);
+    }
+
     @Test
     @DisplayName("⭐ 등록한 미터 집합을 고정한다 — 이름으로 찾는 단언은 '안 만든 미터' 를 못 잡는다")
     void theRegisteredMeterSetIsPinned() {

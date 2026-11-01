@@ -218,6 +218,17 @@ class SessionAdmissionCapTest {
                 .as("어긋난 roomId 로 퇴장하자 자리가 새어 영구히 찬 상태가 됐다")
                 .doesNotThrowAnyException();
         assertThat(registry.admissionCapped()).isZero();
+
+        // 자리만 보면 절반이다. 방 색인도 세션 자신의 방으로 걷어야 한다 — 안 그러면 죽은
+        // sessionId 가 남은 방 항목이 생기고, 그 항목이 존재하는 동안 시청자 수 밀어주기의
+        // 자가치유(항목 부재 검사)가 발동하지 않아 하트비트마다 유령 방에 Redis 왕복이 하나
+        // 영구히 붙는다. "순수 누수" 가 아니라 영구 비용이다.
+        registry.unregister(UUID.randomUUID(), "reconnected").block(VERIFY_CEILING);
+        for (int i = 1; i < CAP; i++) {
+            registry.unregister(UUID.randomUUID(), "s" + i).block(VERIFY_CEILING);
+        }
+        assertThat(registry.trackedRoomCount())
+                .as("어긋난 roomId 로 퇴장하자 방 색인에 유령 항목이 남았다").isZero();
     }
 
     @Test

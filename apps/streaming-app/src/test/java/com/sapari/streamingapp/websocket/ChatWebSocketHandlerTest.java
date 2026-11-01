@@ -98,6 +98,70 @@ class ChatWebSocketHandlerTest {
     }
 
     /**
+     * ⭐ 조립 중 동기 예외가 나도 방 구독 refcount 가 남지 않는다.
+     *
+     * <p>{@code acquireRoom} 은 조립 첫 줄이고 해제는 {@code doFinally} 의 {@code cleanup} 이 한다.
+     * 그 둘 사이에서 동기 예외가 나면 <b>doFinally 가 붙은 Mono 가 애초에 반환되지 않아</b> 방
+     * 구독이 영구히 남는다 — 그 방에 아무도 없는데 이 파드가 계속 그 방의 모든 메시지를 받는다.
+     *
+     * <p>{@code Mono.defer} 로 감싸는 것만으로는 안 닫힌다(실측: 그 모양도 {@code cleanup=0}). 닫히는
+     * 것은 {@code doFinally} 가 defer <b>밖</b>에 있을 때뿐이다. 이 테스트가 그 배치를 고정한다 —
+     * 안으로 옮기면 빨개진다.
+     */
+    @Test
+    @DisplayName("⭐ 조립 중 던져도 방 구독이 남지 않는다 — 남으면 빈 방을 영구히 중계한다")
+    void a_synchronous_throw_during_assembly_releases_the_room() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        // 조립 중 동기 예외 — register 의 즉시 실행 구간이 던지는 모양이다.
+        given(registry.register(eq("s1"), any()))
+                .willThrow(new IllegalStateException("프로브: 조립 중 던진다"));
+        // 뒷정리가 정상으로 돌게 둔다 — 이 테스트가 재는 것은 doFinally 의 <b>배치</b>다.
+        // (뒷정리 자신이 던지는 경우는 아래 테스트가 따로 본다.)
+        given(registry.unregister(roomId, "s1")).willReturn(Mono.empty());
+        // 방 구독 목이 Disposable 을 돌려줘야 한다 — null 이면 releaseRoom 안에서 dispose() 가 NPE 를
+        // 내고 항목이 남아, 이 테스트가 재려는 것과 무관한 이유로 빨개진다.
+        given(subscriber.subscribeRoom(roomId)).willReturn(() -> { });
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(handler.runSession(session, chatSession))
+                .expectErrorSatisfies(error -> assertThat(error).isInstanceOf(IllegalStateException.class))
+                .verify(VERIFY_CEILING);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("조립 중 던졌는데 방 구독이 남았다 — 빈 방을 영구히 중계한다").isFalse();
+    }
+
+    @Test
+    @DisplayName("⭐ 뒷정리가 던져도 방 구독은 해제된다 — 마지막 보상이 자기 안에서 순서에 기대면 안 된다")
+    void a_throwing_cleanup_still_releases_the_room() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any()))
+                .willThrow(new IllegalStateException("프로브: 조립 중 던진다"));
+        // 뒷정리의 첫 줄이 던진다. 그 뒤 방 구독 해제가 건너뛰어지면 refcount 가 영구히 남는다.
+        given(registry.unregister(roomId, "s1"))
+                .willThrow(new IllegalStateException("프로브: 뒷정리가 던진다"));
+        // 방 구독 목이 Disposable 을 돌려줘야 한다 — null 이면 releaseRoom 안에서 dispose() 가 NPE 를
+        // 내고 항목이 남아, 이 테스트가 재려는 것과 무관한 이유로 빨개진다.
+        given(subscriber.subscribeRoom(roomId)).willReturn(() -> { });
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(handler.runSession(session, chatSession))
+                .expectError(IllegalStateException.class)
+                .verify(VERIFY_CEILING);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("뒷정리가 던지자 방 구독이 남았다 — 해제가 finally 에 없다").isFalse();
+    }
+
+    /**
      * ⭐ 죽은 자리 수거가 <b>배선돼 있는지</b> — 등록보다 먼저, 핸들러의 기한으로 불리는지.
      *
      * <p>수거 자체는 {@code SessionAdmissionCapTest} 가 네 건으로 고정한다. 그런데 그 보장은

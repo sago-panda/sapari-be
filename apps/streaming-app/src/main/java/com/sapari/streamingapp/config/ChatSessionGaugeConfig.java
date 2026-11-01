@@ -94,7 +94,9 @@ public class ChatSessionGaugeConfig {
      * {@code chat.session.cut{liveness}} 로는 안 된다 — 태그가 사유 하나라 "상한이 죽은 자리를
      * 비웠다" 와 "생존 루프가 거뒀다" 가 구분되지 않는다.
      *
-     * <p>⚠️ 한때 이 미터를 <b>등록하지 않은 채</b> 저장소 문서 세 곳이 그 짝을 보라고 적었다.
+     * <p>⚠️ 한때 이 미터를 <b>등록하지 않은 채</b> 문서가 그 짝을 보라고 적었다 — {@code .md} 두 곳
+     * ({@code infra/AGENTS.md}·{@code modules/chat/AGENTS.md})이고, "세 곳" 으로 셋 적이 있는데 그
+     * 셋째는 {@code slotsReaped()} <b>자신의 javadoc</b> 이었다(자기를 센 것이다).
      * 짝의 한쪽이 없으면 그 판독이 원리적으로 불가능하고, 영구히 빈 패널이 하필 "공격" 서명으로
      * 읽힌다 — 없는 지표를 문서가 약속하는 쪽이 지표가 아예 없는 것보다 나쁘다.
      */

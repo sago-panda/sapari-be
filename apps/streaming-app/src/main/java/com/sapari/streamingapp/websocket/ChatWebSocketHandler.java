@@ -191,162 +191,176 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     Mono<Void> runSession(WebSocketSession session, ChatSession chatSession) {
         String sid = session.getId();
         UUID roomId = chatSession.roomId();
-        acquireRoom(roomId);
+        // ⚠️ <b>defer 안에 두고 doFinally 를 그 밖에 붙인다.</b> 한때 acquireRoom 과 조립이
+        // 메서드 본문에서 바로 돌았는데, 그러면 조립 중 동기 예외가 나면 doFinally 가 붙은 Mono 가
+        // 애초에 반환되지 않아 <b>방 구독 refcount 가 영구히 남는다</b>(실측: acquired=1 cleanup=0).
+        //
+        // defer 로만 감싸는 것으로는 부족하다 — 그 모양도 cleanup=0 이다(실측). 닫히는 것은
+        // doFinally 가 defer <b>밖</b>에 있을 때뿐이다(실측: Exception 에서 cleanup=1).
+        // Error 는 throwIfFatal 이 그대로 다시 던져 이 모양으로도 안 덮인다 — 그쪽 보상은
+        // 레지스트리의 register 안 try/finally 가 맡는다(자리·local·방 색인).
+        //
+        // 과다 해제 창이 생기지 않는지 재 봤다: 즉시 취소에서도 supplier/doFinally 가 1/1 이고,
+        // 미구독과 '상류가 먼저 에러' 는 둘 다 0/0 이다 — doFinally 가 supplier 보다 먼저 도는
+        // 창이 없으므로 acquireRoom 없이 releaseRoom 이 불리는 일은 없다.
+        return Mono.<Void>defer(() -> {
+            acquireRoom(roomId);
 
-        // Flux.defer: outboundFrames()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
-        // 아웃바운드에 ping 을 합류시킨다. 별도 send 로 두면 같은 소켓에 두 publisher 가 붙어 프레임
-        // 순서 보장이 사라진다 — Reactor Netty 의 send 는 한 publisher 안에서만 직렬화한다.
-        //
-        // ⚠️ <b>ping 은 데이터 채널이 닫힐 때 함께 멈춰야 한다.</b> {@code Flux.interval} 은 스스로
-        // 끝나지 않으므로 그대로 합류시키면 합쳐진 publisher 가 영원히 완료되지 않고, 그러면
-        // {@code session.send} 도 완료되지 않아 아래 {@code outbound.then(closeWithReason)} 가
-        // <b>도달 불가</b>가 된다. 그 결과 서버발 종료(강퇴·밴·방 종료·수명·생존)가 유예 경로로만
-        // 닫혀 27ms 가 3초가 된다(실측 — 리뷰어가 세 번, 내가 한 번).
-        //
-        // <b>버퍼 초과(1013)는 그 목록에 들지 않는다 — 수정 전에도 후에도 유예 경로다.</b> 1013 이
-        // 발생하는 조건이 "클라가 256 슬롯을 비우지 않는다"인데, 그것이 곧 데이터 스트림이 종료를
-        // 전달하지 못하는 조건이다. 큐가 비어야 unicast 가 onComplete 를 내고 그때서야 아래
-        // {@code doFinally} 가 돌기 때문이다. 즉 이 빠른 경로가 1013 에는 원리적으로 닿지 않는다
-        // (리뷰어가 동형 replica 로 실측 — 버퍼가 찬 상태에서 tryEmitComplete=OK 가 와도 merge 가
-        // 완료되지 않는다). 버스트로 한 번 넘쳤다가 따라잡는 클라라면 빠른 경로를 탈 수 있지만,
-        // 1013 이 존재하는 이유인 "읽기를 멈춘 클라"는 탈 수 없다.
-        //
-        // 제어 채널이 아니라 <b>데이터 스트림의 종료</b>에 묶는다.
-        //
-        // ⚠️ 한때 그 근거를 "제어 채널 발화가 실패하면 어느 분기도 이기지 못한다"로 적었는데
-        // <b>그 전제가 도달 불가다.</b> Sinks.one() 은 SinkOneSerialized 이고 첫 tryEmitValue 는
-        // 구독자가 없어도, 구독자가 취소한 뒤에도 OK 를 돌려준다(실측). 실패는 2회차
-        // (FAIL_TERMINATED)와 동시 발화(FAIL_NON_SERIALIZED)뿐인데, 레지스트리가 closeStatus CAS 로
-        // 발화를 1회·1스레드로 고정하고 호출지가 한 곳이라 둘 다 생기지 않는다.
-        //
-        // 성립하는 근거는 다른 것이다: {@code registry.outboundFrames(sid)} 가 {@code Flux.empty()} 를
-        // 돌려주는 경우 — 구독 시점에 그 세션이 이미 사라졌을 때다. 데이터 쪽에 묶으면 그 빈 스트림이
-        // 곧 {@code doFinally} 를 돌려 {@code takeUntilOther} 가 ping 을 완료시키고 merge 가 끝나
-        // 세션이 닫힌다. 제어 채널에 묶으면 {@code terminationSignal} 이 모르는 세션에
-        // {@code Mono.never()} 를 주므로 ping 이 영원히 돌고, 클라가 스스로 끊지 않으면 그 세션이 남는다.
-        Sinks.Empty<Void> dataChannelDone = Sinks.empty();
-        Flux<WebSocketMessage> data = Flux.defer(() -> registry.outboundFrames(sid))
-                .map(frame -> toWireMessage(session, frame))
-                .doFinally(signal -> dataChannelDone.tryEmitEmpty());
-        // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
-        // onBackpressureDrop: 요청이 없을 때 틱을 버린다. 안 버리면 prefetch 가 차는 순간 send 가
-        // OverflowException 으로 끝나는데, 그 에러는 핸들러의 어느 onErrorResume 에도 안 걸린다.
-        //
-        // 한때 그 조건을 "PONG 은 답하지만 데이터 프레임은 읽지 않는 클라"로 적었는데 <b>그런 클라는
-        // 없다</b> — PING·PONG 과 데이터가 같은 TCP 스트림이라 소켓을 비우지 않는 클라는 PING 도 못 본다.
-        // 실제 조건은 "아웃바운드 전달이 32 틱 동안 0" 이고, 32 는 merge inner 의 prefetch
-        // (Queues.XS_BUFFER_SIZE)다. 즉 영향 범위가 <b>ping 간격 × 32</b> 라 간격을 줄이면 그만큼 빨리
-        // 닿는다(기본값 30s 에서는 16분이라 생존 기한 90s 가 10배 먼저 발화한다).
-        Mono<Void> outbound = session.send(Flux.merge(data, pings(session, dataChannelDone.asMono())));
+            // Flux.defer: outboundFrames()를 구독 시점(=register 완료 후)에 평가 — 즉시 평가하면 아직 미등록이라 Flux.empty()가 됨
+            // 아웃바운드에 ping 을 합류시킨다. 별도 send 로 두면 같은 소켓에 두 publisher 가 붙어 프레임
+            // 순서 보장이 사라진다 — Reactor Netty 의 send 는 한 publisher 안에서만 직렬화한다.
+            //
+            // ⚠️ <b>ping 은 데이터 채널이 닫힐 때 함께 멈춰야 한다.</b> {@code Flux.interval} 은 스스로
+            // 끝나지 않으므로 그대로 합류시키면 합쳐진 publisher 가 영원히 완료되지 않고, 그러면
+            // {@code session.send} 도 완료되지 않아 아래 {@code outbound.then(closeWithReason)} 가
+            // <b>도달 불가</b>가 된다. 그 결과 서버발 종료(강퇴·밴·방 종료·수명·생존)가 유예 경로로만
+            // 닫혀 27ms 가 3초가 된다(실측 — 리뷰어가 세 번, 내가 한 번).
+            //
+            // <b>버퍼 초과(1013)는 그 목록에 들지 않는다 — 수정 전에도 후에도 유예 경로다.</b> 1013 이
+            // 발생하는 조건이 "클라가 256 슬롯을 비우지 않는다"인데, 그것이 곧 데이터 스트림이 종료를
+            // 전달하지 못하는 조건이다. 큐가 비어야 unicast 가 onComplete 를 내고 그때서야 아래
+            // {@code doFinally} 가 돌기 때문이다. 즉 이 빠른 경로가 1013 에는 원리적으로 닿지 않는다
+            // (리뷰어가 동형 replica 로 실측 — 버퍼가 찬 상태에서 tryEmitComplete=OK 가 와도 merge 가
+            // 완료되지 않는다). 버스트로 한 번 넘쳤다가 따라잡는 클라라면 빠른 경로를 탈 수 있지만,
+            // 1013 이 존재하는 이유인 "읽기를 멈춘 클라"는 탈 수 없다.
+            //
+            // 제어 채널이 아니라 <b>데이터 스트림의 종료</b>에 묶는다.
+            //
+            // ⚠️ 한때 그 근거를 "제어 채널 발화가 실패하면 어느 분기도 이기지 못한다"로 적었는데
+            // <b>그 전제가 도달 불가다.</b> Sinks.one() 은 SinkOneSerialized 이고 첫 tryEmitValue 는
+            // 구독자가 없어도, 구독자가 취소한 뒤에도 OK 를 돌려준다(실측). 실패는 2회차
+            // (FAIL_TERMINATED)와 동시 발화(FAIL_NON_SERIALIZED)뿐인데, 레지스트리가 closeStatus CAS 로
+            // 발화를 1회·1스레드로 고정하고 호출지가 한 곳이라 둘 다 생기지 않는다.
+            //
+            // 성립하는 근거는 다른 것이다: {@code registry.outboundFrames(sid)} 가 {@code Flux.empty()} 를
+            // 돌려주는 경우 — 구독 시점에 그 세션이 이미 사라졌을 때다. 데이터 쪽에 묶으면 그 빈 스트림이
+            // 곧 {@code doFinally} 를 돌려 {@code takeUntilOther} 가 ping 을 완료시키고 merge 가 끝나
+            // 세션이 닫힌다. 제어 채널에 묶으면 {@code terminationSignal} 이 모르는 세션에
+            // {@code Mono.never()} 를 주므로 ping 이 영원히 돌고, 클라가 스스로 끊지 않으면 그 세션이 남는다.
+            Sinks.Empty<Void> dataChannelDone = Sinks.empty();
+            Flux<WebSocketMessage> data = Flux.defer(() -> registry.outboundFrames(sid))
+                    .map(frame -> toWireMessage(session, frame))
+                    .doFinally(signal -> dataChannelDone.tryEmitEmpty());
+            // 보는 것만 하는 시청자가 대다수라 발화를 생존 신호로 쓸 수 없다. 서버가 먼저 묻는다.
+            // onBackpressureDrop: 요청이 없을 때 틱을 버린다. 안 버리면 prefetch 가 차는 순간 send 가
+            // OverflowException 으로 끝나는데, 그 에러는 핸들러의 어느 onErrorResume 에도 안 걸린다.
+            //
+            // 한때 그 조건을 "PONG 은 답하지만 데이터 프레임은 읽지 않는 클라"로 적었는데 <b>그런 클라는
+            // 없다</b> — PING·PONG 과 데이터가 같은 TCP 스트림이라 소켓을 비우지 않는 클라는 PING 도 못 본다.
+            // 실제 조건은 "아웃바운드 전달이 32 틱 동안 0" 이고, 32 는 merge inner 의 prefetch
+            // (Queues.XS_BUFFER_SIZE)다. 즉 영향 범위가 <b>ping 간격 × 32</b> 라 간격을 줄이면 그만큼 빨리
+            // 닿는다(기본값 30s 에서는 16분이라 생존 기한 90s 가 10배 먼저 발화한다).
+            Mono<Void> outbound = session.send(Flux.merge(data, pings(session, dataChannelDone.asMono())));
 
-        Mono<Void> inbound = runInbound(session.receive()
-                // 생존 시계는 필터 <b>앞에서</b> 민다 — 재려는 것이 "말을 하는가"가 아니라 "소켓이
-                // 살아 있는가"라서, 서버 ping 에 대한 pong 처럼 파싱 대상이 아닌 프레임도 세어야 한다.
-                // 여기서는 종류만 읽고 payload 는 건드리지 않는다. 필터에서 버려지는 프레임의 버퍼도
-                // reactor-netty 가 해제하므로(FluxReceive 가 onNext 직후 try/finally 로 release)
-                // 이 탭이 버퍼 수명에 영향을 주지 않는다 — 리뷰어가 원전으로 확인했다.
-                //
-                // <b>PONG 이 여기까지 올라온다는 것이 이 기능의 전제다</b>(실측). 올라오지 않는다면
-                // 생존 확인이 "소켓이 살아 있는가" 대신 "클라가 말을 하는가"를 재게 되어, 보는 것만
-                // 하는 시청자를 기한마다 전부 끊는다.
-                //
-                // ⚠️ 그 성질은 <b>Netty 기본값이 아니라 reactor-netty 의 것</b>이다. Netty 자신의
-                // {@code WebSocketProtocolHandler} 는 무인자 생성자가 {@code dropPongFrames = true} 를
-                // 넣어 <b>반대로</b> 동작한다. 성립하는 이유는 reactor-netty 가 그 핸들러를 쓰지 않고
-                // 직접 핸드셰이크하며, 그 인바운드 경로에 PING 분기만 있고 PONG 분기가 없어서
-                // PONG 이 일반 프레임 경로로 올라오기 때문이다({@code WebsocketServerSpec.handlePing()}
-                // 기본값 false = PING 자동 응답). 그 핸들러를 파이프라인에 끼우거나 서버를 바꾸면
-                // <b>이 기능이 조용히 죽는다.</b>
-                .doOnNext(message -> registry.recordInbound(sid))
-                // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
-                // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(들어오는 PING 은 reactor-netty 가 자동
-                // 응답하고 올려주지 않는다 — 위 문단의 귀속과 같다. PONG 은 올라오므로 위 탭이 센다).
-                .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
-                .map(WebSocketMessage::getPayloadAsText), sid, chatSession);
+            Mono<Void> inbound = runInbound(session.receive()
+                    // 생존 시계는 필터 <b>앞에서</b> 민다 — 재려는 것이 "말을 하는가"가 아니라 "소켓이
+                    // 살아 있는가"라서, 서버 ping 에 대한 pong 처럼 파싱 대상이 아닌 프레임도 세어야 한다.
+                    // 여기서는 종류만 읽고 payload 는 건드리지 않는다. 필터에서 버려지는 프레임의 버퍼도
+                    // reactor-netty 가 해제하므로(FluxReceive 가 onNext 직후 try/finally 로 release)
+                    // 이 탭이 버퍼 수명에 영향을 주지 않는다 — 리뷰어가 원전으로 확인했다.
+                    //
+                    // <b>PONG 이 여기까지 올라온다는 것이 이 기능의 전제다</b>(실측). 올라오지 않는다면
+                    // 생존 확인이 "소켓이 살아 있는가" 대신 "클라가 말을 하는가"를 재게 되어, 보는 것만
+                    // 하는 시청자를 기한마다 전부 끊는다.
+                    //
+                    // ⚠️ 그 성질은 <b>Netty 기본값이 아니라 reactor-netty 의 것</b>이다. Netty 자신의
+                    // {@code WebSocketProtocolHandler} 는 무인자 생성자가 {@code dropPongFrames = true} 를
+                    // 넣어 <b>반대로</b> 동작한다. 성립하는 이유는 reactor-netty 가 그 핸들러를 쓰지 않고
+                    // 직접 핸드셰이크하며, 그 인바운드 경로에 PING 분기만 있고 PONG 분기가 없어서
+                    // PONG 이 일반 프레임 경로로 올라오기 때문이다({@code WebsocketServerSpec.handlePing()}
+                    // 기본값 false = PING 자동 응답). 그 핸들러를 파이프라인에 끼우거나 서버를 바꾸면
+                    // <b>이 기능이 조용히 죽는다.</b>
+                    .doOnNext(message -> registry.recordInbound(sid))
+                    // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
+                    // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(들어오는 PING 은 reactor-netty 가 자동
+                    // 응답하고 올려주지 않는다 — 위 문단의 귀속과 같다. PONG 은 올라오므로 위 탭이 센다).
+                    .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
+                    .map(WebSocketMessage::getPayloadAsText), sid, chatSession);
 
-        // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
-        // 위한 것이라, 정상 클라가 남은 메시지를 다 받고 스스로 끝낼 시간을 준 뒤에야 발화한다.
-        Mono<Void> forcedClose = Mono.defer(() -> registry.terminationSignal(sid))
-                .delayElement(FORCED_CLOSE_GRACE)
-                .then();
+            // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
+            // 위한 것이라, 정상 클라가 남은 메시지를 다 받고 스스로 끝낼 시간을 준 뒤에야 발화한다.
+            Mono<Void> forcedClose = Mono.defer(() -> registry.terminationSignal(sid))
+                    .delayElement(FORCED_CLOSE_GRACE)
+                    .then();
 
-        // 종료 사유를 코드로 실어 닫는다 — complete 신호엔 코드를 못 싣기 때문에 따로 붙인다.
-        //
-        // firstWithSignal 바깥이 아니라 서버발 종료 브랜치 "안"에 둔다: 승자가 신호를 내보내기 전에
-        // 패자가 먼저 취소되는데, 그때 취소되는 session.receive()가 Reactor Netty에서 상태코드 없는
-        // close 프레임을 먼저 내보내고 "이미 닫음" 래치를 걸어버린다. 바깥에 두면 그 뒤에 실행돼
-        // 아무 효과가 없다(클라가 받는 코드는 1005).
-        // close 프레임도 결국 소켓 write라, 읽지 않는 클라에선 앞선 잔량 뒤에 줄 서서 완료되지 않을 수 있다.
-        // 그 상태로 두면 아래 firstWithSignal이 안 끝나 doFinally(cleanup)까지 막힌다 — 세션 명부·방 구독·
-        // Redis 항목이 통째로 남는다. 상한을 둬서 그 셋은 반드시 회수하되, 채널 자체는 남을 수 있다
-        // (CLOSE_FLUSH_TIMEOUT 주석 참고).
-        // cache(): 아래 firstWithSignal의 두 브랜치가 같은 Mono를 참조한다. 둘이 근소한 차로 진행하면
-        // 구독이 두 번 일어나 close도 두 번 시도된다. 실제로는 두 번째가 no-op이지만, 그건 netty가
-        // "이미 닫음" 래치를 거는 덕이라 우리 코드의 보장이 아니다. 여기서 한 번만 돌게 못 박는다.
-        Mono<Void> closeWithReason = closeWithReason(session, sid).cache();
+            // 종료 사유를 코드로 실어 닫는다 — complete 신호엔 코드를 못 싣기 때문에 따로 붙인다.
+            //
+            // firstWithSignal 바깥이 아니라 서버발 종료 브랜치 "안"에 둔다: 승자가 신호를 내보내기 전에
+            // 패자가 먼저 취소되는데, 그때 취소되는 session.receive()가 Reactor Netty에서 상태코드 없는
+            // close 프레임을 먼저 내보내고 "이미 닫음" 래치를 걸어버린다. 바깥에 두면 그 뒤에 실행돼
+            // 아무 효과가 없다(클라가 받는 코드는 1005).
+            // close 프레임도 결국 소켓 write라, 읽지 않는 클라에선 앞선 잔량 뒤에 줄 서서 완료되지 않을 수 있다.
+            // 그 상태로 두면 아래 firstWithSignal이 안 끝나 doFinally(cleanup)까지 막힌다 — 세션 명부·방 구독·
+            // Redis 항목이 통째로 남는다. 상한을 둬서 그 셋은 반드시 회수하되, 채널 자체는 남을 수 있다
+            // (CLOSE_FLUSH_TIMEOUT 주석 참고).
+            // cache(): 아래 firstWithSignal의 두 브랜치가 같은 Mono를 참조한다. 둘이 근소한 차로 진행하면
+            // 구독이 두 번 일어나 close도 두 번 시도된다. 실제로는 두 번째가 no-op이지만, 그건 netty가
+            // "이미 닫음" 래치를 거는 덕이라 우리 코드의 보장이 아니다. 여기서 한 번만 돌게 못 박는다.
+            Mono<Void> closeWithReason = closeWithReason(session, sid).cache();
 
-        // 수명 상한. 상한에 닿으면 종료를 <b>촉발만</b> 하고 이 분기는 끝나지 않는다(Mono.never) —
-        // 실제 닫기는 아래 셋이 이미 하는 일이고, 여기서 함께 완료되면 그 경로를 건너뛰어 버퍼에 남은
-        // 메시지가 버려진다. 촉발이 전달되지 않는 경우도 유계다: 제어 채널이 발화하므로 forcedClose가
-        // 유예 뒤에 받는다.
-        // 지터를 섞는다. Mono.delay 는 구독 시점 기준이라, 같이 들어온 세션들(방송 시작 직후가 그렇다)이
-        // 같은 순간에 같이 만료되고 같이 재접속한다. 재접속 1건이 live 의 입장(서명·검증·Redis 왕복)을
-        // 다시 타는데 그 엔드포인트에 레이트리밋이 없다 — 12,000 세션이 한 점에 몰리면 그 자체가 부하다.
-        // 상한을 늘리지 않고 아래로만 흩는다(상한이 통제 값이므로 넘기면 안 된다).
-        Mono<Void> lifetimeExpiry = Mono.delay(jittered(timeouts.maxLifetime()))
-                .doOnNext(ignored -> registry.terminateLifetimeExpired(sid))
-                .then(Mono.never());
+            // 수명 상한. 상한에 닿으면 종료를 <b>촉발만</b> 하고 이 분기는 끝나지 않는다(Mono.never) —
+            // 실제 닫기는 아래 셋이 이미 하는 일이고, 여기서 함께 완료되면 그 경로를 건너뛰어 버퍼에 남은
+            // 메시지가 버려진다. 촉발이 전달되지 않는 경우도 유계다: 제어 채널이 발화하므로 forcedClose가
+            // 유예 뒤에 받는다.
+            // 지터를 섞는다. Mono.delay 는 구독 시점 기준이라, 같이 들어온 세션들(방송 시작 직후가 그렇다)이
+            // 같은 순간에 같이 만료되고 같이 재접속한다. 재접속 1건이 live 의 입장(서명·검증·Redis 왕복)을
+            // 다시 타는데 그 엔드포인트에 레이트리밋이 없다 — 12,000 세션이 한 점에 몰리면 그 자체가 부하다.
+            // 상한을 늘리지 않고 아래로만 흩는다(상한이 통제 값이므로 넘기면 안 된다).
+            Mono<Void> lifetimeExpiry = Mono.delay(jittered(timeouts.maxLifetime()))
+                    .doOnNext(ignored -> registry.terminateLifetimeExpired(sid))
+                    .then(Mono.never());
 
-        // 생존 확인. 수명 상한과 달리 이쪽은 <b>죽은 소켓</b>을 거둔다 — 아무것도 보내지 않는 클라는
-        // 정상이지만(시청만 하는 경우) 아무것도 <i>올리지 않는</i> 클라는 끊긴 소켓과 구별되지 않는다.
-        // 끊긴 쪽을 거두지 않으면 그 세션의 sink·방 인덱스·Redis 명부가 수명 상한까지 남는다.
-        // 첫 점검은 기한이 아니라 <b>기한 + 간격</b>이다. 생존 시계가 등록 시각으로 초기화되므로
-        // (레지스트리의 register 참고), 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸 짧아진다 —
-        // 기본값에서 t=30s·60s 의 ping 이 둘 다 유실되면 t=90s 점검에서 last 가 아직 등록 시각이라
-        // 90 - 0 >= 90 이 되어 <b>멀쩡한 시청자가 끊긴다.</b> "기한 = 3 × 간격 = 2회 내성" 이
-        // 첫 창에서만 거짓이었다.
-        //
-        // ⚠️ 정상 구간의 그 2회 내성도 <b>넉넉하지는 않다.</b> PONG 이 두 번 연속 유실되면 점검
-        // 시점의 {@code now - last} 가 정확히 90s 이고 판정이 {@code >=} 라, 살아남는 이유는
-        // {@code last} 에 왕복시간이 더해져 있다는 것뿐이다. 즉 왕복 하나만큼의 마진이다 — 같은
-        // 파일의 "기한 >= 간격 × 2" 불변식이 "왕복 하나에 기대지 말라" 를 근거로 세워져 있으니,
-        // 내성을 더 벌리려면 기한을 간격의 3배보다 크게 잡는 것이 그 기준에 맞다. 이 수정이 고친
-        // 첫 창 쪽은 간격 하나(30s)를 더 받아 그 문제가 없다.
-        //
-        // 대가는 죽은 소켓 수거가 간격 하나만큼 늦어지는 것이다(기본값 90s → 120s).
-        Mono<Void> livenessWatch = Flux.interval(
-                        timeouts.livenessDeadline().plus(timeouts.pingInterval()), timeouts.pingInterval())
-                .filter(ignored -> registry.isUnresponsive(sid, timeouts.livenessDeadline()))
-                .next()
-                .doOnNext(ignored -> registry.terminateUnresponsive(sid))
-                .then(Mono.never());
+            // 생존 확인. 수명 상한과 달리 이쪽은 <b>죽은 소켓</b>을 거둔다 — 아무것도 보내지 않는 클라는
+            // 정상이지만(시청만 하는 경우) 아무것도 <i>올리지 않는</i> 클라는 끊긴 소켓과 구별되지 않는다.
+            // 끊긴 쪽을 거두지 않으면 그 세션의 sink·방 인덱스·Redis 명부가 수명 상한까지 남는다.
+            // 첫 점검은 기한이 아니라 <b>기한 + 간격</b>이다. 생존 시계가 등록 시각으로 초기화되므로
+            // (레지스트리의 register 참고), 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸 짧아진다 —
+            // 기본값에서 t=30s·60s 의 ping 이 둘 다 유실되면 t=90s 점검에서 last 가 아직 등록 시각이라
+            // 90 - 0 >= 90 이 되어 <b>멀쩡한 시청자가 끊긴다.</b> "기한 = 3 × 간격 = 2회 내성" 이
+            // 첫 창에서만 거짓이었다.
+            //
+            // ⚠️ 정상 구간의 그 2회 내성도 <b>넉넉하지는 않다.</b> PONG 이 두 번 연속 유실되면 점검
+            // 시점의 {@code now - last} 가 정확히 90s 이고 판정이 {@code >=} 라, 살아남는 이유는
+            // {@code last} 에 왕복시간이 더해져 있다는 것뿐이다. 즉 왕복 하나만큼의 마진이다 — 같은
+            // 파일의 "기한 >= 간격 × 2" 불변식이 "왕복 하나에 기대지 말라" 를 근거로 세워져 있으니,
+            // 내성을 더 벌리려면 기한을 간격의 3배보다 크게 잡는 것이 그 기준에 맞다. 이 수정이 고친
+            // 첫 창 쪽은 간격 하나(30s)를 더 받아 그 문제가 없다.
+            //
+            // 대가는 죽은 소켓 수거가 간격 하나만큼 늦어지는 것이다(기본값 90s → 120s).
+            Mono<Void> livenessWatch = Flux.interval(
+                            timeouts.livenessDeadline().plus(timeouts.pingInterval()), timeouts.pingInterval())
+                    .filter(ignored -> registry.isUnresponsive(sid, timeouts.livenessDeadline()))
+                    .next()
+                    .doOnNext(ignored -> registry.terminateUnresponsive(sid))
+                    .then(Mono.never());
 
-        // 등록 전에 <b>자리가 꽉 찼을 때만</b> 죽은 소켓을 거둔다. 상한이 세는 자리는 소켓이 조용히
-        // 끊겨도 생존 확인이 돌 때까지 남고(첫 점검 = 기한 + 간격 = 기본 약 2분) 그 사이 재접속이
-        // 죽은 자리 때문에 거부된다 — 모바일 핸드오버가 그 모양이다. 기한을 아는 쪽이 여기(timeouts)
-        // 이므로 판단은 여기서 걸고, 자리 회계는 레지스트리가 한다.
-        //
-        // 거부 뒤 재시도가 아니라 <b>등록 전</b>인 이유는 거부 카운터다 — 거부했다가 재시도로
-        // 성공하면 chat.sessions.admission_capped 가 집행이 아닌 것을 집행으로 센다.
-        //
-        // ⚠️ 기한에 <b>간격을 더해</b> 넘긴다 — 생존 루프가 쓰는 것과 같은 값이어야 한다. 그 루프는
-        // 같은 술어를 쓰면서 첫 평가를 기한 + 간격으로 늦추는데, 그 근거가 이 파일에 적혀 있다:
-        // 기한에 바로 점검하면 ping 두 번이 연속 유실된 t=기한 시점에 last 가 아직 등록 시각이라
-        // "멀쩡한 시청자가 끊긴다". reap 은 그 완충 없이 <b>임의 시점</b>에 같은 술어를 평가하므로,
-        // 기한만 넘기면 생존 루프의 격자에서는 살아남는 구간(기한~기한+간격)에 있던 세션을 죽인다 —
-        // 그리고 비워진 자리를 이 호출이 즉시 가져간다. 그러면 "죽은 자리만 거둔다" 가 그 구간에서
-        // 거짓이 되고, evict-oldest 를 기각한 근거("남의 살아 있는 세션을 끊지 않는다")도 같이
-        // 무너진다. 상한이 5라 창이 간격 하나만큼 길어지는 비용은 사실상 없다.
-        registry.reapUnresponsiveIfFull(chatSession.userId(), roomId,
-                timeouts.livenessDeadline().plus(timeouts.pingInterval()));
-        return registry.register(sid, chatSession)
-                .then(roomInfoFor(roomId, chatSession))
-                .flatMap(info -> registry.sendToSession(sid, info))
-                // firstWithSignal: 다섯 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
-                // (sink complete → outbound), 그 둘이 다 막혔을 때의 강제 종료, 그리고 수명 상한·생존 확인.
-                // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
-                .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
-                        forcedClose.then(closeWithReason), lifetimeExpiry, livenessWatch))
+            // 등록 전에 <b>자리가 꽉 찼을 때만</b> 죽은 소켓을 거둔다. 상한이 세는 자리는 소켓이 조용히
+            // 끊겨도 생존 확인이 돌 때까지 남고(첫 점검 = 기한 + 간격 = 기본 약 2분) 그 사이 재접속이
+            // 죽은 자리 때문에 거부된다 — 모바일 핸드오버가 그 모양이다. 기한을 아는 쪽이 여기(timeouts)
+            // 이므로 판단은 여기서 걸고, 자리 회계는 레지스트리가 한다.
+            //
+            // 거부 뒤 재시도가 아니라 <b>등록 전</b>인 이유는 거부 카운터다 — 거부했다가 재시도로
+            // 성공하면 chat.sessions.admission_capped 가 집행이 아닌 것을 집행으로 센다.
+            //
+            // ⚠️ 기한에 <b>간격을 더해</b> 넘긴다 — 생존 루프가 쓰는 것과 같은 값이어야 한다. 그 루프는
+            // 같은 술어를 쓰면서 첫 평가를 기한 + 간격으로 늦추는데, 그 근거가 이 파일에 적혀 있다:
+            // 기한에 바로 점검하면 ping 두 번이 연속 유실된 t=기한 시점에 last 가 아직 등록 시각이라
+            // "멀쩡한 시청자가 끊긴다". reap 은 그 완충 없이 <b>임의 시점</b>에 같은 술어를 평가하므로,
+            // 기한만 넘기면 생존 루프의 격자에서는 살아남는 구간(기한~기한+간격)에 있던 세션을 죽인다 —
+            // 그리고 비워진 자리를 이 호출이 즉시 가져간다. 그러면 "죽은 자리만 거둔다" 가 그 구간에서
+            // 거짓이 되고, evict-oldest 를 기각한 근거("남의 살아 있는 세션을 끊지 않는다")도 같이
+            // 무너진다. 상한이 5라 창이 간격 하나만큼 길어지는 비용은 사실상 없다.
+            registry.reapUnresponsiveIfFull(chatSession.userId(), roomId,
+                    timeouts.livenessDeadline().plus(timeouts.pingInterval()));
+            return registry.register(sid, chatSession)
+                    .then(roomInfoFor(roomId, chatSession))
+                    .flatMap(info -> registry.sendToSession(sid, info))
+                    // firstWithSignal: 다섯 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
+                    // (sink complete → outbound), 그 둘이 다 막혔을 때의 강제 종료, 그리고 수명 상한·생존 확인.
+                    // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
+                    .then(Mono.firstWithSignal(outbound.then(closeWithReason), inbound,
+                            forcedClose.then(closeWithReason), lifetimeExpiry, livenessWatch));
+        })
                 .doFinally(signal -> cleanup(roomId, sid));
     }
 
@@ -674,9 +688,21 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         return roomSubs.containsKey(roomId);
     }
 
+    /**
+     * 세션 하나의 뒷정리. <b>방 구독 해제를 {@code finally} 에 둔다.</b>
+     *
+     * <p>한때 두 줄을 그냥 나란히 뒀는데, 그러면 앞줄이 던지는 순간 뒤줄이 건너뛰어져 방 구독
+     * refcount 가 영구히 남는다 — 그 방에 아무도 없는데 이 파드가 계속 그 방의 모든 메시지를 받는다.
+     * 오늘 앞줄이 던질 경로는 없지만(레지스트리의 로컬 정리 + 지연 조립된 Redis 제거), 이 메서드는
+     * {@code doFinally} 안에서 도는 <b>마지막 보상</b>이라 자기 안에서 순서에 기대면 안 된다.
+     * 테스트가 그 모양을 실제로 밟았다(목 레지스트리가 던지는 회차에서 구독이 남았다).
+     */
     private void cleanup(UUID roomId, String sid) {
-        registry.unregister(roomId, sid).subscribe();
-        releaseRoom(roomId);
+        try {
+            registry.unregister(roomId, sid).subscribe();
+        } finally {
+            releaseRoom(roomId);
+        }
     }
 
     private Mono<Void> denyAndClose(WebSocketSession session, EntryDeniedException.Reason reason) {

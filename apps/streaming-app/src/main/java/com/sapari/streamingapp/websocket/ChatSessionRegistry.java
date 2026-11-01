@@ -437,9 +437,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *                  거부(현재)                        evict-oldest
      * 공격자 능력      그 (유저, 방) 입장을 결정론적 차단   피해자의 살아 있는 세션 1개를 끊음
      * 지속             51~60분 (세션 수명, 지터 −15%)      ≤90초 (재점유마다 유효 토큰이 필요)
-     * 피해자 수단      없음 — 자리가 빌 때까지 전부 1008    항상 — 재접속하면 최신 자리를 되찾음
+     * 피해자 수단      없음* — 자리가 빌 때까지 전부 1008   항상 — 재접속하면 최신 자리를 되찾음
      * </pre>
-     * (표의 "≤90초" 는 <b>불변식이 아니라 배포 설정값</b>이다 — 룸 토큰 만료가 설정이고 그 쪽
+     * (*"없음" 은 <b>공격자가 5 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
+     * 완주 전에는 피해자의 재접속도 흩어져 남은 파드에 붙는다. 핸드셰이크에 레이트리밋이 없어 토큰
+     * TTL 안에 완주가 가능하므로 표에는 완주 후 값을 적는다. LB 어피니티가 그걸 막는지는 <b>이
+     * 저장소에서 확인할 수 없다</b> — 매니페스트가 여기 없다. 표의 "≤90초" 는 <b>불변식이 아니라
+     * 배포 설정값</b>이다 — 룸 토큰 만료가 설정이고 그 쪽
      * 검증은 양수까지만 본다. 설정을 길게 잡으면 그 칸이 같이 늘어난다.)
      * 비대칭의 원인은 <b>토큰 TTL 이 evict 쪽만 묶는다</b>는 것이다 — 거부의 피해는 이미 성립한
      * 세션이 나르므로 토큰이 죽은 뒤에도 수명만큼 간다.
@@ -599,10 +603,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // (같은 키에 동시 실행이 없으므로 가시성 문제도 없다).
         //
         // ⚠️ 이 메서드는 {@code Mono.defer} 로 감싸여 있지 않다 — 자리 증가는 <b>조립 시점에 즉시</b>
-        // 일어나고, 감소는 호출자가 doFinally 를 붙인 뒤에만 보장된다. 그 사이에서 동기 예외가 나면
-        // 항목이 영구히 남아 그 유저가 그 방에 다시 못 들어온다. 오늘 그 구간은 Mono 조립뿐이라
-        // 도달 불가지만(호출부: ChatWebSocketHandler 의 register → then → doFinally), 그 구간에
-        // 즉시 실행되는 코드를 넣는 변경은 이 불변식을 깬다.
+        // 일어난다. 한때 여기 "그 구간은 Mono 조립뿐이라 도달 불가" 라고 적었는데 <b>두 문장이 다
+        // 틀렸다</b>: 그 구간에는 local.put 과 주입 협력자 호출(특권 뷰 감사)과 roomSessions.compute
+        // 가 있고, 이 파일의 테스트가 그 협력자를 던지게 해 실제로 그 구간을 밟는다. 그리고 "항목이
+        // 영구히 남는다" 도 이제 아래 try/finally 가 되돌린다 — 불변식이 "도달 불가" 에서 "집행" 으로
+        // 바뀐 것이 이 설계의 내용이다. 다음 사람이 "도달 불가" 를 읽고 그 가드를 걷으면 안 된다.
         //
         // local.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 local 에 들어가 있어
         // 게이지·팬아웃이 그 세션을 한 번 보고, cleanup 이 지우기 전까지 시청자 수가 틀린다.
@@ -621,7 +626,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 준다. 그러면 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다 — 이 파일이 스스로
         // "상한 코드가 만들 수 있는 최악의 결함" 이라 부른 그것이다.
         //
-        // ⚠️ 한때 이 try 가 <b>local.put 하나만</b> 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
+        // ⚠️ "실패하면 되돌린다" 의 대상은 <b>넷</b>이다 — 자리·local·방 항목·캐시 둘.
+        // 한때 이 try 가 <b>local.put 하나만</b> 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
         // (put 과 생성자들은 Error 외에 던질 경로가 없다) 정작 던질 수 있는 둘 — 주입 협력자를
         // 부르는 감사 블록과 roomSessions.compute — 이 가드 <b>밖</b>에 남았다. 그 상태가 더
         // 나빴다: 거기서 던지면 register 가 동기 예외로 빠지고, 호출부의
@@ -629,9 +635,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // <b>doFinally 가 애초에 조립되지 않는다</b> — 자리뿐 아니라 local 항목과 acquireRoom 의
         // 방 구독 refcount 까지 영구 누출이다.
         //
-        // 거부 분기도 이 안에 둔다. 그 경로의 finally 는 무해하다(sessionId 가 집합에 없으니
-        // remove 가 무연산이다) — 대신 자리 추가와 가드 사이에 <b>한 줄도 들어가지 않는다</b>.
-        // 인접성에 기대지 않는다는 것이 이 배치의 값이다.
+        // 거부 분기도 이 안에 둔다 — 자리 추가와 가드 사이에 <b>한 줄도 들어가지 않게</b> 하려는
+        // 것이고, 인접성에 기대지 않는다는 것이 이 배치의 값이다.
+        //
+        // 그 경로의 finally 가 무해한 근거는 "remove 가 무연산" 한 단계가 아니다 — finally 는 자리와
+        // local 과 방 항목과 캐시 둘을 되돌리고, 그중 <b>방 항목 삭제와 캐시 둘은 remove 의 무연산
+        // 여부와 무관하게 {@code sessionIds.isEmpty()} 하나로 갈린다.</b> 성립하는 근거는 더 센
+        // 불변식이다: <b>{@code roomSessions} 에 항목이 있으면 그 집합은 비어 있지 않다</b>(값 집합을
+        // 바꾸는 지점이 등록과 되돌리기 둘뿐이고 둘 다 같은 키의 compute 안이며, 비는 즉시 매핑을
+        // 걷는다). 그래서 "키는 있는데 집합이 빈" 상태가 구성 자체가 되지 않는다.
         boolean registered = false;
         try {
             if (!admitted[0]) {
@@ -721,7 +733,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 // 유계가 아니다). 실제로는 Lettuce 명령 타임아웃이 묶지만 그 값이 추적되는 설정에
                 // 없어 라이브러리 기본값에 기댄다. 능력 증가는 없고(구독 전이라 프레임도 받지
                 // 못한다) 자원 누수다 — 여기서 고칠 자리가 아니라 적어 둔다.
-                rollbackLocalRegistration(sessionId, session.roomId());
+                // 자리는 <b>인자에서 키를 만들어 무조건</b> 되돌린다 — local 조회로 키를 만들면
+                // 자리가 들어간 뒤 local.put 전에 던지는 구간에서 반납이 통째로 빠진다(실측).
+                // 그 구간이 이 가드가 존재하는 유일한 이유다. 멱등이라 두 번 불려도 무해하다.
+                releaseSlot(session.userId(), session.roomId(), sessionId);
+                rollbackLocalIndexes(sessionId, session.roomId());
             }
         }
     }
@@ -757,11 +773,24 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 상한 인덱스를 <b>local 을 지우기 전에</b> 걷는다 — 세션 레코드에서 userId 를 읽어야 키를
         // 만들 수 있다. 먼저 지우면 키를 못 만들어 항목이 남고, 그 유저는 그 방에 다시 들어올 수
         // 없게 된다(상한이 영구히 찬 상태로 고정된다). 상한 코드가 만들 수 있는 최악의 결함이다.
-        // 키를 인자 roomId 가 아니라 <b>세션 자신의 roomId</b> 로 만든다 — 등재가 session.roomId() 로
-        // 했으므로 그래야 같은 키다. 포트 계약({@code ChatSessionManager.unregister})에 둘이 같아야
-        // 한다는 보장이 없고, 어긋나는 호출이 들어오면 항목이 영구히 남아 그 유저가 그 방에 다시
-        // 못 들어온다.
-        rollbackLocalRegistration(sessionId, roomId);
+        // 자리도 방 색인도 <b>세션 자신의 roomId</b> 로 걷는다 — 등재를 session.roomId() 로 했으므로
+        // 그래야 같은 키다. 포트 계약({@code ChatSessionManager.unregister})에 인자와 세션의 방이
+        // 같아야 한다는 보장이 없고, 어긋나는 호출이 들어오면 둘이 다 영구히 남는다.
+        //
+        // 방 색인 쪽 손실이 "순수 누수" 보다 나쁘다 — 죽은 sessionId 가 남은 방 항목이 존재하는 동안
+        // pushViewerCount 의 자가치유(항목 부재 검사)가 발동하지 않아, 하트비트 회차마다 그 유령
+        // 방에 Redis 왕복이 하나 영구히 붙는다(게이지와 캐시 둘도 같이 부푼다).
+        //
+        // 세션이 local 에 없으면 인자를 쓴다. 그 경우 방 색인에도 넣은 것이 없으므로(등록 순서가
+        // local.put → roomSessions.compute 다) 어느 쪽을 써도 무연산이다 — 한때 "보상 경로에서
+        // leaving 이 null 일 수 있어 인자가 필요하다" 를 제약으로 적었는데, 그 순서를 보면 제약이
+        // 아니다.
+        LocalSession leaving = local.get(sessionId);
+        UUID indexRoom = leaving != null ? leaving.session().roomId() : roomId;
+        if (leaving != null) {
+            releaseSlot(leaving.session().userId(), leaving.session().roomId(), sessionId);
+        }
+        rollbackLocalIndexes(sessionId, indexRoom);
         // 로컬 정리는 끝났고, Redis 필드는 아래 HDEL이 지운다 — 그게 정상 회수 경로다.
         // 실패하면 방 종료의 clearRoom이, 그마저 놓치면 키 TTL이 받는다(3단 폴백).
         //
@@ -1393,23 +1422,24 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
-     * 로컬 등록을 전부 되돌린다 — 자리 · {@link #local} · 방 색인(과 그 수명을 따르는 캐시 둘).
+     * {@link #local} 과 방 색인(과 그 수명을 따르는 캐시 둘)을 되돌린다. <b>자리는 건드리지 않는다.</b>
      *
      * <p>퇴장과 <b>등록 실패 보상</b>이 같은 걷기를 쓰도록 한 곳에 둔다. 둘이 따로 있으면 한쪽만
      * 빠뜨리는 변경이 조용히 들어온다 — 실제로 그랬다: 보상이 자리만 되돌리던 동안 {@code local}
      * 항목이 남았고, 등록이 던지면 호출부의 {@code doFinally} 가 애초에 조립되지 않으므로 그 항목을
      * 걷을 사람이 없었다(테스트가 7건 누출로 잡았다).
      *
-     * <p>자리를 {@code local} 보다 먼저 걷는다 — 키를 만들려면 세션 레코드에서 userId 를 읽어야
-     * 하고, 먼저 지우면 키를 못 만들어 자리가 남는다.
+     * <p>⚠️ <b>자리를 여기 두지 않는 이유가 있다.</b> 한때 이 메서드가 자리까지 되돌렸고 그 키를
+     * {@code local.get(sessionId)} 으로 만들었다. 그러면 자리 반납이 "{@code local} 에 항목이 있을
+     * 때" 로 좁아지는데, <b>자리가 들어간 뒤 {@code local.put} 전에 던지는 구간</b>이 정확히 그
+     * 조건을 못 만족한다 — 그리고 그 구간이 보상이 존재하는 유일한 이유다. 실측: 그 자리에서 던지게
+     * 하면 자리 다섯이 새고 그 뒤 거부가 {@code TOO_MANY_SESSIONS} 로 바뀐다. 자리는 호출부가
+     * <b>인자에서 키를 만들어</b> 무조건 되돌린다.
      *
-     * @param roomId 방 색인에서 걷을 방. 자리 쪽은 <b>세션 자신의</b> 방을 쓴다.
+     * @param roomId 방 색인에서 걷을 방 — 세션이 {@code local} 에 있으면 <b>세션 자신의</b> 방이어야
+     *               한다(등재를 그 값으로 했으므로).
      */
-    private void rollbackLocalRegistration(String sessionId, UUID roomId) {
-        LocalSession leaving = local.get(sessionId);
-        if (leaving != null) {
-            releaseSlot(leaving.session().userId(), leaving.session().roomId(), sessionId);
-        }
+    private void rollbackLocalIndexes(String sessionId, UUID roomId) {
         local.remove(sessionId);
         // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
         roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
@@ -1426,8 +1456,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /**
      * (유저, 방) 자리 하나를 되돌린다. 빈 항목은 걷는다 — 남기면 그것이 누수원이다.
      *
-     * <p>{@code unregister} 와 등록 실패 보상이 같은 걷기를 쓰도록 한 곳에 둔다. 둘이 따로 있으면
-     * 한쪽만 "빈 항목 걷기" 를 빠뜨리는 변경이 조용히 들어온다.
+     * <p>호출부가 둘이다 — 퇴장({@code unregister})과 등록 실패 보상. 둘이 각자 걷으면 한쪽만
+     * "빈 항목 걷기" 를 빠뜨리는 변경이 조용히 들어온다. 다만 <b>키를 만드는 방식은 다르다</b>:
+     * 퇴장은 세션 레코드에서 읽고, 보상은 인자에서 만든다({@link #rollbackLocalIndexes} 참고).
      */
     private void releaseSlot(UUID userId, UUID roomId, String sessionId) {
         userRoomSessions.computeIfPresent(new UserInRoom(userId, roomId), (userInRoom, sessionIds) -> {
