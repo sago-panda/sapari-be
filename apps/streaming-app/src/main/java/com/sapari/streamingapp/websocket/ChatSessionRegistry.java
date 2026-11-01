@@ -1098,6 +1098,22 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
+     * 이 Pod 가 지금 들고 있는 세션 수.
+     *
+     * <p>{@code public} 인 이유는 게이지 배선이 쓰기 때문이다({@code ChatSessionGaugeConfig}).
+     * 이 수가 보이지 않으면 "파드 하나가 몇 세션까지 버티는가" 를 물을 수 없고, 그러면 연결 수
+     * 상한 같은 값을 <b>고를 근거가 없다</b> — 그래서 상한보다 이 게이지가 먼저다.
+     */
+    public int localSessionCount() {
+        return local.size();
+    }
+
+    /** 이 Pod 가 중계 중인 방 수 — 게이지용. 세션 수와 함께 봐야 "방당 세션" 이 나온다. */
+    public int localRoomCount() {
+        return roomSessions.size();
+    }
+
+    /**
      * 세션 Sink로 1건 밀어넣기. null 세션은 무시.
      *
      * <p>실패 종류에 따라 처분이 다르다. 버퍼가 찼다는 건 <b>그 클라가 못 따라온다</b>는 뜻이라 세션을 끊고,
