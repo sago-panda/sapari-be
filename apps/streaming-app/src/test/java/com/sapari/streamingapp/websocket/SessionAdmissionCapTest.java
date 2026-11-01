@@ -3,8 +3,11 @@ package com.sapari.streamingapp.websocket;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 
 import java.time.Duration;
 import java.util.UUID;
@@ -45,6 +48,7 @@ class SessionAdmissionCapTest {
 
     private static final int CAP = ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM;
 
+    private ChatSessionRepository sessionRepository;
     private ChatSessionRegistry registry;
 
     private final UUID roomId = UUID.randomUUID();
@@ -54,7 +58,7 @@ class SessionAdmissionCapTest {
 
     @BeforeEach
     void setUp() {
-        ChatSessionRepository sessionRepository = mock(ChatSessionRepository.class);
+        sessionRepository = mock(ChatSessionRepository.class);
         given(sessionRepository.add(any(), any(), any())).willReturn(Mono.empty());
         given(sessionRepository.remove(any(), any())).willReturn(Mono.empty());
         registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
@@ -92,6 +96,17 @@ class SessionAdmissionCapTest {
         assertThat(registry.admissionCapped())
                 .as("집행이 보이지 않으면 상한이 공격을 막는지 정상 시청자를 막는지 가를 수 없다")
                 .isEqualTo(1);
+
+        // 거부가 Redis 명부를 건드리지 않는지. 명부에 올라가면 시청자 수가 거부된 연결만큼 부풀고,
+        // 거부된 세션은 local 에 없어 unregister 의 정리를 건너뛰므로 그 과다계수가 TTL 까지 남는다.
+        then(sessionRepository).should(never()).add(eq(roomId), eq("overflow"), eq(userId));
+
+        // 방 인덱스(roomSessions)는 여기서 단언하지 않는다 — 단언할 수 있는 모양이 아니다.
+        // 상한 거부는 정의상 "그 방에 그 유저 세션이 상한만큼 있다" 는 뜻이라 방 항목이 이미 존재하고,
+        // trackedRoomCount 는 어느 쪽으로 구현해도 1 이다(그래서 그 수를 재는 단언은 통과만 하고
+        // 아무것도 잡지 못한다). 집합 <b>안</b>에 죽은 sessionId 가 남는 모양은 공개 표면으로 보이지
+        // 않는다 — 팬아웃이 local 조회로 그것을 건너뛰므로 동작으로도 드러나지 않는다(누수일 뿐이다).
+        // 지금 그 경로가 없는 근거는 코드다: 거부 분기가 roomSessions.compute 앞에서 돌아간다.
     }
 
     @Test
