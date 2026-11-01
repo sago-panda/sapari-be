@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.transaction.TransactionTimedOutException;
 
@@ -144,15 +145,46 @@ public class KickUserService implements KickUserUseCase {
      * 기록을 남기고, 잠금 대기가 상한을 넘으면 도메인 예외로 바꿔 던진다.
      *
      * <p>번역을 어댑터가 아니라 여기서 하는 이유: 이 타임아웃은 특정 저장소의 성질이 아니라 <b>트랜잭션의
-     * 성질</b>이다. 강퇴 로그 쓰기에서도 밴 쓰기에서도 같은 예외가 나오므로 어느 한 어댑터에 두면 다른
-     * 쪽이 새고, 양쪽에 두면 같은 판단이 두 벌이 된다. 경계를 여는 {@link ChatKickRecorder} 바로 바깥이
-     * 그 판단이 한 번만 서는 자리다.
+     * 성질</b>이다. 잠금 획득에서도, 강퇴 로그 쓰기에서도, 밴 쓰기에서도 같은 부류가 나오므로 어느 한
+     * 어댑터에 두면 다른 쪽이 새고, 양쪽에 두면 같은 판단이 두 벌이 된다. 경계를 여는
+     * {@link ChatKickRecorder} 바로 바깥이 그 판단이 한 번만 서는 자리다.
      *
-     * <p><b>상한 초과는 두 모양으로 나온다.</b> DB가 문을 취소하면 {@link QueryTimeoutException}이고,
+     * <p><b>잠금 쪽이 가장 흔한 출처다.</b> 밴 판단이 사용자 단위로 직렬화되므로 같은 사람을 겹쳐
+     * 강퇴하면 뒤에 온 쪽이 트랜잭션 상한보다 먼저 거기서 끊긴다.
+     *
+     * <p>이 경로의 잠금 실패는 <b>종류와 무관하게 {@code CannotAcquireLockException} 하나로 온다</b>
+     * (실측: 대기 상한 초과 {@code 55P03} · 교착 {@code 40P01} · 직렬화 실패 {@code 40001} 셋 모두).
+     * Spring Data JPA → Hibernate 경로에서 {@code LockAcquisitionException}이
+     * {@code PessimisticLockException}보다 먼저 검사되기 때문이다. 그래도 상위
+     * {@link PessimisticLockingFailureException}으로 묶는 이유는 <b>장래에 대한 하드닝</b>이다 —
+     * 맨몸 상위 타입은 {@code JdbcTemplate} 경로의 모양이고(이 모듈에는 0건) 엔티티 비관적 잠금을
+     * 들이면 그 모양이 생긴다. 하위 셋({@code CannotAcquireLockException} ·
+     * {@code CannotSerializeTransactionException} · {@code DeadlockLoserDataAccessException})이 전부
+     * 혼잡계라 넓혀도 뜻이 흐려지지 않는다.
+     *
+     * <p>⚠️ 한때 이 자리에 "교착은 맨몸 상위 타입으로 오므로 자식만 열거하면 500이 된다"고
+     * <b>실측이라 적혀 있었다. 거짓이다</b> — 그 매핑은 다른 번역기(JdbcTemplate 경로)의 것이고,
+     * 이 경로에서 도는 번역기를 보지 않은 채 받은 것이었다. 교착은 교체 전 좁은 catch 로도 이미
+     * 409였다. 덤으로 오늘 이 트랜잭션에서 교착은 도달 불가다 — 스키마에 외래키가 0건이라 잠길
+     * 자원이 어드바이저리 키와 유니크 인덱스 행뿐이고, 어드바이저리가 첫 문장이라
+     * {@link ChatKickRecorder}의 전순서 논증이 실제로 성립한다.
+     *
+     * <p>나머지 둘은 트랜잭션 상한 쪽이다. DB가 문을 취소하면 {@link QueryTimeoutException}이고,
      * 남은 수명이 이미 0 이하라 다음 문을 세우지도 못하면 {@link TransactionTimedOutException}이다
-     * (Spring의 {@code ResourceHolderSupport}가 문마다 데드라인을 검사한다). 둘의 공통 조상은
-     * {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다 — 실제로 그렇게
-     * 썼다가 잡혔다. 프로브가 앞쪽 갈래만 만들어 냈고 catch가 그 프로브 크기에 맞춰졌다.
+     * (Spring의 {@code ResourceHolderSupport}가 문마다 데드라인을 검사한다). 한쪽만 잡으면 나머지가
+     * 500으로 나간다 — 실제로 그렇게 썼다가 잡혔다. 프로브가 앞쪽 갈래만 만들어 냈고 catch가 그 프로브
+     * 크기에 맞춰졌다.
+     *
+     * <p>⚠️ 한때 이 자리에 "{@code CannotAcquireLockException}은 계보가 또 달라 셋을 함께 열거하는
+     * 수밖에 없다"고 적혀 있었다. <b>둘 다 틀렸다</b>(javap 실측) — 잠금 계열과
+     * {@code QueryTimeoutException}은 {@code TransientDataAccessException}을 공유하고,
+     * {@code TransactionTimedOutException}만 그 밖이다. 그래서 그 공통 조상으로 묶으면 둘이 한 번에
+     * 잡히기는 한다. <b>그럼에도 그렇게 하지 않는다</b> — 그 조상에는
+     * {@code TransientDataAccessResourceException}처럼 "혼잡"이 아니라 "인프라가 흔들렸다"를 뜻하는
+     * 갈래도 들어 있어서, 그것까지 409 "잠시 후 다시"로 바꾸면 아래에서 피하려던 바로 그 일 —
+     * 울려야 할 쪽이 조용해지는 것 — 이 일어난다. 이 저장소가 그 타입을 쓰는 유일한 자리는 Spring Batch의
+     * 재시도 분류({@code UserWithdrawalBatchConfig})이고, 그건 "재시도할 만한가"를 묻는 것이라
+     * 넓어도 되는 쓰임이다. HTTP 상태로 옮기는 자리는 다르다.
      *
      * <p><b>상한은 문 하나가 아니라 트랜잭션 전체에 걸린다.</b> 4초짜리 문 둘을 5초 상한에 넣으면 첫
      * 문은 완주하고 둘째가 남은 1초에 끊긴다(실측).
@@ -176,7 +208,7 @@ public class KickUserService implements KickUserUseCase {
     private Optional<ChatBan> record(ChatKickLog kickLog) {   // 이름이 log가 아닌 것은 로거 필드와 겹쳐서다
         try {
             return kickRecorder.record(kickLog);
-        } catch (QueryTimeoutException | TransactionTimedOutException e) {
+        } catch (PessimisticLockingFailureException | QueryTimeoutException | TransactionTimedOutException e) {
             // 원인을 여기서 한 번 남긴다. 이 예외는 4xx라 전역 핸들러가 warn 갈래로 보내는데, 그 줄은
             // 코드와 메시지만 찍고 throwable을 넘기지 않는다 — 즉 여기서 안 남기면 원래 예외의 타입도
             // 스택도 어디에도 남지 않는다.
@@ -186,8 +218,11 @@ public class KickUserService implements KickUserUseCase {
             // 알림을 울리지 않게 하려는 것이었는데, 원인까지 지우면 울려야 할 쪽도 조용해진다.
             log.warn("강퇴 기록이 상한을 넘었다 — 경합이면 정상이고, 반복되면 DB가 느려진 것이다."
                     + " targetUserId={}", kickLog.targetUserId(), e);
+            // 사유를 잠금으로 못 박지 않는다 — 네 모양 중 둘은 트랜잭션 상한 쪽이고, 고정 문구를 두면
+            // 운영자가 로그만 보고 원인을 잠금으로 오판한다. 실제 타입을 싣는다.
             throw new ChatKickContendedException(
-                    "강퇴 기록이 잠금 대기 상한을 넘었다 — targetUserId=" + kickLog.targetUserId(), e);
+                    "강퇴 기록이 상한을 넘었다(" + e.getClass().getSimpleName() + ") — targetUserId="
+                            + kickLog.targetUserId(), e);
         }
     }
 

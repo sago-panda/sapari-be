@@ -244,7 +244,18 @@ management:
         # 액추에이터 기본 노출은 health 하나뿐이다 — 이건 좁힌 값이 아니라 prometheus 를 더한 값이다.
         # 넓히지 말 것: LiveSecurityConfig 가 이 두 개만 permitAll 하고 나머지는 denyAll 이라,
         # 여기에 추가해도 열리지 않고 403 만 난다(코드도 함께 고쳐야 한다 = 리뷰에 보인다).
-        include: health,prometheus     # optional
+        include: health,prometheus     # REQUIRED(운영) — 둘 중 하나라도 실제로 노출되지 않으면
+                                       # 부팅이 실패한다(LiveSecurityConfig.requiredEndpointsMustBeExposed).
+                                       # 가드는 이 키를 읽지 않고 <b>실제 노출</b>을 묻는다 — 그래서
+                                       # exclude 로 되돌리거나 management.endpoint.<id>.enabled=false,
+                                       # endpoints.enabled-by-default=false, endpoint.<id>.access=none,
+                                       # endpoints.access.default=none 로 끄는 것도 전부 걸린다.
+                                       # health 가 빠지면 k8s 프로브가 401 을 받아 파드가 Ready 가
+                                       # 되지 못한다. 액추에이터 기본
+                                       # 노출은 health 하나라, 빠뜨리면 지표 엔드포인트가 생기지 않고
+                                       # 스크레이퍼가 401 을 받아 <b>지표가 조용히 빈다</b> — 빈 대시보드는
+                                       # "방송이 없어서" 와 구분되지 않는다. 종전 optional 표기는 그
+                                       # 결과를 과소평가한 것이었다(실측: CI 로 옮긴 첫 실행이 401 로 깨짐).
   endpoint:
     health:
       show-details: never              # optional — 상세는 DB 주소 등 내부 구조를 흘린다

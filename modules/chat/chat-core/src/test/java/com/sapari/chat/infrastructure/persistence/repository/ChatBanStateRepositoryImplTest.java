@@ -65,7 +65,7 @@ class ChatBanStateRepositoryImplTest {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16.15");
 
     @DynamicPropertySource
     static void schemaValidation(DynamicPropertyRegistry registry) {
@@ -228,7 +228,9 @@ class ChatBanStateRepositoryImplTest {
                 // 단조 규칙 회귀를 이 테스트가 우연에 맡기게 된다.
                 Instant expiry = (i == 0) ? longest : NOW.plus(Duration.ofHours(12));
                 futures.add(pool.submit(() -> {
-                    start.await();
+                    if (!start.await(30, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("시작 래치가 30초 안에 열리지 않았다 — 주 스레드가 countDown 전에 터졌다. 상한이 없으면 이 스레드가 영원히 블록된 채 남아 같은 JVM 의 뒤따르는 테스트를 오염시킨다");
+                    }
                     // 경계를 스레드마다 따로 연다 — @Modifying 네이티브 쿼리는 경계 없이는 실행되지 않는다
                     new TransactionTemplate(transactionManager).executeWithoutResult(status ->
                             repository().extendOrCreate(new ChatBan(userId, SYSTEM, expiry, NOW)));

@@ -26,6 +26,7 @@ import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSession;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.service.SystemMessageService;
@@ -56,6 +57,9 @@ import reactor.test.StepVerifier;
 
 class ChatWebSocketHandlerTest {
 
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private ChatBroadcastSubscriber subscriber;
     private ChatSessionRegistry registry;
     private SendChatUseCase sendUseCase;
@@ -79,9 +83,312 @@ class ChatWebSocketHandlerTest {
         given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(true));
         systemMessageService = mock(SystemMessageService.class);
         given(systemMessageService.renderToSession(anyString(), any())).willReturn(Mono.empty());
-        handler = new ChatWebSocketHandler(
+        handler = handlerWithLifetime(Duration.ofHours(1));
+    }
+
+    /** 핸들러가 생존 확인에 넘겨야 하는 기한. 목이 이 값으로만 답하므로 다른 값을 넘기면 스텁이 빗나간다. */
+    private static final Duration LIVENESS_DEADLINE = Duration.ofSeconds(90);
+    private static final Duration PING_INTERVAL = Duration.ofSeconds(30);
+
+    private ChatWebSocketHandler handlerWithLifetime(Duration lifetime) {
+        return new ChatWebSocketHandler(
                 mock(RoomTokenVerifier.class), entryGate,
-                registry, sendUseCase, subscriber, connections, systemMessageService);
+                registry, sendUseCase, subscriber, connections, systemMessageService,
+                new SessionTimeouts(lifetime, PING_INTERVAL, LIVENESS_DEADLINE), ChatMetrics.NOOP);
+    }
+
+    /**
+     * ⭐ 수명 상한이 <b>배선돼 있는지</b>를 {@code runSession}으로 직접 구동해 확인한다.
+     *
+     * <p>분기만 따로 재면 안 된다 — 그 분기를 {@code firstWithSignal}에서 빼도 아무 테스트가 깨지지
+     * 않는다. 배선이 고정되는 자리는 이 메서드 하나다.
+     *
+     * <p>왜 필요한가: 입장 토큰은 핸드셰이크 때 한 번만 검증되고 그 안에 신원·역할·방 소유가 들어 있다.
+     * 그 뒤의 역할 강등·방 소유권 이전·탈퇴 확정은 이 세션에 닿지 않는다(지금 전파되는 것은 밴 하나뿐).
+     * 수명 상한이 그 전부를 유계로 만든다 — 재접속이 live의 입장을 다시 타므로 거기서 권위가 새로
+     * 평가된다.
+     */
+    @Test
+    @DisplayName("⭐ 기한 동안 아무 프레임도 올라오지 않으면 세션을 거둔다 — 끊긴 소켓이 수명 상한까지 남지 않게")
+    void unresponsive_session_is_reclaimed() {
+        // given: 소켓은 열려 있지만 아무것도 올라오지 않는다 — 끊긴 소켓과 구별되지 않는 상태다.
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        // 기한이 지났다고 레지스트리가 답한다 — 시계 자체는 레지스트리 단위 테스트가 지킨다.
+        // 기한 인자를 any() 로 지우면 핸들러가 <b>수명 상한</b>을 기한으로 넘기는 뮤턴트가 통과한다 —
+        // 그러면 생존 확인이 60분 침묵에서만 참이 되어 사실상 무효가 되는데 아무 테스트도 깨지지 않는다.
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(true);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 수명 상한(1시간)보다 한참 먼저 거둬야 한다 — 그게 이 분기의 존재 이유다.
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(Duration.ofMinutes(3))
+                .then(() -> then(registry).should(times(1)).terminateUnresponsive("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
+    /**
+     * ⭐ 첫 생존 점검이 <b>기한 + 간격</b> 전에는 돌지 않는다.
+     *
+     * <p>생존 시계가 등록 시각으로 초기화되므로, 기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸
+     * 짧아진다 — 기본값에서 t=30s·60s 의 ping 이 둘 다 유실되면 t=90s 점검에서 {@code last} 가 아직
+     * 등록 시각이라 {@code 90 - 0 >= 90} 이 되어 <b>멀쩡한 시청자가 끊긴다.</b> 정상 구간에서는 2회
+     * 유실이 살고 3회가 끊기므로, "기한 = 3 × 간격 = 2회 내성" 이 첫 창에서만 거짓이었다.
+     */
+    @Test
+    @DisplayName("⭐ 첫 생존 점검은 기한 + 간격 뒤다 — 첫 창에서 2회 유실에 멀쩡한 세션이 끊기지 않게")
+    void the_first_liveness_check_waits_one_interval_past_the_deadline() {
+        // given: 레지스트리가 "응답 없음" 이라고 계속 답한다 — 점검이 도는 순간 바로 거둔다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(true);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 기한(90s)만으로는 아직 점검하지 않고, 간격 하나(30s)를 더 지나면 점검한다
+        Duration firstCheck = LIVENESS_DEADLINE.plus(PING_INTERVAL);
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(firstCheck.minusMillis(1))
+                .then(() -> then(registry).should(never()).terminateUnresponsive(anyString()))
+                .thenAwait(Duration.ofMillis(2))
+                .then(() -> then(registry).should(times(1)).terminateUnresponsive("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
+    /**
+     * ⭐ 생존 점검이 <b>간격마다</b> 다시 돈다 — 첫 점검 한 번으로 끝나지 않는다.
+     *
+     * <p>{@code Flux.interval(첫 점검, 간격)} 의 두 번째 인자가 주기다. 그걸 {@code maxLifetime} 으로
+     * 바꿔도 첫 점검은 그대로라, 첫 틱에서 거두는 기존 테스트들은 전부 초록이다 — 그러면 죽은 소켓
+     * 수거가 120초에서 <b>1시간</b>이 된다(첫 점검을 놓친 소켓은 수명까지 남는다).
+     *
+     * <p>그래서 첫 점검에서는 "아직 응답 있음" 으로 답하고 두 번째 틱에서 거두게 만든다.
+     */
+    @Test
+    @DisplayName("⭐ 생존 점검은 간격마다 다시 돈다 — 첫 틱을 놓친 죽은 소켓이 수명까지 남지 않게")
+    void the_liveness_check_repeats_every_interval() {
+        // given: 첫 점검에서는 응답이 있고, 다음 점검에서 끊긴 것으로 확인된다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false, true);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 첫 점검 직후에는 아직 거두지 않고, 간격 하나를 더 지나면 거둔다.
+        // 주기가 maxLifetime 으로 바뀌면 두 번째 틱이 1시간 뒤라 아래 단언이 깨진다.
+        Duration firstCheck = LIVENESS_DEADLINE.plus(PING_INTERVAL);
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(firstCheck.plusMillis(1))
+                .then(() -> then(registry).should(never()).terminateUnresponsive(anyString()))
+                .thenAwait(PING_INTERVAL)
+                .then(() -> then(registry).should(times(1)).terminateUnresponsive("s1"))
+                .thenCancel()
+                .verify(VERIFY_CEILING);
+    }
+
+    /**
+     * ⭐ 수요가 없을 때 버린 ping 을 <b>센다.</b>
+     *
+     * <p>한때 {@code onBackpressureDrop()} 을 인자 없이 써서, 이 줄만 이 파일의 규율에서 빠져 있었다 —
+     * 세지도 로그되지도 않으니 줄을 통째로 지워도 스위트가 전부 초록이었다. 지금 드롭이 안 일어나는
+     * 것은 설정 두 값의 비(ping 간격 × 32 = 16분 vs 생존 기한 90s)에 기대고 있어, 그 비가 바뀌면
+     * 조용히 사라진다.
+     *
+     * <p>수요 0으로 직접 구독한다. {@code runSession} 을 거치면 {@code session.send} 가 수요를
+     * 만들어 드롭이 재현되지 않는다.
+     */
+    @Test
+    @DisplayName("⭐ 수요가 없어 버린 ping 을 센다 — 드롭이 숫자 없이 사라지지 않게")
+    void dropped_pings_are_counted() {
+        // given: 아웃바운드 수요가 없는 구독자
+        WebSocketSession session = mock(WebSocketSession.class);
+
+        // when & then: 간격 30s 로 2분 — 네 틱이 전부 버려진다
+        StepVerifier.withVirtualTime(() -> handler.pings(session, Mono.never()), 0)
+                .expectSubscription()
+                .thenAwait(Duration.ofMinutes(2))
+                .then(() -> assertThat(handler.pingsDropped())
+                        .as("버린 ping 이 세어지지 않았다").isEqualTo(4))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
+    /**
+     * ⭐ 버린 ping 이 <b>밖으로도</b> 나간다.
+     *
+     * <p>위 테스트는 프로세스 안의 카운터를 본다. 그 값은 로그로만 나가고 로그는 간격으로 솎아내므로,
+     * 짧게 반복되는 드롭은 흔적이 없다. 이 값이 꾸준히 오르면 설정 두 값의 비가 깨졌다는 뜻이라
+     * 알림을 걸 수 있어야 한다.
+     */
+    @Test
+    @DisplayName("⭐ 버린 ping 이 stage=liveness_ping 으로 나간다 — 설정 비가 깨진 것을 알림으로 받으려면")
+    void dropped_pings_are_reported_to_metrics() {
+        // given: 실제 레지스트리를 든 핸들러 + 아웃바운드 수요가 없는 구독자
+        io.micrometer.core.instrument.MeterRegistry meters =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        ChatWebSocketHandler metered = new ChatWebSocketHandler(
+                mock(RoomTokenVerifier.class), entryGate, registry, sendUseCase, subscriber, connections,
+                systemMessageService, new SessionTimeouts(Duration.ofHours(1), PING_INTERVAL, LIVENESS_DEADLINE),
+                new com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics(meters));
+        WebSocketSession session = mock(WebSocketSession.class);
+
+        // when & then
+        StepVerifier.withVirtualTime(() -> metered.pings(session, Mono.never()), 0)
+                .expectSubscription()
+                .thenAwait(Duration.ofMinutes(2))
+                .then(() -> assertThat(meters.get("chat.delivery.dropped")
+                        .tags("stage", "liveness_ping").counter().count())
+                        .as("버린 ping 이 지표로 나가지 않았다").isEqualTo(4))
+                .thenCancel()
+                .verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("⭐ 응답이 올라오는 동안은 거두지 않는다 — 말하지 않는 시청자가 대다수다")
+    void responsive_session_is_not_reclaimed() {
+        // given: 프레임은 올라오지만(= 소켓 살아 있음) 발화는 없다. 채팅의 정상 다수다.
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(false);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then: 발화가 없다는 이유로 끊으면 정상 시청자가 전부 끊긴다
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                .thenAwait(Duration.ofMinutes(30))
+                .then(() -> then(registry).should(never()).terminateUnresponsive(anyString()))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
+    @Test
+    @DisplayName("⭐ 수명 상한은 흩어지되 상한을 넘지 않는다 — 같이 들어온 세션이 같이 재접속하면 그게 부하다")
+    void lifetime_is_jittered_below_the_limit() {
+        // given: 상한이 통제 값이라 위로 넘기면 안 되고, 한 점에 몰리면 재접속이 폭주한다
+        Duration limit = Duration.ofMinutes(60);
+
+        // when: 여러 번 뽑는다
+        java.util.Set<Long> seen = new java.util.HashSet<>();
+        for (int i = 0; i < 200; i++) {
+            Duration jittered = handler.jittered(limit);
+            seen.add(jittered.toMillis());
+            assertThat(jittered).as("지터가 상한을 넘었다 — 통제 값이 느슨해진다").isLessThanOrEqualTo(limit);
+            assertThat(jittered).as("지터 폭이 과하다 — 상한이 사실상 짧아진다")
+                    .isGreaterThanOrEqualTo(limit.multipliedBy(80).dividedBy(100));
+        }
+
+        // then: 실제로 흩어진다 — 고정값을 돌려주면 지터가 없는 것과 같다
+        assertThat(seen).as("지터가 흩어지지 않았다 — 같이 들어온 세션이 같은 순간에 끊긴다")
+                .hasSizeGreaterThan(50);
+    }
+
+    /**
+     * ⭐ 수명 분기가 <b>지터를 거쳐</b> 배선돼 있는지 본다.
+     *
+     * <p>{@code lifetime_is_jittered_below_the_limit} 는 헬퍼를 직접 부르고,
+     * {@code session_is_terminated_at_the_lifetime_limit} 는 80% / 100%+1s 로 단언한다 —
+     * 둘 다 지터 없이도 참이라, {@code Mono.delay(jittered(limit))} 를 {@code Mono.delay(limit)} 로
+     * 되돌려도 아무것도 깨지지 않았다(실측: websocket 패키지 전체 BUILD SUCCESSFUL).
+     * {@code runSession} 자신의 javadoc 이 경고한 "분기만 따로 재면 배선이 빠진 것을 아무도 묻지
+     * 않는다" 가 지터에서 그대로 일어났다.
+     *
+     * <p>가상 시간이라 시계는 정확하다. 남는 불확실성은 난수 하나뿐이다 — 지터 폭이 60분의 15%
+     * (540,000ms)이고 뽑기가 {@code [0, span]} 이라, 정확히 0이 나오면 상한에 발화해 이 테스트가
+     * 깨진다. 확률 1/540,001 이고, 그 경우는 "지터가 없다"와 구별되지 않는 것이 맞다.
+     */
+    @Test
+    @DisplayName("⭐ 수명 분기가 지터를 거쳐 배선돼 있다 — 상한 1ms 전에 이미 끊겨 있다")
+    void lifetime_branch_is_wired_through_the_jitter() {
+        // given: 클라도 서버도 먼저 끝내지 않는 세션 — 수명 분기만이 이 연결을 끝낼 수 있다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        Duration lifetime = Duration.ofMinutes(60);
+        ChatWebSocketHandler bounded = handlerWithLifetime(lifetime);
+
+        // when & then: 지터를 거치지 않으면 정확히 상한에 발화하므로 1ms 전에는 아직 끊기지 않는다
+        StepVerifier.withVirtualTime(() -> bounded.runSession(session, chatSession))
+                .thenAwait(lifetime.minusMillis(1))
+                .then(() -> then(registry).should(times(1)).terminateLifetimeExpired("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
+    }
+
+    @Test
+    @DisplayName("⭐ 수명 상한에 닿으면 세션이 종료된다 — 재접속으로 권위를 다시 받게 한다")
+    void session_is_terminated_at_the_lifetime_limit() {
+        // given: 클라도 서버도 먼저 끝내지 않는 세션 — 수명 상한만이 이 연결을 끝낼 수 있다
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outbound("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        Duration lifetime = Duration.ofMinutes(60);
+        ChatWebSocketHandler bounded = handlerWithLifetime(lifetime);
+
+        // when & then: 지터 폭(상한의 15% 아래로) 바깥에서는 아직 끊지 않고, 상한을 지나면 끊는다.
+        // 지터가 있으므로 "상한 직전"으로는 단언할 수 없다 — 최대 15% 일찍 발화한다.
+        // verify 에 상한을 준다 — 기본값은 무한 대기라, 분기가 빠지면 이 테스트가 실패하는 대신 멈춘다.
+        Duration beforeAnyJitter = lifetime.multipliedBy(80).dividedBy(100);
+        StepVerifier.withVirtualTime(() -> bounded.runSession(session, chatSession))
+                .thenAwait(beforeAnyJitter)
+                .then(() -> then(registry).should(never()).terminateLifetimeExpired(anyString()))
+                .thenAwait(lifetime.minus(beforeAnyJitter).plusSeconds(1))
+                .then(() -> then(registry).should(times(1)).terminateLifetimeExpired("s1"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(10));
     }
 
     @Test
@@ -194,7 +501,7 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(Flux.just(payload)
                         .flatMap(p -> handler.onInbound("s1", session, p))
                         .then())
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -206,7 +513,7 @@ class ChatWebSocketHandlerTest {
         ChatSession session = new ChatSession(roomId, userId, ChatRole.SELLER, "판매자", "s@example.com", true);
 
         // when
-        OutboundMessage info = handler.roomInfoFor(roomId, session).block();
+        OutboundMessage info = handler.roomInfoFor(roomId, session).block(VERIFY_CEILING);
 
         // then: 방주인 여부는 그대로 실리고(방주인 토글 UI), 수만 알 수 없음으로 비운다
         assertThat(info).isNotNull();
@@ -224,7 +531,7 @@ class ChatWebSocketHandlerTest {
 
         // when
         StepVerifier.create(handler.onInbound("s1", session, "{\"type\":\"NORMAL\",\"content\":\"도배\"}"))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then: 전송 파이프라인에 아예 들어가지 않는다 — Redis 강퇴 조회는 장애 시 통과(fail-open)라 믿을 수 없다
         then(sendUseCase).should(never()).send(any());
@@ -244,7 +551,7 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(Flux.just("{\"content\":\"안녕\"}")
                         .flatMap(payload -> handler.onInbound("s1", session, payload))
                         .then())
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then: 스트림은 살아있고 ERROR/VALIDATION만 나간다
         ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
@@ -324,7 +631,7 @@ class ChatWebSocketHandlerTest {
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
 
         // when
-        StepVerifier.create(handler.closeWithReason(session, "s1")).verifyComplete();
+        StepVerifier.create(handler.closeWithReason(session, "s1")).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(connections).should(never()).dispose(any());
@@ -341,7 +648,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\",\"myField\":1}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 커맨드까지 도달했다 = 파싱이 통과했다. 거부 카운터도 오르지 않는다.
         then(sendUseCase).should(times(1)).send(any());
@@ -357,7 +664,7 @@ class ChatWebSocketHandlerTest {
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, "{}")).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, "{}")).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(registry).should(times(1)).shouldReplyToRejection("s1");
@@ -375,7 +682,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 서버 잘못이라고 세거나 끊지 않는다 — 사유만 돌려준다
         then(registry).should(never()).terminateKicked(anyString());
@@ -395,7 +702,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(registry).should(never()).sendToSession(anyString(), any());
@@ -413,7 +720,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 안 닫으면 계속 읽으면서 프레임마다 강퇴 조회를 태운다
         then(registry).should(times(1)).terminateKicked("s1");
@@ -432,7 +739,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 커맨드에 실려 나간 값이 false여야 서비스 1단계가 거부한다
         then(sendUseCase).should(times(1)).send(argThat(c -> !c.isRoomAlive()));
@@ -452,7 +759,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: ERROR(롤백 키) → SYSTEM(종료 사유) → 종료. 순서가 뒤집히면 sink가 닫혀 뒤엣것이 사라진다.
         InOrder order = inOrder(registry, systemMessageService);
@@ -476,7 +783,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "NOT_ACTIVE".equals(m.code())));
@@ -494,7 +801,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: terminate가 먼저 나가면 tryEmitNext가 FAIL_TERMINATED가 되어 클라는 1008만 받고 사유를 모른다
         InOrder order = inOrder(registry);
@@ -515,7 +822,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 창이 닫혀 있어도 사유는 나가고, 세션도 끊긴다
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "KICKED".equals(m.code())));
@@ -533,7 +840,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 끊지 않고, 대신 다음 프레임이 Redis에 닿지 않도록 창을 기억한다
         then(registry).should(never()).terminateKicked(anyString());
@@ -551,7 +858,7 @@ class ChatWebSocketHandlerTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 서비스를 아예 부르지 않고, 남은 시간을 그대로 돌려준다
         then(sendUseCase).should(never()).send(any());
@@ -582,7 +889,7 @@ class ChatWebSocketHandlerTest {
 
         // when
         StepVerifier.create(handler.runInbound(payloads, "s1", session))
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(maxInFlight.get()).isOne();
@@ -611,7 +918,7 @@ class ChatWebSocketHandlerTest {
                 "{\"type\":\"NORMAL\",\"content\":\"m3\",\"clientMsgId\":\"c3\"}");
 
         // when
-        StepVerifier.create(handler.runInbound(payloads, "s1", session)).verifyComplete();
+        StepVerifier.create(handler.runInbound(payloads, "s1", session)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(seen).containsExactly("m1", "m2", "m3");
@@ -628,7 +935,7 @@ class ChatWebSocketHandlerTest {
         given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"" + id + "\"}";
-        StepVerifier.create(handler.onInbound("s1", session, payload)).verifyComplete();
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
         // 실제 와이어로 나가는 직렬화까지 태운다
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> {
             assertThat(handler.serialize(m)).isNotBlank();

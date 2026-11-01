@@ -17,6 +17,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 
 import reactor.core.publisher.Mono;
@@ -28,8 +29,11 @@ import reactor.core.publisher.Mono;
 @Testcontainers
 class RedisRateLimiterTest {
 
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     private static LettuceConnectionFactory connectionFactory;
     private static ReactiveStringRedisTemplate redisTemplate;
@@ -40,7 +44,7 @@ class RedisRateLimiterTest {
         connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
         connectionFactory.afterPropertiesSet();
         redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
-        rateLimiter = new RedisRateLimiter(redisTemplate);
+        rateLimiter = new RedisRateLimiter(redisTemplate, ChatMetrics.NOOP);
     }
 
     @AfterAll
@@ -52,7 +56,7 @@ class RedisRateLimiterTest {
     @DisplayName("TC#1 — 첫 요청은 허용")
     void first_request_is_allowed() {
         // given
-        RateLimitResult result = rateLimiter.tryAcquire(UUID.randomUUID()).block();
+        RateLimitResult result = rateLimiter.tryAcquire(UUID.randomUUID()).block(VERIFY_CEILING);
 
         // when & then
         assertThat(result.allowed()).isTrue();
@@ -64,9 +68,9 @@ class RedisRateLimiterTest {
     void second_request_within_window_is_denied() {
         // given
         UUID userId = UUID.randomUUID();
-        rateLimiter.tryAcquire(userId).block();
+        rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
 
-        RateLimitResult result = rateLimiter.tryAcquire(userId).block();
+        RateLimitResult result = rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
 
         // when & then
         assertThat(result.allowed()).isFalse();
@@ -78,9 +82,9 @@ class RedisRateLimiterTest {
     void retryAfter_reflects_remaining_ttl() {
         // given
         UUID userId = UUID.randomUUID();
-        rateLimiter.tryAcquire(userId).block();
+        rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
 
-        RateLimitResult result = rateLimiter.tryAcquire(userId).block();
+        RateLimitResult result = rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
 
         // when & then
         assertThat(result.retryAfterSeconds()).isBetween(1L, 3L);
@@ -91,11 +95,11 @@ class RedisRateLimiterTest {
     void limit_is_per_user_and_global_across_rooms() {
         // given
         UUID userA = UUID.randomUUID();
-        rateLimiter.tryAcquire(userA).block();
+        rateLimiter.tryAcquire(userA).block(VERIFY_CEILING);
 
         // when & then
-        assertThat(rateLimiter.tryAcquire(userA).block().allowed()).isFalse();
-        assertThat(rateLimiter.tryAcquire(UUID.randomUUID()).block().allowed()).isTrue();
+        assertThat(rateLimiter.tryAcquire(userA).block(VERIFY_CEILING).allowed()).isFalse();
+        assertThat(rateLimiter.tryAcquire(UUID.randomUUID()).block(VERIFY_CEILING).allowed()).isTrue();
     }
 
     @Test
@@ -103,11 +107,11 @@ class RedisRateLimiterTest {
     void denied_request_does_not_extend_window() {
         // given
         UUID userId = UUID.randomUUID();
-        rateLimiter.tryAcquire(userId).block();
-        Duration before = redisTemplate.getExpire("ratelimit:chat:" + userId).block();
+        rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
+        Duration before = redisTemplate.getExpire("ratelimit:chat:" + userId).block(VERIFY_CEILING);
 
-        rateLimiter.tryAcquire(userId).block();
-        Duration after = redisTemplate.getExpire("ratelimit:chat:" + userId).block();
+        rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
+        Duration after = redisTemplate.getExpire("ratelimit:chat:" + userId).block(VERIFY_CEILING);
 
         // when & then
         assertThat(after.toMillis()).isLessThanOrEqualTo(before.toMillis());
@@ -118,24 +122,33 @@ class RedisRateLimiterTest {
     void request_after_window_expiry_is_allowed() {
         // given
         UUID userId = UUID.randomUUID();
-        rateLimiter.tryAcquire(userId).block();
-        redisTemplate.delete("ratelimit:chat:" + userId).block();
+        rateLimiter.tryAcquire(userId).block(VERIFY_CEILING);
+        redisTemplate.delete("ratelimit:chat:" + userId).block(VERIFY_CEILING);
 
         // when & then
-        assertThat(rateLimiter.tryAcquire(userId).block().allowed()).isTrue();
+        assertThat(rateLimiter.tryAcquire(userId).block(VERIFY_CEILING).allowed()).isTrue();
     }
 
+    /**
+     * TC#9 — Redis 장애 시 <b>첫 요청은</b> 허용한다.
+     *
+     * <p>한때 이 테스트의 이름이 "fail-open" 이었고 단언이 이 한 줄뿐이었다. 그 모양으로는 강등을
+     * 되돌려도(무조건 {@code allowed=true}) 멀쩡히 초록이라, <b>지워진 계약을 주장하는 초록 테스트</b>가
+     * 된다 — 다음 사람이 "fail-open" 으로 grep 하면 이것을 찾는다. 창 안의 두 번째 요청이 거부되는지는
+     * {@code RedisRateLimiterDegradedTest} 가 본다. 여기서 재는 것은 "장애가 첫 요청을 막지 않는다"
+     * 하나다(가용성 우선).
+     */
     @Test
-    @DisplayName("TC#9 — Redis 장애 시 fail-open (allowed=true)")
-    void redis_failure_fails_open() {
+    @DisplayName("TC#9 — Redis 장애가 첫 요청을 막지 않는다 (상한은 로컬 창으로 강등 — Degraded 테스트 참고)")
+    void redis_failure_still_allows_the_first_request() {
         // given
         ReactiveStringRedisTemplate broken = Mockito.mock(ReactiveStringRedisTemplate.class,
                 Mockito.RETURNS_DEEP_STUBS);
         BDDMockito.given(broken.opsForValue().setIfAbsent(Mockito.anyString(), Mockito.anyString(), Mockito.any()))
                 .willReturn(Mono.error(new RuntimeException("connection refused")));
-        RedisRateLimiter failing = new RedisRateLimiter(broken);
+        RedisRateLimiter failing = new RedisRateLimiter(broken, ChatMetrics.NOOP);
 
-        RateLimitResult result = failing.tryAcquire(UUID.randomUUID()).block();
+        RateLimitResult result = failing.tryAcquire(UUID.randomUUID()).block(VERIFY_CEILING);
 
         // when & then
         assertThat(result.allowed()).isTrue();

@@ -1,6 +1,9 @@
 dependencies {
     implementation project(':common:security-jwt')
     implementation project(':common:core')              // chat 예외 조상 BusinessException (핸들러 에러 매핑 instanceof)
+    // 로그 상관 필드 이름(LogFields). security-jwt 를 통해 전이로도 오지만 직접 쓰므로 명시한다 —
+    // 전이에 기대면 그쪽이 의존을 끊는 순간 여기가 깨진다.
+    implementation project(':common:global')
     implementation project(':modules:chat:chat-core')   // chat 도메인·포트(ChatSession, ChatKickRepository, ChatSessionRepository 등)
     implementation project(':modules:chat:chat-api')    // 핸들러가 쓰는 계약(SendChatUseCase·SendChatCommand·ChatMessageView)
     implementation 'io.livekit:livekit-server:0.12.1'
@@ -8,6 +11,17 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
     implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'   // 핸들러 ObjectMapper(Instant)
+
+    // 관측 노출. chat-core 의 ChatMetrics 는 MeterRegistry 가 없으면 NOOP 으로 뜨므로, 이 의존이
+    // 곧 "이 앱에서는 지표를 실제로 내보낸다" 는 결정이다. 엔드포인트를 어디에 열지는
+    // ObservabilityExposureConfig 가 부팅 시점에 강제한다.
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // 리액티브 상관 식별자. MDC 는 ThreadLocal 이라 Reactor 의 스레드 전환을 넘지 못한다 —
+    // 실측: publishOn 뒤와 onErrorResume 안에서 null 이고, 이 저장소의 열화 로그가 거의 전부
+    // 그 람다 안이다. 이 라이브러리가 Reactor Context ↔ ThreadLocal 을 잇는다.
+    implementation 'io.micrometer:context-propagation'
+    // 레지스트리는 런타임만 — 코드가 프로메테우스 타입을 직접 참조하지 않는다(포트 뒤에 있다).
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
     testImplementation 'io.projectreactor:reactor-test'   // StepVerifier (reactive 단위 테스트)
 

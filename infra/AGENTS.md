@@ -18,6 +18,14 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
 
 - **schema = domain = owns its migrations.** Each domain gets its own PostgreSQL schema
   (`<domain>_schema`) with an independent `flyway_schema_history` and version sequence.
+  - **`chat` is an exception, by design.** It has no schema of its own: `chat_kick_log`, `chat_ban` and
+    `chat_filter_word` live in `live_schema` and their DDL is in `db/migration/live/`, so **live owns
+    those migrations even though chat owns the tables**. `migrate.sh`'s `SCHEMAS` has no chat entry.
+    A chat-side change to those tables goes through the live owner.
+  - **Mongo is outside Flyway entirely.** `chat_messages` and its indexes are created at boot by
+    `ChatMongoConfig`, which only runs in **streaming-app** (its argument is a `ReactiveMongoTemplate`,
+    which live-app does not have). So the indexes behind live-app's chat-history endpoint depend on a
+    *different* app having booted. Nothing in this file used to say so.
 - **No cross-schema FK** — domains reference each other by `uuid` id columns only, so schemas
   have no apply-order dependency (the runner loops schemas in any order).
 - **Run on PRIMARY only** (replicas get it via WAL). `outOfOrder=true`, so timestamp versions
@@ -36,9 +44,13 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
   throws, but from the ShedLock proxy **outside** each scheduler's `try/catch`, so the prepared domain
   message never appears and still-billing egress goes unreclaimed. The guard adds no new boot-time DB
   dependency (`ddl-auto: validate` already needs the DB); it covers what `validate` cannot, since the
-  lock table has no entity. **This reaches local development too**: the `@Tag("context")` tests boot a real
-  context, so a developer whose local database predates this migration now fails at `contextLoads` — run
-  `migrate.sh` against the local DB, or set `live.reconcile.enabled=false` locally.
+  lock table has no entity.
+  **The app context tests do not cover this.** They set `live.reconcile.enabled=false`
+  (`LiveAppContextFixture`) because the cleanup jobs would otherwise call LiveKit for real, and the guard
+  is `@ConditionalOnProperty(live.reconcile.enabled=true)` — so it is never created there and
+  `contextLoads` stays green on a local database that predates the migration. The guard fires on a real
+  run (`bootRun` / deployed pod), which is where it matters; locally, run `migrate.sh` against your DB, or
+  set `live.reconcile.enabled=false` to take the jobs down with it.
 
 How it runs:
 - **local:** `DB_URL=… DB_USER=… DB_PASSWORD=… ./infra/migration/migrate.sh` (needs Flyway CLI;
@@ -47,6 +59,10 @@ How it runs:
 - **prod:** same image run by a Helm pre-upgrade Job (wired when prod is promoted).
 
 ## Observability ports (live-app)
+
+Two apps now expose metrics on a split management port. The rules below were written for live-app; the
+**streaming-app section that follows states where it differs** — most importantly it has no Spring Security,
+so the port split is the only thing standing between an anonymous scraper and the endpoints.
 
 - **live-app listens on two ports: `server.port` (user traffic) and `management.server.port` (metrics).**
   The metrics port serves `/actuator/health` and `/actuator/prometheus` with **no authentication** — a
@@ -67,13 +83,41 @@ How it runs:
   groups are there without extra config on this version — but the load-bearing part is the manifest
   choosing the right path, not the app.
 - The app refuses to start when the two ports are equal (`LiveSecurityConfig.managementPortMustDiffer`),
-  so a config slip fails loudly instead of quietly publishing metrics on the user port. Manifests still
-  have to *set* the management port — nothing here defaults it.
-- **Deployment prerequisite — read before merging live-app.** `MANAGEMENT_PORT` (or
-  `management.server.port`) must exist in the environment *before* this app is rolled out: without it the
-  app refuses to start by design. That is fail-closed on purpose — booting without it would put metrics on
-  the user port — but it means the manifest change leads, and the app follows. Developers running locally
-  need the same key; copy the `management` block from `application.yaml.example`.
+  so a config slip fails loudly instead of quietly publishing metrics on the user port.
+- ⚠️ **"Manifests still have to *set* the management port" is weaker than it reads.** The guard rejects an
+  *absent* key, and the shipped template is `port: ${MANAGEMENT_PORT:8091}`
+  (`application.yaml.example:239`) — copy that and leave the env var unset and the placeholder resolves to
+  8091, so the app **boots normally**. A manifest whose scrape target was pointed at the env value then
+  gets silently empty metrics. If you want the env var to be load-bearing, drop the `:8091` default from
+  the template; today it is a convenience, not a gate. (streaming-app: same shape,
+  `${MANAGEMENT_PORT:8092}` at `application.yml.example:167`.)
+- **It also refuses to start unless `health` and `prometheus` are *actually exposed*** (added 2026-10-31,
+  widened 2026-11-01). The guard does **not** read `exposure.include`/`exclude` any more — it asks
+  `WebEndpointsSupplier.getEndpoints()`, because six config axes can remove an endpoint and a key-reading
+  guard only saw two. Measured, each booting successfully while the old guard passed:
+  `endpoint.<id>.enabled=false`, `endpoints.enabled-by-default=false`, `endpoint.<id>.access=none`,
+  `endpoints.access.default=none`. The two *default*-scoped ones (`enabled-by-default`, `access.default`)
+  leave **no endpoints at all**; the two id-scoped ones remove just that endpoint. Actuator's
+  default exposure is `health` alone, so omitting that line leaves no metrics endpoint at all; the path then
+  misses the actuator chain, falls to `authenticated()`, and the scraper gets **401** — metrics silently
+  empty, indistinguishable from "no broadcasts". Measured: the first CI run of the port test failed exactly
+  that way, which is also how the gap was found. The template no longer calls that line optional.
+- **The context tests for live-app now run in CI** (`LiveAppApplicationTests`, `ActuatorNotOnUserPortTest`).
+  They used to be excluded by `@Tag("context")` on the grounds that CI would need the room-token **private
+  key** as a secret; that was wrong — the key is a plain property, so the test generates a throwaway keypair,
+  Testcontainers supplies Postgres/Redis/Mongo, and Flyway applies the real migrations. Two facts surfaced the
+  moment they ran: the exposure line above, and that `/actuator/health` depends on **Mongo** (503 without it,
+  because the kick-evidence read lives there) — so a manifest that omits Mongo makes this app look unhealthy.
+- **Deployment prerequisite — read before merging live-app.** `management.server.port` must *resolve*
+  before this app is rolled out, and `health` + `prometheus` must actually be exposed: without either the
+  app refuses to start by design.
+  - ⚠️ **`MANAGEMENT_PORT` itself is not load-bearing today**, and an earlier version of this bullet said
+    it was. The guard rejects an *absent* key, and the shipped template is `${MANAGEMENT_PORT:8091}`
+    (`application.yaml.example:239`) — copy that, leave the env var unset, and the placeholder resolves to
+    8091 and the app **boots**. A manifest that points its scrape target at the env value then gets
+    silently empty metrics. To make the env var a real gate, drop the `:8091` default from the template.
+  - Developers running locally need the same keys; copy the `management` block from
+    `application.yaml.example`.
 - **Not done yet in this repo**: the manifests themselves live in the infra repo, so none of the above is
   enforced from here. Until they exist, metrics are only as private as the cluster's default networking,
   and the `live.room.active` gauge's 5-second cache is the only thing bounding DB load from scrapes.
@@ -242,6 +286,62 @@ An egress writes two manifests per rendition and they are **not** interchangeabl
 
 `egress start` → first segment in S3: **12-15s** (720p single rendition, 2s segments). Useful when
 budgeting the one paid verification window.
+
+## Observability ports (streaming-app)
+
+Same two-port shape as live-app, with one difference that changes the risk: **streaming-app has no Spring
+Security at all** (verified: no `SecurityWebFilterChain` anywhere in the app). live-app can afford a
+`permitAll` actuator chain because a *second* chain denies everything else; here there is no chain to hang
+that on.
+
+- **Default management port is 8092** (`MANAGEMENT_PORT`), chosen to clear api-app 8080 and live-app
+  8081/8091. The user port is where **WebSocket handshakes** arrive. "Default" is literal — the template
+  carries `${MANAGEMENT_PORT:8092}`, so an unset env var is not a boot failure; see the live-app note above.
+- `ObservabilityExposureConfig` refuses to boot unless the management port is set and differs from
+  `server.port`, **and unless the set of endpoints that are *actually exposed* is exactly
+  `{health, prometheus}`** (widened 2026-11-01). It no longer parses `exposure.include`/`exclude`: it asks
+  `WebEndpointsSupplier.getEndpoints()`, so the four other axes that can remove an endpoint
+  (`endpoint.<id>.enabled`, `endpoints.enabled-by-default`, `endpoint.<id>.access`,
+  `endpoints.access.default`) are covered by the same single question. Measured: each of those booted
+  successfully while the key-reading guard passed, and two of them left **no endpoints at all**.
+  Before that, a subset check alone passed an *absent* list, and then no `/actuator/prometheus` exists
+  (actuator's default exposure is `health` alone): with no security here the scraper gets a 404 rather
+  than live-app's 401, and either way the chat metrics are silently empty. live-app already failed boot
+  on this; the two apps were asymmetric for one day. The second check does not exist in live-app, because there the security chain
+  denies anything outside that pair; here the yaml line is the whole gate, and `"*"` would serve
+  `/actuator/env` and `/heapdump` unauthenticated.
+  - ⚠️ **Those two are not equally bad, and an earlier version of this file got it wrong.** `/heapdump`
+    is a memory image — Mongo URI credentials and the Redis password are in it in the clear, and masking
+    is not a concept that applies. `/actuator/env` **masks its values**: measured from bytecode,
+    `management.endpoint.env.show-values` defaults to `Show.NEVER` and `Sanitizer.sanitize` then returns
+    `"******"` without consulting any `SanitizingFunction`. What it does leak is every property **name**
+    and source — a blueprint of which keys exist and which files/env vars are in play.
+  - That masking is a **default**, flipped by one line (`show-values`), and no tracked template sets that
+    key. So the defense for `env` lives outside the code we review — which is the argument *for* locking
+    the list in code, not against it.
+- **Unauthenticated on every interface, same as live-app** — so the same conclusion holds: ClusterIP only,
+  never behind the ingress, NetworkPolicy to the monitoring namespace where available.
+- **Probes**: use `/actuator/health/liveness` and `/actuator/health/readiness`, not the aggregate path, for
+  the reason spelled out in the live-app section. Note this app previously had **no health endpoint at all**,
+  so a TCP socket check was the only probe available — and that check answered `Ready` while startup work was
+  still blocked. A real readiness probe is now possible and the manifest should use one.
+- **Deployment prerequisite**: the set of endpoints that are **actually exposed** must be exactly
+  `{health, prometheus}` — without that the app refuses to start, by design (`health` missing means the k8s
+  probes 404; `prometheus` missing means the metrics are silently empty).
+  - ⚠️ **Exactly**, so **adding one more endpoint is also a boot failure** — `include: health,prometheus,info`
+    looks reasonable and CrashLoopBackOffs (measured: `더 열린 것: [info]`). An earlier version of this
+    bullet stated only the containment half, which is what an operator would follow.
+  - The guard does not read `exposure.include`/`exclude`. Keys to check when it fires:
+    `exposure.include`/`exclude`, `endpoint.<id>.enabled`, `endpoints.enabled-by-default`,
+    `endpoint.<id>.access`, `endpoints.access.default`. `MANAGEMENT_PORT` is **not** in the same category: the template defaults it, so an unset env var
+  boots (see the bullet above). The template no longer calls that line optional (it did for one day, while the guard already
+  required it — follow that stale template and the pod CrashLoopBackOffs). Developers running locally copy
+  the `management` block from `application.yml.example`.
+- **What the metrics carry**: `chat.policy.open`, `chat.ratelimit.degraded`, `chat.delivery.dropped`,
+  `chat.session.cut` — every one of them is a *policy not being enforced* right now, which is exactly what
+  alerting should watch. They are 0 in the healthy case. Details in `modules/chat/AGENTS.md`.
+- **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
+  network restrictions above are enforced from here.
 
 ## Manifests & Pipeline
 

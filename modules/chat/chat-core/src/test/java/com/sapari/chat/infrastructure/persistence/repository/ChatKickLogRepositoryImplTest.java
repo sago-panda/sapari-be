@@ -48,7 +48,7 @@ class ChatKickLogRepositoryImplTest {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16.15");
 
     @DynamicPropertySource
     static void schemaValidation(DynamicPropertyRegistry registry) {

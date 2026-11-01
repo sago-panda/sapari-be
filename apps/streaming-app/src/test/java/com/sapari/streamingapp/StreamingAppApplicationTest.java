@@ -1,5 +1,10 @@
 package com.sapari.streamingapp;
 
+import java.time.Duration;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
+
 import com.sapari.chat.application.port.ChatAccountEventSource;
 import com.sapari.chat.application.handler.ChatAccountEventHandler;
 import org.springframework.context.ApplicationContext;
@@ -10,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
@@ -21,26 +28,59 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 이 앱이 실제로 뜨는지만 본다 — 가장 싼 부팅 가드다.
  *
  * <p>컨테이너를 띄우는 이유: 컨텍스트에는 시작하자마자 붙는 것들이 있다. {@code RedisChatBroadcaster}는
- * 생성자에서 구독을 열고, {@code ChatMongoConfig}는 시작 러너에서 인덱스를 만든다. 인프라 없이 돌리면
+ * 생성자에서 구독을 열고, {@code ChatMongoConfig}는 빈 생성 단계에서 인덱스를 만든다(포트가 열리기
+ * 전에 끝내려고 일부러 그 자리다 — {@code EagerSingletonsRunBeforeThePortBindsTest}). 인프라 없이 돌리면
  * 이 테스트는 <b>언제나 빨간불</b>이 되고, 그러면 무엇도 지키지 못한다 — 부팅이 실제로 깨진 날에도
  * 평소와 똑같아 보인다.
  *
  * <p>주소를 프로퍼티로 적지 않고 {@code @ServiceConnection}에 맡긴다. 이름을 적어 두면 그 이름이 바뀌는
  * 순간 조용히 기본값으로 돌아가는데, Boot 4의 {@code spring.data.mongodb.*} → {@code spring.mongodb.*}
  * 개명에서 실제로 그 일이 있었다.
+ *
+ * <p>룸 토큰 공개키를 여기서 만들어 넣는다. 그 설정은 <b>필수</b>라 없으면 부팅이 실패하는데
+ * ({@code RoomTokenConfig}), 운영 설정 파일은 추적되지 않으므로 CI 에는 없다. 이 테스트가 재려는 것은
+ * "인프라를 갖추면 뜨는가"이지 "설정 파일이 있는가"가 아니라서, 키는 테스트가 공급한다 —
+ * <b>아무 RSA 공개키여도 된다</b>(이 테스트는 토큰 서명을 검증하지 않는다). 다만 파싱은 되어야 한다 —
+ * 더미 문자열을 넣으면 가드가 거부해 컨텍스트가 뜨지 않는다.
  */
-@SpringBootTest
+@SpringBootTest(
+        // management.server.port 는 ObservabilityExposureConfig 가 필수로 요구한다 — 비어 있으면
+        // 액추에이터가 WS 핸드셰이크를 받는 사용자 포트에 열리므로 부팅을 실패시킨다. 0 은 포트 번호가
+        // 아니라 "임의의 빈 포트를 골라라" 라서 테스트끼리 포트를 다투지 않는다.
+        properties = {
+                "management.server.port=0",
+                // 노출 가드가 prometheus 를 요구한다 — 빠지면 지표가 조용히 빈다.
+                "management.endpoints.web.exposure.include=health,prometheus"
+        })
 @Testcontainers
 @DisplayName("streaming-app — 인프라를 갖추면 컨텍스트가 뜬다")
 class StreamingAppApplicationTest {
 
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
     @ServiceConnection(name = "redis")
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     @Container
     @ServiceConnection
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
+
+    @DynamicPropertySource
+    static void requiredConfig(DynamicPropertyRegistry registry) {
+        registry.add("chat.room-token.public-key", StreamingAppApplicationTest::throwawayPublicKey);
+    }
+
+    private static String throwawayPublicKey() {
+        try {
+            KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+            gen.initialize(2048);
+            return Base64.getEncoder().encodeToString(gen.generateKeyPair().getPublic().getEncoded());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("RSA 를 쓸 수 없다", e);
+        }
+    }
 
     @Autowired
     private ReactiveStringRedisTemplate reactiveStringRedisTemplate;
@@ -73,6 +113,6 @@ class StreamingAppApplicationTest {
     @DisplayName("관계형 DB 없이도 뜬다 — chat-core가 끌고 오는 JPA가 이 앱을 막지 않는다")
     void bootsWithoutARelationalDatabase() {
         // when & then: DataSource 자동설정 제외가 풀리면 여기서 컨텍스트가 아예 못 뜬다
-        assertThat(reactiveMongoTemplate.getMongoDatabase().block()).isNotNull();
+        assertThat(reactiveMongoTemplate.getMongoDatabase().block(VERIFY_CEILING)).isNotNull();
     }
 }

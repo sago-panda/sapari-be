@@ -39,10 +39,32 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
     testImplementation 'org.springframework.security:spring-security-test'
 
-    // 락 경합 테스트는 인스턴스 2개가 같은 락 저장소를 보는 상황이 전부라 진짜 Postgres 가 필요하다.
-    // 인메모리 DB 로 바꾸면 검증 대상(운영과 같은 프로바이더·같은 DDL)이 사라진다.
-    testImplementation 'org.testcontainers:postgresql:1.21.3'
+    // 컨텍스트를 CI 에서도 띄우기 위한 것들. 종전에는 @Tag("context") 로 CI 에서 제외했고 그 근거가
+    // "설정을 CI 변수로 채우려면 룸토큰 개인키를 CI 에 넣어야 한다" 였는데, 키는 외부 의존 없는
+    // 프로퍼티라 테스트가 직접 만들 수 있다 — 그래서 시크릿 없이 돈다.
+    //
+    // 락 경합 테스트도 같은 컨테이너를 쓴다 — 인스턴스 2개가 같은 락 저장소를 보는 상황이 전부라
+    // 진짜 Postgres 가 필요하고, 인메모리 DB 로 바꾸면 검증 대상(운영과 같은 프로바이더·같은 DDL)이
+    // 사라진다. 버전은 BOM 하나로 <b>선언</b>한다 — dev 쪽이 1.21.3 을 직접 박고 있었는데 다른
+    // 모듈은 전부 이 BOM(1.20.4)을 쓰므로, 선언을 한 자리로 모은다.
+    //
+    // ⚠️ 다만 <b>해소는 한 버전이 아니다</b>(실측: dependencyInsight). spring-boot-testcontainers
+    // 4.0.6 이 org.testcontainers:testcontainers 를 2.0.5 로 직접 끌어오고 그 관리 버전이 이 BOM 의
+    // 제약을 이긴다("Selected by rule" + "By constraint") — 코어만 2.0.5 이고
+    // junit-jupiter·postgresql·mongodb·jdbc·database-commons 는 1.20.4 로 남아 메이저 둘이 한
+    // 클래스패스에 공존한다. 현재 전 테스트가 통과하므로 동작 문제는 아니지만, "두 버전을 두지
+    // 않는다" 는 선언에만 참이다. 진짜로 한 버전으로 모으려면 BOM 대신 Boot 의 관리 버전을 쓰거나
+    // testcontainers.version 프로퍼티를 덮어써야 하고, 그건 다섯 모듈의 동시 변경이다.
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
+    testImplementation 'org.testcontainers:mongodb'
     testRuntimeOnly 'org.postgresql:postgresql'
+    // 스키마는 <b>운영과 같은 러너로</b> 세운다. 손수 SQL 을 읽는 로더를 또 만들면 "전부, 순서대로"
+    // 라는 규칙이 네 번째 자리에 흩어진다(chat 의 LiveSchema javadoc 이 경고한 그 모양).
+    testImplementation 'org.flywaydb:flyway-core'
+    testImplementation 'org.flywaydb:flyway-database-postgresql'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

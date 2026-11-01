@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -85,4 +86,29 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
              WHERE user_id = :userId AND kicked_at > :since
             """, nativeQuery = true)
     long countDistinctKickersSince(@Param("userId") UUID userId, @Param("since") Instant since);
+
+    /**
+     * 이 방에서 강퇴된 사용자 id 전부 — 이력 조회가 질의 단계에서 제외하는 데 쓴다.
+     *
+     * <p>{@code DISTINCT} 를 쓰지 않는다. 유니크 제약이 {@code (user_id, live_room_id)} 라 한 방에
+     * 같은 사용자 행은 하나뿐이고, 그래서 결과에 중복이 없다 — {@code DISTINCT} 를 붙이면 없는
+     * 중복을 지우려 정렬·해시 단계가 붙는다.
+     *
+     * <p>⚠️ <b>이 질의에 쓸 인덱스가 없다.</b> DDL 의 인덱스는 셋뿐이고 — {@code pk(id)},
+     * {@code UNIQUE(user_id, live_room_id)}, {@code (user_id, kicked_at DESC)} — 뒤의 둘은 선두 열이
+     * {@code user_id} 라 방 조건만 있는 이 질의가 쓸 수 없다. 즉 <b>순차 스캔</b>이다.
+     *
+     * <p>한때 여기 "방당 강퇴 행 수가 작아 순차 읽기로 충분하다" 고 적혀 있었다. <b>틀렸다</b> —
+     * 순차 스캔은 그 방의 행이 아니라 <b>테이블 전체</b>를 읽는다. 그래서 비용이 방 크기가 아니라
+     * <b>플랫폼 전체 누적 강퇴 수</b>에 비례하고, 한 방이 조용해도 같이 느려진다. 게다가 이 질의는
+     * 이력 조회 요청 <b>한 건마다</b> 돌고, 그 엔드포인트는 무인증 공개다(비회원 다시보기).
+     *
+     * <p>답은 {@code (live_room_id)} 인덱스 하나다. 그 DDL 은 {@code db/migration/live/} 에 있어
+     * <b>live 소관</b>이므로 여기서 추가하지 않는다 — live 담당자에게 넘긴 항목이다. 그때까지는
+     * 누적 강퇴 수가 이 엔드포인트의 응답 시간 상한이다.
+     */
+    @Query(value = """
+            SELECT user_id FROM live_schema.chat_kick_log WHERE live_room_id = :roomId
+            """, nativeQuery = true)
+    List<UUID> findKickedUserIds(@Param("roomId") UUID roomId);
 }

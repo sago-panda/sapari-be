@@ -85,7 +85,7 @@ class ChatKickRecorderTest {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16.15");
 
     @DynamicPropertySource
     static void schemaValidation(DynamicPropertyRegistry registry) {
@@ -291,6 +291,11 @@ class ChatKickRecorderTest {
 
         // 밴 INSERT만 실패시키는 저장소로 같은 경계를 다시 만든다
         ChatKickRecorder failing = new ChatKickRecorder(kickLogs, new ChatBanStateRepository() {
+            @Override
+            public void lockForBanDecision(UUID userId) {
+                bans.lockForBanDecision(userId);   // 실패시키는 것은 밴 쓰기뿐 — 잠금은 그대로 걸려야 한다
+            }
+
             @Override
             public Optional<ChatBan> findActive(UUID userId, Instant now) {
                 return bans.findActive(userId, now);

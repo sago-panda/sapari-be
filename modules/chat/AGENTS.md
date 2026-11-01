@@ -40,16 +40,22 @@ ArchUnit enforces the calling direction: streaming-app must not touch blocking R
 blocking chat use cases; live-app (MVC) must not touch reactive ones. **Rule ② matches class names by regex** —
 name a service something other than `KickUserService` and it silently guards nothing.
 
-## Failure policy — everything opens, nothing closes
+## Failure policy — the moderation reads open, the rate limit degrades
 
-Every moderation read is **fail-open**. There is no fail-closed path in chat.
+Every moderation read (kick, ban, room-ended) is **fail-open**. The rate limit is **not** one of them
+any more: it falls back to a pod-local window of the same length, so a Redis **outage — or a round trip
+slower than 200ms** — no longer removes the cap. The latency half matters: dropping packets instead of
+dying keeps the command pending to Lettuce's 60s default, and without the bound the fallback never fires.
+It also means degradation is no longer a rare event you can leave to a throttled `log.error`; it fires on
+latency, so "what fraction of the time was enforcement pod-local" wants a metric, not a log line.
+There is still no fail-closed path in chat.
 
 | Read | On failure | Loses |
 |---|---|---|
 | room-ended marker (entry + send re-check) | allow | ended-room blocking |
 | kick set | allow | kick enforcement |
 | ban key | allow | ban enforcement |
-| rate limit | allow | flood control |
+| rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
 | session HASH register / viewer count | allow | count accuracy only |
 
 The bet: total chat outage is worse than a kicked user slipping through. **Adapters propagate, consumers
@@ -66,6 +72,14 @@ Throttled logs are **interval-based, never count-based**: a count threshold sile
 first, which is backwards. Reasons are counted separately so one does not bury another's first occurrence.
 **Never let a metric or audit call throw inside a fail-open handler** — the policy inverts.
 
+**Never hand a record to a logger.** `ChatSession`'s default `toString()` prints `email`, so one
+`log.info("... {}", chatSession)` leaks PII that every call site is currently careful to avoid — the 12
+production log statements all pass `sessionId`/`roomId`/`userId`/`role` scalars. The same holds for any
+record that carries `email` or an unmasked body. Absorbing a failure is also not the same as silencing
+it: when a handler swallows to keep a verdict, it still owes a counter and an interval-throttled log
+(`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
+put back).
+
 ## Redis keys — one source, and it is package-private
 
 `ChatRedisKeys` (package-private, `infrastructure/redis`) owns every key string. Blocking and reactive
@@ -74,7 +88,7 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | Key | Type | Notes |
 |---|---|---|
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
-| `chat:room:{id}:sessions` | HASH | 24h TTL is a backstop; expiry means *no new joins* for 24h, not a long broadcast |
+| `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
 | `chat:room:{id}:ended` | String | 30m — floor = longest room token, ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
@@ -88,9 +102,30 @@ corruption split is not widened to them.
 
 ## Wire contracts — four, and all four fail silently when broken
 
+0. **The room token must carry `iat`.** `RoomTokenVerifier` rejects entry when the token is older than
+   `max-lifetime`, which bounds the window in which a stale `role`/`owner` can start a *new* session —
+   the token has no `jti`, so it is replayable until `exp` and the entry gate re-checks only room-ended,
+   kick and ban. live sets it today (`RoomTokenProvider.issue` → `.issuedAt(...)`). **This one does not
+   fail silently** — a missing `iat` is rejected like a missing `exp`, so dropping it on the live side
+   fails every handshake loudly rather than quietly removing the bound. That is the point: the
+   alternative is losing an enforcement nobody would notice.
+
 1. **`ChatEnvelope`** (`application/protocol`, not infrastructure — the port returns it). Both the reactive
    broadcaster and the blocking kick publisher serialize the **real type**; hand-built JSON was the old
    design and a one-character field-name typo compiles fine and vanishes across every pod.
+   - The broadcaster disables `FAIL_ON_UNKNOWN_PROPERTIES` for the same reason contract 4 does: a rollout is
+     never atomic, so an older pod *will* receive envelopes carrying a field it does not know, and strictness
+     makes it drop **every** envelope the newer publisher sends. **Only one direction is bounded by that.**
+     Add envelope fields **nullable and unvalidated** — a required one makes newer pods drop every *older*
+     envelope instead, and KICK_EVENT shares this channel, so moderation goes with it.
+   - Lenience covers *properties*, not *type ids*. Both discriminators (`ChatEnvelope.kind`,
+     `ChatMessageTypeMixin.kind`) have no `defaultImpl`, so an unknown `kind` still throws — a **new envelope
+     kind reaches older pods as a silent drop of exactly that kind**. Ship the consuming version first, or
+     give the discriminator a `defaultImpl` that explicitly ignores unknowns.
+   - Lenience also turns *rejections into nulls*: a mistyped field name now yields a null component instead of
+     an error. Envelope records therefore validate their own required fields (`KickEvent` rejects a null
+     `userId`; `ChatMsg` relies on `ChatMessage`), because this channel is outside the trust boundary — the
+     channel-name parser says as much.
 2. **`ChatMessageTypeMixin` registration is mandatory** on any mapper touching a CHAT envelope. Omission
    dies loudly on first deserialize — that is the good case.
 3. **`OutboundMessage` omits null fields** (`@JsonInclude(NON_NULL)`). It is an 8-type union, so over half
@@ -139,8 +174,20 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
 - **Buffer overflow and emit contention are different failures.** Overflow means the client cannot keep up →
   close. Contention means another thread held the lock → drop that message, keep the session. Merging them
   makes load shed healthy viewers, whose reconnects raise load further.
-- Close codes: **1000** room ended (normal *and* the late-discovery path — identical on purpose),
-  **1008** entry denial / kick / account-level ban, **1013** buffer overflow. 1013 rather than 1000 exists to stop instant reconnect.
+- Close codes: **1000** room ended, session-lifetime expiry, and liveness-check failure (all three on purpose
+  — see below), **1008** entry denial / kick / account-level ban, **1009** inbound frame over the 4 KB limit
+  (Netty's decoder closes; the reason string leaks the configured limit), **1013** buffer overflow.
+  1013 rather than 1000 exists to stop instant reconnect.
+- ⚠️ **1000 now means three different things, and only one of them carries an explanation.** Room end is
+  preceded by `SYSTEM(ROOM_ENDED)`; lifetime expiry and liveness failure send no frame at all, because the
+  only thing the client should do is reconnect. **That makes "did a SYSTEM(ROOM_ENDED) arrive just before the
+  close?" the sole signal separating "the broadcast is over" from "reconnect now"** — an implicit contract the
+  front end must hold. If it instead reads 1000 as "ended", every healthy viewer sees "방송이 종료되었습니다"
+  once per lifetime window. **The front-end behaviour is not verifiable from this repo** (no front-end code
+  here), so treat it as an assumption to confirm, not a measured fact. Giving expiry its own code would remove
+  the ambiguity at the cost of a new front-end contract.
+- ⚠️ **1009 has no defined front-end behaviour yet** — nothing in this repo mentions it besides the limit
+  itself. A client hitting it is sending frames the protocol layer refuses, so retrying unchanged will loop.
 - Terminate signals **both** channels: sink `complete` (drains the buffer so a just-sent SYSTEM arrives) and
   a control sink (the escape when the client never reads). First reason wins; a later kick cannot overwrite it.
 - Fan-out budgets are **per operation, not per session** — the loop runs on the pod's shared Redis subscriber
@@ -325,6 +372,281 @@ unchanged. What can still fail outside the boundary is the Redis mirror, and a r
 because the active-ban lookup runs *before* the duplicate check and hands the caller the ban to re-mirror.
 That ordering is the whole self-healing story, so it is pinned by a test.
 
+## Viewer count — `HVALS` is not the bottleneck it looks like
+
+`count` is `HVALS` + distinct, and the O(N) is deliberate: the HASH is one row **per tab**
+(`sessionId → userId`) and the number shown is **people, not windows**. `HLEN` is therefore not an
+optimization but a different number — measured off by the multi-tab factor (1 user, 2 tabs → 2×). The
+repository test pins this, so the swap fails the build.
+
+The cost was investigated and **no redesign is warranted** (measured, redis:7 container, 36-byte UUID values):
+
+| Shape | Worst concurrent command |
+|---|---|
+| `HVALS`+distinct alone, 12,000 entries | p50 3ms / max 6ms |
+| 100 concurrent on the *same* 12,000-entry hash | SETNX **211ms** — crosses the rate limiter's 200ms |
+| after in-flight merge: 60,000 sessions in one room | 28ms |
+| after merge: 6 pods × 100 rooms (360,000 entries at once) | 130ms |
+
+So the cache + in-flight merge in `ChatSessionRegistry` is not partial mitigation — it *is* the fix, and it
+holds at five times the sizing model. Entry-gate reads (`EXISTS`/`SISMEMBER`) stayed at 0–2ms throughout.
+
+And the residual tail is **not Redis being single-threaded**: one `ReactiveStringRedisTemplate` means Lettuce
+shares a single native connection, so a large `HVALS` head-of-line-blocks the commands behind it. The same
+load through a separate connection factory dropped p99 from 113ms to 12ms. If this tail ever matters, a
+dedicated connection for this one read is the cheap answer — a maintained counter is the expensive answer to
+the wrong cause.
+
+## Viewer roster — a zombie entry is worse than a missing one, and both are possible
+
+`chat:room:{id}:sessions` holds `sessionId → userId:lastSeenMillis`. A pod crash skips `remove`, so its
+entries stay; counting them inflates the room's viewer count **for the rest of the broadcast**, because the
+only reclaim was the 24h key TTL. And the key's expiry was refreshed only on join, so its real condition was
+"24h since the last *new* join" — a quiet room could expire mid-broadcast.
+
+- **The heartbeat is a re-registration (`HSET`), never a TTL touch.** A touch cannot bring back an entry that
+  Redis lost (replica promotion), so the count would stay short for the whole broadcast. Pinned by a test that
+  deletes the field and asserts the heartbeat restores it — a touch implementation cannot pass it.
+- **Staleness is 4 × the heartbeat interval**, so three missed beats still count a live viewer. Two would
+  drop a healthy viewer the moment Redis wobbles — the same trap the liveness check already sprang once
+  (2 lost pings cut healthy sessions in the first window). A static guard refuses to load if the ratio drops
+  below 3×.
+- **Counting never writes.** Stale entries are skipped on read and reclaimed by the key TTL or `clearRoom`;
+  making the count a write path would put a write on every join.
+- **Values with no separator count as live.** That is the pre-format shape, and old pods keep writing it during
+  a rolling deploy — treating it as stale would erase *that pod's entire audience* from the count. The other
+  direction (a zombie surviving to TTL) heals once the deploy finishes.
+- **One timer per pod, not per session.** The registry already knows every local session, and each session
+  already owns a liveness interval — per-session would double that. The interval comes from the port
+  (`heartbeatInterval()`), because "how often must I re-register to stay counted" is that adapter's contract;
+  split across two places, one side changes and live viewers vanish from the count.
+- **A single session's failure is absorbed.** If it ended the stream, the pod would stop re-registering
+  *everything* and the whole audience would disappear after the staleness window — worse than the bug being
+  fixed. `concatMap` also keeps a slow Redis from overlapping rounds and doubling the writes.
+- Staleness is judged against the **reader's** wall clock, so cross-pod clock skew applies; the 3-beat margin
+  swallows second-scale skew. Moving the comparison into Lua would use Redis's single clock but would also
+  move a full scan onto its single thread, and that cost is measured to be fine where it is.
+- **`HEXPIRE` (field TTL) is deliberately unused.** It is simpler — no timestamp parsing, no bounded
+  arithmetic — and `redis:7` resolved to 7.4.11 here, which has it (measured). But the test tag floats, so a
+  machine that pulled 7.2 lacks it, and production's version is not visible from this repo. That is a
+  "green locally, broken in production" shape. Revisit when 7.4+ is guaranteed.
+
+## Scale axis — what is measured, and what the numbers must still come from
+
+Two items are deliberately **not** implemented here. Both were investigated; the reasons differ.
+
+**Connection cap** — nothing limits accepted connections (`1013` closes an individual slow session, it is not a
+cap). The failure it would prevent is cascading: a pod takes more than it can serve, GCs to death, and its
+whole audience reconnects onto the next pod.
+
+Measured (in-process, 20,000 sessions, three register/unregister cycles):
+
+| | |
+|---|---|
+| Registry heap per idle session | **~1,990 B** |
+| 12,000 sessions | ~24 MB |
+| Retained after everyone leaves | **0 MB** — no leak across cycles |
+
+So **heap in the registry is not the binding resource** — the cap's number has to come from the axes this
+measurement cannot see (Netty/TLS buffers, file descriptors, fan-out CPU), which means the load track, not a
+guess. Shipping a number from nowhere is what this repo spends its time undoing.
+
+⚠️ That measurement first showed 15 MB retained per cycle, growing linearly — which reads exactly like a
+per-session leak. It was **Mockito recording 40,000 invocations** on the stubbed repository. With a
+hand-written stub the residual is 0. If you re-run this, do not use a mock for the collaborator.
+
+**Per-room serialization + batching (and dropping `clientMsgId` from broadcasts)** — today `serialize` runs
+inside each session's pipeline, so one message costs N serializations in a room of N. The premise for the
+contract half is **verified**: `ACK` already carries both `id` and `clientMsgId`, and the front-end guide
+already tells clients to dedup broadcasts by `id`, so the mapping can be built from ACK alone and the
+broadcast copy needs no `clientMsgId` — which collapses the four per-recipient variants to two.
+
+It stays a separate ticket because it moves the transport boundary: the sink would have to carry wire text
+instead of `OutboundMessage`, so every producer (`SendChatService` echo fallback, `SystemMessageService`,
+`LiveRoomEndedHandler`, `ChatBroadcastSubscriber`) serializes and the mapper configuration moves into
+chat-core. That is a defensible change — `OutboundMessage` already owns the wire contract — but it is a
+different review from this one.
+
+## Viewer count updates — the same frame again, only when it changed
+
+`ROOM_INFO` used to be sent once at join, so the number was a **frozen snapshot**: the roster work made the
+count accurate, and nothing could deliver that accurate number to sessions already connected.
+
+- **The frame is reused, not replaced.** The front-end guide's documented handler is a pure state setter
+  (`setActiveCount` + `setOwnerMode`), so repeat delivery is idempotent — whereas nothing in the contract says
+  what a client does with an *unknown* `type`, which makes a new frame type the riskier option.
+  ⚠️ It is still a **front-end contract addition**: that guide says "join only", and it has been updated.
+- **Only on change.** Pushing every round costs one frame per session per round forever, which in a large
+  room is the entire cost of the feature. A quiet room now costs nothing.
+- **The first round seeds, it does not send.** The join-time `ROOM_INFO` is the baseline; sending again would
+  hand every session in every room one duplicate of a number it already has.
+- **An unknown count is never pushed.** `activeCount` is nullable to mean "don't know", and pushing that as an
+  *update* blanks a number the viewer could already see — different from not knowing it at join.
+- **The read bypasses the 3s count cache.** That cache exists to damp a join storm, but this timer's whole job
+  is to observe change, so going through a read-suppressor would hide anything inside the cache window. There
+  is also nothing to damp here: one read per room per round is already bounded.
+- **`isRoomOwner` is resolved per session** (`sendToRoomGated`). One shared frame would switch the owner UI on
+  for everyone or off for the owner.
+- Pods read independently, so viewers in one room can briefly see different numbers. Accepted — reconciling
+  would need cross-pod agreement, which this soft number does not earn.
+- It rides the **heartbeat timer**, after re-registration, so the count it reports is already the
+  zombie-free one. A second timer would double a per-session cost.
+
+## History (VOD) — the gate is one predicate and the exclusion is in the query
+
+`GetChatHistoryUseCase` → `GetChatHistoryService` (chat-core, **blocking**) ← `ChatHistoryController`
+(live-app). Blocking because the caller is MVC: a `Mono` there just adds a reactive hop before a `block()`.
+It lives in live-app for the same reason kick does — the beans that answer "who owns this room" and "when did
+it start" are in live-core, and chat asks through `live-api` ports only.
+
+- **Two modes, mutually exclusive**: cursor (`beforeId`) and VOD window (`playbackPositionMs`). Both at once
+  is rejected rather than one silently ignored, because a client that gets the other mode's result cannot tell.
+- **`findBefore` reads exactly `size`, not `size + 1`.** The shipped frontend contract has no `hasNext` and
+  infers it from `messages.length === size`. Reading one extra makes "more pages" and "exactly full"
+  indistinguishable. Do **not** put this result in the shared `CursorPage` — that helper assumes `size + 1`.
+- **Kicked senders are excluded inside the Mongo query** (`$nin`), never after the read. Filter afterwards and
+  a full page comes back short, which the frontend reads as end-of-list — **the scroll stops silently**.
+  Pinned by a Testcontainers test and by a service test that captures what was passed down.
+- **The privileged view (original text + sender email) uses the same predicate as the live fan-out**:
+  `ChatPermissionPolicy.seesUnmaskedContent(role, isRoomOwner)` — room owner **or** ADMIN. The code used to
+  warn that writing history against the owner-only helper would open live to admins while closing history;
+  that helper is now `toPrivilegedView()` and the warning is answered. The design doc's §10.7 still says
+  owner-only — the product decision recorded on `ChatMessageVisibility.FULL` (admins and sellers get the same
+  chat powers) is the one that holds.
+- **An unknown requester role throws instead of narrowing.** Falling back to MASKED would leave a legitimate
+  operator unable to see the original text in their own room, and that looks like nothing at all.
+- **Anonymous requests are allowed** (public VOD chat, design-confirmed), so `requesterId` is nullable and
+  `requesterRole` is its pair — one without the other is rejected because a half-identity silently narrows.
+- **`playbackPositionMs` → absolute instants** via `LiveRoomView.startedAt`; elapsed time is not stored.
+  The window is 5 minutes, clamped at `startedAt`, and capped at **200 regardless of `size`**. A room that
+  never started is rejected, not answered with an empty list — empty means "nobody talked".
+- Command-contract violations become **`CHAT-009` (400)**. The record throws `IllegalArgumentException`, which
+  the global handler does not map, so a client bug would otherwise be a 500 plus an `Unhandled exception` log.
+  The handler was *not* widened: that would turn infrastructure-origin `IllegalArgumentException` into 400 too.
+- `ChatMessageRepository.findByRoomIdBefore` (reactive) has **no caller and never will** — history went to the
+  blocking port. Its javadoc used to instruct the next person to do the opposite; that is corrected. It is a
+  cleanup candidate, left in place only because deleting it removes nine tests with it.
+
+## Logging — the level is the required response, and the field is the query
+
+Structured ECS JSON for every app, set as *default* properties from `common/global`
+(`StructuredLoggingDefaults`). Two measured traps live there: Boot 4 moved `EnvironmentPostProcessor` to
+`org.springframework.boot` and left a `@Deprecated` twin in `...boot.env`, so the old one compiles and
+silently never runs; and registration is `META-INF/spring.factories`, not `.imports`. A test asserts the
+actual console bytes, because the property can read `ecs` while the output is plain text.
+
+**Correlation is written to the Reactor Context, not MDC.** MDC is a `ThreadLocal`, and measured it is
+`null` after a `publishOn` and `null` inside `onErrorResume` — where nearly every degradation log in this
+module lives. `io.micrometer:context-propagation` plus `Hooks.enableAutomaticContextPropagation()` bridges
+it; `ChatWebSocketHandler` writes `session_id`/`room_id` for the handshake and `user_id` inside the verified
+session. Field names are snake_case and live only in `LogFields` — ECS lifts MDC straight to top-level JSON
+beside `log.level` and `error.stack_trace`, so camelCase would put two conventions in one object.
+
+- **No `request_id` on the reactive side.** A WS session, not a request, is the lifetime unit, and
+  `session.getId()` exists from the first line. A second identifier for the same thing just raises the
+  question of which one to group by.
+- **The Redis subscriber thread has no session scope**, so fan-out, room-end and account-event pipelines
+  write `room_id`/`user_id` themselves. Those three run only in streaming-app (live-app publishes and
+  excludes `com.sapari.chat` from scanning), so the hook is always on where they run.
+- `addKeyValue` (single-line fields) also reaches the JSON, verified — it is the only option where no scope
+  exists. Whether a key present in *both* MDC and `addKeyValue` stays valid JSON was **not** measured, so
+  nothing in this module creates that case.
+
+**Level discipline: ERROR means a human must act.** Now that the degradation metrics exist, "log it at ERROR
+or it disappears" is no longer a reason — the meter carries the rate, and alerting belongs there, not on
+individual lines.
+
+| Shape | Level | Why |
+|---|---|---|
+| Moderation read failed, request let through | WARN | heals when Redis returns; `chat.policy.open` has the rate |
+| Rate limit degraded / TTL fallback | WARN | enforcement continues, only accuracy is lost |
+| Publish or fan-out dropped | WARN | the message is persisted; only live delivery was lost |
+| **Key type conflict** (`WRONGTYPE`) | **ERROR** | retries never heal it; a human must clear the key |
+| Payload parse / deserialize failure | **ERROR** | a contract mismatch; it takes a deploy |
+| Room-end or account-event step failed | **ERROR** | control is lost — the room stays open, the ban is not applied |
+| Forced-close signal failed to emit | **ERROR** | that session can no longer be cut |
+
+The contrast is what matters, so it is pinned by a test: raising the transient branch to ERROR is a
+one-character change that breaks nothing otherwise, and it would bury the lines that need action.
+
+**Runtime log level changes are deliberately unavailable.** The actuator `loggers` endpoint would do it, but
+it mutates state over POST and this app has no Spring Security — exposing it on the unauthenticated
+management port would let anyone reachable there turn on DEBUG and flood the log pipeline. Until there is
+auth or a NetworkPolicy, levels change by `LOGGING_LEVEL_<PACKAGE>` and a restart. That is also why this
+module has **no DEBUG logging worth enabling** (measured: 0 of 143 statements repo-wide are DEBUG) — adding
+it only pays off once it can be switched on.
+
+## Observability — what is measured is the policy *not* being enforced
+
+`ChatMetrics` (`application/port`, no micrometer) ← `infrastructure/metrics`. ArchUnit rule 16 already
+covers chat by wildcard — verified by planting a `MeterRegistry` field in an application class and watching
+it fail. `ChatMetrics.NOOP` is selected via `ObjectProvider` when no registry exists, **not**
+`@ConditionalOnBean`: that condition is evaluated before autoconfiguration, so it picks NOOP even when a
+registry does arrive. Measured — the wiring test supplies the registry *from an autoconfiguration*, and the
+conditional variant really does fall back to NOOP.
+
+| Meter | Tags | What it means |
+|---|---|---|
+| `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through |
+| `chat.ratelimit.degraded` | `mode` | pod-local window, or a denial whose TTL read failed |
+| `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
+| `chat.session.cut` | `reason` | the server closed a session |
+
+- **The adapter must never throw.** Most call sites are inside `onErrorResume` lambdas — a throw there
+  propagates downstream and *denies* the request the policy decided to allow. Instrumentation would invert
+  the availability policy. `safe()` plus null-tolerant tags, pinned by a throwing-registry test.
+- **`failure=store_corrupted` is never merged into `unavailable`.** A corrupted key does not heal on retry
+  or on Redis coming back; a human must clear it. Merged, the permanent condition hides under the transient one.
+- **`checkpoint` separates entry from send.** Open at entry only means a sanctioned user is watching; open at
+  the send re-check means posts land in an ended room. A mutation test caught that this distinction was
+  initially unguarded.
+- **`chat.session.cut` exists because close 1000 means three things** (room end, lifetime, liveness) and only
+  room end is preceded by an explaining frame. `MODERATION` (1008) and `BUFFER_OVERFLOW` (1013) are in the
+  same meter so the reasons sum to all server-initiated closes.
+- Every meter is **0 in the healthy case**, which is what makes alerting possible — tests assert the counters
+  are not even created on a healthy path.
+- The Prometheus registry rejects same-name-different-tag-key meters, so a call that omits a tag makes that
+  series vanish silently at runtime. A scrape test walks every enum value; add a line when adding a meter.
+- **Exposure is locked in code, because this app has no Spring Security.** `ObservabilityExposureConfig`
+  refuses to boot unless `management.server.port` is set and differs from `server.port`, and unless the set
+  of endpoints that are **actually exposed** is exactly `{health, prometheus}` — note **exactly**, so one
+  extra endpoint is also a boot failure. It does **not** read `exposure.include`/`exclude` any more: it asks
+  `WebEndpointsSupplier.getEndpoints()`, which covers six config axes at once (`include`, `exclude`,
+  `endpoint.<id>.enabled`, `endpoints.enabled-by-default`, `endpoint.<id>.access`,
+  `endpoints.access.default`) — measured, each of the last four booting successfully while the old
+  key-reading guard passed. An earlier version of this bullet described the deleted implementation: a
+  *subset* check, a `Binder` read, and a YAML-list-vs-scalar notation axis. All three are gone — parsing is
+  gone, so notation is not an axis.
+  A wide-open exposure would serve `/actuator/env` unauthenticated. `/actuator/env` masks
+  its values (measured from bytecode: `show-values` defaults to `Show.NEVER`, and `Sanitizer.sanitize`
+  then returns `"******"` unconditionally) — it leaks the property *names* and sources, and that masking is
+  a default one line can flip. An earlier version of this line claimed `env` itself carried the secrets.
+- Port reachability is pinned both ways by a test that boots the real app with containers and makes real HTTP
+  calls: 404 on the user port, 200 on the management port. **Expect 404, not live-app's 401** — there is no
+  security chain here to answer first. Unlike live's equivalent it runs in CI, because the infrastructure this
+  app needs is two containers and one throwaway public key.
+
+## Startup — the port is the deadline, not the runner
+
+Measured boot order (`EagerSingletonsRunBeforeThePortBindsTest`, fixed port, real TCP connect):
+
+| Stage | Port |
+|---|---|
+| singleton pre-instantiation (`@Bean` method bodies) | refused |
+| earliest `SmartLifecycle` (`phase = MIN_VALUE`) | refused |
+| `ApplicationRunner` | **accepted** |
+
+The reactive web server is a `SmartLifecycle` at phase 2,147,481,599, so it binds inside `finishRefresh()`;
+runners come after. **Anything a request depends on must therefore be finished in a bean body, not a runner** —
+Mongo index creation is there for exactly that reason. Note the web server *object* exists during
+`onRefresh()`, long before `start()` binds, so its presence proves nothing (measured).
+
+Why it matters here and not everywhere: streaming-app has **no actuator**, so the only readiness probe
+Kubernetes can attach is a TCP socket check. A runner blocked on Mongo answers that probe `Ready` for its whole
+duration — three indexes × 30s server selection = up to 90s of handshakes routed into a pod that is about to
+die. Failing inside refresh is not a new failure mode: a throwing runner already broke
+`SpringApplication.run()` (measured). It only moves the failure to before the port opens.
+
 ## Tests
 
 Boot 4 split the slices into modules and **has no Mongo slice** (verified by jar inspection):
@@ -345,16 +667,104 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
   schema mutation appeared to break nothing (measured: 832ms green with the unique index deleted). The
   `inputs.dir` line in `build.gradle` closes it; if you move where the schema comes from, move that line too.
 - **A red test still has to say so.** Every `StepVerifier` terminator without a ceiling —
-  `verifyComplete()`, `verify()`, `verifyError(...)` — waits forever for a signal that a regression may have
-  removed, so the test *hangs* instead of failing (measured: 110s and still running on a missing close, 2m34s
-  on a `thenCancel().verify()` whose `expectNext` never arrived). **Give every one of them
-  `verify(Duration)`.** The existing suite predates this rule and still has **~121** such call sites
-  (`verifyComplete()` 69 · bare `verify()` ~50 · `verifyError(...)` 2); new and touched tests take the
-  ceiling, and the rest is a cleanup of its own. "passing ≠ catching" has a twin in
-  "failing ≠ telling".
+  `verifyComplete()`, bare `verify()`, `verifyError(...)`, `verifyErrorMessage(...)` — waits forever for a
+  signal that a regression may have removed, so the test *hangs* instead of failing (measured: 110s and still
+  running on a missing close, 2m34s on a `thenCancel().verify()` whose `expectNext` never arrived).
+  **Every call site now carries one** — measured on the commit this line lands on: **139 sites across 17
+  files** carry `expectXxx().verify(VERIFY_CEILING)`, with `VERIFY_CEILING = Duration.ofSeconds(10)`
+  declared per test class, counted over `modules/chat` + `apps/streaming-app` tests. `block(VERIFY_CEILING)`
+  is 246 in the same scope. (This line read "117 across 15 files" for a while with no base commit — the
+  rule two bullets down, which this very number broke. 117 → 128 was tests added in between; 128 → 139 is
+  the 11 sites `SendChatServiceMetricsTest` and `EntryGateMetricsTest` carried *unbounded* while both files
+  already declared a `VERIFY_CEILING` they used elsewhere. Re-measure with the scope spelled out; do not
+  patch the old number.) Verified end to end: making a signal never arrive now fails in 12s with
+  `VerifySubscriber timed out` instead of hanging. Keep it that way — a ceiling-less terminator does not
+  just hide one bug, it voids **every mutation verdict in that run**, because the suite cannot report at
+  all. "passing ≠ catching" has a twin in "failing ≠ telling".
+  - **`.block()` carries the same rule** — every test call site carries a ceiling; verified end to end by
+    making `register` return `Mono.never()`, which turns the class red at the ceiling instead of hanging.
+    **Count a conversion against the commit it lands on and state the scope** — fixing only the baseline
+    lets the scope drift instead. This sweep is 201 sites measured at its own parent over
+    `modules/chat` + `apps/streaming-app` tests. Three commits earlier the same scope gives 199 (two
+    tests added in between call `register(...).block()`); including `src/main` gives 204; widening to the
+    whole repo adds two *comment* lines in `architecture-test` that merely mention `.block()`. Two of
+    those four numbers landed on 201 by different routes — **the counts matching is not evidence that the
+    same thing was counted.**
+  - **Production has 4 of its own, and they are a different kind of bounded** — do not read them as part
+    of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
+    throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
+    `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
+    cost is an **unbounded stall, which does not accumulate across indexes**. Measured driver defaults
+    (`MongoClientSettings.builder().build()`): `serverSelectionTimeoutMs=30000`,
+    **`socketReadTimeoutMs=0` (infinite)**, `socketConnectTimeoutMs=10000`, global `timeoutMs=null` — and
+    this repo sets no Mongo timeout anywhere, so those defaults apply. So 30s bounds only the "never picks
+    a server" mode; once a server *is* picked and `createIndex` does not answer, `.block()` waits forever.
+    Want a bound? Set `timeoutMs`. It does not accumulate because the class has no `catch` and the four
+    `createIndex(...).block()` calls are sequential assignments — the first to throw ends the method and the
+    other three are never evaluated. **This line has been wrong three times**: 90s, then "120s for the
+    four … a fifth adds 30s", then "~30s". Each correction fixed the *number* without measuring what bounds
+    it. State what bounds it, not how long it is. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
+    serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
+    (`infra/`), so this is recorded, not changed.
+  - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
+    forever when the main thread throws before `countDown()`. The reason is **not** that a non-daemon
+    thread holds the worker JVM open: it does not (a thread sleeping 10 minutes still lets the Gradle test
+    worker exit cleanly, measured). The reason is that the stuck thread keeps hammering the sinks and
+    registry and so pollutes the *next* test in the same JVM. Measured on the commit this line lands on
+    over `modules/chat` + `apps/streaming-app` tests: **15 bounded `await(...)` sites**, and the ceilings
+    are **not uniform** — 10s, 30s, 60s and a `RENDEZVOUS_TIMEOUT` constant all appear. **Three of them
+    discard the returned boolean** (`ChatKickRecorderConcurrencyTest:370`,
+    `ChatBanStateRepositoryImplTest:317` and `:324`), so a timeout there is not reported by the `await`
+    itself; the assertion that follows is what fails, which is weaker than throwing with a reason. An
+    earlier version of this line said "all 7 sites take `await(30, SECONDS)` and throw with a reason" —
+    wrong on the count, the uniformity and the throwing, and with no baseline commit, which is what the
+    rule two bullets up asks for.
+  - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded, and
+    the worst case is **not** ceiling × call sites. An exceeded `block(Duration)` *throws*
+    (`IllegalStateException: Timeout on blocking read…`), which aborts that test method, so the remaining
+    calls in it never run. The bound is ceiling × (methods and worker threads that reach a stall), not
+    ceiling × call sites — in `ChatSessionRegistryTest` that is **~100 call sites spread over ~60 test
+    methods** (measured at `eecde755`; the counts move with every commit that adds a test, which is why
+    the rule two bullets up says to state the baseline), so the order of magnitude is minutes, not tens
+    of minutes. Slow, but it *reports* — that is the trade.
+  - **Scope of "every hang is bounded"**: that claim covers `modules/chat` + `apps/streaming-app` only.
+    `modules/live` still has one (`ActiveRoomGaugeTest` — a bare `await()` plus an unbounded
+    `Future.get()`), and live is outside this ticket's reach. State the scope whenever the claim is
+    repeated; a count or a claim taken over a narrower scope does not verify a repo-wide sentence.
+  - **Don't size a ceiling off a test case's reported time.** The ceiling bounds the *terminator's wait*,
+    not the case — setup, `Thread.sleep` before `StepVerifier.create`, and an inner `.timeout(...)` all sit
+    outside it. Picking values off per-case durations once produced a "raise the ceiling" commit whose slow
+    tests turned out to use an inline literal rather than the constant, so the margin did not move at all.
+  - **A slow case is not automatically a load-sensitive one.** `RedisChatBroadcasterTest` and
+    `RedisLiveRoomEndedSourceTest` take ~1.2–1.5s per recovery case, but they are mock-based (no
+    `@Testcontainers`) and that time is the production `Retry.backoff(…, ofSeconds(1))` constant plus its
+    jitter — a scheduled delay does not stretch under CPU pressure the way a `park`-vs-busy-spin margin
+    does. The actually container-backed classes among the converted 15 are `CrossPodBroadcastTest`,
+    `ChatKickRedisRepositoryTest` and `ChatMessageRepositoryImplTest`.
 - **A test that supplies wiring the app does not is worse than no test** — it goes green while production
   breaks. Both of this branch's runtime failures hid behind exactly that (`@DataJpaTest`'s transaction, a
   test-local UUID customizer). `ChatModerationWiringTest` boots the real live-app context and asserts on the
   beans it actually built; it supplies its own properties so CI runs it rather than skipping it by tag.
 - **A test claiming a guarantee must be mutation-checked**: revert the production line, confirm that test —
   and ideally only that test — fails, restore. `checkOrphanJavadoc` gates javadoc placement in `check`.
+
+## Persistence mapping — the policy is the net
+
+`@Mapper` here is `unmappedTargetPolicy = ERROR`, not the MapStruct default (`WARN`). Under the default, a
+field added to a domain record but not to the mapper leaves that target empty and the build still passes
+(measured: `warning: Unmapped target property` + BUILD SUCCESSFUL) — every read of a persisted message then
+silently misses it. `live` uses `IGNORE` for the opposite reason: its entity carries persist-only columns
+with no domain counterpart, and that is stated in `LiveRoomMapper`.
+
+**Deleting the attribute is not caught by the build**, because nothing is unmapped at the moment you delete
+it. ArchUnit rule 20 (`mapstruct_mappers_must_fail_on_unmapped_targets`, repo-wide except `live`) closes that gap: it reads the
+value out of the class file — `@Mapper` is `RetentionPolicy.CLASS`, so reflection cannot — and when the
+attribute is gone it sees the annotation default `WARN`, so one rule covers both the downgrade to `IGNORE`
+and the deletion.
+
+Neither net is replaced by the round-trip test. Adding a domain field breaks every positional
+`new ChatMessage(...)` call (13 of them, one of which is across the module boundary in `streaming-app`), and
+the cheapest way to make those compile again is a `null` argument — which makes both sides null and the
+round-trip assertion pass (measured: 4 round-trip cases green, only the test that walks
+`getRecordComponents()` red). That walking test has its own blind spot: a primitive field lands on `0`,
+which is not null, so only the policy catches it.

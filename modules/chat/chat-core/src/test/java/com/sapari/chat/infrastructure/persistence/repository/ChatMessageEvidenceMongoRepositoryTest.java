@@ -43,7 +43,7 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
 class ChatMessageEvidenceMongoRepositoryTest {
 
     @Container
-    static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
+    static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
     private static MongoTemplate mongoTemplate;
     private static ChatMessageEvidenceMongoRepository repository;

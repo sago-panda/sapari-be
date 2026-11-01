@@ -50,10 +50,10 @@ class ChatMessageTest {
     }
 
     @Test
-    @DisplayName("toOwnerView(): 방 주인 수신자에게 senderEmail·원문 포함")
-    void toOwnerView_includes_pii() {
+    @DisplayName("toPrivilegedView(): 특권 수신자(방 주인·관리자)에게 senderEmail·원문 포함")
+    void toPrivilegedView_includes_pii() {
         // when
-        ChatMessageView view = sample().toOwnerView();
+        ChatMessageView view = sample().toPrivilegedView();
 
         // then — 방 주인만 받는 PII 포함
         assertThat(view.senderEmail()).isEqualTo("buyer@sapari.com");
@@ -131,7 +131,7 @@ class ChatMessageTest {
         ChatMessage message = base().displayMessage("안녕").originalMessage(null).build();
 
         // when
-        ChatMessageView view = message.toOwnerView();
+        ChatMessageView view = message.toPrivilegedView();
 
         // then
         assertThat(view.originalMessage()).isNull();

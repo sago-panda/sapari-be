@@ -7,6 +7,7 @@ import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.inOrder;
 
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -33,6 +34,9 @@ import reactor.test.StepVerifier;
 @ExtendWith(MockitoExtension.class)
 class LiveRoomEndedHandlerTest {
 
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Mock
     private LiveRoomEndedSource liveRoomEndedSource;
 
@@ -67,7 +71,7 @@ class LiveRoomEndedHandlerTest {
         given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
+        StepVerifier.create(handler.onRoomEnded(roomId)).expectComplete().verify(VERIFY_CEILING);
 
         // then — 세 단계가 모두 일어나는지, 그리고 알림 → 닫기 → 정리 흐름이 유지되는지 고정한다.
         // (정합성이 순서에 의존하지는 않는다 — DEL·HDEL 모두 멱등이라 뒤늦은 unregister도 무해)
@@ -93,7 +97,7 @@ class LiveRoomEndedHandlerTest {
         given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
+        StepVerifier.create(handler.onRoomEnded(roomId)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(sessionManager).should(times(1)).closeAll(roomId);
@@ -112,7 +116,7 @@ class LiveRoomEndedHandlerTest {
         given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
+        StepVerifier.create(handler.onRoomEnded(roomId)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 이 체인의 본 일(세션 종료)과 정리는 그대로 수행된다
         then(sessionManager).should(times(1)).closeAll(roomId);
@@ -130,7 +134,7 @@ class LiveRoomEndedHandlerTest {
         given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
+        StepVerifier.create(handler.onRoomEnded(roomId)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(sessionRepository).should(times(1)).clearRoom(roomId);
@@ -148,7 +152,7 @@ class LiveRoomEndedHandlerTest {
         given(kickRepository.expireAfterRoomEnded(roomId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(handler.onRoomEnded(roomId)).verifyComplete();
+        StepVerifier.create(handler.onRoomEnded(roomId)).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(kickRepository).should(times(1)).expireAfterRoomEnded(roomId);

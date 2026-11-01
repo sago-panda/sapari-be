@@ -6,6 +6,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.ParameterizedTest;
 import java.util.stream.Stream;
 import com.sapari.chat.domain.exception.ChatKickContendedException;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -101,9 +103,24 @@ class KickUserServiceTest {
                 new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
-    /** 상한 초과가 드러나는 두 모양. 하나만 잡으면 나머지가 500으로 새어 나간다. */
+    /**
+     * 상한 초과가 드러나는 <b>세 모양</b>. 하나만 잡으면 나머지가 500으로 새어 나간다.
+     *
+     * <p>잠금 쪽이 가장 흔한 출처다. 이 경로의 잠금 실패는 종류와 무관하게
+     * {@code CannotAcquireLockException} 하나로 오지만(실측 — 대기 상한 초과·교착·직렬화 실패 전부),
+     * 상위 타입으로 묶어 잡으므로 맨몸 상위가 들어오는 경우도 번역된다. 아래 두 모양이 그 둘을
+     * 각각 넣는다.
+     *
+     * <p>⚠️ 이 모양들은 <b>번역 분기만</b> 덮는다. "어떤 SQLSTATE가 어떤 타입이 되는가"는 손으로 만든
+     * 예외로 재지지 못하고 실제 DB가 답한다 — 그 매핑을 재는 테스트는 지금 없다(역순 어드바이저리
+     * 잠금 둘로 실제 교착을 만들면 가능하다).
+     */
     static Stream<Arguments> timeoutShapes() {
         return Stream.of(
+                Arguments.of("잠금 대기 상한 초과",
+                        new CannotAcquireLockException("canceling statement due to lock timeout")),
+                Arguments.of("맨몸 상위 타입 — JdbcTemplate 경로·엔티티 비관적 잠금의 모양",
+                        new PessimisticLockingFailureException("deadlock detected")),
                 Arguments.of("문이 취소됨",
                         new QueryTimeoutException("canceling statement due to user request")),
                 Arguments.of("남은 수명이 0 — 다음 문을 세우지 못함",
@@ -289,10 +306,14 @@ class KickUserServiceTest {
     class Contention {
 
         /**
-         * 상한 초과는 <b>두 모양</b>으로 나온다. DB가 문을 취소하면 {@code QueryTimeoutException}이고,
-         * 남은 수명이 0 이하라 다음 문을 세우지도 못하면 {@code TransactionTimedOutException}이다.
-         * 공통 조상이 {@code NestedRuntimeException}뿐이라 한쪽만 잡으면 나머지 절반이 500으로 나간다 —
-         * 실제로 그렇게 썼다가 잡혔고, 그래서 둘을 모두 여기에 건다.
+         * 상한 초과는 <b>네 모양</b>으로 나온다 — 잠금 실패(구체 타입), 잠금 실패(맨몸 상위 타입),
+         * DB가 문을 취소({@code QueryTimeoutException}), 남은 수명이 0 이하라 다음 문을 세우지도 못함
+         * ({@code TransactionTimedOutException}). 앞 둘은 상위 타입 하나로 묶이고 뒤 둘은 각각이다.
+         * 하나만 잡으면 나머지가 500으로 나간다 — 실제로 그렇게 썼다가 <b>두 번</b> 잡혔다.
+         *
+         * <p>실제로 어느 타입이 오는지는 여기서 정하지 않는다. 그건 실제 Postgres가 답하는 것이고
+         * {@code ChatKickRecorderConcurrencyTest}가 잰다 — 이 테스트는 "그 타입이 오면 번역된다"만
+         * 지킨다. 둘을 한 자리에 두면 DB가 바뀔 때 무엇이 틀렸는지 가려진다.
          */
         @ParameterizedTest(name = "{0}")
         @MethodSource("com.sapari.chat.application.service.KickUserServiceTest#timeoutShapes")

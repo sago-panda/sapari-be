@@ -14,6 +14,97 @@ import com.sapari.chat.infrastructure.persistence.entity.ChatBanEntity;
 public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID> {
 
     /**
+     * 밴 판단 잠금의 해시 seed — 이 잠금이 쓰는 키 공간의 이름이다.
+     *
+     * <p>어드바이저리 잠금 키 공간은 DB 전역에 하나라 다른 용도와 겹칠 수 있다. seed가 그 공간을
+     * 나눈다 — 값 자체에 의미는 없고 <b>다른 용도와 다르다는 것</b>만이 의미다.
+     *
+     * <p>⚠️ 바꾸지 마라. 바꾸는 순간 롤링 배포 중의 구·신 버전이 서로 다른 키를 잡아 그 구간 동안
+     * 직렬화가 통째로 깨진다 — 그리고 깨진 증상은 "동시 강퇴에서 밴이 안 걸린다"라서, 배포가 끝난
+     * 뒤에는 재현되지 않는다.
+     *
+     * <p>{@code @Query}가 컴파일 상수를 요구하므로 문자열이고, 쓰이는 곳보다 먼저 선언돼야 한다.
+     */
+    String BAN_DECISION_LOCK_SEED = "8317461";
+
+    /** 잠금 대기 상한. 정상 보유는 밀리초라 정당한 동시 강퇴는 여기 닿지 않는다. */
+    String LOCK_WAIT_LIMIT = "1s";
+
+    /**
+     * 이 트랜잭션의 <b>잠금 대기</b> 상한을 건다. 잠금을 잡기 직전에 불러야 한다.
+     *
+     * <p><b>왜 트랜잭션 타임아웃으로는 부족한가.</b> 강퇴는 인증된 엔드포인트지만 레이트리밋이 없다 —
+     * 판매자 계정 하나와 자기 방에서 발화한 계정 하나만 있으면 같은 요청을 동시에 K개 던질 수 있다.
+     * 전부 같은 키에 줄을 서고, <b>기다리는 동안에도 각자 커넥션을 쥔다</b>(잠금이 트랜잭션 첫 문이라
+     * 커넥션이 이미 획득된 상태다). 그러면 커넥션 보유 시간이 '작업 시간(밀리초)'에서 '대기열 깊이 ×
+     * 작업 시간, 상한은 트랜잭션 타임아웃'으로 바뀌고, 그 상한이 5초라 풀이 오래 마른다. 이 저장소에
+     * Hikari 설정이 없어 기본값(10)이면 동시 10건으로 풀이 포화된다.
+     *
+     * <p>이 결합은 어드바이저리 잠금이 들어오면서 <b>새로 생겼다.</b> 그 전에 같은 (사용자, 방)으로
+     * 반복 강퇴하면 아무것도 기다리지 않았다 — 커밋된 충돌 행에 대한 {@code ON CONFLICT DO NOTHING}은
+     * 잠금 대기 없이 끝난다(리뷰어 실측 0.539ms).
+     *
+     * <p>상한을 걸면 대기열이 <b>빨리 실패</b>하고, 커넥션 보유가 대기열 깊이와 무관해진다. 실패는
+     * 이미 있는 경로로 흘러간다 — 호출자가 경합 예외로 번역해 409로 답하고, 클라는 재시도한다.
+     * 정상 보유 시간이 밀리초라 정당한 동시 강퇴(다른 방, 같은 사람)는 이 상한에 닿지 않는다.
+     *
+     * <p>{@code statement_timeout}이 아니라 {@code lock_timeout}인 것이 중요하다 — 잠금 대기만 끊고
+     * 집계 쿼리의 실행 시간에는 손대지 않는다. {@code SET LOCAL}이라 트랜잭션과 함께 풀린다.
+     *
+     * <p>값은 리터럴이다({@code SET}은 파라미터 바인딩을 받지 않는다). 그래서
+     * {@link #LOCK_WAIT_LIMIT}이 상수이고, 이 값은 <b>테스트의 랑데부 상한보다 커야 한다</b> —
+     * 그 테스트가 한쪽을 일부러 잠금에서 기다리게 만들기 때문이다.
+     */
+    @Modifying
+    @Query(value = "SET LOCAL lock_timeout = '" + LOCK_WAIT_LIMIT + "'", nativeQuery = true)
+    void boundLockWait();
+
+    /**
+     * 사용자 단위 어드바이저리 잠금 — 밴 판단(세기 → 견주기 → 쓰기)을 직렬화한다.
+     *
+     * <p><b>왜 행 잠금이 아닌가.</b> 잠글 행이 없을 수 있다. 밴이 처음 걸리는 순간이 바로 이 직렬화가
+     * 필요한 순간이고, 그때 {@code chat_ban}에는 이 사용자의 행이 아직 없다. {@code SELECT FOR UPDATE}는
+     * 없는 행을 잠그지 못하므로(그래서 이 결함이 지금까지 남아 있었다) 행과 무관한 잠금이 필요하다.
+     *
+     * <p><b>왜 {@code SERIALIZABLE}이 아닌가.</b> 그쪽은 직렬화 실패를 예외로 돌려주므로 강퇴 흐름 전체에
+     * 재시도 책임이 생긴다 — 이미 Redis 쓰기와 발행이 커밋 뒤에 줄줄이 붙어 있어 재시도 단위를 정하는
+     * 일이 작지 않다. 잠금은 기다리기만 하고, 그 대기의 상한은 <b>바로 위 {@link #boundLockWait}가
+     * 쥔다</b> — 호출자의 트랜잭션 타임아웃이 아니다. 전에는 그렇게 적혀 있었는데, 대기하는 쪽도
+     * 커넥션을 쥐므로 트랜잭션 상한(초 단위)으로는 너무 늦다는 것을 알게 되어 상한을 따로 들였다.
+     * 이 문단을 근거로 {@code boundLockWait}를 "중복이니 제거"로 읽지 말 것.
+     *
+     * <p>{@code _xact_} 변종이라 <b>커밋·롤백과 함께 자동으로 풀린다</b> — 명시적 해제 경로가 없어서
+     * 예외로 빠져나가도 잠금이 남지 않는다. 세션 단위 변종({@code pg_advisory_lock})을 쓰면 커넥션 풀이
+     * 그 커넥션을 재사용하는 순간 잠금이 엉뚱한 요청에 딸려간다.
+     *
+     * <p><b>키는 64비트로 만든다.</b> {@code hashtext}는 int4라 수십만 사용자 규모에서도 충돌이 흔하고
+     * (생일 문제), 충돌하면 서로 무관한 두 사용자가 줄을 선다 — 정확성 손실은 아니고 성능 비용이지만
+     * 공짜로 피할 수 있다. {@code hashtextextended}는 int8을 돌려주므로 실질적으로 충돌이 없다.
+     *
+     * <p>어드바이저리 잠금 키 공간은 <b>DB 전역에 하나</b>라 다른 모듈이 쓰기 시작하면 이름이 겹칠 수
+     * 있다. 그래서 seed를 비워 두지 않고 {@link #BAN_DECISION_LOCK_SEED}를 준다 — 같은 사용자 문자열이라도
+     * seed가 다르면 키가 갈리므로, 네임스페이싱이 나중의 이전 작업이 아니라 지금의 상수 하나로 끝난다
+     * (실측: {@code hashtextextended('abc',0)}과 {@code hashtextextended('abc',7777777)}은 다르고, 같은
+     * seed는 늘 같은 값을 준다).
+     *
+     * <p>⚠️ <b>2-인자 변종({@code pg_advisory_xact_lock(int4, int4)})으로 옮기지 마라.</b> 한때 이 자리에
+     * "그때는 2-인자로 옮겨야 한다"고 적혀 있었는데 틀렸다. 그 변종은 두 인자가 <b>각각 32비트</b>라
+     * (실측: 오버로드는 {@code bigint}와 {@code integer, integer} 둘뿐이다) 한쪽을 용도 접두로 쓰면
+     * 사용자 키가 int4로 내려간다 — 바로 위 단락이 {@code hashtext}를 기각한 그 생일 문제가 그대로
+     * 돌아온다. 64비트를 지키면서 네임스페이스를 얻는 길은 seed뿐이다.
+     *
+     * <p>반환형이 {@code void}인 것은 <b>Spring Data가 비-{@code @Modifying} 쿼리의 단일 결과를 버리기</b>
+     * 때문이다. 이 SELECT 자체는 1행 1열을 돌려준다 — 함수가 {@code void} 타입이라서가 아니다(그렇게
+     * 적혀 있었는데 인과가 성립하지 않는다. {@code pg_try_advisory_xact_lock}처럼 boolean을 돌려주는
+     * 함수로 바꿔도 {@code void} 선언이 그대로 동작한다). 쓰기가 아니라 잠금 획득이라
+     * {@code @Modifying}을 붙이지 않는다 — 붙이면 {@code executeUpdate()}로 불려 SELECT에서 깨진다.
+     */
+    @Query(value = "SELECT pg_advisory_xact_lock("
+            + "hashtextextended(cast(:userId as text), " + BAN_DECISION_LOCK_SEED + "))",
+            nativeQuery = true)
+    void lockForBanDecision(@Param("userId") UUID userId);
+
+    /**
      * 지금 유효한 밴. 만료가 없거나({@code expires_at IS NULL}) 아직 지나지 않은 행이다.
      *
      * <p>결과는 <b>많아야 하나</b>다 — {@code uk_chat_ban_user_id}가 사용자당 한 행을 보장한다.

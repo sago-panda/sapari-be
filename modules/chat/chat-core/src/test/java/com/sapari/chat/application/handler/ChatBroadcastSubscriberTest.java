@@ -9,6 +9,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.times;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -22,6 +23,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.protocol.ChatEnvelope;
@@ -39,6 +41,9 @@ import reactor.test.StepVerifier;
 @ExtendWith(MockitoExtension.class)
 class ChatBroadcastSubscriberTest {
 
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Mock
     private ChatBroadcaster broadcaster;
 
@@ -51,6 +56,18 @@ class ChatBroadcastSubscriberTest {
      */
     @Spy
     private ChatPermissionPolicy permissionPolicy = new ChatPermissionPolicy();
+
+    /**
+     * 관측 포트는 목이 아니라 NOOP 이다 — 이 테스트가 보는 것은 라우팅 생존이고, 지표 호출을
+     * 검증 대상에 넣으면 그 관심사가 섞인다. 지표는 {@code SubscriberLogContextTest} 와
+     * 어댑터 테스트가 따로 지킨다.
+     *
+     * <p>{@code @Spy} 로 두는 이유: {@code @InjectMocks} 는 생성자 인자를 타입으로 찾으므로
+     * 필드가 없으면 <b>null 을 넣고 조용히 통과</b>한다 — 그러면 fail-open 람다 안에서 NPE 가 나고
+     * 그 NPE 는 그 람다를 통째로 깨서 "흡수가 침묵이 된" 상태를 만든다(실제로 그렇게 깨졌다).
+     */
+    @Spy
+    private ChatMetrics metrics = ChatMetrics.NOOP;
 
     @InjectMocks
     private ChatBroadcastSubscriber subscriber;
@@ -95,7 +112,7 @@ class ChatBroadcastSubscriberTest {
                 null, Instant.parse("2026-06-11T00:00:00Z"));
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
@@ -136,7 +153,7 @@ class ChatBroadcastSubscriberTest {
         given(sessionManager.closeUser(roomId, kickedId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.KickEvent(kickedId))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.KickEvent(kickedId))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(sessionManager).should(times(1)).closeUser(roomId, kickedId);     // 당사자 세션 close
@@ -165,7 +182,7 @@ class ChatBroadcastSubscriberTest {
                 "안녕", "안녕", "c-1", Instant.parse("2026-06-11T00:00:00Z"));
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();
@@ -193,7 +210,7 @@ class ChatBroadcastSubscriberTest {
                 "상품 설명", "상품 설명", "c-2", Instant.parse("2026-06-11T00:00:00Z"));
 
         // when
-        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(fromOwner))).verifyComplete();
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(fromOwner))).expectComplete().verify(VERIFY_CEILING);
 
         // then
         ArgumentCaptor<Function<ChatSession, OutboundMessage>> cap = resolverCaptor();

@@ -43,10 +43,11 @@ build:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$FORCE_REVIEW == "true"'
-  # 앱 설정은 이 클론에 없다 — application*.yaml 이 .gitignore 대상이다. 설정 없이 앱을 띄우면
-  # 데이터소스·LiveKit·룸토큰 프로퍼티가 연쇄로 없어 실패하므로, 컨텍스트를 실제로 띄우는 테스트는
-  # @Tag("context") 로 CI 에서 제외한다(루트 build.gradle). 룸토큰 개인키를 CI 변수에 넣는 길은
-  # 택하지 않았고, 그 판단은 그대로다.
+  # 앱 설정은 이 클론에 없다 — application*.yaml 이 .gitignore 대상이다. 종전에는 그 때문에
+  # 컨텍스트를 띄우는 테스트를 @Tag("context") 로 CI 에서 제외했는데, 그 제외는 2026-10-31 에
+  # 걷혔고 태그 자체도 코드에 없다 — 테스트가 필요한 값을 스스로 공급하게 바꿨기 때문이다
+  # (룸토큰 키쌍은 테스트가 생성하고, 나머지는 @SpringBootTest(properties) 로 준다).
+  # 룸토큰 개인키를 CI 변수에 넣는 길은 여전히 택하지 않았다.
   #
   # Docker 데몬은 그것과 다른 문제여서 붙인다. Testcontainers 테스트는 앱 설정을 요구하지 않는다 —
   # 필요한 컨테이너를 스스로 띄우고 주소도 자기가 주입한다(@ServiceConnection 또는 getHost()).

@@ -54,7 +54,12 @@ import java.time.ZoneOffset;
 // management.server.port 는 LiveSecurityConfig 의 가드 빈이 요구한다 — 없으면 액추에이터가
 // 사용자 포트에 열린다며 컨텍스트가 뜨지 않는다. 여기서 재는 것과 무관하지만 채워야 뜬다.
 @WebMvcTest(controllers = ChatModerationController.class,
-        properties = "management.server.port=9999")
+        properties = {"management.server.port=9999",
+                // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아
+                // 지표가 조용히 빈다(LiveSecurityConfig.requiredEndpointsMustBeExposed).
+                // 이 조각 테스트에는 액추에이터가 없어 그 가드가 건너뛰므로 사실 이 줄이 없어도 뜬다 —
+                // 전에는 필요했고, 남겨 두면 운영 설정과 같은 모양이라는 정보가 된다.
+                "management.endpoints.web.exposure.include=health,prometheus"})
 // 컨트롤러를 명시로 등록한다. 아래 TestApplication 은 @SpringBootConfiguration 뿐이라 컴포넌트
 // 스캔이 없고, 스캔이 없으면 @WebMvcTest 의 controllers 지정만으로는 빈이 생기지 않아 404 가 된다.
 @Import({ChatModerationController.class, LiveSecurityConfig.class,

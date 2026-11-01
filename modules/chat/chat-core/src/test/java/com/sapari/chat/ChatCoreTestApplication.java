@@ -1,10 +1,15 @@
 package com.sapari.chat;
 
+import java.time.Clock;
+
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.TypeExcludeFilter;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
+
+import com.sapari.global.time.TimeProvider;
 
 /**
  * chat-core 테스트 부트 설정. chat-core는 라이브러리 모듈이라 메인 애플리케이션이 없어 테스트 소스에만 둔다.
@@ -34,4 +39,19 @@ import org.springframework.context.annotation.FilterType;
                 pattern = "com\\.sapari\\.chat\\.application\\.(service|handler)\\..*"),
         @ComponentScan.Filter(type = FilterType.CUSTOM, classes = TypeExcludeFilter.class)})
 public class ChatCoreTestApplication {
+
+    /**
+     * 벽시계.
+     *
+     * <p>{@code TimeProvider} 는 {@code @Component} 지만 {@code com.sapari.global} 에 살고, 위
+     * {@code @ComponentScan} 은 basePackages 를 주지 않아 <b>이 클래스의 패키지({@code com.sapari.chat})
+     * 만</b> 본다. 스캔 범위를 넓히면 그 패키지의 다른 것까지 따라 들어오므로 필요한 빈만 명시한다.
+     *
+     * <p>고정 시계가 아니라 시스템 시계다 — 이 설정을 쓰는 테스트들은 시각을 단언하지 않고, 시각이
+     * 걸린 판정(세션 명부의 낡음)은 자기 테스트에서 시계를 직접 움직인다.
+     */
+    @Bean
+    TimeProvider timeProvider() {
+        return new TimeProvider(Clock.systemUTC());
+    }
 }

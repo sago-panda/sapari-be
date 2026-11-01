@@ -37,24 +37,4 @@ public class ChatMessageRepositoryImpl implements ChatMessageRepository {
         return mongoRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, clientMsgId)
                 .map(mapper::toDomain);
     }
-
-    @Override
-    public Flux<ChatMessage> findByRoomIdBefore(UUID roomId, String beforeId, int size) {
-        // Mongo limit(0) = 무제한 — size<=0이 들어오면 방 전체를 이벤트루프로 긁어오므로 loud failure로 차단
-        if (size <= 0) {
-            return Flux.error(new IllegalArgumentException("size는 1 이상이어야 한다: " + size));
-        }
-        Criteria criteria = Criteria.where("roomId").is(roomId);
-        if (beforeId != null) {
-            if (!ObjectId.isValid(beforeId)) {
-                return Flux.error(new IllegalArgumentException("잘못된 ObjectId 형식: " + beforeId));
-            }
-            criteria = criteria.and("_id").lt(new ObjectId(beforeId));
-        }
-        Query query = Query.query(criteria)
-                .with(Sort.by(Sort.Direction.DESC, "_id"))
-                .limit(size);
-        return mongoTemplate.find(query, ChatMessageDocument.class)
-                .map(mapper::toDomain);
-    }
 }

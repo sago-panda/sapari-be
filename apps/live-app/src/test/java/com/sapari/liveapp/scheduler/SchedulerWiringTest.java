@@ -218,9 +218,18 @@ class SchedulerWiringTest {
         }
 
         /**
-         * 값까지 보는 이유: 실제 동작 검증인 {@code ReconcileSchedulerLockTest} 는 {@code @Tag("docker")}
-         * 로 CI 에서 빠진다. 테이블명 오타는 <b>매 회차 예외</b>로, {@code usingDbTime()} 누락은
+         * 값까지 보는 이유: 테이블명 오타는 <b>매 회차 예외</b>로, {@code usingDbTime()} 누락은
          * <b>인스턴스 시계 오차만큼의 상호배제 구멍</b>으로 이어지는데 둘 다 컴파일은 통과한다.
+         *
+         * <p>한때 이 자리에 "실제 동작 검증인 {@code ReconcileSchedulerLockTest} 는
+         * {@code @Tag("docker")} 로 CI 에서 빠진다" 고 적혀 있었다. <b>지금은 참이 아니다</b> — 이
+         * 브랜치가 Gradle 의 태그 제외를 전부 걷었다(실측: {@code excludeTags}/{@code includeTags}
+         * 0건). CI 는 dind 서비스를 띄우고 그 테스트를 실제로 돌린다.
+         *
+         * <p>그래도 이 단언을 지우지 말 것. 여기 리터럴로 못박은 리스 값이
+         * {@code roundBudget = 리스 × 4/5} 의 원천이다 — "CI 가 실제 경합을 돌리니 중복이다" 로 읽고
+         * 지우면 그 원천이 사라진다. 두 테스트가 보는 것이 다르다: 저쪽은 상호배제가 실제로 되는지,
+         * 이쪽은 그 값이 무엇인지다.
          */
         @Test
         @DisplayName("lock-at-least-for 가 cron 주기의 절반을 넘으면 부팅을 거부한다")
@@ -361,7 +370,8 @@ class SchedulerWiringTest {
         @DisplayName("세 잡 모두 서로 다른 이름의 락을, 잡별 유지 시간으로 건다")
         void everyJobLocksUnderItsOwnName() {
             // 유지 시간까지 여기서 고정하는 이유: 실제 경합·인계 검증인 ReconcileSchedulerLockTest 는
-            // @Tag("docker") 로 CI 에서 빠진다. 값이 조용히 줄어도 CI 는 아무 말이 없는데, 리스는
+            // 종전에는 @Tag("docker") 로 CI 에서 빠졌다(2026-10-31 제외 걷힘 — 이제 CI 에도 데몬이
+            // 있다). 값이 조용히 줄어도 알아채기 어려운 건 그대로인데, 리스는
             // 인계 지연이자 <회차 예산의 원천>이라(예산 = 리스 × 4/5) 줄면 처리량까지 함께 준다.
             Map<Class<?>, Map.Entry<String, Duration>> expected = Map.of(
                     ExpireReadyScheduler.class,

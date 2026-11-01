@@ -4,12 +4,11 @@ import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatMessage;
 
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
  * 채팅 메시지 영속 포트 (reactive — streaming-app 이벤트루프에서 호출).
- * VOD 강퇴자 제외 조회는 live-app(blocking) 책임이라 여기 두지 않는다.
+ * 이력 조회(강퇴자 제외·VOD 창)는 블로킹이라 {@code ChatHistoryRepository} 가 따로 맡는다.
  */
 public interface ChatMessageRepository {
 
@@ -18,7 +17,4 @@ public interface ChatMessageRepository {
     // 중복 전송(DuplicateKey) 발생 시 기존 메시지 재조회용
     Mono<ChatMessage> findByRoomIdAndSenderIdAndClientMsgId(UUID roomId, UUID senderId, String clientMsgId);
 
-    // 이력 역순 페이징 — beforeId 이전(_id 기준 내림차순) size건. size > 0 불변식(0 이하는 IllegalArgumentException).
-    // 상한(VOD 다시보기 최대 200건)은 호출처 입력검증 책임.
-    Flux<ChatMessage> findByRoomIdBefore(UUID roomId, String beforeId, int size);
 }

@@ -1,6 +1,7 @@
 package com.sapari.chat.domain.repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatKickLog;
@@ -46,4 +47,17 @@ public interface ChatKickLogRepository {
      * 사용자도 같은 카운터에 쌓여야 한다.
      */
     long countDistinctKickersSince(UUID userId, Instant since);
+
+    /**
+     * 이 방에서 강퇴된 사용자 id 전부.
+     *
+     * <p>이력 조회가 <b>쿼리 단계에서</b> 강퇴자 메시지를 걷어내는 데 쓴다. 읽어 온 뒤 걸러내면
+     * 안 되는 이유가 있다 — 이력 응답에 {@code hasNext} 가 없어서 프론트가
+     * {@code messages.length === size} 로 다음 페이지 유무를 판단한다(프론트 가이드 계약). 뒤에서
+     * 걸러내면 아직 남은 페이지가 있는데도 길이가 size 보다 작아져 <b>스크롤이 조용히 끝난다</b>.
+     *
+     * <p>방을 가린다 — 강퇴는 방 단위 집행이고, 다른 방에서 강퇴된 사람의 이 방 메시지는 남는다.
+     * 플랫폼 밴은 별개 축이라 여기서 보지 않는다(밴은 입장을 막는 것이고 과거 발화를 지우지 않는다).
+     */
+    List<UUID> findKickedUserIds(UUID roomId);
 }

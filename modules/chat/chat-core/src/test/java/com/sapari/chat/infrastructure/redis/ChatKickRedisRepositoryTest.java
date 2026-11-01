@@ -26,8 +26,19 @@ import reactor.test.StepVerifier;
 @Testcontainers
 class ChatKickRedisRepositoryTest {
 
+
+    /**
+     * 반응형 종결자({@code .block()} / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신
+     * <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md).
+     *
+     * <p>이 파일에 인라인 <b>5s</b> 둘이 섞여 있는 것은 <b>의도다.</b> 그 값들은 이 상수보다 먼저
+     * 있었고 더 조여 있다. 스윕은 상한이 <b>없던 자리</b>에만 이 상수를 넣었고 기존 값을 완화하지
+     * 않았다 — "정규화" 로 10s 로 맞추면 그 조임이 사라진다. 그 자리들의 종결자 대기는 선행
+     * 실체화된 신호({@code Mono.error}·즉시 응답)라 사실상 0 이므로 5s 도 넉넉하다.
+     */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     private static LettuceConnectionFactory connectionFactory;
     private static ReactiveStringRedisTemplate redisTemplate;
@@ -53,27 +64,27 @@ class ChatKickRedisRepositoryTest {
     @DisplayName("kicked SET 멤버면 true (재접속 차단 판정)")
     void member_of_kicked_set_is_true() {
         // given
-        redisTemplate.opsForSet().add("chat:kicked:" + roomId, userId.toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + roomId, userId.toString()).block(VERIFY_CEILING);
 
         // when & then
-        assertThat(repository.isKicked(roomId, userId).block()).isTrue();
+        assertThat(repository.isKicked(roomId, userId).block(VERIFY_CEILING)).isTrue();
     }
 
     @Test
     @DisplayName("SET에 없는 userId는 false")
     void non_member_is_false() {
         // given
-        redisTemplate.opsForSet().add("chat:kicked:" + roomId, UUID.randomUUID().toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + roomId, UUID.randomUUID().toString()).block(VERIFY_CEILING);
 
         // when & then
-        assertThat(repository.isKicked(roomId, userId).block()).isFalse();
+        assertThat(repository.isKicked(roomId, userId).block(VERIFY_CEILING)).isFalse();
     }
 
     @Test
     @DisplayName("키 자체가 없으면 false (라이브 종료로 회수된 방)")
     void missing_key_is_false() {
         // when & then
-        assertThat(repository.isKicked(UUID.randomUUID(), userId).block()).isFalse();
+        assertThat(repository.isKicked(UUID.randomUUID(), userId).block(VERIFY_CEILING)).isFalse();
     }
 
     @Test
@@ -107,7 +118,7 @@ class ChatKickRedisRepositoryTest {
         // given: 다른 무언가가 같은 이름을 String으로 먼저 차지한 상태
         UUID room = UUID.randomUUID();
         String key = "chat:kicked:" + room;
-        redisTemplate.opsForValue().set(key, "남의 값").block();
+        redisTemplate.opsForValue().set(key, "남의 값").block(VERIFY_CEILING);
 
         // when & then: 어느 키를 사람이 치워야 하는지가 예외에 실려 나온다
         StepVerifier.create(repository.isKicked(room, userId))
@@ -124,14 +135,14 @@ class ChatKickRedisRepositoryTest {
         // given: 강퇴 조회가 이미 불가능해진 방
         UUID room = UUID.randomUUID();
         String key = "chat:kicked:" + room;
-        redisTemplate.opsForValue().set(key, "남의 값").block();
+        redisTemplate.opsForValue().set(key, "남의 값").block(VERIFY_CEILING);
 
         // when
-        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).expectComplete().verify(VERIFY_CEILING);
 
         // then: 오염이 영구히 남지는 않는다. 이 단언이 깨지면 방송이 끝나도 그 키가 그대로 남아
         // 같은 roomId가 다시 쓰일 때까지 회수되지 않는다는 뜻이다
-        Duration ttl = redisTemplate.getExpire(key).block();
+        Duration ttl = redisTemplate.getExpire(key).block(VERIFY_CEILING);
         assertThat(ttl).isNotNull().isBetween(Duration.ofHours(23), Duration.ofHours(24));
     }
 
@@ -141,14 +152,14 @@ class ChatKickRedisRepositoryTest {
         // given: 강퇴 명단이 있는 방
         UUID room = UUID.randomUUID();
         UUID kicked = UUID.randomUUID();
-        redisTemplate.opsForSet().add("chat:kicked:" + room, kicked.toString()).block();
+        redisTemplate.opsForSet().add("chat:kicked:" + room, kicked.toString()).block(VERIFY_CEILING);
 
         // when
-        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).expectComplete().verify(VERIFY_CEILING);
 
         // then: DEL로 되돌아가면 멤버십이 사라져 이 단언이 깨진다
-        StepVerifier.create(repository.isKicked(room, kicked)).expectNext(true).verifyComplete();
-        Duration ttl = redisTemplate.getExpire("chat:kicked:" + room).block();
+        StepVerifier.create(repository.isKicked(room, kicked)).expectNext(true).expectComplete().verify(VERIFY_CEILING);
+        Duration ttl = redisTemplate.getExpire("chat:kicked:" + room).block(VERIFY_CEILING);
         assertThat(ttl).isNotNull().isBetween(Duration.ofHours(23), Duration.ofHours(24));
     }
 
@@ -159,7 +170,7 @@ class ChatKickRedisRepositoryTest {
         UUID room = UUID.randomUUID();
 
         // when & then
-        StepVerifier.create(repository.expireAfterRoomEnded(room)).verifyComplete();
-        StepVerifier.create(redisTemplate.hasKey("chat:kicked:" + room)).expectNext(false).verifyComplete();
+        StepVerifier.create(repository.expireAfterRoomEnded(room)).expectComplete().verify(VERIFY_CEILING);
+        StepVerifier.create(redisTemplate.hasKey("chat:kicked:" + room)).expectNext(false).expectComplete().verify(VERIFY_CEILING);
     }
 }

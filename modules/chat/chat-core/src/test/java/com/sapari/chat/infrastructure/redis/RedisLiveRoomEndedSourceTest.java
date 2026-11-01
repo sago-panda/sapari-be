@@ -20,6 +20,9 @@ import reactor.test.StepVerifier;
 
 class RedisLiveRoomEndedSourceTest {
 
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     private RedisLiveRoomEndedSource source;
 
     @BeforeEach
@@ -40,21 +43,21 @@ class RedisLiveRoomEndedSourceTest {
         String payload = "{\"roomId\":\"" + roomId + "\",\"endedAt\":1783036800000}";
 
         // when & then
-        StepVerifier.create(source.parse(payload)).expectNext(roomId).verifyComplete();
+        StepVerifier.create(source.parse(payload)).expectNext(roomId).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
     @DisplayName("parse — 깨진 payload는 skip(빈 Mono)")
     void parse_skips_broken() {
         // when & then
-        StepVerifier.create(source.parse("{깨진 json")).verifyComplete();
+        StepVerifier.create(source.parse("{깨진 json")).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
     @DisplayName("parse — roomId 필드 없으면 skip")
     void parse_skips_missing_roomId() {
         // when & then
-        StepVerifier.create(source.parse("{\"endedAt\":1783036800000}")).verifyComplete();
+        StepVerifier.create(source.parse("{\"endedAt\":1783036800000}")).expectComplete().verify(VERIFY_CEILING);
     }
 
     @Test
@@ -80,7 +83,7 @@ class RedisLiveRoomEndedSourceTest {
         StepVerifier.create(recovering.ended())
                 .expectNext(roomId)
                 .thenCancel()
-                .verify(Duration.ofSeconds(10));
+                .verify(VERIFY_CEILING);
 
         assertThat(subscribeCount.get()).isGreaterThan(1);   // 실제로 다시 붙었다
     }

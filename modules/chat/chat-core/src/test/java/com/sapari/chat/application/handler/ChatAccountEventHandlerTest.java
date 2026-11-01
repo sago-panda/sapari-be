@@ -6,6 +6,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
@@ -29,6 +30,9 @@ import reactor.test.StepVerifier;
 @DisplayName("ChatAccountEventHandler — 조용히 앉아 있는 세션을 끊는다")
 class ChatAccountEventHandlerTest {
 
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Mock
     private ChatAccountEventSource source;
 
@@ -49,7 +53,7 @@ class ChatAccountEventHandlerTest {
         given(sessionManager.closeUserEverywhere(userId)).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(handler().onEvent(new ChatAccountEvent.Banned(userId))).verifyComplete();
+        StepVerifier.create(handler().onEvent(new ChatAccountEvent.Banned(userId))).expectComplete().verify(VERIFY_CEILING);
 
         // then: 종료가 먼저 가면 sink가 닫혀 뒤이은 사유 프레임이 조용히 사라진다
         InOrder order = Mockito.inOrder(sessionManager);
@@ -67,7 +71,7 @@ class ChatAccountEventHandlerTest {
         given(sessionManager.closeUserEverywhere(userId)).willReturn(Mono.empty());
 
         // when & then: 실패가 종료를 막지 않는다
-        StepVerifier.create(handler().onEvent(new ChatAccountEvent.Banned(userId))).verifyComplete();
+        StepVerifier.create(handler().onEvent(new ChatAccountEvent.Banned(userId))).expectComplete().verify(VERIFY_CEILING);
         then(sessionManager).should().closeUserEverywhere(userId);
     }
 

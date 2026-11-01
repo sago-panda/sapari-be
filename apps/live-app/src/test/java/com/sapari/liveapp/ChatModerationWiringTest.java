@@ -84,6 +84,10 @@ class ChatModerationWiringTest {
         registry.add("livekit.hls.segment-duration", () -> 4);
 
         registry.add("management.server.port", () -> 0);
+        // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아 지표가 조용히 빈다
+        // (LiveSecurityConfig.requiredEndpointsMustBeExposed — 실제 노출을 본다). 이 테스트가 재는
+        // 것과 무관하지만 채워야 뜬다.
+        registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus");
 
         // ⚠️ 재조정 잡 셋을 끈다. 마스터 스위치가 matchIfMissing=true라 설정이 없으면 <b>켜진다</b> —
         //    저장소에 application.yaml이 없으니 이 테스트에서는 부재가 곧 활성이다. 그대로 두면
@@ -177,7 +181,11 @@ class ChatModerationWiringTest {
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",
-                "ChatKickEventRedisPublisher", "ChatAccountEventRedisPublisher");
+                "ChatKickEventRedisPublisher", "ChatAccountEventRedisPublisher",
+                // 이력 조회(VOD 다시보기) — 강퇴와 같은 이유로 이 앱이다: 방 주인과 방송 시작 시각을
+                // 묻는 빈이 live-core 에 있다. 매퍼는 생성된 MapStruct 구현을 손으로 세운 것이다
+                // (componentModel=spring 이지만 이 앱은 com.sapari.chat 을 스캔하지 않는다).
+                "GetChatHistoryService", "ChatHistoryMongoRepository", "ChatMessageMapperImpl");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())

@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import java.time.Duration;
 import java.time.Instant;
@@ -37,8 +38,16 @@ import reactor.test.StepVerifier;
 @Testcontainers
 class CrossPodBroadcastTest {
 
+    /** 이 테스트들은 낡음 판정을 재지 않는다 — 실제 시계로 충분하다(그 판정은
+     * ChatSessionHeartbeatTest 가 합성 시계로 잰다). */
+    private static final com.sapari.global.time.TimeProvider SYSTEM_TIME =
+            new com.sapari.global.time.TimeProvider(java.time.Clock.systemUTC());
+
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7").withExposedPorts(6379);
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
 
     private static LettuceConnectionFactory factoryA;
     private static LettuceConnectionFactory factoryB;
@@ -63,8 +72,9 @@ class CrossPodBroadcastTest {
 
         broadcasterA = new RedisChatBroadcaster(templateA);
 
-        registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB), new ChatPermissionPolicy());
-        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB), registryB, new ChatPermissionPolicy());
+        registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB, SYSTEM_TIME), new ChatPermissionPolicy(),
+                ChatMetrics.NOOP);
+        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB), registryB, new ChatPermissionPolicy(), ChatMetrics.NOOP);
     }
 
     @AfterAll
@@ -80,7 +90,7 @@ class CrossPodBroadcastTest {
         // Pod B: 방 구독 시작 + 로컬 세션 등록(비-owner → 마스킹 뷰)
         Disposable sub = subscriberB.subscribeRoom(roomId);
         ChatSession sessionB = new ChatSession(roomId, UUID.randomUUID(), ChatRole.BUYER, "구매자B", "b@example.com", false);
-        registryB.register("sessB", sessionB).block();
+        registryB.register("sessB", sessionB).block(VERIFY_CEILING);
 
         // Redis 패턴 구독이 실제로 활성화될 시간을 준다(pub/sub은 버퍼 없음 — 활성 전 발행분은 유실)
         Thread.sleep(1500);
@@ -92,13 +102,13 @@ class CrossPodBroadcastTest {
 
         // when & then
         StepVerifier.create(registryB.outbound("sessB").next().timeout(Duration.ofSeconds(5)))
-                .then(() -> broadcasterA.publish(roomId, fromA).block())
+                .then(() -> broadcasterA.publish(roomId, fromA).block(VERIFY_CEILING))
                 .assertNext(out -> {
                     org.assertj.core.api.Assertions.assertThat(out.type()).isEqualTo("NORMAL");
                     org.assertj.core.api.Assertions.assertThat(out.displayMessage()).isEqualTo("크로스팟 안녕");
                     org.assertj.core.api.Assertions.assertThat(out.senderEmail()).isNull();   // 비-owner라 PII 제외
                 })
-                .verifyComplete();
+                .expectComplete().verify(VERIFY_CEILING);
 
         sub.dispose();
     }
