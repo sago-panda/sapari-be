@@ -1,6 +1,5 @@
 package com.sapari.streamingapp.config;
 
-import java.util.Comparator;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
@@ -33,10 +32,23 @@ public class ObservabilityExposureConfig {
     /**
      * 이 앱이 열어도 되는 엔드포인트. {@code health} 는 프로브용, {@code prometheus} 는 스크레이프용이다.
      * 늘리려면 이 상수를 고쳐야 하고, 그러면 변경이 diff 에 보인다.
+     *
+     * <p>이 집합은 <b>상한이면서 하한</b>이다 — 둘 다 없어도 되는 것이 아니라 둘 다 있어야 한다.
+     * 하나는 파드가 Ready 가 되는 조건이고 하나는 지표가 존재하는 조건이라, 빠진 쪽이 조용히 죽는다.
      */
     private static final Set<String> ALLOWED_ENDPOINTS = Set.of("health", "prometheus");
 
     private static final String EXPOSURE_KEY = "management.endpoints.web.exposure.include";
+
+    /**
+     * 노출을 <b>뒤에서 되돌리는</b> 키.
+     *
+     * <p>{@code include} 만 보는 가드는 반쪽이다 — {@code exclude} 가 {@code include} 를 이긴다.
+     * <b>실측</b>: 이 앱을 {@code include: health,prometheus} + {@code exclude: prometheus} 로 띄우면
+     * 부팅은 <b>성공하고</b> 노출된 엔드포인트는 {@code health} 하나다. include 만 읽는 가드는 그
+     * 설정을 통과시키고 지표는 조용히 빈다 — 가드를 둔 이유가 바로 그 침묵이었다.
+     */
+    private static final String EXCLUSION_KEY = "management.endpoints.web.exposure.exclude";
 
     /**
      * 관리 포트가 사용자 포트와 같으면 <b>부팅을 실패시킨다</b>.
@@ -90,25 +102,22 @@ public class ObservabilityExposureConfig {
     }
 
     /**
-     * 노출 목록이 허용 집합 안인지 본다.
+     * 노출 목록이 <b>정확히</b> 허용 집합인지, 그리고 그것을 되돌리는 설정이 없는지 본다.
      *
-     * <p>{@code Binder} 로 읽는 이유: 이 키는 {@code include: health,prometheus} 로도,
-     * YAML 리스트로도 쓸 수 있다. 후자는 프로퍼티 소스에 {@code include[0]} 으로 들어가므로
-     * {@code @Value} 로 기본 키를 읽으면 해결에 실패한다 — 그러면 <b>리스트로 쓴 설정을 이 가드가
-     * 못 보고 통과시킨다</b>. 두 모양을 다 받는 쪽이 {@code Binder} 다(실측으로 확인했다).
+     * <p>{@code Binder} 로 읽는 이유: 이 키는 {@code include: health,prometheus} 로도, YAML 리스트로도
+     * 쓸 수 있다. 후자는 프로퍼티 소스에 {@code include[0]} 으로 들어가므로 {@code @Value} 로 기본 키를
+     * 읽으면 해결에 실패한다 — 그러면 <b>리스트로 쓴 설정을 이 가드가 못 보고 통과시킨다</b>. 두 모양을
+     * 다 받는 쪽이 {@code Binder} 다(실측으로 확인했다).
+     *
+     * <p><b>세 방향을 다 본다.</b> 위로 넘치면(허용 밖) 무인증 공개가 되고, 아래로 모자라면(필수 누락)
+     * 관측과 프로브가 조용히 사라진다. 그리고 {@code exclude} 는 그 둘을 다 통과한 설정을 뒤에서
+     * 되돌린다 — 한 방향만 보면 나머지 둘이 열린 문으로 남는다.
      */
     private static void verifyExposure(Environment environment) {
-        Set<String> declared = Binder.get(environment)
-                .bind(EXPOSURE_KEY, Bindable.setOf(String.class))
-                .orElseGet(Set::of);
+        Set<String> declared = readNormalized(environment, EXPOSURE_KEY);
 
-        Set<String> rejected = new TreeSet<>(Comparator.naturalOrder());
-        for (String endpoint : declared) {
-            String normalized = endpoint == null ? "" : endpoint.trim().toLowerCase(Locale.ROOT);
-            if (!normalized.isEmpty() && !ALLOWED_ENDPOINTS.contains(normalized)) {
-                rejected.add(normalized);
-            }
-        }
+        Set<String> rejected = new TreeSet<>(declared);
+        rejected.removeAll(ALLOWED_ENDPOINTS);
         if (!rejected.isEmpty()) {
             throw new IllegalStateException(
                     EXPOSURE_KEY + " 에 허용되지 않은 값이 있다 — " + rejected + ". 이 앱에는 액추에이터를 "
@@ -117,20 +126,54 @@ public class ObservabilityExposureConfig {
                             + "노출한다. 허용: " + new TreeSet<>(ALLOWED_ENDPOINTS));
         }
 
-        // 허용 집합 밖을 막는 것만으로는 반쪽이다 — 목록이 비면 거부할 것도 없어 통과하는데, 그때
-        // /actuator/prometheus 는 아예 생기지 않는다(액추에이터 기본 노출은 health 하나다). 이 앱에는
-        // 시큐리티가 없어 401 조차 나지 않고 404 다 — 어느 쪽이든 <b>지표가 조용히 빈다</b>. 빈
-        // 대시보드는 "방송이 없어서" 와 구분되지 않는다. live-app 은 같은 실패를 부팅 실패로 막는데
-        // (LiveSecurityConfig.requirePrometheusExposed) 이쪽만 비어 있었다 — 그 비대칭을 없앤다.
-        boolean prometheusExposed = declared.stream()
-                .map(value -> value == null ? "" : value.trim().toLowerCase(Locale.ROOT))
-                .anyMatch("prometheus"::equals);
-        if (!prometheusExposed) {
+        // 허용 밖을 막는 것만으로는 반쪽이다 — 목록이 비면 거부할 것도 없어 통과하는데, 그때
+        // 액추에이터 기본 노출은 health 하나라 /actuator/prometheus 가 아예 생기지 않는다. 이 앱에는
+        // 시큐리티가 없어 401 조차 나지 않고 404 다 — 어느 쪽이든 지표가 조용히 빈다. 빈 대시보드는
+        // "방송이 없어서" 와 구분되지 않는다.
+        //
+        // health 도 같은 무게로 요구한다. 실측: include 에 prometheus 만 적으면 부팅은 성공하고
+        // 노출은 prometheus 하나다 — k8s liveness/readiness 가 404 를 받아 파드가 Ready 가 되지
+        // 못하거나 되살아나기를 반복한다. 전에는 prometheus 만 보고 있어 이쪽이 열려 있었다.
+        Set<String> missing = new TreeSet<>(ALLOWED_ENDPOINTS);
+        missing.removeAll(declared);
+        if (!missing.isEmpty()) {
             throw new IllegalStateException(
-                    EXPOSURE_KEY + " 에 prometheus 가 없다 — /actuator/prometheus 가 생기지 않아 chat "
-                            + "지표가 조용히 빈다. 관측을 끄려면 이 가드를 지우는 변경이 리뷰에 보여야 "
-                            + "한다. 현재 값=" + new TreeSet<>(declared));
+                    EXPOSURE_KEY + " 에 " + missing + " 가 없다 — health 가 빠지면 k8s 프로브가 404 를 "
+                            + "받아 파드가 Ready 가 되지 못하고, prometheus 가 빠지면 chat 지표가 조용히 "
+                            + "빈다. 관측이나 프로브를 끄려면 이 가드를 지우는 변경이 리뷰에 보여야 한다. "
+                            + "현재 값=" + declared);
         }
+
+        // include 를 통과한 설정을 exclude 가 되돌린다(실측: 둘 다 적으면 exclude 가 이긴다).
+        // "*" 는 전부 되돌리므로 필수 둘을 다 지운 것과 같다.
+        Set<String> excluded = readNormalized(environment, EXCLUSION_KEY);
+        Set<String> suppressed = new TreeSet<>(excluded);
+        suppressed.retainAll(ALLOWED_ENDPOINTS);
+        if (excluded.contains("*")) {
+            suppressed.addAll(ALLOWED_ENDPOINTS);
+        }
+        if (!suppressed.isEmpty()) {
+            throw new IllegalStateException(
+                    EXCLUSION_KEY + " 가 " + suppressed + " 를 되돌린다 — " + EXPOSURE_KEY + " 에 적혀 "
+                            + "있어도 exclude 가 이기므로 그 엔드포인트는 생기지 않는다. 부팅은 성공하고 "
+                            + "지표·프로브만 사라지는, 이 가드가 배제하려는 바로 그 침묵이다. "
+                            + "현재 값=" + excluded);
+        }
+    }
+
+    /** 키 하나를 읽어 소문자·공백 제거로 정규화한다 — 표기 차이로 가드를 비껴가지 못하게 한다. */
+    private static Set<String> readNormalized(Environment environment, String key) {
+        Set<String> raw = Binder.get(environment)
+                .bind(key, Bindable.setOf(String.class))
+                .orElseGet(Set::of);
+        Set<String> normalized = new TreeSet<>();
+        for (String value : raw) {
+            String trimmed = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+            if (!trimmed.isEmpty()) {
+                normalized.add(trimmed);
+            }
+        }
+        return normalized;
     }
 
     /** 위 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */

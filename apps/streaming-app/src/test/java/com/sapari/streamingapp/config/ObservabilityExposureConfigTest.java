@@ -39,6 +39,19 @@ class ObservabilityExposureConfigTest {
         return environment;
     }
 
+    /**
+     * {@code include} 와 {@code exclude} 를 함께 세운다 — 노출은 두 키의 <b>차집합</b>이다.
+     *
+     * <p>스칼라 표기로 쓴다. 리스트 표기는 위 {@code withExposure} 가 이미 덮고, 여기서 보려는 것은
+     * 표기 해석이 아니라 "exclude 가 include 를 이긴다" 는 쪽이다.
+     */
+    private Environment withExposureAndExclusion(String include, String exclude) {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setProperty("management.endpoints.web.exposure.include", include);
+        environment.setProperty("management.endpoints.web.exposure.exclude", exclude);
+        return environment;
+    }
+
     private Environment withScalarExposure(String value) {
         MockEnvironment environment = new MockEnvironment();
         environment.setProperty("management.endpoints.web.exposure.include", value);
@@ -99,7 +112,7 @@ class ObservabilityExposureConfigTest {
         assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
                 withScalarExposure("health")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("prometheus 가 없다");
+                .hasMessageContaining("[prometheus] 가 없다");
     }
 
     @Test
@@ -107,7 +120,7 @@ class ObservabilityExposureConfigTest {
     void absentExposureIsRejected() {
         assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092", new MockEnvironment()))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("prometheus 가 없다");
+                .hasMessageContaining("[health, prometheus] 가 없다");
     }
 
     @Test
@@ -150,5 +163,43 @@ class ObservabilityExposureConfigTest {
                 withExposure(" ENV ")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("env");
+    }
+
+    @Test
+    @DisplayName("⭐ health 가 없으면 부팅을 막는다 — 프로브가 404 를 받아 파드가 Ready 가 못 된다")
+    void missingHealthExposureIsRejected() {
+        // 실측: include 에 prometheus 만 적으면 부팅은 성공하고 노출은 prometheus 하나다.
+        // 전에는 prometheus 만 요구해서 이 설정이 가드를 그대로 통과했다.
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
+                withScalarExposure("prometheus")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("[health] 가 없다");
+    }
+
+    @Test
+    @DisplayName("⭐ exclude 가 prometheus 를 되돌리면 막는다 — include 에 적혀 있어도 exclude 가 이긴다")
+    void anExclusionThatRevokesPrometheusIsRejected() {
+        // 실측(실제 부팅): include=health,prometheus + exclude=prometheus 는 부팅에 성공하고
+        // 노출된 엔드포인트가 health 하나였다. include 만 읽는 가드는 이것을 통과시킨다.
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
+                withExposureAndExclusion("health,prometheus", "prometheus")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("[prometheus] 를 되돌린다");
+    }
+
+    @Test
+    @DisplayName("⭐ exclude 의 \"*\" 는 둘 다 되돌린다 — 한 줄로 관측과 프로브가 같이 사라진다")
+    void aWildcardExclusionIsRejected() {
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8092",
+                withExposureAndExclusion("health,prometheus", "*")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("[health, prometheus] 를 되돌린다");
+    }
+
+    @Test
+    @DisplayName("필수와 무관한 값을 exclude 해도 통과한다 — 가드는 필요한 둘만 지킨다")
+    void anUnrelatedExclusionPasses() {
+        assertThatCode(() -> config.managementPortMustDiffer(8080, "8092",
+                withExposureAndExclusion("health,prometheus", "env"))).doesNotThrowAnyException();
     }
 }

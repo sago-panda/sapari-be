@@ -6,6 +6,7 @@ import jakarta.servlet.DispatcherType;
 
 import java.util.Locale;
 import java.util.Set;
+import java.util.TreeSet;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.bind.Bindable;
@@ -145,40 +146,85 @@ public class LiveSecurityConfig {
                     "management.server.port(" + port + ") 가 server.port 와 같다 — 지표가 사용자 트래픽 포트에 "
                             + "노출된다. MANAGEMENT_PORT 를 다른 값으로 줄 것.");
         }
-        requirePrometheusExposed(environment);
+        requireObservabilityExposed(environment);
         return new ManagementPortGuard();
     }
 
     /**
-     * {@code prometheus} 가 노출 목록에 있어야 <b>부팅한다</b>.
+     * 관측에 필요한 엔드포인트. {@code health} 는 k8s 프로브용, {@code prometheus} 는 스크레이프용이다.
      *
-     * <p>액추에이터 기본 노출은 {@code health} 하나다. 그래서 그 줄이 빠지면 프로메테우스 엔드포인트가
-     * 아예 없고, 그 경로가 위 액추에이터 체인에 매칭되지 않아 기본 체인의 {@code authenticated()} 에
-     * 걸려 <b>401</b> 이 된다 — 스크레이퍼는 로그인 수단이 없으므로 <b>지표가 조용히 빈다</b>.
-     * 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다. 이 설계가 가장 두려워하는 실패다.
+     * <p>둘 중 하나만 있어도 되는 것이 아니다 — 하나는 파드가 Ready 가 되는 조건이고 하나는 지표가
+     * 존재하는 조건이라, 빠진 쪽이 조용히 죽는다.
+     */
+    private static final Set<String> REQUIRED_ENDPOINTS = Set.of("health", "prometheus");
+
+    /**
+     * {@code health}·{@code prometheus} 가 <b>실제로</b> 노출돼야 부팅한다.
+     *
+     * <p>액추에이터 기본 노출은 {@code health} 하나다. 그래서 {@code prometheus} 가 빠지면 그
+     * 엔드포인트가 아예 없고, 그 경로가 위 액추에이터 체인에 매칭되지 않아 기본 체인의
+     * {@code authenticated()} 에 걸려 <b>401</b> 이 된다 — 스크레이퍼는 로그인 수단이 없으므로
+     * <b>지표가 조용히 빈다</b>. 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다.
      *
      * <p>⚠️ <b>실측으로 드러났다.</b> 이 앱의 컨텍스트 테스트가 CI 에서 제외돼 있던 동안 그 줄은 운영
      * 템플릿의 {@code optional} 항목이었고, 테스트를 CI 로 옮긴 첫 실행이 정확히 401 로 깨졌다.
      * 설정 한 줄이 관측 전면 중단으로 이어지는데 그 사이에 아무 신호가 없어서, 조용히 뜨는 대신
-     * 시끄럽게 죽는 쪽으로 바꾼다({@code streaming-app} 이 같은 이유로 같은 가드를 갖는다).
+     * 시끄럽게 죽는 쪽으로 바꿨다({@code streaming-app} 이 같은 이유로 같은 가드를 갖는다).
+     *
+     * <p><b>include 만 보는 것은 반쪽이었다.</b> 실측: {@code include: health,prometheus} 에
+     * {@code exclude: prometheus} 를 더하면 부팅은 성공하고 노출은 {@code health} 하나다 —
+     * {@code exclude} 가 {@code include} 를 이긴다. 또 {@code health} 를 요구하지 않던 동안
+     * {@code include: prometheus} 만 적은 설정이 통과했는데, 그러면 프로브가 404 를 받아 파드가
+     * Ready 가 되지 못한다. 두 구멍 다 "부팅은 되고 조용히 고장나는" 모양이라 가드를 세운 이유와 같다.
      *
      * <p>목록을 <b>좁히는</b> 검사는 여기 없다 — 이 앱은 액추에이터 체인이 {@code health}·
      * {@code prometheus} 밖을 {@code denyAll} 로 막으므로 넓혀도 열리지 않는다. 시큐리티가 없는
      * {@code streaming-app} 은 그 반대라 허용 집합까지 코드가 잠근다.
      */
-    private static void requirePrometheusExposed(Environment environment) {
-        Set<String> exposed = Binder.get(environment)
-                .bind("management.endpoints.web.exposure.include", Bindable.setOf(String.class))
-                .orElseGet(Set::of);
-        boolean prometheusExposed = exposed.stream()
-                .map(value -> value == null ? "" : value.trim().toLowerCase(Locale.ROOT))
-                .anyMatch(value -> value.equals("prometheus") || value.equals("*"));
-        if (!prometheusExposed) {
-            throw new IllegalStateException(
-                    "management.endpoints.web.exposure.include 에 prometheus 가 없다 — 액추에이터 기본 "
-                            + "노출은 health 하나라 지표 엔드포인트가 생기지 않고, 스크레이퍼는 401 을 "
-                            + "받는다(지표가 조용히 빈다). 현재 값=" + exposed + " / 예시: health,prometheus");
+    private static void requireObservabilityExposed(Environment environment) {
+        Set<String> included = readNormalized(environment, "management.endpoints.web.exposure.include");
+        Set<String> excluded = readNormalized(environment, "management.endpoints.web.exposure.exclude");
+
+        // "*" 는 양쪽에서 모두 와일드카드다 — include 의 "*" 는 전부 열고(이 앱은 체인이 막으므로
+        // 허용한다), exclude 의 "*" 는 전부 되돌린다.
+        Set<String> missing = new TreeSet<>();
+        Set<String> revoked = new TreeSet<>();
+        for (String required : REQUIRED_ENDPOINTS) {
+            if (!included.contains(required) && !included.contains("*")) {
+                missing.add(required);
+            } else if (excluded.contains(required) || excluded.contains("*")) {
+                revoked.add(required);
+            }
         }
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException(
+                    "management.endpoints.web.exposure.include 에 " + missing + " 가 없다 — prometheus 가 "
+                            + "빠지면 스크레이퍼가 401 을 받아 지표가 조용히 비고, health 가 빠지면 k8s "
+                            + "프로브가 404 를 받아 파드가 Ready 가 되지 못한다. 현재 값=" + included
+                            + " / 예시: health,prometheus");
+        }
+        if (!revoked.isEmpty()) {
+            throw new IllegalStateException(
+                    "management.endpoints.web.exposure.exclude 가 " + revoked + " 를 되돌린다 — include 에 "
+                            + "적혀 있어도 exclude 가 이기므로 그 엔드포인트는 생기지 않는다. 부팅은 "
+                            + "성공하고 지표·프로브만 사라지는, 이 가드가 배제하려는 바로 그 침묵이다. "
+                            + "현재 값=" + excluded);
+        }
+    }
+
+    /** 키 하나를 읽어 소문자·공백 제거로 정규화한다 — 표기 차이로 가드를 비껴가지 못하게 한다. */
+    private static Set<String> readNormalized(Environment environment, String key) {
+        Set<String> raw = Binder.get(environment)
+                .bind(key, Bindable.setOf(String.class))
+                .orElseGet(Set::of);
+        Set<String> normalized = new TreeSet<>();
+        for (String value : raw) {
+            String trimmed = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+            if (!trimmed.isEmpty()) {
+                normalized.add(trimmed);
+            }
+        }
+        return normalized;
     }
 
     /** 위 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */

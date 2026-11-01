@@ -41,6 +41,19 @@ class ManagementPortGuardTest {
         return environment;
     }
 
+    /**
+     * {@code include} 와 {@code exclude} 를 함께 세운다 — 노출은 두 키의 <b>차집합</b>이다.
+     *
+     * <p>{@code exclude} 가 {@code include} 를 이긴다(실측). include 만 읽던 가드는 그 사실을 몰라서
+     * "적혀 있으니 있다" 고 통과시켰다.
+     */
+    private static Environment withExposureAndExclusion(String include, String exclude) {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setProperty("management.endpoints.web.exposure.include", include);
+        environment.setProperty("management.endpoints.web.exposure.exclude", exclude);
+        return environment;
+    }
+
     @Test
     @DisplayName("포트가 다르면 통과한다")
     void differentPorts_pass() {
@@ -74,7 +87,7 @@ class ManagementPortGuardTest {
         // given: 액추에이터 기본 노출(health 하나)만 있는 상태
         assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8091", withExposure("health")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("prometheus 가 없다");
+                .hasMessageContaining("[prometheus] 가 없다");
     }
 
     @Test
@@ -82,7 +95,7 @@ class ManagementPortGuardTest {
     void absentExposure_failsStartup() {
         assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8091", withExposure(null)))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("prometheus 가 없다");
+                .hasMessageContaining("[health, prometheus] 가 없다");
     }
 
     @Test
@@ -96,5 +109,40 @@ class ManagementPortGuardTest {
     void caseAndWhitespace_doNotBypass() {
         assertThat(config.managementPortMustDiffer(8080, "8091", withExposure("health, PROMETHEUS ")))
                 .isNotNull();
+    }
+
+    @Test
+    @DisplayName("⭐ 노출 목록에 health 가 없으면 부팅을 실패시킨다 — k8s 프로브가 404 를 받아 파드가 Ready 가 못 된다")
+    void missingHealthExposure_failsStartup() {
+        // 전에는 prometheus 만 요구해서 이 설정이 가드를 그대로 통과했다. 그때 깨지는 것은 지표가
+        // 아니라 배포 자체인데, 부팅 로그에는 아무 신호가 없다.
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8091", withExposure("prometheus")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("[health] 가 없다");
+    }
+
+    @Test
+    @DisplayName("⭐ exclude 가 prometheus 를 되돌리면 실패시킨다 — include 에 적혀 있어도 exclude 가 이긴다")
+    void exclusionThatRevokesPrometheus_failsStartup() {
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8091",
+                withExposureAndExclusion("health,prometheus", "prometheus")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("[prometheus] 를 되돌린다");
+    }
+
+    @Test
+    @DisplayName("⭐ include 가 \"*\" 라도 exclude 가 되돌리면 실패시킨다 — 와일드카드가 면제가 되지 않는다")
+    void exclusionBeatsWildcardInclude_failsStartup() {
+        assertThatThrownBy(() -> config.managementPortMustDiffer(8080, "8091",
+                withExposureAndExclusion("*", "prometheus")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("[prometheus] 를 되돌린다");
+    }
+
+    @Test
+    @DisplayName("필수와 무관한 값을 exclude 해도 통과한다 — 가드는 필요한 둘만 지킨다")
+    void unrelatedExclusion_passes() {
+        assertThat(config.managementPortMustDiffer(8080, "8091",
+                withExposureAndExclusion("health,prometheus", "env"))).isNotNull();
     }
 }
