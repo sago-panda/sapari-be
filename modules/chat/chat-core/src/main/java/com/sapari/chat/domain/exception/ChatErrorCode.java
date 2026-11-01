@@ -1,0 +1,52 @@
+package com.sapari.chat.domain.exception;
+
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+
+import com.sapari.common.core.exception.ErrorCode;
+
+@Getter
+@RequiredArgsConstructor
+public enum ChatErrorCode implements ErrorCode {
+
+    PERMISSION_DENIED(403, "CHAT-001", "채팅 권한이 없습니다."),
+    RATE_LIMIT_EXCEEDED(429, "CHAT-002", "메시지를 너무 빠르게 보내고 있습니다."),
+    USER_KICKED(403, "CHAT-003", "강퇴되어 채팅에 참여할 수 없습니다."),
+    LIVE_NOT_ACTIVE(400, "CHAT-004", "진행 중인 라이브가 아닙니다."),
+    // 사용자 잘못이 아니라 서버 쪽 상태의 문제라 5xx다. 어느 키가 문제인지는 응답이 아니라 로그로 간다
+    // (BusinessException의 debugMessage가 로그용, 응답은 이 문구 — 내부 식별자 누출 방지).
+    KICK_STORE_CORRUPTED(500, "CHAT-005", "강퇴 처리를 완료할 수 없습니다."),
+    // 요청이 들고 온 방·대상·메시지가 서로 맞지 않는다. 요청자가 값을 정하므로 4xx다.
+    // 문구가 세 갈래(메시지 없음·다른 방·다른 작성자)에 공통인 것은 의도다 — 어디까지 맞았는지를
+    // 알려주면 방·메시지 id를 더듬는 통로가 된다. 어느 축이 어긋났는지는 debugMessage로 로그에만 간다.
+    KICK_EVIDENCE_MISMATCH(400, "CHAT-006", "강퇴 증거를 확인할 수 없습니다."),
+
+    // 강퇴(CHAT-003)와 갈라 둔다 — 강퇴는 그 방 하나이고 밴은 계정 전체라, 클라이언트가
+    // "다른 방으로 가면 된다"를 안내할 수 있는지가 갈린다.
+    USER_BANNED(403, "CHAT-007", "이용이 제한되어 채팅에 참여할 수 없습니다."),
+
+    // 409인 이유: 서버가 고장난 게 아니라 같은 대상을 동시에 처리 중이라 지금은 완료할 수 없다는
+    // 뜻이다. 5xx로 두면 정상적인 동시 강퇴가 알림을 울리고(전역 핸들러가 5xx만 스택까지 error로
+    // 남긴다), 클라이언트에게는 재시도해도 소용없다는 신호로 읽힌다. 문구에 재시도를 담는다.
+    KICK_CONTENDED(409, "CHAT-008", "다른 요청이 같은 사용자를 처리 중입니다. 잠시 후 다시 시도해 주세요."),
+
+    // 이력 조회 입력이 계약을 어겼다. 도달 가능한 사유를 <b>열거만</b> 한다 — 개수를 적으면 사유가
+    // 늘 때마다 그 수가 틀리고, 이 자리에서 "세 사유"→"네 사유" 로 이미 두 번 틀렸다:
+    //   · 커서와 재생 위치를 동시에 지정
+    //   · 음수 재생 위치
+    //   · 재생 위치가 TTL 상한(730일)을 넘음
+    //   · size 가 1~100 밖
+    //   · 커서 형식이 ObjectId 가 아님(어댑터가 판정)
+    // 이 코드가 따로 있는 이유: 명령 record 의 불변식은 IllegalArgumentException 으로 던지는데
+    // 전역 핸들러에 그 타입 처리가 없어 <b>클라 잘못이 500 + "Unhandled exception" 로그</b>가 된다.
+    // 전역 핸들러에 IllegalArgumentException 을 더하는 쪽은 저장소 전체의 응답을 바꾸므로(인프라 깊은
+    // 곳에서 올라온 것까지 400 이 된다) 여기서 좁게 받는다.
+    //
+    // 문구가 사유들에 공통인 것은 의도가 아니라 <b>지금은 구분이 쓸모없기 때문</b>이다 — 전부
+    // 클라이언트 코드의 버그이고 사용자가 고칠 것이 없다. 사유는 debugMessage 로 로그에만 남는다.
+    HISTORY_QUERY_INVALID(400, "CHAT-009", "채팅 이력 조회 조건이 올바르지 않습니다.");
+
+    private final int status;
+    private final String code;
+    private final String message;
+}

@@ -81,9 +81,12 @@ import com.sapari.liveapp.config.TrackingLockProvider;
  * <p>인스턴스는 {@link AnnotationConfigApplicationContext} 2개다. 컨텍스트가 곧 파드이고, 둘은
  * 같은 DB 와 같은 LiveKit(아래 {@link CountingMediaManager} 단일 인스턴스)을 본다.
  *
- * <p>{@code @Tag("docker")} — CI 빌드 잡에는 Docker 데몬이 없어 제외된다(루트 build.gradle).
- * 즉 <b>락 회귀는 CI 가 잡아주지 않는다</b>. live-app 스케줄러나 락 설정을 건드렸으면 로컬에서
- * 이 테스트를 직접 돌릴 것.
+ * <p>{@code @Tag("docker")} 가 붙어 있지만 <b>CI 에서 제외되지 않는다</b>. 한때 이 자리에 "CI 빌드
+ * 잡에는 Docker 데몬이 없어 제외된다(루트 build.gradle) … 즉 락 회귀는 CI 가 잡아주지 않는다" 고
+ * 적혀 있었는데 셋 다 거짓이다 — 실측: {@code build.gradle} 의 test 블록은 {@code useJUnitPlatform()}
+ * 뿐이고 {@code excludeTags}/{@code includeTags} 는 저장소 전체 0건이며,
+ * {@code .gitlab/ci/build.yml} 이 {@code docker:28-dind} 를 서비스로 띄우고 {@code ./gradlew build} 를
+ * 돈다. 태그는 "도커가 필요하다" 는 표시로만 남아 있고 제외 규칙은 이 브랜치에서 걷혔다.
  */
 @Tag("docker")
 class ReconcileSchedulerLockTest {

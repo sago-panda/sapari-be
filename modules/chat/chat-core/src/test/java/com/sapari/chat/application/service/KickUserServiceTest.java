@@ -1,0 +1,619 @@
+package com.sapari.chat.application.service;
+
+import org.springframework.transaction.TransactionTimedOutException;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.ParameterizedTest;
+import java.util.stream.Stream;
+import com.sapari.chat.domain.exception.ChatKickContendedException;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Optional;
+import java.util.UUID;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.sapari.chat.application.port.ChatAccountEventPublisher;
+import com.sapari.chat.application.port.ChatKickEventPublisher;
+import com.sapari.chat.command.KickUserCommand;
+import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
+import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
+import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.domain.model.ChatKickLog;
+import com.sapari.chat.domain.model.ChatMessageEvidence;
+import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatBanWriteRepository;
+import com.sapari.chat.domain.repository.ChatKickWriteRepository;
+import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+import com.sapari.live.port.GetLiveRoomUseCase;
+import com.sapari.live.view.LiveRoomView;
+import com.sapari.global.time.TimeProvider;
+
+/**
+ * 강퇴 등록의 <b>순서</b>와 <b>어디서 멈추는가</b>를 고정한다.
+ *
+ * <p>이 서비스에는 값을 계산하는 로직이 거의 없다 — 대신 네 곳에 물어보고, 통과하면 세 곳에 쓴다.
+ * 그래서 검증할 것도 "무엇을 반환하는가"가 아니라 <b>거부가 어느 단계에서 일어나고 그 뒤 단계가
+ * 실행되지 않는가</b>다. 뒤 단계가 실행되면 DB에 없는 강퇴가 Redis에만 남거나, 권한 없는 호출자가
+ * 응답 차이로 남의 데이터 존재를 알아낸다.
+ *
+ * <p>정책과 시계는 진짜를 쓴다. 정책을 가짜로 바꾸면 이 테스트가 검증하는 권한 판정이 사라지고,
+ * 시계는 고정하면 그만이다. 포트만 {@code @Mock}이다.
+ */
+@ExtendWith(MockitoExtension.class)
+@DisplayName("KickUserService — 순서가 계약이다")
+class KickUserServiceTest {
+
+    @Mock
+    private GetLiveRoomUseCase liveRoomReader;
+    @Mock
+    private ChatMessageEvidenceRepository evidenceRepository;
+    @Mock
+    private ChatKickRecorder kickRecorder;
+    @Mock
+    private ChatBanWriteRepository banWriteRepository;
+    @Mock
+    private ChatKickWriteRepository kickWriteRepository;
+    @Mock
+    private ChatKickEventPublisher kickEventPublisher;
+
+    @Mock
+    private ChatAccountEventPublisher accountEventPublisher;
+
+    private KickUserService service;
+
+    private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
+
+    private static final UUID SYSTEM = UUID.fromString("00000000-0000-0000-0000-000000000001");
+
+    private final UUID roomId = UUID.randomUUID();
+    private final UUID sellerId = UUID.randomUUID();
+    private final UUID targetId = UUID.randomUUID();
+    private final String messageId = "68b7f0c2e1a4b93d5c0a1234";
+
+    @BeforeEach
+    void setUp() {
+        service = new KickUserService(
+                liveRoomReader, evidenceRepository, kickRecorder, banWriteRepository,
+                kickWriteRepository, kickEventPublisher, accountEventPublisher, new ChatPermissionPolicy(),
+                new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+    }
+
+    /**
+     * 상한 초과가 드러나는 <b>세 모양</b>. 하나만 잡으면 나머지가 500으로 새어 나간다.
+     *
+     * <p>잠금 쪽이 가장 흔한 출처다. 이 경로의 잠금 실패는 종류와 무관하게
+     * {@code CannotAcquireLockException} 하나로 오지만(실측 — 대기 상한 초과·교착·직렬화 실패 전부),
+     * 상위 타입으로 묶어 잡으므로 맨몸 상위가 들어오는 경우도 번역된다. 아래 두 모양이 그 둘을
+     * 각각 넣는다.
+     *
+     * <p>⚠️ 이 모양들은 <b>번역 분기만</b> 덮는다. "어떤 SQLSTATE가 어떤 타입이 되는가"는 손으로 만든
+     * 예외로 재지지 못하고 실제 DB가 답한다 — 그 매핑을 재는 테스트는 지금 없다(역순 어드바이저리
+     * 잠금 둘로 실제 교착을 만들면 가능하다).
+     */
+    static Stream<Arguments> timeoutShapes() {
+        return Stream.of(
+                Arguments.of("잠금 대기 상한 초과",
+                        new CannotAcquireLockException("canceling statement due to lock timeout")),
+                Arguments.of("맨몸 상위 타입 — JdbcTemplate 경로·엔티티 비관적 잠금의 모양",
+                        new PessimisticLockingFailureException("deadlock detected")),
+                Arguments.of("문이 취소됨",
+                        new QueryTimeoutException("canceling statement due to user request")),
+                Arguments.of("남은 수명이 0 — 다음 문을 세우지 못함",
+                        new TransactionTimedOutException("Transaction timed out: deadline was ...")));
+    }
+
+    /** 인증 주체에서 오는 값(kickerId·kickerRole)은 컨트롤러가 채운다 — 요청 본문에는 자리가 없다. */
+    private KickUserCommand command(UUID kickerId, String platformRole) {
+        return new KickUserCommand(roomId, kickerId, platformRole, targetId, messageId);
+    }
+
+    /** 방 주인(판매자)이 강퇴하는, 가장 흔한 조합. */
+    private KickUserCommand ownerKick() {
+        return command(sellerId, "SELLER");
+    }
+
+    private void givenRoom(boolean live) {
+        given(liveRoomReader.findRoom(roomId))
+                .willReturn(Optional.of(new LiveRoomView(roomId, sellerId, live, NOW)));
+    }
+
+    private void givenEvidence(UUID evidenceRoomId, UUID authorId) {
+        givenEvidence(evidenceRoomId, authorId, ChatRole.BUYER);
+    }
+
+    /** 대상의 역할은 증거 메시지가 들고 있다 — 발신 시점에 룸 토큰이 실어 준 값이다. */
+    private void givenEvidence(UUID evidenceRoomId, UUID authorId, ChatRole authorRole) {
+        given(evidenceRepository.findEvidence(messageId))
+                .willReturn(Optional.of(
+                        new ChatMessageEvidence(evidenceRoomId, authorId, authorRole, "문제의 원문")));
+    }
+
+    /** 방 주인이 자기 방에서 구매자를 강퇴하는, 전부 통과하는 조합. */
+    private void givenHappyPath() {
+        givenRoom(true);
+        givenEvidence(roomId, targetId);
+    }
+
+    @Nested
+    @DisplayName("성공 경로")
+    class HappyPath {
+
+        @Test
+        @DisplayName("로그 → 명단 → 발행 순서로 실행된다 — 커밋이 확정된 뒤에 Redis가 쓰인다")
+        void writesInDbFirstOrder() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then: 순서가 뒤집히면 롤백된 강퇴가 Redis에만 남는다
+            InOrder order = inOrder(kickRecorder, kickWriteRepository, kickEventPublisher);
+            order.verify(kickRecorder).record(any());
+            order.verify(kickWriteRepository).register(roomId, targetId);
+            order.verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+
+        @Test
+        @DisplayName("증거는 서버가 읽은 원문이 그대로 박힌다 — 강퇴자가 사유를 지어낼 수 없다")
+        void logCarriesServerReadEvidence() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            ArgumentCaptor<ChatKickLog> captor = ArgumentCaptor.forClass(ChatKickLog.class);
+            verify(kickRecorder).record(captor.capture());
+            ChatKickLog log = captor.getValue();
+            assertThat(log.triggeringMessage()).isEqualTo("문제의 원문");
+            assertThat(log.targetUserId()).isEqualTo(targetId);
+            assertThat(log.kickedById()).isEqualTo(sellerId);
+            assertThat(log.kickedByRole()).isEqualTo(ChatRole.SELLER);
+            assertThat(log.kickedAt()).isEqualTo(NOW);
+        }
+
+        @Test
+        @DisplayName("중복 강퇴여도 명단 등록과 발행은 실행된다 — 여기서 멈추면 다시는 강퇴하지 못한다")
+        void duplicateStillRegistersAndPublishes() {
+            // given: 이미 같은 (user, room) 로그가 있어 이번 INSERT는 no-op이다
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then: 집행 캐시가 유실된 사용자를 재강퇴로 복구할 수 있어야 한다
+            verify(kickWriteRepository).register(roomId, targetId);
+            verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+
+        @Test
+        @DisplayName("ADMIN은 남의 방에서도 강퇴한다")
+        void adminKicksInAnyRoom() {
+            // given: 방 주인이 아닌 관리자
+            UUID adminId = UUID.randomUUID();
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(command(adminId, "ADMIN"));
+
+            // then
+            verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+
+        @Test
+        @DisplayName("탈퇴 유예 중인 대상도 강퇴된다 — 계정 상태를 아예 묻지 않기 때문이다")
+        void withdrawingTargetIsStillKickable() {
+            // given: 이 경로는 사용자 계정 저장소에 닿지 않는다. 그래서 탈퇴 유예라는 상태가
+            // 판정에 끼어들 자리가 없고, 그게 필요한 동작이다 — REST가 막힌 뒤에도 채팅 세션은
+            // 살아 있어 그 사람이 방에서 계속 말한다.
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+    }
+
+    @Nested
+    @DisplayName("계정 발행 — 조용한 세션을 끊는 신호")
+    class AccountEvent {
+
+        @Test
+        @DisplayName("⭐ 밴이 걸리면 계정 이벤트를 발행한다 — 없으면 다른 방의 조용한 세션이 그대로 남는다")
+        void publishesWhenABanIsInEffect() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(accountEventPublisher).publishBanned(targetId);
+        }
+
+        @Test
+        @DisplayName("밴이 없으면 발행하지 않는다 — 임계 미달 강퇴까지 전 Pod를 훑게 하지 않는다")
+        void doesNotPublishWithoutABan() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(accountEventPublisher, never()).publishBanned(any());
+        }
+
+        @Test
+        @DisplayName("⭐ 계정 발행이 강퇴 명단 등록보다 뒤다 — 앞에 두면 발행 실패가 강퇴 집행을 통째로 건너뛴다")
+        void publishesAfterTheEnforcingWrites() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then: PUBLISH만 실패하는 일시 장애 중에도 명단 등록은 이미 끝나 있어야 한다.
+            // 순서가 뒤집히면 그 방의 강퇴가 성립하지 않고, 밴이 만료되면 강퇴당한 적 없는 사람으로 돌아온다.
+            InOrder order = inOrder(kickWriteRepository, kickEventPublisher, accountEventPublisher);
+            order.verify(kickWriteRepository).register(roomId, targetId);
+            order.verify(kickEventPublisher).publishKicked(roomId, targetId);
+            order.verify(accountEventPublisher).publishBanned(targetId);
+        }
+    }
+
+    @Nested
+    @DisplayName("혼잡 — 고장과 갈라 놓는다")
+    class Contention {
+
+        /**
+         * 상한 초과는 <b>네 모양</b>으로 나온다 — 잠금 실패(구체 타입), 잠금 실패(맨몸 상위 타입),
+         * DB가 문을 취소({@code QueryTimeoutException}), 남은 수명이 0 이하라 다음 문을 세우지도 못함
+         * ({@code TransactionTimedOutException}). 앞 둘은 상위 타입 하나로 묶이고 뒤 둘은 각각이다.
+         * 하나만 잡으면 나머지가 500으로 나간다 — 실제로 그렇게 썼다가 <b>두 번</b> 잡혔다.
+         *
+         * <p>실제로 어느 타입이 오는지는 여기서 정하지 않는다. 그건 실제 Postgres가 답하는 것이고
+         * {@code ChatKickRecorderConcurrencyTest}가 잰다 — 이 테스트는 "그 타입이 오면 번역된다"만
+         * 지킨다. 둘을 한 자리에 두면 DB가 바뀔 때 무엇이 틀렸는지 가려진다.
+         */
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("com.sapari.chat.application.service.KickUserServiceTest#timeoutShapes")
+        @DisplayName("⭐ 잠금 대기가 상한을 넘으면 재시도 가능한 도메인 예외가 된다 — 인프라 예외 그대로면 500이다")
+        void lockTimeoutBecomesARetryableDomainError(String shape, RuntimeException thrown) {
+            // given: 다른 방의 강퇴가 같은 사용자의 밴 행을 쥐고 있어 이 트랜잭션이 상한을 넘겼다
+            givenHappyPath();
+            given(kickRecorder.record(any())).willThrow(thrown);
+
+            // when & then: 번역하지 않으면 전역 핸들러의 마지막 그물에 걸려 500 + Unhandled exception 로그가 된다.
+            // 재시도하면 성공하는 실패에 "서버가 고장났다"고 답하는 셈이고, 정상적인 동시 강퇴가 알림을 울린다.
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatKickContendedException.class)
+                    .extracting(e -> ((ChatKickContendedException) e).getErrorCode().getStatus())
+                    .isEqualTo(409);
+
+            // then: 기록이 안 남았으므로 명단 등록도 발행도 하지 않는다
+            verify(kickWriteRepository, never()).register(any(), any());
+            verify(kickEventPublisher, never()).publishKicked(any(), any());
+        }
+    }
+
+    @Nested
+    @DisplayName("거부 — 어디서 멈추는가")
+    class Rejection {
+
+        /** 거부되면 쓰기 세 단계가 하나도 일어나지 않아야 한다. */
+        private void assertNothingWritten() {
+            verify(kickRecorder, never()).record(any());
+            verify(kickWriteRepository, never()).register(any(), any());
+            verify(kickEventPublisher, never()).publishKicked(any(), any());
+        }
+
+        @Test
+        @DisplayName("없는 방은 권한 거부다 — '없는 방'과 갈라 주면 방 id를 세는 통로가 된다")
+        void unknownRoomIsDeniedNotNotFound() {
+            // given
+            given(liveRoomReader.findRoom(roomId)).willReturn(Optional.empty());
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("모르는 역할 이름은 거부한다 — 조용히 구매자로 접으면 원인이 안 드러난다")
+        void unknownRoleNameIsDenied() {
+            // given
+            givenRoom(true);
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(command(sellerId, "MODERATOR")))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("구매자는 강퇴할 수 없다 — 역할은 인증 주체에서 오므로 올려 부를 수 없다")
+        void buyerCannotKick() {
+            // given: 요청 본문에는 역할 자리가 없다. 이 값은 서명된 토큰에서 온다
+            givenRoom(true);
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "USER")))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("남의 방 판매자는 강퇴할 수 없다")
+        void sellerCannotKickInAnotherRoom() {
+            // given: 이 방의 주인은 sellerId다
+            givenRoom(true);
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "SELLER")))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("⭐ 관리자는 강퇴되지 않는다 — 대상 역할은 증거 메시지가 들고 있다")
+        void adminTargetIsProtected() {
+            // given: 방 주인이 관리자가 남긴 메시지로 강퇴를 건다
+            givenRoom(true);
+            givenEvidence(roomId, targetId, ChatRole.ADMIN);
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("자기 자신은 강퇴할 수 없다")
+        void selfKickIsDenied() {
+            // given: 대상이 곧 강퇴자다
+            givenRoom(true);
+            given(evidenceRepository.findEvidence(messageId)).willReturn(Optional.of(
+                    new ChatMessageEvidence(roomId, sellerId, ChatRole.SELLER, "문제의 원문")));
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(
+                    new KickUserCommand(roomId, sellerId, "SELLER", sellerId, messageId)))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("끝난 방은 거부한다 — 등록하면 아무도 안 보는 명단이 24시간 남는다")
+        void endedRoomIsRejected() {
+            // given
+            givenRoom(false);
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(LiveNotActiveException.class);
+            assertNothingWritten();
+        }
+
+        @Test
+        @DisplayName("⭐ 권한 없는 호출자는 증거 조회에 닿지 못한다 — messageId 존재를 훑지 못하게 한다")
+        void unauthorizedCallerNeverReachesEvidence() {
+            // given
+            givenRoom(true);
+
+            // when
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "USER")))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+
+            // then: 증거 저장소를 건드리지도 않았다
+            verify(evidenceRepository, never()).findEvidence(any());
+        }
+
+        @Test
+        @DisplayName("⭐ 끝난 방 검사도 권한 뒤다 — 아니면 권한 없는 호출자가 방이 켜졌는지 알아낸다")
+        void livenessIsCheckedAfterPermission() {
+            // given: 권한도 없고 방도 끝났다
+            givenRoom(false);
+
+            // when & then: 돌아오는 것은 '진행 중이 아님'이 아니라 '권한 없음'이어야 한다
+            assertThatThrownBy(() -> service.kick(command(UUID.randomUUID(), "USER")))
+                    .isInstanceOf(ChatPermissionDeniedException.class);
+        }
+    }
+    @Nested
+    @DisplayName("증거 정합")
+    class Evidence {
+
+        @Test
+        @DisplayName("없는 메시지로는 강퇴하지 못한다")
+        void missingEvidenceRejects() {
+            // given
+            givenRoom(true);
+            given(evidenceRepository.findEvidence(messageId)).willReturn(Optional.empty());
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatKickEvidenceMismatchException.class);
+            verify(kickRecorder, never()).record(any());
+        }
+
+        @Test
+        @DisplayName("다른 방 메시지로는 강퇴하지 못한다")
+        void evidenceFromAnotherRoomRejects() {
+            // given
+            givenRoom(true);
+            givenEvidence(UUID.randomUUID(), targetId);
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatKickEvidenceMismatchException.class);
+            verify(kickRecorder, never()).record(any());
+        }
+
+        @Test
+        @DisplayName("남이 쓴 메시지로는 강퇴하지 못한다")
+        void evidenceByAnotherAuthorRejects() {
+            // given
+            givenRoom(true);
+            givenEvidence(roomId, UUID.randomUUID());
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(ChatKickEvidenceMismatchException.class);
+            verify(kickRecorder, never()).record(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("밴 미러 — 정본이 돌려준 것을 그대로 비춘다")
+    class BanMirror {
+
+        /**
+         * 임계 판정과 중복 카운트는 이 서비스의 일이 아니라 {@code ChatKickRecorder}의 일이고, 그쪽은
+         * 실제 Postgres로 검증한다({@code ChatKickRecorderTest}). 여기서 고정하는 것은 <b>돌려받은 밴을
+         * 미러에 반영하는가</b>와 <b>그 반영이 강퇴 집행보다 먼저인가</b> 둘뿐이다.
+         */
+        @Test
+        @DisplayName("밴이 없으면 미러를 건드리지 않는다")
+        void noBanLeavesMirrorAlone() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(banWriteRepository, never()).ban(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("돌려받은 만료를 그대로 미러에 쓴다 — 정본과 미러가 갈리면 밴이 일찍 풀린다")
+        void mirrorsTheReturnedExpiry() {
+            // given
+            Instant expiry = NOW.plus(Duration.ofDays(7));
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, UUID.randomUUID(), expiry, NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(banWriteRepository).ban(targetId, expiry, NOW);
+        }
+
+        /**
+         * 자동 승격에는 영구가 없지만, 관리자가 손으로 넣은 영구 밴은 여전히 정본에 있을 수 있고
+         * {@code findActive}가 그걸 돌려준다. 미러는 그때도 만료 없이 써야 한다.
+         */
+        @Test
+        @DisplayName("사람이 건 영구 밴은 만료 없이 비춘다 — 자동 승격에는 영구가 없다")
+        void manualPermanentBanHasNoExpiry() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, UUID.randomUUID(), null, NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            verify(banWriteRepository).ban(targetId, null, NOW);
+        }
+
+        @Test
+        @DisplayName("⭐ 미러가 명단 등록·발행보다 먼저다 — 정본이 확정된 뒤에 집행이 간다")
+        void mirrorPrecedesEnforcement() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(
+                    new ChatBan(targetId, UUID.randomUUID(), NOW.plus(Duration.ofDays(7)), NOW)));
+
+            // when
+            service.kick(ownerKick());
+
+            // then
+            InOrder order = inOrder(kickRecorder, banWriteRepository,
+                    kickWriteRepository, kickEventPublisher);
+            order.verify(kickRecorder).record(any());
+            order.verify(banWriteRepository).ban(any(), any(), any());
+            order.verify(kickWriteRepository).register(roomId, targetId);
+            order.verify(kickEventPublisher).publishKicked(roomId, targetId);
+        }
+    }
+
+    @Nested
+    @DisplayName("실패 시 뒤 단계가 멈춘다")
+    class Propagation {
+
+        @Test
+        @DisplayName("기록이 실패하면 명단·발행이 실행되지 않는다 — 재시도가 안전해야 한다")
+        void recordFailureStopsTheRest() {
+            // given
+            givenHappyPath();
+            willThrow(new IllegalStateException("DB 장애")).given(kickRecorder).record(any());
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(IllegalStateException.class);
+            verify(kickWriteRepository, never()).register(any(), any());
+            verify(kickEventPublisher, never()).publishKicked(any(), any());
+        }
+
+        @Test
+        @DisplayName("명단 등록이 실패하면 발행하지 않는다 — 막히지 않은 강퇴를 성공이라 부르지 않는다")
+        void registerFailureStopsPublish() {
+            // given
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.empty());
+            willThrow(new IllegalStateException("Redis 장애"))
+                    .given(kickWriteRepository).register(any(), any());
+
+            // when & then
+            assertThatThrownBy(() -> service.kick(ownerKick()))
+                    .isInstanceOf(IllegalStateException.class);
+            verify(kickEventPublisher, never()).publishKicked(any(), any());
+        }
+    }
+}
