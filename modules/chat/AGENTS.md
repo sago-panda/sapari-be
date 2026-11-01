@@ -715,6 +715,17 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
       is recorded, not changed."* SPR-152 pulled exactly that lever, at the call site rather than through
       `timeoutMs` (a global `timeoutMs` would bound runtime queries too, and getting that value wrong
       breaks serving rather than boot). `ChatMongoIndexCeilingTest` pins both the bound and its unit.
+    - **Dying at that ceiling does not restart the work** (measured on mongo 7 via the
+      `hangAfterInitializingIndexBuild` failpoint — the one remaining "uncertain" on this bullet, and the
+      answer turned out to be the opposite of what the code said). A second identical `createIndexes`
+      issued while a build is in progress **waits** rather than returning `IndexBuildAlreadyInProgress`;
+      killing the client outright (its container removed) leaves the server-side build running
+      (`createIndexes` op still listed, `IndexBuildsCoordinatorMongod-0` alive) and the index completes
+      with nobody attached. So the pod's death does not undo progress and the next pod joins the same
+      build — N× the ceiling costs ~N restarts, then it boots. Two places said "every restart re-fires
+      the build" (the constant's javadoc and the operator-facing exception message); both were guesses
+      and both are corrected. The sizing advice does not change — it is still a full outage while it
+      lasts — but "permanent CrashLoopBackOff" was wrong.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
     forever when the main thread throws before `countDown()`. The reason is **not** that a non-daemon
     thread holds the worker JVM open: it does not (a thread sleeping 10 minutes still lets the Gradle test

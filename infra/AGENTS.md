@@ -343,9 +343,15 @@ that on.
       **30,053 ms** (measured — driver `serverSelectionTimeout` default, surfaced as
       `DataAccessResourceFailureException`), not at the ceiling. The ceiling only covers the mode where
       a server *was* selected and `createIndex` does not answer.
-    - Dying at the ceiling **re-fires the index build on every restart**, so it reads as
-      `CrashLoopBackOff` rather than one loud failure. If that is what you see, the fix is to build the
-      indexes out of band and redeploy — not to keep restarting.
+    - Dying at the ceiling reads as `CrashLoopBackOff` rather than one loud failure — but **the restart
+      does not re-fire the build, it joins the one already running** (measured on mongo 7 with the
+      `hangAfterInitializingIndexBuild` failpoint: a second identical `createIndexes` **waits** instead
+      of returning `IndexBuildAlreadyInProgress`; a hard client disconnect leaves the server-side build
+      in place — `createIndexes` op still listed, `IndexBuildsCoordinatorMongod-0` still running — and
+      the index finishes with no client attached). So a build taking N× the ceiling costs about N
+      restarts and then boots; restarting does not undo progress, and the loop is **not permanent**.
+      It is still a full outage for that pod while it lasts, so the fix is the same: build the indexes
+      out of band, or raise the ceiling to cover the build.
 - **Deployment prerequisite**: the set of endpoints that are **actually exposed** must be exactly
   `{health, prometheus}` — without that the app refuses to start, by design (`health` missing means the k8s
   probes 404; `prometheus` missing means the metrics are silently empty).
