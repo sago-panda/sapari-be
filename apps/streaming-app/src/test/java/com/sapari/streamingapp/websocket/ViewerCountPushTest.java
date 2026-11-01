@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -225,5 +226,45 @@ class ViewerCountPushTest {
         // then
         assertThat(frames).extracting(OutboundMessage::type).containsOnly("ROOM_INFO");
         assertThat(frames).extracting(OutboundMessage::activeCount).containsExactly(7L);
+    }
+    @Test
+    @DisplayName("⭐ 한 회차가 실패해도 타이머가 산다 — 죽으면 이 파드는 재시작까지 재등록을 전부 잃는다")
+    void aFailedRoundDoesNotKillTheTimer() {
+        // given: 첫 회차만 실패하는 레지스트리. 오늘 운영 코드에서는 회차 단위 onError 에 도달하지
+        // 않는다(잎 셋이 모두 흡수한다) — 그래서 이 테스트가 그 자리를 직접 만든다. 막으려는 것은
+        // "잎 하나가 흡수를 빼먹는 변경" 이고, 그때 깨지는 것은 한 회차가 아니라 이 파드의 관측 전부다.
+        given(sessionRepository.heartbeatInterval()).willReturn(Duration.ofMillis(30));
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(1L), Mono.just(7L));
+        AtomicInteger rounds = new AtomicInteger();
+        ChatSessionRegistry failingFirstRound = new ChatSessionRegistry(
+                sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP) {
+            @Override
+            Mono<Void> pushViewerCounts() {
+                if (rounds.incrementAndGet() == 1) {
+                    return Mono.error(new IllegalStateException("회차 실패"));
+                }
+                return super.pushViewerCounts();
+            }
+        };
+        failingFirstRound.register("s1", new ChatSession(roomId, buyerId, ChatRole.BUYER,
+                "닉", "e@example.com", false)).block(VERIFY_CEILING);
+        List<OutboundMessage> frames = new CopyOnWriteArrayList<>();
+        failingFirstRound.outbound("s1").subscribe(frames::add);
+
+        // when: 1회차 실패 → 2회차가 기준선 1 → 3회차가 7 을 본다. 흡수가 없으면 1회차에서 바깥
+        // subscribe() 가 끝나므로 2·3회차가 아예 오지 않고 프레임도 영원히 없다.
+        failingFirstRound.startHeartbeat();
+        try {
+            long deadline = System.nanoTime() + VERIFY_CEILING.toNanos();
+            while (frames.isEmpty() && System.nanoTime() - deadline < 0) {
+                Thread.onSpinWait();
+            }
+        } finally {
+            failingFirstRound.stopHeartbeat();
+        }
+
+        // then
+        assertThat(frames).extracting(OutboundMessage::activeCount).containsExactly(7L);
+        assertThat(rounds.get()).as("회차가 한 번만 돌았다 — 타이머가 첫 실패에 죽었다").isGreaterThan(1);
     }
 }

@@ -238,7 +238,22 @@ public class ChatSessionRegistry implements ChatSessionManager {
                         // 같은 타이머에 시청자 수 갱신을 얹는다 — 둘 다 "이 Pod 가 주기마다 하는 일"
                         // 이고 타이머를 하나 더 두면 세션 수만큼의 비용이 두 배가 된다. 순서가 이쪽인
                         // 이유는 재등록이 먼저 끝나야 그 회차의 수가 좀비를 걷어낸 값이기 때문이다.
-                        .then(pushViewerCounts()))
+                        .then(pushViewerCounts())
+                        // ⭐ 회차 단위로 흡수한다. 여기까지 올라온 onError 는 concatMap 을 타고
+                        // 밖으로 나가 subscribe() 를 끝내는데, 그러면 이 Pod 는 재시작 전까지
+                        // 재등록과 시청자 수 갱신을 둘 다 잃는다 — 살아 있는 시청자 전원이 낡음
+                        // 상한 뒤에 집계에서 사라지고, 아무 신호가 없다.
+                        //
+                        // 오늘은 여기 도달하지 않는다: 잎 셋이 전부 흡수한다(reregister 의
+                        // onErrorResume, pushViewerCount 의 onErrorResume, 지표의 safe()). 그래도
+                        // 두는 이유는 그 불변식이 잎 하나를 추가하는 변경으로 조용히 깨지고, 깨진
+                        // 결과가 "이 Pod 의 관측이 통째로 멈춤" 이라는 비대칭 때문이다.
+                        // ChatAccountEventHandler·LiveRoomEndedHandler 가 같은 모양을 같은 근거로
+                        // 이미 막아 두었고, 여기만 비어 있었다.
+                        .onErrorResume(e -> {
+                            log.warn("하트비트 회차가 실패했다 — 다음 주기가 받는다", e);
+                            return Mono.<Void>empty();
+                        }))
                 .subscribe();
     }
 
