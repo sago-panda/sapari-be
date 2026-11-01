@@ -687,14 +687,31 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         });
     }
 
+    /**
+     * 구독 refcount 를 하나 내린다. 0 이 되면 매핑을 먼저 걷고 <b>그 다음에</b> dispose 한다.
+     *
+     * <p>⚠️ 한때 {@code dispose()} 를 재매핑 함수 <b>안</b>에서 불렀다. 그게 던지면 CHM 은 매핑을
+     * 되돌리지 않는데 {@code decrementAndGet()} 은 이미 일어났으므로 <b>{@code refs=0} 항목이
+     * 남는다</b>. 그러면 다음 세션이 {@code existing != null} 로 가 {@code refs} 를 0→1 로만 올리고
+     * {@code subscribeRoom} 을 부르지 않는다 — 그 파드의 그 방이 크로스 파드 강퇴·밴·방 종료 채널이
+     * <b>죽은 채로</b> 영구히 간다(다음 해제도 같은 dispose 로 다시 던져 항목이 걷히지 않는다).
+     *
+     * <p>이 자리가 특히 어긋나 있었다 — {@code cleanup} 이 {@code dispose} 의 던짐을 잡는 catch 를
+     * 두어 "던질 수 있다" 를 <b>전제로 채택</b>했는데, 그 전제 아래 남는 맵 상태는 복구하지 않았다.
+     * 매핑을 먼저 걷으면 던져도 상태가 일관된다(구독은 못 끊지만 다음 세션이 새로 구독한다).
+     */
     void releaseRoom(UUID roomId) {
+        Disposable[] last = {null};
         roomSubs.computeIfPresent(roomId, (key, existing) -> {
             if (existing.refs().decrementAndGet() <= 0) {
-                existing.disposable().dispose();
-                return null;   // 마지막 퇴장 → 구독 해제
+                last[0] = existing.disposable();
+                return null;   // 매핑을 먼저 걷는다 — dispose 는 잠금 밖에서
             }
             return existing;
         });
+        if (last[0] != null) {
+            last[0].dispose();
+        }
     }
 
     boolean isSubscribed(UUID roomId) {
@@ -708,6 +725,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * refcount 가 영구히 남는다 — 그 방에 아무도 없는데 이 파드가 계속 그 방의 모든 메시지를 받는다.
      * 오늘 앞줄이 던질 경로는 없지만(레지스트리의 로컬 정리 + 지연 조립된 Redis 제거), 이 메서드는
      * {@code doFinally} 안에서 도는 <b>마지막 보상</b>이라 자기 안에서 순서에 기대면 안 된다.
+     *
+     * <p>⚠️ 해제 쪽 던짐을 잡는 것은 <b>관측</b>을 위한 것이고, 그 전제("dispose 는 던질 수 있다")의
+     * 귀결은 {@link #releaseRoom} 이 맡는다 — 매핑을 먼저 걷으므로 던져도 상태가 일관된다.
      * 테스트가 그 모양을 실제로 밟았다(목 레지스트리가 던지는 회차에서 구독이 남았다).
      */
     private void cleanup(UUID roomId, String sid, boolean roomAcquired) {
@@ -718,10 +738,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 try {
                     releaseRoom(roomId);
                 } catch (RuntimeException e) {
-                    // 여기서 던지면 <b>원래 예외를 가린다</b> — 그리고 이 메서드는 doFinally 콜백
-                    // 안이라 reactor 가 그 던짐을 drop 한다. 즉 안 적으면 아무 데도 안 남는다.
-                    // 구독이 남는 것은 사실이므로 삼키는 것이 아니라 한 줄로 남긴다.
-                    log.warn("방 구독 해제 실패 — 구독이 남는다 roomId={} cause={}",
+                    // 여기서 던지면 <b>이 메서드의</b> 원래 예외를 가린다(스트림의 원래 에러는
+                    // 그 전에 이미 다운스트림에 전달됐다 — 실측).
+                    //
+                    // ⚠️ "안 적으면 아무 데도 안 남는다" 로 적었는데 <b>거짓이었다.</b> 훅이 없으면
+                    // reactor 기본 onErrorDropped 가 ERROR 레벨로 <b>스택까지</b> 남긴다(이 앱의
+                    // Hooks 는 enableAutomaticContextPropagation 하나뿐이다). 즉 이 catch 는 스택을
+                    // 클래스 이름 한 줄로 바꾼 것이라 진단 정보는 오히려 줄었다.
+                    //
+                    // 그래도 두는 이유는 다르다 — reactor 기본 로그에는 <b>roomId 도 상관 식별자도
+                    // 없고</b> 로거 이름이 달라 당직 필터에 걸리지 않는다. 이 한 줄이 "어느 방" 을
+                    // 싣는다. 구독이 남는 것은 사실이므로 삼키는 것이 아니다.
+                    log.warn("방 구독 해제 실패 — 매핑은 걷혔고 구독만 남는다 roomId={} cause={}",
                             roomId, e.getClass().getSimpleName());
                 }
             }

@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -9,6 +10,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
@@ -177,6 +179,76 @@ class ChatWebSocketHandlerTest {
         assertThat(handler.isSubscribed(roomId))
                 .as("실패한 접속의 뒷정리가 다른 세션의 방 구독을 걷어냈다").isTrue();
         then(disposable).should(never()).dispose();
+
+        // ⚠️ 이 교차는 뒷정리의 <b>내부 순서</b>(unregister 먼저 → 방 해제 나중)에 기댄다. 순서를
+        // 뒤집으면 설치가 해제 뒤로 가서 이 테스트가 과다 해제를 <b>조용히 못 잡는다</b>(실측: 순서
+        // 뒤집기 + 플래그 무시 → 전 스위트 초록). 운영의 교차는 시간 기반이라 순서를 바꿔도 결함이
+        // 남으므로, 순서에 기대지 않는 걸쇠를 아래 테스트가 따로 건다 —
+        // {@code a_failed_acquire_never_calls_release}.
+        //
+        // 순서를 InOrder 로 못 박으려 했는데 그것도 공단언이었다: subscribeRoom 이 두 번 불려
+        // (A 의 실패 + B 의 설치) 역순에서도 "unregister 다음 subscribeRoom" 이 성립한다.
+    }
+
+    /**
+     * ⭐ 방을 못 얻었으면 {@code releaseRoom} 을 <b>부르지 않는다</b> — 순서와 무관한 걸쇠.
+     *
+     * <p>위 교차 테스트는 뒷정리의 내부 순서에 기대므로 그 순서를 바꾸면 조용히 효력을 잃는다. 이
+     * 테스트는 그 대신 불변식을 직접 잰다 — 획득이 실패했으면 해제 호출이 <b>0회</b>여야 한다. 핸들러
+     * 자신을 spy 로 감싸는 이유가 그것이다: 해제는 같은 객체의 메서드라 목으로는 안 보인다.
+     */
+    @Test
+    @DisplayName("⭐ 방을 못 얻으면 해제를 아예 부르지 않는다 — 뒷정리 순서와 무관한 걸쇠")
+    void a_failed_acquire_never_calls_release() {
+        ChatWebSocketHandler spied = spy(handlerWithLifetime(Duration.ofHours(1)));
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.unregister(roomId, "s1")).willReturn(Mono.empty());
+        given(subscriber.subscribeRoom(roomId))
+                .willThrow(new IllegalStateException("프로브: subscribeRoom 이 던진다"));
+        ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        StepVerifier.create(spied.runSession(session, chatSession))
+                .expectError(IllegalStateException.class)
+                .verify(VERIFY_CEILING);
+
+        then(spied).should(never()).releaseRoom(roomId);
+    }
+
+    /**
+     * ⭐ {@code dispose()} 가 던져도 <b>맵 상태가 일관된다</b>, 그리고 그 던짐이 한 줄로 남는다.
+     *
+     * <p>두 가지를 한 번에 재는 이유는 둘이 같은 전제를 공유하기 때문이다 — 뒷정리가 그 던짐을 잡는
+     * catch 를 두어 "{@code dispose} 는 던질 수 있다" 를 전제로 채택했으므로, 그 전제 아래 남는
+     * 맵 상태도 복구돼야 한다. 한때 {@code dispose()} 를 재매핑 함수 안에서 불러 던지면
+     * <b>{@code refs=0} 항목이 남았고</b>, 그러면 다음 세션이 구독 없이 그 항목만 올려 그 방의
+     * 크로스 파드 채널이 죽은 채로 영구히 간다.
+     */
+    @Test
+    @DisplayName("⭐ dispose 가 던져도 방 항목은 걷힌다 — 남으면 다음 세션이 구독 없이 그 방을 쓴다")
+    void a_throwing_dispose_still_removes_the_room_entry() {
+        Disposable throwing = mock(Disposable.class);
+        org.mockito.BDDMockito.willThrow(new IllegalStateException("프로브: dispose 가 던진다"))
+                .given(throwing).dispose();
+        given(subscriber.subscribeRoom(roomId)).willReturn(throwing);
+
+        handler.acquireRoom(roomId);
+        // 던짐은 호출부로 올라간다(그 catch 는 cleanup 에 있고 이건 직접 호출이다). 재는 것은
+        // 그 던짐 뒤에 <b>맵 상태가 일관된가</b>다.
+        assertThatThrownBy(() -> handler.releaseRoom(roomId))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(handler.isSubscribed(roomId))
+                .as("dispose 가 던지자 refs=0 항목이 남았다 — 다음 세션이 구독 없이 그 방을 쓴다")
+                .isFalse();
+        // 그 뒤 새 세션은 구독을 <b>새로</b> 만들 수 있어야 한다.
+        given(subscriber.subscribeRoom(roomId)).willReturn(mock(Disposable.class));
+        handler.acquireRoom(roomId);
+        assertThat(handler.isSubscribed(roomId)).isTrue();
+        then(subscriber).should(times(2)).subscribeRoom(roomId);
     }
 
     @Test
