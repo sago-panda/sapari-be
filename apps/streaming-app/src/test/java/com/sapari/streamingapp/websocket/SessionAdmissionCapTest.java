@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
@@ -58,6 +59,7 @@ class SessionAdmissionCapTest {
     private static final Duration REAP_DEADLINE = Duration.ofSeconds(120);
 
     private ChatSessionRepository sessionRepository;
+    private ChatMetrics metrics;
     private ChatSessionRegistry registry;
 
     private final UUID roomId = UUID.randomUUID();
@@ -70,7 +72,9 @@ class SessionAdmissionCapTest {
         sessionRepository = mock(ChatSessionRepository.class);
         given(sessionRepository.add(any(), any(), any())).willReturn(Mono.empty());
         given(sessionRepository.remove(any(), any())).willReturn(Mono.empty());
-        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        // NOOP 이 아니라 목이다 — 종료가 일어났는지는 이 포트로만 보인다(위 reap 테스트 참고).
+        metrics = mock(ChatMetrics.class);
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), metrics);
     }
 
     private ChatSession session(UUID room, UUID user) {
@@ -156,10 +160,48 @@ class SessionAdmissionCapTest {
         // ⭐ 거둔 세션을 <b>종료하지는 않는다.</b> 종료는 Lettuce NIO 이벤트루프에서 세션마다
         // 50ms 예산을 새로 받는 spin 이라, 5건이면 그 루프가 최대 250ms 멈춘다 — 이 파일이 두 자리에서
         // 금지한 모양이고 하필 발동 조건이 재접속 폭주 구간이다. 수거는 각 세션의 생존 확인
-        // (Schedulers.parallel)이 다음 틱에 가져간다. 그래서 거둔 세션은 local 에 잠깐 남는다.
-        assertThat(registry.localSessionCount())
-                .as("reap 이 종료까지 했다 — 접속 경로에서 이벤트루프가 그만큼 멈춘다")
-                .isEqualTo(CAP + 1);
+        // (Schedulers.parallel)이 다음 틱에 가져간다.
+        //
+        // ⚠️ 이걸 localSessionCount 로 재면 <b>변이에 반응하지 않는다</b> — terminateUnresponsive 는
+        // local 에서 지우지 않으므로(지우는 것은 핸들러 cleanup → unregister 다) 종료를 다시 넣어도
+        // 그 수가 그대로다. 실제로 한때 그렇게 적어 뒀고, reap 에 종료를 되돌려도 전 스위트가
+        // 초록이었다 — 금지한다고 적은 변경이 통째로 통과했다. 종료의 관측 가능한 흔적은 지표다.
+        then(metrics).should(never()).sessionCut(any());
+    }
+
+    /**
+     * 등록이 중간에 던져도 자리가 새지 않는다.
+     *
+     * <p>이게 상한 코드가 만들 수 있는 <b>최악의 결함</b>이다 — 자리가 남으면 회수 경로 둘이 다 못
+     * 걷는다(퇴장은 {@code local.get} 이 null 이라 건너뛰고, 수거는 {@code local} 에 없는 세션에
+     * "살아 있음" 을 준다). 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다.
+     *
+     * <p><b>주입 협력자로 던진다.</b> 한때 가드가 {@code local.put} 하나만 감쌌는데 그러면 집행
+     * 대상이 사실상 OOM 뿐이라 테스트로 밟을 수 없었다. 가드를 자리 추가 직후부터 반환까지 넓히면
+     * 감사 블록이 그 안에 들어오고, 그 블록이 부르는 정책이 테스트가 쥘 수 있는 유일한 시임이 된다 —
+     * 가드를 넓힌 것이 테스트 가능성까지 같이 산 셈이다.
+     */
+    @Test
+    @DisplayName("⭐ 등록이 중간에 던져도 자리가 새지 않는다 — 새면 그 유저가 그 방에 영구히 못 들어온다")
+    void aThrowMidRegistrationDoesNotLeakTheSlot() {
+        ChatPermissionPolicy throwingPolicy = mock(ChatPermissionPolicy.class);
+        given(throwingPolicy.usesPrivilegedViewInSomeoneElsesRoom(any(), anyBoolean()))
+                .willThrow(new IllegalStateException("프로브: 등록 중간에 던진다"));
+        ChatSessionRegistry guarded =
+                new ChatSessionRegistry(sessionRepository, throwingPolicy, metrics);
+
+        // 상한보다 많이 시도한다 — 자리가 새면 상한만큼 찬 뒤부터 사유가 TOO_MANY_SESSIONS 로 바뀐다.
+        for (int i = 0; i < CAP + 2; i++) {
+            String sid = "leak" + i;
+            assertThatThrownBy(() -> guarded.register(sid, session(roomId, userId)).block(VERIFY_CEILING))
+                    .as("자리가 새어 거부로 바뀌었다 — 던진 등록이 자리를 남겼다")
+                    .isInstanceOf(IllegalStateException.class);
+        }
+
+        assertThat(guarded.admissionCapped())
+                .as("던진 등록이 자리를 남겨 상한이 찼다").isZero();
+        assertThat(guarded.localSessionCount())
+                .as("던진 등록이 local 에 세션을 남겼다").isZero();
     }
 
     @Test

@@ -87,6 +87,20 @@ public class ChatSessionGaugeConfig {
     static final String ADMISSION_CAPPED_COUNTER = "chat.sessions.admission_capped";
 
     /**
+     * 죽은 소켓이 들고 있던 자리를 거둔 누적 수.
+     *
+     * <p>위 거부 카운터와 <b>짝으로만</b> 뜻이 있다. 거부만 오르고 이쪽이 평평하면 공격이거나 상한이
+     * 낮은 것이고, 둘이 같이 오르면 소켓을 닫지 않고 사라지는 클라가 많은 것이다(평범한 모바일).
+     * {@code chat.session.cut{liveness}} 로는 안 된다 — 태그가 사유 하나라 "상한이 죽은 자리를
+     * 비웠다" 와 "생존 루프가 거뒀다" 가 구분되지 않는다.
+     *
+     * <p>⚠️ 한때 이 미터를 <b>등록하지 않은 채</b> 저장소 문서 세 곳이 그 짝을 보라고 적었다.
+     * 짝의 한쪽이 없으면 그 판독이 원리적으로 불가능하고, 영구히 빈 패널이 하필 "공격" 서명으로
+     * 읽힌다 — 없는 지표를 문서가 약속하는 쪽이 지표가 아예 없는 것보다 나쁘다.
+     */
+    static final String SLOTS_REAPED_COUNTER = "chat.sessions.reaped";
+
+    /**
      * 게이지를 등록하고 그 사실을 빈으로 남긴다.
      *
      * <p>표식 빈을 돌려주는 이유는 등록이 <b>부수효과</b>라서다 — 반환값이 없으면 이 메서드가
@@ -122,6 +136,9 @@ public class ChatSessionGaugeConfig {
         // 쓸 수 없고 "지금 몇 개" 로 오독된다. 이 수는 증가율로 봐야 의미가 있다(상한이 방금 발화했나).
         FunctionCounter.builder(ADMISSION_CAPPED_COUNTER, registry, ChatSessionRegistry::admissionCapped)
                 .description("동시 세션 상한으로 입장을 거부한 누적 수")
+                .register(meters);
+        FunctionCounter.builder(SLOTS_REAPED_COUNTER, registry, ChatSessionRegistry::slotsReaped)
+                .description("죽은 소켓이 들고 있던 동시 세션 자리를 거둔 누적 수")
                 .register(meters);
         return new SessionGauges(true);
     }

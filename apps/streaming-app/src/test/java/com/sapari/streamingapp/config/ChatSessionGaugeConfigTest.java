@@ -218,6 +218,22 @@ class ChatSessionGaugeConfigTest {
     }
 
     @Test
+    @DisplayName("⭐ 등록한 미터 집합을 고정한다 — 이름으로 찾는 단언은 '안 만든 미터' 를 못 잡는다")
+    void theRegisteredMeterSetIsPinned() {
+        // 이 클래스의 다른 테스트는 전부 미터를 <b>이름으로</b> 조회한다. 그러면 새 미터를 상수만
+        // 만들고 등록을 빠뜨려도 아무것도 깨지지 않는다 — 실제로 그랬다: chat.sessions.reaped 가
+        // 접근자와 문서에는 있는데 등록이 없었고, 저장소 문서 세 곳이 당직자에게 그 지표를 보라고
+        // 적고 있었다. 빈 패널이 하필 "공격" 서명으로 읽히는 쪽이라 더 나쁘다.
+        assertThat(meters.getMeters().stream().map(meter -> meter.getId().getName()).toList())
+                .as("등록된 미터 집합이 바뀌었다 — 늘었으면 문서에, 줄었으면 당직 판독에 영향이 간다")
+                .containsExactlyInAnyOrder(
+                        ChatSessionGaugeConfig.SESSIONS_GAUGE,
+                        ChatSessionGaugeConfig.ROOMS_GAUGE,
+                        ChatSessionGaugeConfig.ADMISSION_CAPPED_COUNTER,
+                        ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER);
+    }
+
+    @Test
     @DisplayName("MeterRegistry 가 없으면 등록을 건너뛴다 — registry 없는 컨텍스트가 이 설정 때문에 깨지지 않게")
     void withoutAMeterRegistryNothingIsRegistered() {
         assertThatCode(() -> {

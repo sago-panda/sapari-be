@@ -462,6 +462,14 @@ one half. Both were investigated; the reasons differ.
     session — so only **dead** slots are reclaimed (`reapUnresponsiveIfFull`, needed because a silently
     dropped socket holds its slot until the first liveness check at `deadline + interval` ≈ 2 min). The
     root fix is `jti` on the room token, in live.
+    - ⚠️ **It does not close the ~2 min window, and that window cannot be closed.** An earlier version
+      of this section claimed it did. Since the reap is handed `deadline + interval` (it has to be — see
+      the next bullet), its threshold is exactly when the liveness loop fires anyway, so what it buys is
+      the **≤8 s tail** between the loop firing and `cleanup` sweeping the slot. More fundamentally the
+      liveness clock starts at registration, so a socket that dies right after connecting is
+      **indistinguishable** from a quiet-but-alive viewer until the first check — and the mobile-handover
+      scenario is exactly that case. Closing it would mean giving up "never cut a live session". The
+      mitigation is real but partial; do not read the old claim as a reason to lower the threshold.
     - That reap **frees the slot and does not terminate**. Terminating there would spin on the Lettuce
       NIO event loop — the connect path's thread, since nothing in streaming-app switches schedulers —
       for up to 5 × 50 ms, which is the thing this file forbids twice. Each session's own liveness watch
@@ -796,8 +804,10 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
       the one that records "an earlier version was wrong on the count" — the repo's own rule is that
       *matching counts are not evidence the same thing was counted*, and that applies to its own
       corrections. The genuinely new site is `ChatWebSocketIntegrationTest`'s admitted-latch;
-      `SessionAdmissionCapTest`'s start and finish latches were already in the base commit (the start one
-      was a bare→bounded **conversion**, not an addition), and `ChatSessionGaugeConfigTest` has **no**
+      `SessionAdmissionCapTest`'s start and finish latches were already in the delta's base commit
+      — **`c72dbc5e`**, named because "base" read as pre-SPR-152 and the file itself is new in that
+      commit (the start latch was a bare→bounded **conversion** there, not an addition) — and
+      `ChatSessionGaugeConfigTest` has **no**
       `await(` at all — what grew there was `block(VERIFY_CEILING)`.
     - A fourth statement-form site shows up in the discard list (`RedisRateLimiterDegradedTest:337`) and
       it is **not** the same defect: that one is a `CyclicBarrier`, whose `await(timeout, unit)`
