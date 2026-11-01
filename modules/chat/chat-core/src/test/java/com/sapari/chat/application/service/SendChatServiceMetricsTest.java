@@ -122,7 +122,7 @@ class SendChatServiceMetricsTest {
                 .willReturn(Mono.error(new IllegalStateException("Redis down")));
 
         // when: fail-open 이라 전송은 성공한다
-        StepVerifier.create(service.send(normalSend())).expectNextCount(1).verifyComplete();
+        StepVerifier.create(service.send(normalSend())).expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(count("chat.policy.open", "policy", "kick", "checkpoint", "send",
@@ -139,7 +139,7 @@ class SendChatServiceMetricsTest {
                 .willReturn(Mono.error(new KickStoreCorruptedException("chat:kicked:" + roomId, null)));
 
         // when
-        StepVerifier.create(service.send(normalSend())).expectNextCount(1).verifyComplete();
+        StepVerifier.create(service.send(normalSend())).expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
 
         // then: 일시 장애 쪽은 0 이어야 한다 — 한 통에 담기면 영영 안 낫는 상태가 묻힌다
         assertThat(count("chat.policy.open", "policy", "kick", "checkpoint", "send",
@@ -158,7 +158,7 @@ class SendChatServiceMetricsTest {
         given(banRepository.isBanned(any())).willReturn(Mono.error(new IllegalStateException("Redis down")));
 
         // when
-        StepVerifier.create(service.send(normalSend())).expectNextCount(1).verifyComplete();
+        StepVerifier.create(service.send(normalSend())).expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(count("chat.policy.open", "policy", "ban", "checkpoint", "send",
@@ -175,7 +175,7 @@ class SendChatServiceMetricsTest {
                 .willReturn(Mono.error(new IllegalStateException("Redis down")));
 
         // when: 저장은 됐으므로 발신자에게는 ack 가 간다
-        StepVerifier.create(service.send(normalSend())).expectNextCount(1).verifyComplete();
+        StepVerifier.create(service.send(normalSend())).expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(count("chat.delivery.dropped", "stage", "redis_publish")).isEqualTo(1);
@@ -190,7 +190,7 @@ class SendChatServiceMetricsTest {
         given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
 
         // when
-        StepVerifier.create(service.send(normalSend())).expectNextCount(1).verifyComplete();
+        StepVerifier.create(service.send(normalSend())).expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(registry.find("chat.policy.open").counters()).isEmpty();

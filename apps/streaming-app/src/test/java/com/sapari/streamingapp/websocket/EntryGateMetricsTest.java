@@ -79,7 +79,7 @@ class EntryGateMetricsTest {
         given(banRepository.isBanned(userId)).willReturn(Mono.just(false));
 
         // when: fail-open 이라 입장은 통과한다
-        StepVerifier.create(gate.verify(session())).verifyComplete();
+        StepVerifier.create(gate.verify(session())).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(open("room_ended", "entry", "unavailable")).isEqualTo(1);
@@ -95,7 +95,7 @@ class EntryGateMetricsTest {
         given(banRepository.isBanned(userId)).willReturn(Mono.just(false));
 
         // when
-        StepVerifier.create(gate.verify(session())).verifyComplete();
+        StepVerifier.create(gate.verify(session())).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(open("kick", "entry", "unavailable")).isEqualTo(1);
@@ -111,7 +111,7 @@ class EntryGateMetricsTest {
         given(banRepository.isBanned(userId)).willReturn(Mono.just(false));
 
         // when
-        StepVerifier.create(gate.verify(session())).verifyComplete();
+        StepVerifier.create(gate.verify(session())).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(open("kick", "entry", "store_corrupted")).isEqualTo(1);
@@ -128,7 +128,7 @@ class EntryGateMetricsTest {
         given(banRepository.isBanned(userId)).willReturn(Mono.error(new IllegalStateException("Redis down")));
 
         // when
-        StepVerifier.create(gate.verify(session())).verifyComplete();
+        StepVerifier.create(gate.verify(session())).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(open("ban", "entry", "unavailable")).isEqualTo(1);
@@ -146,7 +146,7 @@ class EntryGateMetricsTest {
                 new MicrometerChatMetrics(this.registry), registry);
 
         // when: fail-open 이라 전송은 통과한다
-        StepVerifier.create(sendGate.isRoomAlive("s1", session())).expectNext(true).verifyComplete();
+        StepVerifier.create(sendGate.isRoomAlive("s1", session())).expectNext(true).expectComplete().verify(VERIFY_CEILING);
 
         // then: 입장 쪽이 아니라 전송 쪽으로 세어진다
         assertThat(open("room_ended", "send", "unavailable")).isEqualTo(1);
@@ -163,7 +163,7 @@ class EntryGateMetricsTest {
         given(banRepository.isBanned(userId)).willReturn(Mono.just(false));
 
         // when
-        StepVerifier.create(gate.verify(session())).verifyComplete();
+        StepVerifier.create(gate.verify(session())).expectComplete().verify(VERIFY_CEILING);
 
         // then
         assertThat(registry.find("chat.policy.open").counters()).isEmpty();
