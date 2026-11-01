@@ -204,6 +204,17 @@ public class LiveSecurityConfig {
      * 액추에이터는 {@code implementation} 의존이라 운영에서는 항상 있고 빼는 변경은
      * {@code build.gradle} diff 에 보인다. 이 설정을 {@code @Import} 로 올리는 MVC 조각 테스트가
      * 없는 빈을 요구해 엉뚱하게 깨지는 쪽을 막으려는 것이다.
+     *
+     * <p>⚠️ <b>그 건너뛰기가 운영 구성에서 일어나지 않는지 따로 쟀다.</b> 관리 포트를 사용자 포트와
+     * 다르게 주면 Boot 는 관리 전용 <b>자식 컨텍스트</b>를 만든다 — {@code WebEndpointsSupplier} 가
+     * 그 자식에만 있다면 부모에서 도는 이 가드는 {@code null} 을 받아 <b>정확히 운영 구성에서만</b>
+     * 조용히 통과했을 것이다. 부팅을 막는 가드가 no-op 이 되는 모양이고, 그건 이 가드가 막으려던
+     * 침묵이 가드째로 조용해지는 것이다.
+     *
+     * <p><b>실측</b>(실제 서버 둘, 관리 포트 53154 / 사용자 포트 53151 — 즉 자식 컨텍스트가 생긴
+     * 구성): 부모 컨텍스트의 {@code WebEndpointsSupplier} 빈 <b>1건</b>, 정상 설정은 부팅 성공,
+     * {@code endpoints.enabled-by-default=false} 는 이 가드의 메시지로 컨텍스트 로드 실패. 즉
+     * 그 빈은 부모 쪽이고 건너뛰기는 액추에이터가 아예 없는 컨텍스트에서만 일어난다.
      */
     @Bean
     public ObservabilityExposureGuard requiredEndpointsMustBeExposed(

@@ -120,6 +120,13 @@ public class ObservabilityExposureConfig {
      * 이 앱에 액추에이터는 {@code implementation} 의존이라 운영에서는 항상 있고, 빼는 변경은
      * {@code build.gradle} diff 에 보인다. 조각 테스트가 이 설정만 올릴 때 없는 빈을 요구해
      * 엉뚱하게 깨지는 쪽을 막으려는 것이다.
+     *
+     * <p>⚠️ <b>그 건너뛰기가 운영 구성에서 일어나지 않는지 따로 쟀다.</b> 관리 포트를 사용자 포트와
+     * 다르게 주면 Boot 는 관리 전용 <b>자식 컨텍스트</b>를 만든다 — {@code WebEndpointsSupplier} 가
+     * 그 자식에만 있다면 부모에서 도는 이 가드는 {@code null} 을 받아 정확히 운영 구성에서만 조용히
+     * 통과했을 것이다. <b>실측</b>(live-app 에서 실제 서버 둘, 관리 53154 / 사용자 53151 — 자식
+     * 컨텍스트가 생긴 구성): 부모의 그 빈 <b>1건</b>, 나쁜 설정은 가드 메시지로 컨텍스트 로드 실패.
+     * 두 앱이 같은 Boot 배선을 쓰므로 결론은 같다 — 건너뛰기는 액추에이터가 아예 없을 때만이다.
      */
     @Bean
     public ExposureGuard exposedEndpointsMustMatchRequired(
