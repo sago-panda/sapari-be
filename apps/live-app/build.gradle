@@ -45,8 +45,16 @@ dependencies {
     //
     // 락 경합 테스트도 같은 컨테이너를 쓴다 — 인스턴스 2개가 같은 락 저장소를 보는 상황이 전부라
     // 진짜 Postgres 가 필요하고, 인메모리 DB 로 바꾸면 검증 대상(운영과 같은 프로바이더·같은 DDL)이
-    // 사라진다. 버전은 <b>BOM 하나로</b> 모은다 — dev 쪽이 1.21.3 을 직접 박고 있었는데 다른 모듈은
-    // 전부 이 BOM(1.20.4)을 쓰므로, 한 저장소에 두 버전을 두지 않는다.
+    // 사라진다. 버전은 BOM 하나로 <b>선언</b>한다 — dev 쪽이 1.21.3 을 직접 박고 있었는데 다른
+    // 모듈은 전부 이 BOM(1.20.4)을 쓰므로, 선언을 한 자리로 모은다.
+    //
+    // ⚠️ 다만 <b>해소는 한 버전이 아니다</b>(실측: dependencyInsight). spring-boot-testcontainers
+    // 4.0.6 이 org.testcontainers:testcontainers 를 2.0.5 로 직접 끌어오고 그 관리 버전이 이 BOM 의
+    // 제약을 이긴다("Selected by rule" + "By constraint") — 코어만 2.0.5 이고
+    // junit-jupiter·postgresql·mongodb·jdbc·database-commons 는 1.20.4 로 남아 메이저 둘이 한
+    // 클래스패스에 공존한다. 현재 전 테스트가 통과하므로 동작 문제는 아니지만, "두 버전을 두지
+    // 않는다" 는 선언에만 참이다. 진짜로 한 버전으로 모으려면 BOM 대신 Boot 의 관리 버전을 쓰거나
+    // testcontainers.version 프로퍼티를 덮어써야 하고, 그건 다섯 모듈의 동시 변경이다.
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')
     testImplementation 'org.testcontainers:junit-jupiter'
