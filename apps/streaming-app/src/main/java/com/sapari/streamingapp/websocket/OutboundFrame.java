@@ -29,6 +29,22 @@ import com.sapari.chat.application.protocol.OutboundMessage;
  * <p><b>경합은 무해하다.</b> {@code wire} 는 {@code volatile} 이고 <b>같은 값으로 한 번만</b> 쓰인다 —
  * 두 세션이 동시에 들어오면 둘 다 만들 수 있지만 결과가 같다(같은 매퍼·같은 객체). 최악이 "N 번"
  * 대신 "몇 번" 이므로 잠금을 걸 이유가 없고, 잠금을 걸면 그게 이벤트루프에서 직렬화 지점이 된다.
+ *
+ * <p><b>남은 O(세션) 항 — 여기서 멈춘 이유를 숫자로 남긴다.</b> 직렬화를 걷어내면 다음 항은
+ * {@code session.textMessage(String)} 의 <b>UTF-8 인코딩</b>이다(스프링 구현이 문자열을 인코딩해
+ * 버퍼로 감싼다). 256바이트 payload 로 재면:
+ * <pre>
+ *                              지금(encode+wrap)   미리 인코딩+복사   미리 인코딩+공유
+ * DefaultDataBufferFactory          129 ns              28.5 ns           7.6 ns
+ * NettyDataBufferFactory(운영)      174 ns             151.8 ns          56.1 ns
+ * </pre>
+ * <b>운영 팩토리에서는 안전한 복사 변형이 13% 밖에 못 줄인다</b> — 복사가 인코딩보다 비싸다.
+ * 3배 이득은 미리 인코딩한 배열을 세션 간 <b>공유</b>하는 쪽에만 있고, 그 안전성은 Netty 버퍼의
+ * 수명·refcount 의미에 달려 있는데 이 저장소 테스트는 목 세션이라 그걸 재지 못한다. 그래서 하지
+ * 않았다 — 검증할 수 없는 근거로 공유를 넣는 것이 이 자리에서 가장 비싼 선택이다.
+ *
+ * <p>⚠️ 테스트용 팩토리만 보면 {@code 129 → 28.5 ns}(4.5배)로 보인다. 그 수로 판단하면 운영에서
+ * 거의 효과가 없는 변경을 넣는다. 다시 잴 때 <b>어느 팩토리로 재는지</b>를 먼저 정할 것.
  */
 final class OutboundFrame {
 
