@@ -6,8 +6,10 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -27,6 +29,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import com.sapari.chat.command.GetChatHistoryCommand;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.port.GetChatHistoryUseCase;
+import com.sapari.chat.view.ChatMessageView;
 import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.web.exception.GlobalExceptionHandler;
@@ -163,6 +166,25 @@ class ChatHistoryControllerTest {
         // then: 소비자(GetChatHistoryService)가 쓰는 파서를 그대로 돌린다 — 동등성만 보면
         // 양쪽을 같이 틀리게 고쳤을 때 통과한다.
         assertThat(ChatRole.valueOf(captured().requesterRole())).isEqualTo(ChatRole.BUYER);
+    }
+
+    @Test
+    @DisplayName("⭐ 응답이 공통 봉투에 담겨 나간다 — messages 가 한 단 깊어진 것이 프론트 계약이다")
+    void theResponseIsWrappedInTheCommonEnvelope() throws Exception {
+        // given: 비어 있지 않은 뷰 — 빈 목록은 봉투를 벗겨도 모양 차이가 눈에 띄지 않는다
+        given(getChatHistoryUseCase.getHistory(any())).willReturn(new GetChatHistoryView(List.of(
+                new ChatMessageView("m-1", ROOM_ID, REQUESTER_ID, "닉", null, "BUYER",
+                        "NORMAL", "안녕", null, "c-1", Instant.parse("2026-06-18T00:00:00Z")))));
+
+        // when & then: 프론트가 "페이지 끝" 을 판단하는 자리가 data.messages 다. 봉투를 벗기면 그
+        // 판단이 조용히 undefined 를 세고, 스크롤이 멈추거나 끝없이 돈다 — 서버는 200 이라 아무도 모른다.
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.messages.length()").value(1))
+                .andExpect(jsonPath("$.data.messages[0].id").value("m-1"))
+                // 봉투 전 모양이 같이 남으면 프론트가 두 모양을 다 지원해야 한다 — 계약이 흐려진다
+                .andExpect(jsonPath("$.messages").doesNotExist());
     }
 
     @Test
