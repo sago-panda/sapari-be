@@ -89,13 +89,25 @@ class OutboundFrameSharingTest {
         registry.sendToRoomGated(roomId,
                 session -> session.isRoomOwner() ? ownerView : viewerView).block(VERIFY_CEILING);
         // 핸들러가 세션마다 하는 일을 그대로 한다
-        frames.forEach(frame -> frame.wire(counting));
+        frames.forEach(frame -> frame.utf8(counting));
 
         // then
         assertThat(frames).as("열 세션이 각자 한 프레임을 받아야 한다").hasSize(SESSIONS);
         assertThat(serializations)
                 .as("직렬화가 세션 수에 비례한다 — 같은 뷰를 받는 세션들이 프레임을 공유하지 않았다")
                 .hasValue(2);
+
+        // ⭐ 같은 뷰를 받는 세션들은 <b>같은 배열 인스턴스</b>를 받는다. 그게 이 변경의 하중 지점이다 —
+        // 세션은 그 배열을 자기 버퍼로 감싸기만 하므로 UTF-8 인코딩도 종류 수만큼만 돈다.
+        // 인스턴스 동일성으로 재는 이유: 내용 비교는 "따로 만들어 같은 값" 과 구분되지 않는다.
+        byte[] ownerBytes = frames.get(0).utf8(counting);
+        byte[] viewerBytes = frames.get(1).utf8(counting);
+        assertThat(frames.get(2).utf8(counting)).as("방 주인 세션들이 배열을 공유하지 않았다")
+                .isSameAs(ownerBytes);
+        assertThat(frames.get(3).utf8(counting)).as("일반 세션들이 배열을 공유하지 않았다")
+                .isSameAs(viewerBytes);
+        assertThat(ownerBytes).as("뷰가 다르면 바이트도 달라야 한다").isNotSameAs(viewerBytes);
+        assertThat(serializations).as("이미 만들어 둔 것을 다시 만들었다").hasValue(2);
     }
 
     @Test
@@ -104,7 +116,7 @@ class OutboundFrameSharingTest {
         List<OutboundFrame> frames = registerAndCollect();
 
         registry.sendToRoomLocal(roomId, OutboundMessage.roomInfo(3L, false)).block(VERIFY_CEILING);
-        frames.forEach(frame -> frame.wire(counting));
+        frames.forEach(frame -> frame.utf8(counting));
 
         assertThat(frames).hasSize(SESSIONS);
         assertThat(serializations).hasValue(1);
@@ -115,10 +127,10 @@ class OutboundFrameSharingTest {
     void readingTheSameFrameTwiceSerializesOnce() {
         OutboundFrame frame = new OutboundFrame(OutboundMessage.roomInfo(1L, false));
 
-        String first = frame.wire(counting);
-        String second = frame.wire(counting);
+        byte[] first = frame.utf8(counting);
+        byte[] second = frame.utf8(counting);
 
-        assertThat(second).isEqualTo(first);
+        assertThat(second).isSameAs(first);
         assertThat(serializations).hasValue(1);
     }
 

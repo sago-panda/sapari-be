@@ -1,5 +1,6 @@
 package com.sapari.streamingapp.websocket;
 
+import java.nio.charset.StandardCharsets;
 import java.util.function.Function;
 
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -30,28 +31,35 @@ import com.sapari.chat.application.protocol.OutboundMessage;
  * 두 세션이 동시에 들어오면 둘 다 만들 수 있지만 결과가 같다(같은 매퍼·같은 객체). 최악이 "N 번"
  * 대신 "몇 번" 이므로 잠금을 걸 이유가 없고, 잠금을 걸면 그게 이벤트루프에서 직렬화 지점이 된다.
  *
- * <p><b>남은 O(세션) 항 — 여기서 멈춘 이유를 숫자로 남긴다.</b> 직렬화를 걷어내면 다음 항은
- * {@code session.textMessage(String)} 의 <b>UTF-8 인코딩</b>이다(스프링 구현이 문자열을 인코딩해
- * 버퍼로 감싼다). 256바이트 payload 로 재면:
+ * <p><b>두 번째 O(세션) 항도 같이 걷었다 — UTF-8 인코딩.</b> {@code session.textMessage(String)} 은
+ * 문자열을 인코딩해 버퍼로 감싸므로 그 인코딩도 세션마다 돌았다. 그래서 프레임은 문자열이 아니라
+ * <b>인코딩된 바이트</b>를 캐시하고, 세션은 그걸 자기 버퍼로 감싸기만 한다. 256바이트 payload:
  * <pre>
  *                              지금(encode+wrap)   미리 인코딩+복사   미리 인코딩+공유
  * DefaultDataBufferFactory          129 ns              28.5 ns           7.6 ns
  * NettyDataBufferFactory(운영)      174 ns             151.8 ns          56.1 ns
  * </pre>
- * <b>운영 팩토리에서는 안전한 복사 변형이 13% 밖에 못 줄인다</b> — 복사가 인코딩보다 비싸다.
- * 3배 이득은 미리 인코딩한 배열을 세션 간 <b>공유</b>하는 쪽에만 있고, 그 안전성은 Netty 버퍼의
- * 수명·refcount 의미에 달려 있는데 이 저장소 테스트는 목 세션이라 그걸 재지 못한다. 그래서 하지
- * 않았다 — 검증할 수 없는 근거로 공유를 넣는 것이 이 자리에서 가장 비싼 선택이다.
+ * 운영 팩토리에서 <b>복사 변형은 13% 밖에 못 줄인다</b>(복사가 인코딩보다 비싸다). 3배 이득은
+ * 배열을 세션 간 <b>공유</b>하는 쪽에만 있다. ⚠️ 테스트용 팩토리만 보면 {@code 129 → 28.5}(4.5배)로
+ * 보이는데 그 수로 판단하면 운영에서 효과 없는 변경을 넣는다 — 다시 잴 때 <b>어느 팩토리로
+ * 재는지</b>를 먼저 정할 것.
  *
- * <p>⚠️ 테스트용 팩토리만 보면 {@code 129 → 28.5 ns}(4.5배)로 보인다. 그 수로 판단하면 운영에서
- * 거의 효과가 없는 변경을 넣는다. 다시 잴 때 <b>어느 팩토리로 재는지</b>를 먼저 정할 것.
+ * <p><b>공유가 안전한 근거</b>(바이트코드로 확인, Netty 4.2.12 / spring-core 7.0.9):
+ * <pre>
+ * NettyDataBufferFactory.wrap(byte[])  → Unpooled.wrappedBuffer(byte[])
+ *                                      → new UnpooledHeapByteBuf(ALLOC, array, len)   배열 공유(복사 없음)
+ * UnpooledHeapByteBuf.freeArray(byte[]) → return                                      no-op
+ * </pre>
+ * 세션마다 <b>자기 ByteBuf</b>(자기 readerIndex)를 갖고 배열만 공유하므로 동시 읽기가 서로
+ * 간섭하지 않고, 한 세션의 버퍼를 해제해도 배열은 건드려지지 않는다({@code freeArray} 가 no-op).
+ * 그래서 끊긴 세션이 다른 세션의 payload 를 망가뜨리는 경로가 없다.
  */
 final class OutboundFrame {
 
     private final OutboundMessage message;
 
-    /** 지연 계산된 와이어 문자열. 쓰기는 멱등이고 가시성만 필요해서 {@code volatile} 이다. */
-    private volatile String wire;
+    /** 지연 계산된 와이어 바이트. 쓰기는 멱등이고 가시성만 필요해서 {@code volatile} 이다. */
+    private volatile byte[] utf8;
 
     OutboundFrame(OutboundMessage message) {
         this.message = message;
@@ -62,12 +70,18 @@ final class OutboundFrame {
         return message;
     }
 
-    /** 와이어 문자열. 이 프레임을 공유하는 세션들 중 처음 부른 쪽이 만든다. */
-    String wire(Function<OutboundMessage, String> serializer) {
-        String cached = wire;
+    /**
+     * 와이어 바이트. 이 프레임을 공유하는 세션들 중 처음 부른 쪽이 만든다.
+     *
+     * <p>⚠️ <b>돌려주는 배열은 공유물이다 — 고치지 말 것.</b> 같은 팬아웃의 다른 세션들이 같은
+     * 배열을 감싸고 있어서, 한 곳에서 쓰면 그 방 전원의 payload 가 바뀐다. 읽기 전용으로만 쓴다
+     * (버퍼로 감싸는 것은 읽기다 — 위 javadoc 의 근거 참조).
+     */
+    byte[] utf8(Function<OutboundMessage, String> serializer) {
+        byte[] cached = utf8;
         if (cached == null) {
-            cached = serializer.apply(message);
-            wire = cached;
+            cached = serializer.apply(message).getBytes(StandardCharsets.UTF_8);
+            utf8 = cached;
         }
         return cached;
     }
