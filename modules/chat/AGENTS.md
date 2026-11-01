@@ -611,8 +611,11 @@ conditional variant really does fall back to NOOP.
   refuses to boot unless `management.server.port` is set and differs from `server.port`, and unless
   `exposure.include` is a subset of `{health, prometheus}`. It reads that key with `Binder`, not the base
   property: written as a YAML list the key lands as `include[0]`, and a base-key read lets a list-form `"*"`
-  through (measured). `"*"` would serve `/actuator/env` and `/heapdump` unauthenticated — Mongo credentials
-  and the Redis password.
+  through (measured). `"*"` would serve `/actuator/env` and `/heapdump` unauthenticated. `/heapdump` is a
+  memory image, so Mongo credentials and the Redis password are in it in the clear. `/actuator/env` masks
+  its values (measured from bytecode: `show-values` defaults to `Show.NEVER`, and `Sanitizer.sanitize`
+  then returns `"******"` unconditionally) — it leaks the property *names* and sources, and that masking is
+  a default one line can flip. An earlier version of this line claimed `env` itself carried the secrets.
 - Port reachability is pinned both ways by a test that boots the real app with containers and makes real HTTP
   calls: 404 on the user port, 200 on the management port. **Expect 404, not live-app's 401** — there is no
   security chain here to answer first. Unlike live's equivalent it runs in CI, because the infrastructure this

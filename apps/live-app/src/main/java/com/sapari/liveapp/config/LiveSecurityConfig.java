@@ -81,9 +81,21 @@ public class LiveSecurityConfig {
      *
      * <p><b>여는 것은 두 엔드포인트뿐이고 나머지는 코드에서 막는다.</b> 노출 범위를 yaml 한 줄
      * ({@code exposure.include})에만 맡기면 거기에 {@code env} 나 {@code "*"} 를 더하는 순간
-     * {@code /actuator/env}·{@code /heapdump} 가 무인증으로 열리고, 그 응답에는 JWT 서명키와
-     * LiveKit API 시크릿이 담긴다. 설정 한 줄이 자격증명 공개가 되는 경로라 코드에서도 잠근다 —
-     * 정말로 하나 더 열어야 하면 여기를 함께 고쳐야 하고, 그건 diff 에 보인다.
+     * {@code /actuator/env}·{@code /heapdump} 가 무인증으로 열린다. 둘의 무게가 다르다:
+     *
+     * <p>{@code /heapdump} 는 <b>메모리 이미지</b>라 마스킹이라는 개념이 없다 — JWT 서명키와 LiveKit
+     * API 시크릿이 그 안에 평문으로 있다.
+     *
+     * <p>{@code /actuator/env} 는 <b>값이 가려진다</b>(실측, 바이트코드):
+     * {@code management.endpoint.env.show-values} 기본값이 {@code Show.NEVER} 이고
+     * {@code Sanitizer.sanitize} 는 그 경우 {@code SanitizingFunction} 을 보지도 않고
+     * {@code "******"} 를 돌려준다. 그래서 이 엔드포인트가 내보내는 것은 시크릿 값이 아니라
+     * <b>프로퍼티 이름과 소스 전부</b> — 어떤 키가 있고 어떤 파일·환경변수가 쓰이는지의 설계도다.
+     * 한때 이 자리에 "그 응답에 시크릿이 담긴다" 고 적었는데 그건 틀렸다.
+     *
+     * <p>그런데 그 마스킹이 <b>기본값</b>이다. {@code show-values} 한 줄로 뒤집히고, 추적되는 설정
+     * 템플릿에는 그 키가 없다(0건) — 즉 이 방어는 우리가 리뷰하는 코드 밖에 있다. 그래서 코드에서
+     * 잠근다: 정말로 하나 더 열어야 하면 여기를 함께 고쳐야 하고, 그건 diff 에 보인다.
      */
     @Bean
     @Order(0)

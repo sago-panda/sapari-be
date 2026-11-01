@@ -294,7 +294,16 @@ that on.
   than live-app's 401, and either way the chat metrics are silently empty. live-app already failed boot
   on this; the two apps were asymmetric for one day. The second check does not exist in live-app, because there the security chain
   denies anything outside that pair; here the yaml line is the whole gate, and `"*"` would serve
-  `/actuator/env` and `/heapdump` unauthenticated — Mongo URI credentials and the Redis password.
+  `/actuator/env` and `/heapdump` unauthenticated.
+  - ⚠️ **Those two are not equally bad, and an earlier version of this file got it wrong.** `/heapdump`
+    is a memory image — Mongo URI credentials and the Redis password are in it in the clear, and masking
+    is not a concept that applies. `/actuator/env` **masks its values**: measured from bytecode,
+    `management.endpoint.env.show-values` defaults to `Show.NEVER` and `Sanitizer.sanitize` then returns
+    `"******"` without consulting any `SanitizingFunction`. What it does leak is every property **name**
+    and source — a blueprint of which keys exist and which files/env vars are in play.
+  - That masking is a **default**, flipped by one line (`show-values`), and no tracked template sets that
+    key. So the defense for `env` lives outside the code we review — which is the argument *for* locking
+    the list in code, not against it.
 - **Unauthenticated on every interface, same as live-app** — so the same conclusion holds: ClusterIP only,
   never behind the ingress, NetworkPolicy to the monitoring namespace where available.
 - **Probes**: use `/actuator/health/liveness` and `/actuator/health/readiness`, not the aggregate path, for

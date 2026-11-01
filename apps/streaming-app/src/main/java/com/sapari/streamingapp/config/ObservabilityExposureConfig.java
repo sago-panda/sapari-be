@@ -19,9 +19,15 @@ import org.springframework.core.env.Environment;
  * 막는데, 여기엔 그 체인을 걸 자리가 없다 — 즉 <b>yaml 한 줄이 유일한 관문</b>이다.
  *
  * <p>그 한 줄이 틀리면 결과가 설정 실수의 수준을 넘는다. {@code include: "*"} 를 쓰는 순간
- * {@code /actuator/env} 와 {@code /heapdump} 가 <b>인증 없이</b> 열리고, 그 응답에는 룸 토큰
- * 공개키 설정은 물론 Mongo URI 의 자격증명과 Redis 비밀번호가 담긴다. 그 사이에 아무 신호가 없어
- * 아무도 모른 채로 굴러가므로, 조용히 뜨는 대신 시끄럽게 죽는 쪽을 택한다.
+ * {@code /actuator/env} 와 {@code /heapdump} 가 <b>인증 없이</b> 열린다.
+ * {@code /heapdump} 는 메모리 이미지라 Mongo URI 자격증명과 Redis 비밀번호가 평문으로 들어 있다.
+ * {@code /actuator/env} 는 값이 가려진다 — <b>실측</b>(바이트코드):
+ * {@code management.endpoint.env.show-values} 기본값이 {@code Show.NEVER} 이고
+ * {@code Sanitizer.sanitize} 는 그때 {@code "******"} 를 무조건 돌려준다. 그래서 그쪽이 내보내는
+ * 것은 값이 아니라 프로퍼티 이름·소스 전부다. 다만 그 마스킹은 <b>기본값</b>이라
+ * {@code show-values} 한 줄로 뒤집히고, 추적되는 템플릿에는 그 키가 없다 — 방어가 코드 밖에 있다는
+ * 뜻이라 오히려 코드에서 잠글 이유가 된다. 그 사이에 아무 신호가 없어 아무도 모른 채로 굴러가므로,
+ * 조용히 뜨는 대신 시끄럽게 죽는 쪽을 택한다.
  *
  * <p>네트워크가 실제 방어라는 점은 live 와 같다 — 스크레이퍼는 로그인 수단이 없으므로 관리 포트는
  * 클러스터 안에만 둬야 한다. 이 가드는 그 전제가 깨졌을 때 <b>깨진 줄 모르는 상태</b>를 막는 것이다.
@@ -122,8 +128,10 @@ public class ObservabilityExposureConfig {
             throw new IllegalStateException(
                     EXPOSURE_KEY + " 에 허용되지 않은 값이 있다 — " + rejected + ". 이 앱에는 액추에이터를 "
                             + "막을 시큐리티가 없어서 여기 적은 것이 곧 무인증 공개다. \"*\" 는 "
-                            + "/actuator/env·/heapdump 까지 열어 Mongo URI 자격증명과 Redis 비밀번호를 "
-                            + "노출한다. 허용: " + new TreeSet<>(ALLOWED_ENDPOINTS));
+                            + "/heapdump 까지 여는데 그건 메모리 이미지라 Mongo URI 자격증명과 Redis "
+                            + "비밀번호가 평문으로 들어 있다. /actuator/env 는 값이 가려지지만(기본값 "
+                            + "show-values=NEVER) 프로퍼티 이름과 소스 전부를 내보내고, 그 마스킹은 "
+                            + "설정 한 줄로 뒤집힌다. 허용: " + new TreeSet<>(ALLOWED_ENDPOINTS));
         }
 
         // 허용 밖을 막는 것만으로는 반쪽이다 — 목록이 비면 거부할 것도 없어 통과하는데, 그때
