@@ -22,6 +22,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.sapari.chat.application.port.ChatMetrics;
+import org.springframework.core.io.buffer.DataBufferUtils;
+
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
@@ -249,5 +251,33 @@ class OutboundFrameSharingTest {
         assertThat(two.getPayloadAsText())
                 .as("한쪽이 읽자 다른 쪽이 비었다 — 같은 ByteBuf 를 공유한 것이다")
                 .isNotEmpty();
+    }
+
+    /**
+     * ⭐ 한쪽 버퍼를 <b>해제한 뒤</b>에도 다른 쪽이 온전하다.
+     *
+     * <p>공유가 안전하다는 근거는 두 절반이다 — ① 동시 읽기가 서로 간섭하지 않는다 ② 한쪽 해제가
+     * 배열을 건드리지 않는다({@code UnpooledHeapByteBuf.freeArray} 가 no-op). ①은 위 테스트들이
+     * 밟는데 <b>②는 어떤 테스트도 밟지 않았다</b> — 해제 경로를 타는 케이스가 없었고, 그 절반이
+     * 틀리면 교차 세션 payload 오염(특권 뷰 원문 포함)이라 가장 비싼 쪽이다. 바이트코드로 확인한
+     * 사실을 동작으로도 고정한다.
+     */
+    @Test
+    @DisplayName("⭐ 한쪽 버퍼를 해제해도 다른 쪽이 온전하다 — 틀리면 교차 세션 payload 오염이다")
+    void releasingOneBufferLeavesTheOtherIntact() {
+        OutboundFrame shared = new OutboundFrame(OutboundMessage.roomInfo(7L, false));
+        ChatWebSocketHandler handler = handlerForWireMapping();
+
+        WebSocketMessage one = handler.toWireMessage(sessionWithRealBufferFactory(), shared);
+        WebSocketMessage two = handler.toWireMessage(sessionWithRealBufferFactory(), shared);
+        String expected = two.getPayloadAsText();
+
+        // 운영에서 Reactor Netty 가 전송 뒤에 하는 일 — 그 해제가 공유 배열을 건드리면 안 된다.
+        DataBufferUtils.release(one.getPayload());
+
+        WebSocketMessage third = handler.toWireMessage(sessionWithRealBufferFactory(), shared);
+        assertThat(third.getPayloadAsText())
+                .as("한쪽 해제가 공유 배열을 망가뜨렸다 — 뒤에 감싼 세션이 깨진 payload 를 받는다")
+                .isEqualTo(expected);
     }
 }
