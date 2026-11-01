@@ -102,9 +102,15 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
         // 가드를 상수 옆에 둔다 — 둘은 한 결정이고, 한쪽만 바꾸면 살아 있는 시청자가 집계에서
         // 사라지거나(상한이 짧아짐) 좀비가 오래 남는다(주기가 길어짐). 사람 검토에 맡기지 않는다.
         if (STALE_AFTER.compareTo(HEARTBEAT_INTERVAL.multipliedBy(3)) < 0) {
+            // 근거를 "유실 N회" 로 적지 않는다 — 상수 javadoc 이 방금 그 셈을 보장이 아니라고
+            // 못 박았는데(실효 주기는 한 회차가 걸리는 시간이다) 메시지가 주기 수로 근거를 대면
+            // 읽는 사람이 "하한이 3배인 이유는 2회 유실 보장" 으로 이해해 또 줄이려 든다.
             throw new IllegalStateException(
-                    "낡음 판정 상한이 재등록 주기의 3배보다 짧다 — 재등록 2회 유실에 살아 있는 세션이 "
-                            + "집계에서 빠진다: 상한=" + STALE_AFTER + " 주기=" + HEARTBEAT_INTERVAL);
+                    "낡음 판정 상한이 재등록 주기의 3배보다 짧다 — 이보다 짧으면 Redis 가 잠깐 흔들린 "
+                            + "것만으로 살아 있는 세션이 집계에서 빠진다. 3배는 임의로 고른 하한이고 "
+                            + "'유실 N회 안전' 을 뜻하지 않는다(실효 재등록 주기는 한 회차가 걸리는 "
+                            + "시간이다 — STALE_AFTER javadoc 참조): 상한=" + STALE_AFTER
+                            + " 주기=" + HEARTBEAT_INTERVAL);
         }
     }
 

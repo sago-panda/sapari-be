@@ -332,11 +332,15 @@ class GetChatHistoryServiceTest {
                 .contains("ADMIN")
                 .contains(adminId.toString())
                 .contains(roomId.toString());
-        // 감사 줄 자체가 PII 를 새로 만들면 안 된다 — 실시간 쪽이 같은 선을 지킨다
-        assertThat(auditLines().get(0))
+        // PII 부재는 <b>이 서비스가 남긴 모든 줄</b>에 긋는다 — 감사 줄 하나만 보면 나중에 같은
+        // 서비스에 log.debug("이력 응답 — email={}") 류를 더했을 때 초록으로 통과한다. 실시간 쪽
+        // 쌍둥이(PrivilegedEntryAuditTest)가 allSatisfy 로 같은 선을 긋고 있어서, 한쪽만 좁으면
+        // 그 비대칭이 다시 사각지대가 된다.
+        assertThat(appender.list)
                 .as("감사 로그가 이메일·닉네임을 남기면 그걸 보려고 로그를 뒤지게 된다")
-                .doesNotContain("buyer@example.com")
-                .doesNotContain("닉");
+                .allSatisfy(event -> assertThat(event.getFormattedMessage())
+                        .doesNotContain("buyer@example.com")
+                        .doesNotContain("닉"));
     }
 
     @Test

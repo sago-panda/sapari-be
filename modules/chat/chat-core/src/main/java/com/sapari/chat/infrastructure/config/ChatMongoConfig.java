@@ -48,21 +48,32 @@ public class ChatMongoConfig {
      * 동안 이 프로세스는 이미 TCP 를 받고 있었고, 그 창에 인덱스 없는 컬렉션으로 WS 핸드셰이크가
      * 라우팅됐다.
      *
-     * <p><b>그 창의 길이는 최악 ~30초다.</b> 서버 선택 상한이 인덱스마다 걸리지만 누적되지 않는다 —
-     * 이 클래스에 {@code catch} 가 0건이고 인덱스 생성은 {@code .block()} 순차 대입 넷이라, 첫
-     * {@code block()} 이 상한을 소진하고 던지면 메서드가 그 자리에서 끝난다(나머지 셋은 평가조차
-     * 되지 않는다). 같은 이유로 "인덱스를 하나 더 만들면 30초가 늘어난다" 도 성립하지 않는다.
-     * 한때 이 자리에 "4종이면 최악 120초" 라고 적었는데, 그 근거로 든 실측값(상한 소진 → <b>던짐</b>)이
-     * 바로 누적을 불가능하게 만든다 — 수와 근거가 서로를 부정하고 있었다.
+     * <p><b>그 창의 길이에 상한이 없다.</b> 이 줄은 세 번 틀렸으니 재서 적는다 — 드라이버 기본값
+     * <b>실측</b>({@code MongoClientSettings.builder().build()}):
+     * <pre>
+     * serverSelectionTimeoutMs  30000
+     * socketReadTimeoutMs       0       ← 무한
+     * socketConnectTimeoutMs    10000
+     * 전역 timeoutMs             null
+     * </pre>
+     * 그리고 이 저장소에는 Mongo 타임아웃 설정이 <b>0건</b>이라(운영 소스·추적 템플릿 전부) 기본값이
+     * 그대로 적용된다. 그래서 30초가 묶는 것은 "<b>서버를 영영 못 고르는</b>" 한 가지 모드뿐이고,
+     * 서버가 선택된 뒤 {@code createIndex} 가 답하지 않으면(큰 컬렉션의 신규 인덱스, 끊겼는데 살아
+     * 있는 소켓) {@code .block()} 은 <b>무한히</b> 기다린다. 상한을 원하면 {@code timeoutMs} 를
+     * 설정해야 한다.
      *
-     * <p><b>프로브가 그 창에 무엇을 보는지는 설정에 달렸다</b>(한때 "이 앱에는 actuator/health 가 없어
-     * TCP 점검뿐" 이라 적었는데 지금은 거짓이다 — 이 앱은 액추에이터를 {@code implementation} 으로
-     * 갖고, {@code ObservabilityExposureConfig} 가 {@code health} 의 실제 노출을 부팅 조건으로 요구한다):
-     * <ul>
-     *   <li>{@code httpGet} 프로브 — 이 빈은 포트 bind 보다 앞이라 그 창에서 connection refused 가
-     *       되고 파드가 Ready 가 <b>되지 않는다</b>. 즉 이 문단이 두려워한 모양의 반대다.</li>
-     *   <li>TCP 소켓 점검 — 여전히 그 창 내내 Ready 로 답한다. 매니페스트가 이쪽을 쓰면 위험이 남는다.</li>
-     * </ul>
+     * <p>누적은 하지 않는다 — 이 클래스에 {@code catch} 가 0건이고 인덱스 생성은 {@code .block()}
+     * 순차 대입 넷이라, 첫 {@code block()} 이 던지면 메서드가 그 자리에서 끝난다(나머지 셋은 평가조차
+     * 되지 않는다). "4종이면 120초" 도 "하나 더 만들면 30초 늘어난다" 도 그래서 성립하지 않는다.
+     *
+     * <p><b>그 창에는 아무것도 listen 하지 않는다</b>(한때 "이 앱에는 actuator/health 가 없어 TCP
+     * 점검뿐이라 그 창 내내 Ready 로 답한다" 고 적었는데 지금은 양쪽 다 거짓이다 — 이 앱은
+     * 액추에이터를 {@code implementation} 으로 갖고 {@code ObservabilityExposureConfig} 가
+     * {@code health} 의 실제 노출을 부팅 조건으로 요구한다). 이 빈은 포트 bind 보다 앞이므로
+     * {@code httpGet} 프로브든 {@code tcpSocket} 점검이든 <b>둘 다 connection refused</b> 이고 파드가
+     * Ready 가 되지 않는다 — 저장소 자체 테스트가 그걸 생 TCP connect 로 단언한다
+     * ({@code EagerSingletonsRunBeforeThePortBindsTest}). 즉 이 문단이 두려워한 모양은 러너 시절의
+     * 것이고, 지금은 방향이 반대다.
      *
      * <p>이 빈이 던지면 refresh 가 실패해 포트가 아예 열리지 않고 프로세스가 내려간다. 새로 생긴
      * 실패가 아니다 — 러너가 던져도 {@code SpringApplication.run()}은 같이 깨졌다(실측). 바뀐 것은
