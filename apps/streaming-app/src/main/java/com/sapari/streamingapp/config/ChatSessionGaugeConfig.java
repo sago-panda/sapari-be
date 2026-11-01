@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Configuration;
 
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -48,8 +49,9 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <b>유저당·방당 남용 상한</b>은 용량과 무관하다. 룸 토큰이 TTL 안에서 재사용 가능하므로 유효한
  * 토큰 한 장으로 한 파드에 세션을 계속 열 수 있고, 그걸 막는 값은 "정상 사용자가 동시에 몇 개를
  * 여는가"(탭·기기 수)에서 나와 부하 측정이 필요 없다. 이 게이지가 그 숫자를 대신 주지도 않는다 —
- * 파드 합계라서 유저당 분포가 보이지 않는다. 즉 남용 상한은 이 순서를 기다릴 이유가 없고, 여기
- * 미뤄 두지 않도록 축을 갈라 적는다.
+ * 파드 합계라서 유저당 분포가 보이지 않는다. 즉 남용 상한은 이 순서를 기다릴 이유가 없고, 실제로
+ * 기다리지 않았다 — {@code ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM} 이 (유저, 방) 단위로
+ * 집행하고, 아래 {@code chat.sessions.admission_capped} 가 그 집행을 센다. 남은 것은 용량 쪽뿐이다.
  *
  * <p>{@code ObjectProvider} 로 받는 이유는 {@code ChatMetricsConfig} 와 같다 —
  * {@code @ConditionalOnBean(MeterRegistry.class)} 은 사용자 {@code @Configuration} 이 자동 구성보다
@@ -64,6 +66,15 @@ public class ChatSessionGaugeConfig {
 
     /** 지금 이 Pod 가 중계 중인 방 수. */
     static final String ROOMS_GAUGE = "chat.rooms.local";
+
+    /**
+     * 동시 세션 상한으로 입장을 거부한 누적 수.
+     *
+     * <p>집행이 보이지 않으면 상한을 운영할 수 없다 — 이 수가 0 에서 움직이지 않으면 상한이 아무것도
+     * 막지 않는 것이고, 꾸준히 오르면 공격이거나 <b>상한이 낮은</b> 것이다. 둘을 가르는 것은 사람이고,
+     * 그 사람에게 줄 수 있는 유일한 수다.
+     */
+    static final String ADMISSION_CAPPED_COUNTER = "chat.sessions.admission_capped";
 
     /**
      * 게이지를 등록하고 그 사실을 빈으로 남긴다.
@@ -96,6 +107,11 @@ public class ChatSessionGaugeConfig {
                 .register(meters);
         Gauge.builder(ROOMS_GAUGE, registry, ChatSessionRegistry::localRoomCount)
                 .description("이 Pod 가 지금 중계 중인 방 수")
+                .register(meters);
+        // 게이지가 아니라 FunctionCounter 다 — 누적 거부 수는 단조 증가라, 게이지로 내면 rate() 를
+        // 쓸 수 없고 "지금 몇 개" 로 오독된다. 이 수는 증가율로 봐야 의미가 있다(상한이 방금 발화했나).
+        FunctionCounter.builder(ADMISSION_CAPPED_COUNTER, registry, ChatSessionRegistry::admissionCapped)
+                .description("동시 세션 상한으로 입장을 거부한 누적 수")
                 .register(meters);
         return new SessionGauges(true);
     }

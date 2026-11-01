@@ -10,7 +10,13 @@ public class EntryDeniedException extends RuntimeException {
     public enum Reason {
         KICKED,
         BANNED,
-        ROOM_ENDED
+        ROOM_ENDED,
+
+        /**
+         * 같은 (유저, 방)의 동시 세션 상한 초과. 모더레이션이 아니라 남용 상한이다 —
+         * {@code ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM} 에 근거가 적혀 있다.
+         */
+        TOO_MANY_SESSIONS
     }
 
     private final Reason reason;

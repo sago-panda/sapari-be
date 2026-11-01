@@ -677,6 +677,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             case KICKED -> SystemMessageCode.KICKED;
             case BANNED -> SystemMessageCode.BANNED;
             case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED;
+            case TOO_MANY_SESSIONS -> SystemMessageCode.TOO_MANY_SESSIONS;
         };
     }
 

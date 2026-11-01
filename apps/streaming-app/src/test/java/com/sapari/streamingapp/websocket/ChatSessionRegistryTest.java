@@ -744,11 +744,22 @@ class ChatSessionRegistryTest {
     @Test
     @DisplayName("팬아웃 호출지는 모두 예산 하나를 나눠 쓴다 — 세션마다 새로 주면 상한이 세션 수만큼 곱해진다")
     void every_fanout_entry_point_shares_one_budget() {
-        // given: 한 방에 세션 여럿. 전원 같은 userId 라 계정 단위 팬아웃도 이 세션들을 훑는다.
-        int sessions = 40;
-        for (int i = 0; i < sessions; i++) {
-            registry.register("s" + i, session(roomId, userId)).block(VERIFY_CEILING);
-            registry.outbound("s" + i).subscribe(m -> { });
+        // given: 한 유저의 세션 여럿. 전원 같은 userId 라 계정 단위 팬아웃도 이 세션들을 훑는다.
+        //
+        // 한때 <b>한 방에</b> 40 세션을 같은 userId 로 넣었는데, 동시 세션 상한
+        // (MAX_SESSIONS_PER_USER_PER_ROOM)이 생긴 뒤로 그 모양은 운영에서 성립하지 않는다. 그래서
+        // 같은 유저를 여러 방에 퍼뜨린다 — 계정 단위 팬아웃(sendToUserEverywhere·closeUserEverywhere)은
+        // 방을 가리지 않아 여전히 40 을 전부 훑고, 방 단위 팬아웃은 그 방의 상한만큼을 훑는다.
+        // 세는 것이 예산 <b>개수</b>라 두 축 다 세션이 복수이면 회귀가 잡힌다(호출당 1 vs 세션 수).
+        int rooms = 8;
+        int perRoom = ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM;
+        for (int r = 0; r < rooms; r++) {
+            UUID room = r == 0 ? roomId : UUID.randomUUID();
+            for (int i = 0; i < perRoom; i++) {
+                String sid = "s" + r + "-" + i;
+                registry.register(sid, session(room, userId)).block(VERIFY_CEILING);
+                registry.outbound(sid).subscribe(m -> { });
+            }
         }
 
         // when & then: 팬아웃 호출지는 저마다 예산을 만든다. 하나라도 세션마다 새로 주는 쪽으로

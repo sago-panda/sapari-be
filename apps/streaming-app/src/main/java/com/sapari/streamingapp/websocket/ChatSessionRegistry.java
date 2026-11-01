@@ -388,6 +388,51 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
 
     /**
+     * 같은 사람이 같은 방에 동시에 열 수 있는 세션 수의 상한.
+     *
+     * <p><b>왜 (유저, 방) 단위인가.</b> 막으려는 것은 "유효한 룸 토큰 한 장으로 세션을 계속 여는 것"
+     * 이고, 룸 토큰은 한 방에 묶여 있다({@code role}·{@code owner}·{@code roomId} 가 클레임이다).
+     * 토큰이 단건용이 아니라 TTL(약 90초) 안에서 재사용 가능하므로({@code modules/live/AGENTS.md} —
+     * "Not single-use — replayable within the TTL") 그 창 안에 같은 토큰으로 몇 번이고 핸드셰이크할 수
+     * 있다. 그 창을 닫는 가장 좁은 단위가 (유저, 방)이다. 유저 단위로 넓히면 방을 여러 개 보는
+     * 관리자를 막고, 방 단위로 넓히면 인기 방의 정상 시청자를 막는다.
+     *
+     * <p><b>왜 5 인가.</b> 정상 사용자가 같은 방에 동시에 여는 수에서 나온 값이다 — 휴대폰 + 데스크톱
+     * + 새로고침 경합(앞 세션이 아직 안 걷혔다)까지 세도 3 을 넘지 않는다. 용량에서 나온 값이
+     * <b>아니다</b>: 앱 쪽 세션당 2,349 bytes 라 5 든 50 든 메모리는 구분되지 않는다
+     * ({@code ChatSessionGaugeConfig} 에 실측이 있다). 그래서 이 값은 부하 테스트를 기다릴 이유가
+     * 없었고, 한때 용량 상한과 한 덩이로 묶여 미뤄져 있었다.
+     *
+     * <p>⚠️ <b>게스트에는 걸리지 않는다.</b> 비로그인 입장은 <b>입장마다 새 임의 userId</b>를 받으므로
+     * ({@code EnterLiveService} — "매 입장마다 새 임의 userId를 부여하고 role=GUEST") 게스트 연결은
+     * 전부 다른 키가 되어 이 상한에 닿지 않는다. 즉 이 상한이 닫는 것은 <b>회원 토큰 재사용</b>
+     * 한 갈래이고, 인증 없이 {@code enter} 를 반복해 토큰을 받아 가는 갈래는 그대로 열려 있다.
+     * 그쪽은 발급 측(live)의 레이트리밋 문제라 이 자리에서 닫을 수 없다 — "연결 수 상한이 생겼다" 로
+     * 읽히면 안 되는 이유다.
+     */
+    static final int MAX_SESSIONS_PER_USER_PER_ROOM = 5;
+
+    /** 상한을 세는 키. (유저, 방) 쌍이다 — 상한의 단위가 그것이라는 사실을 타입으로 남긴다. */
+    private record UserInRoom(UUID userId, UUID roomId) {
+    }
+
+    /**
+     * (유저, 방) → 그 조합의 sessionId 집합. {@link #roomSessions} 와 같은 종류의 보조 인덱스다.
+     *
+     * <p>세지 않고 {@link #local} 을 훑으면 접속 1건이 Pod 전체 세션 수에 비례한다 — 재접속 폭풍이
+     * 정확히 그 둘(접속 수 × 세션 수)이 동시에 큰 구간이라, 상한을 넣으려고 만든 코드가 그 구간의
+     * 비용이 된다. 방이 비면 항목을 걷어내는 것도 같은 이유다(죽은 키 누적 방지).
+     */
+    private final Map<UserInRoom, Set<String>> userRoomSessions = new ConcurrentHashMap<>();
+
+    /** 상한으로 거부한 누적 수. 로그를 솎아도 규모는 남긴다 — 정상 시청자를 막고 있는지는 이 수로 본다. */
+    private final AtomicLong admissionCapped = new AtomicLong();
+
+    /** 상한 거부 로그를 마지막으로 남긴 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
+    private final AtomicLong lastAdmissionCapLogNanos =
+            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+
+    /**
      * 방별 시청자 수 캐시. 입장할 때마다 Redis HASH를 통째로 읽어오는 비용을 끊는다.
      *
      * <p>없으면 입장 하나가 그 방의 세션 수만큼 값을 전송받는다 — 방이 커질수록 입장이 비싸지고,
@@ -498,6 +543,35 @@ public class ChatSessionRegistry implements ChatSessionManager {
             log.info("특권 뷰 입장 — role={} sessionId={} userId={} roomId={}",
                     session.role(), sessionId, session.userId(), session.roomId());
         }
+        // 상한 검사와 등재를 <b>한 원자 구간</b>에 묶는다. 세어 보고 나중에 넣으면 동시 접속 둘이
+        // 같은 수를 읽고 둘 다 통과해 상한을 넘긴다 — compute 의 재매핑 함수는 그 키에 대해 직렬화되므로
+        // "셋을 보고 넣는다" 가 쪼개지지 않는다. 판정을 배열로 받는 것은 그 안에서만 쓰는 값이라서다
+        // (같은 키에 동시 실행이 없으므로 가시성 문제도 없다).
+        //
+        // local.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 local 에 들어가 있어
+        // 게이지·팬아웃이 그 세션을 한 번 보고, cleanup 이 지우기 전까지 시청자 수가 틀린다.
+        boolean[] admitted = {false};
+        userRoomSessions.compute(new UserInRoom(session.userId(), session.roomId()), (key, sessionIds) -> {
+            Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
+            if (ids.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+                ids.add(sessionId);
+                admitted[0] = true;
+            }
+            return ids;
+        });
+        if (!admitted[0]) {
+            long capped = admissionCapped.incrementAndGet();
+            if (shouldLogAdmissionCap()) {
+                // 표본 하나와 Pod 누적을 함께 적는다 — 드롭 로그와 같은 표기다. 이 줄이 늘어나면
+                // 공격이 아니라 상한이 낮은 것일 수 있으니, 사람이 그 둘을 가를 수 있게 둘 다 남긴다.
+                log.warn("동시 세션 상한 초과로 입장 거부 — 표본 userId={} 표본 roomId={} 상한={} 누적거부={}",
+                        session.userId(), session.roomId(), MAX_SESSIONS_PER_USER_PER_ROOM, capped);
+            }
+            // 던지지 않고 Mono.error 로 돌려준다 — 핸들러의 onErrorResume(EntryDeniedException) 이
+            // SYSTEM code 를 실어 1008 로 닫는 경로를 이미 갖고 있고, 거부는 그 모양이 맞다.
+            return Mono.error(new EntryDeniedException(EntryDeniedException.Reason.TOO_MANY_SESSIONS));
+        }
+
         // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
         // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
         local.put(sessionId, new LocalSession(sessionId, session,
@@ -563,6 +637,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> unregister(UUID roomId, String sessionId) {
+        // 상한 인덱스를 <b>local 을 지우기 전에</b> 걷는다 — 세션 레코드에서 userId 를 읽어야 키를
+        // 만들 수 있다. 먼저 지우면 키를 못 만들어 항목이 남고, 그 유저는 그 방에 다시 들어올 수
+        // 없게 된다(상한이 영구히 찬 상태로 고정된다). 상한 코드가 만들 수 있는 최악의 결함이다.
+        LocalSession leaving = local.get(sessionId);
+        if (leaving != null) {
+            UserInRoom key = new UserInRoom(leaving.session().userId(), roomId);
+            userRoomSessions.computeIfPresent(key, (userInRoom, sessionIds) -> {
+                sessionIds.remove(sessionId);
+                return sessionIds.isEmpty() ? null : sessionIds;   // 빈 항목은 걷는다 — 남기면 누수원
+            });
+        }
         local.remove(sessionId);
         // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
         roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
@@ -776,7 +861,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>방 색인을 못 쓴다</b> — 계정 조치는 방을 모른 채로 오고, {@code userId → 세션} 색인은 두지
      * 않았다. 두면 {@code register}/{@code unregister}마다 동기화 대상이 하나 늘고 그 어긋남이 조용한
-     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다. 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
+     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다.
+     *
+     * <p>⚠️ <b>{@link #userRoomSessions} 가 생겼지만 이 경로는 여전히 훑는다.</b> 그 색인의 키는
+     * {@code (userId, roomId)} 쌍이라 "이 사람의 세션 전부" 를 물으면 방을 모르는 채로 전체 항목을
+     * 뒤져야 한다 — 이 스캔보다 싸지 않다. 위 문단의 경고가 틀렸다는 뜻도 아니다: 그 색인에
+     * 정확히 그 조용한 버그가 생길 수 있고(퇴장이 항목을 걷지 않으면 그 유저가 그 방에 영구히
+     * 못 들어온다), 그래서 {@code SessionAdmissionCapTest} 가 그 한 가지를 따로 고정한다. 색인을
+     * 하나 더 두는 값은 "메시지마다 도는 경로" 에서만 나오고, 이 경로는 시간당 몇 건이다. 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
      * 방 fan-out이 색인을 갖는 것은 <b>메시지마다</b> 돌기 때문이고, 이쪽은 시간당 몇 건이다.
      *
      * <p><b>비용을 폭발시키는 변수는 이벤트 빈도가 아니라 파드당 세션 수다.</b> 스캔은 선형이 아니다 —
@@ -1192,6 +1284,25 @@ public class ChatSessionRegistry implements ChatSessionManager {
         long last = lastLifetimeExpiryLogNanos.get();
         return now - last >= DROP_LOG_INTERVAL_NANOS
                 && lastLifetimeExpiryLogNanos.compareAndSet(last, now);
+    }
+
+    /** 마지막 상한 거부 로그로부터 간격이 지났으면 true. {@link #shouldLogDrop()} 과 같은 꼴이다. */
+    private boolean shouldLogAdmissionCap() {
+        long now = System.nanoTime();
+        long last = lastAdmissionCapLogNanos.get();
+        return now - last >= DROP_LOG_INTERVAL_NANOS
+                && lastAdmissionCapLogNanos.compareAndSet(last, now);
+    }
+
+    /**
+     * 동시 세션 상한으로 거부한 누적 수.
+     *
+     * <p>{@code public} 인 이유는 지표 배선이 쓰기 때문이다({@code ChatSessionGaugeConfig}). 집행이
+     * 보이지 않으면 "상한이 공격을 막고 있다" 와 "상한이 정상 시청자를 막고 있다" 를 가를 수 없고,
+     * 후자는 우리가 만든 장애다 — 그래서 집행과 그 관측을 같은 커밋에 둔다.
+     */
+    public long admissionCapped() {
+        return admissionCapped.get();
     }
 
     /** 마지막 드롭 로그로부터 간격이 지났으면 true. 경쟁 시 CAS로 한 스레드만 통과한다. */
