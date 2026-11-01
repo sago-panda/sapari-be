@@ -6,13 +6,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-import org.bson.types.ObjectId;
-
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
-import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatRole;
@@ -26,6 +23,7 @@ import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 채팅 이력 조회 — VOD 다시보기용. <b>블로킹</b>(live-app MVC).
@@ -39,6 +37,7 @@ import lombok.RequiredArgsConstructor;
  * {@code @Bean} 으로 등록한다({@code KickUserService} 와 같은 규율).
  */
 @RequiredArgsConstructor
+@Slf4j
 public class GetChatHistoryService implements GetChatHistoryUseCase {
 
     /** VOD 창 길이 — 재생 위치에서 이만큼 앞까지 본다. */
@@ -78,28 +77,9 @@ public class GetChatHistoryService implements GetChatHistoryUseCase {
 
         List<ChatMessage> messages = command.isPlaybackWindow()
                 ? playbackWindow(command, room, kicked)
-                : cursorPage(command, kicked);
+                : historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
 
         return new GetChatHistoryView(messages.stream().map(message -> render(message, privileged)).toList());
-    }
-
-    /**
-     * 커서 페이지.
-     *
-     * <p><b>형식이 깨진 커서는 400 이다.</b> 커서는 불투명하지만 클라이언트가 만들어 보내는 값이 아니라
-     * 서버가 준 값을 되돌려 보내는 것이므로, 형식이 깨졌다면 클라이언트 코드의 버그다. 빈 목록으로
-     * 답하면 프론트가 {@code messages.length === size} 로 다음 페이지를 판단하는 계약 때문에
-     * <b>스크롤이 사유 없이 조용히 끝난다</b> — "이력이 더 없다" 와 구분되지 않는다. 그 침묵이 깨진
-     * 커서를 만든 버그를 숨긴다.
-     *
-     * <p>형식 유효성을 응답으로 가르는 것이 탐색 신호가 되지는 않는다 — {@code ObjectId} 가 24자
-     * 16진수라는 것은 공개된 형식이고, 클라이언트가 서버에 묻지 않고도 스스로 판정할 수 있다.
-     */
-    private List<ChatMessage> cursorPage(GetChatHistoryCommand command, Set<UUID> kicked) {
-        if (command.beforeId() != null && !ObjectId.isValid(command.beforeId())) {
-            throw new ChatHistoryQueryInvalidException("커서 형식이 올바르지 않습니다.");
-        }
-        return historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
     }
 
     /**
@@ -116,7 +96,20 @@ public class GetChatHistoryService implements GetChatHistoryUseCase {
             return false;
         }
         boolean roomOwner = command.requesterId().equals(room.sellerId());
-        return permissionPolicy.seesUnmaskedContent(parseRole(command.requesterRole()), roomOwner);
+        ChatRole role = parseRole(command.requesterRole());
+
+        // 남의 방에서 특권 뷰(원문·발신자 이메일)를 쓰는 조회는 남긴다. 실시간 입장 경로가 같은 판정에
+        // 같은 로그를 남기는데 이력 경로만 비어 있었다 — 그러면 "누가 남의 방 구매자 이메일을 봤는가"
+        // 에 실시간은 답하고 이력은 답하지 못한다. 같은 PII 를 같은 판정으로 내주는 두 경로가 감사에서
+        // 갈리면 그 비대칭이 곧 사각지대다.
+        //
+        // 문구가 '관리자' 가 아닌 것도 실시간 쪽과 같은 이유다 — 판정이 역할을 가리지 않으므로,
+        // 특권 뷰가 넓어지는 날 감사가 자동으로 따라와야 하고 그때 비-관리자를 관리자로 기록하면 안 된다.
+        if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(role, roomOwner)) {
+            log.info("특권 뷰 이력 조회 — role={} userId={} roomId={}",
+                    role, command.requesterId(), command.roomId());
+        }
+        return permissionPolicy.seesUnmaskedContent(role, roomOwner);
     }
 
     /**

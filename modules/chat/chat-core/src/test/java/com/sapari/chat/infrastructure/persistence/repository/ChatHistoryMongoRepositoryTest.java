@@ -24,6 +24,7 @@ import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
@@ -187,13 +188,25 @@ class ChatHistoryMongoRepositoryTest {
     }
 
     @Test
-    @DisplayName("⭐ 잘못된 커서는 던지지 않고 빈 페이지다 — 형식이 맞다는 사실도 응답으로 새지 않게")
-    void aMalformedCursorYieldsAnEmptyPage() {
+    @DisplayName("⭐ 잘못된 커서는 400 이다 — 빈 페이지로 답하면 스크롤이 사유 없이 조용히 끝난다")
+    void aMalformedCursorIsRejected() {
         // given
         save(roomId, cleanSender, "m0", BASE);
 
-        // when & then
-        assertThat(repository.findBefore(roomId, "not-an-object-id", 10, Set.of())).isEmpty();
+        // when & then: 응답에 hasNext 가 없어 프론트가 길이로 다음 페이지를 판단하므로, 빈 페이지는
+        // "이력이 더 없다" 와 구분되지 않는다 — 커서를 잘못 만든 버그가 그 침묵에 묻힌다.
+        assertThatThrownBy(() -> repository.findBefore(roomId, "not-an-object-id", 10, Set.of()))
+                .isInstanceOf(ChatHistoryQueryInvalidException.class);
+    }
+
+    @Test
+    @DisplayName("형식이 맞지만 없는 커서는 빈 페이지다 — 그건 400 이 아니다")
+    void aWellFormedButAbsentCursorYieldsAnEmptyPage() {
+        // given
+        save(roomId, cleanSender, "m0", BASE);
+
+        // when & then: 가장 작은 ObjectId 보다 앞은 아무것도 없다. 형식 오류와 갈려야 한다.
+        assertThat(repository.findBefore(roomId, "000000000000000000000000", 10, Set.of())).isEmpty();
     }
 
     @Test

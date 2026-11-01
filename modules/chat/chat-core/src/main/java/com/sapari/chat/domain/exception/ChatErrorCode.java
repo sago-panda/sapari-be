@@ -36,7 +36,7 @@ public enum ChatErrorCode implements ErrorCode {
     // 전역 핸들러에 IllegalArgumentException 을 더하는 쪽은 저장소 전체의 응답을 바꾸므로(인프라 깊은
     // 곳에서 올라온 것까지 400 이 된다) 여기서 좁게 받는다.
     //
-    // 문구가 세 사유에 공통인 것은 의도가 아니라 <b>지금은 구분이 쓸모없기 때문</b>이다 — 셋 다
+    // 문구가 네 사유에 공통인 것은 의도가 아니라 <b>지금은 구분이 쓸모없기 때문</b>이다 — 넷 다
     // 클라이언트 코드의 버그이고 사용자가 고칠 것이 없다. 사유는 debugMessage 로 로그에만 남는다.
     HISTORY_QUERY_INVALID(400, "CHAT-009", "채팅 이력 조회 조건이 올바르지 않습니다.");
 

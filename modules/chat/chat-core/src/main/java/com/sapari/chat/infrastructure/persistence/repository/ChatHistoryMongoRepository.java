@@ -11,6 +11,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
+import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.repository.ChatHistoryRepository;
 import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
@@ -59,10 +60,10 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
         Criteria criteria = roomScope(roomId, excludedSenderIds);
         if (beforeId != null) {
             if (!ObjectId.isValid(beforeId)) {
-                // 여기까지 오면 호출자가 게이트를 거치지 않은 것이다 — 정상 경로에서는
-                // GetChatHistoryService 가 형식을 먼저 보고 400 으로 거부한다. 이 어댑터는 그 뒤의
-                // 방어라서, 던지는 대신 빈 페이지로 답해 호출자별 처리를 강요하지 않는다.
-                return List.of();
+                // 형식 판정이 이 어댑터에 있는 것이 요점이다 — 커서가 ObjectId 라는 사실은 저장소의
+                // 지식이고, 응용 서비스가 그걸 알면 저장소를 바꿀 때 서비스가 따라 바뀐다.
+                // 도메인 예외로 번역해 올린다(인프라 예외를 그대로 올리지 않는다).
+                throw new ChatHistoryQueryInvalidException("커서 형식이 올바르지 않습니다.");
             }
             criteria = criteria.and("_id").lt(new ObjectId(beforeId));
         }
