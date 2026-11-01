@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -77,7 +78,7 @@ class SubscriberLogContextTest {
     @BeforeEach
     void setUp() {
         subscriberLogger = (Logger) LoggerFactory.getLogger(ChatBroadcastSubscriber.class);
-        appender = new ListAppender<>();
+        appender = new MdcSafeAppender();
         appender.start();
         subscriberLogger.addAppender(appender);
     }
@@ -134,6 +135,41 @@ class SubscriberLogContextTest {
         long deadline = System.nanoTime() + VERIFY_CEILING.toNanos();
         while (!condition.getAsBoolean() && System.nanoTime() - deadline < 0) {
             Thread.onSpinWait();
+        }
+    }
+
+    /**
+     * 로그를 <b>로깅 스레드에서 확정</b>하고 스레드 안전한 목록에 쌓는 수집기.
+     *
+     * <p><b>왜 {@code ListAppender} 를 그대로 못 쓰는가.</b> {@code LoggingEvent.getMDCPropertyMap()} 은
+     * 지연 캡처다 — 필드가 비어 있으면 <b>부른 스레드</b>의 MDC 를 읽어 그 값을 박아 버린다. 여기서
+     * 로그는 구독 스레드가 쓰고 단언은 메인 스레드가 읽으므로, 메인이 먼저 부르면 <b>메인의 빈 MDC</b>
+     * 가 박히고 이 가드는 "room_id 가 없다" 며 실패한다.
+     *
+     * <p><b>실측</b>: 이 테스트는 루트 콘솔 어펜더가 뒤이어 돌면서
+     * {@code OutputStreamAppender.subAppend} → {@code prepareForDeferredProcessing()} 으로 MDC 를
+     * 대신 확정해 주는 덕에 통과하고 있었다. 그 어펜더만 끊으면({@code setAdditive(false)})
+     * {@code 기대한 맵: &#123;&#125;} 로 결정적으로 실패한다 — 가드의 정답이 자기와 무관한 어펜더
+     * 하나에 매달려 있었고, 그 경합에서 메인이 이기면 간헐 실패가 된다.
+     *
+     * <p>{@code append} 안에서 직접 부르면 그 의존이 끊긴다. 이 메서드는 로깅 스레드에서 돌고,
+     * MDC·메시지·스레드명을 그 자리에서 확정한다.
+     *
+     * <p>목록 교체는 두 번째 결함을 막는다. 상위 클래스의 {@code ArrayList} 는 원소 저장과 size 증가가
+     * 원자적이지 않고 가시성 보장도 없어, {@code isEmpty()} 가 거짓이 된 뒤의 {@code get(0)} 이
+     * {@code null} 일 수 있다. {@code list} 는 {@code public} 비-final 이라 교체가 가능하고,
+     * 상위 {@code append} 가 이 목록에 쌓는다.
+     */
+    private static final class MdcSafeAppender extends ListAppender<ILoggingEvent> {
+
+        private MdcSafeAppender() {
+            this.list = new CopyOnWriteArrayList<>();
+        }
+
+        @Override
+        protected void append(ILoggingEvent event) {
+            event.prepareForDeferredProcessing();
+            super.append(event);
         }
     }
 }

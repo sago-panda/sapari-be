@@ -9,6 +9,7 @@ import static org.mockito.Mockito.mock;
 import java.net.URI;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -92,7 +93,7 @@ class SessionLogContextTest {
         gate = new EntryGate(kicks, roomEnded, bans, ChatMetrics.NOOP, mock(ChatSessionRegistry.class));
 
         gateLogger = (Logger) LoggerFactory.getLogger(EntryGate.class);
-        appender = new ListAppender<>();
+        appender = new MdcSafeAppender();
         appender.start();
         gateLogger.addAppender(appender);
     }
@@ -178,7 +179,7 @@ class SessionLogContextTest {
                 ChatMetrics.NOOP);
 
         Logger handlerLogger = (Logger) LoggerFactory.getLogger(ChatWebSocketHandler.class);
-        ListAppender<ILoggingEvent> handlerAppender = new ListAppender<>();
+        ListAppender<ILoggingEvent> handlerAppender = new MdcSafeAppender();
         handlerAppender.start();
         handlerLogger.addAppender(handlerAppender);
 
@@ -226,5 +227,36 @@ class SessionLogContextTest {
         assertThat(appender.list.get(0).getMDCPropertyMap())
                 .doesNotContainKey(LogFields.SESSION_ID)
                 .doesNotContainKey(LogFields.ROOM_ID);
+    }
+
+    /**
+     * 로그를 <b>로깅 스레드에서 확정</b>하고 스레드 안전한 목록에 쌓는 수집기.
+     *
+     * <p><b>왜 {@code ListAppender} 를 그대로 못 쓰는가.</b> {@code LoggingEvent.getMDCPropertyMap()} 은
+     * 지연 캡처다 — 필드가 비어 있으면 <b>부른 스레드</b>의 MDC 를 읽어 그 값을 박아 버린다. 이 파일이
+     * 보는 로그는 전부 {@code boundedElastic} 에서 찍히고 단언은 메인 스레드가 읽으므로, 메인이 먼저
+     * 부르면 <b>메인의 빈 MDC</b> 가 박히고 가드는 "식별자가 없다" 며 실패한다.
+     *
+     * <p><b>실측</b>: 이 가드들은 루트 콘솔 어펜더가 뒤이어 돌면서
+     * {@code OutputStreamAppender.subAppend} → {@code prepareForDeferredProcessing()} 으로 MDC 를
+     * 대신 확정해 주는 덕에 통과하고 있었다 — 정답이 자기와 무관한 어펜더 하나에 매달려 있었다.
+     * {@code append} 안에서 직접 부르면 그 의존이 끊긴다.
+     *
+     * <p>목록 교체는 두 번째 결함을 막는다. {@code thenCancel().verify()} 는 세션 안쪽에서 비동기로
+     * 찍히는 fail-open 줄을 기다려 주지 않으므로 그 쓰기에는 happens-before 가 없다. 상위 클래스의
+     * {@code ArrayList} 는 가시성 보장이 없고 순회 중 변경에 취약하다. {@code list} 는 {@code public}
+     * 비-final 이라 교체가 가능하고, 상위 {@code append} 가 이 목록에 쌓는다.
+     */
+    private static final class MdcSafeAppender extends ListAppender<ILoggingEvent> {
+
+        private MdcSafeAppender() {
+            this.list = new CopyOnWriteArrayList<>();
+        }
+
+        @Override
+        protected void append(ILoggingEvent event) {
+            event.prepareForDeferredProcessing();
+            super.append(event);
+        }
     }
 }
