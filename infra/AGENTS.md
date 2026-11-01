@@ -91,7 +91,12 @@ so the port split is the only thing standing between an anonymous scraper and th
   gets silently empty metrics. If you want the env var to be load-bearing, drop the `:8091` default from
   the template; today it is a convenience, not a gate. (streaming-app: same shape,
   `${MANAGEMENT_PORT:8092}` at `application.yml.example:167`.)
-- **It also refuses to start unless `prometheus` is in `exposure.include`** (added 2026-10-31). Actuator's
+- **It also refuses to start unless `health` and `prometheus` are *actually exposed*** (added 2026-10-31,
+  widened 2026-11-01). The guard does **not** read `exposure.include`/`exclude` any more — it asks
+  `WebEndpointsSupplier.getEndpoints()`, because six config axes can remove an endpoint and a key-reading
+  guard only saw two. Measured, each booting successfully while the old guard passed:
+  `endpoint.<id>.enabled=false`, `endpoints.enabled-by-default=false`, `endpoint.<id>.access=none`,
+  `endpoints.access.default=none` (the last two of those leave **no endpoints at all**). Actuator's
   default exposure is `health` alone, so omitting that line leaves no metrics endpoint at all; the path then
   misses the actuator chain, falls to `authenticated()`, and the scraper gets **401** — metrics silently
   empty, indistinguishable from "no broadcasts". Measured: the first CI run of the port test failed exactly
@@ -102,11 +107,16 @@ so the port split is the only thing standing between an anonymous scraper and th
   Testcontainers supplies Postgres/Redis/Mongo, and Flyway applies the real migrations. Two facts surfaced the
   moment they ran: the exposure line above, and that `/actuator/health` depends on **Mongo** (503 without it,
   because the kick-evidence read lives there) — so a manifest that omits Mongo makes this app look unhealthy.
-- **Deployment prerequisite — read before merging live-app.** `MANAGEMENT_PORT` (or
-  `management.server.port`) must exist in the environment *before* this app is rolled out: without it the
-  app refuses to start by design. That is fail-closed on purpose — booting without it would put metrics on
-  the user port — but it means the manifest change leads, and the app follows. Developers running locally
-  need the same key; copy the `management` block from `application.yaml.example`.
+- **Deployment prerequisite — read before merging live-app.** `management.server.port` must *resolve*
+  before this app is rolled out, and `health` + `prometheus` must actually be exposed: without either the
+  app refuses to start by design.
+  - ⚠️ **`MANAGEMENT_PORT` itself is not load-bearing today**, and an earlier version of this bullet said
+    it was. The guard rejects an *absent* key, and the shipped template is `${MANAGEMENT_PORT:8091}`
+    (`application.yaml.example:239`) — copy that, leave the env var unset, and the placeholder resolves to
+    8091 and the app **boots**. A manifest that points its scrape target at the env value then gets
+    silently empty metrics. To make the env var a real gate, drop the `:8091` default from the template.
+  - Developers running locally need the same keys; copy the `management` block from
+    `application.yaml.example`.
 - **Not done yet in this repo**: the manifests themselves live in the infra repo, so none of the above is
   enforced from here. Until they exist, metrics are only as private as the cluster's default networking,
   and the `live.room.active` gauge's 5-second cache is the only thing bounding DB load from scrapes.
@@ -287,9 +297,13 @@ that on.
   8081/8091. The user port is where **WebSocket handshakes** arrive. "Default" is literal — the template
   carries `${MANAGEMENT_PORT:8092}`, so an unset env var is not a boot failure; see the live-app note above.
 - `ObservabilityExposureConfig` refuses to boot unless the management port is set and differs from
-  `server.port`, unless `management.endpoints.web.exposure.include` is a subset of
-  `{health, prometheus}`, **and — added 2026-11-01 — unless `prometheus` is actually in that list.**
-  The subset check alone passed an *absent* list, and then no `/actuator/prometheus` exists at all
+  `server.port`, **and unless the set of endpoints that are *actually exposed* is exactly
+  `{health, prometheus}`** (widened 2026-11-01). It no longer parses `exposure.include`/`exclude`: it asks
+  `WebEndpointsSupplier.getEndpoints()`, so the four other axes that can remove an endpoint
+  (`endpoint.<id>.enabled`, `endpoints.enabled-by-default`, `endpoint.<id>.access`,
+  `endpoints.access.default`) are covered by the same single question. Measured: each of those booted
+  successfully while the key-reading guard passed, and two of them left **no endpoints at all**.
+  Before that, a subset check alone passed an *absent* list, and then no `/actuator/prometheus` exists
   (actuator's default exposure is `health` alone): with no security here the scraper gets a 404 rather
   than live-app's 401, and either way the chat metrics are silently empty. live-app already failed boot
   on this; the two apps were asymmetric for one day. The second check does not exist in live-app, because there the security chain
