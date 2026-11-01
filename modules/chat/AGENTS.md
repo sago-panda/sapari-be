@@ -689,17 +689,27 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     of the rule above. `ChatMongoConfig`'s startup index creation blocks, and against a closed address it
     throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is a **30s stall per index, up to ~120s for the four** (it was three until the VOD-window index
-    landed — `ChatMongoConfig` has four `createIndex(...).block()` calls and returns four), which a
-    readiness probe can turn into a restart loop. Adding a fifth index adds another 30s to this number. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
+    cost is a **~30s stall, and it does not accumulate across indexes** — the class has no `catch` and the
+    four `createIndex(...).block()` calls are sequential assignments, so the first one to burn the timeout
+    throws and the method ends; the other three are never evaluated. A readiness probe can still turn that
+    one stall into a restart loop. An earlier version of this line said "up to ~120s for the four … adding
+    a fifth adds another 30s": wrong, and self-contradicting — the very measurement it cited (timeout burned
+    → **throws**) is what makes accumulation impossible. The test rule buys "the suite goes red and reports"; these buy "the pod dies instead of
     serving". A `VERIFY_CEILING`-style value is not the lever here — the probe configuration is
     (`infra/`), so this is recorded, not changed.
   - **`await()` is the third strand** — a start latch or barrier with no ceiling leaves the worker blocked
     forever when the main thread throws before `countDown()`. The reason is **not** that a non-daemon
     thread holds the worker JVM open: it does not (a thread sleeping 10 minutes still lets the Gradle test
     worker exit cleanly, measured). The reason is that the stuck thread keeps hammering the sinks and
-    registry and so pollutes the *next* test in the same JVM. All 7 sites take `await(30, SECONDS)` and
-    throw with a reason.
+    registry and so pollutes the *next* test in the same JVM. Measured on the commit this line lands on
+    over `modules/chat` + `apps/streaming-app` tests: **15 bounded `await(...)` sites**, and the ceilings
+    are **not uniform** — 10s, 30s, 60s and a `RENDEZVOUS_TIMEOUT` constant all appear. **Three of them
+    discard the returned boolean** (`ChatKickRecorderConcurrencyTest:370`,
+    `ChatBanStateRepositoryImplTest:317` and `:324`), so a timeout there is not reported by the `await`
+    itself; the assertion that follows is what fails, which is weaker than throwing with a reason. An
+    earlier version of this line said "all 7 sites take `await(30, SECONDS)` and throw with a reason" —
+    wrong on the count, the uniformity and the throwing, and with no baseline commit, which is what the
+    rule two bullets up asks for.
   - **The uniform 10s costs nothing on a passing run** — a ceiling is only spent when it is exceeded, and
     the worst case is **not** ceiling × call sites. An exceeded `block(Duration)` *throws*
     (`IllegalStateException: Timeout on blocking read…`), which aborts that test method, so the remaining

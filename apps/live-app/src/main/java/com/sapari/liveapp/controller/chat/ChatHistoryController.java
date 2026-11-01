@@ -67,8 +67,9 @@ public class ChatHistoryController {
      * 알림이 울리고 고칠 쪽은 서버가 아닌데 서버 장애로 보인다. 전역 핸들러를 넓히는 쪽은 저장소
      * 전체의 응답을 바꾸므로(인프라에서 올라온 같은 타입까지 400 이 된다) 여기서 좁게 받는다.
      *
-     * <p>사유는 {@code debugMessage} 로만 간다 — 응답 문구는 {@code CHAT-009} 하나다. 셋 다 클라이언트
-     * 코드의 버그라 사용자가 사유별로 다르게 할 일이 없고, 사유는 로그에 남는다.
+     * <p>사유는 {@code debugMessage} 로만 간다 — 응답 문구는 {@code CHAT-009} 하나다. 전부 클라이언트
+     * 코드의 버그라 사용자가 사유별로 다르게 할 일이 없고, 사유는 로그에 남는다. 사유 목록은
+     * {@code ChatErrorCode.HISTORY_QUERY_INVALID} 옆에 열거해 두었다 — 여기서 개수를 세지 않는다.
      */
     private static GetChatHistoryCommand command(UUID roomId, String beforeId, Long playbackPositionMs,
             int size, LiveUserPrincipal principal) {

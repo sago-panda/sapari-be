@@ -62,7 +62,12 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
             if (!ObjectId.isValid(beforeId)) {
                 // 형식 판정이 이 어댑터에 있는 것이 요점이다 — 커서가 ObjectId 라는 사실은 저장소의
                 // 지식이고, 응용 서비스가 그걸 알면 저장소를 바꿀 때 서비스가 따라 바뀐다.
-                // 도메인 예외로 번역해 올린다(인프라 예외를 그대로 올리지 않는다).
+                //
+                // 도메인 예외로 올리는 이유는 번역이 아니라 <b>경계</b>다 — 여기서 잡을 인프라 예외는
+                // 없고(ObjectId.isValid 는 DB 를 치지 않는 순수 24자 16진수 검사다) 이건 입력 검증이다.
+                // 생 IllegalArgumentException 으로 올리면 전역 핸들러에 그 타입이 없어 500 이 된다.
+                // ⚠️ 이 파일의 size·limit·from>to 검사는 아직 생 IllegalArgumentException 이다 —
+                // 지금은 명령 record 가 앞에서 막아 도달하지 않지만, 일관성은 어긋나 있다.
                 throw new ChatHistoryQueryInvalidException("커서 형식이 올바르지 않습니다.");
             }
             criteria = criteria.and("_id").lt(new ObjectId(beforeId));
