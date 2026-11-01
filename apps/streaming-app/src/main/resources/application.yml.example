@@ -176,7 +176,11 @@ management:
         # 무인증으로 Mongo URI 자격증명과 Redis 비밀번호를 내보낸다. 가드가 허용 집합
         # {health, prometheus} 밖을 거부하므로 추가하려면 코드도 함께 고쳐야 한다 = 리뷰에 보인다.
         # (스칼라·YAML 리스트 두 표기 모두 검사한다 — 리스트만 읽히지 않는 구현이면 통과했었다)
-        include: health,prometheus     # optional
+        include: health,prometheus     # REQUIRED(운영) — prometheus 가 빠지면 부팅이 실패한다
+                                       # (ObservabilityExposureConfig). 액추에이터 기본 노출은 health
+                                       # 하나라, 빠뜨리면 지표 엔드포인트가 아예 생기지 않는다. 이 앱에는
+                                       # 시큐리티가 없어 401 조차 나지 않고 404 이고, 어느 쪽이든 지표가
+                                       # 조용히 빈다 — 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다.
 #
 # ⚠️ 관리 포트는 인증이 없고 모든 인터페이스에 바인딩된다(management.server.address 를 두지 않는다 —
 #    컨테이너에서 loopback 으로 묶으면 kubelet 프로브가 닿지 않는다). 따라서 클러스터 밖으로
