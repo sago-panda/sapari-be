@@ -152,18 +152,29 @@ public class ObservabilityExposureConfig {
      * <p><b>이 가드가 보는 범위는 {@code @Endpoint}/{@code @WebEndpoint} 다.</b> 액추에이터에는 id 를
      * 공급하는 타입이 셋 있고({@code WebEndpointsSupplier} ·
      * {@code ControllerEndpointsSupplier} · {@code ServletEndpointsSupplier}) 뒤 둘은 이 집합에
-     * 나타나지 않는다. 그래서 "뒤 둘로 만든 엔드포인트가 상한을 비껴간다" 는 의심이 나올 자리인데,
-     * <b>Boot 4.0.6 에서는 비껴갈 엔드포인트 자체가 생기지 않는다</b>(실측):
-     * <ul>
-     *   <li>{@code ControllerEndpointHandlerMapping} 류가 actuator jar 에 <b>0건</b> — 서블릿도
-     *       리액티브도 없다. 매핑이 없으면 그 엔드포인트는 어느 포트에도 뜨지 않는다.</li>
-     *   <li>{@code actuator-autoconfigure} jar 에 그 자동설정이 <b>0건</b> —
-     *       {@code controllerEndpointDiscoverer} 빈이 아예 만들어지지 않는다.</li>
-     *   <li>{@code ControllerEndpointsSupplier} 자체가 {@code @Deprecated(forRemoval = true)} 다.</li>
-     * </ul>
-     * 그래서 그 공급자를 합집합으로 받지 않는다 — 받으면 항상 {@code null} 인 죽은 코드이고, 사라질
-     * API 에 운영 코드를 묶는 비용만 남는다. Boot 가 그 매핑을 되살리면 이 결정을 다시 봐야 하고,
-     * 그 신호는 위 세 줄 중 하나가 깨지는 것이다.
+     * 나타나지 않는다. 그래서 "뒤 둘로 만든 엔드포인트가 상한을 비껴간다" 는 의심이 나올 자리다.
+     *
+     * <p><b>비껴갈 수 없는 이유는 하나다 — 그것들을 HTTP 로 서빙하는 핸들러 매핑이 Boot 4.0.6 에
+     * 없다.</b> 실측(두 액추에이터 jar 전체에서 {@code ControllerEndpointsSupplier} 를 상수 풀에
+     * 쥔 클래스를 전수 조사): <b>셋뿐</b>이고 그 셋은 인터페이스 자신 ·
+     * {@code ControllerEndpointDiscoverer} · {@code WebEndpointAutoConfiguration}(빈을 만드는 자리)
+     * 이다. 즉 <b>소비자가 없다</b> — {@code ControllerEndpointHandlerMapping} 류도 0건이다. 매핑이
+     * 없으면 그 엔드포인트는 어느 포트에도 뜨지 않는다. 덤으로
+     * {@code ControllerEndpointsSupplier} 는 {@code @Deprecated(since = "3.3.3", forRemoval = true)} 다.
+     *
+     * <p>⚠️ <b>빈이 없어서가 아니다.</b> 한때 이 자리에 "자동설정이 0건이라 그 빈이 아예 만들어지지
+     * 않고 {@code ObjectProvider} 가 항상 {@code null} 이다" 라고 적었는데 <b>거짓이다</b> —
+     * {@code controllerEndpointDiscoverer} 는 {@code WebEndpointAutoConfiguration} 의 {@code @Bean}
+     * 이고, 실제 웹 컨텍스트에서 재면 {@code ControllerEndpointsSupplier} 와
+     * {@code ServletEndpointsSupplier} 빈이 <b>둘 다 있다</b>(실측: {@code controllerEndpointDiscoverer} ·
+     * {@code servletEndpointDiscoverer}). 그 거짓 근거가 나온 경로까지 적어 둔다 —
+     * {@code actuator-autoconfigure} jar 에서 <b>클래스 파일명</b>만 grep 했고, 그 빈은 파일명에 그
+     * 이름이 없는 {@code WebEndpointAutoConfiguration.class} 안의 메서드였다.
+     *
+     * <p>그래서 그 공급자를 합집합으로 받지 않는 이유는 "항상 null" 이 아니라 <b>받아도 서빙되지
+     * 않는 id 를 세게 되고, 사라질 API 에 운영 코드를 묶는다</b> 는 쪽이다. <b>되살아나는 신호는
+     * 빈의 존재가 아니라 매핑이다</b> — 그 공급자를 소비하는 클래스가 위 셋 밖으로 늘어나면 이
+     * 결정을 다시 봐야 한다. 빈 존재에 신호를 걸면 오늘 이미 울린 경보를 "안 울렸다" 고 적는 셈이다.
      */
     static Set<String> exposedIds(WebEndpointsSupplier supplier) {
         Set<String> ids = new TreeSet<>();
