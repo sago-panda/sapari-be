@@ -18,6 +18,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
+
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
@@ -71,13 +77,41 @@ class GetChatHistoryServiceTest {
     private final UUID adminId = UUID.randomUUID();
     private final UUID kickedId = UUID.randomUUID();
 
+    /**
+     * 감사 로그를 읽는 수집기.
+     *
+     * <p>이 서비스는 블로킹 경로(live-app REST)라 로그를 쓰는 스레드와 읽는 스레드가 같다 — 그래서
+     * 평범한 {@code ListAppender} 로 충분하다. 반응형 경로의 로그 단언은 지연 MDC 캡처와 가시성
+     * 때문에 다른 수집기를 써야 하는데({@code SubscriberLogContextTest}), 여기는 그 노출이 없다.
+     */
+    private Logger serviceLogger;
+    private ListAppender<ILoggingEvent> appender;
+
     @BeforeEach
     void setUp() {
+        serviceLogger = (Logger) LoggerFactory.getLogger(GetChatHistoryService.class);
+        appender = new ListAppender<>();
+        appender.start();
+        serviceLogger.addAppender(appender);
         service = new GetChatHistoryService(liveRooms, historyRepository, kickLogRepository,
                 new ChatPermissionPolicy());
         lenient().when(liveRooms.findRoom(roomId))
                 .thenReturn(Optional.of(new LiveRoomView(roomId, sellerId, false, STARTED_AT)));
         lenient().when(kickLogRepository.findKickedUserIds(roomId)).thenReturn(List.of());
+    }
+
+    @AfterEach
+    void tearDown() {
+        serviceLogger.detachAppender(appender);
+        appender.stop();
+    }
+
+    /** 감사 로그로 남은 줄만. */
+    private java.util.List<String> auditLines() {
+        return appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .filter(line -> line.startsWith("특권 뷰 이력 조회"))
+                .toList();
     }
 
     private GetChatHistoryCommand cursorBy(UUID requesterId, String role) {
@@ -267,10 +301,59 @@ class GetChatHistoryServiceTest {
     }
 
     @Test
-    @DisplayName("커서는 그대로 질의로 내려간다 — 형식 판정은 저장소의 지식이라 어댑터가 한다")
+    @DisplayName("⭐ 커서가 질의로 그대로 내려간다 — 떨어지면 모든 페이지가 최신부터가 되고 응답은 200 이다")
     void theCursorIsForwardedToTheQuery() {
-        assertThatCode(() -> service.getHistory(
-                new GetChatHistoryCommand(roomId, buyerId, "BUYER", "68000000000000000000000a", null, 20)))
-                .doesNotThrowAnyException();
+        // 형식 판정을 어댑터로 내린 뒤 이 서비스에 남은 커서 책임은 <b>전달</b> 하나다. 그런데 이
+        // 테스트는 doesNotThrowAnyException() 하나였고, 전달을 재는 단언이 없었다 — 실측: 서비스에서
+        // command.beforeId() 를 null 로 바꾼 한 줄 변경에 chat-core 412건이 전부 초록이었다.
+        // 그 상태면 무한 스크롤이 같은 페이지를 반복하는데 서버는 200 이라 아무 신호가 없다.
+        service.getHistory(new GetChatHistoryCommand(
+                roomId, buyerId, "BUYER", "68000000000000000000000a", null, 20));
+
+        then(historyRepository).should()
+                .findBefore(eq(roomId), eq("68000000000000000000000a"), eq(20), any());
+    }
+
+    @Test
+    @DisplayName("⭐ 남의 방 특권 뷰 조회가 감사 로그로 남는다 — 실시간 경로와 갈리면 그 비대칭이 사각지대다")
+    void aPrivilegedViewInSomeoneElsesRoomIsAudited() {
+        // given: 방 주인은 sellerId 이고 요청자는 ADMIN 이다
+        given(historyRepository.findBefore(eq(roomId), any(), anyInt(), any()))
+                .willReturn(List.of(message()));
+
+        // when
+        service.getHistory(cursorBy(adminId, "ADMIN"));
+
+        // then: 실시간 입장 경로는 PrivilegedEntryAuditTest 가 같은 판정에 같은 줄을 지킨다. 이력만
+        // 비어 있으면 "누가 남의 방 구매자 이메일을 봤는가" 에 한쪽만 답하고, 응답은 그대로 200 이라
+        // 아무 신호가 없다.
+        assertThat(auditLines()).hasSize(1);
+        assertThat(auditLines().get(0))
+                .contains("ADMIN")
+                .contains(adminId.toString())
+                .contains(roomId.toString());
+        // 감사 줄 자체가 PII 를 새로 만들면 안 된다 — 실시간 쪽이 같은 선을 지킨다
+        assertThat(auditLines().get(0))
+                .as("감사 로그가 이메일·닉네임을 남기면 그걸 보려고 로그를 뒤지게 된다")
+                .doesNotContain("buyer@example.com")
+                .doesNotContain("닉");
+    }
+
+    @Test
+    @DisplayName("⭐ 특권 뷰가 아닌 조회는 한 줄도 남기지 않는다 — 무인증 공개라 남기면 요청자가 양을 정한다")
+    void aNonPrivilegedViewLeavesNothing() {
+        // given
+        given(historyRepository.findBefore(eq(roomId), any(), anyInt(), any()))
+                .willReturn(List.of(message()));
+
+        // when: 방 주인 자신 / 일반 구매자 / 비회원
+        service.getHistory(cursorBy(sellerId, "SELLER"));
+        service.getHistory(cursorBy(buyerId, "BUYER"));
+        service.getHistory(new GetChatHistoryCommand(roomId, null, null, null, null, 20));
+
+        // then: 술어가 (방주인 || ADMIN) && !방주인 ≡ ADMIN && !방주인 으로 접히므로 이 셋은 전부
+        // 조용하다. 그게 이 엔드포인트에서 중요한 이유는 무인증 공개라서다 — 남기는 쪽이면 요청자가
+        // INFO 발생량을 정하게 된다.
+        assertThat(auditLines()).isEmpty();
     }
 }
