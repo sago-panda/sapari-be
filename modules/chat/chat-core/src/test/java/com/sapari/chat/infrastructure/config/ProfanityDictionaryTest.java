@@ -32,7 +32,12 @@ class ProfanityDictionaryTest {
     @ValueSource(strings = {
             "시발", "씨발", "씨팔", "ㅅㅂ", "ㅆㅂ", "존나", "졸라", "좆", "썅",
             "개새끼", "병신", "븅신", "지랄", "염병", "니미", "애미",
-            "미친놈", "미친년", "창녀", "강간", "쌍놈", "씹창", "s1bal"})
+            "미친놈", "미친년", "창녀", "강간", "쌍놈", "씹창", "s1bal", "sibal",
+            // 'sex' 를 사전에서 빼면서 sexual·sexy 화이트리스트가 같이 빠졌다 — ASCII 자판만으로
+            // 사전을 끄던 키가 사라진 자리다.
+            "sexyfuck", "sexy시발", "SEXY시발", "시발sexual",
+            // 손가락. 화이트리스트에서 ㅗ 조합을 전부 떨어뜨렸기 때문에 이제 실제로 잡힌다.
+            "ㅗ", "ㅗㅜㅑ"})
     @DisplayName("흔한 표기가 전부 걸린다 — 변형만 든 사전은 기본 표기를 통째로 흘려보냈다")
     void commonProfanityIsMasked(String word) {
         assertThat(filterFromDictionary().filter(word))
@@ -68,7 +73,11 @@ class ProfanityDictionaryTest {
             "일시불 결제", "유니섹스 디자인", "전염병 주의", "감염병 예방",
             "무시발언 자제", "다시팔게요", "오랄비 칫솔",
             // 1글자·연결형이라 결합이 무제한인 것들 — 사전에서 뺐다.
-            "똥손이라 죄송", "소똥 거름", "허리가 쑤셔요", "애가 졸라서 샀어요"})
+            "똥손이라 죄송", "소똥 거름", "허리가 쑤셔요", "애가 졸라서 샀어요",
+            // 'sex' 가 사전에 있는 동안 평범한 영단어가 가려졌다.
+            "UNISEX 사이즈 있나요", "unisex 사이즈", "Essex 산 제품",
+            // <시각>시발송 — '구매시발송' 만 막아 두는 바람에 숫자 쪽이 열려 있었다.
+            "8시발송", "9시발송", "오후 8시발송입니다"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
@@ -100,7 +109,7 @@ class ProfanityDictionaryTest {
      * {@code 8시발}, 그리고 사전에 없는 욕설을 보호하던 {@code 입어보지} 류 24건이다.
      *
      * <p>⚠️ 이 테스트가 재는 것은 <b>그 두 종류가 목록에 없다</b>는 것뿐이다. 규칙을 지킨 항목도
-     * 여전히 우회 스위치다 — {@code 시발점씨발} 은 지금도 통째로 통과한다(유지된 9건 전수 실측).
+     * 여전히 우회 스위치다 — {@code 시발점씨발} 은 지금도 통째로 통과한다(유지된 37건 전수 실측).
      * 그 잔재는 데이터가 아니라 {@code isWhitelisted} 가 "항목을 포함하면 보존" 이라는 데서 나오고,
      * 닫으려면 필터를 바꿔야 한다. 이 테스트를 "우회로가 없다" 의 증거로 읽지 말 것.
      */
@@ -131,6 +140,14 @@ class ProfanityDictionaryTest {
                     .doesNotContain(entry);
             assertThat(words.stream().anyMatch(entry::contains))
                     .as("'%s' 은(는) 사전 단어를 품지 않는다 — 보호할 대상이 없고 우회로만 만든다", entry)
+                    .isTrue();
+            String residue = entry;
+            for (String word : words) {
+                residue = residue.replace(word, "");
+            }
+            assertThat(residue.chars().anyMatch(c -> c >= 0xAC00 && c <= 0xD7A3))
+                    .as("'%s' 은(는) 욕설을 빼면 한글이 남지 않는다 — 지킬 '말' 이 없고 우회로만 만든다",
+                            entry)
                     .isTrue();
         });
     }
@@ -192,7 +209,7 @@ class ProfanityDictionaryTest {
         assertThatThrownBy(() -> ProfanityDictionary.load(
                 "/chat/whitespace-entry-dictionary.txt", WHITELIST, null, null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("공백이 있다")
+                .hasMessageContaining("보이지 않는 글자가 있다")
                 .as("어느 줄인지 안 알려주면 1,000줄짜리 파일에서 찾을 수 없다")
                 .hasMessageContaining(":5");
     }
@@ -219,7 +236,7 @@ class ProfanityDictionaryTest {
     void aWhitespaceEntryFromConfigFailsBoot() {
         assertThatThrownBy(() -> ProfanityDictionary.load("시발,,개 새끼", null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("공백이 있다")
+                .hasMessageContaining("보이지 않는 글자가 있다")
                 .as("어느 프로퍼티인지 없으면 두 키 중 어느 쪽인지 모른다")
                 .hasMessageContaining("chat.profanity.words")
                 .as("몇 번째인지 없으면 긴 CSV 에서 못 찾는다 — 빈 칸도 세야 운영자가 보는 위치와 맞는다")
@@ -261,6 +278,59 @@ class ProfanityDictionaryTest {
                 .hasMessageContaining("어떤 욕설도 품지 않는다");
     }
 
+    @Test
+    @DisplayName("대문자로 적어도 맨 욕설은 거부한다 — 런타임이 소문자로 맞추므로 입구도 그래야 한다")
+    void aBareProfanityInDifferentCaseIsStillRejected() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "sibaL"))
+                .as("런타임은 asciiLower 위에서 도는데 입구만 대소문자를 가리면, 같은 값이 표기에 "
+                        + "따라 통과하거나 거부되고 거부 메시지도 거짓이 된다")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("욕설 그 자체다");
+    }
+
+    /**
+     * 욕설을 뺀 잔여에 한글이 없으면 지킬 '말' 이 없다.
+     *
+     * <p>{@code 8시발} 의 잔여는 {@code 8} 뿐이다. 정상어를 지키는 게 아니라 숫자를 붙인 우회로를
+     * 만든다. 한때 영문 {@code sexual}·{@code sexy} 를 이 규칙의 예외로 뒀는데 그 둘이 ASCII
+     * 자판만으로 사전을 끄는 키였다 — 사전에서 {@code sex} 를 빼면서 예외가 없어졌고, 그래서
+     * 이제 세 규칙을 로더가 예외 없이 강제한다.
+     */
+    @Test
+    @DisplayName("욕설을 뺀 잔여가 한글이 아니면 거부한다 — '8시발' 은 '8' 을 붙인 우회로다")
+    void aWhitelistEntryWithNoHangulResidueIsRejected() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "8시발"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("한글이 남지 않는다");
+    }
+
+    /**
+     * 설정으로 막은 단어가 화이트리스트에 삼켜지지 않는지 본다.
+     *
+     * <p>검사가 화이트리스트 한 방향에만 걸려 있었다. 화이트리스트 항목을 품은 단어는 등재돼도
+     * 영원히 매치되지 않는다 — 그 단어가 든 토큰은 반드시 그 항목도 포함하므로 통째로 보존된다.
+     * 부팅도 되고 적재 개수도 오르는데 아무것도 막지 못하는, 이 검사가 존재하는 이유인 그 모양이다.
+     */
+    @Test
+    @DisplayName("화이트리스트에 삼켜지는 단어는 거부한다 — 등재해도 영원히 안 걸린다")
+    void aWordSwallowedByTheWhitelistFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load("전염병같은놈", null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("삼켜진다")
+                .as("어느 화이트리스트 항목이 삼키는지 없으면 운영자가 손쓸 데를 모른다")
+                .hasMessageContaining("전염병");
+    }
+
+    @Test
+    @DisplayName("보이지 않는 글자가 섞여도 거부한다 — 공백보다 찾기 어려운 사문이다")
+    void anInvisibleCharacterEntryFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load("개\u200B새끼", null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("보이지 않는 글자")
+                .as("원문을 그대로 실으면 보이지 않는 글자를 지목할 수 없다")
+                .hasMessageContaining("u200B");
+    }
+
     /**
      * NBSP 도 공백으로 본다.
      *
@@ -275,7 +345,7 @@ class ProfanityDictionaryTest {
     void aNonBreakingSpaceEntryFromConfigFailsBoot() {
         assertThatThrownBy(() -> ProfanityDictionary.load("개\u00A0새끼", null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("공백이 있다");
+                .hasMessageContaining("보이지 않는 글자가 있다");
     }
 
     /**

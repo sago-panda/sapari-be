@@ -105,25 +105,34 @@ and `자지` already were upstream. **Do not add a short generic entry without r
 regression**; in live commerce a censored seller description is worse than a missed insult, because the
 broadcast cannot be recalled and the masked text is what gets persisted.
 
-Whitelist entries obey one rule: *a normal word that contains a profanity and is longer than it* —
-`시발점`, not `시발`. An entry that contains no dictionary word protects nothing and only opens a bypass
-(`8시발` let `8시발놈아` through; `입어보지` let `입어보지시발` through). `ProfanityDictionaryTest` pins
-that rule, including a format check on the data itself.
+Whitelist entries obey three rules, all enforced by the loader and pinned against the data by
+`ProfanityDictionaryTest`: an entry must **not be a bare profanity** (`시발점`, not `시발` — otherwise
+the insult itself is unmasked), it must **contain** one (otherwise it protects nothing and only opens a
+bypass — `입어보지` let `입어보지시발` through), and what is **left after removing the profanity must
+contain a Hangul syllable** (`8시발` leaves `8`, which guards no word and just adds a digit-prefixed
+bypass). There is no exception: English `sexual`/`sexy` used to be one, and those two were the key that
+let `sexyfuck` and `sexy시발` through on an ASCII keyboard. Dropping `sex` from the dictionary — the one
+ASCII entry that is a substring of ordinary English — removed their coverage and the exception with it.
 
 The rule shrinks the bypass surface; it does not remove it. **Every surviving entry is still a switch
 for the whole dictionary** — prefix one to any insult and the token is preserved whole (`시발점씨발`,
-`성교육씨발`, `구매시발송씨발`; measured across all 9). That follows from `isWhitelisted` being
+`전염병씨발`; measured across all 37). That follows from `isWhitelisted` being
 *token contains entry*, not *entry covers the matched span*, so it is a property of the filter rather
 than of the data. Closing it means changing `ProfanityFilter` to keep a token only where the whitelist
 match covers the profanity span — out of scope here, recorded so the next reader does not mistake the
 format check for a proof that no bypass exists.
 
 Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
-resources — shape (whitespace incl. NBSP, 64 chars) for both keys, **and for the whitelist the same
-meaning check the data test enforces**: not a bare profanity, and it must contain one. It has to.
-The emergency path is used mid-broadcast, and both failure directions are silent without it: a
-spaced word blocks nothing while looking blocked, and `chat.profanity.whitelist=시발` unmasks that
-word across the whole dictionary. Both were measured open before the check went in.
+resources — shape for both keys (any invisible character, not just a space: NBSP, ZWSP, word joiner,
+BOM, Hangul fillers; plus 64 chars), the three whitelist rules above, and one more that only config can
+break: a **word** must not be swallowed by a whitelist entry (`CHAT_PROFANITY_WORDS=전염병같은놈` can
+never match, because every token containing it also contains `전염병`). All comparisons run on the same
+`asciiLower` plane the matcher uses, so `SIBAL` and `sibal` are not judged differently.
+
+It has to be this strict. The emergency path is used mid-broadcast and every one of these failures is
+silent: the entry loads, the count goes up, and nothing is blocked — or, for a bare profanity in the
+whitelist, one line unmasks that word across the whole dictionary. Each was measured open before its
+check went in.
 
 ## Redis keys — one source, and it is package-private
 
