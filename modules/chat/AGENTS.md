@@ -80,6 +80,35 @@ it: when a handler swallows to keep a verdict, it still owes a counter and an in
 (`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
 put back).
 
+## Profanity dictionary — the file is the source, and the short words are the trap
+
+The canonical design is three tiers — `live_schema.chat_filter_word` → Redis pub/sub → in-pod trie.
+Only the third exists. streaming-app has **no DB dependency at all**, so the table and the propagation
+are not wired, and `ProfanityDictionary` loads the words from two classpath resources in chat-core.
+⚠️ The table is therefore **not** the source of truth today, whatever `infra/AGENTS.md` implies. It is
+deliberately **not seeded** either: seeding a table nothing reads would put the same list in two places
+with no way to tell which one is live. When tiers 1–2 land, generate the seed *from* these files.
+
+Missing resource, or zero words after comments, is a **boot failure**. An empty dictionary is not a
+degraded filter — it is the filter silently off (`displayMessage == originalMessage`), and that state
+already shipped once. `chat.profanity.words` / `.whitelist` **add to** the bundled list; they do not
+replace it, so one config line cannot wipe the dictionary.
+
+**The trap is short entries.** `ProfanityFilter` splits on `\S+` and matches substrings, with no notion
+of a word boundary — and Korean glues particles and auxiliary verbs onto stems. So any two-syllable
+entry that is also an ordinary morpheme censors ordinary speech: `새끼` kills *새끼 고양이*, `세끼` kills
+*하루 세끼*, `호로` kills *번호로*, `개떡` kills *쑥개떡*. A whitelist cannot rescue these — an entry only
+protects a token that **contains** it, so covering a bare two-syllable word needs an entry as short as
+the word itself, which then unmasks the real insult. Those four are dropped for that reason, as `보지`
+and `자지` already were upstream. **Do not add a short generic entry without running the false-positive
+regression**; in live commerce a censored seller description is worse than a missed insult, because the
+broadcast cannot be recalled and the masked text is what gets persisted.
+
+Whitelist entries obey one rule: *a normal word that contains a profanity and is longer than it* —
+`시발점`, not `시발`. An entry that contains no dictionary word protects nothing and only opens a bypass
+(`8시발` let `8시발놈아` through; `입어보지` let `입어보지시발` through). `ProfanityDictionaryTest` pins
+all of this, including a format check on the data itself.
+
 ## Redis keys — one source, and it is package-private
 
 `ChatRedisKeys` (package-private, `infrastructure/redis`) owns every key string. Blocking and reactive

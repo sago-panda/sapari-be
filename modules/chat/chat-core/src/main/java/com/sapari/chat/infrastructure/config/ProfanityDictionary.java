@@ -32,6 +32,10 @@ public final class ProfanityDictionary {
     private static final String WORDS = "/chat/profanity-words.txt";
     private static final String WHITELIST = "/chat/profanity-whitelist.txt";
 
+    // 정본 DDL 의 live_schema.chat_filter_word.word 가 varchar(64) 다. 1계층이 붙을 때
+    // 파일이 테이블에 그대로 들어가야 하므로 같은 상한을 여기서 먼저 지킨다.
+    private static final int MAX_WORD_LENGTH = 64;
+
     private final Set<String> words;
     private final Set<String> whitelist;
 
@@ -87,12 +91,16 @@ public final class ProfanityDictionary {
             try (BufferedReader reader =
                     new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
                 String line;
+                int lineNo = 0;
                 while ((line = reader.readLine()) != null) {
-                    String word = line.trim();
+                    lineNo++;
+                    String word = strip(line);
                     // '#' 주석과 빈 줄은 건너뛴다 — 파일 머리에 출처·선별 근거를 적어 두기 때문이다.
-                    if (!word.isEmpty() && !word.startsWith("#")) {
-                        out.add(word);
+                    if (word.isEmpty() || word.startsWith("#")) {
+                        continue;
                     }
+                    reject(path, lineNo, word);
+                    out.add(word);
                 }
             }
             if (out.isEmpty()) {
@@ -103,6 +111,41 @@ public final class ProfanityDictionary {
         } catch (IOException e) {
             throw new UncheckedIOException("욕설 사전 리소스를 읽지 못했다: " + path, e);
         }
+    }
+
+    /**
+     * 항목을 받아들이지 않을 이유가 있으면 던진다. 적재 시점에 터뜨리는 쪽을 고른 이유는
+     * 둘 다 <b>조용히 사문이 되는</b> 결함이기 때문이다 — 틀린 항목이 목록에 남아 있어서
+     * 보호하는 것처럼 보이는데 실제로는 아무것도 하지 않는다.
+     */
+    private static void reject(String path, int lineNo, String word) {
+        if (containsWhitespace(word)) {
+            throw new IllegalStateException(
+                    "사전 항목에 공백이 있다: " + path + ":" + lineNo + " \"" + word + "\" — "
+                            + "ProfanityFilter 는 공백으로 토큰을 가르므로 공백이 든 항목은 어떤 "
+                            + "토큰에도 매치되지 않는다. 보호하는 것처럼 보이지만 사문이다.");
+        }
+        if (word.length() > MAX_WORD_LENGTH) {
+            throw new IllegalStateException(
+                    "사전 항목이 너무 길다: " + path + ":" + lineNo + " (" + word.length() + "자) — "
+                            + "상한 " + MAX_WORD_LENGTH + "자. 단어 파일에 산문이 섞인 것이다.");
+        }
+    }
+
+    private static boolean containsWhitespace(String word) {
+        for (int i = 0; i < word.length(); i++) {
+            if (Character.isWhitespace(word.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // String.trim() 은 U+0020 이하만 떼므로 BOM(U+FEFF)·NBSP 가 남는다. BOM 이 남으면 파일 1행이
+    // 주석 판정('#' 로 시작)을 비껴가 그 줄이 통째로 단어가 된다.
+    private static String strip(String line) {
+        String out = line.strip();
+        return out.isEmpty() || out.charAt(0) != '\uFEFF' ? out : out.substring(1).strip();
     }
 
     private static Set<String> splitCsv(String csv) {
