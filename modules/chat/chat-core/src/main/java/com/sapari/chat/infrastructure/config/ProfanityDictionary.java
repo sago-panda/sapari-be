@@ -48,7 +48,7 @@ public final class ProfanityDictionary {
      * 기본 사전을 읽고 추가 단어를 <b>더한다</b>(교체가 아니다).
      *
      * <p>더하는 쪽인 이유: 운영에서 급히 한 단어를 막아야 할 때 배포를 기다리지 않게 하려는 것이고,
-     * 교체로 두면 설정 한 줄이 사전 850개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
+     * 교체로 두면 설정 한 줄이 사전 1,112개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
      * 0건이라 교체 의미에 기대는 호출자도 없다.
      *
      * @param extraWords     쉼표로 구분한 추가 욕설. null·공백이면 무시한다.
@@ -65,9 +65,9 @@ public final class ProfanityDictionary {
     static ProfanityDictionary load(String wordsPath, String whitelistPath,
             String extraWords, String extraWhitelist) {
         Set<String> words = readResource(wordsPath);
-        words.addAll(splitCsv(extraWords));
+        words.addAll(splitCsv("chat.profanity.words", extraWords));
         Set<String> whitelist = readResource(whitelistPath);
-        whitelist.addAll(splitCsv(extraWhitelist));
+        whitelist.addAll(splitCsv("chat.profanity.whitelist", extraWhitelist));
         return new ProfanityDictionary(words, whitelist);
     }
 
@@ -99,7 +99,7 @@ public final class ProfanityDictionary {
                     if (word.isEmpty() || word.startsWith("#")) {
                         continue;
                     }
-                    reject(path, lineNo, word);
+                    reject(path + ":" + lineNo, word);
                     out.add(word);
                 }
             }
@@ -117,17 +117,23 @@ public final class ProfanityDictionary {
      * 항목을 받아들이지 않을 이유가 있으면 던진다. 적재 시점에 터뜨리는 쪽을 고른 이유는
      * 둘 다 <b>조용히 사문이 되는</b> 결함이기 때문이다 — 틀린 항목이 목록에 남아 있어서
      * 보호하는 것처럼 보이는데 실제로는 아무것도 하지 않는다.
+     *
+     * <p>리소스와 설정 CSV <b>두 입구 모두</b>를 지난다. 처음에는 리소스에만 걸었는데, 그러면
+     * 급한 차단이 필요한 바로 그 순간에 조용히 실패한다 — 방송 중에
+     * {@code CHAT_PROFANITY_WORDS=개 새끼} 를 넣으면 부팅도 되고 적재 로그의 개수도 늘지만
+     * 아무것도 막지 못한다. 반대 방향도 같은 입구다: 설정 화이트리스트에 맨 욕설 한 줄이
+     * 들어가면 그 욕설이 통째로 풀린다.
      */
-    private static void reject(String path, int lineNo, String word) {
+    private static void reject(String where, String word) {
         if (containsWhitespace(word)) {
             throw new IllegalStateException(
-                    "사전 항목에 공백이 있다: " + path + ":" + lineNo + " \"" + word + "\" — "
+                    "사전 항목에 공백이 있다: " + where + " \"" + word + "\" — "
                             + "ProfanityFilter 는 공백으로 토큰을 가르므로 공백이 든 항목은 어떤 "
                             + "토큰에도 매치되지 않는다. 보호하는 것처럼 보이지만 사문이다.");
         }
         if (word.length() > MAX_WORD_LENGTH) {
             throw new IllegalStateException(
-                    "사전 항목이 너무 길다: " + path + ":" + lineNo + " (" + word.length() + "자) — "
+                    "사전 항목이 너무 길다: " + where + " (" + word.length() + "자) — "
                             + "상한 " + MAX_WORD_LENGTH + "자. 단어 파일에 산문이 섞인 것이다.");
         }
     }
@@ -141,23 +147,28 @@ public final class ProfanityDictionary {
         return false;
     }
 
-    // String.trim() 은 U+0020 이하만 떼므로 BOM(U+FEFF)·NBSP 가 남는다. BOM 이 남으면 파일 1행이
-    // 주석 판정('#' 로 시작)을 비껴가 그 줄이 통째로 단어가 된다.
+    // BOM(U+FEFF)을 뗀다. strip() 은 Character.isWhitespace 기준이라 BOM 을 남기는데, 남으면
+    // 파일 1행이 주석 판정('#' 로 시작)을 비껴가 그 줄이 통째로 단어가 된다.
+    // NBSP(U+00A0)는 여기서도 아래 containsWhitespace 에서도 걸리지 않는다(isWhitespace 가 false).
+    // 현행 리소스에 0건이라 지금 깨지는 것은 없다.
     private static String strip(String line) {
         String out = line.strip();
         return out.isEmpty() || out.charAt(0) != '\uFEFF' ? out : out.substring(1).strip();
     }
 
-    private static Set<String> splitCsv(String csv) {
+    private static Set<String> splitCsv(String property, String csv) {
         if (csv == null || csv.isBlank()) {
             return Set.of();
         }
         Set<String> out = new LinkedHashSet<>();
-        for (String part : csv.split(",")) {
-            String word = part.trim();
-            if (!word.isEmpty()) {
-                out.add(word);
+        String[] parts = csv.split(",");
+        for (int i = 0; i < parts.length; i++) {
+            String word = strip(parts[i]);
+            if (word.isEmpty()) {
+                continue;
             }
+            reject(property + " 의 " + (i + 1) + "번째 항목", word);
+            out.add(word);
         }
         return out;
     }

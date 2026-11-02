@@ -85,7 +85,8 @@ put back).
 The canonical design is three tiers — `live_schema.chat_filter_word` → Redis pub/sub → in-pod trie.
 Only the third exists. streaming-app has **no DB dependency at all**, so the table and the propagation
 are not wired, and `ProfanityDictionary` loads the words from two classpath resources in chat-core.
-⚠️ The table is therefore **not** the source of truth today, whatever `infra/AGENTS.md` implies. It is
+⚠️ The table is therefore **not** the source of truth today, though
+`db/migration/live/V1__init_live.sql:157` still calls Postgres the source in its comment. It is
 deliberately **not seeded** either: seeding a table nothing reads would put the same list in two places
 with no way to tell which one is live. When tiers 1–2 land, generate the seed *from* these files.
 
@@ -107,7 +108,19 @@ broadcast cannot be recalled and the masked text is what gets persisted.
 Whitelist entries obey one rule: *a normal word that contains a profanity and is longer than it* —
 `시발점`, not `시발`. An entry that contains no dictionary word protects nothing and only opens a bypass
 (`8시발` let `8시발놈아` through; `입어보지` let `입어보지시발` through). `ProfanityDictionaryTest` pins
-all of this, including a format check on the data itself.
+that rule, including a format check on the data itself.
+
+The rule shrinks the bypass surface; it does not remove it. **Every surviving entry is still a switch
+for the whole dictionary** — prefix one to any insult and the token is preserved whole (`시발점씨발`,
+`성교육씨발`, `구매시발송씨발`; measured across all 9). That follows from `isWhitelisted` being
+*token contains entry*, not *entry covers the matched span*, so it is a property of the filter rather
+than of the data. Closing it means changing `ProfanityFilter` to keep a token only where the whitelist
+match covers the profanity span — out of scope here, recorded so the next reader does not mistake the
+format check for a proof that no bypass exists.
+
+Config (`chat.profanity.words` / `.whitelist`) goes through the same entry validation as the bundled
+resources. It has to: the emergency path is used mid-broadcast, and a rejected-looking-but-accepted
+entry there fails exactly when it is needed.
 
 ## Redis keys — one source, and it is package-private
 

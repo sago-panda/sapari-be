@@ -87,16 +87,21 @@ class ProfanityDictionaryTest {
     }
 
     /**
-     * 화이트리스트가 우회로를 만들지 않는다.
+     * 맨 욕설·보호 대상 없는 항목이 화이트리스트에 들어가 우회로가 되지 않는다.
      *
      * <p>이 저장소의 화이트리스트 의미는 "토큰이 항목을 <b>포함</b>하면 그 토큰 전체를 보존" 이다
      * ({@code ProfanityFilter.isWhitelisted} → {@code containsAny}). 그래서 항목을 하나 잘못 넣으면
      * 그 조각을 붙인 토큰이 통째로 통과한다. 실제로 두 번 밟았다 — 맨 욕설에 숫자를 붙인
      * {@code 8시발}, 그리고 사전에 없는 욕설을 보호하던 {@code 입어보지} 류 24건이다.
+     *
+     * <p>⚠️ 이 테스트가 재는 것은 <b>그 두 종류가 목록에 없다</b>는 것뿐이다. 규칙을 지킨 항목도
+     * 여전히 우회 스위치다 — {@code 시발점씨발} 은 지금도 통째로 통과한다(유지된 9건 전수 실측).
+     * 그 잔재는 데이터가 아니라 {@code isWhitelisted} 가 "항목을 포함하면 보존" 이라는 데서 나오고,
+     * 닫으려면 필터를 바꿔야 한다. 이 테스트를 "우회로가 없다" 의 증거로 읽지 말 것.
      */
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"너가시발", "카카오시발", "0개시발", "8시발", "입어보지시발", "전자지갑시발"})
-    @DisplayName("화이트리스트가 우회로를 만들지 않는다 — 조각을 붙여도 토큰이 통과하지 않는다")
+    @DisplayName("맨 욕설·보호 대상 없는 항목이 화이트리스트에 없다 — 둘 다 우회로를 연다")
     void theWhitelistDoesNotOpenBypasses(String token) {
         assertThat(filterFromDictionary().filter(token))
                 .as("'%s' 이(가) 통째로 통과한다 — 화이트리스트 항목이 우회로가 됐다", token)
@@ -193,6 +198,51 @@ class ProfanityDictionaryTest {
                 "/chat/long-entry-dictionary.txt", WHITELIST, null, null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("너무 길다");
+    }
+
+    /**
+     * 설정 CSV 도 같은 검사를 지난다.
+     *
+     * <p>처음에는 리소스에만 걸었다. 그러면 급한 차단이 필요한 바로 그 순간에 조용히 실패한다 —
+     * 방송 중에 {@code CHAT_PROFANITY_WORDS=개 새끼} 를 넣으면 부팅도 되고 적재 로그의 개수도
+     * 늘지만 아무것도 막지 못한다. 반대 방향은 더 나쁘다 — 설정 화이트리스트에 맨 욕설 한 줄이
+     * 들어가면 그 욕설이 사전 전체에서 풀렸다.
+     */
+    @Test
+    @DisplayName("설정 CSV 의 공백 항목도 거부한다 — 긴급 통로가 조용히 사문이 되면 안 된다")
+    void aWhitespaceEntryFromConfigFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load("개 새끼", null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("공백이 있다")
+                .as("어느 프로퍼티의 몇 번째 항목인지 없으면 운영에서 못 찾는다")
+                .hasMessageContaining("chat.profanity.words");
+    }
+
+    @Test
+    @DisplayName("설정 CSV 의 상한 초과 항목도 거부한다")
+    void anOverlongEntryFromConfigFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "가".repeat(65)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("너무 길다")
+                .hasMessageContaining("chat.profanity.whitelist");
+    }
+
+    /**
+     * BOM 이 붙어도 1행이 주석으로 읽힌다.
+     *
+     * <p>{@code strip()} 은 {@code Character.isWhitespace} 기준이라 BOM(U+FEFF)을 떼지 않는다.
+     * 떼지 않으면 1행이 {@code '#'} 으로 시작하지 않게 되어 주석 판정을 비껴가고, 짧아서 길이
+     * 상한에도 안 걸려 <b>그 줄이 단어가 된다.</b>
+     */
+    @Test
+    @DisplayName("BOM 이 붙은 1행은 주석으로 읽힌다 — 안 떼면 주석 줄이 단어로 적재된다")
+    void aByteOrderMarkDoesNotTurnTheFirstLineIntoAWord() {
+        ProfanityDictionary dictionary =
+                ProfanityDictionary.load("/chat/bom-dictionary.txt", WHITELIST, null, null);
+
+        assertThat(dictionary.words())
+                .as("BOM 이 남아 주석 줄이 단어가 됐다")
+                .containsExactly("시발");
     }
 
     @Test
