@@ -63,7 +63,12 @@ class ProfanityDictionaryTest {
             "전자지갑 결제", "부자지간", "새끼손가락",
             "시발점", "시발역", "졸라매고", "공개세미나",
             "유방암 검진", "유방 확대 상담", "유두 보호기", "수유 유두크림",
-            "고환 검사", "한우 고환 손질", "후장 시세", "후장 마감 기준"})
+            "고환 검사", "한우 고환 손질", "후장 시세", "후장 마감 기준",
+            // 아래는 화이트리스트를 거르지 않고 통째로 교체했다가 보호를 잃은 것들이다.
+            "일시불 결제", "유니섹스 디자인", "전염병 주의", "감염병 예방",
+            "무시발언 자제", "다시팔게요", "오랄비 칫솔",
+            // 1글자·연결형이라 결합이 무제한인 것들 — 사전에서 뺐다.
+            "똥손이라 죄송", "소똥 거름", "허리가 쑤셔요", "애가 졸라서 샀어요"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
@@ -133,6 +138,7 @@ class ProfanityDictionaryTest {
     @Test
     @DisplayName("설정 단어는 사전에 더해진다 — 교체면 설정 한 줄이 사전을 날린다")
     void configuredWordsAreAddedNotReplacing() {
+        // 화이트리스트 값은 words 에 방금 더한 단어를 품어야 한다 — 의미 검사가 그것을 요구한다.
         ProfanityDictionary dictionary = ProfanityDictionary.load("김치찌개", "김치찌개맛집");
 
         assertThat(dictionary.words())
@@ -211,11 +217,13 @@ class ProfanityDictionaryTest {
     @Test
     @DisplayName("설정 CSV 의 공백 항목도 거부한다 — 긴급 통로가 조용히 사문이 되면 안 된다")
     void aWhitespaceEntryFromConfigFailsBoot() {
-        assertThatThrownBy(() -> ProfanityDictionary.load("개 새끼", null))
+        assertThatThrownBy(() -> ProfanityDictionary.load("시발,,개 새끼", null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("공백이 있다")
-                .as("어느 프로퍼티의 몇 번째 항목인지 없으면 운영에서 못 찾는다")
-                .hasMessageContaining("chat.profanity.words");
+                .as("어느 프로퍼티인지 없으면 두 키 중 어느 쪽인지 모른다")
+                .hasMessageContaining("chat.profanity.words")
+                .as("몇 번째인지 없으면 긴 CSV 에서 못 찾는다 — 빈 칸도 세야 운영자가 보는 위치와 맞는다")
+                .hasMessageContaining("3번째 항목");
     }
 
     @Test
@@ -225,6 +233,49 @@ class ProfanityDictionaryTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("너무 길다")
                 .hasMessageContaining("chat.profanity.whitelist");
+    }
+
+    /**
+     * 설정 화이트리스트는 모양만이 아니라 의미도 검사한다.
+     *
+     * <p>모양 검사(공백·길이)만 있을 때 {@code chat.profanity.whitelist=시발} 한 줄이 그대로
+     * 통과했고, 그 한 줄로 사전 전체에서 그 욕설이 풀렸다 — 실측에서 부팅이 성공하고
+     * {@code 아 시발 짜증나} 가 마스킹되지 않았다. 번들 데이터에는 같은 불변식을
+     * {@code everyWhitelistEntryCoversSomeProfanity} 가 강제하고 있었는데 설정 입구에만 없었다.
+     */
+    @Test
+    @DisplayName("설정 화이트리스트에 맨 욕설을 넣으면 부팅이 실패한다 — 한 줄로 사전 전체가 풀린다")
+    void aBareProfanityInTheConfiguredWhitelistFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "시발"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("욕설 그 자체다")
+                .as("무엇을 넣어야 하는지 없으면 운영자가 같은 실수를 반복한다")
+                .hasMessageContaining("시발점");
+    }
+
+    @Test
+    @DisplayName("욕설을 품지 않은 설정 화이트리스트 항목도 거부한다 — 우회로만 만든다")
+    void aConfiguredWhitelistEntryThatProtectsNothingFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "김치찌개"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("어떤 욕설도 품지 않는다");
+    }
+
+    /**
+     * NBSP 도 공백으로 본다.
+     *
+     * <p>{@code Character.isWhitespace(U+00A0)} 는 <b>false</b> 이고 {@code ProfanityFilter} 의
+     * 토큰 정규식 {@code \S+} 도 NBSP 를 구분자로 보지 않는다. 그래서 NBSP 가 섞인 항목은
+     * 거부되지도 않고 평범한 공백이 든 입력을 잡지도 못한다 — 막았다고 보이는데 아무것도
+     * 막지 않는, {@code reject} 가 존재하는 이유인 그 모양이다. 복붙이 NBSP 를 만드는 전형
+     * 경로이고 설정 CSV 에는 번들 리소스 같은 사전 검사가 없다.
+     */
+    @Test
+    @DisplayName("NBSP 가 섞인 설정 항목도 거부한다 — 막은 것처럼 보이지만 아무것도 안 막는다")
+    void aNonBreakingSpaceEntryFromConfigFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load("개\u00A0새끼", null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("공백이 있다");
     }
 
     /**

@@ -66,8 +66,12 @@ public final class ProfanityDictionary {
             String extraWords, String extraWhitelist) {
         Set<String> words = readResource(wordsPath);
         words.addAll(splitCsv("chat.profanity.words", extraWords));
+        // 아래 화이트리스트 검사가 words 를 본다 — 그래서 words 쪽 두 줄이 먼저 와야 한다.
         Set<String> whitelist = readResource(whitelistPath);
-        whitelist.addAll(splitCsv("chat.profanity.whitelist", extraWhitelist));
+        for (String entry : splitCsv("chat.profanity.whitelist", extraWhitelist)) {
+            rejectUselessWhitelist(entry, words);
+            whitelist.add(entry);
+        }
         return new ProfanityDictionary(words, whitelist);
     }
 
@@ -138,9 +142,41 @@ public final class ProfanityDictionary {
         }
     }
 
+    // isWhitespace 만으로는 NBSP(U+00A0)를 놓친다 — isWhitespace 는 false 인데 ProfanityFilter 의
+    // 토큰 정규식 \S+ 는 NBSP 를 구분자로 보지 않아, NBSP 섞인 항목은 평범한 공백이 든 입력을
+    // 영원히 못 잡는다("개<NBSP>새끼" 를 넣으면 "개 새끼" 가 안 걸린다). 복붙이 NBSP 를 만드는
+    // 전형 경로이고 설정 CSV 에는 "현행 리소스" 같은 재고가 없으므로 isSpaceChar 까지 본다.
+    /**
+     * 설정으로 들어온 화이트리스트 항목이 <b>의미상</b> 쓸모 있는지 본다.
+     *
+     * <p>{@link #reject}가 보는 것은 모양(공백·길이)뿐이라 {@code chat.profanity.whitelist=시발}
+     * 한 줄이 그대로 통과했고, 그러면 사전 전체에서 그 욕설이 풀렸다(실측: 부팅 성공,
+     * {@code 아 시발 짜증나} 가 마스킹되지 않음). 번들 데이터에는 같은 불변식을 테스트가 강제하고
+     * 있었는데 설정 입구에만 없었다.
+     *
+     * <p>부팅을 세우는 쪽을 고른 이유: 이 통로는 방송 중에 쓰라고 둔 것이고, 통과시키면 한 줄
+     * 오타가 사전 전체를 조용히 무력화한다. 시끄러운 실패가 조용한 기능 정지보다 낫다는,
+     * 이 사전이 비어 있던 동안 이미 치른 교훈과 같은 판단이다.
+     */
+    private static void rejectUselessWhitelist(String entry, Set<String> words) {
+        if (words.contains(entry)) {
+            throw new IllegalStateException(
+                    "화이트리스트 항목이 욕설 그 자체다: \"" + entry + "\" — 토큰이 이 항목을 "
+                            + "포함하면 통째로 보존되므로, 넣는 순간 그 욕설이 사전 전체에서 풀린다. "
+                            + "'시발' 이 아니라 '시발점' 처럼 그 욕설을 품은 더 긴 정상어를 넣는다.");
+        }
+        if (words.stream().noneMatch(entry::contains)) {
+            throw new IllegalStateException(
+                    "화이트리스트 항목이 어떤 욕설도 품지 않는다: \"" + entry + "\" — 보호할 대상이 "
+                            + "없어 아무 일도 하지 않으면서, 이 조각을 붙인 토큰을 통째로 통과시키는 "
+                            + "우회로만 만든다.");
+        }
+    }
+
     private static boolean containsWhitespace(String word) {
         for (int i = 0; i < word.length(); i++) {
-            if (Character.isWhitespace(word.charAt(i))) {
+            char c = word.charAt(i);
+            if (Character.isWhitespace(c) || Character.isSpaceChar(c)) {
                 return true;
             }
         }
@@ -149,8 +185,7 @@ public final class ProfanityDictionary {
 
     // BOM(U+FEFF)을 뗀다. strip() 은 Character.isWhitespace 기준이라 BOM 을 남기는데, 남으면
     // 파일 1행이 주석 판정('#' 로 시작)을 비껴가 그 줄이 통째로 단어가 된다.
-    // NBSP(U+00A0)는 여기서도 아래 containsWhitespace 에서도 걸리지 않는다(isWhitespace 가 false).
-    // 현행 리소스에 0건이라 지금 깨지는 것은 없다.
+    // NBSP(U+00A0)는 여기서 안 떼지지만 아래 containsWhitespace 가 거부한다.
     private static String strip(String line) {
         String out = line.strip();
         return out.isEmpty() || out.charAt(0) != '\uFEFF' ? out : out.substring(1).strip();

@@ -118,9 +118,12 @@ than of the data. Closing it means changing `ProfanityFilter` to keep a token on
 match covers the profanity span — out of scope here, recorded so the next reader does not mistake the
 format check for a proof that no bypass exists.
 
-Config (`chat.profanity.words` / `.whitelist`) goes through the same entry validation as the bundled
-resources. It has to: the emergency path is used mid-broadcast, and a rejected-looking-but-accepted
-entry there fails exactly when it is needed.
+Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
+resources — shape (whitespace incl. NBSP, 64 chars) for both keys, **and for the whitelist the same
+meaning check the data test enforces**: not a bare profanity, and it must contain one. It has to.
+The emergency path is used mid-broadcast, and both failure directions are silent without it: a
+spaced word blocks nothing while looking blocked, and `chat.profanity.whitelist=시발` unmasks that
+word across the whole dictionary. Both were measured open before the check went in.
 
 ## Redis keys — one source, and it is package-private
 
