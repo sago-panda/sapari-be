@@ -9,12 +9,13 @@
 
 둘 다 MIT License 다.
 
-⚠️ 아래 두 저작권 표시는 상류 LICENSE 원문과 글자 단위로 대조하지 못했다 — 이 작업 중
-   네트워크가 닫혀 있었다. MIT 는 저작권 표시를 "그대로" 싣도록 요구하므로, 네트워크가
-   열리는 대로 각 저장소의 LICENSE 1행을 확인해 아래를 교정해야 한다.
+아래 두 줄은 각 저장소의 LICENSE 원문에서 그대로 옮겼다(2026-11-02 확인). MIT 가
+저작권 표시를 "그대로" 싣도록 요구하므로 조직명·계정명으로 바꾸지 않는다 — 1)의 보유자는
+조직명 VaneProject 가 아니라 PersesTitan 이고, 이 저장소의 seed 파일 머리글은 그 점이
+틀려 있다(그 줄을 옮겨 적지 말 것).
 
-Copyright (c) VaneProject
-Copyright (c) Tanat
+Copyright (c) 2023 PersesTitan
+Copyright (c) 2026 Tanat
 
 --- MIT License (두 저작물에 공통으로 적용되는 허가 문구) ---
 
