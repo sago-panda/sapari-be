@@ -84,8 +84,21 @@ put back).
 
 Before matching, the filter folds the message to **NFC** and folds case plus fullwidth Latin/digits.
 Without that, input that looks identical on screen walks past the whole dictionary — a decomposed
-`개새끼` and a fullwidth `ｆｕｃｋ` both did. It stops at NFC on purpose: NFKC would rewrite the seller's
-own text (`㈜사파리` → `(주)사파리`, `Ⅲ단계` → `III단계`) and that text is what gets persisted.
+`개새끼` and a fullwidth `ｆｕｃｋ` both did. The **output** plane stops at NFC on purpose: NFKC would
+rewrite the seller's own text (`㈜사파리` → `(주)사파리`, `Ⅲ단계` → `III단계`) and that text is what gets
+persisted. The 2A/2B **detection** planes go further — they expand compatibility forms per code point —
+because nothing there is sliced or returned; they only answer "does a profanity appear once this is
+folded". Do not extend "we stop at NFC" to them: collapsing the two is exactly how 829 cases were
+traded for 22 in one commit.
+
+`fold` also maps **jamo written in another encoding** back to the compatibility jamo the dictionary
+uses — conjoining (U+1100–11FF) and halfwidth (U+FFA1–FFDC). This has to happen in the
+length-preserving 1-pass fold, not in the 2A plane, because 2A strips non-letters and that breaks
+entries with a digit or symbol inside them (`ㄴ1ㄱ`, `@ㅐ미`). The reverse table is derived from the
+UCD, not hardcoded, but `NFKD` alone yields **choseong forms only** — Unicode does not link a
+jongseong to its compatibility jamo — so the table is filled a second time by character name
+(`HANGUL JONGSEONG PIEUP` ↔ `HANGUL LETTER PIEUP`). Measured: without that second pass, 72 of the
+73 jamo entries pass when written with jongseong forms.
 
 The canonical design is three tiers — `live_schema.chat_filter_word` → Redis pub/sub → in-pod trie.
 Only the third exists. streaming-app has **no DB dependency at all**, so the table and the propagation

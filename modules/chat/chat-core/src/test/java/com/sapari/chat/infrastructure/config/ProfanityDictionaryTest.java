@@ -82,9 +82,10 @@ class ProfanityDictionaryTest {
             "UNISEX 사이즈 있나요", "unisex 사이즈", "Essex 산 제품",
             // <시각>시발송 — '구매시발송' 만 막아 두는 바람에 숫자 쪽이 열려 있었다.
             "8시발송", "9시발송", "오후 8시발송입니다",
-            // 조르다의 활용. 활용형을 넷 열거해 봤지만 닫히지 않아 '졸라' 를 사전에서 뺐다.
             // 라틴 항목이 평범한 영단어에 걸린 것들 — sex 와 siva 를 뺐다.
-            "passivation 처리", "passivate 공정", "Essex 산", "BusinessException 로그"})
+            "passivation 처리", "passivate 공정", "Essex 산", "BusinessException 로그",
+            // '색스'·'s스' 가 사전에 있는 동안 토큰 안의 기호를 뗀 2A 가 이것들을 통째로 가렸다.
+            "DB/Redis/검색/스토리지", "검색스토리지 설정", "as(\"스레드"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
@@ -152,6 +153,103 @@ class ProfanityDictionaryTest {
                     .as("'%s' 를 %d번째에 끼우면 통과한다 — 화면에는 그냥 시발이다", inserted, pos)
                     .contains("***");
         }
+    }
+
+    /**
+     * 같은 글자를 <b>다른 인코딩</b>으로 적어도 막는다.
+     *
+     * <p>사전의 자모 항목은 전부 호환 자모(U+3131–318E)인데 같은 글리프에 조합용 초성·중성·
+     * 종성(U+1100–11FF)과 반각(U+FFA1–FFDC) 표기가 더 있다. 평면 C 가 조합용을 되돌리지만
+     * 역표를 {@code NFKD} 역으로만 만들면 <b>초성형만</b> 들어온다 — 유니코드가 종성과 호환
+     * 자모를 호환 분해로 잇지 않기 때문이다. 실측으로 사전의 자모 항목 73건 중 <b>72건</b>이
+     * 종성 표기로, 84건 중 6건이 반각 표기로 통과했다.
+     *
+     * <p>아래 벡터는 축마다 하나씩이다. 가운데에 숫자나 기호가 끼면 평면 C 가 그것을 떼어내
+     * 항목이 깨지므로, 접기는 길이를 보존하는 1-패스 {@code fold} 에서 일어나야 한다.
+     *
+     * <p><b>자모를 전부 조합용으로 적는 축은 여기 없다.</b> 그 경우 입구 NFC 가 음절로 합쳐
+     * 버리고({@code ㅅㅣㅂㅏ} → {@code 시바}) 그 음절은 사전에 없다. 실측 7건이고 합쳐진 결과가
+     * {@code 보지 · 씨 · 시바 · 개자} 처럼 <b>오탐 때문에 일부러 뺀 낱말</b>이라, 닫으려면 그
+     * 오탐을 다시 들여야 한다. 알고 남긴 미탐으로 {@code profanity-words.txt} 에 적어 뒀다.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {
+            // 종성형 — ㄴ1ㄱ · ㅅ1 · ㅂㅅ
+            "\u11AB1\u11A8", "\u11BA1", "\u11B8\u11BA",
+            // 반각 — @ㅐ미 · ^^ㅣ벌 · ㅅ1
+            "@\uFFC3미", "^^\uFFDC벌", "\uFFB51",
+            // 조합용 초성 — 시ㅂㅏ · 미ㅊ (자음만 조합용으로 바꿔 NFC 가 합치지 못하게 둔 형태)
+            "\uC2DC\u1107\u314F", "\uBBF8\u110E"})
+    @DisplayName("조합용·반각 자모로 적은 표기도 막는다 — 역표가 초성형만이면 72/73 이 통과한다")
+    void jamoWrittenInAnotherEncodingIsStillMasked(String evaded) {
+        assertThat(filterFromDictionary().filter(evaded))
+                .as("'%s' 가 통과한다 — 화면에는 사전에 있는 자모 그대로 보인다", evaded)
+                .contains("***");
+    }
+
+    /**
+     * 입구 NFC 는 미탐만 막는 것이 아니라 <b>오탐도</b> 막는다.
+     *
+     * <p>NFD 로 들어온 평범한 한국어는 자모로 쪼개져 있고, 매칭 평면들이 그 자모를 사전이 쓰는
+     * 호환 자모로 되돌린다 — 그러면 {@code 삼촌} 안에 {@code ㅁㅊ} 이, {@code 입술} 안에
+     * {@code ㅂㅅ} 이 생겨 사전 항목에 걸린다. 입구에서 음절로 합쳐 두면 되돌릴 자모가 남지
+     * 않는다. 실측: 입구 NFC 를 지우면 아래 22종 중 <b>9종</b>이 검열된다(전부가 아니다 —
+     * 받침이 다음 음절 초성과 사전 항목을 이루는 것만 걸린다).
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"삼촌", "입술", "없습니다", "햇볕", "합시다", "접시", "점차", "값싸다",
+            "옳다", "깻잎", "앉다", "읽다", "젊다", "훑다", "닭갈비", "싫다", "밟다", "넓다",
+            "짧은", "읊다", "핥다", "굶다"})
+    @DisplayName("NFD 로 들어온 평범한 한국어도 그대로 나간다 — 합치지 않으면 받침이 자모 항목이 된다")
+    void ordinaryKoreanWrittenInNfdIsNotMasked(String word) {
+        String nfd = java.text.Normalizer.normalize(word, java.text.Normalizer.Form.NFD);
+        assertThat(filterFromDictionary().filter(nfd))
+                .as("'%s' 의 NFD 형이 가려졌다 — 쪼개진 받침이 자모 항목에 걸린다", word)
+                .isEqualTo(word);
+    }
+
+    /**
+     * 반대 방향 — 종성형이라고 다 접으면 <b>평범한 한국어</b>가 가려진다.
+     *
+     * <p>{@code 미}+종성 ㅊ 처럼 앞 음절에 붙을 수 있는 종성은 입구 NFC 가 {@code 및} 로
+     * 합쳐 버린다. 화면도 {@code 및} 이고 뜻도 {@code 및} 이라 회피가 아니다 — 그래서 사전의
+     * {@code 미ㅊ} 에 걸려선 안 된다. 실측으로 이 계급이 6건 남아 있고 전부 이 방향이 맞다
+     * ({@code 및 · 질 · 잦 · 온홀 · 십ㅏ · 봊ㅣ}).
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"\uBBF8\u11BE", "\uC9C0\u11AF", "\uC790\u11BD"})
+    @DisplayName("앞 음절에 붙는 종성은 접지 않는다 — 합쳐지면 다른 낱말이라 회피가 아니다")
+    void aJongseongThatComposesIntoThePrecedingSyllableIsNotAnEvasion(String composed) {
+        String expected = java.text.Normalizer.normalize(composed, java.text.Normalizer.Form.NFC);
+        assertThat(filterFromDictionary().filter(composed))
+                .as("'%s' 가 가려졌다 — 화면에는 평범한 낱말로 보인다", expected)
+                .isEqualTo(expected);
+    }
+
+    /**
+     * 입구에서 NFC 로 접지 않으면 평범한 한국어가 가려진다.
+     *
+     * <p>떼어 쓴 자모를 합치지 않고 들어오면 1-패스가 아무것도 못 찾고 2A 로 넘어가는데, 2A 는
+     * 구간이 아니라 <b>토큰 전체</b>를 가린다. 실측으로 입구 NFC 를 지워 보면 {@code 병신아} 의
+     * NFD 형이 {@code ***아} 가 아니라 {@code ***} 가 되고, 화이트리스트에 있는 {@code 시발점}
+     * 이 {@code ***} 로 가려진다 — 보호가 평면 하나에서만 돌아 통째로 꺼진다.
+     *
+     * <p>그 되돌림에서 나머지 174건은 <b>전부 통과했다.</b> 그래서 이 테스트가 따로 있다.
+     */
+    @Test
+    @DisplayName("NFD 입력도 정확한 구간만 가린다 — 입구에서 안 합치면 화이트리스트가 꺼진다")
+    void nfdInputIsMaskedOnTheOnePassSpanNotTheWholeToken() {
+        ProfanityFilter filter = filterFromDictionary();
+
+        String withSuffix = java.text.Normalizer.normalize("병신아", java.text.Normalizer.Form.NFD);
+        assertThat(filter.filter(withSuffix))
+                .as("NFD 가 토큰 전체로 번졌다 — 조사 '아' 까지 같이 가려진다")
+                .isEqualTo("***아");
+
+        String whitelisted = java.text.Normalizer.normalize("시발점", java.text.Normalizer.Form.NFD);
+        assertThat(filter.filter(whitelisted))
+                .as("NFD 로 쓴 '시발점' 이 가려졌다 — 화이트리스트가 1-패스 평면에만 걸려 있다")
+                .isEqualTo("시발점");
     }
 
     @ParameterizedTest(name = "{0}")

@@ -335,7 +335,13 @@ public final class ProfanityDictionary {
      * 항목은 "어떤 욕설도 품지 않는다" 라는 <b>거짓 메시지와 함께</b> 부팅을 세웠다.
      *
      * <p>NFD 는 macOS 복사가 그대로 주는 형식이고, 이 두 키는 방송 중에 쓰라고 둔 통로다.
-     * 이 파일이 이미 적어 둔 원칙이 그것이다 — 비교에 참여하는 평면은 전부 같아야 한다.
+     *
+     * <p>⚠️ 여기서 접는 것은 <b>NFC 까지</b>다. 매처의 2A·2B 전처리는 비한글 코드포인트에
+     * NFKC 까지 쓰므로 그 둘은 같은 평면이 아니다 — "비교에 참여하는 평면은 전부 같아야
+     * 한다" 는 1-패스 축에만 참이다. 실해는 오늘 0 이다(사전 1,106·화이트리스트 31 중 평면
+     * 차이로 사문화되는 항목 0건). 다만 설정으로 호환 문자가 섞인 항목이 들어오면 2A·2B
+     * 에서만 조용히 사문이 된다. 항목 쪽도 NFKC 로 접으려면 사전의 호환 자모 84건이 조합용
+     * 으로 바뀌므로 그쪽을 먼저 옮겨야 한다.
      */
     private static String normalizeEntry(String word) {
         return Normalizer.isNormalized(word, Normalizer.Form.NFC)

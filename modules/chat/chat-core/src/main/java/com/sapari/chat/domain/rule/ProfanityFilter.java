@@ -37,6 +37,22 @@ import java.util.regex.Pattern;
  * 거기서는 토큰 전체를 가리므로 길이가 바뀌어도 되고, 반환값은 원문에서 잘라 만든다.
  * 1-패스는 여전히 길이 보존 {@link #fold} 만 쓴다.
  *
+ * <p>반각 한글 자모(U+FFA1–FFDC)와 원문자·괄호 한글(U+3200–321F · U+3260–327F)은 한글 범위
+ * <b>밖</b>이라 호환 전개를 거친다 — 그 결과가 조합용 자모라서 평면 C 가 사전의 호환 자모로
+ * 되돌린다. 사전의 자모 표기 84건 중 반각으로 바꿔 통과하는 것이 83 → 6 이 된 자리다.
+ *
+ * <p>그 마지막 6건과 종성형 표기는 평면 C 가 아니라 {@link #fold} 가 닫는다. 평면 C 는 글자
+ * 아닌 것을 떼어내므로 {@code ㄴ1ㄱ}·{@code @ㅐ미} 처럼 가운데에 숫자나 기호가 낀 항목이
+ * 깨지고, 종성형(U+11A8–11C2)은 애초에 역표에 없었다({@code NFKD} 가 초성형만 준다).
+ * 실측: 종성 표기로 자모 항목 73건 중 <b>72건</b>, 반각으로 84건 중 6건이 통과했는데 지금은
+ * 양쪽 다 0 이다.
+ *
+ * <p><b>자모를 전부 조합용으로 적는 축은 남아 있다 — 7건.</b> 그 경우 입구 NFC 가 음절로
+ * 합쳐 버리고({@code ㅅㅣㅂㅏ} → {@code 시바}) 그 음절은 사전에 없다. 합쳐진 결과가
+ * {@code 보지 · 씨 · 시바 · 개자} 처럼 <b>오탐 때문에 일부러 뺀 낱말</b>이라, 사전에 넣어
+ * 닫으면 그 오탐이 돌아온다. 반대로 앞 음절에 붙는 종성(예: {@code 미}+종성 ㅊ → {@code 및})은
+ * 회피가 아니다 — 화면도 뜻도 다른 낱말이 되므로 접지 않는 것이 맞고, 그쪽이 6건이다.
+ *
  * <p><b>동형자는 범위 밖이다.</b> 키릴 {@code с}(U+0441) 같은 글자는 라틴과 다른 글자이고
  * 어떤 정규화도 접지 않는다 — {@code fuсk} 는 지금 통과한다. 닫으려면 유니코드 confusables
  * 표가 필요하고 그건 새 데이터 의존이다. 한글 항목은 이 축의 영향을 받지 않으므로 노출은
@@ -49,7 +65,10 @@ import java.util.regex.Pattern;
 public final class ProfanityFilter {
 
     private static final String MASK = "***";
-    private static final Map<Integer, Integer> CONJOINING_TO_COMPATIBILITY = buildJamoTable();
+    private static final String COMPATIBILITY_NAME_PREFIX = "HANGUL LETTER ";
+    private static final Pattern VARIANT_NAME_PREFIX =
+            Pattern.compile("^(HANGUL (CHOSEONG|JUNGSEONG|JONGSEONG)|HALFWIDTH HANGUL LETTER) ");
+    private static final Map<Integer, Integer> TO_COMPATIBILITY_JAMO = buildJamoTable();
     private static final Pattern TOKEN = Pattern.compile("\\S+");
 
     private final AhoCorasick profanity;        // 1-패스 span · 2A 부분 매칭
@@ -89,6 +108,9 @@ public final class ProfanityFilter {
         // NFKC 가 아니라 NFC 인 것이 중요하다. 이 결과가 displayMessage 로 영속되는데 NFKC 는
         // 판매자 문구를 고쳐 쓴다(실측: ㈜사파리 → (주)사파리 · Ⅲ단계 → III단계 · ① → 1).
         // NFC 는 NFD 와 화면이 같고 평범한 입력에 대해 왕복이 항등이다(실측).
+        // 그리고 이것은 미탐만 막는 게 아니다 — 여기서 합쳐 두지 않으면 아래 평면들이 쪼개진
+        // 받침을 호환 자모로 되돌려 '삼촌' 안에 ㅁㅊ, '입술' 안에 ㅂㅅ 을 만든다. 실측으로
+        // 이 줄을 지우면 평범한 한국어 22종 중 9종이 검열된다. 순서를 뒤집지 말 것.
         String normalized = Normalizer.isNormalized(message, Normalizer.Form.NFC)
                 ? message
                 : Normalizer.normalize(message, Normalizer.Form.NFC);
@@ -97,14 +119,14 @@ public final class ProfanityFilter {
 
     private String maskNormalized(String message) {
         List<int[]> tokens = tokenSpans(message);
-        // 전처리 평면 둘. 하나로는 양쪽을 못 가진다 — 아래 두 메서드의 javadoc 참조.
+        // 전처리 평면 셋. 하나로는 세 방향을 다 못 가진다 — 아래 세 메서드의 javadoc 참조.
         String[] plain = new String[tokens.size()];
         String[] compat = new String[tokens.size()];
         String[] jamo = new String[tokens.size()];
         for (int i = 0; i < tokens.size(); i++) {
             String t = token(message, tokens, i);
             plain[i] = stripToLetters(t);
-            // 평면 C 는 합성 <b>전</b>에서 파생해야 한다 — 합친 뒤에는 조합용 자모가 이미
+            // 평면 C 는 합성 전에서 파생해야 한다 — 합친 뒤에는 조합용 자모가 이미
             // 음절로 사라져 되돌릴 것이 없다.
             String expanded = expandToLetters(t);
             compat[i] = compose(expanded);
@@ -248,6 +270,13 @@ public final class ProfanityFilter {
      * 병합하고 거르면 합쳐진 범위가 어느 화이트 span 에도 안 들어가 {@code x***} 가 된다.
      * 덮인 자리를 지키는 쪽이 이 함수의 목적이므로 거르기가 먼저다. {@code mergeRanges} 를
      * 앞으로 옮기지 말 것.
+     *
+     * <p><b>부분 겹침에서는 어느 순서도 깨끗하지 않다.</b> 실례 —
+     * {@code 전염병} 뒤에 {@code ㅅㅂ} 을 붙이면 사전 항목 {@code 병ㅅ} 의 span [2,4) 와
+     * {@code ㅅㅂ} 의 [3,5) 가 병합돼 [2,5) 가 되고, 보호어의 {@code 병} 까지 같이 가려
+     * {@code 전염***} 이 된다. 우회 시도를 막는 것 자체는 맞아서 그대로 둔다 — 완전 포함만
+     * 보존하는 이 규칙의 대가이고, 이 값을 "버그" 로 보고 걸친 span 까지 버리면 정상어 꼬리에
+     * 욕설을 붙이는 우회가 열린다. 호환 자모로 적어도 같은 값이 나온다(인코딩과 무관하다).
      */
     private static List<int[]> uncovered(List<int[]> spans, List<int[]> whitelistSpans) {
         List<int[]> kept = new ArrayList<>(spans.size());
@@ -290,6 +319,18 @@ public final class ProfanityFilter {
                 cs[i] = (char) (c - 0xFF41 + 'a');
             } else if (c >= '\uFF10' && c <= '\uFF19') {
                 cs[i] = (char) (c - 0xFF10 + '0');
+            } else if ((c >= '\u1100' && c <= '\u11FF') || (c >= '\uFFA1' && c <= '\uFFDC')) {
+                // 홀로 남은 조합용·반각 자모. 입구 NFC 가 합칠 수 있는 것은 이미 음절이 됐으니
+                // 여기 오는 것은 앞 모음이 없어 합쳐지지 못한 것뿐이고, 화면에는 호환 자모와
+                // 같은 글리프로 보인다. 사전은 호환 자모로 적혀 있어 접어야 1-패스가 본다.
+                // 평면 C 가 아니라 여기여야 하는 이유: 평면 C 는 글자 아닌 것을 떼어내므로
+                // 가운데에 숫자나 기호가 끼면 항목이 깨진다(실측: 이 분기가 없으면 ㄴ1ㄱ ·
+                // ㄴ1ㅁ · ㅅ1 · @ㅐ미 · @ㅐ비 · ^^ㅣ벌 이 종성·반각 표기로 통과한다).
+                // 1-패스는 길이를 보존해야 하는데 이 표는 BMP 한 글자 → 한 글자다.
+                Integer compatibility = TO_COMPATIBILITY_JAMO.get((int) c);
+                if (compatibility != null) {
+                    cs[i] = (char) compatibility.intValue();
+                }
             }
         }
         return new String(cs);
@@ -358,15 +399,27 @@ public final class ProfanityFilter {
      *
      * <p>표는 하드코딩하지 않는다 — 호환 자모 블록을 NFKD 로 돌리면 그 조합용 형태가 나오므로
      * 역으로 뒤집어 만든다. 유니코드가 자모를 더해도 표가 따라간다.
+     *
+     * <p><b>NFKD 만으로는 초성형밖에 안 나온다.</b> {@code NFKD(ㅂ)} 는 초성 U+1107 하나이고
+     * 종성 U+11B8 로는 가는 길이 없다 — 유니코드가 그 둘을 호환 분해로 잇지 않는다. 그래서
+     * 종성형으로 적으면 평면 C 가 못 되돌린다(실측: 사전의 자모 항목 73건 중 <b>72건</b>이
+     * 종성 표기로 통과했다. 반각 83건과 같은 규모다). 겹자음 9건만 우연히 막혔는데, 그것들은
+     * 조합용에 종성 형태만 있어 NFKD 가 바로 종성을 주기 때문이다.
+     *
+     * <p>그 사각을 글자 이름으로 메운다 — {@code HANGUL JONGSEONG PIEUP} 과
+     * {@code HANGUL LETTER PIEUP} 은 접미사가 같다. 이름도 UCD 가 주는 값이라 하드코딩이
+     * 아니고, NFKD 표와 <b>충돌이 0건</b>이다(실측: 겹치는 자리 전부 같은 값). 둘을 합치면
+     * 94 → 128 이 되고 NFKD 가 먼저다 — 이름으로 안 잡히는 2건이 거기 있다.
      */
     private static String toCompatibilityJamo(String s) {
         StringBuilder sb = new StringBuilder(s.length());
-        s.codePoints().forEach(cp -> sb.appendCodePoint(CONJOINING_TO_COMPATIBILITY.getOrDefault(cp, cp)));
+        s.codePoints().forEach(cp -> sb.appendCodePoint(TO_COMPATIBILITY_JAMO.getOrDefault(cp, cp)));
         return sb.toString();
     }
 
     private static Map<Integer, Integer> buildJamoTable() {
         Map<Integer, Integer> table = new HashMap<>();
+        Map<String, Integer> compatibilityByLetterName = new HashMap<>();
         for (int compat = 0x3131; compat <= 0x318E; compat++) {
             String decomposed = Normalizer.normalize(Character.toString(compat), Normalizer.Form.NFKD);
             if (decomposed.codePointCount(0, decomposed.length()) == 1) {
@@ -375,8 +428,32 @@ public final class ProfanityFilter {
                     table.putIfAbsent(conjoining, compat);
                 }
             }
+            String name = Character.getName(compat);
+            if (name != null && name.startsWith(COMPATIBILITY_NAME_PREFIX)) {
+                compatibilityByLetterName.put(name.substring(COMPATIBILITY_NAME_PREFIX.length()), compat);
+            }
         }
+        // 이름으로 메우는 둘째 패스. NFKD 가 이미 채운 자리는 건드리지 않는다.
+        // 반각(U+FFA1–FFDC)도 같은 표에 넣는다 — NFKC 는 반각을 호환이 아니라 조합용으로
+        // 보내므로, 1-패스에서 반각을 바로 접으려면 이 표에 있어야 한다.
+        fillByLetterName(table, compatibilityByLetterName, 0x1100, 0x11FF);
+        fillByLetterName(table, compatibilityByLetterName, 0xFFA1, 0xFFDC);
         return Map.copyOf(table);
+    }
+
+    private static void fillByLetterName(Map<Integer, Integer> table,
+            Map<String, Integer> compatibilityByLetterName, int from, int to) {
+        for (int variant = from; variant <= to; variant++) {
+            String name = Character.getName(variant);
+            if (name == null) {
+                continue;
+            }
+            Integer compat =
+                    compatibilityByLetterName.get(VARIANT_NAME_PREFIX.matcher(name).replaceFirst(""));
+            if (compat != null) {
+                table.putIfAbsent(variant, compat);
+            }
+        }
     }
 
     /**

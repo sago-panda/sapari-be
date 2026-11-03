@@ -39,6 +39,9 @@
 #   것은 작성자가 쓴 코드만이 아니다 — Gradle 이 의존성을 받고(이 저장소에 dependency
 #   verification 이 없다) Testcontainers 가 부동 태그로 이미지를 받는다. 그 경로는 작성자가
 #   멀쩡해도 바뀔 수 있고, 상주 호스트에서는 그 결과가 남는다.
+#   (실측한 태그: redis:7.4 · mongo:7.0 · postgres:16.15 · postgres:16-alpine — 전부
+#   digest 가 아니라 이름이다. 커밋 972cb93b 메시지는 이 셋을 redis:7 · mongo:7 ·
+#   postgres:16 으로 적었는데 값이 틀렸다. 결론은 같지만 숫자는 이 줄이 정본이다.)
 #
 #   그래서 CI 분이 복구될 때까지 이 파이프라인은 돌지 않는 상태로 둔다. 다시 로컬 러너를
 #   붙여야 한다면 먼저 할 것 셋: dependency verification 메타데이터 · Testcontainers 이미지
