@@ -430,7 +430,7 @@ class ProfanityDictionaryTest {
      *
      * <p>이 잔재는 닫혔다. 한때 규칙을 지킨 항목도 전부 우회 스위치였다 — {@code 시발점씨발} 이
      * {@code 시발점} 때문에 통째로 통과했다. 마스킹을 span 단위로 바꿔(욕설 span 이 화이트리스트
-     * span 에 <b>완전히 덮일 때만</b> 버린다) 당시 31건 전수에서 0건이 됐다. 아래
+     * span 에 <b>완전히 덮일 때만</b> 버린다) 당시 31건 전수에서 0건이 됐다(지금은 39건 × 사전 전수 42,627케이스에서 0건). 아래
      * {@code noWhitelistEntryIsAGlobalOffSwitch} 가 그것을 고정한다.
      */
     @ParameterizedTest(name = "{0}")
@@ -712,13 +712,46 @@ class ProfanityDictionaryTest {
     }
 
     /**
-     * 잔여를 보고하는 경고문이 <b>긴 항목부터 지운 결과</b>를 담는다.
+     * 규칙 (3) 건너뛰기가 안전한 <b>조건</b>을 고정한다 — 게이트가 접은 평면에서 판정하는 것.
      *
-     * <p>당직자가 이 경고문으로 "지킬 말이 무엇인가" 를 판단하므로 잔여가 정확해야 한다.
-     * {@code xsibalx} 에서 긴 {@code sibal} 을 먼저 지우면 잔여가 {@code xx} 이지만, 짧은
-     * {@code siba} 를 먼저 지우면 {@code xlx} 가 된다 — 쪼개진 {@code l} 이 '남은 말' 로
-     * 보고된다. 규칙 (3)의 문턱(글자 둘)도 같은 잔여를 쓰므로 순서가 판정을 바꿀 수 있다.
+     * <p>"품는 욕설이 0건이면 푸는 것도 0건" 은 구조적으로 참이지만, 그 증명이 <b>접기</b>에
+     * 걸려 있다. 판정을 원문 표기로 옮기면 {@code ＦＵＣＫ} 가 "욕설 0건" 으로 분류돼 건너뛰기로
+     * 빠지는데, 런타임은 {@link ProfanityFilter#fold} 후 {@code fuck} 을 덮는다 — 전제가 정확히
+     * 그 자리에서 깨진다. 아래 벡터는 전각·대문자가 접힌 뒤에 판정되는 것을 못 박는다.
+     *
+     * <p>여기서는 규칙 (1)이 먼저 잡는다(접으면 사전 단어와 <b>같은 값</b>이 된다). 어느 규칙이
+     * 잡는지보다 <b>접은 뒤에 판정한다</b>가 지켜지는지가 이 테스트의 대상이다.
      */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"ＦＵＣＫ", "ｆｕｃｋ", "ＳＩＢＡＬ", "ｓｉｂａｌ", "FUCK"})
+    @DisplayName("⭐ 게이트는 접은 평면에서 판정한다 — 원문 표기로 옮기면 전각 항목이 사전을 푼다")
+    void theGateJudgesOnTheFoldedPlane(String entry) {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, entry))
+                .as("'%s' 가 수락되면 런타임에서 그 욕설을 덮는다 — 접기 전에 판정한 것이다", entry)
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    /**
+     * 번들 화이트리스트는 경고가 <b>0건</b>이어야 한다 — 설정 입구와 계약이 다르다.
+     *
+     * <p>규칙 (3)을 완화해 라틴 잔여 항목이 설정 입구를 통과하게 됐고, 그래서 이제 그런 항목을
+     * 번들 파일에 커밋할 수도 있다. 그러면 <b>모든 파드가 매 부팅마다</b> WARN 한 줄을 낸다 —
+     * 당직자에게 WARN 을 무시하도록 훈련시키는 쪽이고, 이 기능의 역사가 '조용한 실패' 였던 만큼
+     * 상시 경고는 그 둘 사이에서 가장 나쁘다.
+     *
+     * <p>근거가 비대칭인 이유: 설정 항목은 사고 중에 타이핑되고 env 변경으로 되돌아간다. 번들
+     * 항목은 리뷰를 거치지만 <b>영구히 전 파드에</b> 남는다. 리뷰를 거치니 더 느슨해도 될 것
+     * 같지만 영구성 때문에 더 엄격해야 하고, 두 성질이 반대로 끌어서 결론이 "번들은 깨끗해야
+     * 한다" 가 된다.
+     */
+    @Test
+    @DisplayName("번들 화이트리스트는 기동 경고를 하나도 내지 않는다 — 상시 WARN 은 WARN 을 죽인다")
+    void theBundledWhitelistProducesNoStartupWarning() {
+        assertThat(ProfanityDictionary.load(null, null).warnings())
+                .as("번들 항목이 경고를 내면 모든 파드가 매 부팅마다 그 줄을 낸다")
+                .isEmpty();
+    }
+
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"q", "8", "茶", "!!", ".."})
     @DisplayName("욕설을 안 품은 항목은 비한글 한 글자여도 부팅을 세우지 않는다 — 푸는 것이 0건이다")
@@ -731,6 +764,14 @@ class ProfanityDictionaryTest {
                 .anySatisfy(message -> assertThat(message).contains("아무것도"));
     }
 
+    /**
+     * 잔여를 보고하는 경고문이 <b>긴 항목부터 지운 결과</b>를 담는다.
+     *
+     * <p>당직자가 이 경고문으로 "지킬 말이 무엇인가" 를 판단하므로 잔여가 정확해야 한다.
+     * {@code xsibalx} 에서 긴 {@code sibal} 을 먼저 지우면 잔여가 {@code xx} 이지만, 짧은
+     * {@code siba} 를 먼저 지우면 {@code xlx} 가 된다 — 쪼개진 {@code l} 이 '남은 말' 로
+     * 보고된다. 규칙 (3)의 문턱(글자 둘)도 같은 잔여를 쓰므로 순서가 판정을 바꿀 수 있다.
+     */
     @Test
     @DisplayName("경고문의 잔여는 긴 항목부터 지운 결과다 — 쪼개진 글자가 섞이면 당직자가 오독한다")
     void theReportedResidueRemovesTheLongestEntryFirst() {
