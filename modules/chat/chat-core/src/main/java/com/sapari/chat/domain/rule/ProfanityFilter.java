@@ -153,11 +153,13 @@ public final class ProfanityFilter {
             String[] plain, String[] compat, String[] jamo) {
         List<int[]> ranges = new ArrayList<>();
         // 2A: 전처리가 "원문엔 없던" 욕설을 드러낸 토큰(원문에 이미 있으면 1-패스가 부분 처리 — 예: "시발!").
-        // 두 평면 중 하나라도 드러내면 우회로 본다.
+        // 세 평면 중 하나라도 드러내면 우회로 본다.
         for (int i = 0; i < tokens.size(); i++) {
             String t = token(message, tokens, i);
-            if (revealsMore(plain[i], t) || revealsMore(compat[i], t)
-                    || revealsMore(jamo[i], t)) {
+            // 원문 쪽 매치 수는 세 평면에서 같은 값이다 — 토큰당 한 번만 센다.
+            int inToken = profanity.findAll(fold(t)).size();
+            if (revealsMore(plain[i], t, inToken) || revealsMore(compat[i], t, inToken)
+                    || revealsMore(jamo[i], t, inToken)) {
                 ranges.add(new int[]{tokens.get(i)[0], tokens.get(i)[1]});
             }
         }
@@ -175,9 +177,13 @@ public final class ProfanityFilter {
 
     // 전처리가 "원문보다 더 많은" 욕설을 드러냈을 때만 = 우회가 실제로 숨어 있던 경우.
     // 욕설 수가 그대로면 단순 구두점일 뿐이라 1-패스가 부분 처리한다(예: "시발!" → "***!").
-    private boolean revealsMore(String stripped, String token) {
+    // 원문 쪽 매치 수를 호출자가 넘기는 이유는 중복 제거다 — 세 평면이 같은 값을 다시 세고
+    // 있었다. 다만 비용은 거기 없었다(실측, 200자 메시지 20,000회: 134.8 → 135.7 µs 차이
+    // 1% 미만, 평면 전개를 통째로 건너뛰어도 130.2 µs 로 3% 뿐). 비용은 2B 윈도우 주사
+    // 쪽이다 — 이 두 자리를 다시 최적화 대상으로 꼽지 말 것.
+    private boolean revealsMore(String stripped, String token, int matchesInToken) {
         return !stripped.equals(token)
-                && profanity.findAll(fold(stripped)).size() > profanity.findAll(fold(token)).size();
+                && profanity.findAll(fold(stripped)).size() > matchesInToken;
     }
 
     // 이어 붙인 뒤에 한 번 더 합친다. 토큰별로만 합치면 경계에서 쪼개진 자모가 안 붙는다 —
@@ -346,7 +352,7 @@ public final class ProfanityFilter {
      * <p>한때 이 평면을 코드포인트별 NFKC 로 바꿨다가 회귀를 만들었다 — NFKC 가 전개하면서
      * <b>글자를 남기면</b> 인접성이 깨진다({@code ℃} → {@code °C} 의 {@code C} 가 살아남아
      * {@code 시C발}). BMP 전수에서 차단이 14,525 → 13,718 로 줄었다. ℃·℉·№·㎡ 는 라이브
-     * 커머스에 평범하게 나오는 글자다. 그래서 두 평면을 따로 두고 둘 중 하나라도 드러내면
+     * 커머스에 평범하게 나오는 글자다. 그래서 평면을 따로 두고 그중 하나라도 드러내면
      * 우회로 본다.
      */
     private String stripToLetters(String token) {
@@ -484,7 +490,7 @@ public final class ProfanityFilter {
      * 한글 채움문자 넷. 폭이 0 이거나 공백처럼 보이는데 유니코드가 '문자'(Lo)로 분류한다.
      *
      * <p>여기가 단일 출처다 — 사전 적재 쪽({@code ProfanityDictionary})도 이 판정을 쓴다.
-     * 두 평면이 갈리면 한쪽이 막는 것을 다른 쪽이 통과시킨다.
+     * 로더와 매처가 갈리면 한쪽이 막는 것을 다른 쪽이 통과시킨다.
      */
     public static boolean isHangulFiller(int codePoint) {
         return codePoint == 0x115F || codePoint == 0x1160

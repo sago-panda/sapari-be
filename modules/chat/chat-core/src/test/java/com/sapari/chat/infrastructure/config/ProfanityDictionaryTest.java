@@ -85,7 +85,13 @@ class ProfanityDictionaryTest {
             // 라틴 항목이 평범한 영단어에 걸린 것들 — sex 와 siva 를 뺐다.
             "passivation 처리", "passivate 공정", "Essex 산", "BusinessException 로그",
             // '색스'·'s스' 가 사전에 있는 동안 토큰 안의 기호를 뗀 2A 가 이것들을 통째로 가렸다.
-            "DB/Redis/검색/스토리지", "검색스토리지 설정", "as(\"스레드"})
+            "DB/Redis/검색/스토리지", "검색스토리지 설정", "as(\"스레드",
+            // 보호어 뒤에 붙은 용언 어미. 화이트 span 이 사전 span 을 못 덮어 걸쳐 남은 자리다 —
+            // '섹스해'·'섹스하자' 를 빼고 화이트 '일시불알' 을 넣어 닫았다.
+            "이 옷 유니섹스해요", "디자인이 유니섹스해서 좋아요", "유니섹스하자",
+            "일시불알려주세요", "일시불알림",
+            // 보호어 둘이 맞닿은 자리. 거르기를 병합보다 먼저 하지 않으면 전***송! 이 된다.
+            "전염병시발송!"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
@@ -302,7 +308,7 @@ class ProfanityDictionaryTest {
     @DisplayName("⭐ 전처리 평면 셋이 각자 다른 계급을 잡는다 — 하나로 합치면 반드시 하나가 깨진다")
     void jamoSpreadAndCompatibilityLettersAreBothCaught(String message) {
         assertThat(filterFromDictionary().filter(message))
-                .as("'%s' 이(가) 통과한다 — 두 평면 중 하나를 희생한 것이다", message)
+                .as("'%s' 이(가) 통과한다 — 평면 셋 중 하나를 희생한 것이다", message)
                 .contains("***");
     }
 
@@ -353,10 +359,11 @@ class ProfanityDictionaryTest {
     /**
      * 맨 욕설·보호 대상 없는 항목이 화이트리스트에 들어가 우회로가 되지 않는다.
      *
-     * <p>이 저장소의 화이트리스트 의미는 "토큰이 항목을 <b>포함</b>하면 그 토큰 전체를 보존" 이다
-     * ({@code ProfanityFilter.isWhitelisted} → {@code containsAny}). 그래서 항목을 하나 잘못 넣으면
-     * 그 조각을 붙인 토큰이 통째로 통과한다. 실제로 두 번 밟았다 — 맨 욕설에 숫자를 붙인
-     * {@code 8시발}, 그리고 사전에 없는 욕설을 보호하던 {@code 입어보지} 류 24건이다.
+     * <p>한때 이 저장소의 화이트리스트 의미는 "토큰이 항목을 <b>포함</b>하면 그 토큰 전체를 보존"
+     * 이었고, 그래서 항목을 하나 잘못 넣으면 그 조각을 붙인 토큰이 통째로 통과했다. 실제로 두 번
+     * 밟았다 — 맨 욕설에 숫자를 붙인 {@code 8시발}, 그리고 사전에 없는 욕설을 보호하던
+     * {@code 입어보지} 류 24건이다. (그 통째 보존을 구현했던 {@code isWhitelisted} 와
+     * {@code AhoCorasick.containsAny} 는 지금 없다 — 과거형으로 읽을 것.)
      *
      * <p>이 잔재는 닫혔다. 한때 규칙을 지킨 항목도 전부 우회 스위치였다 — {@code 시발점씨발} 이
      * {@code 시발점} 때문에 통째로 통과했다. 마스킹을 span 단위로 바꿔(욕설 span 이 화이트리스트
@@ -655,8 +662,10 @@ class ProfanityDictionaryTest {
      *
      * <p>{@code 8시발} 의 잔여는 {@code 8} 뿐이다. 정상어를 지키는 게 아니라 숫자를 붙인 우회로를
      * 만든다. 한때 영문 {@code sexual}·{@code sexy} 를 이 규칙의 예외로 뒀는데 그 둘이 ASCII
-     * 자판만으로 사전을 끄는 키였다 — 사전에서 {@code sex} 를 빼면서 예외가 없어졌고, 그래서
-     * 이제 세 규칙을 로더가 예외 없이 강제한다.
+     * 자판만으로 사전을 끄는 키였다 — 사전에서 {@code sex} 를 빼면서 예외가 없어졌다.
+     * 로더가 <b>예외 없이 강제하는 것은 둘</b>이다(맨 욕설 · 잔여에 한글 없음). 셋째 규칙
+     * (욕설을 품을 것)은 거부가 아니라 {@code ineffective()} 보고로 내려갔다 — span 단위에서는
+     * 아무것도 안 덮는 항목이 아무 일도 하지 않으므로, 거부의 경계가 '해로움' 이기 때문이다.
      */
     @Test
     @DisplayName("욕설을 뺀 잔여가 한글이 아니면 거부한다 — '8시발' 은 '8' 을 붙인 우회로다")

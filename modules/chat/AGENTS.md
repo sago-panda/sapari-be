@@ -132,10 +132,23 @@ overlapping matches re-open the hole, so do not move `mergeRanges` earlier.
 Whitelist entries obey three rules, pinned against the data by `ProfanityDictionaryTest`. An entry must
 **not be a bare profanity** (`시발점`, not `시발` — the two spans would coincide exactly and unmask that
 insult everywhere), and what is **left after removing the profanity must contain a Hangul syllable**
-(`8시발` leaves `8`, handing an attacker a one-character prefix: both `8시발` and `8시발놈아` pass).
+(`8시발` leaves `8`, handing an attacker a one-character prefix: `8시발` and `8시발이다` both pass.
+`8시발놈아` does **not** — it masks to `8***아`, because the dictionary span for `시발놈` runs past
+the whitelist span and survives. The rule stands on `8시발` alone; the earlier claim that
+`8시발놈아` passes was wrong, and the reason it is wrong is the crossing-span cost noted above).
 Those two are refused at load. The third — an entry should **contain** a profanity — is only warned
 about, because with span scoping an entry that covers nothing simply does nothing. The line for failing
 boot is harm, not uselessness.
+
+⚠️ Span coverage has a cost in the other direction, and the first number written here was wrong: a
+fragment that follows a protected word is masked where it sits, because the token is no longer kept
+whole. The claim "0 cases on current data" came from a sweep whose 22 suffixes were **all particles,
+no verb endings** — and the real false positives were verb endings (`유니섹스해요` → `유니***요`).
+Re-measured 2026-11-03: 10 of 1,920 (60 suffixes × every entry), none of them natural Korean. The
+structural population is not the suffix count but the **99 crossing pairs** — dictionary entries that
+start inside a whitelist entry and run past its end — which no suffix list fully covers. When adding
+an entry, run that sweep *and* a corpus pass; a suffix sweep cannot see a plain word that matches with
+no insertion at all (`검색스토리지` ← `색스` did).
 
 A fourth rule, *no entry already covered by a shorter one*, was retired. Its premise ("a longer entry
 cannot change the outcome") held only while a hit preserved the whole token. Under span coverage the

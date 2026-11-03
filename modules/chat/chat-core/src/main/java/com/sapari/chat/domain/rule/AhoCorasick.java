@@ -76,18 +76,6 @@ final class AhoCorasick {
         return matches;
     }
 
-    /** text가 패턴을 하나라도 포함하면 true. */
-    boolean containsAny(String text) {
-        Node node = root;
-        for (int i = 0; i < text.length(); i++) {
-            node = advance(node, text.charAt(i));
-            if (!node.outputs.isEmpty()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private Node advance(Node from, char c) {
         Node node = from;
         while (node != root && !node.children.containsKey(c)) {

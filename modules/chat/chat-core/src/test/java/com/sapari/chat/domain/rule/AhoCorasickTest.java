@@ -60,35 +60,6 @@ class AhoCorasickTest {
     }
 
     @Nested
-    @DisplayName("containsAny")
-    class ContainsAny {
-
-        @Test
-        @DisplayName("패턴이 중간에 포함되면 true (실패 링크 경유)")
-        void containsInMiddle() {
-            AhoCorasick ac = new AhoCorasick(Set.of("시발"));
-
-            assertThat(ac.containsAny("구매시발송")).isTrue();
-        }
-
-        @Test
-        @DisplayName("포함 안 되면 false")
-        void notContains() {
-            AhoCorasick ac = new AhoCorasick(Set.of("시발"));
-
-            assertThat(ac.containsAny("구매시 발송")).isFalse();
-        }
-
-        @Test
-        @DisplayName("빈 패턴 집합 → 항상 false")
-        void emptyPatterns() {
-            AhoCorasick ac = new AhoCorasick(Set.of());
-
-            assertThat(ac.containsAny("아무거나")).isFalse();
-        }
-    }
-
-    @Nested
     @DisplayName("사전 모양에 대한 방어")
     class DictionaryShape {
 
@@ -99,8 +70,8 @@ class AhoCorasickTest {
             AhoCorasick ac = new AhoCorasick(List.of("시발", "시발놈"));
 
             // when & then
-            assertThat(ac.containsAny("시발놈")).isTrue();
-            assertThat(ac.containsAny("시발")).isTrue();
+            assertThat(ac.findAll("시발놈")).isNotEmpty();
+            assertThat(ac.findAll("시발")).isNotEmpty();
         }
 
         @Test
@@ -112,9 +83,9 @@ class AhoCorasickTest {
 
             // when & then: "aaab"는 [a][a]까지 간 뒤 세 번째 a에서 실패해 fail 링크([aa]→[a])를 타야만
             // 다시 [a][a][b]로 이어진다. child.fail=root로 고정하면 여기서 놓친다.
-            assertThat(ac.containsAny("aaab")).isTrue();
-            assertThat(ac.containsAny("aab")).isTrue();
-            assertThat(ac.containsAny("ab")).isFalse();
+            assertThat(ac.findAll("aaab")).isNotEmpty();
+            assertThat(ac.findAll("aab")).isNotEmpty();
+            assertThat(ac.findAll("ab")).isEmpty();
         }
 
         @Test
@@ -131,8 +102,8 @@ class AhoCorasickTest {
             AhoCorasick ac = new AhoCorasick(dirty);
 
             // then
-            assertThat(ac.containsAny("욕설이다")).isTrue();
-            assertThat(ac.containsAny("멀쩡한 문장")).isFalse();
+            assertThat(ac.findAll("욕설이다")).isNotEmpty();
+            assertThat(ac.findAll("멀쩡한 문장")).isEmpty();
         }
 
         @Test
@@ -142,7 +113,7 @@ class AhoCorasickTest {
             AhoCorasick ac = new AhoCorasick(List.of());
 
             // then
-            assertThat(ac.containsAny("무슨 말이든")).isFalse();
+            assertThat(ac.findAll("무슨 말이든")).isEmpty();
             assertThat(ac.findAll("무슨 말이든")).isEmpty();
         }
     }

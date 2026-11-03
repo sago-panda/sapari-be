@@ -173,15 +173,15 @@ public final class ProfanityDictionary {
         Set<String> low = loweredSet(words);
         if (low.contains(lowered)) {
             throw new IllegalStateException(
-                    "화이트리스트 항목이 욕설 그 자체다: \"" + entry + "\" — 토큰이 이 항목을 "
-                            + "포함하면 통째로 보존되므로, 넣는 순간 그 욕설이 사전 전체에서 풀린다. "
+                    "화이트리스트 항목이 욕설 그 자체다: \"" + entry + "\" — 두 span 이 정확히 "
+                            + "겹쳐 덮이므로, 넣는 순간 그 욕설이 사전 전체에서 풀린다. "
                             + "'시발' 이 아니라 '시발점' 처럼 그 욕설을 품은 더 긴 정상어를 넣는다.");
         }
         if (!hasHangulSyllable(removeAll(lowered, low))) {
             throw new IllegalStateException(
                     "화이트리스트 항목에서 욕설을 빼면 한글이 남지 않는다: \"" + entry + "\" — 공격자에게 "
-                            + "싼 접두를 준다. '8시발' 을 넣으면 '8' 만 붙여도 그 욕설 span 이 덮여 "
-                            + "'8시발'·'8시발놈아' 가 통과한다. 지킬 '말' 이 있어야 한다 — '시발점' 처럼.");
+                            + "싼 접두를 준다. '8시발' 을 넣으면 '8' 만 붙여 '8시발'·'8시발이다' 가 "
+                            + "통과한다. 지킬 '말' 이 있어야 한다 — '시발점' 처럼.");
         }
     }
 
@@ -305,7 +305,7 @@ public final class ProfanityDictionary {
         return cp == 0x2800 || cp == 0xFFFC;
     }
 
-    // 판정은 ProfanityFilter 에 둔다 — 매처도 같은 넷을 떼어 내야 하고, 두 평면이 갈리면
+    // 판정은 ProfanityFilter 에 둔다 — 매처도 같은 넷을 떼어 내야 하고, 로더와 매처가 갈리면
     // 한쪽이 막는 것을 다른 쪽이 통과시킨다(로더만 닫고 매처를 열어 둔 적이 있다).
     private static boolean isHangulFiller(int cp) {
         return ProfanityFilter.isHangulFiller(cp);
