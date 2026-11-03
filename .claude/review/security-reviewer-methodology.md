@@ -84,8 +84,35 @@ angle: mass-assignment and injection (§5).
     **variable name and that a default exists — never the value.** Also: properties records holding
     secrets must mask `toString()` — asymmetry with a masking sibling is the tell.
 
+11. `SEC-11` **Moderation control that is dead, bypassable, or over-firing** — masking/filter dictionaries,
+    whitelists, kick/ban gates, rate limits. These fail *quietly in both directions*, and "the code is
+    there, the tests are green, the docs say it is on" does not establish that it fires. Check each:
+    - **Dead on arrival**: is the data actually loaded and non-empty, or does an empty/missing resource
+      boot into pass-through? The tell is a control whose off-state is indistinguishable from "nothing
+      to block" in logs and in the stored record.
+    - **Dead letter**: can an entry be accepted but never match? A term carrying a space or an invisible
+      character (NBSP, ZWSP, word joiner, BOM, Hangul fillers) never matches a `\S+` token; a term
+      swallowed by a broader exemption never matches either. Count goes up, nothing is blocked.
+    - **Exemption as a global off switch**: one whitelist/allow entry that *is* the blocked term unmasks
+      it everywhere. More generally, ask what the longest token an exemption preserves is — a prefix
+      match preserves the whole token, so every exemption is a switch unless it is span-scoped.
+    - **Gate plane ≠ runtime plane**: validation must normalise the way matching does (case, Unicode).
+      When they differ, two values that behave identically at runtime are judged differently at the gate
+      and the rejection message is false — the operator is sent to the wrong place mid-incident.
+    - **Over-firing on legitimate content**: a short term that is also an ordinary morpheme censors
+      normal speech. For a seller-facing product this is usually the *worse* direction: the broadcast
+      cannot be recalled and the masked text is what gets persisted. Ask what regression corpus the
+      author measured against, and whether the vectors came from anywhere but the bug already found.
+    - **Emergency path**: config-supplied terms are added mid-incident. Do they get the same validation
+      as the bundled data, in both directions? An emergency switch that silently no-ops is worse than
+      none, because it is believed.
+
+    Report the **class of hole and one concrete input that passes or is wrongly blocked**, never a
+    curated bypass list.
+
 ## Output specifics
 Common format applies; each finding carries a **one-line attack scenario** + fix direction.
 A finding none of the items covers gets `SEC-00`, and repeated `SEC-00` means the list is missing an
-item — say so. `uncertain` when reachability depends on config or a caller that doesn't exist yet —
+item — say so. That is where `SEC-11` came from: four `SEC-00` findings in one round on a single
+masking feature, all of them the same shape. `uncertain` when reachability depends on config or a caller that doesn't exist yet —
 say which condition would make it exploitable.
