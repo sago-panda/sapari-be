@@ -144,11 +144,23 @@ boot is harm, not uselessness.
 fragment that follows a protected word is masked where it sits, because the token is no longer kept
 whole. The claim "0 cases on current data" came from a sweep whose 22 suffixes were **all particles,
 no verb endings** — and the real false positives were verb endings (`유니섹스해요` → `유니***요`).
-Re-measured 2026-11-03: 10 of 1,920 (60 suffixes × every entry), none of them natural Korean. The
-structural population is not the suffix count but the **99 crossing pairs** — dictionary entries that
-start inside a whitelist entry and run past its end — which no suffix list fully covers. When adding
-an entry, run that sweep *and* a corpus pass; a suffix sweep cannot see a plain word that matches with
-no insertion at all (`검색스토리지` ← `색스` did).
+The same claim was then wrong a second time with a wider suffix list — 60 suffixes found 10 hits and
+"no natural Korean", but the real false positives were **following nouns**: `전염병신고` → `전염***고`
+(`감염병 신고` is standard public-health phrasing), `시발점물류` → `시발***류`. A suffix list is not the
+population of this class, because what follows can be a particle, a verb ending or a noun.
+
+Count it structurally instead (measured 2026-11-03): **131 crossing pairs over 100 distinct dictionary
+entries**, whose 125 masked results are read by hand to find the natural compounds. There were 12; all
+are closed — 5 longer whitelist entries (`전염병신`, `감염병신`, `화염병신`, `시발택시발`, `다시팔년`,
+plus `일시불알`), which cost nothing (13,188 cases, 0 evasions, every insult compound still masked), and
+3 dictionary removals (`섹스해`, `섹스하자`, `점물`, `육갑`).
+
+⚠️ The same class also exists **with no whitelist involved**: `지점물류` → `지***류`, `교육갑니다` →
+`교***니다`. A two-syllable entry lands across a syllable boundary of an ordinary compound, and no
+whitelist entry can fix that (you would add `지점물`, `교육갑`, … forever) — the entry itself has to go.
+Neither sweep finds this: there is no Korean word list in the repo, so it is found by reading the 125
+crossing results. Do not skip that reading when adding an entry, and run a corpus pass too — a suffix
+sweep cannot see a plain word that matches with no insertion at all (`검색스토리지` ← `색스` did).
 
 A fourth rule, *no entry already covered by a shorter one*, was retired. Its premise ("a longer entry
 cannot change the outcome") held only while a hit preserved the whole token. Under span coverage the

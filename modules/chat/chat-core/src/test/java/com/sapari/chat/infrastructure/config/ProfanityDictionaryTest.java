@@ -91,7 +91,12 @@ class ProfanityDictionaryTest {
             "이 옷 유니섹스해요", "디자인이 유니섹스해서 좋아요", "유니섹스하자",
             "일시불알려주세요", "일시불알림",
             // 보호어 둘이 맞닿은 자리. 거르기를 병합보다 먼저 하지 않으면 전***송! 이 된다.
-            "전염병시발송!"})
+            "전염병시발송!",
+            // 보호어 뒤에 붙은 <명사>. 어미가 아니라 명사라서 접미 스윕 60종이 못 봤다.
+            "감염병신고 접수", "전염병신고센터", "화염병신고", "전염병신규 확진", "감염병신속진단",
+            "시발점물류", "시발택시발견", "다시팔년치",
+            // 화이트리스트와 무관한 같은 계급. 사전에서 점물·육갑 을 빼서 닫았다.
+            "지점물류", "매점물건", "거점물류센터", "교육갑니다", "체육갑니다", "성교육갑니다"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
@@ -190,6 +195,28 @@ class ProfanityDictionaryTest {
     void jamoWrittenInAnotherEncodingIsStillMasked(String evaded) {
         assertThat(filterFromDictionary().filter(evaded))
                 .as("'%s' 가 통과한다 — 화면에는 사전에 있는 자모 그대로 보인다", evaded)
+                .contains("***");
+    }
+
+    /**
+     * 보호어를 접두로 붙여 욕설을 풀 수는 없다 — <b>반대 방향</b>을 못 박는다.
+     *
+     * <p>위 오탐을 닫을 때 화이트리스트에 긴 항목을 더했고, 덮임 판정을 "시작이 화이트 span
+     * 안이면 보존" 으로 넓히자는 선택지도 있었다. 그 변형을 프로토타입으로 재 보니 자연 복합어
+     * 12건이 전부 닫히는 대신 <b>욕설 복합어가 열렸다</b> — 교차 결과 125개 중 119개가 보존으로
+     * 바뀌고, 새 항목 전수 스윕의 우회가 0 → 32 가 됐다. 그래서 그 변형은 쓰지 않았다.
+     *
+     * <p>아래 벡터가 그 결정을 지킨다. 화이트리스트 항목을 더하거나 덮임 판정을 넓히면 여기가
+     * 먼저 깨진다. 끝의 {@code 감염병신병신} 은 두 방향이 동시에 성립하는 자리다 — 정당한
+     * 접두({@code 감염병신})는 살고 그 뒤의 욕설만 가려야 한다.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"구로역시발새끼", "시발택시발새끼", "다시팔새끼", "공개세끼",
+            "시발점씨발", "시발유방만져", "시발자지빨아", "감염병신병신"})
+    @DisplayName("보호어 접두로는 욕설이 풀리지 않는다 — 덮임 판정을 넓히면 119개가 보존으로 바뀐다")
+    void aProtectedPrefixDoesNotUnmaskTheInsultThatFollows(String evaded) {
+        assertThat(filterFromDictionary().filter(evaded))
+                .as("'%s' 가 통째로 통과한다 — 보호어가 사전의 off 스위치가 됐다", evaded)
                 .contains("***");
     }
 
