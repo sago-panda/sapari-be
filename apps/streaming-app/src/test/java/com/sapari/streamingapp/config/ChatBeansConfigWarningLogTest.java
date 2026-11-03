@@ -26,7 +26,7 @@ import ch.qos.logback.core.read.ListAppender;
  * <p>빈 메서드를 직접 부른다 — 판정이 그 안에 있어서, 호출이 사라지면 이 테스트가 함께 깨진다.
  */
 @DisplayName("사전 적재 경고 — 가려진 단어를 알려 준다")
-class ChatBeansConfigShadowWarnTest {
+class ChatBeansConfigWarningLogTest {
 
     private static final Logger LOGGER = (Logger) LoggerFactory.getLogger(ChatBeansConfig.class);
 

@@ -126,17 +126,26 @@ broadcast cannot be recalled and the masked text is what gets persisted.
 Masking is **span-scoped**: a profanity match is dropped only where a whitelist match *fully covers*
 it. That closed the oldest hole in this feature — a whitelist hit used to preserve the entire token, so
 every entry was an off switch for the whole dictionary and `시발점씨발` walked through. Measured across
-all 31 entries, 0 now do. Filtering happens **before** merging adjacent ranges; reverse that and
+all 39 entries against the whole dictionary (42,627 cases), 0 now do. Filtering happens **before** merging adjacent ranges; reverse that and
 overlapping matches re-open the hole, so do not move `mergeRanges` earlier.
 
 Whitelist entries obey three rules, pinned against the data by `ProfanityDictionaryTest`. An entry must
 **not be a bare profanity** (`시발점`, not `시발` — the two spans would coincide exactly and unmask that
-insult everywhere), and what is **left after removing the profanity must contain a Hangul syllable**
+insult everywhere), and what is **left after removing the profanity must be a word worth keeping** —
+one Hangul syllable, or two letters in any script
 (`8시발` leaves `8`, handing an attacker a one-character prefix: `8시발` and `8시발이다` both pass.
 `8시발놈아` does **not** — it masks to `8***아`, because the dictionary span for `시발놈` runs past
 the whitelist span and survives. The rule stands on `8시발` alone; the earlier claim that
 `8시발놈아` passes was wrong, and the reason it is wrong is the crossing-span cost noted above).
-Those two are refused at load. The third — an entry should **contain** a profanity — is only warned
+Those two are refused at load. Latin needs two letters because a single one is as cheap as `8`
+(`xpussy` and `xfuck` are refused; `pussycat` loads with a warning naming its residue `cat`). Entries
+whose residue has no Hangul syllable load **with a warning** rather than failing boot: judging by
+Hangul alone refused every legitimate Latin entry (`passivation`, `unisex`, `sexual`, `Essex`,
+`pussycat` — 6/6 when reverted), and a Latin false positive during a broadcast then has no remedy but
+a deploy that drops the dictionary entry; `sex` and `siva` already went that way, each time losing the
+detection outright. An entry that contains **no** profanity skips this rule entirely — it frees
+nothing, so the "cheap prefix" wording would be false about it, and it is reported by rule three
+instead. That third rule — an entry should **contain** a profanity — is only warned
 about, because with span scoping an entry that covers nothing simply does nothing. The line for failing
 boot is harm, not uselessness.
 
@@ -183,7 +192,7 @@ two wrong "zero cases" claims in this ticket.
 
 A second cost runs the other way: **16 whitelist entries begin with the profanity they cover**
 (`시발점`, `시발유`, `성교육`, `지랄탄`, …), so one more syllable unmasks that spot — `시발유ㅋㅋ` and
-`시발점ㅋㅋ` pass (measured 64/64 over four tails). The `0/31` figure elsewhere is the **prefix**
+`시발점ㅋㅋ` pass (measured 64/64 over four tails). The `0/42,627` figure above is the **prefix**
 direction only. Narrowing preservation to a token/non-Hangul boundary would close it and break
 `시발점에서` with it, so it stays as a stated cost.
 
@@ -194,7 +203,9 @@ and the whitelist rules above.
 All comparisons run on the same `asciiLower` plane the matcher uses, so `SIBAL` and `sibal` are not
 judged differently.
 
-A config **word** that contains a whitelist entry is loaded, not rejected, and reported as a warning.
+A config **word** that is **identical to** a whitelist entry is loaded, not rejected, and reported as
+a warning (one that merely *contains* an entry is loaded silently — `CHAT_PROFANITY_WORDS=전염병같은놈`
+produces no warning, and `ProfanityDictionaryTest` pins that).
 It is tempting to reject — but "it can never match" is false. Only the literal 1-pass token is
 preserved; 2A and 2B never consult the whitelist, so `CHAT_PROFANITY_WORDS=전염병같은놈` still masks
 `전염병 같은놈`, `전염병1같은놈`, `전염병.같은놈` and `전염병 같 은놈` — four shapes out of five.

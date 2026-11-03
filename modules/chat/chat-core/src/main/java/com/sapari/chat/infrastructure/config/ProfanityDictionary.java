@@ -180,6 +180,12 @@ public final class ProfanityDictionary {
                             + "겹쳐 덮이므로, 넣는 순간 그 욕설이 사전 전체에서 풀린다. "
                             + "'시발' 이 아니라 '시발점' 처럼 그 욕설을 품은 더 긴 정상어를 넣는다.");
         }
+        if (low.stream().noneMatch(lowered::contains)) {
+            // 품는 욕설이 0건이면 푸는 것도 0건이다 — 규칙 (3)의 문면("싼 접두를 준다")이 그
+            // 값에 대해 거짓이 된다. 그 경우는 규칙 (2) 쪽(아무것도 보호하지 않음)이 맞고
+            // 경고로 끝난다. 이 분기가 없으면 'q'·'8'·'茶'·'!!' 가 거짓 메시지로 부팅을 세운다.
+            return;
+        }
         String residue = removeAll(lowered, low);
         if (!hasHangulSyllable(residue) && !hasTwoLetters(residue)) {
             throw new IllegalStateException(
@@ -226,7 +232,7 @@ public final class ProfanityDictionary {
                 continue;
             }
             // 욕설을 뺀 잔여에 한글 음절이 없는 항목. 거부하지 않는다 — 정당한 라틴 항목이
-            // 전부 부팅을 세웠고(실측 8/8) 방송 중에 라틴 오탐을 막을 다른 길이 없다. 다만
+            // 전부 부팅을 세웠고(되돌려 재면 6/6 거부) 방송 중에 라틴 오탐을 막을 길이 없다. 다만
             // 한글 잔여보다 짧고 싸서 '8시발' 류와 거리가 가까우므로 당직자에게 보인다.
             if (!hasHangulSyllable(removeAll(lowered, lowerWords))) {
                 out.add("화이트리스트 항목 \"" + entry + "\" — 욕설을 빼면 한글 음절이 남지 않는다"
@@ -250,11 +256,16 @@ public final class ProfanityDictionary {
     /**
      * {@code text} 에서 사전 항목을 모두 지운 잔여. <b>긴 항목부터</b> 지운다.
      *
-     * <p>순서가 결과를 바꾼다 — {@code 8sibal} 에서 짧은 {@code siba} 를 먼저 지우면 잔여가
-     * {@code 8l} 이 되어 "글자가 남았다" 로 보이지만, 긴 {@code sibal} 을 먼저 지우면 {@code 8}
-     * 이다. 규칙 (3)이 그 잔여로 '지킬 말이 있는가' 를 판정하므로, 짧은 항목이 긴 항목을 쪼개
-     * 만든 글자 조각을 '말' 로 세면 싼 접두가 그대로 통과한다(실측: 그 상태에서 {@code 8sibal}
-     * 이 수락됐다).
+     * <p>순서가 결과를 바꾼다 — {@code 8sibal} 에는 사전 항목 {@code siba}·{@code sibal} 이
+     * 둘 다 들어 있어서, 짧은 쪽을 먼저 지우면 잔여가 {@code 8l} 이고 긴 쪽을 먼저 지우면
+     * {@code 8} 이다.
+     *
+     * <p><b>이 순서가 떠받치는 것은 경고문의 정확성이다 — 규칙 (3)의 판정이 아니다.</b>
+     * 당직자가 경고문의 잔여를 읽고 '지킬 말이 무엇인가' 를 판단하므로 그 값이 쪼개진 글자
+     * 조각이면 안 된다. 판정 쪽은 순서와 무관하다 — {@code 8l} 의 글자는 {@code l} 하나뿐이고
+     * ({@code 8} 은 숫자다) 문턱이 글자 둘이라 어느 순서로도 거부된다. 한때 이 자리에 "순서를
+     * 되돌리면 {@code 8sibal} 이 수락된다" 고 적었는데, 그건 문턱이 '글자 하나' 였던 중간
+     * 상태의 값이고 지금은 거짓이다. 되돌림으로 깨지는 것은 경고문 잔여 테스트 하나다.
      */
     private static String removeAll(String text, Set<String> parts) {
         List<String> longestFirst = new ArrayList<>(parts);
@@ -269,10 +280,11 @@ public final class ProfanityDictionary {
     }
 
     /**
-     * 잔여에 <b>글자</b>가 하나라도 있는가. 한글 음절만 보던 것을 넓혔다.
+     * 잔여에 <b>글자가 둘 이상</b> 있는가. 한글 음절만 보던 것을 넓혔다.
      *
      * <p>좁혔을 때의 대가가 가설이 아니었다 — {@code passivation}·{@code unisex}·
-     * {@code sexual}·{@code Essex} 같은 <b>정당한 라틴 항목이 전부 부팅을 세웠다</b>(실측 8/8).
+     * {@code sexual}·{@code Essex}·{@code pussycat} 같은 <b>정당한 라틴 항목이 전부 부팅을
+     * 세웠다</b>(실측: 그 여섯을 되돌려 재면 6/6 이 거부된다).
      * 그런데 라틴 항목 중 영단어에 걸리는 것이 지금도 5건이고({@code .claude/scripts/
      * check-ascii-entries.sh}) 그중 하나가 방송 중에 오탐을 내면 설정으로 못 막는다 —
      * 사전 항목을 빼는 배포밖에 길이 없고, {@code sex}·{@code siva} 에서 이미 두 번 그 길로
@@ -282,8 +294,9 @@ public final class ProfanityDictionary {
      * <p>한글 음절은 하나로도 낱말이라 그쪽은 그대로 한 글자다({@code 시발점} → {@code 점}).
      * 라틴에만 글자 <b>둘</b>을 요구하는 이유: 한 글자는 한글이든 라틴이든 싸다. 잔여가 {@code x}
      * 하나면({@code xsex}) {@code 8시발} 과 같은 모양이고, 라틴 정상어의 잔여는 둘 이상이다
-     * (실측: {@code Essex} → {@code es} · {@code pussycat} → {@code cat} · {@code unisex} →
-     * {@code uni}).
+     * (실측: {@code pussycat} → {@code cat}. {@code Essex}·{@code unisex} 는 사전에서
+     * {@code sex} 를 뺀 뒤로 품는 욕설이 0건이어서 규칙 (3)에 아예 들어오지 않고 규칙 (2)
+     * 경고로 간다 — 데이터가 바뀌면 그 데이터를 예시로 쓴 문장이 같이 썩는다).
      */
     private static boolean hasTwoLetters(String s) {
         return s.codePoints().filter(Character::isLetter).count() >= 2;

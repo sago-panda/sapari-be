@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.DisplayName;
@@ -454,19 +455,17 @@ class ProfanityDictionaryTest {
         var words = dictionary.words();
 
         assertThat(dictionary.whitelist()).allSatisfy(entry -> {
-            assertThat(words)
-                    .as("'%s' 은(는) 맨 욕설이다 — 넣으면 진짜 욕설까지 풀린다", entry)
-                    .doesNotContain(entry);
+            // 판정을 여기서 다시 쓰지 않는다 — 운영 경로(설정 입구)를 그대로 부른다. 전에는
+            // 잔여를 이 테스트가 직접 만들었고 (가) 지우는 순서가 Set 순회라 미규정이었으며
+            // (나) 판정이 '한글 음절' 로 굳어 운영이 허용하는 라틴 항목을 번들 파일에는 영원히
+            // 못 넣었다. 번들 화이트리스트의 유일한 게이트가 이 테스트라 그 엄격함이 곧 계약이
+            // 됐다. 이제 정의는 ProfanityDictionary 한 군데에만 있다.
+            assertThatCode(() -> ProfanityDictionary.load(null, entry))
+                    .as("'%s' 은(는) 설정으로 들어오면 거부될 항목이다 — 번들 파일이 설정보다 "
+                            + "느슨하면 안 된다", entry)
+                    .doesNotThrowAnyException();
             assertThat(words.stream().anyMatch(entry::contains))
                     .as("'%s' 은(는) 사전 단어를 품지 않는다 — 보호할 대상이 없고 우회로만 만든다", entry)
-                    .isTrue();
-            String residue = entry;
-            for (String word : words) {
-                residue = residue.replace(word, "");
-            }
-            assertThat(residue.chars().anyMatch(c -> c >= 0xAC00 && c <= 0xD7A3))
-                    .as("'%s' 은(는) 욕설을 빼면 한글이 남지 않는다 — 지킬 '말' 이 없고 우회로만 만든다",
-                            entry)
                     .isTrue();
         });
     }
@@ -720,8 +719,20 @@ class ProfanityDictionaryTest {
      * {@code siba} 를 먼저 지우면 {@code xlx} 가 된다 — 쪼개진 {@code l} 이 '남은 말' 로
      * 보고된다. 규칙 (3)의 문턱(글자 둘)도 같은 잔여를 쓰므로 순서가 판정을 바꿀 수 있다.
      */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"q", "8", "茶", "!!", ".."})
+    @DisplayName("욕설을 안 품은 항목은 비한글 한 글자여도 부팅을 세우지 않는다 — 푸는 것이 0건이다")
+    void anEntryThatContainsNoProfanityNeverTripsTheResidueRule(String entry) {
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, entry);
+
+        assertThat(dictionary.warnings())
+                .as("'%s' 은(는) 푸는 것이 0건인데 '싼 접두를 준다' 로 거부되고 있었다 — 그 문면이 "
+                        + "그 값에 대해 거짓이다", entry)
+                .anySatisfy(message -> assertThat(message).contains("아무것도"));
+    }
+
     @Test
-    @DisplayName("경고문의 잔여는 긴 항목부터 지운 결과다 — 짧은 항목이 먼저면 쪼개진 글자가 섞인다")
+    @DisplayName("경고문의 잔여는 긴 항목부터 지운 결과다 — 쪼개진 글자가 섞이면 당직자가 오독한다")
     void theReportedResidueRemovesTheLongestEntryFirst() {
         ProfanityDictionary dictionary = ProfanityDictionary.load(null, "xsibalx");
 
@@ -751,11 +762,13 @@ class ProfanityDictionaryTest {
      * 정당한 라틴 항목은 적재된다 — 한글 음절만 '말' 로 세면 방송 중에 길이 없다.
      *
      * <p>잔여를 "한글 음절" 로만 보던 동안 {@code passivation}·{@code unisex}·{@code sexual}·
-     * {@code Essex}·{@code pussycat} 이 <b>전부 부팅을 세웠다</b>(실측 8/8). 그런데 라틴 항목
+     * {@code Essex}·{@code pussycat} 이 <b>전부 부팅을 세웠다</b>(되돌려 재면 그 여섯이 6/6
+     * 거부된다). 그런데 라틴 항목
      * 중 영단어에 걸리는 것이 지금도 5건이라(사전 머리글 참조) 그중 하나가 방송 중에 오탐을
      * 내면 설정으로 못 막고 배포로 사전을 고쳐야 한다 — {@code sex}·{@code siva} 에서 이미 두 번
      * 그 길로 갔고 그때마다 검출을 통째로 잃었다. 그래서 잔여에 글자가 둘 이상이면 적재하고
-     * {@code warnings()} 로 알린다. 한 글자({@code xsex} → {@code x})는 여전히 거부다.
+     * {@code warnings()} 로 알린다. 한 글자({@code xpussy} → {@code x})는 여전히 거부다. {@code xsex} 는 사전에서 {@code sex} 를 뺀 뒤로
+     * 품는 욕설이 0건이라 이 규칙에 들어오지 않는다 — 데이터를 예시로 쓰면 데이터와 함께 썩는다.
      */
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"passivation", "passivate", "pussycat", "unisex", "sexual", "Essex"})
