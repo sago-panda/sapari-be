@@ -82,6 +82,11 @@ put back).
 
 ## Profanity dictionary — the file is the source, and the short words are the trap
 
+Before matching, the filter folds the message to **NFC** and folds case plus fullwidth Latin/digits.
+Without that, input that looks identical on screen walks past the whole dictionary — a decomposed
+`개새끼` and a fullwidth `ｆｕｃｋ` both did. It stops at NFC on purpose: NFKC would rewrite the seller's
+own text (`㈜사파리` → `(주)사파리`, `Ⅲ단계` → `III단계`) and that text is what gets persisted.
+
 The canonical design is three tiers — `live_schema.chat_filter_word` → Redis pub/sub → in-pod trie.
 Only the third exists. streaming-app has **no DB dependency at all**, so the table and the propagation
 are not wired, and `ProfanityDictionary` loads the words from two classpath resources in chat-core.
@@ -105,14 +110,20 @@ and `자지` already were upstream. **Do not add a short generic entry without r
 regression**; in live commerce a censored seller description is worse than a missed insult, because the
 broadcast cannot be recalled and the masked text is what gets persisted.
 
-Whitelist entries obey three rules, all enforced by the loader and pinned against the data by
+Whitelist entries obey four rules, pinned against the data by
 `ProfanityDictionaryTest`: an entry must **not be a bare profanity** (`시발점`, not `시발` — otherwise
 the insult itself is unmasked), it must **contain** one (otherwise it protects nothing and only opens a
 bypass — `입어보지` let `입어보지시발` through), and what is **left after removing the profanity must
 contain a Hangul syllable** (`8시발` leaves `8`, which guards no word and just adds a digit-prefixed
-bypass). There is no exception: English `sexual`/`sexy` used to be one, and those two were the key that
-let `sexyfuck` and `sexy시발` through on an ASCII keyboard. Dropping `sex` from the dictionary — the one
-ASCII entry that is a substring of ordinary English — removed their coverage and the exception with it.
+bypass), and it must **not already be covered by a shorter entry** (`시발자동차` changes nothing once
+`시발자` is there, and every extra entry widens the bypass surface). The loader **refuses** the first
+three and only **warns** about the fourth: the first three each open a new bypass, while a redundant
+entry changes no outcome. The line for failing boot is harm, not uselessness — the same reason a
+shadowed word is loaded with a warning rather than refused. There is no exception: English
+`sexual`/`sexy` used to be one, and those two were the key that let `sexyfuck` and `sexy시발` through on
+an ASCII keyboard. Dropping `sex` removed their coverage and the exception with it. `sex` was not the
+only ASCII entry that is a substring of ordinary English, as that change claimed — `siva` was another
+(`passivation`), found a round later. Measure the class, do not trust the count.
 
 The rule shrinks the bypass surface; it does not remove it. **Every surviving entry is still a switch
 for the whole dictionary** — prefix one to any insult and the token is preserved whole (`시발점씨발`,
@@ -124,7 +135,8 @@ format check for a proof that no bypass exists.
 
 Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
 resources — shape for both keys (whitespace plus the invisible classes: NBSP, ZWSP, word joiner, BOM,
-Hangul fillers, variation selectors, tag characters; and 64 chars), and all four whitelist rules above.
+Hangul fillers, variation selectors, tag characters, blank-looking symbols like U+2800; and 64 chars),
+and the whitelist rules above.
 All comparisons run on the same `asciiLower` plane the matcher uses, so `SIBAL` and `sibal` are not
 judged differently.
 

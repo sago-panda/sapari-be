@@ -41,19 +41,21 @@ public final class ProfanityDictionary {
     private final Set<String> words;
     private final Set<String> whitelist;
     private final Set<String> partiallyShadowed;
+    private final Set<String> redundantWhitelist;
 
     private ProfanityDictionary(Set<String> words, Set<String> whitelist,
-            Set<String> partiallyShadowed) {
+            Set<String> partiallyShadowed, Set<String> redundantWhitelist) {
         this.words = words;
         this.whitelist = whitelist;
         this.partiallyShadowed = partiallyShadowed;
+        this.redundantWhitelist = redundantWhitelist;
     }
 
     /**
      * 기본 사전을 읽고 추가 단어를 <b>더한다</b>(교체가 아니다).
      *
      * <p>더하는 쪽인 이유: 운영에서 급히 한 단어를 막아야 할 때 배포를 기다리지 않게 하려는 것이고,
-     * 교체로 두면 설정 한 줄이 사전 1,107개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
+     * 교체로 두면 설정 한 줄이 사전 1,106개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
      * 0건이라 교체 의미에 기대는 호출자도 없다.
      *
      * @param extraWords     쉼표로 구분한 추가 욕설. null·공백이면 무시한다.
@@ -80,14 +82,22 @@ public final class ProfanityDictionary {
         for (String entry : extraWl) {
             rejectUselessWhitelist(entry, words, whitelist);
         }
+        // 번들·설정을 가리지 않고 전부 본다. 설정만 보면 번들에 같은 모양이 들어와도 신호가 없다.
         Set<String> shadowed = new LinkedHashSet<>();
-        for (String word : extraW) {
-            String by = whitelistCoveredBy(asciiLower(word), whitelist);
+        for (String word : words) {
+            String by = whitelistInside(asciiLower(word), whitelist, false);
             if (by != null) {
                 shadowed.add(word + " ⊂ " + by);
             }
         }
-        return new ProfanityDictionary(words, whitelist, shadowed);
+        Set<String> redundant = new LinkedHashSet<>();
+        for (String entry : whitelist) {
+            String by = whitelistInside(asciiLower(entry), whitelist, true);
+            if (by != null) {
+                redundant.add(entry + " ⊂ " + by);
+            }
+        }
+        return new ProfanityDictionary(words, whitelist, shadowed, redundant);
     }
 
     public Set<String> words() {
@@ -189,13 +199,6 @@ public final class ProfanityDictionary {
                             + "없어 아무 일도 하지 않으면서, 이 조각을 붙인 토큰을 통째로 통과시키는 "
                             + "우회로만 만든다.");
         }
-        String covered = whitelistCoveredBy(lowered, whitelist);
-        if (covered != null) {
-            throw new IllegalStateException(
-                    "화이트리스트 항목이 다른 항목에 이미 덮인다: \"" + entry + "\" 안에 \"" + covered
-                            + "\" 이 들어 있다 — 토큰이 이 항목을 포함하면 그 짧은 항목도 포함하므로 "
-                            + "결과를 바꾸지 못하면서 우회면만 넓힌다.");
-        }
         if (!hasHangulSyllable(removeAll(lowered, low))) {
             throw new IllegalStateException(
                     "화이트리스트 항목에서 욕설을 빼면 한글이 남지 않는다: \"" + entry + "\" — 지키려는 "
@@ -221,10 +224,37 @@ public final class ProfanityDictionary {
         return Set.copyOf(partiallyShadowed);
     }
 
-    /** 이 항목을 이미 덮는 다른 화이트리스트 항목. 자기 자신은 제외한다. */
-    private static String whitelistCoveredBy(String lowered, Set<String> whitelist) {
+    /**
+     * 다른 화이트리스트 항목에 이미 덮이는 항목. {@code "항목 ⊂ 덮는항목"} 꼴이다.
+     *
+     * <p>거부하지 않는 이유는 <b>해롭지 않기 때문</b>이다 — 긴 항목을 품은 토큰은 짧은 항목도
+     * 반드시 품으므로 결과가 바뀌지 않는다. 반대로 한 줄 오타로 전 파드 채팅이 멈추는 대가는
+     * 크다. 같은 근거로 가려진 단어 쪽도 WARN 으로 내렸는데 이쪽만 거부로 두면, 효과가 4/5 인
+     * 값은 통과시키면서 효과가 0 인 값에 부팅을 세우는 거꾸로 된 정책이 된다.
+     *
+     * <p>거부가 남아 있는 것은 넷 중 셋이다 — 맨 욕설 · 보호 대상 없음 · 잔여 비한글. 셋 다
+     * <b>우회로를 새로 연다.</b> 경계는 "쓸모없음" 이 아니라 "해로움" 이다.
+     */
+    public Set<String> redundantWhitelist() {
+        return Set.copyOf(redundantWhitelist);
+    }
+
+    /**
+     * 이 문자열 안에 들어 있는 화이트리스트 항목. 없으면 null.
+     *
+     * <p>{@code skipExactMatch} 가 두 방향을 가른다. 화이트리스트 항목끼리 비교할 때는 자기
+     * 자신과의 비교를 빼야 모든 항목이 자기에게 덮였다고 나온다. 사전 단어와 비교할 때는 빼면
+     * 안 된다 — 두 집합이 다르므로 값이 같은 것은 자기비교가 아니라 <b>완전히 가려진 단어</b>다.
+     * 한 함수를 양쪽에 그냥 재사용했다가 {@code CHAT_PROFANITY_WORDS=시발점} 이 거부도 경고도
+     * 없이 조용히 적재되는 구멍을 만들었다.
+     */
+    private static String whitelistInside(String lowered, Set<String> whitelist,
+            boolean skipExactMatch) {
         for (String other : loweredSet(whitelist)) {
-            if (!other.equals(lowered) && lowered.contains(other)) {
+            if (skipExactMatch && other.equals(lowered)) {
+                continue;
+            }
+            if (lowered.contains(other)) {
                 return other;
             }
         }
@@ -258,16 +288,10 @@ public final class ProfanityDictionary {
         return false;
     }
 
-    // ProfanityFilter.asciiLower 와 같은 규칙(A–Z만, 길이 보존). 매칭이 그 위에서 돌기 때문에
-    // 입구 검사도 같은 평면에서 해야 한다.
+    // 매처와 같은 평면으로 접는다(대소문자 + 전각). 여기서 따로 구현하면 두 평면이 갈리고,
+    // 그러면 입구가 통과시킨 것을 매처가 다르게 보거나 그 반대가 된다 — 이미 두 번 겪었다.
     private static String asciiLower(String s) {
-        char[] cs = s.toCharArray();
-        for (int i = 0; i < cs.length; i++) {
-            if (cs[i] >= 'A' && cs[i] <= 'Z') {
-                cs[i] = (char) (cs[i] + 32);
-            }
-        }
-        return new String(cs);
+        return ProfanityFilter.fold(s);
     }
 
     /**
@@ -289,12 +313,15 @@ public final class ProfanityDictionary {
      * 서로게이트 쌍이라, {@code charAt} 로 돌면 {@code getType} 이 FORMAT 이 아니라 SURROGATE 를
      * 돌려줘 검사를 그대로 통과한다.
      *
-     * <p>개별 글자를 열거하는 대신 <b>분류</b>로 막는다. 열거는 빠뜨린 하나가 그대로 통로가 되고,
-     * 실제로 두 번 그랬다 — NBSP 를 빠뜨렸고 그 다음엔 한글 채움문자 넷 중 둘을 빠뜨렸다.
+     * <p>가능한 곳은 <b>분류</b>로 막는다 — 열거는 빠뜨린 하나가 그대로 통로가 되고 실제로 두 번
+     * 그랬다(NBSP, 그리고 한글 채움문자 넷 중 둘). 다만 전수는 아니다. 유니코드가 '기호'(So)로
+     * 분류하면서 공백처럼 렌더하는 글자가 있어 그쪽은 열거로 받는다 — 아래 {@code isBlankLooking}.
+     * So 를 통째로 막지는 않는다. 그러면 이모지 항목을 나중에 못 넣는다.
      * 현재 사전·화이트리스트가 쓰는 분류는 Nd·Ll·Lo·Po·Sk·Sm 뿐이라(실측) 아래 거부군과 겹치지 않는다.
      */
     private static boolean isInvisible(int cp) {
-        if (Character.isWhitespace(cp) || Character.isSpaceChar(cp) || isHangulFiller(cp)) {
+        if (Character.isWhitespace(cp) || Character.isSpaceChar(cp)
+                || isHangulFiller(cp) || isBlankLooking(cp)) {
             return true;
         }
         return switch (Character.getType(cp)) {
@@ -305,6 +332,12 @@ public final class ProfanityDictionary {
             case Character.NON_SPACING_MARK, Character.ENCLOSING_MARK -> true;
             default -> false;
         };
+    }
+
+    // 공백처럼 렌더되지만 유니코드가 기호(So)·문자로 분류해 위 어느 가지에도 안 걸리는 것들.
+    // U+2800 은 인터넷에서 'invisible character' 로 가장 널리 복사되는 글자다.
+    private static boolean isBlankLooking(int cp) {
+        return cp == 0x2800 || cp == 0xFFFC;
     }
 
     // 판정은 ProfanityFilter 에 둔다 — 매처도 같은 넷을 떼어 내야 하고, 두 평면이 갈리면

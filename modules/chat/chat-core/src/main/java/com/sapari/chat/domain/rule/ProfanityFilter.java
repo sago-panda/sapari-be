@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
+import java.text.Normalizer;
 import java.util.regex.Pattern;
 
 /**
@@ -21,7 +22,11 @@ import java.util.regex.Pattern;
  * </ol>
  * 화이트리스트는 1-패스에서 <b>리터럴 토큰</b>에만 적용한다(정상어 보호). 2A·2B는 우회로 판단된 토큰만 가리므로
  * 보정이 없다 — 즉 사전적 단어 `시발점`은 보존하되, 일부러 끼워넣은 `시1발점`은 우회로 보고 마스킹한다.
- * 대소문자 무관. 자모 분해 분산(예: 시 ㅂ ㅏ)은 음절 합성이 필요해 본 버전 범위 밖.
+ * <p><b>입력 정규화.</b> 매칭 전에 NFC 로 접고, 대소문자와 전각 라틴·숫자를 {@link #fold} 로
+ * 접는다. 접지 않으면 화면에 똑같이 보이는 입력이 사전을 통째로 지나간다 — NFD 분해형과
+ * 전각({@code ｆｕｃｋ})이 그랬다. 호환 분해(½ · ﬁ · ㈜)는 접지 않는다. 길이가 1:1 이 아니라
+ * span 슬라이싱 계약이 깨지고, 결과가 영속되는 본문이라 판매자 문구를 고쳐 쓰게 된다.
+ * 음절을 띄어 쓴 자모 분산(예: 시 ㅂ ㅏ)은 여전히 범위 밖이다 — NFC 로는 합쳐지지 않는다.
  *
  * <p><b>보이지 않는 글자.</b> 대부분은 글자가 아니라 2A 전처리가 떼어 낸다. 예외가 한글
  * 채움문자 넷(U+115F·U+1160·U+3164·U+FFA0)이고 유니코드가 이들을 '문자'(Lo)로 분류해
@@ -42,7 +47,7 @@ public final class ProfanityFilter {
         int max = 0;
         for (String w : words) {
             if (w != null && !w.isBlank()) {
-                String lw = asciiLower(w);
+                String lw = fold(w);
                 lowerWords.add(lw);
                 max = Math.max(max, lw.length());
             }
@@ -50,7 +55,7 @@ public final class ProfanityFilter {
         Set<String> lowerWhite = new HashSet<>();
         for (String w : whitelist) {
             if (w != null && !w.isBlank()) {
-                lowerWhite.add(asciiLower(w));
+                lowerWhite.add(fold(w));
             }
         }
         this.profanity = new AhoCorasick(lowerWords);
@@ -64,6 +69,18 @@ public final class ProfanityFilter {
         if (message == null || message.isBlank()) {
             return message;
         }
+        // NFC 로 접고 시작한다. 안 접으면 NFD 입력이 사전 전체를 통과한다 — 화면에는 똑같이
+        // 보이고 자모가 따로 저장될 뿐이라, 보낸 사람 말고는 아무도 구별하지 못한다.
+        // NFKC 가 아니라 NFC 인 것이 중요하다. 이 결과가 displayMessage 로 영속되는데 NFKC 는
+        // 판매자 문구를 고쳐 쓴다(실측: ㈜사파리 → (주)사파리 · Ⅲ단계 → III단계 · ① → 1).
+        // NFC 는 NFD 와 화면이 같고 평범한 입력에 대해 왕복이 항등이다(실측).
+        String normalized = Normalizer.isNormalized(message, Normalizer.Form.NFC)
+                ? message
+                : Normalizer.normalize(message, Normalizer.Form.NFC);
+        return maskNormalized(normalized);
+    }
+
+    private String maskNormalized(String message) {
         List<int[]> tokens = tokenSpans(message);
         String[] stripped = new String[tokens.size()];
         for (int i = 0; i < tokens.size(); i++) {
@@ -94,8 +111,8 @@ public final class ProfanityFilter {
             // 전처리(특수문자·숫자 제거)가 "원문보다 더 많은" 욕설을 드러냈을 때만 = 우회가 실제로 숨어 있던 경우.
             // 욕설 수가 그대로면 단순 구두점일 뿐이라 1-패스가 부분 처리한다(예: "시발!" → "***!").
             if (!stripped[i].equals(t)
-                    && profanity.findAll(asciiLower(stripped[i])).size()
-                        > profanity.findAll(asciiLower(t)).size()) {
+                    && profanity.findAll(fold(stripped[i])).size()
+                        > profanity.findAll(fold(t)).size()) {
                 ranges.add(new int[]{tokens.get(i)[0], tokens.get(i)[1]});
             }
         }
@@ -106,7 +123,7 @@ public final class ProfanityFilter {
                 for (int k = start; k < start + w; k++) {
                     joined.append(stripped[k]);
                 }
-                if (profanitySet.contains(asciiLower(joined.toString()))) {
+                if (profanitySet.contains(fold(joined.toString()))) {
                     ranges.add(new int[]{tokens.get(start)[0], tokens.get(start + w - 1)[1]});
                 }
             }
@@ -132,7 +149,7 @@ public final class ProfanityFilter {
         if (isWhitelisted(token)) {
             return token;
         }
-        List<int[]> spans = profanity.findAll(asciiLower(token));
+        List<int[]> spans = profanity.findAll(fold(token));
         if (spans.isEmpty()) {
             return token;
         }
@@ -175,17 +192,33 @@ public final class ProfanityFilter {
     }
 
     private boolean isWhitelisted(String s) {
-        return whitelistMatcher.containsAny(asciiLower(s));
+        return whitelistMatcher.containsAny(fold(s));
     }
 
-    // ASCII 전용 소문자화(A–Z만, 길이 보존). 사전이 한국어(무대소문자)+ASCII 영어뿐이라 충분하고,
-    // String.toLowerCase()의 로케일 의존·길이 변화(예: 'İ' → "i̇" 2글자)로 span이 어긋나
-    // maskToken 슬라이싱이 StringIndexOutOfBounds로 터지는 것을 막는다(어떤 입력에도 total).
-    private static String asciiLower(String s) {
+    /**
+     * 매칭 평면으로 접는다 — <b>길이를 보존한다.</b>
+     *
+     * <p>접는 것은 둘이다. ASCII 대문자(A–Z)와 전각 라틴·숫자(U+FF10–FF19 · U+FF21–FF3A ·
+     * U+FF41–FF5A). 전각을 안 접으면 {@code ｆｕｃｋ} 가 사전을 그대로 지나간다 — 화면에 보이는
+     * 글자는 같고 코드포인트만 다르다. 전각 라틴은 ASCII 와 1:1 이라 접어도 길이가 그대로다.
+     *
+     * <p>길이 보존이 계약인 이유: {@code maskToken} 이 여기서 얻은 span 인덱스로 <b>원문</b>을
+     * 자른다. {@code String.toLowerCase()} 는 로케일에 따라 길이가 변하고('İ' → "i̇" 2글자)
+     * 그러면 슬라이싱이 StringIndexOutOfBounds 로 터진다. 같은 이유로 ½ · ﬁ 같은 호환 분해는
+     * 여기서 접지 않는다 — 그쪽은 1:1 이 아니다.
+     */
+    public static String fold(String s) {
         char[] cs = s.toCharArray();
         for (int i = 0; i < cs.length; i++) {
-            if (cs[i] >= 'A' && cs[i] <= 'Z') {
-                cs[i] = (char) (cs[i] + 32);
+            char c = cs[i];
+            if (c >= 'A' && c <= 'Z') {
+                cs[i] = (char) (c + 32);
+            } else if (c >= '\uFF21' && c <= '\uFF3A') {
+                cs[i] = (char) (c - 0xFF21 + 'a');
+            } else if (c >= '\uFF41' && c <= '\uFF5A') {
+                cs[i] = (char) (c - 0xFF41 + 'a');
+            } else if (c >= '\uFF10' && c <= '\uFF19') {
+                cs[i] = (char) (c - 0xFF10 + '0');
             }
         }
         return new String(cs);
