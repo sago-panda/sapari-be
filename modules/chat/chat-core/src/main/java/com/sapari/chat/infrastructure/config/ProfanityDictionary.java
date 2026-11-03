@@ -41,15 +41,13 @@ public final class ProfanityDictionary {
 
     private final Set<String> words;
     private final Set<String> whitelist;
-    private final Set<String> partiallyShadowed;
-    private final Set<String> redundantWhitelist;
+    private final Set<String> ineffective;
 
     private ProfanityDictionary(Set<String> words, Set<String> whitelist,
-            Set<String> partiallyShadowed, Set<String> redundantWhitelist) {
+            Set<String> ineffective) {
         this.words = words;
         this.whitelist = whitelist;
-        this.partiallyShadowed = partiallyShadowed;
-        this.redundantWhitelist = redundantWhitelist;
+        this.ineffective = ineffective;
     }
 
     /**
@@ -84,21 +82,7 @@ public final class ProfanityDictionary {
             rejectUselessWhitelist(entry, words);
         }
         // 번들·설정을 가리지 않고 전부 본다. 설정만 보면 번들에 같은 모양이 들어와도 신호가 없다.
-        Set<String> shadowed = new LinkedHashSet<>();
-        for (String word : words) {
-            String by = whitelistInside(asciiLower(word), whitelist, false);
-            if (by != null) {
-                shadowed.add(word + " ⊂ " + by);
-            }
-        }
-        Set<String> redundant = new LinkedHashSet<>();
-        for (String entry : whitelist) {
-            String by = whitelistInside(asciiLower(entry), whitelist, true);
-            if (by != null) {
-                redundant.add(entry + " ⊂ " + by);
-            }
-        }
-        return new ProfanityDictionary(words, whitelist, shadowed, redundant);
+        return new ProfanityDictionary(words, whitelist, ineffectiveEntries(words, whitelist));
     }
 
     public Set<String> words() {
@@ -193,73 +177,54 @@ public final class ProfanityDictionary {
                             + "포함하면 통째로 보존되므로, 넣는 순간 그 욕설이 사전 전체에서 풀린다. "
                             + "'시발' 이 아니라 '시발점' 처럼 그 욕설을 품은 더 긴 정상어를 넣는다.");
         }
-        if (low.stream().noneMatch(lowered::contains)) {
-            throw new IllegalStateException(
-                    "화이트리스트 항목이 어떤 욕설도 품지 않는다: \"" + entry + "\" — 보호할 대상이 "
-                            + "없어 아무 일도 하지 않으면서, 이 조각을 붙인 토큰을 통째로 통과시키는 "
-                            + "우회로만 만든다.");
-        }
         if (!hasHangulSyllable(removeAll(lowered, low))) {
             throw new IllegalStateException(
-                    "화이트리스트 항목에서 욕설을 빼면 한글이 남지 않는다: \"" + entry + "\" — 지키려는 "
-                            + "'말' 이 없다는 뜻이다. '8시발' 의 잔여는 '8' 뿐이라 정상어를 지키는 게 "
-                            + "아니라 숫자를 붙인 우회로를 만든다. '시발점' 처럼 한글이 남아야 한다.");
+                    "화이트리스트 항목에서 욕설을 빼면 한글이 남지 않는다: \"" + entry + "\" — 공격자에게 "
+                            + "싼 접두를 준다. '8시발' 을 넣으면 '8' 만 붙여도 그 욕설 span 이 덮여 "
+                            + "'8시발'·'8시발놈아' 가 통과한다. 지킬 '말' 이 있어야 한다 — '시발점' 처럼.");
         }
     }
 
     /**
-     * 사전 단어(번들·설정 모두) 중 화이트리스트 항목을 품은 것들. {@code "단어 ⊂ 항목"} 꼴이다.
+     * 적재는 됐지만 <b>아무 일도 하지 않는</b> 항목들. 사람이 읽는 문장으로 낸다.
      *
-     * <p>이들은 <b>리터럴 토큰으로만</b> 안 걸린다. 처음에는 "영원히 매치되지 않는다" 로 보고
-     * 부팅을 세웠는데 그 전제가 거짓이었다 — 실측에서 다섯 모양 중 넷의 동작이 바뀐다.
-     * {@code 전염병같은놈} 을 더하면 {@code 전염병 같은놈}·{@code 전염병1같은놈}·
-     * {@code 전염병.같은놈}·{@code 전염병 같 은놈} 이 전부 마스킹되고, 안 걸리는 것은 공백·기호
-     * 없는 {@code 전염병같은놈} 하나뿐이다. 2A·2B 우회 경로는 화이트리스트를 보지 않기 때문이다.
+     * <p>두 종류다. 사전 단어가 화이트리스트 항목과 <b>같으면</b> 두 span 이 언제나 정확히
+     * 겹쳐 영원히 버려진다. 화이트리스트 항목이 <b>어떤 욕설도 품지 않으면</b> 덮을 span 이
+     * 없어 아무것도 보존하지 못한다.
      *
-     * <p>그래서 거부하지 않는다. 거부하면 방송 중에 쓰라고 둔 통로가 정당한 긴급차단을 막고
-     * (실측: {@code 전염병새끼}·{@code 시발역놈}·{@code 성교육충} 등 5/5 거부) 그 실패가
-     * 빈 생성 실패 = 전 파드 채팅 정지다. 대신 적재하고 호출자가 경고로 남긴다.
+     * <p>둘 다 거부하지 않는다 — 해롭지 않기 때문이다. span 단위로 바꾸기 전에는 후자가
+     * 토큰 전체를 통과시키는 우회로였고 그래서 거부했는데, 이제는 덮을 span 이 없으면 그냥
+     * 아무 일도 안 한다(실측: {@code 감사합니다시발} 이 화이트리스트 유무와 무관하게
+     * {@code 감사합니다***}). 거부는 우회로를 <b>새로 여는</b> 것에만 건다.
+     *
+     * <p>창구를 하나로 둔 이유: 전에 둘로 나눴다가 한쪽에만 테스트를 붙였고, 나머지 분기는
+     * 지워도 아무것도 안 깨졌다. 같은 실수를 두 라운드 연속 했다.
      */
-    public Set<String> partiallyShadowed() {
-        return Set.copyOf(partiallyShadowed);
+    public Set<String> ineffective() {
+        return Set.copyOf(ineffective);
     }
 
-    /**
-     * 다른 화이트리스트 항목에 이미 덮이는 항목. {@code "항목 ⊂ 덮는항목"} 꼴이다.
-     *
-     * <p>거부하지 않는 이유는 <b>해롭지 않기 때문</b>이다 — 긴 항목을 품은 토큰은 짧은 항목도
-     * 반드시 품으므로 결과가 바뀌지 않는다. 반대로 한 줄 오타로 전 파드 채팅이 멈추는 대가는
-     * 크다. 같은 근거로 가려진 단어 쪽도 WARN 으로 내렸는데 이쪽만 거부로 두면, 효과가 4/5 인
-     * 값은 통과시키면서 효과가 0 인 값에 부팅을 세우는 거꾸로 된 정책이 된다.
-     *
-     * <p>거부가 남아 있는 것은 넷 중 셋이다 — 맨 욕설 · 보호 대상 없음 · 잔여 비한글. 셋 다
-     * <b>우회로를 새로 연다.</b> 경계는 "쓸모없음" 이 아니라 "해로움" 이다.
-     */
-    public Set<String> redundantWhitelist() {
-        return Set.copyOf(redundantWhitelist);
-    }
-
-    /**
-     * 이 문자열 안에 들어 있는 화이트리스트 항목. 없으면 null.
-     *
-     * <p>{@code skipExactMatch} 가 두 방향을 가른다. 화이트리스트 항목끼리 비교할 때는 자기
-     * 자신과의 비교를 빼야 모든 항목이 자기에게 덮였다고 나온다. 사전 단어와 비교할 때는 빼면
-     * 안 된다 — 두 집합이 다르므로 값이 같은 것은 자기비교가 아니라 <b>완전히 가려진 단어</b>다.
-     * 한 함수를 양쪽에 그냥 재사용했다가 {@code CHAT_PROFANITY_WORDS=시발점} 이 거부도 경고도
-     * 없이 조용히 적재되는 구멍을 만들었다.
-     */
-    private static String whitelistInside(String lowered, Set<String> whitelist,
-            boolean skipExactMatch) {
-        for (String other : loweredSet(whitelist)) {
-            if (skipExactMatch && other.equals(lowered)) {
-                continue;
-            }
-            if (lowered.contains(other)) {
-                return other;
+    private static Set<String> ineffectiveEntries(Set<String> words, Set<String> whitelist) {
+        Set<String> lowerWhitelist = loweredSet(whitelist);
+        Set<String> lowerWords = loweredSet(words);
+        Set<String> out = new LinkedHashSet<>();
+        for (String word : words) {
+            if (lowerWhitelist.contains(asciiLower(word))) {
+                out.add("사전 단어 \"" + word + "\" — 같은 화이트리스트 항목이 있어 어느 자리에서도 "
+                        + "걸리지 않는다");
             }
         }
-        return null;
+        for (String entry : whitelist) {
+            String lowered = asciiLower(entry);
+            if (lowerWords.stream().noneMatch(lowered::contains)) {
+                out.add("화이트리스트 항목 \"" + entry + "\" — 어떤 욕설도 품지 않아 아무것도 "
+                        + "보호하지 않는다");
+            }
+        }
+        return out;
     }
+
+
 
     private static Set<String> loweredSet(Set<String> source) {
         Set<String> out = new LinkedHashSet<>();

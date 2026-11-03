@@ -110,28 +110,36 @@ and `자지` already were upstream. **Do not add a short generic entry without r
 regression**; in live commerce a censored seller description is worse than a missed insult, because the
 broadcast cannot be recalled and the masked text is what gets persisted.
 
-Whitelist entries obey four rules, pinned against the data by
-`ProfanityDictionaryTest`: an entry must **not be a bare profanity** (`시발점`, not `시발` — otherwise
-the insult itself is unmasked), it must **contain** one (otherwise it protects nothing and only opens a
-bypass — `입어보지` let `입어보지시발` through), and what is **left after removing the profanity must
-contain a Hangul syllable** (`8시발` leaves `8`, which guards no word and just adds a digit-prefixed
-bypass), and it must **not already be covered by a shorter entry** (`시발자동차` changes nothing once
-`시발자` is there, and every extra entry widens the bypass surface). The loader **refuses** the first
-three and only **warns** about the fourth: the first three each open a new bypass, while a redundant
-entry changes no outcome. The line for failing boot is harm, not uselessness — the same reason a
-shadowed word is loaded with a warning rather than refused. There is no exception: English
-`sexual`/`sexy` used to be one, and those two were the key that let `sexyfuck` and `sexy시발` through on
-an ASCII keyboard. Dropping `sex` removed their coverage and the exception with it. `sex` was not the
-only ASCII entry that is a substring of ordinary English, as that change claimed — `siva` was another
-(`passivation`), found a round later. Measure the class, do not trust the count.
+Masking is **span-scoped**: a profanity match is dropped only where a whitelist match *fully covers*
+it. That closed the oldest hole in this feature — a whitelist hit used to preserve the entire token, so
+every entry was an off switch for the whole dictionary and `시발점씨발` walked through. Measured across
+all 31 entries, 0 now do. Filtering happens **before** merging adjacent ranges; reverse that and
+overlapping matches re-open the hole, so do not move `mergeRanges` earlier.
 
-The rule shrinks the bypass surface; it does not remove it. **Every surviving entry is still a switch
-for the whole dictionary** — prefix one to any insult and the token is preserved whole (`시발점씨발`,
-`전염병씨발`; measured across all 31). That follows from `isWhitelisted` being
-*token contains entry*, not *entry covers the matched span*, so it is a property of the filter rather
-than of the data. Closing it means changing `ProfanityFilter` to keep a token only where the whitelist
-match covers the profanity span — out of scope here, recorded so the next reader does not mistake the
-format check for a proof that no bypass exists.
+Whitelist entries obey three rules, pinned against the data by `ProfanityDictionaryTest`. An entry must
+**not be a bare profanity** (`시발점`, not `시발` — the two spans would coincide exactly and unmask that
+insult everywhere), and what is **left after removing the profanity must contain a Hangul syllable**
+(`8시발` leaves `8`, handing an attacker a one-character prefix: both `8시발` and `8시발놈아` pass).
+Those two are refused at load. The third — an entry should **contain** a profanity — is only warned
+about, because with span scoping an entry that covers nothing simply does nothing. The line for failing
+boot is harm, not uselessness.
+
+A fourth rule, *no entry already covered by a shorter one*, was retired. Its premise ("a longer entry
+cannot change the outcome") held only while a hit preserved the whole token. Under span coverage the
+longer entry covers a wider span and keeps matches the shorter cannot: with `cd` in the dictionary and
+`abc` whitelisted, `abcd` masks to `ab***`; add `abcd` and it stays whole. A duplicate-looking entry is
+a different protection, not dead weight.
+
+There is no exception to the rules. English `sexual`/`sexy` used to be one, and those two were the key
+that let `sexyfuck` and `sexy시발` through on an ASCII keyboard. Dropping `sex` removed their coverage
+and the exception with it. `sex` was not the only ASCII entry that is a substring of ordinary English,
+as that change claimed — `siva` was another (`passivation`), found a round later. Measure the class, do
+not trust the count.
+
+Span scoping has a cost in the other direction: a token is no longer preserved wholesale, so a fragment
+*after* a protected word can be masked. Zero cases in the current data — the suffix sweep in
+`ProfanityDictionaryTest` runs every entry against 22 common particles and endings, and must be re-run
+whenever an entry is added.
 
 Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
 resources — shape for both keys (whitespace plus the invisible classes: NBSP, ZWSP, word joiner, BOM,

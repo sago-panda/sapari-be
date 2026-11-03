@@ -49,17 +49,24 @@ class ChatBeansConfigShadowWarnTest {
     }
 
     @Test
-    @DisplayName("⭐ 가려지는 단어가 있으면 WARN 에 그 단어와 가리는 항목이 실린다")
-    void aShadowedConfigWordIsWarnedAbout() {
+    @DisplayName("⭐ 화이트리스트 항목과 같은 단어는 WARN 에 실린다 — 어느 자리에서도 안 걸린다")
+    void aWordIdenticalToAWhitelistEntryIsWarnedAbout() {
+        new ChatBeansConfig().profanityFilter("시발점", "");
+
+        assertThat(warnings())
+                .as("안 걸린다는 사실을 아무 데도 안 남기면 '막았다' 와 구분되지 않는다")
+                .hasSize(1);
+        assertThat(warnings().get(0).getFormattedMessage()).contains("시발점");
+    }
+
+    @Test
+    @DisplayName("항목을 품기만 하는 단어는 경고하지 않는다 — span 이 더 넓어 정상 작동한다")
+    void aWordMerelyContainingAnEntryIsNotWarnedAbout() {
         new ChatBeansConfig().profanityFilter("전염병같은놈", "");
 
         assertThat(warnings())
-                .as("가려진다는 사실을 아무 데도 안 남기면 '막았다' 와 구분되지 않는다")
-                .hasSize(1);
-        assertThat(warnings().get(0).getFormattedMessage())
-                .contains("전염병같은놈")
-                .as("무엇이 가리는지 없으면 운영자가 손쓸 데를 모른다")
-                .contains("전염병");
+                .as("거짓 경고는 진짜 경고를 묻는다 — 이 단어는 실제로 마스킹된다")
+                .isEmpty();
     }
 
     /**
@@ -70,15 +77,12 @@ class ChatBeansConfigShadowWarnTest {
      * 이 테스트 클래스 자신의 javadoc 이 경고하는 모양을 같은 클래스가 다시 만든 것이다.
      */
     @Test
-    @DisplayName("⭐ 이미 덮이는 화이트리스트 항목도 WARN 에 실린다 — 형제 분기를 빼먹었었다")
-    void aRedundantWhitelistEntryIsWarnedAbout() {
-        new ChatBeansConfig().profanityFilter("", "시발자동차");
+    @DisplayName("⭐ 아무것도 보호하지 않는 화이트리스트 항목도 같은 WARN 에 실린다")
+    void anIneffectiveWhitelistEntryIsWarnedAbout() {
+        new ChatBeansConfig().profanityFilter("", "감사합니다");
 
         assertThat(warnings()).hasSize(1);
-        assertThat(warnings().get(0).getFormattedMessage())
-                .contains("시발자동차")
-                .as("무엇에 덮이는지 없으면 운영자가 손쓸 데를 모른다")
-                .contains("시발자");
+        assertThat(warnings().get(0).getFormattedMessage()).contains("감사합니다");
     }
 
     @Test

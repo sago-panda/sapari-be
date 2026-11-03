@@ -57,19 +57,12 @@ public class ChatBeansConfig {
         ProfanityDictionary dictionary = ProfanityDictionary.load(extraWords, extraWhitelist);
         log.info("욕설 사전 적재 — 욕설 {}개 · 화이트리스트 {}개",
                 dictionary.words().size(), dictionary.whitelist().size());
-        // 사전 단어(번들·설정 모두)가 화이트리스트 항목을 품으면 리터럴 토큰에서만 안 걸린다
-        // (우회형은 여전히 잡는다). 적재는 하되 알려 준다 — 급히 막은 사람이 "막았다" 와
-        // "리터럴은 못 막는다" 를 구분할 수 있어야 하기 때문이다. 부팅을 세우면 정당한 긴급차단까지
-        // 막힌다.
-        if (!dictionary.partiallyShadowed().isEmpty()) {
-            log.warn("사전 단어가 화이트리스트에 일부 가려진다 — 리터럴 토큰으로는 안 걸리고 "
-                    + "공백·기호가 섞인 우회형만 걸린다: {}", dictionary.partiallyShadowed());
-        }
-        // 해롭지는 않다(결과가 안 바뀐다). 다만 화이트리스트가 길어질수록 우회면이 넓어지므로
-        // 효과 없는 항목이 쌓이는 것을 알려 준다.
-        if (!dictionary.redundantWhitelist().isEmpty()) {
-            log.warn("화이트리스트 항목이 더 짧은 항목에 이미 덮인다 — 효과가 없으면서 우회면만 "
-                    + "넓힌다: {}", dictionary.redundantWhitelist());
+        // 적재는 됐지만 아무 일도 하지 않는 항목을 알려 준다. 거부하지 않는 이유는 해롭지
+        // 않기 때문이고(결과가 안 바뀐다), 방송 중에 쓰라고 둔 통로가 한 줄 오타로 전 파드
+        // 채팅을 세우는 대가가 더 크다. 다만 "막았다" 로 믿고 넘어가는 것이 이 경고가 막으려는
+        // 것이라, 조용히 넘기지도 않는다.
+        if (!dictionary.ineffective().isEmpty()) {
+            log.warn("사전에 효과 없는 항목이 있다: {}", dictionary.ineffective());
         }
         return new ProfanityFilter(dictionary.words(), dictionary.whitelist());
     }

@@ -133,6 +133,27 @@ class ProfanityDictionaryTest {
                 .contains("***");
     }
 
+    /**
+     * NFD 는 음절 <b>안</b>에 글자를 끼웠을 때가 진짜 시험대다.
+     *
+     * <p>음절 경계에 끼우면 입구 NFC 가 합성해 잡히지만, 자모 사이에 끼우면 합성이 막힌다 —
+     * 한때 76케이스 중 57 이 통과했다. 떼고 나서 합치는 순서로 닫았다.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"1", "!", ".", "-", "*", "0", " ", "\u200B", "\u3164", "\uFE0F"})
+    @DisplayName("⭐ NFD 음절 안에 글자를 끼워도 잡는다 — 떼기 전에 합치면 영원히 안 붙는다")
+    void anInsertionInsideADecomposedSyllableIsStillMasked(String inserted) {
+        String nfd = java.text.Normalizer.normalize("시발", java.text.Normalizer.Form.NFD);
+        ProfanityFilter filter = filterFromDictionary();
+
+        for (int pos = 1; pos < nfd.length(); pos++) {
+            String evaded = nfd.substring(0, pos) + inserted + nfd.substring(pos);
+            assertThat(filter.filter(evaded))
+                    .as("'%s' 를 %d번째에 끼우면 통과한다 — 화면에는 그냥 시발이다", inserted, pos)
+                    .contains("***");
+        }
+    }
+
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"ｆｕｃｋ", "ｓｉｂａｌ", "ｂｉｔｃｈ", "ＦＵＣＫ",
             // 전각 숫자 가지(FF10–19). 없으면 사전의 s1bal · 18놈 이 전각으로 통과한다.
@@ -161,13 +182,26 @@ class ProfanityDictionaryTest {
     /**
      * 2A 전처리가 한글과 그 밖을 다르게 접는다.
      *
-     * <p>한글은 NFC 까지만 접는다 — NFKC 를 쓰면 호환 자모 {@code ㅂ}(U+3142)가 조합용 자모로
-     * 바뀌어 사전의 {@code 시ㅂㅏ} 류 항목과 어긋난다. 한 번 그렇게 깨뜨렸다. 그 밖은 코드포인트
-     * 단위 NFKC 라 원문자·수학 알파벳이 닫힌다. 두 평면을 한 번에 접으면 한쪽이 반드시 깨진다.
+     * <p>평면이 셋이고 2A·2B 가 OR 로 발화한다. 하나로 합치면 반드시 하나가 깨진다 —
+     * 실제로 깨뜨렸다. 비글자 제거 평면을 코드포인트별 NFKC 로 바꿨더니 {@code ℃} 가
+     * {@code °C} 로 전개되며 {@code C} 가 남아 {@code 시C발} 이 됐고, BMP 전수 차단이
+     * 14,525 → 13,718 로 줄었다(829 잃고 22 얻음). ℃·℉·№·㎡ 는 라이브 커머스에 평범하게
+     * 나온다.
+     *
+     * <p>평면 A 는 글자 아닌 것을 떼고, B 는 호환 전개 후 글자만 남기고, C 는 B 의 조합용
+     * 자모를 사전이 쓰는 호환 자모로 되돌린다. 셋 다 반환 직전에 합친다 — 떼기 전에 합치면
+     * 음절 안에 끼인 글자가 합성을 막는다.
      */
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"시 ㅂ ㅏ", "ㅅ ㅣ ㅂ ㅏ", "ⓕⓤⓒⓚ", "𝖋𝖚𝖈𝖐"})
-    @DisplayName("⭐ 자모 분산과 원문자·수학 알파벳을 같이 잡는다 — 한글은 NFC, 나머지는 NFKC")
+    @ValueSource(strings = {
+            "시 ㅂ ㅏ", "ㅅ ㅣ ㅂ ㅏ",          // 평면 A — 글자 아닌 것을 떼면 붙는다
+            "ⓕⓤⓒⓚ", "𝖋𝖚𝖈𝖐",                  // 평면 B — 호환 전개해야 글자가 나온다
+            "시℃발", "시№발", "시㎡발", "시ⓐ발", // 평면 A — NFKC 가 글자를 남기면 끊긴다
+            "시\uFFB2\uFFC2",                  // 평면 C — 반각은 조합용으로 접히고 사전은 호환이다
+            // 평면 B — 반각 '창녀'. 사전에 'ㅊㄴ' 자모 표기가 없어 평면 C 로는 안 잡히고,
+            // 호환 전개 뒤 음절로 합쳐야 걸린다. 평면 B 를 빼면 이 줄만 깨진다(실측).
+            "\uFFBA\uFFC2\u11BC\uFFA4\uFFCA"})
+    @DisplayName("⭐ 전처리 평면 셋이 각자 다른 계급을 잡는다 — 하나로 합치면 반드시 하나가 깨진다")
     void jamoSpreadAndCompatibilityLettersAreBothCaught(String message) {
         assertThat(filterFromDictionary().filter(message))
                 .as("'%s' 이(가) 통과한다 — 두 평면 중 하나를 희생한 것이다", message)
@@ -226,10 +260,10 @@ class ProfanityDictionaryTest {
      * 그 조각을 붙인 토큰이 통째로 통과한다. 실제로 두 번 밟았다 — 맨 욕설에 숫자를 붙인
      * {@code 8시발}, 그리고 사전에 없는 욕설을 보호하던 {@code 입어보지} 류 24건이다.
      *
-     * <p>⚠️ 이 테스트가 재는 것은 <b>그 두 종류가 목록에 없다</b>는 것뿐이다. 규칙을 지킨 항목도
-     * 여전히 우회 스위치다 — {@code 시발점씨발} 은 지금도 통째로 통과한다(유지된 31건 전수 실측).
-     * 그 잔재는 데이터가 아니라 {@code isWhitelisted} 가 "항목을 포함하면 보존" 이라는 데서 나오고,
-     * 닫으려면 필터를 바꿔야 한다. 이 테스트를 "우회로가 없다" 의 증거로 읽지 말 것.
+     * <p>이 잔재는 닫혔다. 한때 규칙을 지킨 항목도 전부 우회 스위치였다 — {@code 시발점씨발} 이
+     * {@code 시발점} 때문에 통째로 통과했다. 마스킹을 span 단위로 바꿔(욕설 span 이 화이트리스트
+     * span 에 <b>완전히 덮일 때만</b> 버린다) 31건 전수에서 0건이 됐다. 아래
+     * {@code noWhitelistEntryIsAGlobalOffSwitch} 가 그것을 고정한다.
      */
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"너가시발", "카카오시발", "0개시발", "8시발", "입어보지시발", "전자지갑시발"})
@@ -271,6 +305,27 @@ class ProfanityDictionaryTest {
     }
 
     /**
+     * 어떤 화이트리스트 항목도 사전 전체의 off 스위치가 아니다.
+     *
+     * <p>여섯 라운드 동안 "범위 밖" 으로 적혀 있던 잔재다. 항목을 접두로 붙이면 토큰이 통째로
+     * 보존돼 {@code 시발점씨발} 이 통과했다 — 항목 하나하나가 사전 전체를 끄는 스위치였다.
+     * 마스킹을 span 단위로 바꿔 닫았고, 여기서 전수로 고정한다.
+     */
+    @Test
+    @DisplayName("⭐ 화이트리스트 항목에 욕설을 붙여도 통과하지 않는다 — 전수 고정")
+    void noWhitelistEntryIsAGlobalOffSwitch() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, null);
+        ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
+
+        assertThat(dictionary.whitelist()).allSatisfy(entry -> {
+            String token = entry + "씨발";
+            assertThat(filter.filter(token))
+                    .as("'%s' 이(가) 통째로 통과한다 — 이 항목이 사전 전체의 off 스위치다", token)
+                    .isNotEqualTo(token);
+        });
+    }
+
+    /**
      * 순 ASCII 항목의 집합을 통째로 고정한다.
      *
      * <p>라틴 항목은 평범한 영단어의 부분문자열이 되기 쉽고, 한글 항목과 달리 화이트리스트로
@@ -300,28 +355,33 @@ class ProfanityDictionaryTest {
     }
 
     /**
-     * 화이트리스트 안에 서로 덮는 항목이 없다.
+     * 화이트리스트 추가가 평범한 한국어를 새로 가리지 않는다.
      *
-     * <p>다른 항목에 이미 덮이는 항목은 결과를 바꾸지 못하면서 우회면만 넓힌다
-     * ({@code 시발자} 가 있으면 {@code 시발자동차} 는 사문이다).
+     * <p>span 단위로 바꾸면서 생긴 새 계급이다 — 토큰 전체를 보존하지 않으므로, 보호어 뒤에
+     * 붙은 조각이 사전에 걸리면 그 자리가 마스킹된다. 지금 데이터에서는 0건이지만 항목을
+     * 더할 때마다 다시 재야 한다. 항목 전수 × 흔한 조사·접미사를 돌린다.
      *
-     * <p>사전 단어가 화이트리스트 항목을 품는 방향은 <b>단언하지 않는다.</b> 한때 그것도
-     * 걸었는데 "그러면 영원히 안 걸린다" 는 전제가 거짓이었다 — 리터럴 토큰만 보존되고
-     * 2A·2B 우회형은 잡힌다. 그 단언을 남겨 두면 다음 사람이 정당한 번들 단어를 지우는 쪽으로
-     * 확장한다.
+     * <p>서로 덮는 항목을 금지하던 규칙은 걷었다. 그 근거("긴 항목은 결과를 바꾸지 못한다")가
+     * 토큰 전체 보존에서만 참이었다 — span 단위에서는 긴 항목이 더 넓은 span 을 덮어 결과를
+     * 바꾼다(실측: 사전 {@code cd} · 화이트 {@code abc} 면 {@code ab***}, 거기에 {@code abcd}
+     * 를 더하면 {@code abcd}).
      */
     @Test
-    @DisplayName("화이트리스트에 서로 덮는 항목이 없다 — 효과 0 이면서 우회면만 넓힌다")
-    void theBundledDataHasNoDeadEntries() {
+    @DisplayName("⭐ 보호어에 조사·접미사를 붙여도 새로 가려지지 않는다 — span 단위가 연 계급")
+    void addingAnOrdinarySuffixToAProtectedWordDoesNotMask() {
         ProfanityDictionary dictionary = ProfanityDictionary.load(null, null);
-        var words = dictionary.words();
-        var whitelist = dictionary.whitelist();
+        ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
+        String[] suffixes = {"에서", "이", "가", "로", "으로", "과정", "동", "버스", "님", "을", "를",
+                "은", "는", "와", "도", "만", "까지", "부터", "보다", "처럼", "마다", "조차"};
 
-        assertThat(words).isNotEmpty();
-        assertThat(whitelist).allSatisfy(entry ->
-                assertThat(whitelist.stream().filter(o -> !o.equals(entry) && entry.contains(o)).toList())
-                        .as("'%s' 은(는) 더 짧은 항목에 이미 덮인다 — 결과를 안 바꾸고 우회면만 넓힌다", entry)
-                        .isEmpty());
+        assertThat(dictionary.whitelist()).allSatisfy(entry -> {
+            for (String suffix : suffixes) {
+                String token = entry + suffix;
+                assertThat(filter.filter(token))
+                        .as("'%s' 이(가) 가려진다 — 보호어 뒤 조각이 사전에 걸렸다", token)
+                        .isEqualTo(token);
+            }
+        });
     }
 
     @Test
@@ -442,12 +502,25 @@ class ProfanityDictionaryTest {
                 .hasMessageContaining("시발점");
     }
 
+    /**
+     * 아무것도 보호하지 않는 항목은 <b>적재하고 알린다</b> — 더는 거부하지 않는다.
+     *
+     * <p>마스킹이 토큰 전체 보존이던 동안에는 이것이 우회로였다 — 그 조각을 붙인 토큰이 통째로
+     * 통과했다. span 단위로 바꾼 뒤에는 덮을 span 이 없어 아무 일도 하지 않는다(실측:
+     * {@code 감사합니다시발} 이 이 항목의 유무와 무관하게 {@code 감사합니다***}). 해롭지 않은
+     * 것에 부팅을 세우지 않는다는 경계를 그대로 적용한다.
+     */
     @Test
-    @DisplayName("욕설을 품지 않은 설정 화이트리스트 항목도 거부한다 — 우회로만 만든다")
-    void aConfiguredWhitelistEntryThatProtectsNothingFailsBoot() {
-        assertThatThrownBy(() -> ProfanityDictionary.load(null, "김치찌개"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("어떤 욕설도 품지 않는다");
+    @DisplayName("⭐ 아무것도 보호하지 않는 항목은 적재하고 알린다 — span 단위에서는 해롭지 않다")
+    void aWhitelistEntryThatProtectsNothingIsLoadedAndReported() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, "김치찌개");
+        ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
+
+        assertThat(dictionary.whitelist()).contains("김치찌개");
+        assertThat(dictionary.ineffective()).anySatisfy(e -> assertThat(e).contains("김치찌개"));
+        assertThat(filter.filter("김치찌개시발"))
+                .as("덮을 span 이 없으면 우회로가 되지 않는다")
+                .contains("***");
     }
 
     @Test
@@ -496,31 +569,26 @@ class ProfanityDictionaryTest {
     }
 
     /**
-     * 화이트리스트에 일부 가려지는 단어는 <b>적재하고 알린다</b> — 거부하지 않는다.
+     * 화이트리스트 항목을 <b>품기만</b> 하는 단어는 정상 작동한다.
      *
-     * <p>처음에는 "영원히 매치되지 않는다" 로 보고 부팅을 세웠는데 그 전제가 거짓이었다.
-     * 리터럴 토큰 하나만 보존되고 2A·2B 우회 경로는 화이트리스트를 보지 않는다 — 다섯 모양 중
-     * 넷의 동작이 바뀐다. 거부하면 방송 중에 쓰라고 둔 통로가 정당한 긴급차단을 막고, 그 실패가
-     * 빈 생성 실패 = 전 파드 채팅 정지다.
+     * <p>마스킹이 span 단위라 그 단어의 span 이 항목 span 보다 넓어 덮이지 않는다. 한때 이것을
+     * "영원히 매치되지 않는다" 로 보고 부팅을 세웠는데 거짓이었고, 그 다음에는 거짓 경고를
+     * 남겼다. 지금은 둘 다 아니다 — 그냥 작동한다.
      */
     @Test
-    @DisplayName("⭐ 일부 가려지는 단어도 적재한다 — 우회형은 여전히 잡고, 거부하면 긴급차단이 막힌다")
-    void aPartiallyShadowedWordIsLoadedAndReported() {
+    @DisplayName("⭐ 화이트리스트 항목을 품기만 하는 단어는 그대로 작동한다 — 경고할 것도 없다")
+    void aWordMerelyContainingAWhitelistEntryWorks() {
         ProfanityDictionary dictionary = ProfanityDictionary.load("전염병같은놈", null);
         ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
 
-        assertThat(dictionary.words()).contains("전염병같은놈");
-        assertThat(dictionary.partiallyShadowed())
-                .as("가려진다는 사실을 호출자가 알 수 없으면 '막았다' 와 구분이 안 된다")
-                .anySatisfy(entry -> assertThat(entry).contains("전염병같은놈").contains("전염병"));
-
-        assertThat(filter.filter("전염병 같은놈"))
-                .as("우회형까지 못 잡는다면 이 단어는 정말 쓸모가 없고, 그러면 거부가 맞았을 것이다")
-                .isNotEqualTo("전염병 같은놈");
-        assertThat(filter.filter("전염병1같은놈")).isNotEqualTo("전염병1같은놈");
-        assertThat(filter.filter("전염병같은놈"))
-                .as("리터럴 토큰은 화이트리스트가 보존한다 — 이것이 '일부' 라는 말의 내용이다")
-                .isEqualTo("전염병같은놈");
+        assertThat(filter.filter("전염병같은놈")).contains("***");
+        assertThat(filter.filter("아 전염병같은놈 진짜")).contains("***");
+        assertThat(dictionary.ineffective())
+                .as("작동하는 단어에 경고를 달면 진짜 경고가 묻힌다")
+                .isEmpty();
+        assertThat(filter.filter("전염병 주의"))
+                .as("보호어 자체는 그대로여야 한다")
+                .isEqualTo("전염병 주의");
     }
 
     /**
@@ -532,13 +600,16 @@ class ProfanityDictionaryTest {
      * 경우가 유일하게 조용해졌다.
      */
     @Test
-    @DisplayName("설정 단어가 화이트리스트 항목과 같으면 그것도 보고한다 — 가장 크게 가려진 경우다")
-    void aWordIdenticalToAWhitelistEntryIsStillReported() {
+    @DisplayName("설정 단어가 화이트리스트 항목과 같으면 보고한다 — 그때만 정말 안 걸린다")
+    void aWordIdenticalToAWhitelistEntryIsReported() {
         ProfanityDictionary dictionary = ProfanityDictionary.load("시발점", null);
+        ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
 
-        assertThat(dictionary.partiallyShadowed())
-                .as("값이 같으면 자기비교가 아니라 완전히 가려진 것이다")
+        assertThat(dictionary.ineffective())
                 .anySatisfy(entry -> assertThat(entry).contains("시발점"));
+        assertThat(filter.filter("아 시발점 진짜"))
+                .as("두 span 이 정확히 겹쳐 언제나 버려진다")
+                .isEqualTo("아 시발점 진짜");
     }
 
     @Test
@@ -576,23 +647,25 @@ class ProfanityDictionaryTest {
     }
 
     /**
-     * 이미 덮이는 화이트리스트 항목은 <b>적재하고 알린다</b> — 거부하지 않는다.
+     * 서로 덮는 항목을 금지하던 규칙은 걷었다 — 그 전제가 span 단위에서 거짓이다.
      *
-     * <p>거부가 남아 있는 셋(맨 욕설 · 보호 대상 없음 · 잔여 비한글)은 전부 <b>우회로를 새로
-     * 연다.</b> 이 항목은 그렇지 않다 — 긴 항목을 품은 토큰은 짧은 항목도 반드시 품으므로 결과가
-     * 바뀌지 않는다. 한때 이것만 거부로 뒀는데, 그러면 효과가 4/5 인 값(가려진 단어)은 통과시키고
-     * 효과가 0 인 값에 전 파드 채팅을 세우는 거꾸로 된 정책이 된다. 경계는 '쓸모없음' 이 아니라
-     * '해로움' 이다.
+     * <p>근거는 "긴 항목을 품은 토큰은 짧은 항목도 반드시 품으므로 결과가 바뀌지 않는다"
+     * 였는데, 그것은 토큰 전체를 보존하던 동안에만 참이었다. span 단위에서는 긴 항목이
+     * <b>더 넓은 span 을 덮어</b> 짧은 항목이 못 덮는 사전 매치를 추가로 보존한다. 효과가
+     * 0 이 아니므로 "효과 0 인 값에 부팅을 세우지 않는다" 는 근거 자체가 성립하지 않는다.
+     * 그 사실을 여기서 고정한다 — 규칙을 되살리려는 사람이 이 테스트를 먼저 보게 된다.
      */
     @Test
-    @DisplayName("⭐ 이미 덮이는 항목은 적재하고 알린다 — 해롭지 않은 것에 부팅을 세우지 않는다")
-    void aWhitelistEntryAlreadyCoveredIsLoadedAndReported() {
-        ProfanityDictionary dictionary = ProfanityDictionary.load(null, "시발자동차");
+    @DisplayName("⭐ 더 긴 화이트리스트 항목은 결과를 바꾼다 — '중복이라 효과 0' 은 거짓이다")
+    void aLongerWhitelistEntryChangesTheOutcome() {
+        ProfanityFilter shortOnly = new ProfanityFilter(java.util.Set.of("cd"), java.util.Set.of("abc"));
+        ProfanityFilter withLonger =
+                new ProfanityFilter(java.util.Set.of("cd"), java.util.Set.of("abc", "abcd"));
 
-        assertThat(dictionary.whitelist()).contains("시발자동차");
-        assertThat(dictionary.redundantWhitelist())
-                .as("효과 0 인 항목이 쌓이는 것을 알리지 않으면 우회면만 조용히 넓어진다")
-                .anySatisfy(e -> assertThat(e).contains("시발자동차").contains("시발자"));
+        assertThat(shortOnly.filter("abcd")).isEqualTo("ab***");
+        assertThat(withLonger.filter("abcd"))
+                .as("긴 항목이 cd 의 span 까지 덮는다 — 중복이 아니라 다른 보호다")
+                .isEqualTo("abcd");
     }
 
     /**
