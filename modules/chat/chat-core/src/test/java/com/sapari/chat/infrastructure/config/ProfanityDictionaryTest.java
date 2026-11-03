@@ -75,18 +75,41 @@ class ProfanityDictionaryTest {
             "일시불 결제", "유니섹스 디자인", "전염병 주의", "감염병 예방",
             "무시발언 자제", "다시팔게요", "오랄비 칫솔",
             // 1글자·연결형이라 결합이 무제한인 것들 — 사전에서 뺐다.
-            "똥손이라 죄송", "소똥 거름", "허리가 쑤셔요", "애가 졸라서 샀어요",
+            "똥손이라 죄송", "소똥 거름", "허리가 쑤셔요",
+            // 조르다의 활용. 활용형 넷을 화이트리스트에 열거해 봤지만 닫히지 않아 '졸라' 를 뺐다.
+            "애가 졸라서 샀어요", "애가 졸라요", "졸라네요", "졸라댔어요", "허리띠를 졸라매고",
             // 'sex' 가 사전에 있는 동안 평범한 영단어가 가려졌다.
             "UNISEX 사이즈 있나요", "unisex 사이즈", "Essex 산 제품",
             // <시각>시발송 — '구매시발송' 만 막아 두는 바람에 숫자 쪽이 열려 있었다.
             "8시발송", "9시발송", "오후 8시발송입니다",
             // 조르다의 활용. 활용형을 넷 열거해 봤지만 닫히지 않아 '졸라' 를 사전에서 뺐다.
-            "애가 졸라요", "졸라네요", "졸라댔어요", "허리띠를 졸라매고"})
+            // 라틴 항목이 평범한 영단어에 걸린 것들 — sex 와 siva 를 뺐다.
+            "passivation 처리", "passivate 공정", "Essex 산", "BusinessException 로그"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
                 .as("'%s' 이(가) 가려졌다 — 짧은 항목이 한국어 형태소와 겹친다", sentence)
                 .isEqualTo(sentence);
+    }
+
+    /**
+     * 보이지 않는 글자를 끼워도 마스킹된다 — <b>매처</b> 쪽 이야기다.
+     *
+     * <p>로더가 사전 항목의 보이지 않는 글자를 거부하는 것과 이것은 다른 평면이다. 로더는
+     * 운영자 복붙 경로라 공격자가 닿지 않고, 매처는 <b>시청자 누구나</b> 닿는다. 한글 채움문자
+     * 넷은 유니코드가 '문자'(Lo)로 분류해 2A 전처리({@code Character.isLetter})를 그냥 지나갔고,
+     * 토큰 정규식도 구분자로 보지 않아 <b>화면에 공백으로 보이는 한 글자로 사전 전체가 꺼졌다.</b>
+     * 다른 보이지 않는 글자는 글자가 아니라 이미 떨어졌고 정확히 이 넷만 통과했다.
+     */
+    @ParameterizedTest(name = "U+{0}")
+    @ValueSource(strings = {"115F", "1160", "3164", "FFA0", "00A0", "200B", "2060", "FEFF", "FE0F"})
+    @DisplayName("⭐ 보이지 않는 글자를 끼워 넣어도 매처가 잡는다 — 로더만 닫으면 공격자 면이 열린다")
+    void anInvisibleCharacterDoesNotEvadeTheMatcher(String codePoint) {
+        String evaded = "개" + Character.toString(Integer.parseInt(codePoint, 16)) + "새끼";
+
+        assertThat(filterFromDictionary().filter(evaded))
+                .as("U+%s 를 끼우면 통과한다 — 이 한 글자로 사전 전체가 무력화된다", codePoint)
+                .isNotEqualTo(evaded);
     }
 
     @Test
@@ -172,10 +195,9 @@ class ProfanityDictionaryTest {
         var words = dictionary.words();
         var whitelist = dictionary.whitelist();
 
-        assertThat(words).allSatisfy(word ->
-                assertThat(whitelist.stream().filter(word::contains).toList())
-                        .as("'%s' 은(는) 화이트리스트 항목을 품어 어떤 토큰에서도 매치되지 않는다", word)
-                        .isEmpty());
+        // 번들 단어가 화이트리스트 항목을 품는 것 자체는 결함이 아니다 — 리터럴 토큰 하나만
+        // 보존되고 우회형은 걸린다. 그래서 그 방향은 단언하지 않는다. 중복만 본다.
+        assertThat(words).isNotEmpty();
         assertThat(whitelist).allSatisfy(entry ->
                 assertThat(whitelist.stream().filter(o -> !o.equals(entry) && entry.contains(o)).toList())
                         .as("'%s' 은(는) 더 짧은 항목에 이미 덮인다 — 결과를 안 바꾸고 우회면만 넓힌다", entry)
@@ -318,6 +340,25 @@ class ProfanityDictionaryTest {
                 .hasMessageContaining("욕설 그 자체다");
     }
 
+    @Test
+    @DisplayName("규칙 (3)도 소문자 평면에서 본다 — 대문자로 적어도 잔여가 '8' 이면 거부한다")
+    void theResidueRuleRunsOnTheLowercasePlane() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "8SIBAL"))
+                .as("입구가 매처와 다른 평면에서 판정하면 표기만 바꿔 우회로가 들어온다")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("한글이 남지 않는다");
+    }
+
+    @Test
+    @DisplayName("규칙 (2)도 소문자 평면에서 본다 — 대문자로 적은 보호어를 '욕설 미포함' 으로 보지 않는다")
+    void theCoverageRuleRunsOnTheLowercasePlane() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, "SIBAL점");
+
+        assertThat(dictionary.whitelist())
+                .as("소문자로 맞추지 않으면 'sibal' 을 못 찾아 정당한 보호어가 거부된다")
+                .contains("SIBAL점");
+    }
+
     /**
      * 욕설을 뺀 잔여에 한글이 없으면 지킬 '말' 이 없다.
      *
@@ -335,20 +376,31 @@ class ProfanityDictionaryTest {
     }
 
     /**
-     * 설정으로 막은 단어가 화이트리스트에 삼켜지지 않는지 본다.
+     * 화이트리스트에 일부 가려지는 단어는 <b>적재하고 알린다</b> — 거부하지 않는다.
      *
-     * <p>검사가 화이트리스트 한 방향에만 걸려 있었다. 화이트리스트 항목을 품은 단어는 등재돼도
-     * 영원히 매치되지 않는다 — 그 단어가 든 토큰은 반드시 그 항목도 포함하므로 통째로 보존된다.
-     * 부팅도 되고 적재 개수도 오르는데 아무것도 막지 못하는, 이 검사가 존재하는 이유인 그 모양이다.
+     * <p>처음에는 "영원히 매치되지 않는다" 로 보고 부팅을 세웠는데 그 전제가 거짓이었다.
+     * 리터럴 토큰 하나만 보존되고 2A·2B 우회 경로는 화이트리스트를 보지 않는다 — 다섯 모양 중
+     * 넷의 동작이 바뀐다. 거부하면 방송 중에 쓰라고 둔 통로가 정당한 긴급차단을 막고, 그 실패가
+     * 빈 생성 실패 = 전 파드 채팅 정지다.
      */
     @Test
-    @DisplayName("화이트리스트에 삼켜지는 단어는 거부한다 — 등재해도 영원히 안 걸린다")
-    void aWordSwallowedByTheWhitelistFailsBoot() {
-        assertThatThrownBy(() -> ProfanityDictionary.load("전염병같은놈", null))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("삼켜진다")
-                .as("어느 화이트리스트 항목이 삼키는지 없으면 운영자가 손쓸 데를 모른다")
-                .hasMessageContaining("전염병");
+    @DisplayName("⭐ 일부 가려지는 단어도 적재한다 — 우회형은 여전히 잡고, 거부하면 긴급차단이 막힌다")
+    void aPartiallyShadowedWordIsLoadedAndReported() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load("전염병같은놈", null);
+        ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
+
+        assertThat(dictionary.words()).contains("전염병같은놈");
+        assertThat(dictionary.partiallyShadowed())
+                .as("가려진다는 사실을 호출자가 알 수 없으면 '막았다' 와 구분이 안 된다")
+                .anySatisfy(entry -> assertThat(entry).contains("전염병같은놈").contains("전염병"));
+
+        assertThat(filter.filter("전염병 같은놈"))
+                .as("우회형까지 못 잡는다면 이 단어는 정말 쓸모가 없고, 그러면 거부가 맞았을 것이다")
+                .isNotEqualTo("전염병 같은놈");
+        assertThat(filter.filter("전염병1같은놈")).isNotEqualTo("전염병1같은놈");
+        assertThat(filter.filter("전염병같은놈"))
+                .as("리터럴 토큰은 화이트리스트가 보존한다 — 이것이 '일부' 라는 말의 내용이다")
+                .isEqualTo("전염병같은놈");
     }
 
     @Test
@@ -369,14 +421,36 @@ class ProfanityDictionaryTest {
      * 하나를 두는 것은 막지 않은 것과 같다.
      */
     @ParameterizedTest(name = "U+{0}")
-    @ValueSource(strings = {"115F", "1160", "3164", "FFA0"})
-    @DisplayName("한글 채움문자 넷을 전부 거부한다 — 하나를 남기면 그 하나가 통로다")
-    void everyHangulFillerIsRejected(String codePoint) {
-        String entry = "개" + (char) Integer.parseInt(codePoint, 16) + "새끼";
+    @ValueSource(strings = {
+            "115F", "1160", "3164", "FFA0",   // 한글 채움문자 넷 — 전부 Lo 라 표준 검사에 안 걸린다
+            "00A0", "200B", "2060", "FEFF",   // NBSP · ZWSP · 워드조이너 · BOM
+            "FE0F", "0300",                   // 변이 선택자 · 결합 악센트 — 폭 0 인 Mn
+            "E0001"})                         // 태그 문자 — 보조평면이라 char 루프로는 안 잡힌다
+    @DisplayName("보이지 않는 글자를 분류로 거부한다 — 열거는 빠뜨린 하나가 통로가 된다")
+    void everyInvisibleCharacterIsRejected(String codePoint) {
+        String entry = "개" + Character.toString(Integer.parseInt(codePoint, 16)) + "새끼";
 
         assertThatThrownBy(() -> ProfanityDictionary.load(entry, null))
+                .as("U+%s 가 통과한다 — 이 항목은 적재되고도 평범한 입력을 영원히 못 잡는다", codePoint)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("보이지 않는 글자");
+    }
+
+    /**
+     * 설정 화이트리스트에도 규칙 (4)를 건다.
+     *
+     * <p>번들 데이터에는 {@code theBundledDataHasNoDeadEntries} 가 이 불변식을 걸고 있었는데
+     * 설정 입구에만 없었다 — 나머지 세 규칙이 양쪽을 지키는 것과 비대칭이었다. 이미 덮이는
+     * 항목은 결과를 바꾸지 못하면서 우회면만 넓힌다.
+     */
+    @Test
+    @DisplayName("이미 덮이는 설정 화이트리스트 항목은 거부한다 — 효과 0, 우회면만 넓힌다")
+    void aConfiguredWhitelistEntryAlreadyCoveredIsRejected() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "시발자동차"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("이미 덮인다")
+                .as("무엇에 덮이는지 없으면 운영자가 손쓸 데를 모른다")
+                .hasMessageContaining("시발자");
     }
 
     /**

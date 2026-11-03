@@ -116,18 +116,25 @@ ASCII entry that is a substring of ordinary English — removed their coverage a
 
 The rule shrinks the bypass surface; it does not remove it. **Every surviving entry is still a switch
 for the whole dictionary** — prefix one to any insult and the token is preserved whole (`시발점씨발`,
-`전염병씨발`; measured across all 37). That follows from `isWhitelisted` being
+`전염병씨발`; measured across all 31). That follows from `isWhitelisted` being
 *token contains entry*, not *entry covers the matched span*, so it is a property of the filter rather
 than of the data. Closing it means changing `ProfanityFilter` to keep a token only where the whitelist
 match covers the profanity span — out of scope here, recorded so the next reader does not mistake the
 format check for a proof that no bypass exists.
 
 Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
-resources — shape for both keys (any invisible character, not just a space: NBSP, ZWSP, word joiner,
-BOM, Hangul fillers; plus 64 chars), the three whitelist rules above, and one more that only config can
-break: a **word** must not be swallowed by a whitelist entry (`CHAT_PROFANITY_WORDS=전염병같은놈` can
-never match, because every token containing it also contains `전염병`). All comparisons run on the same
-`asciiLower` plane the matcher uses, so `SIBAL` and `sibal` are not judged differently.
+resources — shape for both keys (whitespace plus the invisible classes: NBSP, ZWSP, word joiner, BOM,
+Hangul fillers, variation selectors, tag characters; and 64 chars), and all four whitelist rules above.
+All comparisons run on the same `asciiLower` plane the matcher uses, so `SIBAL` and `sibal` are not
+judged differently.
+
+A config **word** that contains a whitelist entry is loaded, not rejected, and reported as a warning.
+It is tempting to reject — but "it can never match" is false. Only the literal 1-pass token is
+preserved; 2A and 2B never consult the whitelist, so `CHAT_PROFANITY_WORDS=전염병같은놈` still masks
+`전염병 같은놈`, `전염병1같은놈`, `전염병.같은놈` and `전염병 같 은놈` — four shapes out of five.
+Rejecting on that false premise turned the mid-broadcast emergency path into a boot failure for
+legitimate terms (measured: 5 of 5 ordinary new insults refused), and a refused bean is chat down on
+every pod.
 
 It has to be this strict. The emergency path is used mid-broadcast and every one of these failures is
 silent: the entry loads, the count goes up, and nothing is blocked — or, for a bare profanity in the

@@ -9,6 +9,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+import com.sapari.chat.domain.rule.ProfanityFilter;
+
 /**
  * 욕설 사전을 클래스패스 리소스에서 읽는다. 순수 데이터 로더 — 매칭은 {@code ProfanityFilter} 의 몫이다.
  *
@@ -38,17 +40,20 @@ public final class ProfanityDictionary {
 
     private final Set<String> words;
     private final Set<String> whitelist;
+    private final Set<String> partiallyShadowed;
 
-    private ProfanityDictionary(Set<String> words, Set<String> whitelist) {
+    private ProfanityDictionary(Set<String> words, Set<String> whitelist,
+            Set<String> partiallyShadowed) {
         this.words = words;
         this.whitelist = whitelist;
+        this.partiallyShadowed = partiallyShadowed;
     }
 
     /**
      * 기본 사전을 읽고 추가 단어를 <b>더한다</b>(교체가 아니다).
      *
      * <p>더하는 쪽인 이유: 운영에서 급히 한 단어를 막아야 할 때 배포를 기다리지 않게 하려는 것이고,
-     * 교체로 두면 설정 한 줄이 사전 1,108개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
+     * 교체로 두면 설정 한 줄이 사전 1,107개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
      * 0건이라 교체 의미에 기대는 호출자도 없다.
      *
      * @param extraWords     쉼표로 구분한 추가 욕설. null·공백이면 무시한다.
@@ -73,12 +78,16 @@ public final class ProfanityDictionary {
         // 두 집합이 다 모인 뒤에 검사한다 — 두 방향이 서로를 봐야 하기 때문이다(화이트리스트 항목은
         // 사전을 보고, 사전 항목은 화이트리스트를 본다). 한쪽을 먼저 검사하면 나머지 절반을 못 본다.
         for (String entry : extraWl) {
-            rejectUselessWhitelist(entry, words);
+            rejectUselessWhitelist(entry, words, whitelist);
         }
+        Set<String> shadowed = new LinkedHashSet<>();
         for (String word : extraW) {
-            rejectSwallowedWord(word, whitelist);
+            String by = whitelistCoveredBy(asciiLower(word), whitelist);
+            if (by != null) {
+                shadowed.add(word + " ⊂ " + by);
+            }
         }
-        return new ProfanityDictionary(words, whitelist);
+        return new ProfanityDictionary(words, whitelist, shadowed);
     }
 
     public Set<String> words() {
@@ -138,9 +147,9 @@ public final class ProfanityDictionary {
         if (containsInvisible(word)) {
             throw new IllegalStateException(
                     "사전 항목에 공백·보이지 않는 글자가 있다: " + where + " \"" + visible(word)
-                            + "\" — ProfanityFilter 는 공백으로 토큰을 가르고 그 외 보이지 "
-                            + "않는 글자는 구분자로 치지도 않으므로, 이런 항목은 어떤 토큰에도 "
-                            + "매치되지 않는다. 보호하는 것처럼 보이지만 사문이다.");
+                            + "\" — 공백이 든 항목은 ProfanityFilter 가 공백으로 토큰을 가르므로 "
+                            + "어떤 토큰에도 안 맞고, 그 외 보이지 않는 글자가 든 항목은 같은 글자를 "
+                            + "품은 입력 하나만 맞는다. 둘 다 평범한 입력은 못 잡으면서 막은 것처럼 보인다.");
         }
         if (word.length() > MAX_WORD_LENGTH) {
             throw new IllegalStateException(
@@ -161,7 +170,8 @@ public final class ProfanityDictionary {
      * 오타가 사전 전체를 조용히 무력화한다. 시끄러운 실패가 조용한 기능 정지보다 낫다는,
      * 이 사전이 비어 있던 동안 이미 치른 교훈과 같은 판단이다.
      */
-    private static void rejectUselessWhitelist(String entry, Set<String> words) {
+    private static void rejectUselessWhitelist(String entry, Set<String> words,
+            Set<String> whitelist) {
         // 런타임 매칭이 asciiLower 위에서 돌므로 검사도 거기서 해야 한다. 안 그러면 런타임에
         // 똑같이 동작하는 두 값이 입구에서 갈린다 — 'unisex' 는 통과하고 'UNISEX' 는 "어떤 욕설도
         // 품지 않는다" 로 거부되는데 그 메시지가 거짓이다(소문자로 적으면 같은 토큰을 보호한다).
@@ -179,6 +189,13 @@ public final class ProfanityDictionary {
                             + "없어 아무 일도 하지 않으면서, 이 조각을 붙인 토큰을 통째로 통과시키는 "
                             + "우회로만 만든다.");
         }
+        String covered = whitelistCoveredBy(lowered, whitelist);
+        if (covered != null) {
+            throw new IllegalStateException(
+                    "화이트리스트 항목이 다른 항목에 이미 덮인다: \"" + entry + "\" 안에 \"" + covered
+                            + "\" 이 들어 있다 — 토큰이 이 항목을 포함하면 그 짧은 항목도 포함하므로 "
+                            + "결과를 바꾸지 못하면서 우회면만 넓힌다.");
+        }
         if (!hasHangulSyllable(removeAll(lowered, low))) {
             throw new IllegalStateException(
                     "화이트리스트 항목에서 욕설을 빼면 한글이 남지 않는다: \"" + entry + "\" — 지키려는 "
@@ -188,24 +205,30 @@ public final class ProfanityDictionary {
     }
 
     /**
-     * 설정으로 급히 막은 단어가 화이트리스트에 삼켜지지 않는지 본다.
+     * 설정 단어 중 화이트리스트 항목을 품은 것들. {@code "단어 ⊂ 화이트리스트항목"} 꼴이다.
      *
-     * <p>화이트리스트 항목을 품은 단어는 등재돼도 영원히 매치되지 않는다 — 그 단어가 든 토큰은
-     * 반드시 그 화이트리스트 항목도 포함하므로 통째로 보존된다. 부팅은 되고 적재 개수도 오르는데
-     * 아무것도 막지 못하는, 이 검사가 존재하는 이유인 그 모양이다.
+     * <p>이들은 <b>리터럴 토큰으로만</b> 안 걸린다. 처음에는 "영원히 매치되지 않는다" 로 보고
+     * 부팅을 세웠는데 그 전제가 거짓이었다 — 실측에서 다섯 모양 중 넷의 동작이 바뀐다.
+     * {@code 전염병같은놈} 을 더하면 {@code 전염병 같은놈}·{@code 전염병1같은놈}·
+     * {@code 전염병.같은놈}·{@code 전염병 같 은놈} 이 전부 마스킹되고, 안 걸리는 것은 공백·기호
+     * 없는 {@code 전염병같은놈} 하나뿐이다. 2A·2B 우회 경로는 화이트리스트를 보지 않기 때문이다.
+     *
+     * <p>그래서 거부하지 않는다. 거부하면 방송 중에 쓰라고 둔 통로가 정당한 긴급차단을 막고
+     * (실측: {@code 전염병새끼}·{@code 시발역놈}·{@code 성교육충} 등 5/5 거부) 그 실패가
+     * 빈 생성 실패 = 전 파드 채팅 정지다. 대신 적재하고 호출자가 경고로 남긴다.
      */
-    private static void rejectSwallowedWord(String word, Set<String> whitelist) {
-        String lowered = asciiLower(word);
-        String swallower = loweredSet(whitelist).stream()
-                .filter(lowered::contains)
-                .findFirst()
-                .orElse(null);
-        if (swallower != null) {
-            throw new IllegalStateException(
-                    "사전 항목이 화이트리스트에 삼켜진다: \"" + word + "\" 안에 화이트리스트 항목 \""
-                            + swallower + "\" 이 들어 있다 — 이 단어가 든 토큰은 그 항목 때문에 통째로 "
-                            + "보존되므로 등재해도 아무것도 막지 못한다. 화이트리스트 쪽을 먼저 좁혀야 한다.");
+    public Set<String> partiallyShadowed() {
+        return Set.copyOf(partiallyShadowed);
+    }
+
+    /** 이 항목을 이미 덮는 다른 화이트리스트 항목. 자기 자신은 제외한다. */
+    private static String whitelistCoveredBy(String lowered, Set<String> whitelist) {
+        for (String other : loweredSet(whitelist)) {
+            if (!other.equals(lowered) && lowered.contains(other)) {
+                return other;
+            }
         }
+        return null;
     }
 
     private static Set<String> loweredSet(Set<String> source) {
@@ -258,24 +281,36 @@ public final class ProfanityDictionary {
      * 리소스 같은 사전 검사가 없다.
      */
     private static boolean containsInvisible(String word) {
-        for (int i = 0; i < word.length(); i++) {
-            if (isInvisible(word.charAt(i))) {
-                return true;
-            }
+        return word.codePoints().anyMatch(ProfanityDictionary::isInvisible);
+    }
+
+    /**
+     * char 가 아니라 <b>코드포인트</b>로 본다. 보조평면의 태그 문자(U+E0000~E007F)는 UTF-16 에서
+     * 서로게이트 쌍이라, {@code charAt} 로 돌면 {@code getType} 이 FORMAT 이 아니라 SURROGATE 를
+     * 돌려줘 검사를 그대로 통과한다.
+     *
+     * <p>개별 글자를 열거하는 대신 <b>분류</b>로 막는다. 열거는 빠뜨린 하나가 그대로 통로가 되고,
+     * 실제로 두 번 그랬다 — NBSP 를 빠뜨렸고 그 다음엔 한글 채움문자 넷 중 둘을 빠뜨렸다.
+     * 현재 사전·화이트리스트가 쓰는 분류는 Nd·Ll·Lo·Po·Sk·Sm 뿐이라(실측) 아래 거부군과 겹치지 않는다.
+     */
+    private static boolean isInvisible(int cp) {
+        if (Character.isWhitespace(cp) || Character.isSpaceChar(cp) || isHangulFiller(cp)) {
+            return true;
         }
-        return false;
+        return switch (Character.getType(cp)) {
+            // 서식·제어·미할당·사용자영역: 보이지 않거나 글자가 아니다.
+            case Character.FORMAT, Character.CONTROL, Character.UNASSIGNED, Character.PRIVATE_USE,
+                    Character.SURROGATE -> true;
+            // 비간격 표시: 변이 선택자(U+FE0F)와 결합 악센트가 여기다. 폭이 0 이라 눈에 안 보인다.
+            case Character.NON_SPACING_MARK, Character.ENCLOSING_MARK -> true;
+            default -> false;
+        };
     }
 
-    private static boolean isInvisible(char c) {
-        return Character.isWhitespace(c) || Character.isSpaceChar(c)
-                || Character.getType(c) == Character.FORMAT
-                || isHangulFiller(c);
-    }
-
-    // 한글 채움문자는 넷이고 전부 Lo(문자)로 분류돼 위 둘에 안 걸린다. 셋만 막고 하나를 두면
-    // 그 하나가 그대로 통로다 — U+115F 와 U+FFA0 을 빠뜨렸던 것이 그 모양이었다.
-    private static boolean isHangulFiller(char c) {
-        return c == '\u115F' || c == '\u1160' || c == '\u3164' || c == '\uFFA0';
+    // 판정은 ProfanityFilter 에 둔다 — 매처도 같은 넷을 떼어 내야 하고, 두 평면이 갈리면
+    // 한쪽이 막는 것을 다른 쪽이 통과시킨다(로더만 닫고 매처를 열어 둔 적이 있다).
+    private static boolean isHangulFiller(int cp) {
+        return ProfanityFilter.isHangulFiller(cp);
     }
 
     /** 보이지 않는 글자는 코드포인트로 보여 줘야 당직자가 지목할 수 있다. */
@@ -288,6 +323,7 @@ public final class ProfanityDictionary {
             } else {
                 out.append(String.format("\\u%04X", (int) c));
             }
+            // 서로게이트는 짝마다 \\uXXXX 두 개로 찍힌다 — 지목에는 그것으로 충분하다.
         }
         return out.toString();
     }

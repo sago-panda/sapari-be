@@ -85,6 +85,9 @@ rules:
               "**/*RateLimiter*.java", "**/resources/**/profanity-*.txt",
               "**/*ChatKick*.java", "**/*ChatBan*.java"]
     # 통제의 데이터와 그것을 켜는 배선, 그리고 긴급 통로의 계약을 같이 읽어야 판정이 된다.
+    # 앵커의 사전 글롭은 chat 으로 좁다 — trigger 는 도메인을 안 가리므로 다른 도메인이 같은
+    # 모양의 파일을 두면 그 도메인 짝은 안 붙고 chat 것이 끌려온다. 지금 그런 파일은 chat
+    # 하나뿐이라 실해가 없고, 생기면 여기에 그 도메인 글롭을 같이 적는다.
     anchors: ["**/resources/chat/profanity-*.txt", "**/config/ChatBeansConfig.java",
               "**/resources/application*.y*ml*", "modules/chat/AGENTS.md"]
     activate: [SEC-11, CONV-07, CONV-11]

@@ -90,6 +90,12 @@ angle: mass-assignment and injection (§5).
     - **Dead on arrival**: is the data actually loaded and non-empty, or does an empty/missing resource
       boot into pass-through? The tell is a control whose off-state is indistinguishable from "nothing
       to block" in logs and in the stored record.
+    - **The matcher's own normalisation gap**: what does the *matcher* treat as a separator or strip
+      before matching, and is there a character class just outside it? One invisible character that the
+      preprocessor keeps turns the whole dictionary off for anyone who types it. This is the widest hole
+      of the six because the loader side is an operator path while the matcher is reachable by any user
+      — closing only the loader leaves it fully open while the commit message reads as if it is shut.
+      Ask for the measurement across classes, not a list of characters: enumerations miss one.
     - **Dead letter**: can an entry be accepted but never match? A term carrying a space or an invisible
       character (NBSP, ZWSP, word joiner, BOM, Hangul fillers) never matches a `\S+` token; a term
       swallowed by a broader exemption never matches either. Count goes up, nothing is blocked.
@@ -106,9 +112,20 @@ angle: mass-assignment and injection (§5).
     - **Emergency path**: config-supplied terms are added mid-incident. Do they get the same validation
       as the bundled data, in both directions? An emergency switch that silently no-ops is worse than
       none, because it is believed.
+    - **Validation that becomes the outage**: the opposite failure. A guard that refuses a *legitimate*
+      value turns the mid-incident path into a boot failure, and for a bean that the app cannot start
+      without, that is the whole feature down. Check the premise the refusal rests on: "this value can
+      never work" is usually narrower than it sounds, and refusing on an overstated premise costs more
+      than it saves. Prefer load-and-warn unless the value is actively harmful.
+    - **Replace vs add**: when config or a curation step *narrows* a list, did it filter or substitute?
+      Substituting drops entries that the stated rule would have kept, and the loss is invisible because
+      reviews ask whether what remains is correct, not whether what left should have stayed.
 
     Report the **class of hole and one concrete input that passes or is wrongly blocked**, never a
     curated bypass list.
+
+Three of these bullets exist because the same feature produced them in consecutive rounds: the matcher
+gap, the availability direction, and replace-vs-filter were each found *after* the item was written.
 
 ## Output specifics
 Common format applies; each finding carries a **one-line attack scenario** + fix direction.

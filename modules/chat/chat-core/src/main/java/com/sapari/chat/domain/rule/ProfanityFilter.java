@@ -22,6 +22,10 @@ import java.util.regex.Pattern;
  * 화이트리스트는 1-패스에서 <b>리터럴 토큰</b>에만 적용한다(정상어 보호). 2A·2B는 우회로 판단된 토큰만 가리므로
  * 보정이 없다 — 즉 사전적 단어 `시발점`은 보존하되, 일부러 끼워넣은 `시1발점`은 우회로 보고 마스킹한다.
  * 대소문자 무관. 자모 분해 분산(예: 시 ㅂ ㅏ)은 음절 합성이 필요해 본 버전 범위 밖.
+ *
+ * <p><b>보이지 않는 글자.</b> 대부분은 글자가 아니라 2A 전처리가 떼어 낸다. 예외가 한글
+ * 채움문자 넷(U+115F·U+1160·U+3164·U+FFA0)이고 유니코드가 이들을 '문자'(Lo)로 분류해
+ * 전처리를 그냥 지나갔다 — 한 글자로 사전 전체가 꺼졌다. {@link #isHangulFiller} 가 그 자리다.
  */
 public final class ProfanityFilter {
 
@@ -188,14 +192,35 @@ public final class ProfanityFilter {
     }
 
     // 토큰 내부 특수문자·숫자 제거(글자만 남김) — 2A·2B 전처리.
+    /**
+     * 2A 전처리 — 글자가 아닌 것을 떼어 "원문엔 없던 욕설" 이 드러나는지 본다.
+     *
+     * <p>한글 채움문자 넷은 {@code Character.isLetter} 가 <b>true</b> 로 보기 때문에(Lo) 여기서
+     * 따로 떼어 내야 한다. 떼지 않으면 그 한 글자가 사전 전체를 무력화한다 — 토큰 정규식
+     * {@code \S+} 도 구분자로 보지 않으므로 {@code 시<U+3164>발} 은 토큰 하나이고, 전처리가
+     * 그대로 두면 {@code 시발} 이 만들어지지 않아 2A 가 발화하지 않는다. 화면에는 공백으로
+     * 보이므로 보낸 사람 말고는 아무도 눈치채지 못한다(실측: 다른 보이지 않는 글자는 전부
+     * 글자가 아니라 이미 떨어졌고, 정확히 이 넷만 통과했다).
+     */
     private String stripNonLetters(String token) {
         StringBuilder sb = new StringBuilder(token.length());
         for (int i = 0; i < token.length(); i++) {
             char c = token.charAt(i);
-            if (Character.isLetter(c)) {
+            if (Character.isLetter(c) && !isHangulFiller(c)) {
                 sb.append(c);
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 한글 채움문자 넷. 폭이 0 이거나 공백처럼 보이는데 유니코드가 '문자'(Lo)로 분류한다.
+     *
+     * <p>여기가 단일 출처다 — 사전 적재 쪽({@code ProfanityDictionary})도 이 판정을 쓴다.
+     * 두 평면이 갈리면 한쪽이 막는 것을 다른 쪽이 통과시킨다.
+     */
+    public static boolean isHangulFiller(int codePoint) {
+        return codePoint == 0x115F || codePoint == 0x1160
+                || codePoint == 0x3164 || codePoint == 0xFFA0;
     }
 }
