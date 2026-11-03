@@ -30,7 +30,9 @@ class ProfanityDictionaryTest {
 
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {
-            "시발", "씨발", "씨팔", "ㅅㅂ", "ㅆㅂ", "존나", "졸라", "좆", "썅",
+            // '졸라' 는 없다 — 조르다의 활용(졸라요·졸라네)과 겹쳐 사전에서 뺐다. 같은 뜻의
+            // '존나' 가 그 자리를 지킨다.
+            "시발", "씨발", "씨팔", "ㅅㅂ", "ㅆㅂ", "존나", "좆", "썅",
             "개새끼", "병신", "븅신", "지랄", "염병", "니미", "애미",
             "미친놈", "미친년", "창녀", "강간", "쌍놈", "씹창", "s1bal", "sibal",
             // 'sex' 를 사전에서 빼면서 sexual·sexy 화이트리스트가 같이 빠졌다 — ASCII 자판만으로
@@ -77,7 +79,9 @@ class ProfanityDictionaryTest {
             // 'sex' 가 사전에 있는 동안 평범한 영단어가 가려졌다.
             "UNISEX 사이즈 있나요", "unisex 사이즈", "Essex 산 제품",
             // <시각>시발송 — '구매시발송' 만 막아 두는 바람에 숫자 쪽이 열려 있었다.
-            "8시발송", "9시발송", "오후 8시발송입니다"})
+            "8시발송", "9시발송", "오후 8시발송입니다",
+            // 조르다의 활용. 활용형을 넷 열거해 봤지만 닫히지 않아 '졸라' 를 사전에서 뺐다.
+            "애가 졸라요", "졸라네요", "졸라댔어요", "허리띠를 졸라매고"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
@@ -109,7 +113,7 @@ class ProfanityDictionaryTest {
      * {@code 8시발}, 그리고 사전에 없는 욕설을 보호하던 {@code 입어보지} 류 24건이다.
      *
      * <p>⚠️ 이 테스트가 재는 것은 <b>그 두 종류가 목록에 없다</b>는 것뿐이다. 규칙을 지킨 항목도
-     * 여전히 우회 스위치다 — {@code 시발점씨발} 은 지금도 통째로 통과한다(유지된 37건 전수 실측).
+     * 여전히 우회 스위치다 — {@code 시발점씨발} 은 지금도 통째로 통과한다(유지된 31건 전수 실측).
      * 그 잔재는 데이터가 아니라 {@code isWhitelisted} 가 "항목을 포함하면 보존" 이라는 데서 나오고,
      * 닫으려면 필터를 바꿔야 한다. 이 테스트를 "우회로가 없다" 의 증거로 읽지 말 것.
      */
@@ -150,6 +154,32 @@ class ProfanityDictionaryTest {
                             entry)
                     .isTrue();
         });
+    }
+
+    /**
+     * 번들 데이터에도 삼켜지는 단어가 없다.
+     *
+     * <p>삼켜짐 검사가 설정 입구에만 걸려 있다 — 번들 쪽은 화이트리스트를 늘릴 때 조용히
+     * 사문이 되는 단어가 생길 수 있는데 로더가 보지 않는다. 그 방향은 데이터로 고정한다.
+     *
+     * <p>같은 이유로 화이트리스트 안의 중복도 본다. 다른 항목에 이미 덮이는 항목은 결과를
+     * 바꾸지 못하면서 우회면만 넓힌다({@code 시발자} 가 있으면 {@code 시발자동차} 는 사문이다).
+     */
+    @Test
+    @DisplayName("번들 데이터에 사문이 없다 — 삼켜지는 단어도, 서로 덮는 화이트리스트도 없다")
+    void theBundledDataHasNoDeadEntries() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, null);
+        var words = dictionary.words();
+        var whitelist = dictionary.whitelist();
+
+        assertThat(words).allSatisfy(word ->
+                assertThat(whitelist.stream().filter(word::contains).toList())
+                        .as("'%s' 은(는) 화이트리스트 항목을 품어 어떤 토큰에서도 매치되지 않는다", word)
+                        .isEmpty());
+        assertThat(whitelist).allSatisfy(entry ->
+                assertThat(whitelist.stream().filter(o -> !o.equals(entry) && entry.contains(o)).toList())
+                        .as("'%s' 은(는) 더 짧은 항목에 이미 덮인다 — 결과를 안 바꾸고 우회면만 넓힌다", entry)
+                        .isEmpty());
     }
 
     @Test
@@ -329,6 +359,24 @@ class ProfanityDictionaryTest {
                 .hasMessageContaining("보이지 않는 글자")
                 .as("원문을 그대로 실으면 보이지 않는 글자를 지목할 수 없다")
                 .hasMessageContaining("u200B");
+    }
+
+    /**
+     * 한글 채움문자는 넷이고 전부 Lo(문자)로 분류된다.
+     *
+     * <p>{@code isWhitespace} 도 {@code isSpaceChar} 도 {@code FORMAT} 도 이들을 걸러 내지
+     * 못한다. 처음에 U+3164·U+1160 둘만 막았는데, 남긴 둘이 그대로 통로였다 — 셋을 막고
+     * 하나를 두는 것은 막지 않은 것과 같다.
+     */
+    @ParameterizedTest(name = "U+{0}")
+    @ValueSource(strings = {"115F", "1160", "3164", "FFA0"})
+    @DisplayName("한글 채움문자 넷을 전부 거부한다 — 하나를 남기면 그 하나가 통로다")
+    void everyHangulFillerIsRejected(String codePoint) {
+        String entry = "개" + (char) Integer.parseInt(codePoint, 16) + "새끼";
+
+        assertThatThrownBy(() -> ProfanityDictionary.load(entry, null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("보이지 않는 글자");
     }
 
     /**

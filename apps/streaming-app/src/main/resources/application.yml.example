@@ -90,10 +90,12 @@ chat:
   # IllegalStateException 으로 기동 실패다(CrashLoopBackOff). 공백 항목은 어떤 토큰에도
   # 매치되지 않는 사문이라, 막았다고 믿는 채로 안 막히는 상태가 되기 때문이다 — 그 상태가
   # 실제로 배포된 적이 있다. 실패 메시지는 프로퍼티명과 몇 번째 항목인지를 싣는다.
-  #   CHAT_PROFANITY_WORDS="개 새끼"  →  "사전 항목에 공백이 있다: chat.profanity.words 의 1번째 항목"
+  #   CHAT_PROFANITY_WORDS="개 새끼"
+  #     → "사전 항목에 공백·보이지 않는 글자가 있다: chat.profanity.words 의 1번째 항목 \"개 새끼\""
   # 따라서 CSV 는 공백 없이 쉼표로만 끊는다. 64자는 정본 chat_filter_word.word varchar(64) 와 맞춘 값이다.
   #
-  # 공백 외에 눈에 안 보이는 글자(NBSP·ZWSP·워드조이너·BOM·한글 채움문자)도 같은 이유로 거부한다.
+  # 공백 외에 눈에 안 보이는 글자(NBSP · ZWSP · 워드조이너 · BOM · 한글 채움문자 넷)도 같은
+  # 이유로 거부한다.
   # 메시지는 그 글자를 \uXXXX 로 보여 준다 — 안 그러면 당직자가 무엇이 틀렸는지 볼 수가 없다.
   #
   # whitelist 는 세 가지를 더 본다 — 맨 욕설이 아닐 것, 욕설을 품을 것, 욕설을 뺀 잔여에 한글이

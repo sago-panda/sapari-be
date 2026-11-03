@@ -149,10 +149,6 @@ public final class ProfanityDictionary {
         }
     }
 
-    // isWhitespace 만으로는 NBSP(U+00A0)를 놓친다 — isWhitespace 는 false 인데 ProfanityFilter 의
-    // 토큰 정규식 \S+ 는 NBSP 를 구분자로 보지 않아, NBSP 섞인 항목은 평범한 공백이 든 입력을
-    // 영원히 못 잡는다("개<NBSP>새끼" 를 넣으면 "개 새끼" 가 안 걸린다). 복붙이 NBSP 를 만드는
-    // 전형 경로이고 설정 CSV 에는 "현행 리소스" 같은 재고가 없으므로 isSpaceChar 까지 본다.
     /**
      * 설정으로 들어온 화이트리스트 항목이 <b>의미상</b> 쓸모 있는지 본다.
      *
@@ -255,8 +251,8 @@ public final class ProfanityDictionary {
      * 눈에 안 보이는 글자가 섞였는지 본다.
      *
      * <p>{@code isWhitespace} 하나로는 모자란다. NBSP(U+00A0)는 그게 false 이고, ZWSP(U+200B)·
-     * WJ(U+2060)·BOM(U+FEFF)은 서식 문자이며, 한글 채움문자(U+3164·U+1160)는 아예 '문자' 로
-     * 분류된다. 그런데 {@code ProfanityFilter} 의 토큰 정규식은 이들 중 어느 것도 구분자로 보지
+     * WJ(U+2060)·BOM(U+FEFF)은 서식 문자이며, 한글 채움문자 넷(U+115F·U+1160·U+3164·U+FFA0)은
+     * 아예 '문자'(Lo)로 분류된다. 그런데 {@code ProfanityFilter} 의 토큰 정규식은 이들 중 어느 것도 구분자로 보지
      * 않는다 — 그래서 이런 글자가 섞인 항목은 <b>평범한 입력을 영원히 못 잡는다.</b> 적재는 되고
      * 개수도 오르는데 아무것도 막지 못한다. 복붙이 만드는 전형 경로이고, 설정 CSV 에는 번들
      * 리소스 같은 사전 검사가 없다.
@@ -273,7 +269,13 @@ public final class ProfanityDictionary {
     private static boolean isInvisible(char c) {
         return Character.isWhitespace(c) || Character.isSpaceChar(c)
                 || Character.getType(c) == Character.FORMAT
-                || c == '\u3164' || c == '\u1160';
+                || isHangulFiller(c);
+    }
+
+    // 한글 채움문자는 넷이고 전부 Lo(문자)로 분류돼 위 둘에 안 걸린다. 셋만 막고 하나를 두면
+    // 그 하나가 그대로 통로다 — U+115F 와 U+FFA0 을 빠뜨렸던 것이 그 모양이었다.
+    private static boolean isHangulFiller(char c) {
+        return c == '\u115F' || c == '\u1160' || c == '\u3164' || c == '\uFFA0';
     }
 
     /** 보이지 않는 글자는 코드포인트로 보여 줘야 당직자가 지목할 수 있다. */
