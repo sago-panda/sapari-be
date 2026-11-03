@@ -58,15 +58,39 @@
 #   3개년      '개년' 에 걸린다. 막으려면 '개년' 자체를 화이트리스트에 넣어야 하는데 그건 진짜
 #              욕설을 푼다. 라이브 커머스 채팅에서 '3개년' 보다 '개년' 이 나올 확률이 높다고 봤다.
 #   여성교사류  위 '성교' 항목 참조.
-#   pussycat   'pussy' 에 걸려 '***cat'. 잔여가 라틴이라 화이트리스트로 못 넣는다. 한국어
-#              라이브 커머스에서 이 단어가 나올 확률이 낮다고 보고 욕설 쪽을 남겼다.
+#   영단어 5건  순 ASCII 항목 28건을 영어 사전 전수와 대조한 결과다. 잔여가 라틴이라
+#              화이트리스트로 못 넣고(규칙 (3)), 한국어 라이브 커머스에 나올 확률이 낮다고 보고
+#              전부 욕설 쪽을 남겼다. 상품 설명어였던 passivation(siva) · BusinessException(sex)
+#              은 그래서 뺀 것이고, 아래는 성격이 다르다.
+#                pussy  -> pussycat · pussyfoot · pussytoe …  7건
+#                penis  -> hemipenis · micropenis · penistone  4건
+#                sipal  -> fissipalmate · fissipalmation       2건
+#                sival  -> passival · possessival              2건
+#                pennis -> pennisetum (수크령 속명)             1건
+#
+#              재확인하는 법(2026-11-03 기준, /usr/share/dict/web2 235,976 단어):
+#                python3 - <<'EOF'
+#                import re
+#                R='modules/chat/chat-core/src/main/resources/chat/profanity-words.txt'
+#                W=[l.strip() for l in open(R,encoding='utf-8')
+#                   if l.strip() and not l.strip().startswith('#')]
+#                A=sorted(w.lower() for w in W if re.fullmatch(r'[A-Za-z]+', w))
+#                D=[w.strip().lower() for w in open('/usr/share/dict/web2',encoding='utf-8',
+#                   errors='ignore') if w.strip()]
+#                for e in A:
+#                    m=[w for w in D if e in w and w!=e]
+#                    if m: print(e, len(m), sorted(m, key=len)[:5])
+#                EOF
+#              이 목록은 테스트에 들이지 않는다 — OS 제공 파일이라 CI 이미지에 없으면 검사가
+#              조용히 초록이 된다. 대신 ProfanityDictionaryTest 가 ASCII 항목 28건의 집합 자체를
+#              고정해, 하나를 더하려면 테스트를 고쳐야 하고 고치려면 이 문단을 보게 된다.
 #
 # 알고 남긴 미탐 — 뺀 것의 대가다. '뺀 것' 목록이 왜 뺐는지만 적고 무엇을 잃었는지는 안 적어서
 # 따로 센다.
 #   졸라       사전에 '졸라' 를 품은 항목이 0건이다. 뜻이 같은 '존나'·'존나게' 가 남지만 표기는
 #              커버되지 않는다 — '졸라 비싸' 는 통과하고 '존나 비싸' 만 걸린다.
 #   보지 · 자지 · 새끼 · 세끼 · 유방 · 유두 · 고환 · 후장 · 호로 · 개떡 · 똥 · 수셔 · 쑤셔 · sex · siva
-#              각 항목의 합성형은 대부분 따로 등재돼 있지만(개새끼 · 개보지 · 룸섹스 …) 단독형은
+#              각 항목의 합성형은 대부분 따로 등재돼 있지만(개새 · 개보지 · 룸섹스 …) 단독형은
 #              통과한다. 오탐을 피하려고 고른 대가이고, 이 선택은 '뺀 것' 에 근거를 적어 뒀다.
 #
 # 한 줄에 한 단어. '#' 로 시작하는 줄과 빈 줄은 무시한다. 항목이 둘 중 하나면 로더가 거부하고

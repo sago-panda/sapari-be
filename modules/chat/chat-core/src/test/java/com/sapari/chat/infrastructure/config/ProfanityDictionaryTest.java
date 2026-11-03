@@ -222,6 +222,35 @@ class ProfanityDictionaryTest {
     }
 
     /**
+     * 순 ASCII 항목의 집합을 통째로 고정한다.
+     *
+     * <p>라틴 항목은 평범한 영단어의 부분문자열이 되기 쉽고, 한글 항목과 달리 화이트리스트로
+     * 구제할 수 없다 — 잔여가 라틴이라 규칙 (3)에 걸린다. 그래서 들어오는 순간이 유일한 통제
+     * 지점인데, 두 번 연속 사후에 발견했다({@code sex} → BusinessException,
+     * {@code siva} → passivation).
+     *
+     * <p>영단어 목록을 테스트에 들이지는 않는다. OS 제공 파일이라 CI 이미지에 없으면 검사가
+     * <b>조용히 초록</b>이 되고, 그게 이 티켓에서 반복된 바로 그 모양이다. 대신 집합을 박는다 —
+     * 항목을 더하려면 이 테스트를 고쳐야 하고, 고치려면 사전 머리글의 대조 절차를 보게 된다.
+     * 그 문단에 목록·단어 수·날짜·명령이 적혀 있다.
+     */
+    @Test
+    @DisplayName("⭐ 순 ASCII 사전 항목은 이 28건뿐이다 — 더하려면 영단어 대조를 다시 돌려야 한다")
+    void theAsciiEntriesAreExactlyThese() {
+        var ascii = ProfanityDictionary.load(null, null).words().stream()
+                .filter(w -> w.matches("[A-Za-z]+"))
+                .map(String::toLowerCase)
+                .sorted()
+                .toList();
+
+        assertThat(ascii).containsExactlyInAnyOrder(
+                "bitch", "bozi", "fuck", "fuckyou", "giral", "penis", "pennis", "pussy",
+                "rotorl", "rotprl", "siba", "sibak", "sibal", "sibar", "sipal", "siqk",
+                "sival", "tlba", "tlbak", "tlbal", "tlbar", "tlpal", "tlqk", "tlqkd",
+                "tlqkf", "tlva", "tlval", "wlfkf");
+    }
+
+    /**
      * 화이트리스트 안에 서로 덮는 항목이 없다.
      *
      * <p>다른 항목에 이미 덮이는 항목은 결과를 바꾸지 못하면서 우회면만 넓힌다
