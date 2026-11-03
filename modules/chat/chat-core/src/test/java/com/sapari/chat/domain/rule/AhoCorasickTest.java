@@ -114,7 +114,6 @@ class AhoCorasickTest {
 
             // then
             assertThat(ac.findAll("무슨 말이든")).isEmpty();
-            assertThat(ac.findAll("무슨 말이든")).isEmpty();
         }
     }
 }

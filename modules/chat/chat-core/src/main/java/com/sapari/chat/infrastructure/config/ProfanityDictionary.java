@@ -7,6 +7,9 @@ import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
+import java.util.Comparator;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -41,20 +44,20 @@ public final class ProfanityDictionary {
 
     private final Set<String> words;
     private final Set<String> whitelist;
-    private final Set<String> ineffective;
+    private final Set<String> warnings;
 
     private ProfanityDictionary(Set<String> words, Set<String> whitelist,
-            Set<String> ineffective) {
+            Set<String> warnings) {
         this.words = words;
         this.whitelist = whitelist;
-        this.ineffective = ineffective;
+        this.warnings = warnings;
     }
 
     /**
      * 기본 사전을 읽고 추가 단어를 <b>더한다</b>(교체가 아니다).
      *
      * <p>더하는 쪽인 이유: 운영에서 급히 한 단어를 막아야 할 때 배포를 기다리지 않게 하려는 것이고,
-     * 교체로 두면 설정 한 줄이 사전 1,106개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
+     * 교체로 두면 설정 한 줄이 사전 1,093개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
      * 0건이라 교체 의미에 기대는 호출자도 없다.
      *
      * @param extraWords     쉼표로 구분한 추가 욕설. null·공백이면 무시한다.
@@ -82,7 +85,7 @@ public final class ProfanityDictionary {
             rejectUselessWhitelist(entry, words);
         }
         // 번들·설정을 가리지 않고 전부 본다. 설정만 보면 번들에 같은 모양이 들어와도 신호가 없다.
-        return new ProfanityDictionary(words, whitelist, ineffectiveEntries(words, whitelist));
+        return new ProfanityDictionary(words, whitelist, warningEntries(words, whitelist));
     }
 
     public Set<String> words() {
@@ -177,9 +180,10 @@ public final class ProfanityDictionary {
                             + "겹쳐 덮이므로, 넣는 순간 그 욕설이 사전 전체에서 풀린다. "
                             + "'시발' 이 아니라 '시발점' 처럼 그 욕설을 품은 더 긴 정상어를 넣는다.");
         }
-        if (!hasHangulSyllable(removeAll(lowered, low))) {
+        String residue = removeAll(lowered, low);
+        if (!hasHangulSyllable(residue) && !hasTwoLetters(residue)) {
             throw new IllegalStateException(
-                    "화이트리스트 항목에서 욕설을 빼면 한글이 남지 않는다: \"" + entry + "\" — 공격자에게 "
+                    "화이트리스트 항목에서 욕설을 빼면 글자가 남지 않는다: \"" + entry + "\" — 공격자에게 "
                             + "싼 접두를 준다. '8시발' 을 넣으면 '8' 만 붙여 '8시발'·'8시발이다' 가 "
                             + "통과한다. 지킬 '말' 이 있어야 한다 — '시발점' 처럼.");
         }
@@ -200,11 +204,11 @@ public final class ProfanityDictionary {
      * <p>창구를 하나로 둔 이유: 전에 둘로 나눴다가 한쪽에만 테스트를 붙였고, 나머지 분기는
      * 지워도 아무것도 안 깨졌다. 같은 실수를 두 라운드 연속 했다.
      */
-    public Set<String> ineffective() {
-        return Set.copyOf(ineffective);
+    public Set<String> warnings() {
+        return Set.copyOf(warnings);
     }
 
-    private static Set<String> ineffectiveEntries(Set<String> words, Set<String> whitelist) {
+    private static Set<String> warningEntries(Set<String> words, Set<String> whitelist) {
         Set<String> lowerWhitelist = loweredSet(whitelist);
         Set<String> lowerWords = loweredSet(words);
         Set<String> out = new LinkedHashSet<>();
@@ -219,6 +223,15 @@ public final class ProfanityDictionary {
             if (lowerWords.stream().noneMatch(lowered::contains)) {
                 out.add("화이트리스트 항목 \"" + entry + "\" — 어떤 욕설도 품지 않아 아무것도 "
                         + "보호하지 않는다");
+                continue;
+            }
+            // 욕설을 뺀 잔여에 한글 음절이 없는 항목. 거부하지 않는다 — 정당한 라틴 항목이
+            // 전부 부팅을 세웠고(실측 8/8) 방송 중에 라틴 오탐을 막을 다른 길이 없다. 다만
+            // 한글 잔여보다 짧고 싸서 '8시발' 류와 거리가 가까우므로 당직자에게 보인다.
+            if (!hasHangulSyllable(removeAll(lowered, lowerWords))) {
+                out.add("화이트리스트 항목 \"" + entry + "\" — 욕설을 빼면 한글 음절이 남지 않는다"
+                        + "(잔여: \"" + removeAll(lowered, lowerWords) + "\"). 라틴 정상어라면 의도된"
+                        + " 것이고, 아니면 그 욕설을 싸게 푸는 접두일 수 있으니 확인할 것");
             }
         }
         return out;
@@ -234,14 +247,46 @@ public final class ProfanityDictionary {
         return out;
     }
 
+    /**
+     * {@code text} 에서 사전 항목을 모두 지운 잔여. <b>긴 항목부터</b> 지운다.
+     *
+     * <p>순서가 결과를 바꾼다 — {@code 8sibal} 에서 짧은 {@code siba} 를 먼저 지우면 잔여가
+     * {@code 8l} 이 되어 "글자가 남았다" 로 보이지만, 긴 {@code sibal} 을 먼저 지우면 {@code 8}
+     * 이다. 규칙 (3)이 그 잔여로 '지킬 말이 있는가' 를 판정하므로, 짧은 항목이 긴 항목을 쪼개
+     * 만든 글자 조각을 '말' 로 세면 싼 접두가 그대로 통과한다(실측: 그 상태에서 {@code 8sibal}
+     * 이 수락됐다).
+     */
     private static String removeAll(String text, Set<String> parts) {
+        List<String> longestFirst = new ArrayList<>(parts);
+        longestFirst.sort(Comparator.comparingInt(String::length).reversed());
         String out = text;
-        for (String part : parts) {
+        for (String part : longestFirst) {
             if (!part.isEmpty() && out.contains(part)) {
                 out = out.replace(part, "");
             }
         }
         return out;
+    }
+
+    /**
+     * 잔여에 <b>글자</b>가 하나라도 있는가. 한글 음절만 보던 것을 넓혔다.
+     *
+     * <p>좁혔을 때의 대가가 가설이 아니었다 — {@code passivation}·{@code unisex}·
+     * {@code sexual}·{@code Essex} 같은 <b>정당한 라틴 항목이 전부 부팅을 세웠다</b>(실측 8/8).
+     * 그런데 라틴 항목 중 영단어에 걸리는 것이 지금도 5건이고({@code .claude/scripts/
+     * check-ascii-entries.sh}) 그중 하나가 방송 중에 오탐을 내면 설정으로 못 막는다 —
+     * 사전 항목을 빼는 배포밖에 길이 없고, {@code sex}·{@code siva} 에서 이미 두 번 그 길로
+     * 갔다. 거부의 경계는 '해로움' 이므로 측정된 공격 모양({@code 8시발} — 잔여가 숫자 한 글자)
+     * 만 거부하고, 한글이 아닌 글자 잔여는 아래 {@code warnings()} 로 내린다.
+     *
+     * <p>한글 음절은 하나로도 낱말이라 그쪽은 그대로 한 글자다({@code 시발점} → {@code 점}).
+     * 라틴에만 글자 <b>둘</b>을 요구하는 이유: 한 글자는 한글이든 라틴이든 싸다. 잔여가 {@code x}
+     * 하나면({@code xsex}) {@code 8시발} 과 같은 모양이고, 라틴 정상어의 잔여는 둘 이상이다
+     * (실측: {@code Essex} → {@code es} · {@code pussycat} → {@code cat} · {@code unisex} →
+     * {@code uni}).
+     */
+    private static boolean hasTwoLetters(String s) {
+        return s.codePoints().filter(Character::isLetter).count() >= 2;
     }
 
     private static boolean hasHangulSyllable(String s) {
@@ -338,7 +383,7 @@ public final class ProfanityDictionary {
      *
      * <p>⚠️ 여기서 접는 것은 <b>NFC 까지</b>다. 매처의 2A·2B 전처리는 비한글 코드포인트에
      * NFKC 까지 쓰므로 그 둘은 같은 평면이 아니다 — "비교에 참여하는 평면은 전부 같아야
-     * 한다" 는 1-패스 축에만 참이다. 실해는 오늘 0 이다(사전 1,106·화이트리스트 31 중 평면
+     * 한다" 는 1-패스 축에만 참이다. 실해는 오늘 0 이다(사전 1,093·화이트리스트 39 중 평면
      * 차이로 사문화되는 항목 0건). 다만 설정으로 호환 문자가 섞인 항목이 들어오면 2A·2B
      * 에서만 조용히 사문이 된다. 항목 쪽도 NFKC 로 접으려면 사전의 호환 자모 84건이 조합용
      * 으로 바뀌므로 그쪽을 먼저 옮겨야 한다.

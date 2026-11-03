@@ -151,9 +151,11 @@ population of this class, because what follows can be a particle, a verb ending 
 
 Count it structurally instead (measured 2026-11-03): **131 crossing pairs over 100 distinct dictionary
 entries**, whose 125 masked results are read by hand to find the natural compounds. There were 12; all
-are closed — 5 longer whitelist entries (`전염병신`, `감염병신`, `화염병신`, `시발택시발`, `다시팔년`,
-plus `일시불알`), which cost nothing (13,188 cases, 0 evasions, every insult compound still masked), and
-3 dictionary removals (`섹스해`, `섹스하자`, `점물`, `육갑`).
+are closed — 6 longer whitelist entries (`전염병신`, `감염병신`, `화염병신`, `시발택시발`, `다시팔년`,
+`일시불알`), which cost nothing (13,188 cases, 0 evasions, every insult compound still masked), and
+4 dictionary removals (`섹스해`, `섹스하자`, `점물`, `육갑`). Three more whitelist entries (`환불알`,
+`동봉알`, `검색키`) and five more removals (`조까`, `조또`, `족까`, `젓까`, `젖까`) closed the
+particle-attachment variant of the same class; 13 entries were removed across the ticket in total.
 
 ⚠️ The same class also exists **with no whitelist involved**: `지점물류` → `지***류`, `교육갑니다` →
 `교***니다`. A two-syllable entry lands across a syllable boundary of an ordinary compound, and no
@@ -175,9 +177,15 @@ as that change claimed — `siva` was another (`passivation`), found a round lat
 not trust the count.
 
 Span scoping has a cost in the other direction: a token is no longer preserved wholesale, so a fragment
-*after* a protected word can be masked. Zero cases in the current data — the suffix sweep in
-`ProfanityDictionaryTest` runs every entry against 22 common particles and endings, and must be re-run
-whenever an entry is added.
+*after* a protected word can be masked. That cost is measured above — do not re-derive it from the
+suffix sweep in `ProfanityDictionaryTest`, which is **particles only** and is the sample that produced
+two wrong "zero cases" claims in this ticket.
+
+A second cost runs the other way: **16 whitelist entries begin with the profanity they cover**
+(`시발점`, `시발유`, `성교육`, `지랄탄`, …), so one more syllable unmasks that spot — `시발유ㅋㅋ` and
+`시발점ㅋㅋ` pass (measured 64/64 over four tails). The `0/31` figure elsewhere is the **prefix**
+direction only. Narrowing preservation to a token/non-Hangul boundary would close it and break
+`시발점에서` with it, so it stays as a stated cost.
 
 Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
 resources — shape for both keys (whitespace plus the invisible classes: NBSP, ZWSP, word joiner, BOM,

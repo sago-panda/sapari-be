@@ -31,6 +31,12 @@ import java.util.regex.Pattern;
  * 음절을 띄어 쓴 자모 분산(예: {@code 시 ㅂ ㅏ})은 2B 가 인접 토큰을 조인해 잡는다 — 사전에
  * {@code 시ㅂㅏ}·{@code ㅅㅣㅂㅏ} 가 리터럴로 있다. 범위 밖이라고 적었던 적이 있는데 거짓이었다.
  *
+ * <p><b>다만 그 리터럴은 84건뿐이라 풀어쓰기 축은 열려 있다 — 실측 1,063건 중 667건 통과.</b>
+ * 사전 단어를 호환 자모로 전부 풀어 쓰면({@code 병신} → {@code ㅂㅕㅇㅅㅣㄴ}) 조인할 토큰 경계도
+ * 없고 그 문자열이 사전에도 없다. 한국어 인터넷에서 흔한 표기다. 닫으려면 평면을 하나 더 두고
+ * (음절 → 자모 풀어쓰기) 사전의 자모 항목 84건을 그 평면으로 같이 옮겨야 한다 — 하지 않았고
+ * <b>알고 남긴 미탐</b>이다. base 와 동일하므로 회귀는 아니다.
+ *
  * <p>2A·2B 전처리는 한글과 그 밖을 다르게 접는다. 한글은 NFC 까지만 — NFKC 는 호환 자모
  * {@code ㅂ}(U+3142)를 조합용 자모로 바꿔 사전의 {@code 시ㅂㅏ} 류 항목과 어긋나게 만든다.
  * 그 밖은 코드포인트마다 NFKC 라 원문자 {@code ⓕⓤⓒⓚ} 와 수학 알파벳 {@code 𝖋𝖚𝖈𝖐} 이 닫힌다.
@@ -45,7 +51,7 @@ import java.util.regex.Pattern;
  * 아닌 것을 떼어내므로 {@code ㄴ1ㄱ}·{@code @ㅐ미} 처럼 가운데에 숫자나 기호가 낀 항목이
  * 깨지고, 종성형(U+11A8–11C2)은 애초에 역표에 없었다({@code NFKD} 가 초성형만 준다).
  * 실측: 종성 표기로 자모 항목 73건 중 <b>72건</b>, 반각으로 84건 중 6건이 통과했는데 지금은
- * 양쪽 다 0 이다.
+ * 반각이 0, 종성이 6 이다 — 그 6건은 우회가 아니라 <b>다른 낱말</b>이고 아래 단락이 설명한다.
  *
  * <p><b>자모를 전부 조합용으로 적는 축은 남아 있다 — 7건.</b> 그 경우 입구 NFC 가 음절로
  * 합쳐 버리고({@code ㅅㅣㅂㅏ} → {@code 시바}) 그 음절은 사전에 없다. 합쳐진 결과가
@@ -181,6 +187,10 @@ public final class ProfanityFilter {
     // 있었다. 다만 비용은 거기 없었다(실측, 200자 메시지 20,000회: 134.8 → 135.7 µs 차이
     // 1% 미만, 평면 전개를 통째로 건너뛰어도 130.2 µs 로 3% 뿐). 비용은 2B 윈도우 주사
     // 쪽이다 — 이 두 자리를 다시 최적화 대상으로 꼽지 말 것.
+    // 그리고 그 수는 평범한 입력 값이다. 200자 안에서 도달 가능한 최악은 토큰을 잘게 쪼갠
+    // 모양이다(실측: 평범한 49자/14토큰 39.9 µs · 199자/100토큰 194.9 µs — 약 5배).
+    // 상한·레이트리밋이 filter() 앞이라 DoS 축은 아니지만, 레이트리밋 면제 경로(ADMIN·방주인)
+    // 에서는 그 195 µs 가 리액티브 스레드에서 동기로 돈다.
     private boolean revealsMore(String stripped, String token, int matchesInToken) {
         return !stripped.equals(token)
                 && profanity.findAll(fold(stripped)).size() > matchesInToken;
@@ -330,7 +340,11 @@ public final class ProfanityFilter {
                 // 여기 오는 것은 앞 모음이 없어 합쳐지지 못한 것뿐이고, 화면에는 호환 자모와
                 // 같은 글리프로 보인다. 사전은 호환 자모로 적혀 있어 접어야 1-패스가 본다.
                 // 평면 C 가 아니라 여기여야 하는 이유: 평면 C 는 글자 아닌 것을 떼어내므로
-                // 가운데에 숫자나 기호가 끼면 항목이 깨진다(실측: 이 분기가 없으면 ㄴ1ㄱ ·
+                // 가운데에 숫자나 기호가 끼면 항목이 깨진다(그런 항목이 22건이다 — 10r놈 ·
+                // 10련 · 10발년 · 10발놈 · 18놈 · 18새끼 · 18아 · @ㅐ미 · @ㅐ비 · ^^/발 ·
+                // ^^ㅣ벌 · s1bal · si8 · ㄴ1ㄱ · ㄴ1ㅁ · ㄴ1에미 · ㅅ1 · 꼬3 · 시8 · 십8 ·
+                // 씨8 · 이=스. 순한글 항목은 0건이라 계급이 leet 에 유계다).
+                // (실측: 이 분기가 없으면 ㄴ1ㄱ ·
                 // ㄴ1ㅁ · ㅅ1 · @ㅐ미 · @ㅐ비 · ^^ㅣ벌 이 종성·반각 표기로 통과한다).
                 // 1-패스는 길이를 보존해야 하는데 이 표는 BMP 한 글자 → 한 글자다.
                 Integer compatibility = TO_COMPATIBILITY_JAMO.get((int) c);
@@ -357,7 +371,10 @@ public final class ProfanityFilter {
      */
     private String stripToLetters(String token) {
         StringBuilder sb = new StringBuilder(token.length());
-        token.codePoints().forEach(cp -> {
+        // 먼저 NFD 로 쪼갠다. 입구 NFC 가 결합표시(Mn)를 앞 글자에 합쳐 버려서(u + U+0300 → ù)
+        // 쪼개지 않으면 뗄 Mn 이 남아 있지 않다 — 실측으로 라틴 항목 73건 중 51건이 Mn 한 글자로
+        // 통과했다(fùck · bìtch). 한글은 영향이 없다(쪼갠 자모가 아래 compose 로 다시 합쳐진다).
+        decompose(token).codePoints().forEach(cp -> {
             if (Character.isLetter(cp) && !isHangulFiller(cp)) {
                 sb.appendCodePoint(cp);
             }
@@ -415,7 +432,8 @@ public final class ProfanityFilter {
      * <p>그 사각을 글자 이름으로 메운다 — {@code HANGUL JONGSEONG PIEUP} 과
      * {@code HANGUL LETTER PIEUP} 은 접미사가 같다. 이름도 UCD 가 주는 값이라 하드코딩이
      * 아니고, NFKD 표와 <b>충돌이 0건</b>이다(실측: 겹치는 자리 전부 같은 값). 둘을 합치면
-     * 94 → 128 이 되고 NFKD 가 먼저다 — 이름으로 안 잡히는 2건이 거기 있다.
+     * 94 → 179 가 되고(NFKD 94 + 이름 패스로 채운 조합용·반각) NFKD 가 먼저다 — 이름으로
+     * 안 잡히는 2건이 거기 있다.
      */
     private static String toCompatibilityJamo(String s) {
         StringBuilder sb = new StringBuilder(s.length());
@@ -472,6 +490,12 @@ public final class ProfanityFilter {
      * <p>여기서 길이가 바뀌어도 된다 — 이 결과는 집합 멤버십 판정에만 쓰이고, 2A·2B 는 토큰
      * <b>전체</b>를 가리므로 span 슬라이싱을 하지 않는다. 길이 보존이 계약인 쪽은 {@link #fold}다.
      */
+    private static String decompose(String s) {
+        return Normalizer.isNormalized(s, Normalizer.Form.NFD)
+                ? s
+                : Normalizer.normalize(s, Normalizer.Form.NFD);
+    }
+
     private static String compose(String s) {
         return Normalizer.isNormalized(s, Normalizer.Form.NFC)
                 ? s

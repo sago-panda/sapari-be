@@ -132,7 +132,7 @@ class ProfanityDictionaryTest {
     /**
      * 같은 글자로 보이는 입력은 같게 판정한다.
      *
-     * <p>NFD 분해형과 전각은 <b>화면에 똑같이 보인다.</b> 접지 않으면 사전 1,106개가 통째로
+     * <p>NFD 분해형과 전각은 <b>화면에 똑같이 보인다.</b> 접지 않으면 사전 1,093개가 통째로
      * 지나가는데, 채움문자와 달리 글자를 끼울 필요조차 없다 — macOS 복사·전각 IME 로 그냥
      * 나온다. {@code displayMessage == originalMessage} 로 영속·팬아웃되고 화면상 구별이
      * 불가능하다.
@@ -169,6 +169,35 @@ class ProfanityDictionaryTest {
                     .as("'%s' 를 %d번째에 끼우면 통과한다 — 화면에는 그냥 시발이다", inserted, pos)
                     .contains("***");
         }
+    }
+
+    /**
+     * 결합표시(Mn)를 끼워도 막는다 — 입구 NFC 가 합쳐 버려서 뗄 것이 안 남는다.
+     *
+     * <p>{@code u} 뒤에 U+0300 을 붙이면 NFC 가 {@code ù} 로 합치고 그건 글자라서 2A 전처리가
+     * 떼어내지 못한다. 그래서 라틴 항목 73건 중 <b>51건</b>이 Mn 한 글자로 통과했다(실측).
+     * 평면 A 가 NFD 로 먼저 쪼개 Mn 을 드러내야 닫힌다 — 한글은 영향이 없다(쪼갠 자모가 다시
+     * 합쳐진다). 그 선행 NFD 를 빼면 아래가 깨진다.
+     *
+     * <p>악센트가 붙은 평범한 낱말 20종({@code café}·{@code jalapeño}·{@code naïve} …)에서
+     * 오탐은 0건이다 — 떼어낸 결과가 사전 항목이 되는 경우가 없다.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"fùck", "bìtch", "이 fùck 아", "bòzi"})
+    @DisplayName("결합표시를 끼워도 막는다 — 입구 NFC 가 합치므로 평면 A 가 먼저 쪼개야 한다")
+    void aCombiningMarkInsertionIsStillMasked(String evaded) {
+        assertThat(filterFromDictionary().filter(evaded))
+                .as("'%s' 가 통과한다 — 화면에는 악센트 하나 붙은 그 욕설이다", evaded)
+                .contains("***");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"café", "jalapeño", "naïve", "Pokémon", "résumé", "señor", "façade"})
+    @DisplayName("악센트가 붙은 평범한 낱말은 그대로 나간다 — Mn 을 떼도 사전 항목이 되지 않는다")
+    void anAccentedOrdinaryWordIsNotMasked(String word) {
+        assertThat(filterFromDictionary().filter(word))
+                .as("'%s' 이(가) 가려졌다 — Mn 제거가 평범한 라틴을 사전 항목으로 만들었다", word)
+                .isEqualTo(word);
     }
 
     /**
@@ -272,7 +301,8 @@ class ProfanityDictionaryTest {
      * NFD 형이 {@code ***아} 가 아니라 {@code ***} 가 되고, 화이트리스트에 있는 {@code 시발점}
      * 이 {@code ***} 로 가려진다 — 보호가 평면 하나에서만 돌아 통째로 꺼진다.
      *
-     * <p>그 되돌림에서 나머지 174건은 <b>전부 통과했다.</b> 그래서 이 테스트가 따로 있다.
+     * <p>그 되돌림에서 <b>이 테스트를 뺀 나머지가 전부 통과했다</b>(당시 174건). 그래서 이
+     * 테스트가 따로 있다 — 수는 테스트가 늘면 변하니 기준 시점과 함께 읽을 것.
      */
     @Test
     @DisplayName("NFD 입력도 정확한 구간만 가린다 — 입구에서 안 합치면 화이트리스트가 꺼진다")
@@ -399,7 +429,7 @@ class ProfanityDictionaryTest {
      *
      * <p>이 잔재는 닫혔다. 한때 규칙을 지킨 항목도 전부 우회 스위치였다 — {@code 시발점씨발} 이
      * {@code 시발점} 때문에 통째로 통과했다. 마스킹을 span 단위로 바꿔(욕설 span 이 화이트리스트
-     * span 에 <b>완전히 덮일 때만</b> 버린다) 31건 전수에서 0건이 됐다. 아래
+     * span 에 <b>완전히 덮일 때만</b> 버린다) 당시 31건 전수에서 0건이 됐다. 아래
      * {@code noWhitelistEntryIsAGlobalOffSwitch} 가 그것을 고정한다.
      */
     @ParameterizedTest(name = "{0}")
@@ -496,7 +526,10 @@ class ProfanityDictionaryTest {
      *
      * <p>span 단위로 바꾸면서 생긴 새 계급이다 — 토큰 전체를 보존하지 않으므로, 보호어 뒤에
      * 붙은 조각이 사전에 걸리면 그 자리가 마스킹된다. 지금 데이터에서는 0건이지만 항목을
-     * 더할 때마다 다시 재야 한다. 항목 전수 × 흔한 조사·접미사를 돌린다.
+     * 더할 때마다 다시 재야 한다. 여기서 돌리는 것은 <b>항목 전수 × 조사 중심 22종</b>이고,
+     * 그것이 이 계급의 모수가 아니다 — 뒤따르는 것은 어미도 명사도 될 수 있어 목록으로는
+     * 닫히지 않는다(화이트리스트 머리글의 구조적 전수 참조). 이 테스트는 그 22종이 회귀하지
+     * 않는지만 지킨다.
      *
      * <p>서로 덮는 항목을 금지하던 규칙은 걷었다. 그 근거("긴 항목은 결과를 바꾸지 못한다")가
      * 토큰 전체 보존에서만 참이었다 — span 단위에서는 긴 항목이 더 넓은 span 을 덮어 결과를
@@ -654,7 +687,7 @@ class ProfanityDictionaryTest {
         ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
 
         assertThat(dictionary.whitelist()).contains("김치찌개");
-        assertThat(dictionary.ineffective()).anySatisfy(e -> assertThat(e).contains("김치찌개"));
+        assertThat(dictionary.warnings()).anySatisfy(e -> assertThat(e).contains("김치찌개"));
         assertThat(filter.filter("김치찌개시발"))
                 .as("덮을 span 이 없으면 우회로가 되지 않는다")
                 .contains("***");
@@ -676,7 +709,63 @@ class ProfanityDictionaryTest {
         assertThatThrownBy(() -> ProfanityDictionary.load(null, "8SIBAL"))
                 .as("입구가 매처와 다른 평면에서 판정하면 표기만 바꿔 우회로가 들어온다")
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("한글이 남지 않는다");
+                .hasMessageContaining("글자가 남지 않는다");
+    }
+
+    /**
+     * 잔여를 보고하는 경고문이 <b>긴 항목부터 지운 결과</b>를 담는다.
+     *
+     * <p>당직자가 이 경고문으로 "지킬 말이 무엇인가" 를 판단하므로 잔여가 정확해야 한다.
+     * {@code xsibalx} 에서 긴 {@code sibal} 을 먼저 지우면 잔여가 {@code xx} 이지만, 짧은
+     * {@code siba} 를 먼저 지우면 {@code xlx} 가 된다 — 쪼개진 {@code l} 이 '남은 말' 로
+     * 보고된다. 규칙 (3)의 문턱(글자 둘)도 같은 잔여를 쓰므로 순서가 판정을 바꿀 수 있다.
+     */
+    @Test
+    @DisplayName("경고문의 잔여는 긴 항목부터 지운 결과다 — 짧은 항목이 먼저면 쪼개진 글자가 섞인다")
+    void theReportedResidueRemovesTheLongestEntryFirst() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, "xsibalx");
+
+        assertThat(dictionary.warnings())
+                .as("잔여에 'l' 이 섞이면 짧은 항목(siba)을 먼저 지운 것이다")
+                .anySatisfy(message -> assertThat(message).contains("\"xx\""));
+    }
+
+    /**
+     * 긴 항목부터 지워야 잔여가 '지킬 말' 을 뜻한다.
+     *
+     * <p>{@code 8sibal} 의 잔여는 {@code 8} 이어야 하는데, 짧은 {@code siba} 를 먼저 지우면
+     * {@code 8l} 이 되어 "글자가 남았다" 로 보인다. 실측으로 그 상태에서 {@code 8sibal} 이
+     * 수락됐다 — 싼 접두를 막는 규칙이 쪼개진 글자 조각 하나에 뚫렸다.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"8sibal", "8SIBAL", "1sibal", "8시발"})
+    @DisplayName("⭐ 싼 접두는 표기가 라틴이어도 거부한다 — 긴 항목부터 지워야 잔여가 '8' 이 된다")
+    void aCheapPrefixIsRejectedInEitherScript(String entry) {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, entry))
+                .as("'%s' 가 수락되면 그 욕설이 한 글자 접두로 풀린다", entry)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("글자가 남지 않는다");
+    }
+
+    /**
+     * 정당한 라틴 항목은 적재된다 — 한글 음절만 '말' 로 세면 방송 중에 길이 없다.
+     *
+     * <p>잔여를 "한글 음절" 로만 보던 동안 {@code passivation}·{@code unisex}·{@code sexual}·
+     * {@code Essex}·{@code pussycat} 이 <b>전부 부팅을 세웠다</b>(실측 8/8). 그런데 라틴 항목
+     * 중 영단어에 걸리는 것이 지금도 5건이라(사전 머리글 참조) 그중 하나가 방송 중에 오탐을
+     * 내면 설정으로 못 막고 배포로 사전을 고쳐야 한다 — {@code sex}·{@code siva} 에서 이미 두 번
+     * 그 길로 갔고 그때마다 검출을 통째로 잃었다. 그래서 잔여에 글자가 둘 이상이면 적재하고
+     * {@code warnings()} 로 알린다. 한 글자({@code xsex} → {@code x})는 여전히 거부다.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"passivation", "passivate", "pussycat", "unisex", "sexual", "Essex"})
+    @DisplayName("⭐ 정당한 라틴 항목은 부팅을 세우지 않는다 — 방송 중에 쓸 수 있어야 한다")
+    void aLegitimateLatinEntryLoads(String entry) {
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, entry);
+
+        assertThat(dictionary.whitelist())
+                .as("'%s' 가 거부되면 라틴 오탐을 막을 길이 배포밖에 없다", entry)
+                .contains(entry);
     }
 
     @Test
@@ -696,7 +785,7 @@ class ProfanityDictionaryTest {
      * 만든다. 한때 영문 {@code sexual}·{@code sexy} 를 이 규칙의 예외로 뒀는데 그 둘이 ASCII
      * 자판만으로 사전을 끄는 키였다 — 사전에서 {@code sex} 를 빼면서 예외가 없어졌다.
      * 로더가 <b>예외 없이 강제하는 것은 둘</b>이다(맨 욕설 · 잔여에 한글 없음). 셋째 규칙
-     * (욕설을 품을 것)은 거부가 아니라 {@code ineffective()} 보고로 내려갔다 — span 단위에서는
+     * (욕설을 품을 것)은 거부가 아니라 {@code warnings()} 보고로 내려갔다 — span 단위에서는
      * 아무것도 안 덮는 항목이 아무 일도 하지 않으므로, 거부의 경계가 '해로움' 이기 때문이다.
      */
     @Test
@@ -704,7 +793,7 @@ class ProfanityDictionaryTest {
     void aWhitelistEntryWithNoHangulResidueIsRejected() {
         assertThatThrownBy(() -> ProfanityDictionary.load(null, "8시발"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("한글이 남지 않는다");
+                .hasMessageContaining("글자가 남지 않는다");
     }
 
     /**
@@ -722,7 +811,7 @@ class ProfanityDictionaryTest {
 
         assertThat(filter.filter("전염병같은놈")).contains("***");
         assertThat(filter.filter("아 전염병같은놈 진짜")).contains("***");
-        assertThat(dictionary.ineffective())
+        assertThat(dictionary.warnings())
                 .as("작동하는 단어에 경고를 달면 진짜 경고가 묻힌다")
                 .isEmpty();
         assertThat(filter.filter("전염병 주의"))
@@ -744,7 +833,7 @@ class ProfanityDictionaryTest {
         ProfanityDictionary dictionary = ProfanityDictionary.load("시발점", null);
         ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
 
-        assertThat(dictionary.ineffective())
+        assertThat(dictionary.warnings())
                 .anySatisfy(entry -> assertThat(entry).contains("시발점"));
         assertThat(filter.filter("아 시발점 진짜"))
                 .as("두 span 이 정확히 겹쳐 언제나 버려진다")

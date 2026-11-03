@@ -61,8 +61,8 @@ public class ChatBeansConfig {
         // 않기 때문이고(결과가 안 바뀐다), 방송 중에 쓰라고 둔 통로가 한 줄 오타로 전 파드
         // 채팅을 세우는 대가가 더 크다. 다만 "막았다" 로 믿고 넘어가는 것이 이 경고가 막으려는
         // 것이라, 조용히 넘기지도 않는다.
-        if (!dictionary.ineffective().isEmpty()) {
-            log.warn("사전에 효과 없는 항목이 있다: {}", dictionary.ineffective());
+        if (!dictionary.warnings().isEmpty()) {
+            log.warn("사전 설정에 확인할 항목이 있다: {}", dictionary.warnings());
         }
         return new ProfanityFilter(dictionary.words(), dictionary.whitelist());
     }
