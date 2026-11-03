@@ -26,7 +26,19 @@ import java.util.regex.Pattern;
  * 접는다. 접지 않으면 화면에 똑같이 보이는 입력이 사전을 통째로 지나간다 — NFD 분해형과
  * 전각({@code ｆｕｃｋ})이 그랬다. 호환 분해(½ · ﬁ · ㈜)는 접지 않는다. 길이가 1:1 이 아니라
  * span 슬라이싱 계약이 깨지고, 결과가 영속되는 본문이라 판매자 문구를 고쳐 쓰게 된다.
- * 음절을 띄어 쓴 자모 분산(예: 시 ㅂ ㅏ)은 여전히 범위 밖이다 — NFC 로는 합쳐지지 않는다.
+ * 음절을 띄어 쓴 자모 분산(예: {@code 시 ㅂ ㅏ})은 2B 가 인접 토큰을 조인해 잡는다 — 사전에
+ * {@code 시ㅂㅏ}·{@code ㅅㅣㅂㅏ} 가 리터럴로 있다. 범위 밖이라고 적었던 적이 있는데 거짓이었다.
+ *
+ * <p>2A·2B 전처리는 한글과 그 밖을 다르게 접는다. 한글은 NFC 까지만 — NFKC 는 호환 자모
+ * {@code ㅂ}(U+3142)를 조합용 자모로 바꿔 사전의 {@code 시ㅂㅏ} 류 항목과 어긋나게 만든다.
+ * 그 밖은 코드포인트마다 NFKC 라 원문자 {@code ⓕⓤⓒⓚ} 와 수학 알파벳 {@code 𝖋𝖚𝖈𝖐} 이 닫힌다.
+ * 거기서는 토큰 전체를 가리므로 길이가 바뀌어도 되고, 반환값은 원문에서 잘라 만든다.
+ * 1-패스는 여전히 길이 보존 {@link #fold} 만 쓴다.
+ *
+ * <p><b>동형자는 범위 밖이다.</b> 키릴 {@code с}(U+0441) 같은 글자는 라틴과 다른 글자이고
+ * 어떤 정규화도 접지 않는다 — {@code fuсk} 는 지금 통과한다. 닫으려면 유니코드 confusables
+ * 표가 필요하고 그건 새 데이터 의존이다. 한글 항목은 이 축의 영향을 받지 않으므로 노출은
+ * 라틴 항목에 유계다.
  *
  * <p><b>보이지 않는 글자.</b> 대부분은 글자가 아니라 2A 전처리가 떼어 낸다. 예외가 한글
  * 채움문자 넷(U+115F·U+1160·U+3164·U+FFA0)이고 유니코드가 이들을 '문자'(Lo)로 분류해
@@ -236,14 +248,37 @@ public final class ProfanityFilter {
      * 글자가 아니라 이미 떨어졌고, 정확히 이 넷만 통과했다).
      */
     private String stripNonLetters(String token) {
-        StringBuilder sb = new StringBuilder(token.length());
-        for (int i = 0; i < token.length(); i++) {
-            char c = token.charAt(i);
-            if (Character.isLetter(c) && !isHangulFiller(c)) {
-                sb.append(c);
+        // 한글과 그 밖을 다르게 접는다. 2A·2B 는 토큰 전체를 가리므로 길이가 바뀌어도 되고,
+        // filter() 의 반환값은 원문에서 잘라 만들므로 ㈜사파리 · Ⅲ단계 는 그대로 나간다.
+        //
+        // 한글: NFC 로 합치기만 한다. NFKC 를 쓰면 호환 자모(ㅂ U+3142)가 조합용 자모(U+1107)로
+        // 바뀌어 사전의 '시ㅂㅏ' 류 항목과 더는 같지 않다 — 한 번 그렇게 깨뜨렸다.
+        // 그 밖: 코드포인트마다 NFKC. 원문자(ⓕ, So)와 수학 알파벳(𝖋, 보조평면 Ll)이 그걸로
+        // 'f' 가 된다. 둘 다 접지 않으면 사전의 라틴 항목을 통째로 지나간다.
+        String composed = Normalizer.normalize(token, Normalizer.Form.NFC);
+        StringBuilder sb = new StringBuilder(composed.length());
+        composed.codePoints().forEach(cp -> {
+            if (isHangulFiller(cp)) {
+                return;
             }
-        }
+            if (isHangul(cp)) {
+                if (Character.isLetter(cp)) {
+                    sb.appendCodePoint(cp);
+                }
+                return;
+            }
+            String folded = Normalizer.normalize(Character.toString(cp), Normalizer.Form.NFKC);
+            folded.codePoints().filter(Character::isLetter).forEach(sb::appendCodePoint);
+        });
         return sb.toString();
+    }
+
+    /** 한글 음절·자모 영역. 이 안에서는 NFKC 가 사전 표기를 바꿔 버리므로 NFC 까지만 접는다. */
+    private static boolean isHangul(int cp) {
+        return (cp >= 0x1100 && cp <= 0x11FF)      // 조합용 자모
+                || (cp >= 0x3130 && cp <= 0x318F)  // 호환 자모
+                || (cp >= 0xA960 && cp <= 0xA97F)  // 확장 A
+                || (cp >= 0xAC00 && cp <= 0xD7FB); // 음절 + 확장 B
     }
 
     /**

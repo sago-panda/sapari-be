@@ -126,13 +126,17 @@ class ProfanityDictionaryTest {
     void aDecomposedMessageIsStillMasked(String message) {
         String decomposed = java.text.Normalizer.normalize(message, java.text.Normalizer.Form.NFD);
 
+        // isNotEqualTo 로는 못 잰다 — filter 가 NFC 를 돌려주므로 마스킹이 0 건이어도 반환값이
+        // 입력과 다르다. 마스킹 자체를 봐야 한다.
         assertThat(filterFromDictionary().filter(decomposed))
                 .as("'%s' 의 NFD 형이 통과한다 — 보낸 사람 말고는 아무도 구별하지 못한다", message)
-                .isNotEqualTo(decomposed);
+                .contains("***");
     }
 
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"ｆｕｃｋ", "ｓｉｂａｌ", "ｂｉｔｃｈ", "ＦＵＣＫ"})
+    @ValueSource(strings = {"ｆｕｃｋ", "ｓｉｂａｌ", "ｂｉｔｃｈ", "ＦＵＣＫ",
+            // 전각 숫자 가지(FF10–19). 없으면 사전의 s1bal · 18놈 이 전각으로 통과한다.
+            "ｓ１ｂａｌ", "１８놈"})
     @DisplayName("⭐ 전각 라틴도 마스킹된다 — ASCII 와 1:1 이라 길이 보존으로 접을 수 있다")
     void aFullwidthMessageIsStillMasked(String message) {
         assertThat(filterFromDictionary().filter(message))
@@ -152,6 +156,51 @@ class ProfanityDictionaryTest {
     @DisplayName("호환 분해 글자는 원문 그대로 둔다 — 영속되는 본문을 고쳐 쓰지 않는다")
     void compatibilityFormsAreLeftAlone(String message) {
         assertThat(filterFromDictionary().filter(message)).isEqualTo(message);
+    }
+
+    /**
+     * 2A 전처리가 한글과 그 밖을 다르게 접는다.
+     *
+     * <p>한글은 NFC 까지만 접는다 — NFKC 를 쓰면 호환 자모 {@code ㅂ}(U+3142)가 조합용 자모로
+     * 바뀌어 사전의 {@code 시ㅂㅏ} 류 항목과 어긋난다. 한 번 그렇게 깨뜨렸다. 그 밖은 코드포인트
+     * 단위 NFKC 라 원문자·수학 알파벳이 닫힌다. 두 평면을 한 번에 접으면 한쪽이 반드시 깨진다.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"시 ㅂ ㅏ", "ㅅ ㅣ ㅂ ㅏ", "ⓕⓤⓒⓚ", "𝖋𝖚𝖈𝖐"})
+    @DisplayName("⭐ 자모 분산과 원문자·수학 알파벳을 같이 잡는다 — 한글은 NFC, 나머지는 NFKC")
+    void jamoSpreadAndCompatibilityLettersAreBothCaught(String message) {
+        assertThat(filterFromDictionary().filter(message))
+                .as("'%s' 이(가) 통과한다 — 두 평면 중 하나를 희생한 것이다", message)
+                .contains("***");
+    }
+
+    /**
+     * 사전·설정 항목도 메시지와 같은 평면으로 접힌다.
+     *
+     * <p>메시지는 {@code filter()} 입구에서 NFC 로 접히는데 항목이 그대로면 둘이 영원히 만나지
+     * 못한다. NFD 는 macOS 복사가 그대로 주는 형식이고, 이 두 키는 방송 중에 쓰라고 둔 통로다 —
+     * 실측에서 NFD 로 쓴 단어가 거부도 경고도 없이 적재되고 <b>NFC·NFD 메시지를 둘 다</b> 못
+     * 막았고, NFD 로 쓴 정당한 화이트리스트는 거짓 메시지와 함께 부팅을 세웠다.
+     */
+    @Test
+    @DisplayName("⭐ NFD 로 쓴 설정 단어도 실제로 막는다 — 평면이 갈리면 조용히 사문이 된다")
+    void aDecomposedConfiguredWordActuallyBlocks() {
+        String decomposed = java.text.Normalizer.normalize("짱나죽어", java.text.Normalizer.Form.NFD);
+        ProfanityDictionary dictionary = ProfanityDictionary.load(decomposed, null);
+        ProfanityFilter filter = new ProfanityFilter(dictionary.words(), dictionary.whitelist());
+
+        assertThat(filter.filter("아 짱나죽어 진짜")).contains("***");
+        assertThat(filter.filter("아 " + decomposed + " 진짜")).contains("***");
+    }
+
+    @Test
+    @DisplayName("⭐ NFD 로 쓴 화이트리스트도 거부되지 않는다 — 화면이 같은 값이 입구에서 갈리면 안 된다")
+    void aDecomposedConfiguredWhitelistIsAccepted() {
+        String decomposed = java.text.Normalizer.normalize("시발점", java.text.Normalizer.Form.NFD);
+
+        ProfanityDictionary dictionary = ProfanityDictionary.load(null, decomposed);
+
+        assertThat(dictionary.whitelist()).contains("시발점");
     }
 
     @Test

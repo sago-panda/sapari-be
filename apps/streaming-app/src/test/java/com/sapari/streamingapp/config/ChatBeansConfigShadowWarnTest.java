@@ -62,6 +62,25 @@ class ChatBeansConfigShadowWarnTest {
                 .contains("전염병");
     }
 
+    /**
+     * 형제 분기도 같이 잰다.
+     *
+     * <p>직전 라운드에 {@code partiallyShadowed} 쪽 WARN 을 고정하면서 같은 커밋에서 추가한
+     * {@code redundantWhitelist} 쪽은 빼먹었다 — 그 블록을 지워도 아무것도 안 깨졌다.
+     * 이 테스트 클래스 자신의 javadoc 이 경고하는 모양을 같은 클래스가 다시 만든 것이다.
+     */
+    @Test
+    @DisplayName("⭐ 이미 덮이는 화이트리스트 항목도 WARN 에 실린다 — 형제 분기를 빼먹었었다")
+    void aRedundantWhitelistEntryIsWarnedAbout() {
+        new ChatBeansConfig().profanityFilter("", "시발자동차");
+
+        assertThat(warnings()).hasSize(1);
+        assertThat(warnings().get(0).getFormattedMessage())
+                .contains("시발자동차")
+                .as("무엇에 덮이는지 없으면 운영자가 손쓸 데를 모른다")
+                .contains("시발자");
+    }
+
     @Test
     @DisplayName("가려지는 단어가 없으면 WARN 을 남기지 않는다 — 평상시 경고는 읽히지 않게 된다")
     void theOrdinaryCaseIsQuiet() {

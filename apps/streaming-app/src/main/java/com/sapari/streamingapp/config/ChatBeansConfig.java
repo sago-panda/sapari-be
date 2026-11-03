@@ -57,9 +57,10 @@ public class ChatBeansConfig {
         ProfanityDictionary dictionary = ProfanityDictionary.load(extraWords, extraWhitelist);
         log.info("욕설 사전 적재 — 욕설 {}개 · 화이트리스트 {}개",
                 dictionary.words().size(), dictionary.whitelist().size());
-        // 설정으로 더한 단어가 화이트리스트 항목을 품으면 리터럴 토큰에서만 안 걸린다(우회형은
-        // 여전히 잡는다). 적재는 하되 알려 준다 — 급히 막은 사람이 "막았다" 와 "리터럴은 못 막는다"
-        // 를 구분할 수 있어야 하기 때문이다. 부팅을 세우면 정당한 긴급차단까지 막힌다.
+        // 사전 단어(번들·설정 모두)가 화이트리스트 항목을 품으면 리터럴 토큰에서만 안 걸린다
+        // (우회형은 여전히 잡는다). 적재는 하되 알려 준다 — 급히 막은 사람이 "막았다" 와
+        // "리터럴은 못 막는다" 를 구분할 수 있어야 하기 때문이다. 부팅을 세우면 정당한 긴급차단까지
+        // 막힌다.
         if (!dictionary.partiallyShadowed().isEmpty()) {
             log.warn("사전 단어가 화이트리스트에 일부 가려진다 — 리터럴 토큰으로는 안 걸리고 "
                     + "공백·기호가 섞인 우회형만 걸린다: {}", dictionary.partiallyShadowed());

@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -80,7 +81,7 @@ public final class ProfanityDictionary {
         // 두 집합이 다 모인 뒤에 검사한다 — 두 방향이 서로를 봐야 하기 때문이다(화이트리스트 항목은
         // 사전을 보고, 사전 항목은 화이트리스트를 본다). 한쪽을 먼저 검사하면 나머지 절반을 못 본다.
         for (String entry : extraWl) {
-            rejectUselessWhitelist(entry, words, whitelist);
+            rejectUselessWhitelist(entry, words);
         }
         // 번들·설정을 가리지 않고 전부 본다. 설정만 보면 번들에 같은 모양이 들어와도 신호가 없다.
         Set<String> shadowed = new LinkedHashSet<>();
@@ -180,8 +181,7 @@ public final class ProfanityDictionary {
      * 오타가 사전 전체를 조용히 무력화한다. 시끄러운 실패가 조용한 기능 정지보다 낫다는,
      * 이 사전이 비어 있던 동안 이미 치른 교훈과 같은 판단이다.
      */
-    private static void rejectUselessWhitelist(String entry, Set<String> words,
-            Set<String> whitelist) {
+    private static void rejectUselessWhitelist(String entry, Set<String> words) {
         // 런타임 매칭이 asciiLower 위에서 돌므로 검사도 거기서 해야 한다. 안 그러면 런타임에
         // 똑같이 동작하는 두 값이 입구에서 갈린다 — 'unisex' 는 통과하고 'UNISEX' 는 "어떤 욕설도
         // 품지 않는다" 로 거부되는데 그 메시지가 거짓이다(소문자로 적으면 같은 토큰을 보호한다).
@@ -208,7 +208,7 @@ public final class ProfanityDictionary {
     }
 
     /**
-     * 설정 단어 중 화이트리스트 항목을 품은 것들. {@code "단어 ⊂ 화이트리스트항목"} 꼴이다.
+     * 사전 단어(번들·설정 모두) 중 화이트리스트 항목을 품은 것들. {@code "단어 ⊂ 항목"} 꼴이다.
      *
      * <p>이들은 <b>리터럴 토큰으로만</b> 안 걸린다. 처음에는 "영원히 매치되지 않는다" 로 보고
      * 부팅을 세웠는데 그 전제가 거짓이었다 — 실측에서 다섯 모양 중 넷의 동작이 바뀐다.
@@ -361,12 +361,30 @@ public final class ProfanityDictionary {
         return out.toString();
     }
 
+    /**
+     * 항목을 매칭 평면으로 접는다 — 지금은 NFC.
+     *
+     * <p>메시지는 {@code filter()} 입구에서 NFC 로 접히는데 항목이 그대로면 둘이 영원히 만나지
+     * 못한다. 실측: {@code CHAT_PROFANITY_WORDS} 에 NFD 로 쓴 단어는 거부도 경고도 없이
+     * 적재되고 NFC·NFD 메시지를 <b>둘 다</b> 못 막았다. 반대로 NFD 로 쓴 정당한 화이트리스트
+     * 항목은 "어떤 욕설도 품지 않는다" 라는 <b>거짓 메시지와 함께</b> 부팅을 세웠다.
+     *
+     * <p>NFD 는 macOS 복사가 그대로 주는 형식이고, 이 두 키는 방송 중에 쓰라고 둔 통로다.
+     * 이 파일이 이미 적어 둔 원칙이 그것이다 — 비교에 참여하는 평면은 전부 같아야 한다.
+     */
+    private static String normalizeEntry(String word) {
+        return Normalizer.isNormalized(word, Normalizer.Form.NFC)
+                ? word
+                : Normalizer.normalize(word, Normalizer.Form.NFC);
+    }
+
     // BOM(U+FEFF)을 뗀다. strip() 은 Character.isWhitespace 기준이라 BOM 을 남기는데, 남으면
     // 파일 1행이 주석 판정('#' 로 시작)을 비껴가 그 줄이 통째로 단어가 된다.
     // NBSP 등 다른 보이지 않는 글자는 여기서 안 떼지지만 아래 containsInvisible 이 거부한다.
     private static String strip(String line) {
         String out = line.strip();
-        return out.isEmpty() || out.charAt(0) != '\uFEFF' ? out : out.substring(1).strip();
+        out = out.isEmpty() || out.charAt(0) != '\uFEFF' ? out : out.substring(1).strip();
+        return normalizeEntry(out);
     }
 
     private static Set<String> splitCsv(String property, String csv) {
