@@ -1,0 +1,5 @@
+# Qodo Merge 설정. 기본 브랜치(dev)에 있는 이 파일만 읽힌다.
+
+[config]
+# skip-review 라벨이 붙은 MR 은 리뷰하지 않는다 (이전 mr-review.yml 과 같은 규칙).
+ignore_pr_labels = ["skip-review"]
