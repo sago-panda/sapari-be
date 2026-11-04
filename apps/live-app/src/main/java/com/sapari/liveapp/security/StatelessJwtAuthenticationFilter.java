@@ -18,6 +18,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+import com.sapari.global.logging.LogFields;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
@@ -102,6 +103,6 @@ public class StatelessJwtAuthenticationFilter extends OncePerRequestFilter {
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
         // 인증 성공 후 MDC에 userId 주입 → 이후 모든 로그 라인에 부착 (정리는 MdcContextFilter가 담당)
-        MDC.put("userId", claims.userId().toString());
+        MDC.put(LogFields.USER_ID, claims.userId().toString());
     }
 }
