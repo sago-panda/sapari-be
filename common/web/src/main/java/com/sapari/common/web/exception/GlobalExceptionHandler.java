@@ -18,6 +18,7 @@ import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import com.sapari.global.logging.LogFields;
 import com.sapari.common.core.exception.BusinessException;
 import com.sapari.common.core.exception.CommonErrorCode;
 import com.sapari.common.core.exception.ErrorCode;
@@ -38,7 +39,6 @@ import com.sapari.global.time.TimeProvider;
 @RequiredArgsConstructor
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
-    private static final String REQUEST_ID = "requestId";
     private static final String VALIDATION_FALLBACK_MESSAGE = "잘못된 요청입니다.";
 
     private final TimeProvider timeProvider;
@@ -172,6 +172,6 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     private String requestId() {
-        return MDC.get(REQUEST_ID);
+        return MDC.get(LogFields.REQUEST_ID);
     }
 }

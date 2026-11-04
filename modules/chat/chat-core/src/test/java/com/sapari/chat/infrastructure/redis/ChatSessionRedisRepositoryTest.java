@@ -1,0 +1,163 @@
+package com.sapari.chat.infrastructure.redis;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Duration;
+import java.util.UUID;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+/**
+ * Redis 세션 HASH 어댑터 단위 통합 테스트 — 컨테이너 + 수동 조립.
+ * 어댑터 1개만 검증하므로 @SpringBootTest(전체 컴포넌트 스캔=mongo 저장소까지 부트스트랩)를 쓰지 않는다.
+ * TC 번호는 설계 문서 통합 테스트 계획의 WebSocket 연결 표 중 sessions HASH 책임 항목을 따른다.
+ */
+@Testcontainers
+class ChatSessionRedisRepositoryTest {
+
+    /** 이 테스트들은 낡음 판정을 재지 않는다 — 실제 시계로 충분하다(그 판정은
+     * ChatSessionHeartbeatTest 가 합성 시계로 잰다). */
+    private static final com.sapari.global.time.TimeProvider SYSTEM_TIME =
+            new com.sapari.global.time.TimeProvider(java.time.Clock.systemUTC());
+
+
+    /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
+    @Container
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.4").withExposedPorts(6379);
+
+    private static LettuceConnectionFactory connectionFactory;
+    private static ReactiveStringRedisTemplate redisTemplate;
+
+    private ChatSessionRedisRepository repository;
+
+    private final UUID roomId = UUID.randomUUID();
+    private final UUID userId = UUID.randomUUID();
+
+    @BeforeAll
+    static void startTemplate() {
+        connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
+        connectionFactory.afterPropertiesSet();
+        redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
+    }
+
+    @AfterAll
+    static void stopTemplate() {
+        connectionFactory.destroy();
+    }
+
+    @BeforeEach
+    void setUp() {
+        repository = new ChatSessionRedisRepository(redisTemplate, SYSTEM_TIME);
+        redisTemplate.delete("chat:room:" + roomId + ":sessions").block(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("TC#3 — 연결 시 sessions HASH에 sessionId→userId가 등록된다")
+    void add_registers_session_to_userId_mapping() {
+        // given
+        repository.add(roomId, "session-1", userId).block(VERIFY_CEILING);
+
+        Object stored = redisTemplate.opsForHash()
+                .get("chat:room:" + roomId + ":sessions", "session-1").block(VERIFY_CEILING);
+
+        // when & then: 값은 userId:마지막확인시각 이다 — 그 시각이 없으면 Pod 크래시로 남은 항목을
+        // 집계에서 뺄 근거가 사라지고, 시청자 수가 방송 내내 부푼다.
+        assertThat(String.valueOf(stored)).matches(userId + ":\\d+");
+    }
+
+    @Test
+    @DisplayName("TC#4 — 유저 1명 1탭이면 count=1")
+    void single_user_single_tab_counts_one() {
+        // given
+        repository.add(roomId, "session-1", userId).block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(repository.count(roomId).block(VERIFY_CEILING)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("TC#5·#24 — 같은 유저 3탭이어도 count=1 (고유 유저 수, 탭 수 아님)")
+    void multi_tab_same_user_counts_one() {
+        // given
+        repository.add(roomId, "tab-1", userId).block(VERIFY_CEILING);
+        repository.add(roomId, "tab-2", userId).block(VERIFY_CEILING);
+        repository.add(roomId, "tab-3", userId).block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(repository.count(roomId).block(VERIFY_CEILING)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("서로 다른 유저 2명이면 count=2")
+    void distinct_users_count_independently() {
+        // given
+        repository.add(roomId, "s1", userId).block(VERIFY_CEILING);
+        repository.add(roomId, "s2", UUID.randomUUID()).block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(repository.count(roomId).block(VERIFY_CEILING)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("TC#6·#7 — 종료 시 sessionId가 제거되고 count가 감소한다")
+    void remove_deletes_session_and_decreases_count() {
+        // given
+        repository.add(roomId, "s1", userId).block(VERIFY_CEILING);
+        repository.add(roomId, "s2", UUID.randomUUID()).block(VERIFY_CEILING);
+
+        repository.remove(roomId, "s1").block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(repository.count(roomId).block(VERIFY_CEILING)).isEqualTo(1);
+        assertThat(redisTemplate.opsForHash()
+                .hasKey("chat:room:" + roomId + ":sessions", "s1").block(VERIFY_CEILING)).isFalse();
+    }
+
+    @Test
+    @DisplayName("TC#25 — 멀티탭 중 한 탭 제거 시 나머지 탭 유지, count 불변")
+    void removing_one_tab_keeps_other_tabs() {
+        // given
+        repository.add(roomId, "tab-1", userId).block(VERIFY_CEILING);
+        repository.add(roomId, "tab-2", userId).block(VERIFY_CEILING);
+
+        repository.remove(roomId, "tab-1").block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(redisTemplate.opsForHash()
+                .hasKey("chat:room:" + roomId + ":sessions", "tab-2").block(VERIFY_CEILING)).isTrue();
+        assertThat(repository.count(roomId).block(VERIFY_CEILING)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("clearRoom — 키 자체가 삭제된다 (라이브 종료 정리)")
+    void clearRoom_deletes_the_hash_key() {
+        // given
+        repository.add(roomId, "s1", userId).block(VERIFY_CEILING);
+
+        repository.clearRoom(roomId).block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(redisTemplate.hasKey("chat:room:" + roomId + ":sessions").block(VERIFY_CEILING)).isFalse();
+        assertThat(repository.count(roomId).block(VERIFY_CEILING)).isZero();
+    }
+
+    @Test
+    @DisplayName("add — 등재와 함께 TTL이 실제로 걸린다(백스톱이 사라지는 걸 목이 아니라 Redis로 확인)")
+    void add_setsTtlOnRealRedis() {
+        // when
+        repository.add(roomId, "s1", userId).block(VERIFY_CEILING);
+
+        // then: -1(무기한)이면 정상 회수가 다 실패했을 때 키를 받아줄 폴백이 사라진다
+        assertThat(redisTemplate.getExpire("chat:room:" + roomId + ":sessions").block(VERIFY_CEILING).toSeconds()).isPositive();
+    }
+}

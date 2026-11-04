@@ -1,10 +1,12 @@
 package com.sapari.architecture;
 
+import java.util.List;
 import com.tngtech.archunit.core.domain.Dependency;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
@@ -224,6 +226,95 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    // chat-core 한 모듈에 reactive 유스케이스(WS 전송)와 blocking 유스케이스(강퇴·이력 조회)가 함께 산다.
+    // 두 앱이 chat-core를 의존하므로 양쪽 스택이 전이로 클래스패스에 올라오는데, 그 전이를 막으면 모듈 구조가
+    // 깨지므로 허용하고 '호출'만 막는다 — 블로킹 Redis 금지와 같은 계열이다.
+    //
+    // 아래 두 규칙은 지금 검사 대상 클래스가 없어도(강퇴·이력은 미구현) 그대로 둔다. 잘못 배선하는 순간
+    // 실패하는 게 목적이지, 지금 뭔가를 잡는 게 목적이 아니다.
+
+    /**
+     * streaming-app이 닿으면 안 되는 블로킹 chat 타입들. <b>한 줄에 하나씩 둔다.</b>
+     *
+     * <p>정규식 한 줄에 파이프로 늘어놓으면 두 브랜치가 각각 이름을 더할 때 반드시 같은 줄에서 충돌한다.
+     * 이 목록은 chat이 블로킹 경로를 하나 만들 때마다 늘어나는 것이 정상이라, 그 비용이 계속 든다.
+     * 줄을 나누면 추가가 append가 되어 서로 다른 브랜치의 추가가 자동으로 합쳐진다.
+     */
+    private static final List<String> BLOCKING_CHAT_TYPES = List.of(
+            "KickUserUseCase",
+            "KickUserService",
+            "ChatKickRecorder",
+            "ChatAccountEventPublisher",
+            "GetChatHistoryUseCase",
+            "GetChatHistoryService");
+
+    /** reactive chat 타입들 — MVC 앱(live-app)이 닿으면 결국 {@code .block()}을 강요당한다. 위와 같은 이유로 한 줄에 하나씩. */
+    private static final List<String> REACTIVE_CHAT_TYPES = List.of(
+            "SendChatUseCase",
+            "SendChatService",
+            "ChatAccountEventSource",
+            "ChatAccountEventHandler");
+
+    /** 단순 이름 목록을 FQN 매칭 정규식으로. 이름에 정규식 메타문자가 없다는 전제이고, 실제로 자바 식별자뿐이다. */
+    private static String endingWithAnyOf(List<String> simpleNames) {
+        return ".*\\.(" + String.join("|", simpleNames) + ")";
+    }
+
+    // WebFlux 앱이 blocking 유스케이스를 호출하면 Netty 이벤트루프가 그 시간만큼 멈춘다.
+    @Test
+    void streaming_app_must_not_call_blocking_chat_use_cases() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.streamingapp..")
+                .should().dependOnClassesThat()
+                        .haveNameMatching(endingWithAnyOf(BLOCKING_CHAT_TYPES))
+                .orShould().dependOnClassesThat()
+                        .haveFullyQualifiedName("org.springframework.data.mongodb.core.MongoTemplate")
+                .as("streaming-app(WebFlux)은 블로킹 chat 유스케이스·블로킹 MongoTemplate을 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // MVC 앱이 Mono/Flux를 반환하는 유스케이스를 호출하면 결국 .block()을 강요당한다.
+    // 강퇴 REST가 얹히는 MVC 앱은 live-app이다. api-app은 chat 의존이 0건이라 대상에 넣지 않는다 —
+    // 넣으면 그쪽 클래스가 항상 존재해서, live-app이 클래스패스에서 빠져도 빈 검사가 드러나지 않는다.
+    @Test
+    void live_app_must_not_call_reactive_chat_use_cases() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.liveapp..")
+                .should().dependOnClassesThat()
+                        .haveNameMatching(endingWithAnyOf(REACTIVE_CHAT_TYPES))
+                .as("live-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // OutboundMessage는 여덟 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 위치 인자로 지으면
+    // 한 칸 밀린 실수가 컴파일도 타입 검사도 통과한다 — 하필 senderEmail 바로 뒤가 displayMessage라,
+    // 그 실수는 발신자 이메일을 본문 자리에 넣어 방 전원에게 뿌린다.
+    //
+    // 밖에서는 타입별 정적 팩토리로만 짓는다. 팩토리 안에서 위치 인자를 안 쓰게 하는 것은 빌더가
+    // 맡고, 그 빌더는 package 접근이라 컴파일러가 이미 막는다 — 그래서 이 규칙은 생성자만 본다.
+    //
+    // 대상에서 빼는 것은 OutboundMessage와 그 중첩 클래스뿐이다. 빌더는 Lombok이 만든 중첩 클래스라
+    // FQN이 다르고(OutboundMessage$OutboundMessageBuilder), 이름 하나만 비교하면 자기 빌더를 자기
+    // 규칙이 잡는다(실제로 그랬다). 그렇다고 접두로 비교하면 같은 패키지의 OutboundMessageFactory 같은
+    // 이름까지 조용히 면제된다 — 중첩 구분자 '$'까지 붙여 정확히 중첩만 뺀다.
+    @Test
+    void outbound_message_must_be_built_through_factories() {
+        String outbound = "com.sapari.chat.application.protocol.OutboundMessage";
+
+        ArchRule rule = noClasses()
+                .that(DescribedPredicate.describe("OutboundMessage와 그 중첩 클래스가 아닌",
+                        javaClass -> !javaClass.getName().equals(outbound)
+                                && !javaClass.getName().startsWith(outbound + "$")))
+                .should().callConstructorWhere(DescribedPredicate.describe(
+                        "OutboundMessage 생성자",
+                        target -> target.getTargetOwner().getName().equals(outbound)))
+                .as("OutboundMessage는 타입별 정적 팩토리로만 생성해야 한다(위치 인자 밀림 = PII 유출)");
+
+        rule.check(SAPARI);
+    }
+
     // 10) @Transactional은 application 레이어에만 둔다.
     //     트랜잭션 경계는 유스케이스 오케스트레이션(application/service)의 책임 — 인프라/도메인/표현 계층에
     //     트랜잭션이 새면 경계가 흐려진다. (Spring Data 레포의 자체 트랜잭션은 여기 대상 아님)
@@ -323,5 +414,59 @@ class ArchitectureTest {
         }
         String[] parts = packageName.split("\\.");
         return parts.length >= 3 && !NON_DOMAIN_ROOTS.contains(parts[2]);
+    }
+
+    /**
+     * 20) MapStruct 매퍼는 미매핑 타깃에서 빌드를 깨야 한다.
+     *
+     * <p>기본 정책({@code WARN})이면 도메인 record 에 필드를 더하고 매퍼를 안 고쳤을 때 MapStruct 가
+     * 그 타깃을 비워 둔 채 경고 한 줄만 내고 통과한다. 그러면 영속된 메시지를 읽을 때마다 그 필드가
+     * 조용히 비어 있다.
+     *
+     * <p>매퍼 자신의 {@code unmappedTargetPolicy = ERROR} 가 그걸 막지만, <b>그 속성이 지워지는 것은
+     * 아무것도 막지 않는다</b> — 지우는 시점에 미매핑 필드가 없으면 빌드도 테스트도 멀쩡하다. 그 구간을
+     * 닫는 것이 이 규칙이다.
+     *
+     * <p>{@code @Mapper} 는 {@code RetentionPolicy.CLASS} 라 런타임 리플렉션으로는 못 읽지만 클래스
+     * 파일에는 남고, ArchUnit 은 클래스 파일을 직접 읽는다. 속성을 아예 지운 경우에는 ArchUnit 이
+     * <b>애너테이션 기본값을 채워</b> {@code WARN} 을 돌려주므로, 이 한 줄이 {@code IGNORE} 로의 명시적
+     * 격하와 속성 삭제를 동시에 잡는다 — "속성이 있는가" 를 따로 볼 필요가 없다.
+     *
+     * <p>{@code live} 하나만 예외다 — 엔티티에 도메인 대응이 없는 영속 전용 필드(VOD·시청자 집계 등)가
+     * 많아 비는 타깃이 정상이고, 그 사유가 {@code LiveRoomMapper} javadoc 에 적혀 있다. 나머지는
+     * 이미 전부 {@code ERROR} 였으므로 이 규칙이 새로 금지하는 것은 없고, <b>그 상태가 유지되게</b> 한다.
+     *
+     * <p>한때 범위를 chat 으로만 잡았는데 그건 chat 작업 중이어서였고 근거가 아니었다. 결과가 가장
+     * 무거운 자리는 다른 모듈이다 — {@code LocalCredentialMapper.toDomain} 이
+     * {@code passwordHash}·{@code failedLoginCount}·{@code lockedAt} 를 담은 도메인 record 를 만든다.
+     * 그쪽 정책이 지워진 뒤 필드가 늘면 <b>락아웃 상태가 조용히 빈다.</b>
+     */
+    @Test
+    void mapstruct_mappers_must_fail_on_unmapped_targets() {
+        ArchRule rule = classes()
+                .that().resideInAPackage("com.sapari..")
+                .and().resideOutsideOfPackage("com.sapari.live..")
+                .and().areAnnotatedWith("org.mapstruct.Mapper")
+                .should(declareUnmappedTargetPolicyError());
+
+        rule.check(SAPARI);
+    }
+
+    /** {@code @Mapper} 의 {@code unmappedTargetPolicy} 를 클래스 파일에서 읽어 ERROR 인지 본다. */
+    private static ArchCondition<JavaClass> declareUnmappedTargetPolicyError() {
+        return new ArchCondition<>("unmappedTargetPolicy = ERROR 로 선언되어야 한다") {
+            @Override
+            public void check(JavaClass mapper, ConditionEvents events) {
+                com.tngtech.archunit.core.domain.JavaAnnotation<?> annotation =
+                        mapper.getAnnotationOfType("org.mapstruct.Mapper");
+                String policy = annotation.get("unmappedTargetPolicy")
+                        .map(value -> value instanceof com.tngtech.archunit.core.domain.JavaEnumConstant constant
+                                ? constant.name()
+                                : String.valueOf(value))
+                        .orElse("(속성 없음 — ArchUnit 이 기본값도 못 채웠다)");
+                events.add(new SimpleConditionEvent(mapper, "ERROR".equals(policy),
+                        mapper.getName() + " 의 unmappedTargetPolicy = " + policy));
+            }
+        };
     }
 }

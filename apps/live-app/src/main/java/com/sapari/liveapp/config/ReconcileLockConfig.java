@@ -314,8 +314,12 @@ public class ReconcileLockConfig {
     /**
      * 별도 메서드인 이유는 <b>테스트가 값을 볼 수 있게</b> 하기 위해서다. {@code JdbcTemplateLockProvider}
      * 는 자기 설정을 노출하지 않아, 빈만 만들면 테이블명 오타나 {@code usingDbTime()} 누락을 Docker 없이는
-     * 확인할 방법이 없다 — 그리고 그걸 확인하는 유일한 테스트는 CI 에서 빠진다({@code @Tag("docker")}).
-     * 테스트가 다른 패키지({@code liveapp.scheduler})에 있어 {@code public} 이다.
+     * 확인할 방법이 없다. 테스트가 다른 패키지({@code liveapp.scheduler})에 있어 {@code public} 이다.
+     *
+     * <p>한때 여기에 "그걸 확인하는 유일한 테스트는 CI 에서 빠진다({@code @Tag("docker")})" 고
+     * 적혀 있었다. <b>지금은 참이 아니다</b> — Gradle 의 태그 제외가 전부 걷혔고(실측:
+     * {@code excludeTags}/{@code includeTags} 0건) CI 는 dind 로 그 테스트를 돌린다. 이 메서드를
+     * 따로 두는 이유는 그대로다: Docker 없이도 값을 재는 빠른 그물이 하나 더 있는 쪽이 낫다.
      */
     public static JdbcTemplateLockProvider.Configuration lockConfiguration(DataSource dataSource) {
         return JdbcTemplateLockProvider.Configuration.builder()
