@@ -7,6 +7,7 @@ import com.sapari.product.domain.model.combination.Sku;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductImageRef;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
+import com.sapari.product.domain.model.product.ProductStatus;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.port.GetProductDetailUseCase;
@@ -21,7 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 상품 상세 조회 유스케이스. 상품 애그리거트(기본 정보·태그·이미지·옵션 트리)와 별도 애그리거트인 옵션 조합을 함께 조립해 뷰로 돌려준다.
+ * 구매자용 상품 공개 상세 조회 유스케이스. 상품 애그리거트(기본 정보·태그·이미지·옵션 트리)와 별도 애그리거트인 옵션 조합을 함께 조립해 뷰로 돌려준다.
  */
 @Service
 @RequiredArgsConstructor
@@ -31,15 +32,17 @@ public class GetProductDetailService implements GetProductDetailUseCase {
     private final ProductOptionCombinationRepository combinationRepository;
 
     /**
-     * 상품 상세를 조회한다. 소프트 삭제된 상품은 미존재로 간주한다.
+     * 판매 중인 상품의 상세를 조회한다. 삭제된 상품과 판매 중이 아닌(검수 대기·판매 중지·반려) 상품은 미존재로 간주한다 —
+     * 비공개 상품은 존재 여부조차 드러나면 안 되므로 두 경우를 같은 예외·같은 메시지로 거절한다.
      *
-     * @throws ProductNotFoundException 상품이 없거나 삭제된 경우
+     * @throws ProductNotFoundException 상품이 없거나, 삭제됐거나, 판매 중이 아닌 경우
      */
     @Override
     @Transactional(readOnly = true)
     public ProductDetailView get(GetProductDetailCommand command) {
-        // 삭제된 상품은 없는 것으로 취급 — 조합 조회 전에 차단한다
+        // 삭제·비공개 상품은 없는 것으로 취급 — 조합 조회 전에 차단한다
         Product product = productRepository.findActiveById(command.productId())
+                .filter(found -> found.status() == ProductStatus.ON_SALE)
                 .orElseThrow(() -> new ProductNotFoundException(
                         "상품을 찾을 수 없습니다: " + command.productId()));
 

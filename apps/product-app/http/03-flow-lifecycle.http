@@ -33,15 +33,15 @@ Content-Type: application/json
 
 > {%
     client.test("A1 201", function () { client.assert(response.status === 201, "got " + response.status); });
-    client.global.set("flowA_id", response.body.productId);
+    client.global.set("flowA_id", response.body.data.productId);
 %}
 
 ### A2. 목록 → version 캡처 + PENDING_REVIEW 확인
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
-    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    const p = response.body.data.content.find(x => x.productId === client.global.get("flowA_id"));
     client.test("A2 목록에 존재 + PENDING_REVIEW", function () {
         client.assert(p !== undefined, "미발견");
         client.assert(p.status === "PENDING_REVIEW", "status=" + p.status);
@@ -69,11 +69,11 @@ Content-Type: application/json
 %}
 
 ### A4. 목록 → 수정 반영 확인 + version 재캡처
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
-    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    const p = response.body.data.content.find(x => x.productId === client.global.get("flowA_id"));
     client.test("A4 이름 수정 반영", function () { client.assert(p.name === "Flow A 상품 (수정)", "name=" + p.name); });
     client.global.set("flowA_version", p.version);
 %}
@@ -101,11 +101,11 @@ Content-Type: application/json
 %}
 
 ### A6. 목록 → 삭제용 version 재캡처
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
-    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    const p = response.body.data.content.find(x => x.productId === client.global.get("flowA_id"));
     client.global.set("flowA_version", p.version);
 %}
 
@@ -118,11 +118,11 @@ Authorization: Bearer {{sellerToken}}
 %}
 
 ### A8. 목록 → 삭제 상품이 더 이상 없음
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
-    const p = response.body.find(x => x.productId === client.global.get("flowA_id"));
+    const p = response.body.data.content.find(x => x.productId === client.global.get("flowA_id"));
     client.test("A8 삭제 상품 목록에서 제외", function () { client.assert(p === undefined, "삭제됐는데 목록에 남음"); });
 %}
 
@@ -146,7 +146,7 @@ GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
 
 > {%
     client.test("B1 200 (ON_SALE)", function () { client.assert(response.status === 200, "ON_SALE 상품 필요: " + response.status); });
-    const d = response.body;
+    const d = response.body.data;
     client.global.set("flowB_onSaleId", d.productId);
     client.global.set("flowB_pVersion", d.version);
     const c = d.combinations[0];
@@ -181,7 +181,7 @@ Content-Type: application/json
 GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
 
 > {%
-    const d = response.body;
+    const d = response.body.data;
     const c = d.combinations.find(x => x.combinationId === client.global.get("flowB_comboId"));
     client.test("B3 가격 17900 반영", function () { client.assert(c.price === 17900, "price=" + c.price); });
     client.test("B3 재고 7 반영", function () { client.assert(c.stock === 7, "stock=" + c.stock); });
@@ -207,12 +207,12 @@ GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
 %}
 
 ### B6. 목록 → SUSPENDED 상품 version 캡처(복구용)
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
     const onSaleId = client.global.get("flowB_onSaleId");
-    const p = response.body.find(x => x.productId === onSaleId);
+    const p = response.body.data.content.find(x => x.productId === onSaleId);
     client.test("B6 SUSPENDED 확인", function () { client.assert(p && p.status === "SUSPENDED", "status=" + (p && p.status)); });
     client.global.set("flowB_pVersion", p.version);
 %}
@@ -254,15 +254,15 @@ Content-Type: application/json
 
 > {%
     client.test("C1 201", function () { client.assert(response.status === 201, "got " + response.status); });
-    client.global.set("flowC_id", response.body.productId);
+    client.global.set("flowC_id", response.body.data.productId);
 %}
 
 ### C2. 목록 → version V 캡처
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
-    const p = response.body.find(x => x.productId === client.global.get("flowC_id"));
+    const p = response.body.data.content.find(x => x.productId === client.global.get("flowC_id"));
     client.global.set("flowC_version", p.version);
 %}
 
@@ -298,11 +298,11 @@ Content-Type: application/json
 %}
 
 ### C5. 정리 — 최신 version 재캡처 후 삭제
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
-    const p = response.body.find(x => x.productId === client.global.get("flowC_id"));
+    const p = response.body.data.content.find(x => x.productId === client.global.get("flowC_id"));
     client.global.set("flowC_version", p.version);
 %}
 

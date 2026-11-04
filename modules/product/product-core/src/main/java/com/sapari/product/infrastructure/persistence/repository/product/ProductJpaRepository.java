@@ -3,7 +3,6 @@ package com.sapari.product.infrastructure.persistence.repository.product;
 import com.sapari.product.infrastructure.persistence.entity.product.ProductEntity;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -16,8 +15,6 @@ import org.springframework.data.repository.query.Param;
  */
 public interface ProductJpaRepository extends JpaRepository<ProductEntity, UUID> {
     Optional<ProductEntity> findByIdAndDeletedAtIsNull(UUID id);
-
-    List<ProductEntity> findByCategoryId(Long categoryId);
 
     /**
      * 상품 행에 쓰기 잠금을 건다({@code SELECT ... FOR UPDATE}). 캐시 재계산을 같은 상품의 동시 조합 변경과 직렬화하는 용도.

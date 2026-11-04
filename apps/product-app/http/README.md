@@ -32,5 +32,6 @@ product 도메인의 모든 REST API를 IntelliJ HTTP Client로 단건/연계(fl
 
 - **판매자 상세 엔드포인트 없음**: 현재 상세는 공개(`GET /api/v1/products/{id}`, ON_SALE 게이트)뿐이다. 판매자가 자기 `PENDING_REVIEW` 상품의 **버전·조합 id**를 보려면 목록(`GET /api/v1/seller/products`, 모든 상태·`version` 포함)을 쓴다. 단, 목록엔 조합 정보가 없어 **조합 수정은 ON_SALE 상품으로만** 검증 가능(공개 상세에서 조합 id·version 획득).
 - `expectedVersion`은 수정 폼이 본 version. 신규 상품은 **목록**에서, ON_SALE 상품은 **공개 상세**에서 캡처한다.
-- 응답 봉투: 성공은 View raw(`{...}`), 실패만 `{success:false, error:{status,code,message,...}}`.
+- 응답 봉투: 성공·실패 모두 봉투다 — 성공 `{success:true, data:{...}, error:null}`, 실패 `{success:false, data:null, error:{status,code,message,...}}`. 204 응답만 본문이 없다.
+- 판매자 목록은 커서 페이지(`data.content`·`data.nextCursor`·`data.hasNext`)다. 픽스처는 `?size=100`(상한)으로 한 페이지에 받아 방금 만든 상품을 찾는다. 다음 페이지는 `?cursor={nextCursor}`.
 </content>
