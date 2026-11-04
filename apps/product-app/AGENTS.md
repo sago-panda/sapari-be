@@ -7,7 +7,9 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
 
 - 🚧 **Seller product REST + public detail wired (③).** `controller/product/` =
   `SellerProductController` (`/api/v1/seller/products**`, ROLE_SELLER) + `ProductController`
-  (`GET /api/v1/products/{id}`, public, ON_SALE-only gate). Request DTOs under
+  (`GET /api/v1/products/{id}`, public). Success bodies are `ResponseEnvelope<T>` (status via `@ResponseStatus`,
+  204 = `void`); the seller list is a `CursorPage` (`?cursor=&size=`, newest first). The ON_SALE-only rule for
+  the public detail lives in `GetProductDetailService`, not the controller. Request DTOs under
   `controller/product/dto/request` (`@Valid`, `toCommand(sellerId[, productId])`). Swagger UI at
   `/swagger-ui.html`, API docs at `/v3/api-docs`. Pending: optimistic-lock `version`/`expectedVersion`
   threading (§13.2), image (④) / rule-override (⑤) fields.

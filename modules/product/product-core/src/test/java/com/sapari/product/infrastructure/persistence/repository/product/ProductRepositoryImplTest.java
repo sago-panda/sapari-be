@@ -291,7 +291,7 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             em.flush();
             em.clear();
 
-            List<ProductSummary> summaries = productRepository.findActiveSellerProductSummaries(SELLER_A);
+            List<ProductSummary> summaries = productRepository.findActiveSellerProductSummaries(SELLER_A, null, null, 100);
             assertThat(summaries).extracting(ProductSummary::id).containsExactly(live.id());
             assertThat(summaries.get(0)).satisfies(s -> {
                 assertThat(s.status()).isEqualTo(ProductStatus.ON_SALE);
@@ -317,7 +317,7 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             em.flush();
             em.clear();
 
-            List<ProductSummary> summaries = productRepository.findActiveSellerProductSummaries(SELLER_A);
+            List<ProductSummary> summaries = productRepository.findActiveSellerProductSummaries(SELLER_A, null, null, 100);
             assertThat(summaries).filteredOn(s -> s.id().equals(p1.id()))
                     .singleElement().satisfies(s -> assertThat(s.thumbnailKey()).isEqualTo("p1-g.jpg"));
             assertThat(summaries).filteredOn(s -> s.id().equals(p2.id()))
@@ -335,7 +335,7 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             em.flush();
             em.clear();
 
-            assertThat(productRepository.findActiveSellerProductSummaries(SELLER_A))
+            assertThat(productRepository.findActiveSellerProductSummaries(SELLER_A, null, null, 100))
                     .singleElement()
                     .satisfies(s -> assertThat(s.thumbnailKey()).isNull());
         }

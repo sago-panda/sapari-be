@@ -1,13 +1,11 @@
 package com.sapari.productapp.controller.product;
 
-import java.util.List;
 import java.util.UUID;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,8 +16,11 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.sapari.common.page.CursorPage;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.product.command.DeleteProductCommand;
 import com.sapari.product.command.GetSellerProductsCommand;
@@ -65,118 +66,117 @@ public class SellerProductController {
      *
      * @param sellerId 인증된 판매자 id
      * @param request  상품 등록 요청
-     * @return 201 Created + 생성된 상품 id·상태
+     * @return 201 Created + 생성된 상품 id·상태 성공 봉투
      */
     @PostMapping
-    public ResponseEntity<CreateProductView> create(
+    @ResponseStatus(HttpStatus.CREATED)
+    public ResponseEnvelope<CreateProductView> create(
             @CurrentUserId UUID sellerId,
             @Valid @RequestBody CreateProductRequest request
     ) {
-        CreateProductView view = createProductUseCase.create(request.toCommand(sellerId));
-        return ResponseEntity.status(HttpStatus.CREATED).body(view);
+        return ResponseEnvelope.success(createProductUseCase.create(request.toCommand(sellerId)));
     }
 
     /**
-     * 인증된 판매자가 등록한 상품 목록을 조회한다(모든 상태 포함).
+     * 인증된 판매자가 등록한 상품을 최신 등록순으로 한 페이지 조회한다(모든 상태 포함, 삭제 제외).
      *
      * @param sellerId 인증된 판매자 id
-     * @return 200 OK + 상품 요약 목록
+     * @param cursor   이전 응답의 {@code nextCursor}. 생략하면 첫 페이지
+     * @param size     페이지 크기. 생략·0 이하는 기본 15, 100 초과는 100으로 정규화
+     * @return 200 OK + 상품 요약 커서 페이지 성공 봉투
      */
     @GetMapping
-    public ResponseEntity<List<ProductSummaryView>> getMyProducts(
-            @CurrentUserId UUID sellerId
+    public ResponseEnvelope<CursorPage<ProductSummaryView>> getMyProducts(
+            @CurrentUserId UUID sellerId,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer size
     ) {
-        List<ProductSummaryView> views = getSellerProductsUseCase.get(new GetSellerProductsCommand(sellerId));
-        return ResponseEntity.ok(views);
+        return ResponseEnvelope.success(
+                getSellerProductsUseCase.get(new GetSellerProductsCommand(sellerId, cursor, size)));
     }
 
     /**
-     * 상품 기본 정보를 수정한다(재승인 대상).
+     * 상품 기본 정보를 수정한다(재승인 대상). 성공 시 204 No Content(본문 없음).
      *
      * @param sellerId  인증된 판매자 id
      * @param productId 수정할 상품 id
      * @param request   기본 정보 수정 요청
-     * @return 204 No Content
      */
     @PutMapping("/{productId}")
-    public ResponseEntity<Void> updateInfo(
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void updateInfo(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID productId,
             @Valid @RequestBody UpdateProductInfoRequest request
     ) {
         updateProductInfoUseCase.update(request.toCommand(sellerId, productId));
-        return ResponseEntity.noContent().build();
     }
 
     /**
-     * 상품 옵션을 통째로 교체하고 조합을 재생성한다.
+     * 상품 옵션을 통째로 교체하고 조합을 재생성한다. 성공 시 204 No Content(본문 없음).
      *
      * @param sellerId  인증된 판매자 id
      * @param productId 수정할 상품 id
      * @param request   옵션 수정 요청
-     * @return 204 No Content
      */
     @PutMapping("/{productId}/options")
-    public ResponseEntity<Void> updateOptions(
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void updateOptions(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID productId,
             @Valid @RequestBody UpdateProductOptionsRequest request
     ) {
         updateProductOptionsUseCase.update(request.toCommand(sellerId, productId));
-        return ResponseEntity.noContent().build();
     }
 
     /**
-     * 조합별 가격·재고를 일괄 수정한다(즉시 반영, 재승인 불필요).
+     * 조합별 가격·재고를 일괄 수정한다(즉시 반영, 재승인 불필요). 성공 시 204 No Content(본문 없음).
      *
      * @param sellerId  인증된 판매자 id
      * @param productId 대상 상품 id
      * @param request   조합 가격·재고 수정 요청
-     * @return 204 No Content
      */
     @PatchMapping("/{productId}/combinations")
-    public ResponseEntity<Void> updateCombinations(
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void updateCombinations(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID productId,
             @Valid @RequestBody UpdateCombinationPriceStockRequest request
     ) {
         updateCombinationPriceStockUseCase.update(request.toCommand(sellerId, productId));
-        return ResponseEntity.noContent().build();
     }
 
     /**
-     * 판매 상태를 전환한다(ON_SALE ↔ SUSPENDED).
+     * 판매 상태를 전환한다(ON_SALE ↔ SUSPENDED). 성공 시 204 No Content(본문 없음).
      *
      * @param sellerId  인증된 판매자 id
      * @param productId 대상 상품 id
      * @param request   상태 전환 요청
-     * @return 204 No Content
      */
     @PatchMapping("/{productId}/status")
-    public ResponseEntity<Void> changeStatus(
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void changeStatus(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID productId,
             @Valid @RequestBody ChangeSaleStatusRequest request
     ) {
         changeProductSaleStatusUseCase.change(request.toCommand(sellerId, productId));
-        return ResponseEntity.noContent().build();
     }
 
     /**
-     * 상품을 논리 삭제한다(되돌리기 불가). 본문이 없으므로 expectedVersion은 쿼리 파라미터로 받는다.
+     * 상품을 논리 삭제한다(되돌리기 불가). 본문이 없으므로 expectedVersion은 쿼리 파라미터로 받는다. 성공 시 204 No Content(본문 없음).
      *
      * @param sellerId        인증된 판매자 id
      * @param productId       삭제할 상품 id
      * @param expectedVersion 클라이언트가 본 상품 version(stale-form 충돌 감지)
-     * @return 204 No Content
      */
     @DeleteMapping("/{productId}")
-    public ResponseEntity<Void> delete(
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID productId,
             @RequestParam @NotNull Long expectedVersion
     ) {
         deleteProductUseCase.delete(new DeleteProductCommand(productId, sellerId, expectedVersion));
-        return ResponseEntity.noContent().build();
     }
 }

@@ -7,7 +7,7 @@ GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
     client.test("200 OK", function () {
         client.assert(response.status === 200, "ON_SALE 상품이 아님/없음: " + response.status);
     });
-    const d = response.body;
+    const d = response.body.data;
     client.test("핵심 필드 존재", function () {
         client.assert(d.productId != null, "productId 없음");
         client.assert(d.sellerId != null, "sellerId 없음");
