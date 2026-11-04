@@ -12,6 +12,7 @@ import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
+import com.sapari.chat.application.service.ReconcileKickListService;
 import com.sapari.chat.application.service.ReleaseBanService;
 import com.sapari.chat.domain.repository.ChatHistoryRepository;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapper;
@@ -35,6 +36,7 @@ import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
@@ -213,5 +215,16 @@ public class ChatModerationBeansConfig {
                                                ChatBanWriteRepository banWriteRepository,
                                                TimeProvider timeProvider) {
         return new ReleaseBanService(permissionPolicy, releaseRecorder, banWriteRepository, timeProvider);
+    }
+
+    /**
+     * 강퇴 명단 재적재. 트랜잭션 빈이 없다 — 정본은 읽기만 하고 쓰기는 Redis 한 번이라
+     * {@code @Modifying} 경계가 필요하지 않다.
+     */
+    @Bean
+    public ReconcileKickListUseCase reconcileKickListUseCase(ChatPermissionPolicy permissionPolicy,
+                                                             ChatKickLogRepository kickLogRepository,
+                                                             ChatKickWriteRepository kickWriteRepository) {
+        return new ReconcileKickListService(permissionPolicy, kickLogRepository, kickWriteRepository);
     }
 }

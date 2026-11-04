@@ -332,6 +332,14 @@ public class LiveSecurityConfig {
                         // 행이 들지만 <막는 것은 이 역할 하나>다. SELLER 를 여기 더하면 자동 승격이
                         // 요구한 '서로 다른 판매자 3·6·9명' 의 독립성을 그중 한 명이 되돌리게 된다.
                         .requestMatchers(HttpMethod.DELETE, "/api/v1/chat/bans/*").hasRole("ADMIN")
+                        // 강퇴 명단 재적재도 ADMIN 전용이다. 경로가 방 아래라 아래 판매자 전용
+                        // 규칙에 걸리므로 그보다 <b>먼저</b> 와야 한다 — 먼저 맞는 규칙이 이긴다.
+                        // 순서가 뒤집히면 관리자가 403 을 받고, 집행이 꺼진 방을 고칠 사람이 없어진다.
+                        // 판매자에게 열지 않는 이유는 위험이 아니라 가청성이다 — 입력이 정본이라
+                        // 과다 차단을 새로 만들 수 없고(ReconcileKickListService), 이 조치가
+                        // 필요하다는 신호는 KickStoreCorruptedException 로그이고 그건 운영자가 읽는다.
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/lives/*/chat/kicked")
+                                .hasRole("ADMIN")
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

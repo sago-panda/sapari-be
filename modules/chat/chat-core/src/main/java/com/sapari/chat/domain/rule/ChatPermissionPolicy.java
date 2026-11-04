@@ -124,4 +124,20 @@ public final class ChatPermissionPolicy {
     public boolean canReleaseBan(ChatRole actorRole) {
         return actorRole == ChatRole.ADMIN;
     }
+
+    /**
+     * 강퇴 집행 명단을 정본에서 다시 세울 수 있는가 — <b>ADMIN 만이다.</b>
+     *
+     * <p>{@link #canReleaseBan}과 값이 같고 <b>이유는 다르다.</b> 그쪽은 "판매자 한 명이 3·6·9명의
+     * 판단을 되돌릴 수 없다" 이고, 이쪽은 <b>이 조치를 필요로 하는 사람이 누구인가</b>다. 재적재가
+     * 필요하다는 신호는 {@code KickStoreCorruptedException} 로그이고 그 로그를 읽는 사람은 플랫폼
+     * 운영자다 — 판매자는 자기 방의 강퇴가 조용히 꺼진 것을 알 방법이 없으므로, 그에게 권한을 줘도
+     * 쓸 계기가 없다. 두 판정을 하나로 합치지 않는 이유가 이것이다: 값이 갈릴 날의 근거가 서로 다르다.
+     *
+     * <p>이 조치 자체는 <b>과다 차단을 새로 만들지 못한다</b> — 입력이 정본이라 정본에 없는 사람을
+     * 올릴 수 없다. 그래서 위험이 아니라 가청성이 권한의 기준이 된다.
+     */
+    public boolean canReconcileKickList(ChatRole actorRole) {
+        return actorRole == ChatRole.ADMIN;
+    }
 }

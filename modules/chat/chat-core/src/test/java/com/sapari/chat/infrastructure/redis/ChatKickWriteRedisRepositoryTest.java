@@ -121,4 +121,113 @@ class ChatKickWriteRedisRepositoryTest {
         // then
         assertThat(redisTemplate.getExpire(key())).isEqualTo(-1L);
     }
+
+    @Test
+    @DisplayName("⭐ 재적재는 사라진 명단을 정본에서 되살린다 — 만료도 붙지 않는다")
+    void reconcileRestoresALostList() {
+        // given: 키가 축출·승격으로 사라진 상태
+        UUID other = UUID.randomUUID();
+        assertThat(redisTemplate.hasKey(key())).isFalse();
+
+        // when
+        repository.reconcile(roomId, java.util.List.of(userId, other));
+
+        // then
+        assertThat(redisTemplate.opsForSet().members(key()))
+                .containsExactlyInAnyOrder(userId.toString(), other.toString());
+        assertThat(redisTemplate.getExpire(key()))
+                .as("만료가 붙으면 되살린 명단이 그 시각에 다시 조용히 사라진다")
+                .isEqualTo(-1L);
+    }
+
+    /**
+     * ⭐ 이 테스트가 재적재의 존재 이유다.
+     *
+     * <p>키가 우리 타입이 아니면 읽기도 쓰기도 Redis 가 멀쩡해도 계속 실패한다 — 재시도는 멱등이면서
+     * <b>영원히 실패</b>한다({@code KickStoreCorruptedException}). 읽기 경로는 fail-open 이라 그 방의
+     * 강퇴자 전원이 돌아오고 로그 한 줄만 남는다. {@code SADD} 로는 고칠 수 없다(타입이 틀려 추가
+     * 자체가 실패) — 그래서 스크립트가 {@code DEL} 로 시작한다.
+     */
+    @Test
+    @DisplayName("⭐ 오염된 키(WRONGTYPE)도 재적재로 고쳐진다 — SADD 로는 못 고치는 자리다")
+    void reconcileRepairsACorruptedKey() {
+        // given: 집합이 아닌 타입으로 오염
+        redisTemplate.opsForValue().set(key(), "오염된 문자열");
+        assertThatThrownBy(() -> repository.register(roomId, userId))
+                .as("전제가 성립해야 이 테스트가 의미를 갖는다 — 추가로는 고칠 수 없어야 한다")
+                .isInstanceOf(KickStoreCorruptedException.class);
+
+        // when
+        repository.reconcile(roomId, java.util.List.of(userId));
+
+        // then
+        assertThat(redisTemplate.type(key())).isEqualTo(org.springframework.data.redis.connection.DataType.SET);
+        assertThat(redisTemplate.opsForSet().isMember(key(), userId.toString())).isTrue();
+        // 고쳐진 뒤에는 평소 경로가 다시 돈다
+        repository.register(roomId, UUID.randomUUID());
+        assertThat(redisTemplate.opsForSet().size(key())).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("⭐ 정본이 비면 키가 없는 상태가 결과다 — 멤버 없는 집합은 존재하지 않는다")
+    void reconcileWithAnEmptySourceOfTruthRemovesTheKey() {
+        // given: 정본에는 없는데 집행 명단에만 남아 있는 사람(과다 차단)
+        repository.register(roomId, userId);
+        assertThat(redisTemplate.hasKey(key())).isTrue();
+
+        // when
+        repository.reconcile(roomId, java.util.List.of());
+
+        // then
+        assertThat(redisTemplate.hasKey(key()))
+                .as("빈 집합을 만들려 하면 Redis 가 키를 지운다 — 그게 '강퇴 없음' 과 같은 상태다")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("재적재는 교체다 — 정본에 없는 사람은 명단에서 빠진다")
+    void reconcileReplacesRatherThanAdds() {
+        // given
+        UUID staleEntry = UUID.randomUUID();
+        repository.register(roomId, staleEntry);
+
+        // when: 정본에는 userId 만 있다
+        repository.reconcile(roomId, java.util.List.of(userId));
+
+        // then
+        assertThat(redisTemplate.opsForSet().members(key()))
+                .as("더하기만 하면 오염된 키를 못 고치고, 정본에서 사라진 강퇴도 영구히 남는다")
+                .containsExactly(userId.toString());
+    }
+
+    @Test
+    @DisplayName("재적재는 멱등이다 — 같은 정본으로 두 번 불러도 결과가 같다")
+    void reconcileIsIdempotent() {
+        // given
+        UUID other = UUID.randomUUID();
+        repository.reconcile(roomId, java.util.List.of(userId, other));
+
+        // when
+        repository.reconcile(roomId, java.util.List.of(userId, other));
+
+        // then
+        assertThat(redisTemplate.opsForSet().members(key()))
+                .containsExactlyInAnyOrder(userId.toString(), other.toString());
+        assertThat(redisTemplate.getExpire(key())).isEqualTo(-1L);
+    }
+
+    @Test
+    @DisplayName("회수용 만료가 붙어 있던 키도 재적재로 만료가 걷힌다")
+    void reconcileClearsARecoveryExpiry() {
+        // given: 방 종료 신호로 만료가 붙은 상태
+        repository.register(roomId, userId);
+        redisTemplate.expire(key(), Duration.ofHours(24));
+        assertThat(redisTemplate.getExpire(key())).isPositive();
+
+        // when
+        repository.reconcile(roomId, java.util.List.of(userId));
+
+        // then: 만료가 남으면 되살린 명단이 그 시각에 통째로 사라진다
+        assertThat(redisTemplate.getExpire(key())).isEqualTo(-1L);
+    }
 }

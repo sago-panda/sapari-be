@@ -203,6 +203,8 @@ class ChatModerationWiringTest {
                 "ChatPermissionPolicy", "ChatKickRecorder", "KickUserService",
                 // 밴 해제 — 이 도메인의 첫 역경로. 해제는 ADMIN 전용이고 방을 읽지 않는다.
                 "ChatBanReleaseRecorder", "ReleaseBanService",
+                // 강퇴 집행 캐시의 역경로 — 정본을 읽어 Redis SET 을 다시 세운다.
+                "ReconcileKickListService",
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",

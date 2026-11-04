@@ -5,6 +5,7 @@ import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.List;
@@ -12,6 +13,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -27,6 +30,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.LiveUserPrincipal;
@@ -79,6 +83,9 @@ class ChatKickAuthorizationTest {
     private KickUserUseCase kickUserUseCase;
 
     @MockitoBean
+    private ReconcileKickListUseCase reconcileKickListUseCase;
+
+    @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
 
     /** 실제 인증 필터를 태우지 않고 주체만 심는다 — 여기서 재는 것은 토큰 파싱이 아니라 인가 규칙이다. */
@@ -121,6 +128,37 @@ class ChatKickAuthorizationTest {
 
         // then: 관문에서 끊겼으므로 서비스까지 가지 않는다
         then(kickUserUseCase).should(never()).kick(any());
+    }
+
+    /**
+     * ⭐ 재적재는 <b>ADMIN 만</b>이다 — 강퇴 관문과 같은 컨트롤러인데 역할이 다르다.
+     *
+     * <p>경로가 방 아래({@code /api/v1/lives/*}/chat/kicked)라 판매자 전용 규칙에 걸린다. 그러니
+     * 재적재 규칙이 그보다 <b>먼저</b> 와야 하고, 동시에 강퇴처럼 SELLER 를 포함하면 안 된다.
+     * 두 조건이 반대 방향이라 순서가 뒤집히거나 역할이 넓어지면 둘 중 하나가 깨진다.
+     *
+     * <p>판매자에게 열지 않는 이유는 위험이 아니라 <b>가청성</b>이다 — 입력이 정본이라 과다 차단을
+     * 새로 만들 수 없고, 이 조치가 필요하다는 신호는 {@code KickStoreCorruptedException} 로그이며
+     * 그건 운영자가 읽는다.
+     */
+    @Test
+    @DisplayName("⭐ 재적재는 관리자가 지난다 — 판매자 전용 규칙보다 앞에 있어야만 성립한다")
+    void adminPassesTheReconcileGate() throws Exception {
+        // when & then: 규칙 순서가 뒤집히면 /api/v1/lives/** → hasRole("SELLER") 가 먼저 맞아 403 이 된다
+        mockMvc.perform(put("/api/v1/lives/{roomId}/chat/kicked", ROOM_ID).with(as("ADMIN")))
+                .andExpect(status().isOk());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"SELLER", "USER"})
+    @DisplayName("⭐ 재적재는 판매자도 막는다 — 강퇴 관문을 그대로 베끼면 여기가 통과로 뒤집힌다")
+    void nonAdminIsDeniedTheReconcileGate(String role) throws Exception {
+        // when: 자기 방이어도 이 조치의 대상이 아니다 — 가청성이 기준이다(로그를 읽는 사람이 운영자다)
+        mockMvc.perform(put("/api/v1/lives/{roomId}/chat/kicked", ROOM_ID).with(as(role)))
+                .andExpect(status().isForbidden());
+
+        // then: 관문에서 끊겼으므로 서비스까지 가지 않는다
+        then(reconcileKickListUseCase).should(never()).reconcile(any());
     }
 
     @Test

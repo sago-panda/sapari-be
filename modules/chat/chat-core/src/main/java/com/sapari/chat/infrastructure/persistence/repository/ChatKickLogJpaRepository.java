@@ -120,18 +120,20 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
      * 같은 사용자 행은 하나뿐이고, 그래서 결과에 중복이 없다 — {@code DISTINCT} 를 붙이면 없는
      * 중복을 지우려 정렬·해시 단계가 붙는다.
      *
-     * <p>⚠️ <b>이 질의에 쓸 인덱스가 없다.</b> DDL 의 인덱스는 셋뿐이고 — {@code pk(id)},
-     * {@code UNIQUE(user_id, live_room_id)}, {@code (user_id, kicked_at DESC)} — 뒤의 둘은 선두 열이
-     * {@code user_id} 라 방 조건만 있는 이 질의가 쓸 수 없다. 즉 <b>순차 스캔</b>이다.
+     * <p><b>인덱스가 있다</b> — {@code (live_room_id, user_id)}. SPR-151 의
+     * {@code V202611011635__chat_kick_log_room_index.sql} 이 세웠고, {@code user_id} 까지 넣어
+     * 이 질의가 <b>인덱스만으로</b> 답하게 했다(읽는 열이 그 둘뿐이다).
      *
-     * <p>한때 여기 "방당 강퇴 행 수가 작아 순차 읽기로 충분하다" 고 적혀 있었다. <b>틀렸다</b> —
-     * 순차 스캔은 그 방의 행이 아니라 <b>테이블 전체</b>를 읽는다. 그래서 비용이 방 크기가 아니라
-     * <b>플랫폼 전체 누적 강퇴 수</b>에 비례하고, 한 방이 조용해도 같이 느려진다. 게다가 이 질의는
-     * 이력 조회 요청 <b>한 건마다</b> 돌고, 그 엔드포인트는 무인증 공개다(비회원 다시보기).
+     * <p>한때 여기 "이 질의에 쓸 인덱스가 없다 … 즉 순차 스캔이다 … live 담당자에게 넘긴 항목이다"
+     * 가 적혀 있었다. 그 사이에 들어왔고 이 문단이 낡아 있었다. 그 전의 또 다른 판이 "방당 강퇴 행
+     * 수가 작아 순차 읽기로 충분하다" 였고 그것도 틀렸다 — 순차 스캔은 그 방의 행이 아니라
+     * <b>테이블 전체</b>를 읽으므로 비용이 방 크기가 아니라 플랫폼 전체 누적 강퇴 수에 비례한다.
+     * 같은 문단이 두 번 낡았으므로 <b>수치나 상태를 여기 적는 대신 계획을 재는 테스트</b>를 뒀다 —
+     * {@code ChatKickLogRepositoryImplTest.roomScopedLookupHasAnIndex} 가 {@code EXPLAIN} 으로
+     * 인덱스의 존재를 묻고, 인덱스가 사라지는 날 그 단언이 깨진다.
      *
-     * <p>답은 {@code (live_room_id)} 인덱스 하나다. 그 DDL 은 {@code db/migration/live/} 에 있어
-     * <b>live 소관</b>이므로 여기서 추가하지 않는다 — live 담당자에게 넘긴 항목이다. 그때까지는
-     * 누적 강퇴 수가 이 엔드포인트의 응답 시간 상한이다.
+     * <p>이 질의에 거는 비용이 두 곳이다 — 이력 조회가 요청마다 부르고(무인증 공개 경로), 강퇴 명단
+     * 재적재가 복구 때 부른다({@code ReconcileKickListService}).
      */
     @Query(value = """
             SELECT user_id FROM live_schema.chat_kick_log WHERE live_room_id = :roomId

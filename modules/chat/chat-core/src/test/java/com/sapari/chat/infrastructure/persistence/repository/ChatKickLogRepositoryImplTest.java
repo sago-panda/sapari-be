@@ -64,6 +64,8 @@ class ChatKickLogRepositoryImplTest {
 
     @Autowired
     private ChatKickLogJpaRepository jpaRepository;
+    @Autowired
+    private jakarta.persistence.EntityManager entityManager;
 
     /** 슬라이스는 Spring Data 리포지토리만 올리고 {@code @Repository} 컴포넌트는 스캔하지 않아 직접 엮는다. */
     private ChatKickLogRepository repository() {
@@ -121,5 +123,42 @@ class ChatKickLogRepositoryImplTest {
         assertThat(jpaRepository.findAll())
                 .singleElement()
                 .satisfies(entity -> assertThat(entity.getKickedAt()).isEqualTo(kickedAt));
+    }
+
+    /**
+     * ⭐ 방 단위 조회가 <b>순차 스캔이 아님</b>을 계획으로 확인한다.
+     *
+     * <p>이 javadoc 이 한때 "이 질의에 쓸 인덱스가 없다 … 즉 순차 스캔이다 … live 담당자에게 넘긴
+     * 항목이다" 로 적혀 있었다. <b>그 사이에 들어왔다</b> — SPR-151 의
+     * {@code V202611011635__chat_kick_log_room_index.sql} 이 {@code (live_room_id, user_id)} 를
+     * 세웠고, 그 마이그레이션 주석이 바로 이 질의의 Index Only Scan 을 근거로 든다. 수치를 적는
+     * 대신 <b>계획을 재는 테스트</b>로 바꾼 이유가 그것이다 — 주석은 낡지만 이 단언은 인덱스가
+     * 사라지는 날 깨진다.
+     *
+     * <p>이 질의에 거는 비용이 두 곳에서 는다 — 이력 조회가 요청마다 부르고(무인증 공개 경로),
+     * 강퇴 명단 재적재가 복구 때 부른다. 순차 스캔이면 비용이 그 방이 아니라 <b>플랫폼 전체 누적
+     * 강퇴 수</b>에 비례한다.
+     *
+     * <p>행이 적으면 플래너가 순차 스캔을 고를 수 있으므로 {@code enable_seqscan = off} 로
+     * <b>인덱스가 존재하는지</b>를 묻는다 — 재는 것은 플래너의 선택이 아니라 선택지의 존재다.
+     */
+    @Test
+    @DisplayName("⭐ 방 단위 강퇴자 조회는 인덱스를 쓴다 — 없으면 비용이 플랫폼 전체 누적에 비례한다")
+    void roomScopedLookupHasAnIndex() {
+        // given
+        repository().appendIfAbsent(log(roomId, targetUserId));
+        entityManager.createNativeQuery("SET LOCAL enable_seqscan = off").executeUpdate();
+
+        // when
+        String plan = entityManager.createNativeQuery(
+                        "EXPLAIN SELECT user_id FROM live_schema.chat_kick_log WHERE live_room_id = :r")
+                .setParameter("r", roomId)
+                .getResultList().toString();
+
+        // then
+        assertThat(plan)
+                .as("계획에 인덱스가 없다 — (live_room_id, ...) 인덱스가 사라졌다. 계획: %s", plan)
+                .containsIgnoringCase("Index")
+                .contains("chat_kick_log");
     }
 }

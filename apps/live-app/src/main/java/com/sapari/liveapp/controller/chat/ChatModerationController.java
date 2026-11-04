@@ -8,13 +8,16 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.chat.command.KickUserCommand;
+import com.sapari.chat.command.ReconcileKickListCommand;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.liveapp.controller.chat.dto.KickUserRequest;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
@@ -44,6 +47,7 @@ import lombok.RequiredArgsConstructor;
 public class ChatModerationController {
 
     private final KickUserUseCase kickUserUseCase;
+    private final ReconcileKickListUseCase reconcileKickListUseCase;
 
     @PostMapping("/kick")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -53,5 +57,30 @@ public class ChatModerationController {
         kickUserUseCase.kick(new KickUserCommand(
                 roomId, principal.userId(), principal.role(),
                 request.targetUserId(), request.messageId()));
+    }
+
+    /**
+     * 강퇴 집행 명단을 정본에서 다시 세운다 — ADMIN 전용.
+     *
+     * <p><b>{@code PUT} 인 것이 계약이다.</b> 이 조치는 "정본과 같게 만든다" 이므로 몇 번을 불러도
+     * 결과가 같다. {@code POST} 로 두면 "누적되는 조치" 로 읽히는데, 실제로는 명단을 통째로 교체한다.
+     *
+     * <p><b>본문이 없다.</b> 명단은 서버가 정본({@code chat_kick_log})에서 읽는다 — 호출자가 실어
+     * 보내면 정본에 없는 사람을 집행 명단에 올릴 수 있고, 그러면 복구 수단이 감사 없는 강퇴 수단이 된다.
+     *
+     * <p>복원한 수를 돌려준다. 0 도 성공이다 — 그 방에 강퇴 기록이 없었다는 뜻이고, 그걸 404 로
+     * 가르면 운영자가 "복구 실패" 와 "복구할 것이 없음" 을 구분할 수 없다.
+     */
+    @PutMapping("/kicked")
+    public ReconcileKickListResponse reconcileKickList(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal LiveUserPrincipal principal) {
+        int restored = reconcileKickListUseCase.reconcile(new ReconcileKickListCommand(
+                roomId, principal.userId(), principal.role()));
+        return new ReconcileKickListResponse(restored);
+    }
+
+    /** 복원한 사람 수. 운영자가 "복구할 것이 없었다" 와 "복구했다" 를 구분하는 유일한 값이다. */
+    public record ReconcileKickListResponse(int restored) {
     }
 }

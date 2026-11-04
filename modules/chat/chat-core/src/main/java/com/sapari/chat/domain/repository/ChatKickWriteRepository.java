@@ -35,4 +35,31 @@ public interface ChatKickWriteRepository {
      * 실패만 {@code KickStoreCorruptedException}으로 갈라 던진다 — 그건 재시도로 낫지 않는다.
      */
     void register(UUID roomId, UUID userId);
+
+    /**
+     * 정본에서 읽은 명단으로 이 방의 집행 명단을 <b>통째로 다시 세운다.</b> 만료도 함께 걷어낸다.
+     *
+     * <p><b>왜 필요한가.</b> 이 키는 집행 캐시이고 정본은 {@code chat_kick_log} 다
+     * ({@link ChatKickRepository#expireAfterRoomEnded} javadoc). 그런데 되살리는 코드가 없어서
+     * "만료라서 복구 가능" 이 <b>사람이 손으로 Redis 를 만질 때만</b> 성립했다. 키가 사라지거나
+     * ({@code maxmemory} 축출, replica 승격 — 정본 L11) 우리 타입이 아닌 값으로 오염되면
+     * ({@code KickStoreCorruptedException}) 그 방의 강퇴 집행이 <b>조용히, 영구히</b> 꺼진다.
+     * 읽기 경로가 fail-open 이라 아무도 막히지 않고, 로그 한 줄만 남는다.
+     *
+     * <p><b>추가가 아니라 교체다.</b> {@code SADD} 로 더하기만 하면 오염된 키를 못 고친다 — 타입이
+     * 틀린 키에는 애초에 추가가 안 되고, 그게 이 메서드가 닫으려는 가장 나쁜 경우다. 그래서 지우고
+     * 다시 채운다. 정본이 비어 있으면 키가 없는 상태가 결과이고, 그건 "그 방에 강퇴가 없다" 와 같다.
+     *
+     * <p><b>한 번의 실행이어야 한다.</b> 지우기와 채우기를 나누면 그 사이에 그 방의 강퇴 집행이
+     * 통째로 비는 창이 생기고, 두 번째가 실패하면 <b>원래 있던 명단까지 날린 상태</b>로 끝난다 —
+     * 복구하려고 부른 호출이 상태를 더 나쁘게 만든다. 멤버가 많아도 왕복은 하나다.
+     *
+     * <p><b>멱등이다.</b> 정본이 같으면 몇 번을 불러도 결과가 같다. 정본이 입력이므로 이 호출로는
+     * 정본에 없는 사람을 명단에 올릴 수 없다 — 과다 차단을 새로 만들 수 없다는 뜻이다.
+     *
+     * <p>실패는 그대로 던진다. 복구하지 못했다는 사실이 호출자에게 가야 한다.
+     *
+     * @param kickedUserIds 정본에서 읽은 그 방의 강퇴자 전체. 비어 있으면 키를 지운다
+     */
+    void reconcile(UUID roomId, java.util.Collection<UUID> kickedUserIds);
 }

@@ -62,4 +62,45 @@ public class ChatKickWriteRedisRepository implements ChatKickWriteRepository {
             throw e;
         }
     }
+
+    /**
+     * 지우고 다시 채우고 만료를 떼는 것이 <b>한 번의 실행</b>이다.
+     *
+     * <p>{@code DEL} 이 맨 앞인 것이 이 스크립트의 요점이다 — 우리 타입이 아닌 값으로 오염된 키도
+     * 이것으로 치워진다. {@code SADD} 만으로는 그 키를 고칠 수 없고(타입이 틀려 추가 자체가 실패),
+     * 그게 이 메서드가 닫으려는 가장 나쁜 경우다. 그래서 {@code reconcile} 은 WRONGTYPE 을 갈라
+     * 던지지 <b>않는다</b>: 이 경로에서 그것은 고치려는 대상이지 보고할 실패가 아니다.
+     *
+     * <p><b>{@code PERSIST} 가 없다 — {@code DEL} 이 그 일을 이미 한다.</b> 키를 지우면 만료도
+     * 함께 사라지므로 뒤이은 {@code SADD} 는 만료 없는 새 키를 만든다. 처음에 위
+     * {@code REGISTER_KICKED} 를 베껴 {@code PERSIST} 를 넣었는데, 되돌림 확인에서 <b>떼도 아무
+     * 테스트가 깨지지 않았다</b> — 즉 죽은 코드였다. 등록 쪽에서는 그것이 실제로 일한다
+     * ({@code SADD} 는 기존 키의 만료를 건드리지 않는다). 같은 두 줄이 한 자리에서는 보장이고
+     * 다른 자리에서는 장식이라, 베껴 두면 다음 사람이 그 차이를 모르는 채 둘을 같이 고친다.
+     * 회수용 만료가 걷히는 것은 {@code reconcileClearsARecoveryExpiry} 가 계속 잰다.
+     *
+     * <p>{@code ARGV} 가 비면 {@code SADD} 를 부르지 않는다. Redis 의 {@code SADD} 는 멤버가
+     * 하나는 있어야 하고, 더 중요하게는 <b>멤버 없는 집합이 존재하지 않는다</b> — 정본이 비었으면
+     * 키가 없는 상태가 올바른 결과다.
+     *
+     * <p>{@code unpack} 을 쓰므로 멤버 수가 Lua 스택 한계(약 8,000)에 걸린다. 한 방의 강퇴자가
+     * 그만큼이면 {@code SADD} 를 쪼개야 하는데, 그때는 <b>이 스크립트 안에서</b> 쪼개야 한다 —
+     * 호출을 쪼개면 위 포트 javadoc 이 금지한 "비는 창" 이 그대로 생긴다.
+     */
+    private static final RedisScript<Long> RECONCILE_KICKED = RedisScript.of("""
+            redis.call('DEL', KEYS[1])
+            if #ARGV > 0 then
+                redis.call('SADD', KEYS[1], unpack(ARGV))
+            end
+            return #ARGV
+            """, Long.class);
+
+    @Override
+    public void reconcile(UUID roomId, java.util.Collection<UUID> kickedUserIds) {
+        String key = ChatRedisKeys.kicked(roomId);
+        Object[] members = kickedUserIds.stream().map(UUID::toString).toArray();
+        // 실패는 그대로 던진다 — WRONGTYPE 도 갈라내지 않는다. DEL 이 그것을 고치므로 이 경로에서는
+        // 오염이 실패가 아니고, 갈라 던지면 "복구하려 불렀는데 복구 대상이라며 거부" 가 된다.
+        redisTemplate.execute(RECONCILE_KICKED, List.of(key), members);
+    }
 }
