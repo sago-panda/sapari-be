@@ -152,6 +152,34 @@ class ReleaseBanServiceTest {
         verify(banWriteRepository, never()).releaseMirror(any());
     }
 
+    /**
+     * ⭐ <b>미러 축의 경합도 409 다</b> — 같은 조치 안에서 같은 종류의 실패가 다른 등급으로
+     * 나가면 {@code ChatErrorCode} 가 409 를 고른 근거가 이 경로에서만 역전된다.
+     *
+     * <p>위 벡터는 <b>정본 쓰기</b> 축이고 이쪽은 <b>미러 삭제</b> 축이다. 둘의 잔여 상태가
+     * 다르다 — 정본 축은 아무것도 안 바뀌었고, 미러 축은 <b>정본 행은 지워졌는데 미러가 남은</b>
+     * 과다 차단이다. 영구 밴의 미러에는 TTL 이 없어 사람이 다시 누르지 않으면 영원히 막힌다.
+     *
+     * <p>잡는 타입이 위와 다르다. 이 호출의 구현은 Redis 하나뿐이고
+     * {@code PessimisticLockingFailureException} 은 JDBC/JPA 번역에서만 나와 도달 불가다.
+     * {@code QueryTimeoutException} 은 도달한다 — spring-data-redis 4.0.5 바이트코드 실측:
+     * {@code LettuceExceptionConverter} 가 {@code TimeoutException}·
+     * {@code RedisCommandTimeoutException} 을 이 타입으로 번역한다.
+     */
+    @Test
+    @DisplayName("⭐ 미러 삭제의 경합도 409 다 — 정본 축과 같은 등급으로 나간다")
+    void mirrorContentionIsTranslatedToARetryableFailure() {
+        given(releaseRecorder.release(targetUserId, actorId, NOW))
+                .willReturn(new Released(true, null, UUID.randomUUID()));
+        willThrow(new org.springframework.dao.QueryTimeoutException("Redis 명령 상한 초과"))
+                .given(banWriteRepository).releaseMirror(targetUserId);
+
+        assertThatThrownBy(() -> service.release(command("ADMIN")))
+                .as("미러가 남은 해제는 과다 차단이고 복구 수단이 멱등 재시도다 — 500 이면 "
+                        + "재시도 신호가 안 간다")
+                .isInstanceOf(com.sapari.chat.domain.exception.ChatKickContendedException.class);
+    }
+
     static java.util.stream.Stream<RuntimeException> contentionFailures() {
         return java.util.stream.Stream.of(
                 new org.springframework.dao.PessimisticLockingFailureException("잠금 실패"),

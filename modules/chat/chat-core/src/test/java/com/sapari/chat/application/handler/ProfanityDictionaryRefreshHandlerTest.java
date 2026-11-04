@@ -237,7 +237,22 @@ class ProfanityDictionaryRefreshHandlerTest {
         // Redis 가 상태를 잃었다 — 버전이 1 부터 다시 시작한다
         given(snapshotReader.readVersion()).willReturn(Mono.just(2L));
         given(snapshotReader.read()).willReturn(Mono.just(snapshot(2, "복원된욕설")));
-        refresh("poll");
+        ListAppender<ILoggingEvent> appender = attachAppender();
+        try {
+            refresh("poll");
+
+            // ⭐ 적용만 재면 <WARN 을 지우는 변경>이 조용히 지나간다. 이 분기의 원래 결함이
+            // "조용히 버린다" 였으므로 적용과 소리가 둘 다 성질이다 — 뒤로 간 버전을 적용하는
+            // 것은 Redis 가 상태를 잃었다는 신호이고, 그것이 로그에 없으면 아무도 모른다.
+            assertThat(appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("버전이 뒤로 간 것을 조용히 적용하면 Redis 상태 유실이 흔적 없이 지나간다")
+                    .anySatisfy(message -> assertThat(message).contains("뒤로 갔다"));
+        } finally {
+            detachAppender(appender);
+        }
 
         assertThat(cell.current().filter("복원된욕설"))
                 .as("이 Pod 이 가진 유일한 정본 사본이 발행된 스냅샷이다 — 버리면 이 Pod 만 "

@@ -927,10 +927,13 @@ class ProfanityDictionaryTest {
     void anEntryThatContainsNoProfanityNeverTripsTheResidueRule(String entry) {
         ProfanityDictionary dictionary = ProfanityDictionary.load(null, entry);
 
+        // ⚠️ 축을 <메시지 문자열>로 고른다. anySatisfy 만 쓰면 다른 축의 경고가 우연히 그 토큰을
+        // 품을 때 통과하므로 분모를 같이 박는다 — 이 입력이 내야 하는 경고는 정확히 하나다.
         assertThat(dictionary.warnings())
                 .as("'%s' 은(는) 푸는 것이 0건인데 '싼 접두를 준다' 로 거부되고 있었다 — 그 문면이 "
                         + "그 값에 대해 거짓이다", entry)
-                .anySatisfy(message -> assertThat(message).contains("아무것도"));
+                .hasSize(1)
+                .allSatisfy(message -> assertThat(message).contains("아무것도"));
     }
 
     /**

@@ -154,6 +154,42 @@ class ChatFilterWordRepositoryImplTest {
                 .containsExactlyElementsOf(first);
     }
 
+    /**
+     * ⭐ <b>순서가 내용의 함수여야 한다 — 삽입 이력의 함수가 아니다.</b>
+     *
+     * <p>위 테스트는 <b>{@code ORDER BY} 를 지워도 통과한다.</b> 같은 테이블을 연달아 두 번
+     * 읽으면 계획도 힙 순서도 같아서 두 결과가 같기 때문이다 — 즉 그 테스트가 재는 것은
+     * "읽기가 재현된다" 이고 "정렬이 있다" 가 아니다. 실측으로 확인하고 이 벡터를 더했다.
+     *
+     * <p>그래서 <b>같은 내용을 서로 다른 삽입 순서로</b> 두 번 만든다. 정렬이 없으면 순차 스캔이
+     * 힙 순서를 돌려주고 그것은 삽입 순서를 따라가므로 두 결과가 갈린다. 이것이 필요한 성질인
+     * 이유는 스냅샷 본문의 줄 순서가 이 결과이기 때문이다 — 내용이 같은데 바이트가 다르면
+     * 왕복 비교와 두 Pod 의 출력 대조가 둘 다 흔들린다.
+     *
+     * <p>어떤 순서인지는 여기서도 단언하지 않는다(콜레이션은 컨테이너의 로케일이다). 재는 것은
+     * <b>두 이력이 같은 순서를 낸다</b> 뿐이다.
+     */
+    @Test
+    @DisplayName("⭐ 조회 순서가 삽입 순서에 안 묶인다 — 같은 내용이면 같은 순서다")
+    void findWordsOrderIsAFunctionOfContentNotInsertHistory() {
+        List<String> oneWay = List.of("지랄", "개새끼", "시발");
+        for (String word : oneWay) {
+            repository().add(FilterWordKind.PROFANITY, word, ACTOR);
+        }
+        List<String> first = List.copyOf(repository().findWords(FilterWordKind.PROFANITY));
+
+        // 같은 내용을 거꾸로 넣는다 — 정렬이 없으면 힙 순서가 이 순서를 따라간다
+        jpaRepository.deleteAll();
+        for (String word : oneWay.reversed()) {
+            repository().add(FilterWordKind.PROFANITY, word, ACTOR);
+        }
+        List<String> second = List.copyOf(repository().findWords(FilterWordKind.PROFANITY));
+
+        assertThat(second)
+                .as("삽입 순서가 결과 순서를 바꾸면 내용이 같은 스냅샷이 매번 다른 바이트가 된다")
+                .containsExactlyElementsOf(first);
+    }
+
     @Test
     @DisplayName("비어 있으면 isEmpty — 시드 판정이 이 값에 걸린다")
     void isEmptyReflectsTheWholeTable() {
