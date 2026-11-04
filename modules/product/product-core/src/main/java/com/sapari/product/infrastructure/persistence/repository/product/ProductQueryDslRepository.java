@@ -1,11 +1,13 @@
 package com.sapari.product.infrastructure.persistence.repository.product;
 
 import com.querydsl.core.Tuple;
+import com.querydsl.core.types.dsl.BooleanExpression;
 import com.querydsl.jpa.impl.JPAQueryFactory;
 import com.sapari.product.domain.model.product.ImageRole;
 import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.infrastructure.persistence.entity.product.QProductEntity;
 import com.sapari.product.infrastructure.persistence.entity.product.QProductImageEntity;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,17 +26,29 @@ public class ProductQueryDslRepository {
     private final JPAQueryFactory queryFactory;
 
     /**
-     * 판매자의 삭제되지 않은 상품 요약 목록을 프로젝션으로 조회한다(자식 미로딩). 스칼라 1쿼리 + 대표 이미지 배치 1쿼리로 N+1 없이 조립한다.
+     * 판매자의 삭제되지 않은 상품 요약 한 페이지를 프로젝션으로 조회한다(자식 미로딩). 스칼라 1쿼리 + 대표 이미지 배치 1쿼리로 N+1 없이 조립한다.
+     *
+     * <p>정렬 {@code created_at DESC, id DESC}와 keyset 조건 {@code created_at < :c OR (created_at = :c AND id < :id)}는 같은 두 키를
+     * 같은 방향으로 쓴다 — 어긋나면 등록 일시가 같은 행이 페이지 경계에서 중복되거나 빠진다.
+     *
+     * @param sellerId       판매자 id
+     * @param afterCreatedAt 이전 페이지 마지막 행의 등록 일시, 첫 페이지면 null
+     * @param afterId        이전 페이지 마지막 행의 상품 id, 첫 페이지면 null
+     * @param limit          최대 행 수
+     * @return 정렬된 요약 목록(최대 limit개)
      */
-    public List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId) {
+    public List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId, Instant afterCreatedAt, UUID afterId,
+                                                                 int limit) {
         QProductEntity product = QProductEntity.productEntity;
         // 1) 요약 스칼라만 프로젝션 — 자식(옵션·조합·config) 미로딩, deleted_at IS NULL
         List<Tuple> rows = queryFactory
                 .select(product.id, product.name, product.status, product.minPrice,
-                        product.hasStock, product.reviewCount, product.avgRating, product.version)
+                        product.hasStock, product.reviewCount, product.avgRating, product.version, product.createdAt)
                 .from(product)
-                .where(product.sellerId.eq(sellerId), product.deletedAt.isNull())
-                .orderBy(product.createdAt.desc(), product.id.asc())   // 최신순, id로 tie-break(결정적)
+                .where(product.sellerId.eq(sellerId), product.deletedAt.isNull(),
+                        after(product, afterCreatedAt, afterId))
+                .orderBy(product.createdAt.desc(), product.id.desc())   // 최신순, id로 tie-break(전순서)
+                .limit(limit)
                 .fetch();
         if (rows.isEmpty()) {
             return List.of();
@@ -54,8 +68,20 @@ public class ProductQueryDslRepository {
                         row.get(product.reviewCount),
                         row.get(product.avgRating),
                         thumbnailByProduct.get(row.get(product.id)),
-                        row.get(product.version)))
+                        row.get(product.version),
+                        row.get(product.createdAt)))
                 .toList();
+    }
+
+    /**
+     * keyset 다음 위치 조건. 첫 페이지(위치 없음)면 null을 돌려 QueryDSL이 조건을 생략하게 한다.
+     */
+    private static BooleanExpression after(QProductEntity product, Instant afterCreatedAt, UUID afterId) {
+        if (afterCreatedAt == null || afterId == null) {
+            return null;
+        }
+        return product.createdAt.lt(afterCreatedAt)
+                .or(product.createdAt.eq(afterCreatedAt).and(product.id.lt(afterId)));
     }
 
     /**

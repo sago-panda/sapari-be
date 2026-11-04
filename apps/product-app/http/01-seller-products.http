@@ -55,27 +55,29 @@ Content-Type: application/json
         client.assert(response.status === 201, "expected 201, got " + response.status);
     });
     client.test("productId 반환", function () {
-        client.assert(response.body.productId != null, "productId 없음");
+        client.assert(response.body.data.productId != null, "productId 없음");
     });
     client.test("status=PENDING_REVIEW", function () {
-        client.assert(response.body.status === "PENDING_REVIEW", "status=" + response.body.status);
+        client.assert(response.body.data.status === "PENDING_REVIEW", "status=" + response.body.data.status);
     });
-    client.global.set("freshProductId", response.body.productId);
+    client.global.set("freshProductId", response.body.data.productId);
 %}
 
 ### [2/9] 판매자 목록 (GET) → 200, 방금 등록 상품의 version 캡처
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
     client.test("200 OK", function () {
         client.assert(response.status === 200, "expected 200, got " + response.status);
     });
-    client.test("배열 응답", function () {
-        client.assert(Array.isArray(response.body), "배열 아님");
+    client.test("성공 봉투 + 커서 페이지 응답", function () {
+        client.assert(response.body.success === true, "success!=true");
+        client.assert(Array.isArray(response.body.data.content), "content 배열 아님");
+        client.assert("nextCursor" in response.body.data && "hasNext" in response.body.data, "커서 필드 누락");
     });
     const id = client.global.get("freshProductId");
-    const p = response.body.find(x => x.productId === id);
+    const p = response.body.data.content.find(x => x.productId === id);
     client.test("등록 상품이 목록에 존재", function () {
         client.assert(p !== undefined, "등록 상품 미발견: " + id);
     });
@@ -109,12 +111,12 @@ Content-Type: application/json
 %}
 
 ### [4/9] 판매자 목록 재조회 → 수정 후 version 재캡처(수정으로 version 증가)
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
     const id = client.global.get("freshProductId");
-    const p = response.body.find(x => x.productId === id);
+    const p = response.body.data.content.find(x => x.productId === id);
     client.test("이름 리뉴얼 반영", function () {
         client.assert(p.name === "테스트 코튼 티셔츠 (리뉴얼)", "name=" + p.name);
     });
@@ -157,7 +159,7 @@ GET {{productBaseUrl}}/api/v1/products/{{onSaleProductId}}
         client.assert(response.status === 200, "ON_SALE 상품이 아님/없음: status=" + response.status
             + " — onSaleProductId 설정 확인");
     });
-    const d = response.body;
+    const d = response.body.data;
     client.global.set("onSaleId", d.productId);
     client.global.set("onSaleVersion", d.version);
     client.test("조합 존재", function () {
@@ -209,12 +211,12 @@ Content-Type: application/json
 %}
 
 ### [8.1/9] 상태 복구 준비 — SUSPENDED 상품의 version은 공개 상세에 안 보이므로 목록에서 캡처
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
     const onSaleId = client.global.get("onSaleId");
-    const p = response.body.find(x => x.productId === onSaleId);
+    const p = response.body.data.content.find(x => x.productId === onSaleId);
     client.test("SUSPENDED 반영", function () {
         client.assert(p && p.status === "SUSPENDED", "status=" + (p && p.status));
     });
@@ -239,11 +241,11 @@ Content-Type: application/json
 
 ### [9/9] 상품 삭제 (DELETE) → 204. expectedVersion은 쿼리 파라미터
 # 삭제 전 신규 상품의 최신 version을 목록에서 캡처
-GET {{productBaseUrl}}/api/v1/seller/products
+GET {{productBaseUrl}}/api/v1/seller/products?size=100
 Authorization: Bearer {{sellerToken}}
 
 > {%
-    const p = response.body.find(x => x.productId === client.global.get("freshProductId"));
+    const p = response.body.data.content.find(x => x.productId === client.global.get("freshProductId"));
     client.global.set("freshProductVersion", p.version);
 %}
 

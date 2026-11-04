@@ -12,6 +12,7 @@ import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.infrastructure.persistence.mapper.product.ProductMapper;
 import jakarta.persistence.EntityNotFoundException;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -88,17 +89,10 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     @Override
-    public List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId) {
+    public List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId, Instant afterCreatedAt, UUID afterId,
+                                                                 int limit) {
         // 복잡 프로젝션 조회는 QueryDSL 전용 어댑터에 위임
-        return queryDslRepository.findActiveSellerProductSummaries(sellerId);
-    }
-
-    @Override
-    public List<Product> findByCategoryId(Long categoryId) {
-        return productJpaRepository.findByCategoryId(categoryId)
-                .stream()
-                .map(this::loadAggregate)
-                .toList();
+        return queryDslRepository.findActiveSellerProductSummaries(sellerId, afterCreatedAt, afterId, limit);
     }
 
     /**

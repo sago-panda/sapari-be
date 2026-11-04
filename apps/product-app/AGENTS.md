@@ -7,7 +7,9 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
 
 - 🚧 **Seller product REST + public detail wired (③).** `controller/product/` =
   `SellerProductController` (`/api/v1/seller/products**`, ROLE_SELLER) + `ProductController`
-  (`GET /api/v1/products/{id}`, public, ON_SALE-only gate). Request DTOs under
+  (`GET /api/v1/products/{id}`, public). Success bodies are `ResponseEnvelope<T>` (status via `@ResponseStatus`,
+  204 = `void`); the seller list is a `CursorPage` (`?cursor=&size=`, newest first). The ON_SALE-only rule for
+  the public detail lives in `GetProductDetailService`, not the controller. Request DTOs under
   `controller/product/dto/request` (`@Valid`, `toCommand(sellerId[, productId])`). Swagger UI at
   `/swagger-ui.html`, API docs at `/v3/api-docs`. Create/option-update accept option-value `ref` +
   `surchargeRules`/`exclusionRules`/`combinations` (⑤); structural rule checks are service-side (PRODUCT-004),
@@ -30,6 +32,9 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
 - **The app does NOT create the schema.** `ddl-auto: none` and there is **no Flyway in the app** —
   DDL is applied by the **infra runner** (`infra/migration/migrate.sh`, SQL at `db/migration/product/`;
   see `infra/AGENTS.md`). Boot against an un-migrated DB → entity mapping fails. Apply migrations first.
+- Config template: `src/main/resources/application.yaml.example` (the real `application*.yaml` is gitignored) —
+  copy it and fill the REQUIRED keys. Swagger/OpenAPI is **off by default** (`SPRINGDOC_ENABLED=true` to turn it on
+  locally); `SecurityConfig` permits those paths, so production must leave it off.
 - DB: `jdbc:postgresql://localhost:5432/sapari` (user/pass `sapari`). Redis: `localhost:6379`.
 - JWT config (`jwt.*`) is present (inherited via `common/web`). Security is wired in `config/SecurityConfig`
   (two stateless chains: seller `ROLE_SELLER` + public). Auth beans (`JwtTokenProvider`, revocation
