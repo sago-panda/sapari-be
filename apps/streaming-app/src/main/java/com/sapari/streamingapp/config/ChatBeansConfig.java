@@ -58,10 +58,11 @@ public class ChatBeansConfig {
      * 없다</b> — 서비스의 필드가 {@code final} 이고 부팅 때 한 번 조립되니 빈을 갈아 끼워도 안 닿는다.
      * 사전 변경의 유일한 길이 배포였던 이유가 그것이다.
      *
-     * <p>구체 타입으로 돌려주는 것이 의도다. {@code ProfanityFilterSource} 로 선언하면 교체
-     * 메서드({@code swap})가 빈 타입에서 사라져, 전파 어댑터가 그것을 쓰려고 캐스팅하거나 별
-     * 빈을 또 만들게 된다. 읽는 쪽은 포트로 받고({@code SendChatService}) 쓰는 쪽은 이 타입으로
-     * 받는다 — 같은 객체이고 역할이 둘이다.
+     * <p>구체 타입으로 돌려주는 것이 의도다. 이 클래스는 포트 <b>둘</b>을 구현하는데
+     * ({@code ProfanityFilterSource} 읽기 · {@code ProfanityFilterInstaller} 쓰기) 한쪽 포트
+     * 타입으로 선언하면 다른 쪽이 빈 타입에서 사라져, 그것을 쓰는 쪽이 캐스팅하거나 별 빈을
+     * 또 만들게 된다. 구체 타입으로 주면 두 포트 주입이 같은 객체로 해결된다 — 읽는 쪽은
+     * {@code SendChatService}, 쓰는 쪽은 {@code ProfanityDictionaryRefreshHandler} 다.
      */
     @Bean
     public SwappableProfanityFilter profanityFilterSource(

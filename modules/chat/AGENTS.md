@@ -132,13 +132,35 @@ which meant the module's own guide read as if the filter were closed. They are d
 Numbers and vectors for each live in `ProfanityFilter`'s class javadoc and the two data headers; this
 list exists so the axes are visible from here.
 
-The canonical design is three tiers — `live_schema.chat_filter_word` → Redis pub/sub → in-pod trie.
-Only the third exists. streaming-app has **no DB dependency at all**, so the table and the propagation
-are not wired, and `ProfanityDictionary` loads the words from two classpath resources in chat-core.
-⚠️ The table is therefore **not** the source of truth today, though
-`db/migration/live/V1__init_live.sql:157` still calls Postgres the source in its comment. It is
-deliberately **not seeded** either: seeding a table nothing reads would put the same list in two places
-with no way to tell which one is live. When tiers 1–2 land, generate the seed *from* these files.
+All three canonical tiers now exist — `live_schema.chat_filter_word` → Redis snapshot → in-pod trie
+(SPR-165). The split is forced by the apps: streaming-app has **no DataSource at all**, so the app that
+can read the source of truth (live-app) reads it and leaves a snapshot where the app that cannot
+(streaming-app) will find it.
+
+- **live-app writes.** `ChatDictionaryBootstrap` seeds the table from the bundled `.txt` **only when it
+  is empty** — re-pushing every boot would resurrect words an operator deleted, which is the same as
+  `remove` not working. After the seed, the table is the author and the files are just its origin.
+  Then it publishes, on every boot: idempotent, and it makes "snapshot missing or stale" self-clear with
+  one deploy.
+- **The snapshot is one key.** `chat:dict:snapshot` holds version + both sets in one value, so a reader
+  cannot see "half new" — a whitelist entry only means something next to the profanity it covers.
+  `INCR` + `SET` + `PUBLISH` are **one Lua script**; split them and you get "version advanced, body did
+  not", after which the receiver's poll reads the old body and advances its version anyway.
+- **streaming-app reads.** `ProfanityDictionaryRefreshHandler` merges three triggers (boot, notify,
+  poll) into one `concatMap` stream, so only one refresh runs at a time and monotonicity is a field
+  comparison. ⚠️ The **poll** is what makes propagation work, not the notification: Redis pub/sub is
+  non-persistent, so a pod whose subscription was down during a publish never gets that message and
+  would enforce the old dictionary until restart. The notification only saves the poll interval.
+- **Failure directions are deliberate.** A transport failure does **not** advance the local version
+  (otherwise the poll sees "same" and never retries — that ordering is the load-bearing part of the
+  self-heal, pinned by a revert test). A **content** refusal does advance it, because re-reading the
+  same snapshot refuses for the same reason and would ERROR every minute on every pod; a fix is a new
+  publish, so the version rises and it is picked up.
+- **The last gate is the swap point.** A propagated dictionary goes through the *same* door as the
+  bundled and config ones (`ProfanityFilterFactory` → `ProfanityDictionary.of`), K budget included.
+  Rejection means **keep the previous filter** — not boot failure: one ADMIN request must not CrashLoop
+  the fleet. The write path pre-checks so this state is not reached normally; this gate catches writes
+  that bypassed it (direct SQL or Redis).
 
 Missing resource, or zero words after comments, is a **boot failure**. An empty dictionary is not a
 degraded filter — it is the filter silently off (`displayMessage == originalMessage`), and that state

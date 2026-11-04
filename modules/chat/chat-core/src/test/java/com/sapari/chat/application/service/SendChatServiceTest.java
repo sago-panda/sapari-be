@@ -125,7 +125,7 @@ class SendChatServiceTest {
                 .expectComplete().verify(VERIFY_CEILING);
 
         // when: 운영자가 런타임에 사전을 바꿨다(배포 없이)
-        filterCell.swap(new ProfanityFilter(Set.of("신상어"), Set.of()));
+        filterCell.install(new ProfanityFilter(Set.of("신상어"), Set.of()));
 
         // then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "신상어 삽니다", "c2")))

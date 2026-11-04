@@ -215,7 +215,13 @@ class ChatModerationWiringTest {
                 // 이력 조회(VOD 다시보기) — 강퇴와 같은 이유로 이 앱이다: 방 주인과 방송 시작 시각을
                 // 묻는 빈이 live-core 에 있다. 매퍼는 생성된 MapStruct 구현을 손으로 세운 것이다
                 // (componentModel=spring 이지만 이 앱은 com.sapari.chat 을 스캔하지 않는다).
-                "GetChatHistoryService", "ChatHistoryMongoRepository", "ChatMessageMapperImpl");
+                "GetChatHistoryService", "ChatHistoryMongoRepository", "ChatMessageMapperImpl",
+                // 사전 전파의 <쓰는 쪽>. 정본이 Postgres 인데 그것을 평가하는 앱(streaming-app)에는
+                // DataSource 가 없어서, 읽을 수 있는 이 앱이 읽어 Redis 스냅샷으로 내놓는다.
+                // 받는 쪽 빈(구독·재빌드·교체)은 전부 streaming-app 이고 여기 없다 — 그것이
+                // 이 목록이 보여 주는 비대칭이다.
+                "ChatFilterWordRepositoryImpl", "ProfanityDictionarySnapshotRedisPublisher",
+                "ChatFilterWordSeedRecorder", "ProfanityDictionaryPublishService");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())

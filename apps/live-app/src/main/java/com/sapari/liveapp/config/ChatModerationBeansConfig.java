@@ -8,6 +8,13 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
+import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
+import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
+import com.sapari.chat.application.service.ProfanityDictionaryPublishService;
+import com.sapari.chat.domain.repository.ChatFilterWordRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordJpaRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordRepositoryImpl;
+import com.sapari.chat.infrastructure.redis.ProfanityDictionarySnapshotRedisPublisher;
 import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
@@ -142,6 +149,46 @@ public class ChatModerationBeansConfig {
                                                         ChatPermissionPolicy permissionPolicy) {
         return new GetChatHistoryService(liveRoomReader, historyRepository, kickLogRepository,
                 permissionPolicy);
+    }
+
+    /**
+     * 사전 정본 접근. 이 앱만 가진다 — streaming-app 에는 DataSource 가 없다.
+     */
+    @Bean
+    public ChatFilterWordRepository chatFilterWordRepository(ChatFilterWordJpaRepository jpaRepository) {
+        return new ChatFilterWordRepositoryImpl(jpaRepository);
+    }
+
+    /**
+     * 사전 스냅샷 발행(블로킹). 받는 쪽은 streaming-app 이고, 두 앱이 같은 Redis 를 봐야 전파가
+     * 성립한다 — 이 앱의 {@code spring.data.redis} 설정이 streaming-app 과 같은 인스턴스를
+     * 가리켜야 한다(강퇴 이벤트 발행과 같은 전제다).
+     */
+    @Bean
+    public ProfanityDictionarySnapshotPublisher profanityDictionarySnapshotPublisher(
+            StringRedisTemplate redisTemplate) {
+        return new ProfanityDictionarySnapshotRedisPublisher(redisTemplate);
+    }
+
+    /**
+     * 번들 시드의 DB 쓰기를 감싸는 트랜잭션 빈 — 위 {@code chatKickRecorder} 와 같은 이유로
+     * 별도 빈이다. 한 트랜잭션이어야 하는 이유는 따로 있다: 나누면 Pod 이 중간에 죽을 때
+     * "비지 않았지만 절반인" 테이블이 남고, 그 뒤로는 비어 있지 않으니 다시 심지 않는다.
+     */
+    @Bean
+    public ChatFilterWordSeedRecorder chatFilterWordSeedRecorder(ChatFilterWordRepository repository) {
+        return new ChatFilterWordSeedRecorder(repository);
+    }
+
+    /**
+     * 정본 → 스냅샷. 시드 트랜잭션과 <b>다른 빈</b>이고 호출 순서가 계약이다 — 트랜잭션 안에서
+     * 발행하면 롤백된 단어가 함대에 깔린다.
+     */
+    @Bean
+    public ProfanityDictionaryPublishService profanityDictionaryPublishService(
+            ChatFilterWordRepository repository,
+            ProfanityDictionarySnapshotPublisher snapshotPublisher) {
+        return new ProfanityDictionaryPublishService(repository, snapshotPublisher);
     }
 
     @Bean

@@ -11,8 +11,13 @@ public final class ChatConstants {
     }
 
     /**
-     * SYSTEM 메시지 발신 주체의 고정 UUID. 실제 유저가 아닌 서버 발신 신호(강퇴·종료·밴 등)에 쓴다.
+     * 서버 자신을 가리키는 고정 UUID — 실제 유저가 아닌 주체가 남기는 자리에 쓴다.
      * 리터럴이 여러 곳에 흩어지면 한 글자 오타로 식별이 어긋나므로 이 상수만 사용한다.
+     *
+     * <p>쓰이는 자리 둘이다: SYSTEM 메시지의 발신 주체(강퇴·종료·밴 알림)와, 사람이 아니라
+     * 서버가 만든 행의 작성자({@code chat_filter_word.created_by} 의 번들 시드). 이름이
+     * {@code SENDER} 인 것은 전자가 먼저 생겼기 때문이고, 값이 가리키는 것은 <b>서버</b>다 —
+     * 정본 DDL 도 두 자리를 같은 말("SYSTEM UUID")로 적는다.
      */
     public static final UUID SYSTEM_SENDER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 

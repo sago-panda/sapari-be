@@ -39,7 +39,7 @@ class SwappableProfanityFilterTest {
         assertThat(cell.current().filter("나나나 삽니다")).isEqualTo("나나나 삽니다");
 
         // when: 운영자가 '나나나' 를 사전에 넣었다
-        cell.swap(filterOf("나나나"));
+        cell.install(filterOf("나나나"));
 
         // then
         assertThat(cell.current().filter("나나나 삽니다")).isEqualTo("*** 삽니다");
@@ -53,7 +53,7 @@ class SwappableProfanityFilterTest {
     void nullIsRefusedAtBothEnds() {
         assertThatThrownBy(() -> new SwappableProfanityFilter(null))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new SwappableProfanityFilter(filterOf("가가가")).swap(null))
+        assertThatThrownBy(() -> new SwappableProfanityFilter(filterOf("가가가")).install(null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -100,7 +100,7 @@ class SwappableProfanityFilterTest {
             Future<?> swapper = pool.submit(() -> {
                 go.await(10, TimeUnit.SECONDS);
                 for (int i = 0; i < 2_000; i++) {
-                    cell.swap(i % 2 == 0 ? other : first);
+                    cell.install(i % 2 == 0 ? other : first);
                 }
                 return null;
             });
