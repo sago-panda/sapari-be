@@ -44,9 +44,4 @@ public interface ProductRepository {
      * @return 정렬된 요약 목록(최대 limit개)
      */
     List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId, Instant afterCreatedAt, UUID afterId, int limit);
-
-    /**
-     * 카테고리(bigint id) 소속 상품 목록.
-     */
-    List<Product> findByCategoryId(Long categoryId);
 }

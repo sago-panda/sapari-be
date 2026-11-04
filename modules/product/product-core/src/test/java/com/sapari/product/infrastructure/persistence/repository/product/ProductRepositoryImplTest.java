@@ -3,7 +3,6 @@ package com.sapari.product.infrastructure.persistence.repository.product;
 import static com.sapari.product.support.ProductFixtures.CATEGORY_1;
 import static com.sapari.product.support.ProductFixtures.CATEGORY_2;
 import static com.sapari.product.support.ProductFixtures.SELLER_A;
-import static com.sapari.product.support.ProductFixtures.SELLER_B;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -254,20 +253,6 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
     @Nested
     @DisplayName("조회(파생 finder)")
     class Finders {
-
-        @Test
-        @DisplayName("카테고리로 필터링한다")
-        void filters_by_category() {
-            productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
-            productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_2));
-            productRepository.save(ProductFixtures.minimal(SELLER_B, CATEGORY_1));
-            em.flush();
-            em.clear();
-
-            assertThat(productRepository.findByCategoryId(CATEGORY_1)).hasSize(2)
-                    .allSatisfy(p -> assertThat(p.categoryId()).isEqualTo(CATEGORY_1));
-            assertThat(productRepository.findByCategoryId(9999L)).isEmpty();
-        }
 
         @Test
         @DisplayName("findActiveSellerProductSummaries는 삭제 상품을 제외하고 스칼라·대표이미지(GALLERY 최소 sortOrder)를 채운다")

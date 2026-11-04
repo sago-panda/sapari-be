@@ -2,7 +2,6 @@ package com.sapari.product.infrastructure.persistence.repository.product;
 
 import com.sapari.product.infrastructure.persistence.entity.product.ProductEntity;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -12,6 +11,4 @@ import org.springframework.data.jpa.repository.JpaRepository;
  */
 public interface ProductJpaRepository extends JpaRepository<ProductEntity, UUID> {
     Optional<ProductEntity> findByIdAndDeletedAtIsNull(UUID id);
-
-    List<ProductEntity> findByCategoryId(Long categoryId);
 }

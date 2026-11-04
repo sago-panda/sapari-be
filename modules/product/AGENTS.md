@@ -34,13 +34,18 @@ Non-obvious facts that bite when you map entities:
 - `products` sort/filter columns (`min_price`, `has_stock`, `purchase_count`, `avg_rating`,
   `*_count`) are **app-maintained denormalized caches**, not DB-computed.
 
-## Entities (all 26 tables mapped, by DDD aggregate)
+## Entities (mapped only where a use case reads or writes them, by DDD aggregate)
 
-JPA entities for **every** `V1` table live in `infrastructure/persistence/entity/<aggregate>/`, split by
-aggregate: `category`, `optionattribute` (global option templates, not per-product), `product`
-(incl. `product/option/` — option types/values/config are **inside the Product aggregate**, edited with
-the product), `productgroup`, `combination` (own aggregate — runtime stock/price, referenced by orders by
-id), `stock`, `discount`, `faq`, `ranking`, `audit`, `search`, `outbox`. Conventions:
+JPA entities live in `infrastructure/persistence/entity/<aggregate>/`, split by aggregate: `category`,
+`optionattribute` (global option templates, not per-product), `product` (incl. `product/option/` — option
+types/values/config are **inside the Product aggregate**, edited with the product), `combination` (own
+aggregate — runtime stock/price, referenced by orders by id).
+
+**DDL-only tables** — `product_group_*`, `stock_reservations`, `discount_*`, `combination_winning_discounts`,
+`product_faq`/`product_inquiry_images`, `weekly_best_products`, `audit_logs`, `product_search_logs`,
+`search_keyword_daily_stats`, `outbox_events` — have **no entity/repository/domain code** on purpose: their
+pre-built slices had no caller and were removed. Build each slice together with the use case that needs it
+(paged reads, an idempotent key for batch upserts, a claim strategy for an outbox relay). Conventions:
 
 - **Bare id columns only** — no JPA relations/`@ManyToOne` (cross-/intra refs are `UUID`/`Long` fields,
   matching the no-physical-FK rule).

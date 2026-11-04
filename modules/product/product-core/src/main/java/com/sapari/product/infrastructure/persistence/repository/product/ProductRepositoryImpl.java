@@ -78,14 +78,6 @@ public class ProductRepositoryImpl implements ProductRepository {
         return queryDslRepository.findActiveSellerProductSummaries(sellerId, afterCreatedAt, afterId, limit);
     }
 
-    @Override
-    public List<Product> findByCategoryId(Long categoryId) {
-        return productJpaRepository.findByCategoryId(categoryId)
-                .stream()
-                .map(this::loadAggregate)
-                .toList();
-    }
-
     /**
      * 자식 컬렉션을 단순 replace(전체 삭제 후 재삽입)로 동기화한다.
      */
