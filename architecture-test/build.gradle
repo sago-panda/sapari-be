@@ -23,6 +23,15 @@ dependencies {
     // 실패시키므로(failOnEmptyShould 기본값) 앱을 빼면 빌드가 깨진다 — 규칙을 지우거나 앱을 넣거나 둘 중 하나다.
     // 앱을 빠뜨리면 그 앱 코드는 어떤 규칙의 검사도 받지 않는다. 스케줄러·필터·설정이
     // 앱에 살기 때문에 @Transactional 위치와 TimeProvider 규칙이 조용히 비게 된다.
+    //
+    // ⚠️ 그 기본값에 <규칙 둘이 정확성을 걸고 있다> — 대상 집합이 비면 그 규칙은 "검사할 것이
+    // 없다" 로 초록이 되는 게 아니라 실패해야 한다. 실측(2026-11-05), 둘 다 실패한다:
+    //   only_the_refresh_handler_may_install_a_profanity_filter — 메서드명을 문자열로 박았다.
+    //     install 이 사라지거나 이름이 바뀌면 대상 0건이고, 그때 초록이면 "아무도 필터를 갈아
+    //     끼우지 않는다" 를 통과로 읽는다.
+    //   mapstruct_mappers_must_fail_on_unmapped_targets — 대상이 @Mapper 로 <발견되는> 집합이다.
+    //     애노테이션 FQN 을 없는 것으로 바꾸면 "failed to check any classes" 로 깨진다.
+    // 그래서 allowEmptyShould 를 켜지 말 것 — 켜는 순간 이 둘이 조용한 통과가 된다.
     testImplementation project(':apps:streaming-app')
     testImplementation project(':apps:api-app')
     testImplementation project(':apps:live-app')

@@ -61,16 +61,16 @@ it is false: the CI pipeline is deliberately not executing — the shared runner
 exhausted (`ci_quota_exceeded`), recorded at the top of `.gitlab/ci/build.yml`, and the local-runner
 replacement was reverted for reasons written there. The `build` and `harness-check` jobs still only have
 `merge_request_event` / `FORCE_REVIEW` rules, and the MR bot review is commented out in
-`.gitlab-ci.yml` as well. So while that holds, **nothing but a local run enforces these 20.**
+`.gitlab-ci.yml` as well. So while that holds, **nothing but a local run enforces these 21.**
 
 That is why the deterministic gate is now a step of the `/review` skill rather than an assumption of
 this file. What you owe the reader depends on what happened:
 
-- **The gate ran and passed** (the `/review` report says so) → do not re-report these 20. The tool is
+- **The gate ran and passed** (the `/review` report says so) → do not re-report these 21. The tool is
   better at them than you are, and it is deterministic.
 - **The gate did not run, or you cannot tell** → say so once, as `증거부족` on the item closest to the
-  change, naming `./gradlew :architecture-test:test`. Do not emulate the 20 rules by hand and do not
-  stay silent: silence here reads as "checked, fine", which is exactly how these 20 came to have no
+  change, naming `./gradlew :architecture-test:test`. Do not emulate the 21 rules by hand and do not
+  stay silent: silence here reads as "checked, fine", which is exactly how these 21 came to have no
   coverage at all — CI could not run them and reviewers were told to skip them.
 - **The gate failed** → the failure is the finding. Report the rule name; do not re-derive it.
 
