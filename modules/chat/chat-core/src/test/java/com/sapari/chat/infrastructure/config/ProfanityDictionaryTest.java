@@ -225,7 +225,10 @@ class ProfanityDictionaryTest {
             // 반각 — @ㅐ미 · ^^ㅣ벌 · ㅅ1
             "@\uFFC3미", "^^\uFFDC벌", "\uFFB51",
             // 조합용 초성 — 시ㅂㅏ · 미ㅊ (자음만 조합용으로 바꿔 NFC 가 합치지 못하게 둔 형태)
-            "\uC2DC\u1107\u314F", "\uBBF8\u110E"})
+            "\uC2DC\u1107\u314F", "\uBBF8\u110E",
+            // 종성 + 기호 삽입. 평면 C 만이 막는 축이다 — 삽입 때문에 fold 가 1-패스로 못 닿고
+            // 평면 A 는 종성 조합용을 호환으로 되돌리지 못한다. 평면 C 를 떼면 이 셋만 깨진다.
+            "\uBBF81\u11BE", "\uC2DC1\u11B8\u314F", "\uC9C01\u11AF"})
     @DisplayName("조합용·반각 자모로 적은 표기도 막는다 — 역표가 초성형만이면 72/73 이 통과한다")
     void jamoWrittenInAnotherEncodingIsStillMasked(String evaded) {
         assertThat(filterFromDictionary().filter(evaded))
@@ -790,8 +793,13 @@ class ProfanityDictionaryTest {
      * 수락됐다 — 싼 접두를 막는 규칙이 쪼개진 글자 조각 하나에 뚫렸다.
      */
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"8sibal", "8SIBAL", "1sibal", "8시발"})
-    @DisplayName("⭐ 싼 접두는 표기가 라틴이어도 거부한다 — 긴 항목부터 지워야 잔여가 '8' 이 된다")
+    @ValueSource(strings = {"8sibal", "8SIBAL", "1sibal", "8시발",
+            // 1글자 잔여 축. 위 넷은 전부 <숫자> 접두라 isLetter 가 0 이고, 문턱을 '글자 둘' 에서
+            // '하나' 로 내려도 그대로 거부된다 — 즉 넷만으로는 문턱을 재지 못한다(실측: 돌연변이
+            // 가 320건 전부 초록). 아래 셋이 그 자리를 잡는다. 라틴 전용 축이 아니라서
+            // 'x시발' 도 넣는다.
+            "xpussy", "xfuck", "x시발"})
+    @DisplayName("⭐ 싼 접두는 표기가 라틴이어도 거부한다 — 잔여가 한 글자면 '8시발' 과 같은 모양이다")
     void aCheapPrefixIsRejectedInEitherScript(String entry) {
         assertThatThrownBy(() -> ProfanityDictionary.load(null, entry))
                 .as("'%s' 가 수락되면 그 욕설이 한 글자 접두로 풀린다", entry)
@@ -803,8 +811,9 @@ class ProfanityDictionaryTest {
      * 정당한 라틴 항목은 적재된다 — 한글 음절만 '말' 로 세면 방송 중에 길이 없다.
      *
      * <p>잔여를 "한글 음절" 로만 보던 동안 {@code passivation}·{@code unisex}·{@code sexual}·
-     * {@code Essex}·{@code pussycat} 이 <b>전부 부팅을 세웠다</b>(되돌려 재면 그 여섯이 6/6
-     * 거부된다). 그런데 라틴 항목
+     * {@code Essex}·{@code pussycat} 이 <b>전부 부팅을 세웠다</b>(완화 전 — 이 문턱과 '욕설 0건
+     * 건너뛰기' 를 둘 다 되돌린 상태 — 에서 6/6 거부. 문턱만 되돌리면 1/6 이고 그 하나가
+     * {@code pussycat} 이다). 그런데 라틴 항목
      * 중 영단어에 걸리는 것이 지금도 5건이라(사전 머리글 참조) 그중 하나가 방송 중에 오탐을
      * 내면 설정으로 못 막고 배포로 사전을 고쳐야 한다 — {@code sex}·{@code siva} 에서 이미 두 번
      * 그 길로 갔고 그때마다 검출을 통째로 잃었다. 그래서 잔여에 글자가 둘 이상이면 적재하고

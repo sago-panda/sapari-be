@@ -140,8 +140,10 @@ the whitelist span and survives. The rule stands on `8시발` alone; the earlier
 Those two are refused at load. Latin needs two letters because a single one is as cheap as `8`
 (`xpussy` and `xfuck` are refused; `pussycat` loads with a warning naming its residue `cat`). Entries
 whose residue has no Hangul syllable load **with a warning** rather than failing boot: judging by
-Hangul alone refused every legitimate Latin entry (`passivation`, `unisex`, `sexual`, `Essex`,
-`pussycat` — 6/6 when reverted), and a Latin false positive during a broadcast then has no remedy but
+Hangul alone refused every legitimate Latin entry (`passivation`, `passivate`, `unisex`, `sexual`,
+`Essex`, `pussycat` — 6/6 with **both** this threshold and the no-profanity skip reverted; reverting
+the threshold alone gives 1/6, because after `sex` and `siva` left the dictionary the other five
+contain no profanity and the skip takes them first), and a Latin false positive during a broadcast then has no remedy but
 a deploy that drops the dictionary entry; `sex` and `siva` already went that way, each time losing the
 detection outright. An entry that contains **no** profanity skips this rule entirely — it frees
 nothing, so the "cheap prefix" wording would be false about it, and it is reported by rule three
@@ -161,7 +163,8 @@ population of this class, because what follows can be a particle, a verb ending 
 Count it structurally instead (measured 2026-11-03): **131 crossing pairs over 100 distinct dictionary
 entries**, whose 125 masked results are read by hand to find the natural compounds. There were 12; all
 are closed — 6 longer whitelist entries (`전염병신`, `감염병신`, `화염병신`, `시발택시발`, `다시팔년`,
-`일시불알`), which cost nothing (13,188 cases, 0 evasions, every insult compound still masked), and
+`일시불알`), which cost nothing (13,188 cases when measured — 6 × 1,099 × 2; the dictionary is 1,093
+now, so the same sweep is 13,116 — 0 evasions, every insult compound still masked), and
 4 dictionary removals (`섹스해`, `섹스하자`, `점물`, `육갑`). Three more whitelist entries (`환불알`,
 `동봉알`, `검색키`) and five more removals (`조까`, `조또`, `족까`, `젓까`, `젖까`) closed the
 particle-attachment variant of the same class; 13 entries were removed across the ticket in total.
@@ -169,7 +172,7 @@ particle-attachment variant of the same class; 13 entries were removed across th
 ⚠️ The same class also exists **with no whitelist involved**: `지점물류` → `지***류`, `교육갑니다` →
 `교***니다`. A two-syllable entry lands across a syllable boundary of an ordinary compound, and no
 whitelist entry can fix that (you would add `지점물`, `교육갑`, … forever) — the entry itself has to go.
-Neither sweep finds this: there is no Korean word list in the repo, so it is found by reading the 125
+Neither sweep finds this: there is no Korean word list in the repo, so it is found by reading the 127
 crossing results. Do not skip that reading when adding an entry, and run a corpus pass too — a suffix
 sweep cannot see a plain word that matches with no insertion at all (`검색스토리지` ← `색스` did).
 

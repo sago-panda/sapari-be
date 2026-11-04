@@ -16,7 +16,12 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 /**
- * 설정으로 급히 막은 단어가 화이트리스트에 가려진 사실이 <b>실제로 남는지</b> 고정한다.
+ * 사전 적재 경고가 <b>실제로 로그에 남는지</b> 고정한다.
+ *
+ * <p>재는 것은 두 종류다 — 사전 단어와 <b>똑같은</b> 화이트리스트 항목이 있어 그 단어가 어느
+ * 자리에서도 안 걸리는 경우, 그리고 어떤 욕설도 품지 않아 아무것도 보호하지 않는 항목.
+ * 화이트리스트 항목을 <b>품기만</b> 하는 단어는 경고 대상이 아니고(그쪽은 2A·2B 가 그대로
+ * 잡는다) 이 클래스의 테스트 하나가 그 사실을 따로 못 박는다.
  *
  * <p>이 WARN 은 "부팅을 세우지 않는다" 는 결정의 대가다. 전에는 같은 상황에서 기동이 실패했고,
  * 그 전제("영원히 매치되지 않는다")가 거짓이라 거부를 걷었다 — 대신 알려 주기로 했다. 그런데
@@ -25,7 +30,7 @@ import ch.qos.logback.core.read.ListAppender;
  *
  * <p>빈 메서드를 직접 부른다 — 판정이 그 안에 있어서, 호출이 사라지면 이 테스트가 함께 깨진다.
  */
-@DisplayName("사전 적재 경고 — 가려진 단어를 알려 준다")
+@DisplayName("사전 적재 경고 — 아무 일도 하지 않는 항목을 알려 준다")
 class ChatBeansConfigWarningLogTest {
 
     private static final Logger LOGGER = (Logger) LoggerFactory.getLogger(ChatBeansConfig.class);

@@ -293,7 +293,11 @@ public final class ProfanityDictionary {
      *
      * <p>좁혔을 때의 대가가 가설이 아니었다 — {@code passivation}·{@code unisex}·
      * {@code sexual}·{@code Essex}·{@code pussycat} 같은 <b>정당한 라틴 항목이 전부 부팅을
-     * 세웠다</b>(실측: 그 여섯을 되돌려 재면 6/6 이 거부된다).
+     * 세웠다</b>(실측: 완화 전 — 이 문턱과 위의 '욕설 0건 건너뛰기' 를 <b>둘 다</b> 되돌린
+     * 상태 — 에서 6/6 이 거부된다. 이 문턱만 되돌리면 1/6 이다({@code pussycat} 하나) —
+     * 사전에서 {@code sex}·{@code siva} 를 뺀 뒤로 나머지 다섯은 품는 욕설이 0건이라 건너뛰기
+     * 쪽이 먼저 받는다. 오늘 데이터로 이 문턱이 실제로 지키는 것은 {@code pussycat} 과
+     * 아래 1글자 잔여 축이다).
      * 그런데 라틴 항목 중 영단어에 걸리는 것이 지금도 5건이고({@code .claude/scripts/
      * check-ascii-entries.sh}) 그중 하나가 방송 중에 오탐을 내면 설정으로 못 막는다 —
      * 사전 항목을 빼는 배포밖에 길이 없고, {@code sex}·{@code siva} 에서 이미 두 번 그 길로
@@ -302,7 +306,7 @@ public final class ProfanityDictionary {
      *
      * <p>한글 음절은 하나로도 낱말이라 그쪽은 그대로 한 글자다({@code 시발점} → {@code 점}).
      * 라틴에만 글자 <b>둘</b>을 요구하는 이유: 한 글자는 한글이든 라틴이든 싸다. 잔여가 {@code x}
-     * 하나면({@code xsex}) {@code 8시발} 과 같은 모양이고, 라틴 정상어의 잔여는 둘 이상이다
+     * 하나면({@code xpussy} → {@code x}) {@code 8시발} 과 같은 모양이고, 라틴 정상어의 잔여는 둘 이상이다
      * (실측: {@code pussycat} → {@code cat}. {@code Essex}·{@code unisex} 는 사전에서
      * {@code sex} 를 뺀 뒤로 품는 욕설이 0건이어서 규칙 (3)에 아예 들어오지 않고 규칙 (2)
      * 경고로 간다 — 데이터가 바뀌면 그 데이터를 예시로 쓴 문장이 같이 썩는다).
