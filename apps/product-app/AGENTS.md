@@ -23,6 +23,9 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
 - **The app does NOT create the schema.** `ddl-auto: none` and there is **no Flyway in the app** —
   DDL is applied by the **infra runner** (`infra/migration/migrate.sh`, SQL at `db/migration/product/`;
   see `infra/AGENTS.md`). Boot against an un-migrated DB → entity mapping fails. Apply migrations first.
+- Config template: `src/main/resources/application.yaml.example` (the real `application*.yaml` is gitignored) —
+  copy it and fill the REQUIRED keys. Swagger/OpenAPI is **off by default** (`SPRINGDOC_ENABLED=true` to turn it on
+  locally); `SecurityConfig` permits those paths, so production must leave it off.
 - DB: `jdbc:postgresql://localhost:5432/sapari` (user/pass `sapari`). Redis: `localhost:6379`.
 - JWT config (`jwt.*`) is present (inherited via `common/web`). Security is wired in `config/SecurityConfig`
   (two stateless chains: seller `ROLE_SELLER` + public). Auth beans (`JwtTokenProvider`, revocation
