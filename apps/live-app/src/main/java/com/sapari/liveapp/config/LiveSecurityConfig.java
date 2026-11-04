@@ -342,6 +342,18 @@ public class LiveSecurityConfig {
                         // (예: 명단 조회) 판매자에게 열리고 관리자에게 닫힌다. 그래서 아래 셋 다
                         // 메서드를 한정하지 않는다 — /chat/bans/** · /chat/kicked · /chat/ended.
                         .requestMatchers("/api/v1/chat/bans/**").hasRole("ADMIN")
+                        // 사전 관리도 ADMIN 전용이고 방 경로 밖이다 — 사전은 글로벌 1개라 어느
+                        // 방에서 눌렀는지가 판정을 바꾸지 않는다. 메서드를 한정하지 않는 이유는
+                        // 위와 같다(폴스루가 /api/v1/chat/** 에는 역할 바닥이 없다).
+                        // ⚠️ GET 도 여기 걸린다. 그게 의도다 — 이 목록은 "플랫폼이 무엇을 막는가"
+                        // 의 전체이고, 우회하려는 사람에게 어떤 표기가 사전에 <없는지>를 알려 준다.
+                        // 쓰기만 ADMIN 으로 두고 읽기를 아래로 떨어뜨리면 구매자가 그것을 받는다.
+                        // ⚠️ /** 하나로 <그 경로 자신>까지 덮인다 — 한 줄 더 적지 않는다.
+                        // 실측(2026-11-05): 패턴 /api/v1/chat/filter-words/** 가 경로
+                        // /api/v1/chat/filter-words 에 맞는다(PathPattern true · AntPathMatcher
+                        // true, 끝 슬래시 유무 무관). 처음에 "** 는 하위 세그먼트에만 맞는다" 로
+                        // 적고 같은 경로를 두 줄로 두려 했는데 그 전제가 거짓이었다.
+                        .requestMatchers("/api/v1/chat/filter-words/**").hasRole("ADMIN")
                         // 강퇴 명단 재적재도 ADMIN 전용이다. 경로가 방 아래라 아래 판매자 전용
                         // 규칙에 걸리므로 그보다 먼저 와야 한다 — 먼저 맞는 규칙이 이긴다.
                         // 순서가 뒤집히면 관리자가 403 을 받고, 집행이 꺼진 방을 고칠 사람이 없어진다.

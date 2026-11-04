@@ -161,6 +161,24 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   Rejection means **keep the previous filter** — not boot failure: one ADMIN request must not CrashLoop
   the fleet. The write path pre-checks so this state is not reached normally; this gate catches writes
   that bypassed it (direct SQL or Redis).
+- **The operator surface is `/api/v1/chat/filter-words`** (GET / POST / DELETE, ADMIN, live-app).
+  GET is ADMIN too, deliberately: the list is "everything the platform blocks", which tells an evader
+  which spellings are *absent* — and without a read, delete is unusable. A single
+  `requestMatchers("/api/v1/chat/filter-words/**")` covers the bare path as well (measured: PathPattern
+  and AntPathMatcher both match it; pinned by `ChatFilterWordAuthorizationTest`, which fails on all
+  three methods if that line goes).
+- ⚠️ **The write path validates the resulting *whole set*, not the submitted word** — otherwise one
+  pre-existing violating row freezes propagation: the write succeeds, every pod refuses the swap on that
+  old row, and the operator sees their word in the list while no pod enforces it (same dead-letter shape
+  as `SEC-11`). The two reachable causes are direct SQL and **tightening a rule later** — exactly what
+  lowering the K budget 64 → 16 was; the table was empty then, so it cost nothing, but the next
+  tightening will meet a populated one.
+- **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
+  first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
+  set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.
+  Collapsing them tells an operator who sent a perfectly good word that their word is wrong. **Delete
+  does not check the pre-change set** — removing the offending row must stay possible, or there is no
+  app-level way out of the freeze.
 
 Missing resource, or zero words after comments, is a **boot failure**. An empty dictionary is not a
 degraded filter — it is the filter silently off (`displayMessage == originalMessage`), and that state

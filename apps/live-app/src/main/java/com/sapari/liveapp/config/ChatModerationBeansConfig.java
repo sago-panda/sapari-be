@@ -9,6 +9,11 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
+import com.sapari.chat.application.port.ProfanityFilterFactory;
+import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
+import com.sapari.chat.application.service.ManageFilterWordsService;
+import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
+import com.sapari.chat.port.ManageFilterWordsUseCase;
 import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
 import com.sapari.chat.application.service.ProfanityDictionaryPublishService;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
@@ -189,6 +194,40 @@ public class ChatModerationBeansConfig {
             ChatFilterWordRepository repository,
             ProfanityDictionarySnapshotPublisher snapshotPublisher) {
         return new ProfanityDictionaryPublishService(repository, snapshotPublisher);
+    }
+
+    /**
+     * 사전의 <b>문</b>. 쓰기 경로의 선검사가 이것을 쓴다 — 번들·설정·전파가 지나는 문과 같아야
+     * 하므로 chat-core 의 구현을 그대로 세운다. 스테레오타입이 붙어 있지만 이 앱은
+     * {@code com.sapari.chat} 을 스캔하지 않으므로 직접 등록해야 한다.
+     */
+    @Bean
+    public ProfanityFilterFactory profanityFilterFactory() {
+        return new DictionaryProfanityFilterFactory();
+    }
+
+    /**
+     * 사전 한 줄 쓰기의 트랜잭션 빈 — 위 {@code chatKickRecorder} 와 같은 이유로 별도 빈이다
+     * ({@code @Modifying} 쿼리가 트랜잭션을 요구하고, 자기 호출은 프록시를 타지 않는다).
+     */
+    @Bean
+    public ChatFilterWordWriteRecorder chatFilterWordWriteRecorder(ChatFilterWordRepository repository) {
+        return new ChatFilterWordWriteRecorder(repository);
+    }
+
+    /**
+     * 사전 관리(ADMIN). 쓰기가 발행으로 끝나므로 발행 서비스를 받는다 — 정본만 고치고 발행하지
+     * 않으면 함대가 그 변경을 영원히 모른다(받는 쪽이 버전을 본다).
+     */
+    @Bean
+    public ManageFilterWordsUseCase manageFilterWordsUseCase(
+            ChatPermissionPolicy permissionPolicy,
+            ChatFilterWordRepository repository,
+            ChatFilterWordWriteRecorder writeRecorder,
+            ProfanityDictionaryPublishService publishService,
+            ProfanityFilterFactory filterFactory) {
+        return new ManageFilterWordsService(
+                permissionPolicy, repository, writeRecorder, publishService, filterFactory);
     }
 
     @Bean

@@ -140,4 +140,23 @@ public final class ChatPermissionPolicy {
     public boolean canReconcileKickList(ChatRole actorRole) {
         return actorRole == ChatRole.ADMIN;
     }
+
+    /**
+     * 욕설 사전을 고칠 수 있는가 — <b>ADMIN 만이다.</b>
+     *
+     * <p>위 둘과 값이 같고 <b>이유는 또 다르다.</b> 이쪽 근거는 <b>영향 범위</b>다. 강퇴와 밴은
+     * 한 사람에게 붙지만 사전은 <b>전 방 공용</b>이라, 한 줄이 플랫폼 전체의 마스킹을 바꾼다 —
+     * 판매자에게 열면 자기 방송에서 쓰이는 말을 전 플랫폼에서 막거나 풀 수 있다.
+     *
+     * <p>그리고 양방향이 다 위험하다. 더하는 쪽은 정상어를 걸어 오탐을 만들고(그 복구가 또 이
+     * 경로다), 빼는 쪽은 막혀 있던 욕설을 푼다. 강퇴 재적재처럼 "입력이 정본이라 새로 해로울 수
+     * 없다" 가 성립하지 않는다.
+     *
+     * <p><b>조회도 같은 판정을 쓴다.</b> 목록은 "플랫폼이 무엇을 막는가" 의 전체이고, 우회하려는
+     * 사람에게는 어떤 표기가 사전에 없는지를 알려 주는 값이다. 쓰기와 읽기를 가르지 않는 이유가
+     * 그것이다 — 읽기 쪽이 더 느슨해질 근거가 없다.
+     */
+    public boolean canManageFilterWords(ChatRole actorRole) {
+        return actorRole == ChatRole.ADMIN;
+    }
 }

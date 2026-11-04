@@ -221,7 +221,11 @@ class ChatModerationWiringTest {
                 // 받는 쪽 빈(구독·재빌드·교체)은 전부 streaming-app 이고 여기 없다 — 그것이
                 // 이 목록이 보여 주는 비대칭이다.
                 "ChatFilterWordRepositoryImpl", "ProfanityDictionarySnapshotRedisPublisher",
-                "ChatFilterWordSeedRecorder", "ProfanityDictionaryPublishService");
+                "ChatFilterWordSeedRecorder", "ProfanityDictionaryPublishService",
+                // 사전 관리(ADMIN). 쓰기 선검사가 사전의 <문>을 쓰므로 그 구현도 이 앱에 있다 —
+                // 번들·설정·전파가 지나는 문과 같아야 하기 때문이다.
+                "DictionaryProfanityFilterFactory", "ChatFilterWordWriteRecorder",
+                "ManageFilterWordsService");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())
