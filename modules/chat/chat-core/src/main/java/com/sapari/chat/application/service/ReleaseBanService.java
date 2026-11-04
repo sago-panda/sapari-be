@@ -107,9 +107,15 @@ public class ReleaseBanService implements ReleaseBanUseCase {
         // 쓰기와 같은 409 로 접는다 — 같은 조치 안에서 같은 종류의 실패가 다른 등급으로 나가면
         // ChatErrorCode 가 409 를 고른 근거("500 은 재시도해도 소용없다는 신호로 읽힌다")가
         // 이 경로에서만 역전된다.
+        //
+        // ⚠️ 잡는 타입이 위와 <다르다>. 위는 DB 축이라 셋을 접지만 이 호출의 구현은 Redis 하나뿐
+        // 이고(ChatBanWriteRedisRepository) PessimisticLockingFailureException 은 JDBC/JPA 번역에서만
+        // 나오므로 여기서는 <도달 불가>였다. 남은 하나는 도달한다 — 실측(spring-data-redis 4.0.5
+        // 바이트코드): LettuceExceptionConverter 가 TimeoutException·RedisCommandTimeoutException 을
+        // QueryTimeoutException 으로 번역한다. 나머지 Redis 실패는 아래 일반 갈래가 받는다.
         try {
             banWriteRepository.releaseMirror(command.targetUserId());
-        } catch (PessimisticLockingFailureException | QueryTimeoutException e) {
+        } catch (QueryTimeoutException e) {
             log.error("밴 해제 — 미러 삭제가 경합으로 실패했다. 정본 행은 지워졌고 기준선도 남았는데 "
                             + "미러가 남아 그 사용자는 계속 막힌다(영구 밴은 TTL 이 없어 스스로 "
                             + "풀리지 않는다). 같은 요청을 다시 보내면 된다 — 해제는 멱등이다. "

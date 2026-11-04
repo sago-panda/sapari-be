@@ -84,7 +84,9 @@ public class ProfanityDictionaryRefreshHandler {
      * 고쳐지면 새 발행이고 버전이 오르므로 그때 다시 받는다.
      *
      * <p>0 은 "아직 정본 사전을 적용하지 않았다"(번들로 떠 있다)는 뜻이다 — 발행 버전은
-     * {@code INCR} 결과라 1부터다.
+     * 조건부 발행이 집은 수 + 1 이라 1부터다. ({@code INCR} 이 아니다. 한때 그랬는데 ABA 를
+     * 닫으면서 빠졌다 — 토큰을 두 키의 최댓값으로 집어야 어느 한 키의 유실이 번호를 내리지
+     * 못한다.)
      *
      * <p>쓰는 스레드가 하나다({@code concatMap}). {@code volatile} 은 로그·테스트가 다른
      * 스레드에서 읽기 때문이다.
@@ -183,9 +185,10 @@ public class ProfanityDictionaryRefreshHandler {
     /**
      * 스냅샷을 문에 통과시키고 필터를 만들어 갈아 끼운다.
      *
-     * <p>단조 비교를 여기서 한 번 더 한다. 위 {@code filter} 는 "확인 때 본 수" 로 걸렀고 이것은
-     * "손에 든 스냅샷의 수" 다 — 그 사이에 더 낡은 스냅샷이 올 경로는 없지만(발행이 덮어쓰기라)
-     * 비교가 없으면 그 사실이 코드에 안 적힌다.
+     * <p><b>버전을 비교하지만 그것으로 거르지는 않는다</b> — 같은 수면 건너뛰고, <b>낮은 수면
+     * WARN 을 남기고 적용한다.</b> 한때 이 javadoc 이 "단조 비교를 한 번 더 한다" 고만 적혀 있어
+     * 방어처럼 읽혔는데, 아래 본문은 그 반대를 한다. 되돌아간 버전을 버리면 그 Pod 이 함대와
+     * 영구히 갈리기 때문이고, 근거와 도달 경로는 본문 주석에 있다.
      */
     private Mono<Void> apply(ProfanityDictionarySnapshot snapshot, String reason) {
         if (snapshot.version() == processedVersion) {

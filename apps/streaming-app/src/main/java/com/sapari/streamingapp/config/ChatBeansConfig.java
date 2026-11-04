@@ -64,10 +64,6 @@ public class ChatBeansConfig {
      * 또 만들게 된다. 구체 타입으로 주면 두 포트 주입이 같은 객체로 해결된다 — 읽는 쪽은
      * {@code SendChatService}, 쓰는 쪽은 {@code ProfanityDictionaryRefreshHandler} 다.
      */
-    private static boolean hasText(String value) {
-        return value != null && !value.isBlank();
-    }
-
     @Bean
     public SwappableProfanityFilter profanityFilterSource(
             @Value("${chat.profanity.words:}") String extraWords,
@@ -88,10 +84,13 @@ public class ChatBeansConfig {
         // 그래서 조용히 사라지지 않게 수명을 여기서 말한다. 운영 중 변경은 ADMIN API
         // (/api/v1/chat/filter-words)로 — 그쪽은 감사되고 함대에 전파된다.
         if (hasText(extraWords) || hasText(extraWhitelist)) {
+            // 원문을 싣지 않는다 — 그 원문이 곧 욕설이고, 운영자는 자기 설정을 이미 들고 있다.
+            // 필요한 것은 "설정 항목이 있다 · 몇 개다 · 사라진다" 이고 개수로 충분하다.
             log.warn("설정 CSV 사전 항목이 적재됐다 — 이 항목들은 <정본 스냅샷이 도착하면 교체와 "
                     + "함께 빠진다>(live-app 부팅 또는 ADMIN 쓰기 한 번). 지속되는 변경은 "
-                    + "ADMIN API(/api/v1/chat/filter-words)로 할 것. words={} whitelist={}",
-                    extraWords, extraWhitelist);
+                    + "ADMIN API(/api/v1/chat/filter-words)로 할 것. "
+                    + "chat.profanity.words={}개 chat.profanity.whitelist={}개",
+                    countCsv(extraWords), countCsv(extraWhitelist));
         }
         // 적재는 됐지만 아무 일도 하지 않는 항목을 알려 준다. 거부하지 않는 이유는 해롭지
         // 않기 때문이고(결과가 안 바뀐다), 방송 중에 쓰라고 둔 통로가 한 줄 오타로 전 파드
@@ -102,5 +101,14 @@ public class ChatBeansConfig {
         }
         return new SwappableProfanityFilter(
                 new ProfanityFilter(dictionary.words(), dictionary.whitelist()));
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /** 로그에 실을 개수 — 빈 칸도 센다. 운영자가 세는 위치와 맞아야 "3번째" 가 통한다. */
+    private static int countCsv(String value) {
+        return hasText(value) ? value.split(",", -1).length : 0;
     }
 }

@@ -90,7 +90,7 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         warnIfCommittedSourceViolates(command.actorId());
         // 멱등 호출(이미 있던 단어)에도 발행한다 — 건너뛰면 스냅샷이 유실된 상태를 되돌릴
         // 경로가 하나 줄어든다.
-        long version = publishService.publishFromSource();
+        long version = publishOrLogLoss("추가", kind, word.length(), changed, command.actorId());
         log.info("사전에 항목을 더했다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
         return new FilterWordChange(changed, version);
@@ -110,7 +110,7 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         guardRemoval(nextWords, nextWhitelist);
 
         boolean changed = writeRecorder.remove(kind, word);
-        long version = publishService.publishFromSource();
+        long version = publishOrLogLoss("제거", kind, word.length(), changed, command.actorId());
         log.info("사전에서 항목을 뺐다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
         return new FilterWordChange(changed, version);
@@ -125,6 +125,33 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
     }
 
     /**
+     * 발행까지 하고 버전을 돌려준다 — 발행 실패를 <b>무엇을 잃었는지와 함께</b> 적는다.
+     *
+     * <p>성공 로그가 발행 <b>뒤</b>에 있다. 그래서 발행이 실패하면 <정본은 바뀌었는데 함대는
+     * 모르는> 상태가 로그 한 줄 없이 일반 500 으로만 나갔다 — 밴 해제의 미러 삭제에서 같은
+     * 모양을 이미 한 번 고쳤다({@code ReleaseBanService}).
+     *
+     * <p>복구 수단은 <b>같은 요청의 재시도</b>다 — 쓰기가 멱등이고, 멱등 호출도 발행한다.
+     * 그 사실이 로그에 없으면 누른 사람은 재시도할 이유를 모른다.
+     *
+     * <p>항목 자체는 적지 않는다. 로그로 가는 사전 항목은 그대로 욕설이고, 어느 요청인지는
+     * 길이와 {@code actorId} 로 가린다.
+     */
+    private long publishOrLogLoss(
+            String action, FilterWordKind kind, int wordLength, boolean changed, UUID actorId) {
+        try {
+            return publishService.publishFromSource();
+        } catch (RuntimeException e) {
+            log.error("사전 {} — 정본은 바뀌었는데 발행이 실패했다. 받는 쪽이 버전을 보므로 "
+                            + "버전이 안 오르면 어느 Pod 도 교체하지 않는다. 같은 요청을 다시 "
+                            + "보내면 된다(쓰기는 멱등이고 멱등 호출도 발행한다). "
+                            + "kind={} 항목길이={} changed={} actorId={}",
+                    action, kind, wordLength, changed, actorId, e);
+            throw e;
+        }
+    }
+
+    /**
      * 커밋된 정본이 문을 지나는지 본다 — <b>로그만</b> 남긴다.
      *
      * <p>선검사를 지나왔는데도 어길 수 있는 이유는 규칙 (1)이 두 kind 를 가로지르기 때문이다
@@ -133,8 +160,25 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
      * 이 로그가 없으면 아무 데도 없다.
      */
     private void warnIfCommittedSourceViolates(UUID actorId) {
-        Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
-        Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
+        Set<String> words;
+        Set<String> whitelist;
+        // ⚠️ 이 두 읽기가 try 밖에 있었다. 이것은 <진단>인데 호출 위치가 쓰기 커밋 뒤 ·
+        // 발행 앞이라, 여기서 일시 DB 오류가 나면 <쓰기는 커밋됐고 발행은 안 됐고 응답은
+        // 일반 500> 이 된다 — 진단이 본선을 죽이는 모양이고, 그 상태가 정확히 이 메서드가
+        // 알리려던 그 상태(정본은 바뀌었는데 함대는 모른다)다.
+        //
+        // 읽기 실패는 삼키고 넘어간다. 삼키지 않는 쪽이 기본 규칙이지만(AGENTS.md) 여기서
+        // 올리면 잃는 것이 발행이고, 어기는지 모르는 상태는 다음 쓰기의 guardSource 가
+        // 409 로 잡는다 — 지연은 한 회차고 그 대가가 전파 유실이다.
+        try {
+            words = repository.findWords(FilterWordKind.PROFANITY);
+            whitelist = repository.findWords(FilterWordKind.WHITELIST);
+        } catch (RuntimeException e) {
+            log.warn("사전 쓰기 뒤 정본 재검사를 하지 못했다 — 읽기가 실패했다. 이 검사는 "
+                            + "진단이므로 쓰기·발행을 막지 않는다. 어기는 상태였다면 다음 쓰기의 "
+                            + "선검사가 409 로 잡는다. actorId={}", actorId, e);
+            return;
+        }
         try {
             filterFactory.from(SOURCE_ORIGIN, words, whitelist);
         } catch (IllegalStateException e) {

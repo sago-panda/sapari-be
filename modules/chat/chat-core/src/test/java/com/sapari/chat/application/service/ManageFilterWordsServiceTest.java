@@ -34,6 +34,12 @@ import com.sapari.chat.domain.repository.ChatFilterWordRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+
 /**
  * 사전 관리 — <b>거부의 원인을 운영자의 입력과 정본 중 어느 쪽으로 돌리는지</b>를 잰다.
  *
@@ -409,6 +415,74 @@ class ManageFilterWordsServiceTest {
         service.add(add("profanity", "지랄", "ADMIN"));
 
         verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin);
+    }
+
+    /**
+     * ⭐ <b>커밋 뒤의 진단 읽기가 본선을 죽이지 않는다.</b>
+     *
+     * <p>{@code warnIfCommittedSourceViolates} 의 두 읽기가 {@code try} <b>밖</b>에 있었다.
+     * 호출 위치가 쓰기 커밋 뒤 · 발행 앞이라, 그 읽기의 일시 오류가 <b>쓰기는 커밋됐는데 발행은
+     * 안 되고 응답은 일반 500</b> 을 만들었다 — 진단이 자기가 알리려던 바로 그 상태를 만드는
+     * 모양이다.
+     */
+    @Test
+    @DisplayName("⭐ 커밋 뒤 진단 읽기가 실패해도 발행은 간다 — 진단이 본선을 죽이면 안 된다")
+    void aFailedDiagnosticReadDoesNotSkipThePublish() {
+        // given: 선검사의 두 읽기는 되고, 커밋 뒤 재검사의 두 읽기가 터진다
+        given(repository.findWords(FilterWordKind.PROFANITY))
+                .willReturn(Set.of("시발"))
+                .willThrow(new org.springframework.dao.QueryTimeoutException("일시 DB 오류"));
+        given(repository.findWords(FilterWordKind.WHITELIST))
+                .willReturn(Set.of())
+                .willThrow(new org.springframework.dao.QueryTimeoutException("일시 DB 오류"));
+
+        // when
+        var change = service.add(add("PROFANITY", "지랄", "ADMIN"));
+
+        // then
+        verify(publishService)
+                .publishFromSource();
+        assertThat(change.version())
+                .as("진단 읽기가 실패했다고 발행을 건너뛰면 정본과 함대가 갈린 채로 200 이 나간다")
+                .isEqualTo(42);
+    }
+
+    /**
+     * ⭐ <b>발행 실패가 무엇을 잃었는지와 함께 적힌다.</b>
+     *
+     * <p>성공 로그가 발행 <b>뒤</b>에 있다. 그래서 발행이 실패하면 <정본은 바뀌었는데 함대는
+     * 모르는> 상태가 로그 한 줄 없이 일반 500 으로만 나갔다. 복구 수단이 같은 요청의 재시도인데
+     * (쓰기가 멱등이고 멱등 호출도 발행한다) 그 사실이 어디에도 없으면 누른 사람은 재시도할
+     * 이유를 모른다. 밴 해제의 미러 삭제에서 같은 모양을 이미 한 번 고쳤다.
+     */
+    @Test
+    @DisplayName("⭐ 발행이 실패하면 무엇을 잃었는지 적고 올린다 — 조용한 500 이면 복구 안내가 없다")
+    void aFailedPublishIsLoggedWithWhatWasLost() {
+        sourceIs(Set.of("시발"), Set.of());
+        given(publishService.publishFromSource())
+                .willThrow(new IllegalStateException("발행이 5회 밀렸다"));
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(ManageFilterWordsService.class);
+        logger.addAppender(appender);
+        try {
+            assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
+                    .as("삼키면 운영자가 '깔렸다' 고 믿는데 함대는 그 단어를 모른다")
+                    .isInstanceOf(IllegalStateException.class);
+
+            assertThat(appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.ERROR)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("이 상태가 조용하면 복구 수단(멱등 재시도)이 아무에게도 전달되지 않는다")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("발행이 실패했다")
+                            .contains("다시 보내면 된다"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     @Test
