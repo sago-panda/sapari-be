@@ -31,7 +31,7 @@ import com.sapari.chat.domain.repository.ChatBanRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatMessageRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
-import com.sapari.chat.domain.rule.ProfanityFilter;
+import com.sapari.chat.application.port.ProfanityFilterSource;
 import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.chat.view.ChatMessageView;
 import com.sapari.global.time.TimeProvider;
@@ -63,7 +63,7 @@ public class SendChatService implements SendChatUseCase {
     private static final Duration DEGRADED_LOG_INTERVAL = Duration.ofSeconds(10);
 
     private final ChatPermissionPolicy permissionPolicy;
-    private final ProfanityFilter profanityFilter;
+    private final ProfanityFilterSource profanityFilterSource;
     private final ChatKickRepository kickRepository;
     private final ChatBanRepository banRepository;
     private final RateLimiter rateLimiter;
@@ -251,7 +251,14 @@ public class SendChatService implements SendChatUseCase {
     /** 6) 욕설필터 → 도메인 생성 → 저장(먼저) → 발행. DuplicateKey(재전송)는 기존 메시지 재조회로 멱등 처리(재발행 생략). */
     private Mono<ChatMessageView> persistAndPublish(SendChatCommand command, ChatRole role,
                                                     ChatMessageType type, String content) {
-        String displayMessage = profanityFilter.filter(content);
+        // 매 메시지마다 "지금 것" 을 묻는다 — 사전이 런타임에 바뀔 수 있어서다. 필터를 생성자로
+        // 직접 받으면 빈을 교체해도 이 필드에 안 닿고(final 이고 서비스는 부팅 때 한 번 조립된다)
+        // 사전을 바꾸는 유일한 길이 배포가 된다. 비용은 메시지당 0.022 µs (filter() 자체의 0.11%,
+        // 실측 — SwappableProfanityFilter javadoc).
+        //
+        // 한 번 집어 들고 그것으로 끝까지 간다. 교체가 중간에 일어나도 이 메시지는 이전 사전이나
+        // 다음 사전 중 하나를 쓰고, 두 사전이 섞인 상태를 보지 않는다.
+        String displayMessage = profanityFilterSource.current().filter(content);
         ChatMessage message = ChatMessage.builder()
                 .id(null)                          // ObjectId는 save 시점에 reactive 드라이버가 부여
                 .roomId(command.roomId())

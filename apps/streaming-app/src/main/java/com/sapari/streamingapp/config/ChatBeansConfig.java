@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.domain.rule.ProfanityFilter;
 import com.sapari.chat.infrastructure.config.ProfanityDictionary;
+import com.sapari.chat.infrastructure.config.SwappableProfanityFilter;
 import com.sapari.global.time.TimeProvider;
 
 /**
@@ -49,9 +50,21 @@ public class ChatBeansConfig {
      * <p>지금은 리소스가 없거나 비면 {@link ProfanityDictionary} 가 <b>부팅을 실패시킨다</b> —
      * 그래서 "사전이 비어 있다" WARN 은 이 자리에서 도달 불가가 됐고 지웠다. 조용한 기능 정지보다
      * 시끄러운 부팅 실패가 낫다는 판단은 이 앱의 액추에이터 노출 가드와 같은 것이다.
+     *
+     * <p>⚠️ <b>빈 타입이 {@code ProfanityFilter} 에서 {@code SwappableProfanityFilter} 로 바뀌었다.</b>
+     *
+     * <p>{@code SendChatService} 가 {@code ProfanityFilterSource} 를 받으므로 이 앱이 그 구현을
+     * 준다. 전에는 {@code ProfanityFilter} 자체를 빈으로 줬는데, 그러면 <b>사전을 런타임에 바꿀 수
+     * 없다</b> — 서비스의 필드가 {@code final} 이고 부팅 때 한 번 조립되니 빈을 갈아 끼워도 안 닿는다.
+     * 사전 변경의 유일한 길이 배포였던 이유가 그것이다.
+     *
+     * <p>구체 타입으로 돌려주는 것이 의도다. {@code ProfanityFilterSource} 로 선언하면 교체
+     * 메서드({@code swap})가 빈 타입에서 사라져, 전파 어댑터가 그것을 쓰려고 캐스팅하거나 별
+     * 빈을 또 만들게 된다. 읽는 쪽은 포트로 받고({@code SendChatService}) 쓰는 쪽은 이 타입으로
+     * 받는다 — 같은 객체이고 역할이 둘이다.
      */
     @Bean
-    public ProfanityFilter profanityFilter(
+    public SwappableProfanityFilter profanityFilterSource(
             @Value("${chat.profanity.words:}") String extraWords,
             @Value("${chat.profanity.whitelist:}") String extraWhitelist) {
         ProfanityDictionary dictionary = ProfanityDictionary.load(extraWords, extraWhitelist);
@@ -64,6 +77,7 @@ public class ChatBeansConfig {
         if (!dictionary.warnings().isEmpty()) {
             log.warn("사전 설정에 확인할 항목이 있다: {}", dictionary.warnings());
         }
-        return new ProfanityFilter(dictionary.words(), dictionary.whitelist());
+        return new SwappableProfanityFilter(
+                new ProfanityFilter(dictionary.words(), dictionary.whitelist()));
     }
 }

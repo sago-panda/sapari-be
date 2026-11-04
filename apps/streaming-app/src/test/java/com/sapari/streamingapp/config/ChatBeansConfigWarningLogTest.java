@@ -56,7 +56,7 @@ class ChatBeansConfigWarningLogTest {
     @Test
     @DisplayName("⭐ 화이트리스트 항목과 같은 단어는 WARN 에 실린다 — 어느 자리에서도 안 걸린다")
     void aWordIdenticalToAWhitelistEntryIsWarnedAbout() {
-        new ChatBeansConfig().profanityFilter("시발점", "");
+        new ChatBeansConfig().profanityFilterSource("시발점", "");
 
         assertThat(warnings())
                 .as("안 걸린다는 사실을 아무 데도 안 남기면 '막았다' 와 구분되지 않는다")
@@ -67,7 +67,7 @@ class ChatBeansConfigWarningLogTest {
     @Test
     @DisplayName("항목을 품기만 하는 단어는 경고하지 않는다 — span 이 더 넓어 정상 작동한다")
     void aWordMerelyContainingAnEntryIsNotWarnedAbout() {
-        new ChatBeansConfig().profanityFilter("전염병같은놈", "");
+        new ChatBeansConfig().profanityFilterSource("전염병같은놈", "");
 
         assertThat(warnings())
                 .as("거짓 경고는 진짜 경고를 묻는다 — 이 단어는 실제로 마스킹된다")
@@ -84,7 +84,7 @@ class ChatBeansConfigWarningLogTest {
     @Test
     @DisplayName("⭐ 아무것도 보호하지 않는 화이트리스트 항목도 같은 WARN 에 실린다")
     void anIneffectiveWhitelistEntryIsWarnedAbout() {
-        new ChatBeansConfig().profanityFilter("", "감사합니다");
+        new ChatBeansConfig().profanityFilterSource("", "감사합니다");
 
         assertThat(warnings()).hasSize(1);
         assertThat(warnings().get(0).getFormattedMessage()).contains("감사합니다");
@@ -93,7 +93,7 @@ class ChatBeansConfigWarningLogTest {
     @Test
     @DisplayName("가려지는 단어가 없으면 WARN 을 남기지 않는다 — 평상시 경고는 읽히지 않게 된다")
     void theOrdinaryCaseIsQuiet() {
-        new ChatBeansConfig().profanityFilter("", "");
+        new ChatBeansConfig().profanityFilterSource("", "");
 
         assertThat(warnings()).isEmpty();
     }
