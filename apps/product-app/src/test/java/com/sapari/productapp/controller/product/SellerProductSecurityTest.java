@@ -26,6 +26,7 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.sapari.common.page.CursorPage;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
@@ -130,7 +131,7 @@ class SellerProductSecurityTest {
     @Test
     @DisplayName("SELLER 권한 요청은 인가를 통과한다")
     void sellerPassesAuthorization() throws Exception {
-        when(getSellerProductsUseCase.get(any())).thenReturn(List.of());
+        when(getSellerProductsUseCase.get(any())).thenReturn(new CursorPage<>(List.of(), null, false));
 
         int statusCode = mockMvc.perform(get(SELLER_PRODUCTS_PATH)
                         .with(user(UUID.randomUUID().toString()).roles("SELLER")))

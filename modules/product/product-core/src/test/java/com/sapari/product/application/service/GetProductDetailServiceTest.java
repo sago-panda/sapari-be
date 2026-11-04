@@ -2,6 +2,7 @@ package com.sapari.product.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 
@@ -17,6 +18,7 @@ import com.sapari.product.domain.model.product.ProductImageRef;
 import com.sapari.product.domain.model.product.ProductOptionModel;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
+import com.sapari.product.domain.model.product.ProductStatus;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.view.CombinationView;
@@ -30,6 +32,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -190,6 +194,32 @@ class GetProductDetailServiceTest {
                     .isInstanceOf(ProductNotFoundException.class);
 
             then(combinationRepository).shouldHaveNoInteractions();
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(value = ProductStatus.class, names = "ON_SALE", mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("판매 중이 아닌 상품은 존재를 숨겨 미존재와 같은 예외·메시지로 거절하고, 조합은 조회하지 않는다")
+        void hidesNonOnSaleProduct(ProductStatus status) {
+            given(productRepository.findActiveById(PRODUCT_ID))
+                    .willReturn(Optional.of(onSaleProduct().toBuilder().status(status).build()));
+
+            assertThatThrownBy(() -> service.get(new GetProductDetailCommand(PRODUCT_ID)))
+                    .isInstanceOf(ProductNotFoundException.class)
+                    .hasMessage("상품을 찾을 수 없습니다: " + PRODUCT_ID);
+
+            then(combinationRepository).shouldHaveNoInteractions();
+        }
+
+        @Test
+        @DisplayName("미존재와 비공개는 같은 메시지다 — 응답·로그로 상품 존재 여부를 구분할 수 없다")
+        void missingAndHiddenShareMessage() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.empty());
+            String missing = catchThrowable(() -> service.get(new GetProductDetailCommand(PRODUCT_ID))).getMessage();
+            given(productRepository.findActiveById(PRODUCT_ID))
+                    .willReturn(Optional.of(onSaleProduct().toBuilder().status(ProductStatus.SUSPENDED).build()));
+            String hidden = catchThrowable(() -> service.get(new GetProductDetailCommand(PRODUCT_ID))).getMessage();
+
+            assertThat(hidden).isEqualTo(missing);
         }
     }
 }

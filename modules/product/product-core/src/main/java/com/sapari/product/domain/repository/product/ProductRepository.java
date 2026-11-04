@@ -3,6 +3,7 @@ package com.sapari.product.domain.repository.product;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductSummary;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -44,11 +45,15 @@ public interface ProductRepository {
     /**
      * 판매자의 삭제되지 않은 상품 <b>요약</b> 목록(목록 카드용). 프로젝션 쿼리로 스칼라 + 대표 이미지 키만 조회하고
      * 옵션·조합 등 자식은 로딩하지 않는다({@code deleted_at IS NULL} 필터 포함).
+     *
+     * <p>정렬은 등록 일시 내림차순, 동률은 id 내림차순(전순서). {@code afterCreatedAt}·{@code afterId}가 주어지면 그 위치 <b>다음</b>
+     * 행부터 돌려준다(keyset). 둘은 함께 주거나 함께 null이어야 한다(null = 첫 페이지).
+     *
+     * @param sellerId       판매자 id
+     * @param afterCreatedAt 이전 페이지 마지막 행의 등록 일시, 첫 페이지면 null
+     * @param afterId        이전 페이지 마지막 행의 상품 id, 첫 페이지면 null
+     * @param limit          최대 행 수(호출측이 다음 페이지 판정용으로 size + 1을 넘긴다)
+     * @return 정렬된 요약 목록(최대 limit개)
      */
-    List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId);
-
-    /**
-     * 카테고리(bigint id) 소속 상품 목록.
-     */
-    List<Product> findByCategoryId(Long categoryId);
+    List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId, Instant afterCreatedAt, UUID afterId, int limit);
 }
