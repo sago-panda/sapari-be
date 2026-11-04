@@ -135,6 +135,40 @@ class ManageFilterWordsServiceTest {
     }
 
     /**
+     * ⭐ <b>빈 정본에는 첫 단어를 넣을 수 없다 — 그게 붕괴 경로를 막는다.</b>
+     *
+     * <p>시드가 실패하면(부팅 러너가 그 예외를 삼키고 Pod 는 계속 뜬다) 테이블이 비어 있고 발행도
+     * 안 된 상태가 된다. 거기까지는 안전하다 — 함대는 번들 1,078개로 집행한다. 위험한 것은 그
+     * <b>다음</b>이다: 운영자가 단어 하나를 추가하면 결과 집합이 {그 단어} 가 되고, 그것이
+     * 발행되면 함대의 마스킹이 1,078개에서 <b>1개로</b> 내려앉는다. 운영자는 성공을 받고 목록에서
+     * 자기 단어를 보고, 증상("욕설이 거의 안 걸린다")의 원인은 몇 시간 전 부팅 로그의 ERROR
+     * 한 줄이다.
+     *
+     * <p>막는 것은 <b>변경 전 집합 검사</b>다 — 빈 욕설 집합이 사전 문에서 거부되므로
+     * {@code add} 가 그 자리에서 409 로 떨어진다. 즉 이 보호는 "빈 테이블" 을 따로 판정해서
+     * 생긴 것이 아니라, 귀속을 가르려고 넣은 그 검사가 <b>같이 막아 준</b> 것이다. 그래서
+     * 벡터를 명시로 둔다 — 그 검사를 "add 에서 변경 전은 볼 필요 없다" 로 지우는 변경이
+     * 이 붕괴를 되살린다.
+     *
+     * <p>409 가 맞는 이유도 같다. 운영자가 보낸 단어에는 문제가 없고 정본의 <b>상태</b>가 문제다.
+     * 그리고 이 상태는 앱 경로로 고칠 수 없다(첫 단어를 넣는 것이 곧 붕괴다) — 복구는 DB 를
+     * 고치고 live-app 을 다시 띄워 시드를 돌리는 것이다.
+     */
+    @Test
+    @DisplayName("⭐ 빈 정본에 첫 단어를 넣으면 409 다 — 마스킹이 1개로 내려앉는 것을 막는다")
+    void addingTheFirstWordToAnEmptySourceIsRefused() {
+        // given: 시드가 실패해 테이블이 비어 있다
+        sourceIs(Set.of(), Set.of());
+
+        // when & then
+        assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
+                .isInstanceOf(FilterWordSourceInvalidException.class);
+
+        verify(writeRecorder, never()).add(any(), anyString(), any());
+        verify(publishService, never()).publishFromSource();
+    }
+
+    /**
      * ⭐ 반대 축 — 정본이 멀쩡하면 결과가 어기는 원인은 <b>보낸 항목 하나</b>뿐이다.
      *
      * <p>이 둘이 같은 코드로 나가면 안 되는 이유가 위 테스트의 javadoc 에 있다.
