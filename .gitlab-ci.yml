@@ -3,6 +3,7 @@
 include:
   - local: '.gitlab/ci/build.yml'
   - local: '.gitlab/ci/mr-review.yml'
+  - local: '.gitlab/ci/image.yml'
 
 # stages 는 여기서만 선언한다. include 된 파일이 각자 선언하면 나중 것이 앞의 것을 덮어써
 # 잡이 통째로 사라진다.
@@ -12,3 +13,4 @@ stages:
   - precheck
   - review
   - comment
+  - publish # dev push 전용(image.yml). MR 파이프라인에는 이 단계의 잡이 없다
