@@ -38,8 +38,8 @@ public class ChatKickLogRepositoryImpl implements ChatKickLogRepository {
     }
 
     @Override
-    public long countDistinctKickersSince(UUID userId, Instant since) {
-        return jpaRepository.countDistinctKickersSince(userId, since);
+    public long countConfirmingKickersSince(UUID userId, Instant since) {
+        return jpaRepository.countConfirmingKickersSince(userId, since);
     }
 
     @Override

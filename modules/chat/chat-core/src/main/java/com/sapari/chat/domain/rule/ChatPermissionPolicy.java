@@ -105,4 +105,23 @@ public final class ChatPermissionPolicy {
     public boolean usesPrivilegedViewInSomeoneElsesRoom(ChatRole role, boolean isRoomOwner) {
         return seesUnmaskedContent(role, isRoomOwner) && !isRoomOwner;
     }
+
+    /**
+     * 밴을 풀 수 있는가 — <b>ADMIN 만이다.</b>
+     *
+     * <p>{@link #canKick}과 축이 다르다. 강퇴는 방 안의 일이라 방 주인(SELLER)에게 열려 있지만,
+     * 밴은 플랫폼 전역이라 방 주인이 자기 방에서 겪은 일로 전역 제재를 풀 자리가 없다. 특히
+     * 자동 승격은 <b>서로 다른 판매자 3·6·9명</b>의 독립된 판단으로 걸리는데, 그중 한 명이 혼자
+     * 되돌릴 수 있으면 그 임계가 요구한 독립성이 무의미해진다.
+     *
+     * <p>{@code roomOwnerId}를 받지 않는 것이 그 사실의 표현이다 — 방을 보지 않으므로 어느 방에서
+     * 눌렀는지가 판정을 바꿀 수 없다. 서명에 그 자리를 두면 다음 사람이 "자기 방이면" 가지를 더하게 된다.
+     *
+     * <p>자기 밴 해제도 막힌다. ADMIN 은 애초에 밴 대상이 아니지만({@code canKick}이 ADMIN 을
+     * 보호한다) 수동 밴 경로가 생기면 그 전제가 깨지므로, 그때 이 자리에 자기 대상 검사를 더해야 한다 —
+     * 지금은 대상 id 를 받지 않아 그 검사를 <b>할 수 없다</b>는 것이 이 javadoc 의 요점이다.
+     */
+    public boolean canReleaseBan(ChatRole actorRole) {
+        return actorRole == ChatRole.ADMIN;
+    }
 }

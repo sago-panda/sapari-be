@@ -98,4 +98,17 @@ public class ChatBanWriteRedisRepository implements ChatBanWriteRepository {
                 : String.valueOf(Duration.between(now, expiresAt).toMillis());
         redisTemplate.execute(EXTEND_ONLY, List.of(ChatRedisKeys.banned(userId)), remaining, PRESENT);
     }
+
+    /**
+     * 조건 없는 {@code DEL}. 위 {@code EXTEND_ONLY}를 타지 않는 이유가 그 스크립트의 단조성이다 —
+     * 늘리기 전용 쓰기로는 어떤 값을 넣어도 밴이 짧아지지 않고, 영구 밴은 TTL이 없어
+     * {@code ttl == -1} 가지에서 즉시 0을 돌려준다. 해제는 쓰기가 아니라 삭제여야 한다.
+     *
+     * <p>{@code EXISTS}로 먼저 묻지 않는다. 없는 키 삭제가 no-op 이므로 물어볼 이유가 없고,
+     * 묻는 순간 왕복이 둘이 되며 그 사이가 새 레이스가 된다.
+     */
+    @Override
+    public void releaseMirror(UUID userId) {
+        redisTemplate.delete(ChatRedisKeys.banned(userId));
+    }
 }

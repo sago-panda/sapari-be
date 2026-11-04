@@ -68,6 +68,21 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
                                 + ban.userId()));
     }
 
+    /**
+     * 행 삭제와 기준선 추가가 <b>한 트랜잭션</b>이어야 한다 — 호출자가 경계를 연다.
+     *
+     * <p>순서는 삭제 먼저다. 기준선을 먼저 넣고 삭제가 실패하면 "누적은 접혔는데 밴은 남은" 상태가
+     * 되는데, 그쪽은 다음 강퇴에서 티어가 내려가 보이므로 원인 추적이 더 어렵다. 반대 순서의 잔여
+     * 상태(밴은 풀렸고 누적은 안 접힘)는 해제를 다시 눌러 수렴한다. 한 트랜잭션이면 둘 다
+     * 안 생기지만, 경계를 여는 것은 이 포트가 아니라 유스케이스다.
+     */
+    @Override
+    public boolean release(UUID userId, UUID releasedById, Instant now) {
+        int removed = jpaRepository.deleteByUserId(userId);
+        jpaRepository.appendRelease(userId, releasedById, now);
+        return removed > 0;
+    }
+
     private static ChatBan toDomain(ChatBanEntity entity) {
         return new ChatBan(entity.getUserId(), entity.getBannedById(),
                 entity.getExpiresAt(), entity.getCreatedAt());

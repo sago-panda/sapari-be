@@ -37,7 +37,16 @@ public interface ChatKickLogRepository {
     boolean appendIfAbsent(ChatKickLog log);
 
     /**
-     * {@code since} 이후 이 사용자를 강퇴한 <b>서로 다른 사람의 수</b>.
+     * 창 안에서 이 사용자를 강퇴한 <b>서로 다른 사람의 수</b>. 창의 시작은
+     * <b>{@code since} 와 가장 최근 밴 해제 시각 중 늦은 쪽</b>이다.
+     *
+     * <p>이름에 {@code Since} 하나만 두지 않은 이유가 그 둘째 하한이다. 해제는
+     * {@code chat_ban} 행 DELETE 라 강퇴 로그를 건드리지 않으므로, 하한이 하나면 해제된 사용자가
+     * <b>새 방에서</b> 강퇴 한 번을 더 받는 순간 과거 강퇴자가 다시 세어져 같은 티어가 재적용된다.
+     * 그러면 해제가 해제가 아니라 '다음 강퇴 1회까지의 유예' 가 된다. 하한을 올리는 쪽을 택했다 —
+     * 강퇴 로그는 일어난 사건이라 지우지 않고({@link com.sapari.chat.domain.model.ChatBan} javadoc)
+     * 이력 조회가 그 행을 쓴다.
+     *
      *
      * <p>강퇴 횟수가 아니다. 횟수를 세면 한 사람이 혼자 임계에 닿아 플랫폼 전역 밴을 걸 수 있다 —
      * 로그가 방 단위로 쌓이므로 방송을 세 번 하는 것만으로 3이 된다. 사람을 세면 임계가
@@ -46,7 +55,7 @@ public interface ChatKickLogRepository {
      * <p>방은 가리지 않는다 — 밴은 판매자별이 아니라 플랫폼 단위라, 여러 방을 돌며 같은 짓을 하는
      * 사용자도 같은 카운터에 쌓여야 한다.
      */
-    long countDistinctKickersSince(UUID userId, Instant since);
+    long countConfirmingKickersSince(UUID userId, Instant since);
 
     /**
      * 이 방에서 강퇴된 사용자 id 전부.

@@ -159,7 +159,7 @@ class ChatKickRecorderTest {
         // then: 행은 셋이지만 확증한 사람은 하나다
         assertThat(ban).isEmpty();
         assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
-        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
                 .as("한 사람의 반복 강퇴가 확증으로 세어졌다 — 판매자 하나가 전역 밴 권한을 갖는다")
                 .isEqualTo(1);
     }
@@ -176,7 +176,7 @@ class ChatKickRecorderTest {
         // then: 예외 없이 커밋됐고, 누적 1회는 임계 미만이라 밴은 없다
         assertThat(ban).isEmpty();
         assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
-        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(1);
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(1);
     }
 
     @Test
@@ -208,7 +208,7 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
 
         // when & then: 3회를 불렀지만 임계에 닿지 않는다
-        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(2);
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)))).isEqualTo(2);
         assertThat(bans.findActive(targetUserId, NOW)).isEmpty();
     }
 
@@ -261,7 +261,7 @@ class ChatKickRecorderTest {
         });
 
         // then: 전파가 REQUIRED면 여기서 0이 된다 — 그러면 호출자가 이미 Redis를 쓴 뒤다
-        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
                 .as("바깥 롤백이 기록까지 되돌렸다 — 반환 시점에 커밋이 확정되지 않는다")
                 .isEqualTo(1);
     }
@@ -286,7 +286,7 @@ class ChatKickRecorderTest {
         // given: 누적 2회. 다음 강퇴가 임계에 닿아 승격을 시도한다
         recorder.record(kick(UUID.randomUUID(), NOW));
         recorder.record(kick(UUID.randomUUID(), NOW));
-        long before = kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)));
+        long before = kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730)));
         assertThat(before).isEqualTo(2);
 
         // 밴 INSERT만 실패시키는 저장소로 같은 경계를 다시 만든다
@@ -305,6 +305,13 @@ class ChatKickRecorderTest {
             public BanWrite extendOrCreate(ChatBan ban) {
                 throw new IllegalStateException("밴 저장 실패");
             }
+
+            @Override
+            public boolean release(UUID userId, UUID releasedById, Instant now) {
+                // 이 테스트는 승격 경로의 트랜잭션 경계만 잰다. 해제는 그 경계에 들어오지 않는다 —
+                // 불리면 그건 이 테스트가 모르는 경로가 생긴 것이므로 조용히 통과시키지 않는다.
+                throw new UnsupportedOperationException("이 테스트는 해제를 쓰지 않는다");
+            }
         });
         // 경계는 템플릿으로 만든다 — 여기서 재는 것은 "두 쓰기가 한 트랜잭션인가"이고,
         // 애너테이션이 프록시로 실제로 걸리는지는 ChatModerationWiringTest가 따로 지킨다.
@@ -316,7 +323,7 @@ class ChatKickRecorderTest {
                 .isInstanceOf(IllegalStateException.class);
 
         // then: 강퇴 로그가 남아 있으면 재시도가 중복 경로로 들어가 승격을 영영 건너뛴다
-        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
                 .as("밴이 실패했는데 강퇴 로그가 커밋됐다 — 재시도가 승격을 건너뛴다")
                 .isEqualTo(before);
     }

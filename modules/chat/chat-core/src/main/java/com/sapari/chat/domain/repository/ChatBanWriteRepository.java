@@ -32,4 +32,18 @@ public interface ChatBanWriteRepository {
      * @param expiresAt 만료 시각. {@code null}이면 영구라 TTL을 붙이지 않는다
      */
     void ban(UUID userId, Instant expiresAt, Instant now);
+
+    /**
+     * 미러를 지운다 — <b>조건 없이</b>. 집행이 이 키로 일어나므로 이것이 실제로 밴을 푸는 쓰기다.
+     *
+     * <p>위 {@link #ban}이 늘리기 전용이라 짧은 만료로는 아무것도 바꿀 수 없고, 영구 밴은 TTL이
+     * 없어 스스로 풀리지도 않는다. 그래서 해제에는 이 삭제가 반드시 있어야 한다.
+     *
+     * <p><b>정본 행의 존재를 묻지 않는다.</b> 해제는 정본을 먼저 지우므로 재시도 때는 이미 행이
+     * 없는데, 거기서 "지울 밴이 없다" 로 끊으면 미러에 도달할 코드가 안 남는다. 없는 키 삭제는
+     * no-op 이라 무조건 실행이 안전하고, 그 성질이 곧 해제의 멱등성이다.
+     *
+     * <p>실패는 삼키지 않고 던진다 — 미러가 남은 해제는 아무도 풀지 못한 해제다.
+     */
+    void releaseMirror(UUID userId);
 }

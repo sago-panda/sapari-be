@@ -318,6 +318,20 @@ public class LiveSecurityConfig {
                         // 관리자는 아닌지는 KickUserService 가 본다. 이 줄은 그 앞의 거친 관문이다.
                         .requestMatchers(HttpMethod.POST, "/api/v1/lives/*/chat/kick")
                                 .hasAnyRole("SELLER", "ADMIN")
+                        // 밴 해제는 ADMIN 전용이고 <b>방 경로 밖</b>이다 — 밴은 방이 아니라 사람에
+                        // 붙으므로 어느 방에서 눌렀는지가 판정을 바꾸지 않는다. 아래
+                        // `anyRequest().authenticated()` 에 맡기지 않는 이유: 그 줄은 역할을 보지
+                        // 않아 구매자도 통과하고, 거부가 서비스의 권한 검사 하나에만 걸리게 된다.
+                        // 강퇴를 명시한 것과 같은 이유로 거친 관문을 여기 둔다 — 실제 판정은
+                        // ReleaseBanService 의 canReleaseBan 이 한 번 더 본다.
+                        //
+                        // ⚠️ 이 한 줄이 여는 권한의 무게: ADMIN 한 명이 그 사용자의 <2년치 누적을
+                        // 조용히 접을 수 있다>. 해제는 밴만 푸는 것이 아니라 사면 기준선을 남겨
+                        // 730일 창의 과거 강퇴자를 전부 세지 않게 만든다(그게 없으면 해제가 새 방
+                        // 강퇴 1회까지의 유예가 되므로 그쪽이 맞는 설계다). 추적은 chat_ban_release
+                        // 행이 들지만 <막는 것은 이 역할 하나>다. SELLER 를 여기 더하면 자동 승격이
+                        // 요구한 '서로 다른 판매자 3·6·9명' 의 독립성을 그중 한 명이 되돌리게 된다.
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/chat/bans/*").hasRole("ADMIN")
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

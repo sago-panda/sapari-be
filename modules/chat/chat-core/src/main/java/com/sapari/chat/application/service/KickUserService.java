@@ -236,34 +236,9 @@ public class KickUserService implements KickUserUseCase {
      * 늘었을 때 그 사람이 이유 없이 강퇴에 실패하는 것으로만 드러난다.
      */
     private static ChatRole kickerRole(String platformRole) {
-        try {
-            return toChatRole(UserRole.valueOf(platformRole));
-        } catch (IllegalArgumentException e) {
-            throw new ChatPermissionDeniedException("알 수 없는 역할이다 — role=" + platformRole);
-        }
+        return ChatRole.fromPlatformRole(platformRole)
+                .orElseThrow(() -> new ChatPermissionDeniedException(
+                        "알 수 없는 역할이다 — role=" + platformRole));
     }
 
-    /**
-     * 플랫폼 역할 → 채팅 역할.
-     *
-     * <p>{@code default}를 쓰지 않는다. 목록이 늘면 컴파일이 깨져서 알려주도록 세 갈래를 모두 나열한다 —
-     * {@code default}로 접으면 새 역할이 조용히 구매자 취급을 받는다.
-     */
-    private static ChatRole toChatRole(UserRole role) {
-        return switch (role) {
-            case USER -> ChatRole.BUYER;
-            case SELLER -> ChatRole.SELLER;
-            case ADMIN -> ChatRole.ADMIN;
-        };
-    }
-
-    /**
-     * 플랫폼 역할 이름 — user 도메인의 열거와 같은 이름을 갖는다.
-     *
-     * <p>그쪽 타입을 직접 참조하지 않는 이유는 이 경로가 사용자 계정 도메인에 닿지 않기 위해서다.
-     * 이름이 갈라지면 위 파싱이 거부로 드러난다.
-     */
-    private enum UserRole {
-        USER, SELLER, ADMIN
-    }
 }

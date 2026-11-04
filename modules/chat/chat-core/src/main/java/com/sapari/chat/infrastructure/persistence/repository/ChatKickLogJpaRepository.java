@@ -80,12 +80,38 @@ public interface ChatKickLogJpaRepository extends JpaRepository<ChatKickLogEntit
      * <p>그 전제가 깨지면 {@code INCLUDE (kicked_by_id)}가 힙 접근을 없앤다. <b>공짜가 아니다</b> —
      * 리프 튜플에 uuid 16바이트가 붙는 만큼 <b>인덱스가 약 45% 커진다</b>(실측, 여러 데이터 모양에서
      * 42~45%). 한때 이 자리에 "인덱스 크기는 오히려 감소"라고 적혀 있었는데 사실이 아니었다.
+     *
+     * <p>⚠️ 창의 하한이 둘이다 — {@code :since}(730일 창)와 <b>가장 최근 해제 시각</b>. 둘 중 늦은 쪽이
+     * 이긴다.
+     *
+     * <p>해제 기준선이 없으면 <b>해제가 해제가 아니다.</b> 해제는 {@code chat_ban} 행 DELETE 라
+     * {@code chat_kick_log} 행을 건드리지 않는다. 그래서 그 기준선 없이는 해제된 사용자가
+     * <b>새 방에서</b> 강퇴 한 번을 더 받는 순간 과거 강퇴자가 그대로 다시 세어져 같은 티어가
+     * 재적용된다 — 9명에 닿았던 사용자는 강퇴 1회로 1년이고, 창이 730일이라 2년 가까이 그렇다.
+     * 해제가 '다음 강퇴 1회까지의 유예' 로 변한다.
+     *
+     * <p><b>같은 방 재강퇴로는 재현되지 않는다</b> — {@code ChatKickRecorder} 가
+     * {@code firstKickInThisRoom} 이 아니면 세는 걸음에 오지 않는다. 이 계급을 재는 벡터는 반드시
+     * <b>새 방</b>이어야 하고, 같은 방으로 재면 "재밴 안 된다" 는 거짓 0 이 나온다.
+     *
+     * <p><b>왜 강퇴 로그를 지우지 않는가.</b> 강퇴는 일어난 사건이라 지우지 않는다({@code ChatBan}
+     * javadoc 이 수명 차이를 테이블 분리의 근거로 적는다). 이력 조회도 그 행으로 강퇴자를 제외한다
+     * ({@code GetChatHistoryService}). 그래서 지우는 대신 세는 창을 올린다.
+     *
+     * <p><b>왕복은 늘지 않는다</b> — 상관 서브쿼리라 한 번의 질의다. 기준선 조회는
+     * {@code chat_ban_release(user_id, released_at DESC)} 인덱스로 끝난다. 이 질의가 사용자 단위
+     * 어드바이저리 잠금을 쥔 안에서 돌기 때문에 왕복을 늘리거나 순차 스캔을 들이면 그 줄서기가 길어진다.
+     *
+     * <p>{@code COALESCE} 의 기본값은 {@code :since} 다 — 해제 이력이 없으면 종전과 똑같이 동작한다.
      */
     @Query(value = """
             SELECT COUNT(DISTINCT kicked_by_id) FROM live_schema.chat_kick_log
-             WHERE user_id = :userId AND kicked_at > :since
+             WHERE user_id = :userId
+               AND kicked_at > GREATEST(:since, COALESCE(
+                     (SELECT MAX(released_at) FROM live_schema.chat_ban_release
+                       WHERE user_id = :userId), :since))
             """, nativeQuery = true)
-    long countDistinctKickersSince(@Param("userId") UUID userId, @Param("since") Instant since);
+    long countConfirmingKickersSince(@Param("userId") UUID userId, @Param("since") Instant since);
 
     /**
      * 이 방에서 강퇴된 사용자 id 전부 — 이력 조회가 질의 단계에서 제외하는 데 쓴다.

@@ -145,8 +145,8 @@ class ChatKickRecorderConcurrencyTest {
         }
 
         @Override
-        public long countDistinctKickersSince(UUID userId, Instant since) {
-            return delegate.countDistinctKickersSince(userId, since);
+        public long countConfirmingKickersSince(UUID userId, Instant since) {
+            return delegate.countConfirmingKickersSince(userId, since);
         }
     }
 
@@ -226,7 +226,7 @@ class ChatKickRecorderConcurrencyTest {
         // given: 확증 1명이 이미 커밋돼 있다. 여기서 서로 다른 두 사람이 각자 다른 방에서 동시에
         // 강퇴하면 확증은 3이 되고, 임계가 3이라 밴이 걸려야 한다.
         recorder.record(kick(UUID.randomUUID(), UUID.randomUUID()));
-        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(WINDOW))).isEqualTo(1);
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(WINDOW))).isEqualTo(1);
 
         CountDownLatch bothRecorded = new CountDownLatch(2);
         latched.arm(bothRecorded);
@@ -247,7 +247,7 @@ class ChatKickRecorderConcurrencyTest {
 
         // then: 두 강퇴 모두 성공했고(실패를 밴 부재로 착각하지 않도록 먼저 본다) 확증은 3이다.
         assertThat(failures).as("강퇴 자체가 실패했다면 밴 부재의 원인이 레이스가 아니다").isEmpty();
-        assertThat(kickLogs.countDistinctKickersSince(targetUserId, NOW.minus(WINDOW)))
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(WINDOW)))
                 .as("서로 다른 방이라 세 행이 모두 남아야 한다")
                 .isEqualTo(3);
 

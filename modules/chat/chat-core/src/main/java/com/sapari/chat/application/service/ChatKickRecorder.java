@@ -143,16 +143,23 @@ public class ChatKickRecorder {
         if (!firstKickInThisRoom) {
             return Optional.empty();
         }
-        long kickers = kickLogRepository.countDistinctKickersSince(
+        long kickers = kickLogRepository.countConfirmingKickersSince(
                 kickLog.targetUserId(), now.minus(CONFIRMATION_WINDOW));
         return ChatBanTier.of(kickers)
                 .map(tier -> {
                     BanWrite write = banStateRepository.extendOrCreate(
                             ChatBan.escalated(kickLog.targetUserId(), tier, now));
-                    // 사람이 누른 적 없는 제재라 흔적이 여기밖에 없다. 게다가 지금은 푸는 코드가 없어서
-                    // (해제는 행 삭제이고 그걸 하는 경로가 admin-app에 아직 없다) 남기지 않으면 "왜 못
+                    // 사람이 누른 적 없는 제재라 흔적이 여기밖에 없다. 남기지 않으면 "왜 못
                     // 들어가느냐"는 물음에 chat_ban을 직접 조회해야만 답할 수 있다. 이 도메인이 fail-open
-                    // 한 건까지 남기면서 영구 제재를 안 남기는 건 앞뒤가 맞지 않는다.
+                    // 한 건까지 남기면서 제재를 안 남기는 건 앞뒤가 맞지 않는다.
+                    //
+                    // (여기에 "지금은 푸는 코드가 없다 — 해제 경로가 admin-app에 아직 없다"가 적혀
+                    //  있었다. 둘 다 거짓이 됐다: ReleaseBanService 가 풀고, 호스트는 admin-app이
+                    //  아니라 live-app이다. 그 앱은 파일 3개에 modules 의존이 0건인데 live-app은
+                    //  인증 주체·역할·chat-core 배선·ChatException 처리기가 이미 돌고 있어서,
+                    //  해제 엔드포인트의 증분이 앱 부트스트랩보다 작다. 설계 정본은 수동 밴·해제를
+                    //  admin-app 소관으로 적었고 이 선택은 그와 어긋난다 — 운영자 조치를 운영자 앱에
+                    //  모으려면 그때 옮긴다.)
                     //
                     // 두 경우를 갈라 적는다. 안 갈랐을 때는 동시 강퇴에서 남의 트랜잭션이 건 만료가 이
                     // 호출의 단계와 나란히 찍혀, 단계와 만료가 서로 맞지 않는 기록이 됐다 —

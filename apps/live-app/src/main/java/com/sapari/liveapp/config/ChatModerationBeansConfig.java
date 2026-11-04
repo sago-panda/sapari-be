@@ -8,9 +8,11 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
+import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
+import com.sapari.chat.application.service.ReleaseBanService;
 import com.sapari.chat.domain.repository.ChatHistoryRepository;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapper;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapperImpl;
@@ -33,6 +35,7 @@ import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
 
@@ -186,5 +189,29 @@ public class ChatModerationBeansConfig {
         return new KickUserService(liveRoomReader, evidenceRepository, kickRecorder,
                 banWriteRepository, kickWriteRepository, kickEventPublisher,
                 accountEventPublisher, permissionPolicy, timeProvider);
+    }
+
+    /**
+     * 밴 해제의 DB 쓰기를 감싸는 트랜잭션 빈 — 위 {@code chatKickRecorder}와 같은 이유로 별도 빈이다.
+     */
+    @Bean
+    public ChatBanReleaseRecorder chatBanReleaseRecorder(ChatBanStateRepository banStateRepository) {
+        return new ChatBanReleaseRecorder(banStateRepository);
+    }
+
+    /**
+     * 밴 해제. 방을 읽지 않으므로 {@code GetLiveRoomUseCase}를 받지 않는다 — 밴은 사람에 붙고
+     * 해제는 ADMIN 전용이라, 어느 방에서 눌렀는지가 판정을 바꾸지 않는다.
+     *
+     * <p>발행도 하지 않는다. 밴이 <b>걸릴</b> 때는 당사자 세션을 끊어야 해서 계정 채널로 발행하지만
+     * (위 {@code chatAccountEventPublisher}), 풀릴 때 끊을 세션이 없다 — 막혀 있던 사람은 애초에
+     * 접속하지 못했고, 다음 접속에서 입장 게이트가 미러를 다시 읽는다.
+     */
+    @Bean
+    public ReleaseBanUseCase releaseBanUseCase(ChatPermissionPolicy permissionPolicy,
+                                               ChatBanReleaseRecorder releaseRecorder,
+                                               ChatBanWriteRepository banWriteRepository,
+                                               TimeProvider timeProvider) {
+        return new ReleaseBanService(permissionPolicy, releaseRecorder, banWriteRepository, timeProvider);
     }
 }

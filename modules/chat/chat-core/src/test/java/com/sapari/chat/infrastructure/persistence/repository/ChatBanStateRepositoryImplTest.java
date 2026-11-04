@@ -84,6 +84,8 @@ class ChatBanStateRepositoryImplTest {
     private ChatKickLogJpaRepository kickLogJpaRepository;
     @Autowired
     private PlatformTransactionManager transactionManager;
+    @Autowired
+    private jakarta.persistence.EntityManager entityManager;
 
     /** 슬라이스는 Spring Data 리포지토리만 올리고 어댑터는 스캔하지 않아 직접 엮는다. */
     private ChatBanStateRepositoryImpl repository() {
@@ -393,11 +395,134 @@ class ChatBanStateRepositoryImplTest {
         kickLogs.appendIfAbsent(kick(since.minus(Duration.ofDays(1))));
 
         // when & then: 방이 셋으로 갈려 있어도 사람 기준으로 합산된다
-        assertThat(kickLogs.countDistinctKickersSince(userId, since)).isEqualTo(2);
+        assertThat(kickLogs.countConfirmingKickersSince(userId, since)).isEqualTo(2);
     }
+
+    @Test
+    @DisplayName("⭐ 해제는 행을 지우고 사면 기준선을 남긴다 — 활성이든 만료든")
+    void releaseRemovesTheRowAndLeavesABaseline() {
+        // given: 만료가 남은 밴
+        repository().extendOrCreate(new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(30)),
+                NOW.minus(Duration.ofDays(1))));
+        assertThat(repository().findActive(userId, NOW)).isPresent();
+
+        // when
+        boolean removed = repository().release(userId, ADMIN, NOW);
+
+        // then
+        assertThat(removed).isTrue();
+        assertThat(repository().findActive(userId, NOW))
+                .as("정본에 행이 남으면 다음 자동 승격의 ON CONFLICT 대상이 되어 발급자·생성시각이 덮인다")
+                .isEmpty();
+        assertThat(latestReleaseOf(userId))
+                .as("기준선이 없으면 새 방 강퇴 1회로 같은 티어가 재적용된다")
+                .isEqualTo(NOW);
+    }
+
+    @Test
+    @DisplayName("⭐ 풀 밴이 없어도 해제는 성공하고 기준선을 남긴다 — 멱등")
+    void releaseIsIdempotentAndStillFoldsTheTally() {
+        // when: 밴이 애초에 없다
+        boolean removed = repository().release(userId, ADMIN, NOW);
+
+        // then
+        assertThat(removed)
+                .as("지운 행이 없다는 사실은 돌려주지만 실패가 아니다 — 재시도가 미러 삭제에 닿아야 한다")
+                .isFalse();
+        assertThat(latestReleaseOf(userId))
+                .as("만료가 이미 지난 사람에게 누르는 것도 '누적을 접는다'는 뜻이다")
+                .isEqualTo(NOW);
+    }
+
+    /**
+     * 이 티켓의 핵심 벡터다 — 기준선이 없으면 해제가 <b>해제가 아니라 유예</b>가 된다.
+     *
+     * <p>해제는 {@code chat_ban} 행만 지우므로 {@code chat_kick_log} 가 그대로 남는다. 창이 730일이라
+     * 과거 강퇴자가 계속 세어지고, 그러면 해제된 사용자가 강퇴 한 번을 더 받는 순간 같은 티어가
+     * 재적용된다. 기준선이 그 재적용을 막는다.
+     *
+     * <p><b>벡터는 반드시 새 방이어야 한다.</b> {@code ChatKickRecorder} 가
+     * {@code firstKickInThisRoom} 이 아니면 세는 걸음에 오지 않으므로, 같은 방으로 재면 재밴이
+     * 안 일어나고 "막혔다" 는 거짓 통과가 나온다. 여기서는 {@code kickBy} 가 방을 매번 새로 만든다.
+     */
+    @Test
+    @DisplayName("⭐ 해제 뒤에는 과거 강퇴자가 세어지지 않는다 — 새 방 강퇴 1회로 재밴되지 않는다")
+    void releaseFoldsThePastTally() {
+        // given: 서로 다른 판매자 3명에게 강퇴당해 ONE_WEEK 임계(3)에 닿은 상태
+        ChatKickLogRepositoryImpl kickLogs = new ChatKickLogRepositoryImpl(kickLogJpaRepository);
+        Instant since = NOW.minus(Duration.ofDays(730));
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.minus(Duration.ofDays(3))));
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.minus(Duration.ofDays(2))));
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.minus(Duration.ofDays(1))));
+        assertThat(kickLogs.countConfirmingKickersSince(userId, since))
+                .as("전제가 성립해야 이 테스트가 의미를 갖는다 — 임계 3 에 닿아 있어야 한다")
+                .isEqualTo(3);
+
+        // when: 해제하고, 그 뒤에 <새 방>에서 한 번 더 강퇴당한다
+        repository().release(userId, ADMIN, NOW);
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.plus(Duration.ofMinutes(1))));
+
+        // then: 해제 이후의 강퇴 하나만 세어진다
+        assertThat(kickLogs.countConfirmingKickersSince(userId, since))
+                .as("과거 강퇴자가 다시 세어지면 강퇴 1회로 같은 티어가 재적용된다 — 해제가 유예가 된다")
+                .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("해제가 없으면 종전과 똑같이 센다 — 기준선은 창을 좁히기만 한다")
+    void withoutAReleaseTheWindowIsUnchanged() {
+        // given
+        ChatKickLogRepositoryImpl kickLogs = new ChatKickLogRepositoryImpl(kickLogJpaRepository);
+        Instant since = NOW.minus(Duration.ofDays(730));
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.minus(Duration.ofDays(2))));
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.minus(Duration.ofDays(1))));
+
+        // when & then: COALESCE 기본값이 :since 라 해제 이력이 없으면 동작이 같다
+        assertThat(kickLogs.countConfirmingKickersSince(userId, since)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("기준선은 가장 최근 해제가 이긴다 — 두 번 풀면 뒤의 것이 창을 정한다")
+    void theLatestReleaseWins() {
+        // given
+        ChatKickLogRepositoryImpl kickLogs = new ChatKickLogRepositoryImpl(kickLogJpaRepository);
+        Instant since = NOW.minus(Duration.ofDays(730));
+        repository().release(userId, ADMIN, NOW.minus(Duration.ofDays(10)));
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.minus(Duration.ofDays(5))));
+
+        // when: 다시 풀면 그 사이의 강퇴도 접힌다
+        repository().release(userId, ADMIN, NOW);
+
+        // then
+        assertThat(kickLogs.countConfirmingKickersSince(userId, since)).isZero();
+    }
+
+    /**
+     * {@code chat_ban_release} 의 가장 최근 기준선.
+     *
+     * <p><b>같은 영속 컨텍스트로 읽어야 한다.</b> 처음에 별 JDBC 커넥션을 열었더니 {@code null} 이
+     * 나왔다 — {@code @DataJpaTest} 가 테스트를 롤백 트랜잭션에 담으므로 그 안의 INSERT 는 다른
+     * 커넥션에 보이지 않는다. "기준선이 안 남았다" 와 "다른 커넥션이라 안 보인다" 가 같은 출력이다.
+     */
+    private Instant latestReleaseOf(UUID user) {
+        Object at = entityManager.createNativeQuery(
+                        "SELECT MAX(released_at) FROM live_schema.chat_ban_release WHERE user_id = :u")
+                .setParameter("u", user)
+                .getSingleResult();
+        // 드라이버가 timestamptz 를 Instant 로 돌려준다 — Timestamp 로 캐스트하면 ClassCastException 이다.
+        return at == null ? null : ((Instant) at);
+    }
+
+    private static final UUID ADMIN = UUID.fromString("00000000-0000-0000-0000-0000000000ad");
 
     private ChatKickLog kick(Instant kickedAt) {
         return new ChatKickLog(userId, UUID.randomUUID(), UUID.randomUUID(),
+                ChatRole.SELLER, "문제된 원문", kickedAt);
+    }
+
+    /** 방을 매번 새로 만든다 — 같은 방이면 유니크 제약에 걸려 세는 걸음에 도달하지 않는다. */
+    private ChatKickLog kickBy(UUID kickerId, Instant kickedAt) {
+        return new ChatKickLog(userId, UUID.randomUUID(), kickerId,
                 ChatRole.SELLER, "문제된 원문", kickedAt);
     }
 }

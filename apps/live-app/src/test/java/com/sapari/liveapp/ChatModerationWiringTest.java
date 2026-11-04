@@ -24,6 +24,7 @@ import org.springframework.util.ClassUtils;
 
 import com.mongodb.MongoClientSettings;
 import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
+import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.port.KickUserUseCase;
 
@@ -134,6 +135,28 @@ class ChatModerationWiringTest {
     }
 
     /**
+     * ⭐ 해제도 같은 축을 갖는다.
+     *
+     * <p>해제의 DB 쓰기 둘(행 DELETE + 사면 기준선 INSERT)이 모두 {@code @Modifying} 네이티브
+     * 쿼리라 경계가 없으면 {@code "No active transaction for update or delete query"}로 실패한다.
+     * 그리고 둘이 한 트랜잭션이 아니면 "밴은 풀렸는데 누적은 안 접힘" 또는 그 반대가 생긴다.
+     *
+     * <p>위 {@code recorderIsATransactionalProxy}와 따로 두는 이유: 같은 테스트에 둘을 담으면
+     * 한쪽 빈 등록을 잃었을 때 어느 쪽인지가 메시지로 안 나온다.
+     */
+    @Test
+    @DisplayName("⭐ 밴 해제 기록자도 트랜잭션 프록시다 — 두 쓰기가 한 트랜잭션이어야 한다")
+    void banReleaseRecorderIsATransactionalProxy() {
+        // given
+        ChatBanReleaseRecorder recorder = context.getBean(ChatBanReleaseRecorder.class);
+
+        // when & then
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatBanReleaseRecorder가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /**
      * ⭐ UUID 표현이 standard로 적용되는지.
      *
      * <p><b>{@code MongoClientSettings} 빈을 그대로 보면 안 된다</b> — 그 빈은 프로퍼티에서만 만들어지고
@@ -178,6 +201,8 @@ class ChatModerationWiringTest {
         Set<String> expected = Set.of(
                 // ChatModerationBeansConfig 가 세우는 것
                 "ChatPermissionPolicy", "ChatKickRecorder", "KickUserService",
+                // 밴 해제 — 이 도메인의 첫 역경로. 해제는 ADMIN 전용이고 방을 읽지 않는다.
+                "ChatBanReleaseRecorder", "ReleaseBanService",
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",

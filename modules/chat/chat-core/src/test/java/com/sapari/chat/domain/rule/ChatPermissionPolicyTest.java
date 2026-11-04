@@ -165,6 +165,27 @@ class ChatPermissionPolicyTest {
                         .map(owner -> Arguments.of(role, owner)));
     }
 
+    /**
+     * ⭐ 밴 해제는 ADMIN 뿐이다 — <b>SELLER 를 포함하면</b> 자동 승격의 임계가 무의미해진다.
+     *
+     * <p>승격은 서로 다른 판매자 3·6·9명의 독립된 판단으로 걸린다. 그중 한 명이 혼자 되돌릴 수
+     * 있으면 그 임계가 요구한 독립성이 사라진다 — 강퇴({@code canKick})가 방 주인에게 열려 있는
+     * 것과 축이 다른 이유다.
+     *
+     * <p>{@code GUEST}·{@code SYSTEM}·{@code null}까지 전수로 돈다. {@code null}은 서명상 올 수
+     * 없어 보이지만({@code ChatRole.fromPlatformRole}이 {@code Optional}이다) 이 메서드는
+     * {@code public}이라 다른 호출자가 생기면 올 수 있고, 그때 <b>조용히 통과</b>하면 안 된다.
+     */
+    @org.junit.jupiter.params.ParameterizedTest(name = "role={0}")
+    @org.junit.jupiter.params.provider.NullSource
+    @org.junit.jupiter.params.provider.EnumSource(ChatRole.class)
+    @DisplayName("⭐ 밴 해제는 ADMIN 뿐이다 — 판매자 한 명이 3·6·9명의 판단을 되돌릴 수 없다")
+    void onlyAdminMayReleaseABan(ChatRole role) {
+        assertThat(new ChatPermissionPolicy().canReleaseBan(role))
+                .as("role=%s 의 판정이 ADMIN 여부와 다르다", role)
+                .isEqualTo(role == ChatRole.ADMIN);
+    }
+
     private static boolean isRepresentableAsASession(ChatRole role, boolean isRoomOwner) {
         try {
             new ChatSession(java.util.UUID.randomUUID(), java.util.UUID.randomUUID(),
