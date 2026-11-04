@@ -25,6 +25,8 @@ import org.springframework.util.ClassUtils;
 import com.mongodb.MongoClientSettings;
 import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
 import com.sapari.chat.application.service.ChatBanReleaseRecorder;
+import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
+import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.port.KickUserUseCase;
 
@@ -153,6 +155,40 @@ class ChatModerationWiringTest {
         // when & then
         assertThat(AopUtils.isAopProxy(recorder))
                 .as("ChatBanReleaseRecorder가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /**
+     * ⭐ 사전 쓰기 둘도 같은 축을 갖는다 — <b>다만 깨지는 시점이 다르다.</b>
+     *
+     * <p>위 둘(강퇴·밴 해제)은 프록시를 잃으면 그 조치가 500 이 된다. 사전 쪽은 더 늦게 보인다:
+     * {@code @Modifying} 네이티브 쿼리가 트랜잭션 없이 돌면 {@code TransactionRequiredException}
+     * 인데, 그 경로가 <b>ADMIN 요청과 부팅 시드뿐</b>이라 평범한 테스트가 밟지 않는다. 시드 쪽은
+     * {@code ChatDictionaryBootstrap} 이 예외를 잡아 ERROR 로 넘기므로 <b>부팅도 성공한다</b> —
+     * 그러면 테이블이 비어 있는데 아무도 모르고, 함대는 번들 사전으로 집행한다.
+     *
+     * <p>그래서 이 단언이 없으면 프록시 상실이 "ADMIN 이 단어를 못 넣는다 + 시드가 조용히
+     * 안 된다" 로만 드러난다. 둘을 한 테스트에 담지 않는 것은 위 둘과 같은 이유다.
+     */
+    @Test
+    @DisplayName("⭐ 사전 시드 기록자가 트랜잭션 프록시다 — 아니면 시드가 조용히 안 된다")
+    void filterWordSeedRecorderIsATransactionalProxy() {
+        ChatFilterWordSeedRecorder recorder = context.getBean(ChatFilterWordSeedRecorder.class);
+
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatFilterWordSeedRecorder가 프록시가 아니다 — 시드가 "
+                        + "TransactionRequiredException 으로 실패하고 부팅은 성공한다")
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("⭐ 사전 쓰기 기록자도 트랜잭션 프록시다 — 아니면 모든 ADMIN 쓰기가 실패한다")
+    void filterWordWriteRecorderIsATransactionalProxy() {
+        ChatFilterWordWriteRecorder recorder = context.getBean(ChatFilterWordWriteRecorder.class);
+
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatFilterWordWriteRecorder가 프록시가 아니다 — @Modifying 쿼리가 "
+                        + "TransactionRequiredException 으로 터진다")
                 .isTrue();
     }
 
