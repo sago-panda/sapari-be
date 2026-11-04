@@ -25,6 +25,8 @@ import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+import com.sapari.live.port.GetLiveRoomUseCase;
+import com.sapari.live.view.LiveRoomView;
 
 /**
  * 강퇴 집행 명단의 재적재 — <b>정본이 입력</b>이라는 계약을 잰다.
@@ -43,6 +45,8 @@ import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 class ReconcileKickListServiceTest {
 
     @Mock
+    private GetLiveRoomUseCase liveRoomReader;
+    @Mock
     private ChatKickLogRepository kickLogRepository;
     @Mock
     private ChatKickWriteRepository kickWriteRepository;
@@ -55,7 +59,12 @@ class ReconcileKickListServiceTest {
     @BeforeEach
     void setUp() {
         service = new ReconcileKickListService(
-                new ChatPermissionPolicy(), kickLogRepository, kickWriteRepository);
+                new ChatPermissionPolicy(), liveRoomReader, kickLogRepository, kickWriteRepository);
+        // 기본은 "진행 중인 방". 상류 게이트에 닿는 모든 테스트가 이걸 쓰지만 권한에서 끝나는
+        // 테스트는 안 쓰므로 lenient 다.
+        org.mockito.Mockito.lenient().when(liveRoomReader.findRoom(roomId))
+                .thenReturn(java.util.Optional.of(
+                        new LiveRoomView(roomId, UUID.randomUUID(), true, java.time.Instant.EPOCH)));
     }
 
     private ReconcileKickListCommand command(String role) {
@@ -112,6 +121,35 @@ class ReconcileKickListServiceTest {
         assertThat(outcome.wasCorrupted())
                 .as("오염이었다는 사실이 사라지면 운영자는 조치가 필요했는지도 모른다")
                 .isTrue();
+    }
+
+    /**
+     * ⭐ 끝난 방에는 재적재하지 않는다 — <b>회수 만료가 걷히고 다시 붙여 줄 경로가 없다.</b>
+     *
+     * <p>{@code chat:kicked:} 에 만료를 붙이는 경로는 하나뿐이고({@code expireAfterRoomEnded},
+     * RoomEnded 수신 시) {@code Ended} 는 terminal 이라 그 신호가 다시 오지 않는다. 그래서 끝난
+     * 방에 더하면 {@code PERSIST} 가 만료를 걷어내고 그 키가 Redis 에 영구히 남는다.
+     *
+     * <p>처방이 이미 저장소에 적혀 있었다 — {@code ChatKickWriteRepository.register} javadoc 이
+     * 대칭 케이스("늦은 등록")를 두고 "막을 자리는 여기가 아니라 <b>상류</b>다: 강퇴 유스케이스가
+     * 방을 정본에서 읽어 진행 중이 아니면 거부하면 된다" 고 적었다. 강퇴는 그 게이트를 갖는데
+     * 재적재는 없었다.
+     *
+     * <p>이것은 <b>권한이 아니다</b> — 재적재는 방 소유와 무관한 ADMIN 전용이고 그 판정은 앞에서
+     * 끝난다. 여기서 방을 읽는 것은 "되살릴 집행이 있는 방인가" 를 묻는 것이다.
+     */
+    @Test
+    @DisplayName("⭐ 끝난 방은 거부한다 — 되살리면 회수 만료가 영구히 걷힌다")
+    void refusesWhenTheRoomHasEnded() {
+        // given
+        given(liveRoomReader.findRoom(roomId)).willReturn(java.util.Optional.of(
+                new LiveRoomView(roomId, UUID.randomUUID(), false, java.time.Instant.EPOCH)));
+
+        // when & then
+        assertThatThrownBy(() -> service.reconcile(command("ADMIN")))
+                .isInstanceOf(com.sapari.chat.domain.exception.LiveNotActiveException.class);
+
+        verify(kickWriteRepository, never()).reconcile(any(), any());
     }
 
     @ParameterizedTest(name = "{0}")

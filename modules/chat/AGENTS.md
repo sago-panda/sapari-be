@@ -326,7 +326,7 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
 | `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
 | `chat:room:{id}:ended` | String | 30m — floor = longest room token, ceiling = blast radius of a false end signal |
-| `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` |
+| `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
@@ -458,6 +458,22 @@ was lost** (control → ERROR, self-healing cleanup → WARN), not by exception 
 This mattered less while the write path was broken and the set was never created; now that kicks land, every
 lost end signal leaks a key. Room ids are UUIDs so nothing malfunctions — it is pure leak, and it belongs to
 live's delivery guarantee, not chat's.
+
+**Recovery for this key now exists, and it lives in live-app** (`PUT /api/v1/lives/{roomId}/chat/kicked`,
+ADMIN, `ReconcileKickListService`). It reads the source of truth (`chat_kick_log`) and tops the set up.
+Three properties of it are load-bearing and each closed a way it could have made things worse:
+
+- It **only adds** to a healthy key. Deleting first raced the kick path — a kick is DB-first (log commits,
+  then `SADD`), so a kick committing after the reconcile's `SELECT` was erased by its `DEL`, permanently and
+  silently. Adding is sufficient because `SET ⊆ source of truth` always holds on the app path: the only
+  writer of members is a kick, and a kick commits its log first. `DEL` is used **only** on a key whose type
+  is not ours, where there is nothing to lose because the content was never readable by us.
+- It **refuses a room that is not live**. Otherwise `PERSIST` strips the room-end expiry above and nothing
+  re-attaches it — the prescription for this is already written in `ChatKickWriteRepository.register`'s
+  javadoc ("block it upstream: read the room and refuse if it is not live"), which the kick path follows and
+  this one did not.
+- It **reports whether the key was corrupted**, read before the `DEL`. That fact is the strongest evidence
+  that enforcement was off, and it is unrecoverable afterwards — `DEL` succeeds whatever the type was.
 
 ⚠️ **The signal can also arrive and then be undone.** Room-end sets the 24h expiry; a kick that lands in that
 window runs `SADD` + `PERSIST` and strips it, and the two callers sit on different pods so nothing orders

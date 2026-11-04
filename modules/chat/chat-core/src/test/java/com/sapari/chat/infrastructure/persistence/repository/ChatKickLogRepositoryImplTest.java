@@ -139,26 +139,38 @@ class ChatKickLogRepositoryImplTest {
      * 강퇴 명단 재적재가 복구 때 부른다. 순차 스캔이면 비용이 그 방이 아니라 <b>플랫폼 전체 누적
      * 강퇴 수</b>에 비례한다.
      *
-     * <p>행이 적으면 플래너가 순차 스캔을 고를 수 있으므로 {@code enable_seqscan = off} 로
-     * <b>인덱스가 존재하는지</b>를 묻는다 — 재는 것은 플래너의 선택이 아니라 선택지의 존재다.
+     * <p><b>처음 판은 못 재는 테스트였다.</b> {@code enable_seqscan = off} + {@code EXPLAIN} 으로
+     * 계획 문자열에 {@code Index} 가 있는지 봤는데, 그 설정은 순차 스캔을 <b>금지하는 것이 아니라
+     * 비용만 올리는</b> 것이라 플래너가 다른 인덱스로 답한다 — 대상 인덱스를 지워도
+     * {@code uk_chat_kick_log_user_room}(유니크, 선두 열이 {@code user_id})의 전체 스캔으로
+     * {@code Index Only Scan using ...} 이 나오고 계획에 {@code chat_kick_log} 도 그대로 들어간다.
+     * "같은 문단이 두 번 낡았으니 계획을 재는 테스트를 뒀다" 는 설명이 <b>못 재는 테스트</b>로
+     * 교체된 셈이었다.
+     *
+     * <p>그래서 계획이 아니라 <b>카탈로그</b>에 묻는다 — {@code pg_index.indkey[0]} 으로 선두 열이
+     * {@code live_room_id} 인 인덱스가 있는지. 그게 이 질의가 쓸 수 있는 인덱스의 정의이고,
+     * 플래너의 그날 선택과 무관하게 참·거짓이 갈린다.
      */
     @Test
     @DisplayName("⭐ 방 단위 강퇴자 조회는 인덱스를 쓴다 — 없으면 비용이 플랫폼 전체 누적에 비례한다")
     void roomScopedLookupHasAnIndex() {
-        // given
-        repository().appendIfAbsent(log(roomId, targetUserId));
-        entityManager.createNativeQuery("SET LOCAL enable_seqscan = off").executeUpdate();
-
-        // when
-        String plan = entityManager.createNativeQuery(
-                        "EXPLAIN SELECT user_id FROM live_schema.chat_kick_log WHERE live_room_id = :r")
-                .setParameter("r", roomId)
-                .getResultList().toString();
+        // when: 선두 열이 live_room_id 인 인덱스가 있는지 카탈로그에 묻는다
+        @SuppressWarnings("unchecked")
+        java.util.List<Object[]> rows = entityManager.createNativeQuery("""
+                SELECT i.relname, a.attname
+                  FROM pg_index x
+                  JOIN pg_class i ON i.oid = x.indexrelid
+                  JOIN pg_class c ON c.oid = x.indrelid
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = x.indkey[0]
+                 WHERE n.nspname = 'live_schema' AND c.relname = 'chat_kick_log'
+                """).getResultList();
 
         // then
-        assertThat(plan)
-                .as("계획에 인덱스가 없다 — (live_room_id, ...) 인덱스가 사라졌다. 계획: %s", plan)
-                .containsIgnoringCase("Index")
-                .contains("chat_kick_log");
+        assertThat(rows)
+                .as("선두 열이 live_room_id 인 인덱스가 없다 — 이 질의의 비용이 그 방이 아니라 "
+                        + "플랫폼 전체 누적 강퇴 수에 비례하게 된다. 현재 인덱스: %s", rows.stream()
+                        .map(r -> r[0] + "(" + r[1] + ")").toList())
+                .anySatisfy(row -> assertThat(row[1]).isEqualTo("live_room_id"));
     }
 }

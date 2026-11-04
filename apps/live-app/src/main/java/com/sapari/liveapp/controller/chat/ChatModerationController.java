@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.chat.command.KickUserCommand;
 import com.sapari.chat.command.ClearRoomEndedMarkerCommand;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.chat.command.ReconcileKickListCommand;
 import com.sapari.chat.port.KickUserUseCase;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
@@ -27,7 +28,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 import lombok.RequiredArgsConstructor;
 
 /**
- * 방송 중 채팅 통제 — 지금은 강퇴 하나다.
+ * 방송 중 채팅 통제 — 셋이다: 강퇴 · 강퇴 명단 재적재 · 종료 마커 해제.
  *
  * <p><b>왜 이 앱인가.</b> 강퇴는 방 주인이 누구고 방이 진행 중인지를 물어야 하는데, 그 답을 주는 빈이
  * live-core에 있다. live-core를 얹은 앱은 룸 토큰 설정도 함께 스캔하고, 그 설정은 서명용 <b>개인키</b>를
@@ -37,7 +38,9 @@ import lombok.RequiredArgsConstructor;
  * <p><b>신원은 본문이 아니라 인증 주체에서 온다.</b> 강퇴자 id와 역할을 여기서 채우므로 요청 본문에는
  * 그 자리가 없다.
  *
- * <p>응답 본문이 없다. 성공은 204이고 상태는 {@code @ResponseStatus}가 준다 — {@code ResponseEntity}를
+ * <p>강퇴와 마커 해제는 응답 본문이 없다(성공 204). 재적재만 봉투를 돌려준다 — 복원 수와
+ * 오염 여부가 운영자에게 가야 하기 때문이다. 본문 없는 쪽의 상태는 {@code @ResponseStatus}가
+ * 준다 — {@code ResponseEntity}를
  * 상태 코드 때문에 쓰는 것은 이 저장소의 컨트롤러 규약 위반이다. 거부는 {@code ChatException}이 공통
  * 처리기를 거쳐 나간다 —
  * 권한 없음은 403, 끝난 방과 증거 불일치는 400, 같은 대상에 대한 처리가 겹쳐 상한을 넘으면 409다.
@@ -76,12 +79,13 @@ public class ChatModerationController {
      * 가르면 운영자가 "복구 실패" 와 "복구할 것이 없음" 을 구분할 수 없다.
      */
     @PutMapping("/kicked")
-    public ReconcileKickListResponse reconcileKickList(
+    public ResponseEnvelope<ReconcileKickListResponse> reconcileKickList(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal LiveUserPrincipal principal) {
         var outcome = reconcileKickListUseCase.reconcile(new ReconcileKickListCommand(
                 roomId, principal.userId(), principal.role()));
-        return new ReconcileKickListResponse(outcome.restored(), outcome.wasCorrupted());
+        return ResponseEnvelope.success(
+                new ReconcileKickListResponse(outcome.restored(), outcome.wasCorrupted()));
     }
 
     /**

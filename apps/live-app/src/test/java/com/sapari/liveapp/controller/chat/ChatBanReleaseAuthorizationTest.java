@@ -89,9 +89,9 @@ class ChatBanReleaseAuthorizationTest {
         mockMvc.perform(delete("/api/v1/chat/bans/{userId}", TARGET).with(as("ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
-                        .jsonPath("$.banExisted").value(true))
+                        .jsonPath("$.data.banExisted").value(true))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
-                        .jsonPath("$.wasPermanent").value(true));
+                        .jsonPath("$.data.wasPermanent").value(true));
     }
 
     @Test
@@ -105,7 +105,7 @@ class ChatBanReleaseAuthorizationTest {
         mockMvc.perform(delete("/api/v1/chat/bans/{userId}", TARGET).with(as("ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
-                        .jsonPath("$.banExisted").value(false));
+                        .jsonPath("$.data.banExisted").value(false));
     }
 
     /**

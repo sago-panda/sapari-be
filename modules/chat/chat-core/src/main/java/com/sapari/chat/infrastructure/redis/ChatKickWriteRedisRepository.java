@@ -64,23 +64,38 @@ public class ChatKickWriteRedisRepository implements ChatKickWriteRepository {
     }
 
     /** 한 {@code SADD} 에 넘기는 멤버 수. Lua 스택 한계(약 8,000)보다 한참 아래면 값 자체는 무관하다. */
-    private static final int SADD_CHUNK = 500;
+    static final int SADD_CHUNK = 500;
 
     /**
      * 지우고 다시 채우고 만료를 떼는 것이 <b>한 번의 실행</b>이다.
      *
-     * <p>{@code DEL} 이 맨 앞인 것이 이 스크립트의 요점이다 — 우리 타입이 아닌 값으로 오염된 키도
-     * 이것으로 치워진다. {@code SADD} 만으로는 그 키를 고칠 수 없고(타입이 틀려 추가 자체가 실패),
-     * 그게 이 메서드가 닫으려는 가장 나쁜 경우다. 그래서 {@code reconcile} 은 WRONGTYPE 을 갈라
-     * 던지지 <b>않는다</b>: 이 경로에서 그것은 고치려는 대상이지 보고할 실패가 아니다.
+     * <p><b>⚠️ {@code DEL} 은 오염된 키에만 쓴다 — 무조건 지우면 동시 강퇴를 영구히 삼킨다.</b>
+     * 처음에 {@code DEL} 을 맨 앞에 뒀는데, 강퇴가 DB-first 라(로그 커밋 확정 → {@code SADD})
+     * 이런 끼어들기가 열렸다:
+     * <pre>
+     *   A(재적재)  SELECT 정본 → [u1]        (u3 의 로그 행은 아직 미커밋)
+     *   B(강퇴 u3)                            u3 커밋 → SADD u3
+     *   A          DEL + SADD [u1]           → u3 가 집행 명단에서 사라진다(정본에는 있다)
+     * </pre>
+     * 204 를 받은 강퇴가 조용히 무효화되고, 읽기 경로가 fail-open 이라 아무도 막히지 않으며,
+     * 재시도 경로가 없어 <b>영구</b>다. 복구하려 부른 조치가 집행을 지운다.
      *
-     * <p><b>{@code PERSIST} 가 없다 — {@code DEL} 이 그 일을 이미 한다.</b> 키를 지우면 만료도
-     * 함께 사라지므로 뒤이은 {@code SADD} 는 만료 없는 새 키를 만든다. 처음에 위
-     * {@code REGISTER_KICKED} 를 베껴 {@code PERSIST} 를 넣었는데, 되돌림 확인에서 <b>떼도 아무
-     * 테스트가 깨지지 않았다</b> — 즉 죽은 코드였다. 등록 쪽에서는 그것이 실제로 일한다
-     * ({@code SADD} 는 기존 키의 만료를 건드리지 않는다). 같은 두 줄이 한 자리에서는 보장이고
-     * 다른 자리에서는 장식이라, 베껴 두면 다음 사람이 그 차이를 모르는 채 둘을 같이 고친다.
-     * 회수용 만료가 걷히는 것은 {@code reconcileClearsARecoveryExpiry} 가 계속 잰다.
+     * <p><b>그래서 건강한 키에는 더하기만 한다.</b> 그게 충분한 이유는 집합의 방향이 한쪽이기
+     * 때문이다 — 멤버를 넣는 것은 강퇴뿐이고 강퇴는 <b>로그를 먼저 커밋</b>하므로,
+     * 앱 경로에서 {@code SET ⊆ 정본} 이 늘 참이다. 반대(정본에 없는데 SET 에 있음)는 만들어지지
+     * 않는다. 그러니 재적재가 지워야 할 것은 없고, 모자란 것을 채우는 것으로 족하다.
+     * 더하기는 동시 강퇴의 {@code SADD} 를 절대 덮지 않는다.
+     *
+     * <p>오염된 키에서만 {@code DEL} 이 필요하다 — {@code SADD} 는 타입이 틀린 키에 아예 들어가지
+     * 못하고, 그게 이 메서드가 닫으려는 가장 나쁜 경우다. 그 분기에서 잃는 것도 없다: 그 키의
+     * 내용은 애초에 우리가 읽을 수 없는 값이다. 그래서 {@code reconcile} 은 WRONGTYPE 을 갈라
+     * 던지지 않는다 — 이 경로에서 그것은 고치려는 대상이지 보고할 실패가 아니다.
+     *
+     * <p><b>{@code PERSIST} 가 돌아왔다.</b> {@code DEL} 이 맨 앞이던 판에서는 죽은 코드였고
+     * (키를 지우면 만료도 사라진다) 되돌림 확인으로 그걸 재서 지웠다. 더하기로 바뀐 지금은
+     * {@code SADD} 가 기존 만료를 건드리지 않으므로 다시 <b>일한다</b> — 회수용 만료가 붙은 키에
+     * 더하면 되살린 명단이 그 시각에 통째로 사라진다. 같은 두 줄이 설계가 바뀌면 보장과 장식을
+     * 왕복한다는 증거라 그 역사를 남긴다.
      *
      * <p>{@code ARGV} 가 비면 루프가 한 번도 돌지 않는다. Redis 의 {@code SADD} 는 멤버가 하나는
      * 있어야 하고, 더 중요하게는 <b>멤버 없는 집합이 존재하지 않는다</b> — 정본이 비었으면 키가
@@ -109,11 +124,14 @@ public class ChatKickWriteRedisRepository implements ChatKickWriteRepository {
             local before = redis.call('TYPE', KEYS[1])['ok']
             if before ~= 'none' and before ~= 'set' then
                 wasCorrupted = 1
+                redis.call('DEL', KEYS[1])
             end
-            redis.call('DEL', KEYS[1])
             local chunk = tonumber(ARGV[1])
             for i = 2, #ARGV, chunk do
                 redis.call('SADD', KEYS[1], unpack(ARGV, i, math.min(i + chunk - 1, #ARGV)))
+            end
+            if #ARGV > 1 then
+                redis.call('PERSIST', KEYS[1])
             end
             return wasCorrupted
             """, Long.class);
@@ -133,7 +151,7 @@ public class ChatKickWriteRedisRepository implements ChatKickWriteRepository {
 
         // 실패는 그대로 던진다 — WRONGTYPE 도 갈라내지 않는다. DEL 이 그것을 고치므로 이 경로에서는
         // 오염이 실패가 아니고, 갈라 던지면 "복구하려 불렀는데 복구 대상이라며 거부" 가 된다.
-        // 다만 <b>사실은 잃지 않는다</b> — 스크립트가 고치기 전 타입을 보고 돌려준다.
+        // 다만 사실은 잃지 않는다 — 스크립트가 고치기 전 타입을 보고 돌려준다.
         Long corrupted = redisTemplate.execute(RECONCILE_KICKED, List.of(key), args.toArray());
         return corrupted != null && corrupted == 1L;
     }

@@ -393,7 +393,7 @@ class ChatKickRecorderTest {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @DisplayName("⭐ 이미 밴이 있으면 임계에 닿아도 겹쳐 쌓지 않는다 — 재시도가 밴을 늘리지 않는다")
     void existingBanIsReturnedNotStacked() {
-        // given: ⚠️ 가드가 <b>실제로 일하는</b> 조합이어야 한다. 누적이 임계에 닿아 있어야
+        // given: ⚠️ 가드가 실제로 일하는 조합이어야 한다. 누적이 임계에 닿아 있어야
         //        "가드가 없으면 새 밴이 생긴다"가 성립하고, 그때만 이 테스트가 가드를 잰다.
         //        선행 강퇴 둘(다른 방)로 누적을 2로 만들어 아래 강퇴가 3회째가 되게 한다.
         recorder.record(kick(UUID.randomUUID(), NOW));

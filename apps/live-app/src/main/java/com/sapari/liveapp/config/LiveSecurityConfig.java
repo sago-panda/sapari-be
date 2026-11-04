@@ -304,7 +304,7 @@ public class LiveSecurityConfig {
                         // 공개 조회를 명시한다. 이후 추가되는 GET은 자동 공개하지 않는다.
                         //
                         // ⚠️ dev 가 와일드카드(`GET /api/v1/lives/**` permitAll)를 이 목록으로 조였고,
-                        // 그 조임이 chat 의 <b>이력 조회를 비공개로 만들었다</b> — 다시보기 채팅은 비회원도
+                        // 그 조임이 chat 의 이력 조회를 비공개로 만들었다 — 다시보기 채팅은 비회원도
                         // 본다는 것이 설계 확정이라, 목록에 명시해 되살린다. 와일드카드로 되돌리지 말 것:
                         // 조인 쪽이 맞고, chat 경로를 여기 적는 비용이 그 안전의 값이다.
                         .requestMatchers(HttpMethod.GET,
@@ -318,7 +318,7 @@ public class LiveSecurityConfig {
                         // 관리자는 아닌지는 KickUserService 가 본다. 이 줄은 그 앞의 거친 관문이다.
                         .requestMatchers(HttpMethod.POST, "/api/v1/lives/*/chat/kick")
                                 .hasAnyRole("SELLER", "ADMIN")
-                        // 밴 해제는 ADMIN 전용이고 <b>방 경로 밖</b>이다 — 밴은 방이 아니라 사람에
+                        // 밴 해제는 ADMIN 전용이고 방 경로 밖이다 — 밴은 방이 아니라 사람에
                         // 붙으므로 어느 방에서 눌렀는지가 판정을 바꾸지 않는다. 아래
                         // `anyRequest().authenticated()` 에 맡기지 않는 이유: 그 줄은 역할을 보지
                         // 않아 구매자도 통과하고, 거부가 서비스의 권한 검사 하나에만 걸리게 된다.
@@ -331,30 +331,31 @@ public class LiveSecurityConfig {
                         // 강퇴 1회까지의 유예가 되므로 그쪽이 맞는 설계다). 추적은 chat_ban_release
                         // 행이 들지만 <막는 것은 이 역할 하나>다. SELLER 를 여기 더하면 자동 승격이
                         // 요구한 '서로 다른 판매자 3·6·9명' 의 독립성을 그중 한 명이 되돌리게 된다.
-                        // 메서드를 한정하지 않는다. 한정하면 그 경로의 <다른> 메서드가 이 규칙에
-                        // 안 걸려 아래 anyRequest().authenticated() 로 떨어지고, 그 줄은 역할을
-                        // 보지 않는다 — 실측으로 OPTIONS 가 구매자에게 200 이었다(지금 새는 것은
-                        // "이 경로가 존재하고 DELETE 를 받는다" 뿐이라 작지만, 이 경로에 나중에
-                        // GET/POST 가 붙으면 규칙을 같이 적지 않는 한 구매자에게 열린다).
-                        // /api/v1/lives/** → SELLER 가 접두사 단위 바닥을 주던 불변식이 접두사
-                        // 둘로 갈리면서 /api/v1/chat/** 에는 바닥이 없어진 것이 이 축의 본체다.
+                        // 메서드를 한정하지 않는다. 기준은 "폴스루에 역할 바닥이 있는가" 다 —
+                        // 한정하면 그 경로의 <다른> 메서드가 이 규칙에 안 걸려 더 아래로 떨어지고,
+                        // 그 아래가 /api/v1/chat/** 에는 anyRequest().authenticated()(역할 안 봄),
+                        // /api/v1/lives/** 에는 SELLER 바닥이다. 둘 다 틀린 답을 준다:
+                        //   chat  → 구매자가 통과 (실측: OPTIONS 가 USER 에게 200 이었다)
+                        //   lives → ADMIN 전용 엔드포인트의 OPTIONS 가 <판매자에게 200, 관리자에게
+                        //           403> 이 된다. Allow 헤더가 그 경로의 수락 메서드까지 흘린다.
+                        // 지금 뚫리는 것은 없지만 뒤집힌 모양이고, 그 경로에 나중에 GET 이 붙으면
+                        // (예: 명단 조회) 판매자에게 열리고 관리자에게 닫힌다. 그래서 아래 셋 다
+                        // 메서드를 한정하지 않는다 — /chat/bans/** · /chat/kicked · /chat/ended.
                         .requestMatchers("/api/v1/chat/bans/**").hasRole("ADMIN")
                         // 강퇴 명단 재적재도 ADMIN 전용이다. 경로가 방 아래라 아래 판매자 전용
-                        // 규칙에 걸리므로 그보다 <b>먼저</b> 와야 한다 — 먼저 맞는 규칙이 이긴다.
+                        // 규칙에 걸리므로 그보다 먼저 와야 한다 — 먼저 맞는 규칙이 이긴다.
                         // 순서가 뒤집히면 관리자가 403 을 받고, 집행이 꺼진 방을 고칠 사람이 없어진다.
                         // 판매자에게 열지 않는 이유는 위험이 아니라 가청성이다 — 입력이 정본이라
                         // 과다 차단을 새로 만들 수 없고(ReconcileKickListService), 이 조치가
                         // 필요하다는 신호는 KickStoreCorruptedException 로그이고 그건 운영자가 읽는다.
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/lives/*/chat/kicked")
-                                .hasRole("ADMIN")
+                        .requestMatchers("/api/v1/lives/*/chat/kicked").hasRole("ADMIN")
                         // 종료 마커 해제는 강퇴와 같은 관문이다 — 오발행으로 막히는 것이 판매자의
                         // 진행 중인 방송이고, 그걸 초 단위로 알아채는 사람도 판매자다. 재적재를
                         // ADMIN 전용으로 둔 것과 반대 방향인데, 그쪽 신호는 운영자만 읽는 로그이고
                         // 이쪽은 당사자가 즉시 아는 증상이다 — 가청성이 권한을 정한다는 같은 기준의
                         // 다른 답이다. 끝난 방을 되살리는 데 쓰이지 못하게 막는 것은 역할이 아니라
                         // 유스케이스의 LIVE 검증이다(ClearRoomEndedMarkerService).
-                        .requestMatchers(HttpMethod.DELETE, "/api/v1/lives/*/chat/ended")
-                                .hasAnyRole("SELLER", "ADMIN")
+                        .requestMatchers("/api/v1/lives/*/chat/ended").hasAnyRole("SELLER", "ADMIN")
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

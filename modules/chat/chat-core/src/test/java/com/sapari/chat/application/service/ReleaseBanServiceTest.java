@@ -125,7 +125,13 @@ class ReleaseBanServiceTest {
      *
      * <p>그 창이 열리는 때가 하필 <b>해제를 누르는 가장 현실적인 상황</b>이다 — 지금 집중적으로
      * 강퇴당하는 사람을 푸는 것. 그리고 그 타입이 실제로 나오는 것은 저장소에 이미 실측돼 있다
-     * ({@code ChatBanStateRepositoryImplTest.lockContentionSurfacesAsQueryTimeout}).
+     * ({@code ChatKickRecorderConcurrencyTest} — 어드바이저리 잠금 + {@code SET LOCAL
+     * lock_timeout='1s'} 를 실제 Postgres 에서 태우는 쪽이다).
+     *
+     * <p>처음에 {@code ChatBanStateRepositoryImplTest.lockContentionSurfacesAsQueryTimeout} 을
+     * 인용했는데 <b>다른 기구를 재는 테스트</b>였다 — 그쪽은 유니크 제약 행 대기 +
+     * {@code template.setTimeout(1)} 의 문장 취소이고, 해제 경로가 타는 것은 어드바이저리 잠금과
+     * {@code SET LOCAL lock_timeout} 이다. 같은 예외 타입이 나와서 맞는 인용처럼 보였다.
      *
      * <p>상한의 <b>값</b>(1s)이 문제가 아니었다. 짧게 하면 운영자가 필요한 그 순간에 실패하고
      * 길게 하면 기다린다. 정상 보유가 밀리초라 1s 는 1000배 여유다 — 빠진 것은 실패의 번역이다.

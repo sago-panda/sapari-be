@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.chat.command.ReleaseBanCommand;
+import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
@@ -38,11 +39,13 @@ public class ChatBanController {
     private final ReleaseBanUseCase releaseBanUseCase;
 
     @DeleteMapping("/{userId}")
-    public ReleaseBanResponse release(@PathVariable UUID userId,
-                                      @AuthenticationPrincipal LiveUserPrincipal principal) {
+    public ResponseEnvelope<ReleaseBanResponse> release(
+            @PathVariable UUID userId,
+            @AuthenticationPrincipal LiveUserPrincipal principal) {
         var result = releaseBanUseCase.release(
                 new ReleaseBanCommand(userId, principal.userId(), principal.role()));
-        return new ReleaseBanResponse(result.banExisted(), result.wasPermanent());
+        return ResponseEnvelope.success(
+                new ReleaseBanResponse(result.banExisted(), result.wasPermanent()));
     }
 
     /**

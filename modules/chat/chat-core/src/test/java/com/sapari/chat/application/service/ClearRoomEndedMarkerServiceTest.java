@@ -64,13 +64,27 @@ class ClearRoomEndedMarkerServiceTest {
         return new ClearRoomEndedMarkerCommand(roomId, actorId, role);
     }
 
+    /**
+     * ⚠️ {@code live=true} 는 <b>심는 값</b>이고, 생산 경로가 그것을 만들 수 있다는 증거가 아니다.
+     *
+     * <p>사슬을 전수로 재면 마커가 존재하는 모든 순간 그 방은 DB 에서 이미 {@code Ended} 다 —
+     * {@code markEnded} 는 {@code live:room:ended} 구독에서만 불리고, 발행하는 둘
+     * ({@code EndLiveService}·{@code EndStaleLiveService})은 {@code endLive() → save() →
+     * afterCommit() → publish} 순서다. 그래서 "진행 중인데 마커가 있는" 상태는 <b>앱 경로로
+     * 만들어지지 않는다</b>.
+     *
+     * <p>그러니 아래 {@code clearsTheMarkerWhenTheRoomIsActuallyLive} 가 재는 것은 "앱 밖에서
+     * 들어온 발행을 지울 수 있다" 이고, 그 이상으로 읽지 말 것. 이 메서드가 그 사실을 들고 있는
+     * 이유는, 심은 값을 보고 "배치 오판도 닫힌다" 로 읽는 것이 정확히 내가 저질렀던 오독이기
+     * 때문이다({@code ClearRoomEndedMarkerService} javadoc 이 그 정정을 싣는다).
+     */
     private void roomIs(boolean live) {
         given(liveRoomReader.findRoom(roomId))
                 .willReturn(Optional.of(new LiveRoomView(roomId, sellerId, live, NOW)));
     }
 
     @Test
-    @DisplayName("⭐ 진행 중인 방의 마커는 해제된다 — 받은 종료 신호가 거짓이었다는 뜻이다")
+    @DisplayName("⭐ 진행 중인 방의 마커는 해제된다 — 앱 밖에서 들어온 발행이었다는 뜻이다")
     void clearsTheMarkerWhenTheRoomIsActuallyLive() {
         // given
         roomIs(true);
@@ -139,12 +153,21 @@ class ClearRoomEndedMarkerServiceTest {
                 .isInstanceOf(ChatPermissionDeniedException.class);
     }
 
+    /**
+     * ⚠️ 이 테스트는 한때 <b>인자를 받지 않았다.</b> {@code @ValueSource} 는 셋인데 메서드 시그니처가
+     * 비어 있고 본문이 {@code "OPERATOR"} 를 하드코딩해서, 같은 값으로 세 번 돌고 {@code "seller"}·
+     * {@code ""} 는 <b>한 번도 실행되지 않았다</b> — 조용히 초록이었다. 바로 아래
+     * {@code ReconcileKickListServiceTest} 에서 복사하다 인자가 떨어진 것이다.
+     *
+     * <p>{@code ""} 가 특히 중요하다 — {@code ClearRoomEndedMarkerCommand} 에 컴팩트 생성자가 없어
+     * 서비스까지 도달하는 <b>유일한 공란 벡터</b>다(해제 쪽은 커맨드에서 끊긴다).
+     */
     @ParameterizedTest(name = "role={0}")
     @ValueSource(strings = {"OPERATOR", "seller", ""})
     @DisplayName("모르는 역할 이름은 방을 읽기도 전에 거부한다")
-    void unknownRoleIsRejectedBeforeReadingTheRoom() {
+    void unknownRoleIsRejectedBeforeReadingTheRoom(String role) {
         // when & then
-        assertThatThrownBy(() -> service.clear(command(sellerId, "OPERATOR")))
+        assertThatThrownBy(() -> service.clear(command(sellerId, role)))
                 .isInstanceOf(ChatPermissionDeniedException.class)
                 .hasMessageContaining("알 수 없는 역할");
 

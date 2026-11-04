@@ -158,9 +158,13 @@ class ChatKickWriteRedisRepositoryTest {
                 .isInstanceOf(KickStoreCorruptedException.class);
 
         // when
-        repository.reconcile(roomId, java.util.List.of(userId));
+        boolean wasCorrupted = repository.reconcile(roomId, java.util.List.of(userId));
 
         // then
+        assertThat(wasCorrupted)
+                .as("오염이었다는 사실을 돌려주지 않으면 TYPE 읽기를 DEL 뒤로 옮겨도 아무것도 안 깨진다 — "
+                        + "그 값이 ADMIN 전용의 근거(가청성)를 지탱한다")
+                .isTrue();
         assertThat(redisTemplate.type(key())).isEqualTo(org.springframework.data.redis.connection.DataType.SET);
         assertThat(redisTemplate.opsForSet().isMember(key(), userId.toString())).isTrue();
         // 고쳐진 뒤에는 평소 경로가 다시 돈다
@@ -168,36 +172,102 @@ class ChatKickWriteRedisRepositoryTest {
         assertThat(redisTemplate.opsForSet().size(key())).isEqualTo(2);
     }
 
+    /**
+     * ⭐ <b>건강한 키에는 더하기만 한다</b> — 한때 이것이 "교체" 였고 그게 결함이었다.
+     *
+     * <p>처음에 {@code DEL} 을 무조건 맨 앞에 뒀다. 강퇴가 DB-first 라(로그 커밋 → {@code SADD})
+     * 이런 끼어들기가 열렸다 — 재적재가 정본을 읽은 <i>뒤</i> 커밋된 강퇴는 그 재적재의
+     * {@code DEL} 에 지워지고, 읽기 경로가 fail-open 이라 아무도 막히지 않으며 재시도 경로가 없어
+     * <b>영구</b>다. 복구하려 부른 조치가 집행을 지운다.
+     *
+     * <p>더하기가 충분한 이유는 집합의 방향이 한쪽이기 때문이다 — 멤버를 넣는 것은 강퇴뿐이고
+     * 강퇴는 로그를 먼저 커밋하므로 앱 경로에서 {@code SET ⊆ 정본} 이 늘 참이다. 그러니 재적재가
+     * 지워야 할 것은 없다. 반대 방향(정본에 없는데 SET 에 있음)을 만드는 경로가 없다.
+     */
     @Test
-    @DisplayName("⭐ 정본이 비면 키가 없는 상태가 결과다 — 멤버 없는 집합은 존재하지 않는다")
-    void reconcileWithAnEmptySourceOfTruthRemovesTheKey() {
-        // given: 정본에는 없는데 집행 명단에만 남아 있는 사람(과다 차단)
-        repository.register(roomId, userId);
-        assertThat(redisTemplate.hasKey(key())).isTrue();
+    @DisplayName("⭐ 건강한 키에는 더하기만 한다 — 동시 강퇴를 지우지 않는다")
+    void reconcileOnlyAddsToAHealthyKey() {
+        // given: 재적재가 정본을 읽은 뒤에 커밋된 강퇴가 이미 SADD 돼 있다
+        UUID concurrentKick = UUID.randomUUID();
+        repository.register(roomId, concurrentKick);
 
-        // when
-        repository.reconcile(roomId, java.util.List.of());
-
-        // then
-        assertThat(redisTemplate.hasKey(key()))
-                .as("빈 집합을 만들려 하면 Redis 가 키를 지운다 — 그게 '강퇴 없음' 과 같은 상태다")
-                .isFalse();
-    }
-
-    @Test
-    @DisplayName("재적재는 교체다 — 정본에 없는 사람은 명단에서 빠진다")
-    void reconcileReplacesRatherThanAdds() {
-        // given
-        UUID staleEntry = UUID.randomUUID();
-        repository.register(roomId, staleEntry);
-
-        // when: 정본에는 userId 만 있다
+        // when: 정본 스냅샷에는 그 사람이 없다(읽기 시점에 미커밋이었다)
         repository.reconcile(roomId, java.util.List.of(userId));
 
         // then
         assertThat(redisTemplate.opsForSet().members(key()))
-                .as("더하기만 하면 오염된 키를 못 고치고, 정본에서 사라진 강퇴도 영구히 남는다")
-                .containsExactly(userId.toString());
+                .as("지우면 204 를 받은 강퇴가 조용히·영구히 무효화된다")
+                .containsExactlyInAnyOrder(userId.toString(), concurrentKick.toString());
+    }
+
+    @Test
+    @DisplayName("정본이 비면 기존 명단을 건드리지 않는다 — 비었다는 것이 '지워라' 가 아니다")
+    void anEmptySourceOfTruthLeavesTheKeyAlone() {
+        // given
+        repository.register(roomId, userId);
+
+        // when: 정본이 비었다 — 그 방에 강퇴가 없거나, 읽은 시점에 아직 없었다
+        repository.reconcile(roomId, java.util.List.of());
+
+        // then: 둘을 구분할 수 없으므로 지우지 않는다(위 더하기 전용 결정과 같은 근거)
+        assertThat(redisTemplate.opsForSet().members(key())).containsExactly(userId.toString());
+    }
+
+    @Test
+    @DisplayName("⭐ 오염된 키에서만 지운다 — 거기서는 잃을 내용이 애초에 없다")
+    void onlyACorruptedKeyIsDeleted() {
+        // given
+        redisTemplate.opsForValue().set(key(), "오염된 문자열");
+
+        // when
+        boolean wasCorrupted = repository.reconcile(roomId, java.util.List.of(userId));
+
+        // then: 그 키의 내용은 우리가 읽을 수 없는 값이었으므로 지워도 잃는 것이 없다
+        assertThat(wasCorrupted).isTrue();
+        assertThat(redisTemplate.opsForSet().members(key())).containsExactly(userId.toString());
+    }
+
+    @Test
+    @DisplayName("건강한 키였으면 오염 아님을 돌려준다 — 두 값이 갈려야 신호가 된다")
+    void reconcileReportsNoCorruptionForAHealthyKey() {
+        // given
+        repository.register(roomId, userId);
+
+        // when & then
+        assertThat(repository.reconcile(roomId, java.util.List.of(userId)))
+                .as("항상 true 를 돌려주면 '조치가 필요했는가' 를 가르지 못한다")
+                .isFalse();
+    }
+
+    /**
+     * ⭐ 청크 경계를 넘는 벡터 — 이것이 없으면 쪼갠 루프에 가드가 0이다.
+     *
+     * <p>커밋된 다른 벡터의 최대 멤버 수가 <b>2</b> 였다. 되돌림 측정: 루프를
+     * {@code unpack(ARGV, 2, #ARGV)}(쪼개기 이전 판)으로 바꿔도 11/11 초록이었고, 스텝
+     * off-by-one({@code chunk + 1})은 더 조용하다 — 청크마다 한 명씩 흘리므로 n=501 에서
+     * 500 이 되는데, 청크를 한 번도 넘지 않는 벡터로는 정상과 "조용한 부분 복원" 을 <b>구분할 수
+     * 없다</b>. 이 티켓이 가장 무서워하는 실패 모양이 바로 그 조용한 부분 복원이다.
+     *
+     * <p>{@code SADD_CHUNK} 를 참조한다 — 수를 베껴 적으면 상수를 줄일 때 이 벡터가 다시
+     * 경계 아래로 내려간다.
+     */
+    @Test
+    @DisplayName("⭐ 청크 경계를 넘는 명단도 전량 복원된다 — 한 명도 흘리지 않는다")
+    void reconcileRestoresAcrossChunkBoundaries() {
+        // given: 청크 하나를 넘긴다
+        int count = ChatKickWriteRedisRepository.SADD_CHUNK + 1;
+        java.util.List<UUID> many = java.util.stream.Stream.generate(UUID::randomUUID)
+                .limit(count).toList();
+
+        // when
+        repository.reconcile(roomId, many);
+
+        // then
+        assertThat(redisTemplate.opsForSet().size(key()))
+                .as("청크마다 한 명씩 흘리는 off-by-one 이 여기서만 드러난다")
+                .isEqualTo((long) count);
+        assertThat(redisTemplate.opsForSet().members(key()))
+                .containsExactlyInAnyOrderElementsOf(many.stream().map(UUID::toString).toList());
     }
 
     @Test

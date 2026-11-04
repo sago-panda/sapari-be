@@ -224,12 +224,18 @@ public class ChatModerationBeansConfig {
     /**
      * 강퇴 명단 재적재. 트랜잭션 빈이 없다 — 정본은 읽기만 하고 쓰기는 Redis 한 번이라
      * {@code @Modifying} 경계가 필요하지 않다.
+     *
+     * <p>{@code GetLiveRoomUseCase} 를 받는 것은 <b>권한 때문이 아니다</b> — 재적재는 방 소유와
+     * 무관한 ADMIN 전용이다. 끝난 방에 되살리면 회수 만료가 걷히고 다시 붙여 줄 경로가 없어서,
+     * "되살릴 의미가 있는 방인가" 를 정본에 묻는다({@code ReconcileKickListService}).
      */
     @Bean
     public ReconcileKickListUseCase reconcileKickListUseCase(ChatPermissionPolicy permissionPolicy,
+                                                             GetLiveRoomUseCase liveRoomReader,
                                                              ChatKickLogRepository kickLogRepository,
                                                              ChatKickWriteRepository kickWriteRepository) {
-        return new ReconcileKickListService(permissionPolicy, kickLogRepository, kickWriteRepository);
+        return new ReconcileKickListService(
+                permissionPolicy, liveRoomReader, kickLogRepository, kickWriteRepository);
     }
 
     /**

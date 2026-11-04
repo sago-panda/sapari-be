@@ -13,10 +13,18 @@ import com.sapari.chat.domain.rule.ProfanityFilter;
  * 두 사전이 섞인 상태를 보는 경로가 없다. 필터가 불변이라 성립하는 성질이고, 그래서 교체는
  * 필터를 고치는 것이 아니라 <b>새로 만들어 바꿔 끼우는</b> 것이다.
  *
- * <p><b>왜 {@code AtomicReference} 인가.</b> {@code volatile} 필드로도 같은 가시성을 얻지만,
- * 그러면 "이 필드는 다른 스레드에서 바뀐다" 가 선언이 아니라 관례가 된다 — 다음 사람이
- * {@code volatile} 을 떼도 단일 스레드 테스트는 전부 초록이다. 타입이 그 사실을 들고 있는 쪽을
- * 골랐다. 비용은 핫패스에서 재지 않는다(아래).
+ * <p><b>왜 {@code AtomicReference} 인가.</b> 가시성만 보면 {@code volatile} 필드로도 같고, 이
+ * 저장소에 선례가 양쪽 다 있다({@code ActiveRoomGauge} 가 {@code AtomicReference},
+ * {@code ChatSessionRegistry}·{@code OutboundFrame} 이 {@code volatile}). 그래서 컨벤션으로는
+ * 어느 쪽도 위반이 아니다.
+ *
+ * <p>고른 근거는 <b>곧 필요해지는 연산</b>이다. 사전 전파가 "델타 + 단조 버전" 으로 가므로
+ * (버전이 {@code local+1} 이면 적용, 어긋나면 전체 재읽기) 그 단조성을 지키려면 교체가 "지금 값이
+ * 내가 읽은 그것일 때만" 이어야 하고, 그건 {@code compareAndSet}/{@code updateAndGet} 이다 —
+ * {@code volatile} 로는 쓸 수 없다. 즉 지금은 과해 보이지만 그때 load-bearing 이 된다.
+ *
+ * <p>(처음에 적어 둔 근거는 "타입이 선언을 들고 있게" 였다. 그것도 참이지만 재현되는 근거가
+ * 아니라 취향이고, 취향으로 적어 두면 다음 사람이 바꿀 때 무엇을 잃는지 모른다.)
  *
  * <p><b>핫패스 비용</b>(2026-11-05 실측, 1,078 항목 사전 · 메시지 1건 · 각 20만 회 5라운드의
  * 중간값, 두 경로를 번갈아 워밍업해 JIT 상태를 맞춤):

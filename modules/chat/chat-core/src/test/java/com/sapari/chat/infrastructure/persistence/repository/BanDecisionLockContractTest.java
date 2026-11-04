@@ -54,9 +54,9 @@ class BanDecisionLockContractTest {
                 .as("대기 상한이 트랜잭션 범위가 아니다 — 커넥션에 남아 풀을 공유하는 다른 도메인을 끊는다")
                 .startsWith("SET LOCAL ")
                 .contains("lock_timeout")
-                // ⚠️ 상수를 넣으면 <b>동어반복</b>이다 — 쿼리 문자열이 그 상수로 조립되므로 값을
+                // ⚠️ 상수를 넣으면 동어반복이다 — 쿼리 문자열이 그 상수로 조립되므로 값을
                 // 바꿀 때 양쪽이 같이 바뀌어 아무것도 안 걸린다. 리뷰어 실측: 상수를 "0"으로 바꿔도
-                // 통과했고, Postgres 에서 lock_timeout='0' 은 <b>상한 해제(영구 대기)</b>라
+                // 통과했고, Postgres 에서 lock_timeout='0' 은 상한 해제(영구 대기)라
                 // boundLockWait 가 막으려는 바로 그 상태다. 리터럴로 적어 "바꾸려면 여기도 고치게"
                 // 만든다 — seed 단언과 같은 이유다.
                 .contains("'1s'");
