@@ -50,9 +50,38 @@ as clean.
   anchor outside the diff, a config you have no access to). Silence would read as "checked, fine".
   Name the item and the path you could not open.
 
-## Enforced by ArchUnit — do NOT re-report
-The build already fails on all 20 rules in `architecture-test/.../ArchitectureTest.java`, and the MR
-pipeline runs them (`.gitlab/ci/build.yml`) — a violation here blocks the merge without you.
+## Enforced by ArchUnit — do NOT re-report **if the gate ran**
+All 20 rules below live in `architecture-test/.../ArchitectureTest.java`, and a violation really does
+fail — verified by mutation on 2026-11-05: planting one `Instant.now()` in an application-layer service
+makes `time_must_come_from_time_provider()` fail. Locally the suite is 20 rules in ~5 s
+(`./gradlew :architecture-test:test`).
+
+⚠️ **It does not block the merge "without you" right now.** That sentence used to sit here as a fact and
+it is false: the CI pipeline is deliberately not executing — the shared runner's CI minutes are
+exhausted (`ci_quota_exceeded`), recorded at the top of `.gitlab/ci/build.yml`, and the local-runner
+replacement was reverted for reasons written there. The `build` and `harness-check` jobs still only have
+`merge_request_event` / `FORCE_REVIEW` rules, and the MR bot review is commented out in
+`.gitlab-ci.yml` as well. So while that holds, **nothing but a local run enforces these 20.**
+
+That is why the deterministic gate is now a step of the `/review` skill rather than an assumption of
+this file. What you owe the reader depends on what happened:
+
+- **The gate ran and passed** (the `/review` report says so) → do not re-report these 20. The tool is
+  better at them than you are, and it is deterministic.
+- **The gate did not run, or you cannot tell** → say so once, as `증거부족` on the item closest to the
+  change, naming `./gradlew :architecture-test:test`. Do not emulate the 20 rules by hand and do not
+  stay silent: silence here reads as "checked, fine", which is exactly how these 20 came to have no
+  coverage at all — CI could not run them and reviewers were told to skip them.
+- **The gate failed** → the failure is the finding. Report the rule name; do not re-derive it.
+
+Do not "fix" this by enabling branch-push pipelines. There are no minutes, and `build.yml` records the
+three things that must land first if a local runner is attached again (dependency verification,
+Testcontainers image digests, keeping that host away from token-bearing jobs).
+
+Related, and **not** a defect: `.pr_agent.toml` sets `ignore_pr_labels = ["skip-review"]`, so an author
+can exempt their own MR from the remaining bot review with a label. That is what the label is for; it is
+a team process question, not a code finding. Note it if you see the label on an MR you are reviewing —
+it means you are the only review that ran.
 
 1. domain exception not extending `BusinessException` — `domain_exceptions_extend_BusinessException`
 2. domain → application/infrastructure — `domain_must_not_depend_on_application_or_infrastructure`
