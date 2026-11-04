@@ -192,8 +192,9 @@ public class ChatModerationBeansConfig {
     @Bean
     public ProfanityDictionaryPublishService profanityDictionaryPublishService(
             ChatFilterWordRepository repository,
-            ProfanityDictionarySnapshotPublisher snapshotPublisher) {
-        return new ProfanityDictionaryPublishService(repository, snapshotPublisher);
+            ProfanityDictionarySnapshotPublisher snapshotPublisher,
+            ProfanityFilterFactory filterFactory) {
+        return new ProfanityDictionaryPublishService(repository, snapshotPublisher, filterFactory);
     }
 
     /**

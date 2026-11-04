@@ -1,9 +1,12 @@
 package com.sapari.chat.application.service;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.OptionalLong;
 import java.util.Set;
 
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
+import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.domain.model.FilterWordKind;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
 
@@ -21,6 +24,19 @@ import lombok.extern.slf4j.Slf4j;
  * 비용이 없는데, 그 대신 "스냅샷이 없다/낡았다" 는 상태가 배포 한 번으로 스스로 정리된다.
  * 발행을 변경 시점에만 하면 스냅샷이 사라졌을 때(키 유실·다른 환경에서 지움) 되돌릴 경로가
  * 운영자의 손뿐이다.
+ *
+ * <p>⚠️ <b>그래서 발행 트리거가 정확히 셋이고 주기 재발행이 없다.</b> live-app 부팅
+ * ({@code ChatDictionaryBootstrap}) · ADMIN 추가 · ADMIN 제거 — 이 셋뿐이다. 받는 쪽은 분마다
+ * 버전을 확인하지만({@code ProfanityDictionaryRefreshHandler}) <b>그것은 발행을 유발하지
+ * 않는다</b>: 스냅샷이 사라진 상태에서 분마다 확인해도 읽을 것이 없고, 함대는 번들 사전으로
+ * 돌아간 채 조용히 돈다.
+ *
+ * <p>주기 재발행을 두지 않은 것은 의도다. 앱이 여럿이라 스케줄러에 분산 잠금(ShedLock 류)이
+ * 필요한데, 그 배선의 값은 "아무도 쓰지 않고 아무도 재배포하지 않는 구간" 에서만 나온다 —
+ * 그 구간에서 함대가 쓰는 사전은 번들이고, 번들은 비어 있지 않다(부팅이 그것을 강제한다).
+ * 즉 잃는 것은 <b>최근 ADMIN 변경</b>이고 되찾는 비용은 <b>쓰기 한 번</b>이다. 그 교환이
+ * 뒤집히면(사전이 커져 번들과 정본의 차이가 운영상 유의미해지면) 그때 넣을 것이고, 그 판단의
+ * 입력은 "번들과 테이블의 항목 수 차이" 다.
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -28,6 +44,7 @@ public class ProfanityDictionaryPublishService {
 
     private final ChatFilterWordRepository repository;
     private final ProfanityDictionarySnapshotPublisher snapshotPublisher;
+    private final ProfanityFilterFactory filterFactory;
 
     /**
      * 재시도 상한. 경합이 사람 타이핑 빈도(관리자 쓰기)와 롤링 배포(부팅 발행)뿐이라 두 번째
@@ -66,6 +83,9 @@ public class ProfanityDictionaryPublishService {
             long expected = snapshotPublisher.currentVersion();
             Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
             Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
+            if (attempt == 1) {
+                errorIfRowsCannotBeAddressed(words, whitelist);
+            }
 
             OptionalLong version =
                     snapshotPublisher.publishIfUnchanged(expected, words, whitelist);
@@ -79,5 +99,55 @@ public class ProfanityDictionaryPublishService {
                 "사전 스냅샷 발행이 " + MAX_ATTEMPTS + "회 연속 다른 발행에 밀렸다 — "
                         + "정본과 함대가 갈린 채로 끝나지 않게 실패로 알린다. 버전 키를 "
                         + "스크립트 밖에서 쓰고 있는 경로가 있는지 확인할 것.");
+    }
+
+    /**
+     * 접기로 <b>가리킬 수 없는 행</b>이 정본에 있는지 본다 — 로그만 남긴다.
+     *
+     * <p>이 티켓은 쓰기 경로가 접은 값을 저장하게 고쳤고({@code ManageFilterWordsService.fold})
+     * 접기가 고정점임을 테스트로 못 박았다. 그 둘은 <b>앞으로</b> 그런 행이 생기지 않게 한다.
+     * 이미 있는 행에는 둘 다 닿지 않는다 — 이 브랜치 전의 쓰기 경로는 원문을 저장했고,
+     * {@code CHAT_PROFANITY_WORDS} 로 들어간 항목도 같은 모양일 수 있다.
+     *
+     * <p><b>그 행 하나가 전파를 영구 동결시킨다.</b> 보이지 않는 글자가 든 항목은 사전 문에서
+     * 떨어지므로 (1) 전 Pod 이 스냅샷 교체를 거부하고 (2) 다음 ADMIN 쓰기가 전부 409 가 되고
+     * (3) 그 행을 지우려는 삭제 요청은 접혀서 다른 값을 찾으므로 <b>0행</b>이다. 운영자에게
+     * 보이는 것은 "성공했다는 응답과 올라가는 버전, 그런데 아무것도 안 막힌다" 다.
+     *
+     * <p><b>막지 않는다.</b> 여기서 예외를 올리면 그 상태에서 발행이 아예 못 돌아 동결이
+     * 한 겹 더 굳는다(부팅까지 실패한다). 하는 일은 <b>무엇을 지워야 하는지</b>를 코드 포인트로
+     * 찍어 주는 것이다 — 문제가 보이지 않는 글자라서, 평문으로 적으면 로그에서도 안 보인다.
+     *
+     * <p>첫 시도에서만 센다. 재시도는 같은 정본을 다시 읽는 것이라 결과가 같고, 경합이 심한
+     * 구간에서 같은 ERROR 를 다섯 번 찍을 이유가 없다.
+     */
+    private void errorIfRowsCannotBeAddressed(Set<String> words, Set<String> whitelist) {
+        List<String> unreachable = new ArrayList<>();
+        collectUnreachable(FilterWordKind.PROFANITY, words, unreachable);
+        collectUnreachable(FilterWordKind.WHITELIST, whitelist, unreachable);
+        if (unreachable.isEmpty()) {
+            return;
+        }
+        log.error("정본에 <접기로 가리킬 수 없는 행>이 {}건 있다 — 이 행 하나로 전 Pod 의 사전 "
+                        + "교체가 거부되고 이후 모든 ADMIN 쓰기가 409 가 되며, 그 행을 지우려는 "
+                        + "요청은 접혀서 0행이 된다(이 브랜치 전의 쓰기 경로가 원문을 저장했다). "
+                        + "복구는 chat_filter_word 에서 아래 행을 직접 지우는 것이다 — 코드 포인트는 "
+                        + "U+XXXX 로 적었다: {}",
+                unreachable.size(), unreachable);
+    }
+
+    private void collectUnreachable(FilterWordKind kind, Set<String> stored, List<String> out) {
+        for (String word : stored) {
+            if (!word.equals(filterFactory.normalize(word))) {
+                out.add(kind + ":" + describe(word));
+            }
+        }
+    }
+
+    /** 코드 포인트로 적는다 — 평문으로 적으면 BOM·ZWSP 가 로그에서도 안 보인다. */
+    private static String describe(String word) {
+        StringBuilder out = new StringBuilder();
+        word.codePoints().forEach(cp -> out.append(String.format("U+%04X ", cp)));
+        return out.toString().strip();
     }
 }

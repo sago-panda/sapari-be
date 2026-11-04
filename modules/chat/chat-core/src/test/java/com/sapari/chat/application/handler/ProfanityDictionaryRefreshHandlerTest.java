@@ -223,7 +223,8 @@ class ProfanityDictionaryRefreshHandlerTest {
      * 낡은 레플리카 페일오버(버전이 1 부터 다시 시작). 그때 버리면 이 Pod 이 함대와 <b>영구히</b>
      * 갈린다.
      *
-     * <p>적용이 맞는 이유: 발행된 스냅샷이 정본이고, 새로고침이 직렬화돼 있어(triggers →
+     * <p>적용이 맞는 이유: 이 Pod 이 가진 유일한 정본 사본이 발행된 스냅샷이고(정본은 테이블인데
+     * streaming-app 에는 DataSource 가 없다), 새로고침이 직렬화돼 있어(triggers →
      * {@code concatMap}) 순서가 뒤집힐 경로가 없다. 그 비교는 방어였고 대가가 무음이었다.
      */
     @Test
@@ -239,7 +240,8 @@ class ProfanityDictionaryRefreshHandlerTest {
         refresh("poll");
 
         assertThat(cell.current().filter("복원된욕설"))
-                .as("발행된 스냅샷이 정본이다 — 버리면 이 Pod 만 옛 사전으로 남는다")
+                .as("이 Pod 이 가진 유일한 정본 사본이 발행된 스냅샷이다 — 버리면 이 Pod 만 "
+                        + "옛 사전으로 남고 정본과 다시 맞출 경로가 없다")
                 .isEqualTo("***");
         assertThat(cell.current().filter("정본욕설")).isEqualTo("정본욕설");
     }

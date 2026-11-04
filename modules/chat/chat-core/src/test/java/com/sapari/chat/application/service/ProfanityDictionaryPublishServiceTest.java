@@ -21,6 +21,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
 import com.sapari.chat.domain.model.FilterWordKind;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
+import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 
 /**
  * 정본 → 스냅샷 — <b>두 종류가 함께 나가는지</b>를 잰다.
@@ -42,7 +49,10 @@ class ProfanityDictionaryPublishServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new ProfanityDictionaryPublishService(repository, snapshotPublisher);
+        // 문은 실제 구현을 쓴다 — 접기 평면을 목으로 바꾸면 "가리킬 수 없는 행" 판정이
+        // 목 설정을 재는 테스트가 된다.
+        service = new ProfanityDictionaryPublishService(
+                repository, snapshotPublisher, new DictionaryProfanityFilterFactory());
     }
 
     @Test
@@ -128,5 +138,82 @@ class ProfanityDictionaryPublishServiceTest {
                 .willReturn(OptionalLong.of(1L));
 
         assertThat(service.publishFromSource()).isEqualTo(1);
+    }
+
+    /**
+     * ⭐ <b>접기로 가리킬 수 없는 행을 찍어 준다 — 막지는 않는다.</b>
+     *
+     * <p>이 티켓은 쓰기 경로가 접은 값을 저장하게 고쳤고 접기가 고정점임을 못 박았다. 그 둘은
+     * <b>앞으로</b> 그런 행이 생기지 않게 할 뿐이고, <b>이미 있는 행</b>에는 둘 다 닿지 않는다 —
+     * 이 브랜치 전의 쓰기 경로는 원문을 저장했다.
+     *
+     * <p>그 행 하나가 전파를 영구 동결시킨다: 전 Pod 이 교체를 거부하고, 다음 ADMIN 쓰기가 전부
+     * 409 가 되고, 그 행을 지우려는 삭제는 접혀서 0행이다. 운영자가 보는 것은 "성공 응답과
+     * 올라가는 버전, 그런데 아무것도 안 막힌다" 다. 탐지가 없으면 이 상태를 <b>알 방법 자체가
+     * 없다.</b>
+     *
+     * <p>로그가 코드 포인트여야 한다. 문제가 보이지 않는 글자라서 평문으로 적으면 로그에서도
+     * 안 보이고, 운영자는 무엇을 지워야 하는지 모른다.
+     */
+    @Test
+    @DisplayName("⭐ 접기로 가리킬 수 없는 행을 코드 포인트로 찍는다 — 그래도 발행은 간다")
+    void unaddressableRowsAreReportedWithCodePoints() {
+        // given: 이 브랜치 전에 들어간, 선행 BOM 이 붙은 행
+        given(repository.findWords(FilterWordKind.PROFANITY))
+                .willReturn(Set.of("\uFEFF시발"));
+        given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of());
+        given(snapshotPublisher.currentVersion()).willReturn(7L);
+        given(snapshotPublisher.publishIfUnchanged(anyLong(), anySet(), anySet()))
+                .willReturn(OptionalLong.of(8L));
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger =
+                (Logger) LoggerFactory.getLogger(ProfanityDictionaryPublishService.class);
+        logger.addAppender(appender);
+        try {
+            // when: 막지 않는다 — 여기서 올리면 그 상태에서 부팅까지 실패해 동결이 더 굳는다
+            assertThat(service.publishFromSource()).isEqualTo(8L);
+
+            // then
+            assertThat(appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.ERROR)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("이 상태가 조용하면 운영자는 전파 동결의 원인을 알 방법이 없다")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("가리킬 수 없는 행")
+                            .as("평문으로 적으면 BOM 이 로그에서도 안 보인다")
+                            .contains("U+FEFF")
+                            .contains("U+C2DC"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("정상 정본에는 그 ERROR 가 없다 — 상시 ERROR 는 ERROR 를 죽인다")
+    void aCleanSourceProducesNoUnaddressableReport() {
+        given(repository.findWords(FilterWordKind.PROFANITY)).willReturn(Set.of("시발"));
+        given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of("시발점"));
+        given(snapshotPublisher.currentVersion()).willReturn(0L);
+        given(snapshotPublisher.publishIfUnchanged(anyLong(), anySet(), anySet()))
+                .willReturn(OptionalLong.of(1L));
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger =
+                (Logger) LoggerFactory.getLogger(ProfanityDictionaryPublishService.class);
+        logger.addAppender(appender);
+        try {
+            service.publishFromSource();
+            assertThat(appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList())
+                    .as("멀쩡한 정본에서 ERROR 가 나면 당직자가 이 줄을 무시하게 된다")
+                    .isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 }
