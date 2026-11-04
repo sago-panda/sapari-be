@@ -51,9 +51,9 @@ as clean.
   Name the item and the path you could not open.
 
 ## Enforced by ArchUnit — do NOT re-report **if the gate ran**
-All 20 rules below live in `architecture-test/.../ArchitectureTest.java`, and a violation really does
+All 21 rules below live in `architecture-test/.../ArchitectureTest.java`, and a violation really does
 fail — verified by mutation on 2026-11-05: planting one `Instant.now()` in an application-layer service
-makes `time_must_come_from_time_provider()` fail. Locally the suite is 20 rules in ~5 s
+makes `time_must_come_from_time_provider()` fail. Locally the suite is 21 rules in ~5 s
 (`./gradlew :architecture-test:test`).
 
 ⚠️ **It does not block the merge "without you" right now.** That sentence used to sit here as a fact and
@@ -103,6 +103,7 @@ it means you are the only review that ran.
 18. `live-app` → reactive chat use cases — `live_app_must_not_call_reactive_chat_use_cases`
 19. `OutboundMessage` built outside its type factories (positional-arg slip = PII leak) — `outbound_message_must_be_built_through_factories`
 20. `@Mapper` without `unmappedTargetPolicy = ERROR`, outside `live` (silent unmapped domain field; attribute removal reports the `WARN` default, so this one rule covers both) — `mapstruct_mappers_must_fail_on_unmapped_targets`
+21. a second place installing a profanity filter (the refresh handler serialises applies with `concatMap`, and the monotonic version guard was *removed* on that premise — a second applier would have nothing stopping an older dictionary landing last) — `only_the_refresh_handler_may_install_a_profanity_filter`
 
 A one-line heads-up is fine only for a genuinely new pattern it can't guard. **This list is checked
 against the test file in CI** — if they diverge, the build fails, so fix the list rather than working

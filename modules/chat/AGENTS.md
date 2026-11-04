@@ -207,9 +207,14 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   while writes passed — the same gate-plane/runtime-plane split this ticket keeps closing. Its lifetime
   is logged at boot so it does not vanish silently; durable changes go through the ADMIN API.
 - **Rule (1) crosses kinds, so two concurrent adds can each pass and still commit a violation**
-  (`rejectUselessWhitelist` tests a whitelist entry against the *word* set). No lock: it needs the same
-  string added to both kinds simultaneously at human typing rates, and it is recoverable by removing
-  either. What it gets instead is a post-write re-check that logs it against the request that caused it.
+  (`rejectUselessWhitelist` tests a whitelist entry against the *word* set). No lock — and the reason is
+  **not** that closing it is expensive: `ChatKickRecorder.record` already shows the cheap shape (advisory
+  lock as the first statement inside `REQUIRES_NEW`, Redis only after it returns), so there would be no
+  external call inside the transaction. The real cost is **one more lock resource**, which
+  `ChatKickRecorder` obliges you to order or prove acyclic. It is left open because the probability is
+  low (same string, both kinds, simultaneously, at human typing rates), the result is recoverable
+  (remove either), and a post-write re-check now logs it against the request that caused it. If any of
+  those three changes — e.g. dictionary writes become automated — revisit it.
 - **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
   first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
   set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.

@@ -469,4 +469,37 @@ class ArchitectureTest {
             }
         };
     }
+    /**
+     * 욕설 필터를 갈아 끼우는 포트를 <b>한 곳만</b> 쓴다.
+     *
+     * <p>이 규칙이 떠받치는 것은 다른 파일의 <b>삭제된 방어</b>다.
+     * {@code ProfanityDictionaryRefreshHandler} 는 트리거 셋을 {@code concatMap} 으로 직렬화해
+     * 적용자가 하나이고, 그 사실 위에서 단조 버전 비교({@code snapshot.version() <= local} 이면
+     * 버림)를 <b>걷어냈다</b> — 그 비교가 "버전이 뒤로 간" 스냅샷을 조용히 버려서 Redis 가 상태를
+     * 잃은 Pod 이 함대와 영구히 갈리는 무음 분기를 만들었기 때문이다.
+     *
+     * <p>그래서 "적용자가 하나" 가 주석이 아니라 <b>구조</b>여야 한다. 두 번째 구독이나 두 번째
+     * 주입처가 생기면 두 적용이 겹칠 수 있고, 그때 더 낡은 사전이 나중에 깔려도 막는 것이 없다 —
+     * 그 방어를 이미 지웠으니까. 이 규칙이 그 전제를 깨는 변경을 빌드에서 세운다.
+     *
+     * <p>포트 쪽을 거는 이유: 셀 구현({@code SwappableProfanityFilter})은 호스트 앱이
+     * {@code @Bean} 으로 들고 있어 설정에서 보이는 것이 정상이다. 막아야 하는 것은 <b>그것을
+     * 써서 교체하는</b> 코드가 늘어나는 것이다.
+     */
+    @Test
+    void only_the_refresh_handler_may_install_a_profanity_filter() {
+        ArchRule rule = classes()
+                .that().haveFullyQualifiedName("com.sapari.chat.application.port.ProfanityFilterInstaller")
+                .should().onlyHaveDependentClassesThat()
+                // haveNameMatching 은 FQN 에 맞는다. 패키지로 거는 쪽(resideInAnyPackage)이 이
+                // 저장소의 선례지만 여기서는 쓰지 않는다 — 막아야 하는 것이 "그 패키지 밖에서
+                // 쓰는 것" 이 아니라 <적용자가 둘이 되는 것>이라, 같은 패키지에 두 번째가
+                // 생기는 경우를 통과시키면 규칙이 자기 목적을 비껴간다.
+                .haveNameMatching(
+                        "com\\.sapari\\.chat\\.application\\.handler\\.ProfanityDictionaryRefreshHandler"
+                                + "|com\\.sapari\\.chat\\.infrastructure\\.config\\.SwappableProfanityFilter");
+
+        rule.check(SAPARI);
+    }
+
 }
