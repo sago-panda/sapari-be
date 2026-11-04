@@ -1,6 +1,7 @@
 package com.sapari.productapp.bulk;
 
 import java.io.File;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -15,6 +16,7 @@ import org.apache.poi.ooxml.POIXMLException;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackageAccess;
+import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.util.ZipSecureFile;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.util.CellReference;
@@ -25,6 +27,7 @@ import org.apache.poi.xssf.eventusermodel.XSSFReader;
 import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler;
 import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler.SheetContentsHandler;
 import org.apache.poi.xssf.model.StylesTable;
+import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.apache.poi.xssf.usermodel.XSSFComment;
 import org.springframework.stereotype.Component;
 import org.xml.sax.InputSource;
@@ -40,6 +43,7 @@ import com.sapari.product.domain.exception.InvalidBulkUploadException;
  *   <li>파일 경로로 연다 — 입력 스트림으로 열면 ZIP 엔트리 전체가 메모리에 풀리지만, 파일로 열면 필요한 엔트리만 읽는다.
  *   <li>DOM(usermodel) 대신 SAX로 시트를 읽어 행 단위로만 메모리를 쓴다. 시트당 행 수, 템플릿 밖 열, 셀 길이에 상한을 둔다.
  *   <li>ZIP 엔트리 크기 상한을 낮춘다(zip bomb). 압축률 하한은 POI 기본값을 유지한다.
+ *   <li>공유 문자열 표는 SAX로 흘려 읽을 수 없고 통째로 힙에 올라가므로(셀이 인덱스로 참조) 엔트리 상한보다 낮은 별도 상한을 둔다.
  *   <li>조작된 파일에서 POI가 던지는 런타임 예외도 입력 파일 문제(400)로 번역한다.
  * </ul>
  */
@@ -55,8 +59,17 @@ public class XlsxWorkbookReader {
     /** 셀 문자열 길이 상한 — 가장 긴 필드(상세설명 50,000자)보다 한 글자 길게 둬, 초과 여부는 입력 제약이 판단하게 한다. */
     static final int MAX_CELL_CHARS = 50_001;
 
-    /** 풀린 ZIP 엔트리 하나의 크기 상한 (상한 행 수의 정상 시트 XML을 덮으면서 5MB 업로드에 맞춘 값). */
-    private static final long MAX_ZIP_ENTRY_BYTES = 32L * 1024 * 1024;
+    /**
+     * 풀린 ZIP 엔트리 하나의 크기 상한. 시트 XML은 SAX로 흘려 읽어 힙에 머물지 않으므로 CPU·디스크 상한 성격이다.
+     * 실측: 5MB 업로드 안의 최대 시트(조합 50,000행, 문자열 인라인 저장) ≈ 17.8MB — 여기에 여유를 둔다.
+     */
+    static final long MAX_ZIP_ENTRY_BYTES = 24L * 1024 * 1024;
+
+    /**
+     * 공유 문자열 표(xl/sharedStrings.xml) 크기 상한. 표 전체가 요청 동안 힙에 머물므로 엔트리 상한보다 낮게 둔다.
+     * 실측: 5MB 업로드 안의 최대(상세설명 100개 × 엑셀 셀 한도 32,767자 + 조합 SKU 50,000개) ≈ 10.6MB.
+     */
+    static final long MAX_SHARED_STRINGS_BYTES = 16L * 1024 * 1024;
 
     static {
         // POI 전역 설정이지만 이 앱에서 POI를 쓰는 곳은 이 리더뿐이다
@@ -74,7 +87,7 @@ public class XlsxWorkbookReader {
     public Map<String, List<WorkbookRow>> read(File file, Set<String> sheetNames) {
         try (OPCPackage pkg = OPCPackage.open(file, PackageAccess.READ)) {
             XSSFReader reader = new XSSFReader(pkg);
-            ReadOnlySharedStringsTable strings = new ReadOnlySharedStringsTable(pkg);
+            ReadOnlySharedStringsTable strings = readSharedStrings(pkg);
             StylesTable styles = reader.getStylesTable();
             DataFormatter formatter = new DataFormatter();
 
@@ -98,10 +111,32 @@ public class XlsxWorkbookReader {
         } catch (RowLimitExceededException e) {
             throw new InvalidBulkUploadException(
                     "시트 '" + e.sheetName + "'의 행이 " + MAX_ROWS_PER_SHEET + "개를 넘습니다.", e);
+        } catch (SharedStringsLimitExceededException e) {
+            throw new InvalidBulkUploadException(
+                    "공유 문자열 표가 상한(" + MAX_SHARED_STRINGS_BYTES + " bytes)을 넘습니다.", e);
         } catch (IOException | OpenXML4JException | SAXException | ParserConfigurationException
                  | IllegalArgumentException | IndexOutOfBoundsException | RecordFormatException | POIXMLException e) {
             // xlsx가 아닌 파일(xls·csv·손상된 zip), zip bomb 차단, 조작된 셀 참조·공유 문자열 인덱스 등 — 입력 파일 문제로 번역한다
             throw new InvalidBulkUploadException("xlsx 파일을 읽을 수 없습니다: " + e.getClass().getSimpleName(), e);
+        }
+    }
+
+    /**
+     * 공유 문자열 표를 크기 상한 안에서 읽는다. POI의 {@code ReadOnlySharedStringsTable(OPCPackage)}와 같은 파트를 고르되, 스트림을 상한으로 감싼다
+     * — 엔트리 헤더의 크기 값은 조작될 수 있어 미리 확인하지 않고 실제로 읽은 바이트를 센다.
+     *
+     * @param pkg 열린 xlsx 패키지
+     * @return 공유 문자열 표(파트가 없으면 빈 표)
+     * @throws SharedStringsLimitExceededException 표가 {@link #MAX_SHARED_STRINGS_BYTES}를 넘는 경우
+     */
+    private static ReadOnlySharedStringsTable readSharedStrings(OPCPackage pkg)
+            throws IOException, SAXException, OpenXML4JException {
+        List<PackagePart> parts = pkg.getPartsByContentType(XSSFRelation.SHARED_STRINGS.getContentType());
+        if (parts.isEmpty()) {
+            return new ReadOnlySharedStringsTable(pkg);
+        }
+        try (InputStream in = new LimitedInputStream(parts.get(0).getInputStream(), MAX_SHARED_STRINGS_BYTES)) {
+            return new ReadOnlySharedStringsTable(in);
         }
     }
 
@@ -169,6 +204,74 @@ public class XlsxWorkbookReader {
         private RowLimitExceededException(String sheetName) {
             super(null, null, false, false);
             this.sheetName = sheetName;
+        }
+    }
+
+    /**
+     * 읽은 바이트 수가 상한을 넘으면 {@link SharedStringsLimitExceededException}을 던지는 스트림.
+     */
+    private static final class LimitedInputStream extends FilterInputStream {
+
+        private final long limit;
+        private long count;
+
+        private LimitedInputStream(InputStream in, long limit) {
+            super(in);
+            this.limit = limit;
+        }
+
+        /**
+         * 한 바이트를 읽고 센다.
+         */
+        @Override
+        public int read() throws IOException {
+            int b = super.read();
+            if (b != -1) {
+                add(1);
+            }
+            return b;
+        }
+
+        /**
+         * 버퍼로 읽고 읽은 만큼 센다.
+         */
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            int n = super.read(buffer, offset, length);
+            if (n > 0) {
+                add(n);
+            }
+            return n;
+        }
+
+        /**
+         * 건너뛴 바이트도 센다(풀린 크기 기준 상한이므로).
+         */
+        @Override
+        public long skip(long n) throws IOException {
+            long skipped = super.skip(n);
+            add(skipped);
+            return skipped;
+        }
+
+        /**
+         * 누적 바이트를 더하고 상한을 넘으면 중단한다.
+         */
+        private void add(long bytes) throws SharedStringsLimitExceededException {
+            count += bytes;
+            if (count > limit) {
+                throw new SharedStringsLimitExceededException();
+            }
+        }
+    }
+
+    /**
+     * 공유 문자열 표가 상한을 넘었음을 알리는 신호. SAX 파서를 거쳐 그대로 전파되도록 {@link IOException}이며, {@link #read}가 입력 오류로 번역한다.
+     */
+    private static final class SharedStringsLimitExceededException extends IOException {
+
+        private SharedStringsLimitExceededException() {
+            super("shared strings limit exceeded");
         }
     }
 }

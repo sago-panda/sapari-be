@@ -13,8 +13,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
@@ -27,6 +29,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import com.sapari.product.domain.exception.InvalidBulkUploadException;
 import com.sapari.productapp.controller.product.dto.request.CombinationOverrideRequest;
@@ -195,6 +199,119 @@ class XlsxWorkbookReaderTest {
             assertThatThrownBy(() -> reader.read(file, Set.of("2.옵션")))
                     .isInstanceOf(InvalidBulkUploadException.class)
                     .hasMessageContaining("2.옵션");
+        }
+    }
+
+    @Nested
+    @DisplayName("메모리 상한 — ZIP 엔트리·공유 문자열 표")
+    class MemoryLimits {
+
+        /** 고정 시드 — 압축률이 실제 문서에 가깝게(지나친 반복이면 POI 압축률 하한에 걸린다) 섞인 한글을 만든다. */
+        private final Random random = new Random(42);
+
+        /**
+         * 압축이 잘 되지 않는 한글 본문을 만든다(문단마다 임의 음절 40자 + 숫자).
+         */
+        private String koreanText(int length) {
+            StringBuilder text = new StringBuilder(length + 64);
+            while (text.length() < length) {
+                text.append("<p>");
+                for (int i = 0; i < 40; i++) {
+                    text.append((char) (0xAC00 + random.nextInt(2_000)));
+                }
+                text.append(" 소재 ").append(random.nextInt(100_000)).append("</p>");
+            }
+            return text.substring(0, length);
+        }
+
+        /**
+         * 5MB 업로드로 담을 수 있는 최대치를 넘는 정상 형식 파일을 만든다 — 상품 100개(상세설명 = 엑셀 셀 한도 32,767자) + 조합 행 50,000개.
+         * 이 파일이 읽히면 한도 안의 어떤 정상 파일도 상한에 걸리지 않는다.
+         *
+         * @param useSharedStrings true면 문자열을 공유 문자열 표에(엑셀 방식), false면 셀에 인라인으로(코드 생성 도구 방식) 저장
+         */
+        private File largestRealisticWorkbook(boolean useSharedStrings) throws IOException {
+            File file = tempDir.resolve("largest-" + useSharedStrings + ".xlsx").toFile();
+            String description = koreanText(32_000);
+            try (SXSSFWorkbook workbook = new SXSSFWorkbook(null, 100, false, useSharedStrings);
+                 OutputStream out = Files.newOutputStream(file.toPath())) {
+                Sheet products = workbook.createSheet(ProductWorkbookTemplate.PRODUCT_SHEET);
+                for (int p = 0; p < 100; p++) {
+                    Row row = products.createRow(p);
+                    row.createCell(0).setCellValue("P-" + p);
+                    row.createCell(2).setCellValue("여름 린넨 오버핏 셔츠 " + p);
+                    // 상품마다 다른 문자열(공유 문자열 표에서 중복 제거되지 않게), 엑셀 셀 한도 32,767자에 맞춘다
+                    row.createCell(8).setCellValue((p + description + koreanText(767)).substring(0, 32_767));
+                }
+                Sheet overrides = workbook.createSheet(ProductWorkbookTemplate.OVERRIDE_SHEET);
+                for (int p = 0; p < 100; p++) {
+                    for (int c = 0; c < 500; c++) {
+                        Row row = overrides.createRow(p * 500 + c);
+                        row.createCell(0).setCellValue("P-" + p);
+                        row.createCell(1).setCellValue("색상값" + c % 10 + "|사이즈값" + c / 10 % 10 + "|소재값" + c / 100);
+                        row.createCell(2).setCellValue(41_000 + c);
+                        row.createCell(3).setCellValue(50);
+                        row.createCell(4).setCellValue("SKU-P" + p + "-COMBO-" + c + "-LINEN-SHIRT");
+                        row.createCell(5).setCellValue("N");
+                    }
+                }
+                workbook.write(out);
+            }
+            return file;
+        }
+
+        /**
+         * 한도 안 최대치를 넘는 정상 파일이 두 저장 방식 모두에서 상한에 걸리지 않고 끝까지 읽히는지 — 상한을 실측보다 낮추는 회귀를 막는다.
+         *
+         * @param useSharedStrings 문자열 저장 방식
+         */
+        @ParameterizedTest(name = "공유 문자열 표 사용 = {0}")
+        @ValueSource(booleans = {true, false})
+        @DisplayName("한도 안 최대 크기의 정상 파일은 상한에 걸리지 않고 끝까지 읽힌다 (실측 근거 — 공유 문자열 ≈ 10.6MB, 시트 ≈ 17.8MB)")
+        void readsLargestRealisticWorkbook(boolean useSharedStrings) throws IOException {
+            File file = largestRealisticWorkbook(useSharedStrings);
+
+            Map<String, List<WorkbookRow>> sheets = reader.read(file, Set.copyOf(ProductWorkbookTemplate.SHEETS));
+
+            assertThat(sheets.get(ProductWorkbookTemplate.PRODUCT_SHEET)).hasSize(100);
+            assertThat(sheets.get(ProductWorkbookTemplate.OVERRIDE_SHEET)).hasSize(50_000);
+            assertThat(sheets.get(ProductWorkbookTemplate.PRODUCT_SHEET).get(0).cells().get(8))
+                    .hasSize(32_767);  // 엑셀 셀 한도 길이 그대로 — 자르지 않는다
+        }
+
+        /**
+         * 공유 문자열 표가 상한을 넘으면(엔트리 상한 아래여도) 표를 끝까지 힙에 올리지 않고 거절하는지.
+         */
+        @Test
+        @DisplayName("공유 문자열 표가 상한(16MB)을 넘으면 — ZIP 엔트리 상한(24MB) 아래여도 — 거절한다")
+        void rejectsOversizedSharedStrings() throws IOException {
+            File file = tempDir.resolve("strings.xlsx").toFile();
+            // 셀 하나 ≈ 75KB(30,000자, 한글 3바이트·태그/숫자 1바이트 섞임) × 250개 ≈ 19MB — 16MB < 표 < 24MB
+            try (SXSSFWorkbook workbook = new SXSSFWorkbook(null, 100, false, true);
+                 OutputStream out = Files.newOutputStream(file.toPath())) {
+                Sheet sheet = workbook.createSheet(ProductWorkbookTemplate.PRODUCT_SHEET);
+                for (int i = 0; i < 250; i++) {
+                    sheet.createRow(i).createCell(8).setCellValue(koreanText(30_000));
+                }
+                workbook.write(out);
+            }
+            long sharedStringsBytes = entrySize(file, "xl/sharedStrings.xml");
+            assertThat(sharedStringsBytes)
+                    .isGreaterThan(XlsxWorkbookReader.MAX_SHARED_STRINGS_BYTES)
+                    .isLessThan(XlsxWorkbookReader.MAX_ZIP_ENTRY_BYTES);
+
+            assertThatThrownBy(() -> reader.read(file, Set.of(ProductWorkbookTemplate.PRODUCT_SHEET)))
+                    .isInstanceOf(InvalidBulkUploadException.class)
+                    .hasMessageContaining("공유 문자열");
+        }
+
+        /**
+         * xlsx(zip) 안 엔트리의 풀린 크기.
+         */
+        private long entrySize(File file, String entryName) throws IOException {
+            try (ZipFile zip = new ZipFile(file)) {
+                return zip.getEntry(entryName).getSize();
+            }
         }
     }
 }
