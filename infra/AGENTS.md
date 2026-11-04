@@ -40,6 +40,23 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
 - **Adding a schema:** one `folder:schema` line in `migrate.sh`'s `SCHEMAS` list **+** create
   `db/migration/<folder>/`. Nothing else.
 
+- ⚠️ **An applied migration file is frozen — comments included.** Flyway's checksum covers the whole
+  file, so editing a comment in a file that has already run is the same as editing its DDL. `migrate.sh`
+  passes no `-validateOnMigrate=false` / `-ignoreMigrationPatterns`, so validation is on by default: a
+  mismatch aborts that schema, and `set -eu` means the schemas after it never run either. The runner is
+  a **Helm pre-upgrade Job**, so this stops the deploy.
+  - **The test for "may I edit it" is whether it exists on a remote branch**, not whether the change
+    looks harmless: `git branch -r --contains <the commit that added the file>`. Empty ⇒ it has run
+    nowhere, edit freely. Non-empty ⇒ frozen; put the correction in the **next new migration file**
+    (`V1__init_live.sql`'s stale escalation comment is recorded in `V202609061437` for exactly this reason).
+  - **Testcontainers cannot catch this, structurally** — those tests run Flyway against an empty database,
+    where a mismatch cannot arise. Build, ArchUnit and the harness scripts all stay green while a frozen
+    file is edited. There is no gate here; the rule is the gate.
+  - If a database already applied the older bytes, `flyway repair` rewrites the stored checksum. That is
+    recovery, not permission — it is still the frozen-file rule that decides whether the edit was allowed.
+  - Measured on 2026-11-05 (SPR-165): a 6-line comment edit to `V202609061437__chat_ban_one_row_per_user.sql`
+    moved its checksum from `-721420016` to `-1766037485`. The commit that added that file is on `origin/dev`.
+
 - **Deployment prerequisite — the migration leads, live-app follows.** Since SPR-142 the reconcile
   schedulers take a ShedLock lock on `live_schema.shedlock`, created by `db/migration/live/V*__shedlock.sql`.
   Roll out the migration **before** the app. `ShedLockTableGuard` **refuses to boot** unless it can actually
