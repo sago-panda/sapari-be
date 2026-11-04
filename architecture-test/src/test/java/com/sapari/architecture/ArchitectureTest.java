@@ -482,29 +482,44 @@ class ArchitectureTest {
      * 주입처가 생기면 두 적용이 겹칠 수 있고, 그때 더 낡은 사전이 나중에 깔려도 막는 것이 없다 —
      * 그 방어를 이미 지웠으니까. 이 규칙이 그 전제를 깨는 변경을 빌드에서 세운다.
      *
-     * <p>포트 쪽을 거는 이유: 셀 구현({@code SwappableProfanityFilter})은 호스트 앱이
-     * {@code @Bean} 으로 들고 있어 설정에서 보이는 것이 정상이다. 막아야 하는 것은 <b>그것을
-     * 써서 교체하는</b> 코드가 늘어나는 것이다. 그 구현을 허용 목록에 넣은 것은 포트를
-     * {@code implements} 하는 쪽이라 의존이 불가피하기 때문이다.
+     * <p><b>타입이 아니라 메서드를 건다.</b> 처음에 포트 <i>타입</i>의 의존자를 셌는데 구멍이
+     * 있었다 — 빈 선언 타입이 <b>구체 클래스</b>({@code ChatBeansConfig} 가
+     * {@code SwappableProfanityFilter} 를 돌려준다)이고 {@code install} 이 공개라, 포트를 안
+     * 거치고 구체 클래스를 주입받아 부르는 코드는 그 규칙을 <b>비껴간다.</b> 실측으로 확인했다
+     * (2026-11-05): 앱 패키지에 그런 적용자를 심으면 21건 전부 초록이었다. 응용 계층에 심으면
+     * {@code application_must_not_depend_on_infrastructure} 가 잡지만, 빈이 주입되는 자리는
+     * 앱 패키지라 그 경로가 현실적인 쪽이다.
      *
-     * <p><b>이 규칙은 조용해질 수 없다</b> — FQN 을 문자열로 박았으니 클래스가 옮겨지면 대상이
-     * 0건이 되어 "의존자 없음" 으로 초록이 될까 물을 자리다. 실측(2026-11-05): 포트 FQN 을
-     * 없는 이름으로 바꾸고 돌리면 <b>이 규칙이 실패한다</b>(ArchUnit 이 빈 집합을 거부한다).
-     * 반대 방향도 실패 쪽이다 — 허용 목록의 FQN 이 안 맞게 되면 그 의존자가 위반으로 잡힌다.
-     * 두 축 모두 조용한 통과가 아니라 빨간 빌드다.
+     * <p>메서드를 걸면 두 경로가 한 규칙으로 닫히고, <b>셀을 만드는 것</b>(호스트 앱의
+     * {@code @Bean})은 그대로 허용된다 — 막아야 하는 것은 생성이 아니라 <i>호출</i>이다.
+     * 그래서 허용 목록이 핸들러 하나다: 셀은 {@code install} 을 <b>선언</b>할 뿐 부르지 않고,
+     * 설정은 생성자만 부른다.
+     *
+     * <p><b>이 규칙은 조용해질 수 없다</b> — 이름을 문자열로 박았으니 클래스나 메서드가 옮겨지면
+     * 대상이 0건이 되어 "호출자 없음" 으로 초록이 될까 물을 자리다. 실측(2026-11-05), 두 축 모두
+     * <b>실패</b>한다: 메서드명을 없는 이름으로 바꾸면 이 규칙이 깨지고(ArchUnit 이 빈 집합을
+     * 거부한다 — {@code architecture-test/build.gradle} 이 {@code failOnEmptyShould} 기본값에
+     * 이미 하중을 걸고 있다), 선언 클래스 FQN 을 바꿔도 같다. 허용 목록 쪽도 실패 방향이다 —
+     * 핸들러가 옮겨지면 그 호출이 위반으로 잡힌다. 조용한 통과가 되는 축이 없다.
+     *
+     * <p>세 경로를 되돌림으로 확인했다(2026-11-05) — 포트 경유 · 앱 패키지에서 구체 클래스 경유 ·
+     * infrastructure 에서 구체 클래스 경유. 셋 다 이 규칙 이름으로 빨개진다. 가운데가 타입을
+     * 걸었을 때 <b>통과하던</b> 경로다.
      */
     @Test
     void only_the_refresh_handler_may_install_a_profanity_filter() {
-        ArchRule rule = classes()
-                .that().haveFullyQualifiedName("com.sapari.chat.application.port.ProfanityFilterInstaller")
-                .should().onlyHaveDependentClassesThat()
+        ArchRule rule = methods()
+                .that().haveName("install")
+                .and().areDeclaredInClassesThat().haveNameMatching(
+                        "com\\.sapari\\.chat\\.application\\.port\\.ProfanityFilterInstaller"
+                                + "|com\\.sapari\\.chat\\.infrastructure\\.config\\.SwappableProfanityFilter")
+                .should().onlyBeCalled().byClassesThat()
                 // haveNameMatching 은 FQN 에 맞는다. 패키지로 거는 쪽(resideInAnyPackage)이 이
                 // 저장소의 선례지만 여기서는 쓰지 않는다 — 막아야 하는 것이 "그 패키지 밖에서
                 // 쓰는 것" 이 아니라 <적용자가 둘이 되는 것>이라, 같은 패키지에 두 번째가
                 // 생기는 경우를 통과시키면 규칙이 자기 목적을 비껴간다.
-                .haveNameMatching(
-                        "com\\.sapari\\.chat\\.application\\.handler\\.ProfanityDictionaryRefreshHandler"
-                                + "|com\\.sapari\\.chat\\.infrastructure\\.config\\.SwappableProfanityFilter");
+                .haveFullyQualifiedName(
+                        "com.sapari.chat.application.handler.ProfanityDictionaryRefreshHandler");
 
         rule.check(SAPARI);
     }

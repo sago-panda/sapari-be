@@ -103,7 +103,7 @@ it means you are the only review that ran.
 18. `live-app` → reactive chat use cases — `live_app_must_not_call_reactive_chat_use_cases`
 19. `OutboundMessage` built outside its type factories (positional-arg slip = PII leak) — `outbound_message_must_be_built_through_factories`
 20. `@Mapper` without `unmappedTargetPolicy = ERROR`, outside `live` (silent unmapped domain field; attribute removal reports the `WARN` default, so this one rule covers both) — `mapstruct_mappers_must_fail_on_unmapped_targets`
-21. a second place installing a profanity filter (the refresh handler serialises applies with `concatMap`, and the monotonic version guard was *removed* on that premise — a second applier would have nothing stopping an older dictionary landing last) — `only_the_refresh_handler_may_install_a_profanity_filter`
+21. a second **caller** of `install(..)` on the profanity-filter cell (the refresh handler serialises applies with `concatMap`, and the monotonic version guard was *removed* on that premise — a second applier would have nothing stopping an older dictionary landing last). Targets the method, not the type, because the bean's declared type is the concrete cell: a class injecting it directly bypassed a type-level rule, measured — only the application-layer variant was caught, by rule 15 — `only_the_refresh_handler_may_install_a_profanity_filter`
 
 A one-line heads-up is fine only for a genuinely new pattern it can't guard. **This list is checked
 against the test file in CI** — if they diverge, the build fails, so fix the list rather than working
