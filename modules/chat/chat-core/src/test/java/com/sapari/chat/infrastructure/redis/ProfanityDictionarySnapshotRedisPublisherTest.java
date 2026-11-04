@@ -200,6 +200,55 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                 .containsExactly("시발", "지랄");
     }
 
+    /**
+     * ⭐ <b>ABA — 번호 재사용을 막는다.</b>
+     *
+     * <p>기준을 버전 키만으로 잡으면 {@code GET} 이 없는 키에 {@code false} 를 주므로
+     * "한 번도 발행 안 됨" 과 "버전 키가 사라짐" 이 <b>같은 토큰(0)</b>이 된다. 토큰이 유일하지
+     * 않으면 조건이 지키는 것이 없다 — 낡은 발행자가 통과하면서 <b>번호를 재사용</b>하고 더 새
+     * 본문을 덮는다. 그리고 성공을 돌려주므로 재시도도 없고, 그 번호를 이미 적용한 Pod 은
+     * 버전이 같아 다시 읽지 않는다.
+     *
+     * <p>도달 경로가 {@code allkeys-lru} 축출과 <b>이 어댑터가 안내하는 복구 절차</b>(버전 키
+     * 삭제) 자신이었다.
+     */
+    @Test
+    @DisplayName("⭐ 버전 키가 사라져도 낡은 발행자를 거부한다 — 번호 재사용(ABA)을 막는다")
+    void aStalePublisherIsRefusedEvenWhenTheVersionKeyIsGone() {
+        // given: A 가 0 을 집어 뒀고, 그 사이 B 가 더 새 본문으로 발행했다
+        long expectedByA = publisher.currentVersion();
+        assertThat(expectedByA).isZero();
+        assertThat(publish(ordered("시발", "지랄"), Set.of())).isEqualTo(1);
+
+        // 버전 키만 사라진다 — 본문은 남아 있다
+        redisTemplate.delete(VERSION);
+
+        // when: A 가 낡은 본문으로 들어온다
+        OptionalLong refused =
+                publisher.publishIfUnchanged(expectedByA, ordered("시발"), Set.of());
+
+        // then: 거부된다 — 기준이 본문 머리로 떨어지므로 토큰이 0 이 아니다
+        assertThat(refused)
+                .as("여기서 통과하면 v1 이 재사용되고 지랄이 함대에서 사라진다")
+                .isEmpty();
+        assertThat(ProfanityDictionarySnapshotCodec.decode(
+                redisTemplate.opsForValue().get(SNAPSHOT)).words())
+                .containsExactly("시발", "지랄");
+    }
+
+    @Test
+    @DisplayName("⭐ 본문이 사라져도 버전 키가 남아 있으면 낡은 발행자를 거부한다")
+    void aStalePublisherIsRefusedWhenOnlyTheBodyIsGone() {
+        long expectedByA = publisher.currentVersion();
+        assertThat(publish(ordered("시발", "지랄"), Set.of())).isEqualTo(1);
+
+        redisTemplate.delete(SNAPSHOT);
+
+        assertThat(publisher.publishIfUnchanged(expectedByA, ordered("시발"), Set.of()))
+                .as("두 키 중 남은 쪽이 토큰을 떨어뜨리지 않아야 한다")
+                .isEmpty();
+    }
+
     @Test
     @DisplayName("한 번도 발행되지 않았으면 현재 버전이 0 이다 — 스크립트도 없는 키를 0 으로 읽는다")
     void theCurrentVersionIsZeroBeforeAnyPublish() {

@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -682,6 +685,55 @@ class ProfanityDictionaryTest {
                 "/chat/long-entry-dictionary.txt", WHITELIST, null, null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("예산보다 길다");
+    }
+
+    /**
+     * ⭐ <b>{@code normalize} 가 고정점이어야 한다 — {@code normalize(normalize(x)) == normalize(x)}.</b>
+     *
+     * <p>그게 깨지면 관리자 쓰기에서 <b>저장값 ≠ 집행값</b>이 된다. 쓰기 경로는 한 번 접어
+     * 저장하고({@code ManageFilterWordsService.fold}) 사전 문은 받은 값에 {@code strip} 을 한 번
+     * 더 걸어 판정하므로, 두 번째 접기에서 더 떨어지는 글자가 있으면 저장된 행이 문에는 다르게
+     * 보인다. 실제로 선행 BOM 2개 이상에서 그랬다 — 저장 {@code <BOM>시발} · 집행 {@code 시발}.
+     *
+     * <p>피해가 삭제 불가다. {@code ?word=시발} 삭제는 접혀서 {@code 시발} 로 가고 DB 행은
+     * {@code <BOM>시발} 이라 <b>0행</b>이며 응답은 "이미 그 상태였다" 다. 정확히 같은 2중 BOM 을
+     * 다시 보내야만 맞는데, 접기가 모든 평범한 후보를 {@code 시발} 로 접으므로 <b>그 행을 가리킬
+     * 수 있는 입력이 없다.</b>
+     *
+     * <p><b>벡터를 손으로 적지 않고 생성한다.</b> 전에 이 축의 벡터가 넷이었고
+     * ({@code "시발\n"}·{@code "\n시발"}·{@code "  시발  "}·{@code "시발\t"}) 전부
+     * {@code String.strip()} 이 떼는 류 하나였다 — <b>이미 찾은 버그에서만 온 벡터</b>라 BOM 축을
+     * 보지 못했다. 글자 클래스 × 위치 × 반복 횟수로 돌리면 그 축이 나온다.
+     */
+    @Test
+    @DisplayName("⭐ normalize 는 고정점이다 — 저장값과 집행값이 갈리지 않는다")
+    void normalizeIsAFixedPoint() {
+        // 글자 클래스: strip 이 떼는 것 · BOM(떼지만 isWhitespace 가 아님) · 둘의 조합
+        String[] trimmable = {" ", "\t", "\n", "\r", "\u000B", "\f"};
+        String bom = "\uFEFF";
+        List<String> inputs = new ArrayList<>();
+        for (int repeat = 0; repeat <= 3; repeat++) {
+            String bomRun = bom.repeat(repeat);
+            for (String ws : trimmable) {
+                // 위치: 앞 · 뒤 · 양쪽 · BOM 사이에 공백이 끼는 모양
+                inputs.add(bomRun + "시발");
+                inputs.add("시발" + bomRun);
+                inputs.add(bomRun + ws + "시발");
+                inputs.add(ws + bomRun + "시발");
+                inputs.add(bomRun + ws + bomRun + "시발");
+                inputs.add(ws + bomRun + ws + "시발" + ws);
+            }
+        }
+
+        // 분모를 세어 적는다 — "통과" 만 적으면 다음 사람이 이 축이 얼마나 덮였는지 모른다.
+        assertThat(inputs).hasSize(144);
+        assertThat(inputs).allSatisfy(input -> {
+            String once = ProfanityDictionary.normalize(input);
+            assertThat(ProfanityDictionary.normalize(once))
+                    .as("normalize 가 고정점이 아니면 저장값과 집행값이 갈린다: %s",
+                            input.replace("\uFEFF", "<BOM>"))
+                    .isEqualTo(once);
+        });
     }
 
     /**

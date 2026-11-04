@@ -567,9 +567,20 @@ public final class ProfanityDictionary {
     // BOM(U+FEFF)을 뗀다. strip() 은 Character.isWhitespace 기준이라 BOM 을 남기는데, 남으면
     // 파일 1행이 주석 판정('#' 로 시작)을 비껴가 그 줄이 통째로 단어가 된다.
     // NBSP 등 다른 보이지 않는 글자는 여기서 안 떼지지만 아래 containsInvisible 이 거부한다.
+    //
+    // ⚠️ 선행 BOM 을 <수렴할 때까지> 뗀다. 한때 한 번만 뗐고, 그래서 이 함수가 고정점이 아니었다
+    // (실측: 선행 BOM 2개 이상 7벡터 중 5종이 normalize(normalize(x)) != normalize(x)). 그 비고정점이
+    // 관리자 쓰기에서 <저장값 ≠ 집행값>을 만들었다 — fold() 가 한 번 접어 저장하고, 사전 문 of() 가
+    // 받은 값에 strip 을 한 번 더 걸어 판정하므로, 저장된 "<BOM>시발" 이 문에는 "시발" 로 보인다.
+    // 피해는 그 행을 API 로 지울 수 없다는 것이다 — 정확히 같은 2중 BOM 을 다시 보내야만 맞고,
+    // 어떤 평범한 입력도 그 행을 가리키지 못한다(접기가 모든 후보를 "시발" 로 접는다).
+    //
+    // 공백을 사이에 끼운 모양도 같이 수렴한다(<BOM> <BOM>시발) — 떼고 나서 다시 strip 하기 때문이다.
     private static String strip(String line) {
         String out = line.strip();
-        out = out.isEmpty() || out.charAt(0) != '\uFEFF' ? out : out.substring(1).strip();
+        while (!out.isEmpty() && out.charAt(0) == '\uFEFF') {
+            out = out.substring(1).strip();
+        }
         return normalizeEntry(out);
     }
 

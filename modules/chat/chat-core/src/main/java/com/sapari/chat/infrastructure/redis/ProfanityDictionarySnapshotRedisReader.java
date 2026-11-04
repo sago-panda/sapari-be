@@ -33,10 +33,40 @@ public class ProfanityDictionarySnapshotRedisReader implements ProfanityDictiona
                 .map(ProfanityDictionarySnapshotCodec::decode);
     }
 
+    /**
+     * ⚠️ <b>버전 키가 없으면 본문 머리로 떨어진다</b> — 한때 그 자리가 완전 무음이었다.
+     *
+     * <p>버전 키만 사라지면(두 키 모두 TTL 이 없지만 {@code allkeys-lru} 는 TTL 없는 키도
+     * 축출한다) 이 메서드가 빈 {@code Mono} 를 주고, 호출자의 "스냅샷이 아직 없다" 분기는
+     * <b>부팅 때만</b> 로그를 남긴다 — 주기 확인은 매분 아무 말 없이 지나간다. 그 사이 새로 뜨는
+     * Pod 은 멀쩡한 스냅샷이 Redis 에 있는데도 번들로 집행한다(잃는 것 = 시드 이후의 ADMIN 델타).
+     *
+     * <p>도달 경로가 발행자가 안내하는 복구 절차(버전 키 삭제) 자신이기도 했다. 본문 머리로
+     * 떨어지면 빈 {@code Mono} 는 <b>두 키가 함께 없을 때</b>, 즉 진짜로 한 번도 발행되지 않은
+     * 상태에만 나온다.
+     */
     @Override
     public Mono<Long> readVersion() {
         return redisTemplate.opsForValue().get(ChatRedisKeys.dictVersion())
-                .map(ProfanityDictionarySnapshotRedisReader::parseVersion);
+                .map(ProfanityDictionarySnapshotRedisReader::parseVersion)
+                .switchIfEmpty(Mono.defer(this::snapshotHeadVersion));
+    }
+
+    /** 본문 머리의 버전. 본문이 없거나 머리가 숫자가 아니면 빈 {@code Mono} 다. */
+    private Mono<Long> snapshotHeadVersion() {
+        return redisTemplate.opsForValue().get(ChatRedisKeys.dictSnapshot())
+                .flatMap(snapshot -> {
+                    int newline = snapshot.indexOf('\n');
+                    String head = newline < 0 ? snapshot : snapshot.substring(0, newline);
+                    try {
+                        return Mono.just(Long.parseLong(head.strip()));
+                    } catch (NumberFormatException e) {
+                        // 머리가 깨졌으면 "버전을 모른다" 다. 던지지 않는 이유는 호출자가 그것을
+                        // 전송 실패로 분류해 버전을 올리지 않고 재시도하는데, 이 상태는 재시도로
+                        // 낫지 않기 때문이다 — 빈 값으로 주면 "아직 없음" 분기가 로그를 남긴다.
+                        return Mono.empty();
+                    }
+                });
     }
 
     /**
