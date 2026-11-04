@@ -20,8 +20,16 @@ import com.sapari.product.command.ProductOptionTypeCommand;
 import com.sapari.product.command.ProductOptionValueCommand;
 import com.sapari.product.command.SurchargeRuleCommand;
 import com.sapari.product.domain.exception.CategoryNotFoundException;
+import com.sapari.product.domain.exception.CombinationNotFoundException;
 import com.sapari.product.domain.exception.InvalidBulkUploadException;
+import com.sapari.product.domain.exception.InvalidProductOptionException;
+import com.sapari.product.domain.exception.InvalidProductStateException;
+import com.sapari.product.domain.exception.InvalidProductTagException;
+import com.sapari.product.domain.exception.ProductAccessDeniedException;
+import com.sapari.product.domain.exception.ProductConcurrentModificationException;
+import com.sapari.product.domain.exception.ProductDomainException;
 import com.sapari.product.domain.exception.ProductErrorCode;
+import com.sapari.product.domain.exception.TooManyCombinationsException;
 import com.sapari.product.domain.model.category.Category;
 import com.sapari.product.domain.repository.category.CategoryRepository;
 import com.sapari.product.port.CreateProductUseCase;
@@ -37,11 +45,14 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -53,6 +64,8 @@ class BulkCreateProductsServiceTest {
     private static final UUID SELLER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a1");
     private static final Long CATEGORY_ID = 1001L;
     private static final Long MISSING_CATEGORY_ID = 9999L;
+    /** 응답으로 새면 안 되는 내부 식별자(허용 목록 밖 예외의 디버그 메시지에 담는다). */
+    private static final UUID INTERNAL_ID = UUID.fromString("00000000-0000-0000-0000-00000000dead");
     private static final Instant NOW = Instant.parse("2026-09-15T00:00:00Z");
 
     @Mock
@@ -305,6 +318,79 @@ class BulkCreateProductsServiceTest {
 
             assertThatThrownBy(() -> service.create(new BulkCreateProductsCommand(items)))
                     .isSameAs(infraFailure);
+        }
+    }
+
+    @Nested
+    @DisplayName("오류 메시지 노출 — 허용 목록 밖의 코드는 카탈로그 문구")
+    class MessageExposure {
+
+        /**
+         * 저장 중 해당 예외가 나도록 해 STOPPED 결과의 오류 1건을 돌려준다.
+         */
+        private BulkProductErrorView stoppedErrorFor(ProductDomainException failure) {
+            CreateProductCommand product = simpleProduct(CATEGORY_ID, List.of());
+            given(categoryRepository.findById(CATEGORY_ID)).willReturn(Optional.of(aCategory()));
+            given(createProductUseCase.create(product)).willThrow(failure);
+
+            BulkCreateProductsView view = service.create(bulk(item("P-1", product)));
+
+            assertThat(view.status()).isEqualTo(BulkCreateProductsView.STOPPED);
+            return view.errors().get(0);
+        }
+
+        /**
+         * 판매자 입력값만 담는 코드(태그·옵션·조합 수·카테고리)는 위반 내용(디버그 메시지)을 그대로 담는다.
+         *
+         * @param failure 허용 목록 코드의 도메인 예외
+         */
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("violationDetailFailures")
+        @DisplayName("허용 목록 코드(004·005·007·009)는 위반 내용을 그대로 담는다")
+        void exposesViolationDetail(ProductDomainException failure) {
+            BulkProductErrorView error = stoppedErrorFor(failure);
+
+            assertThat(error.code()).isEqualTo(failure.getErrorCode().getCode());
+            assertThat(error.message()).isEqualTo(failure.getMessage());
+        }
+
+        /**
+         * 메시지 내용이 보장되지 않는 코드는 디버그 메시지(내부 식별자 포함 가능)를 버리고 카탈로그 문구를 담는다.
+         *
+         * @param failure 허용 목록 밖 코드의 도메인 예외(디버그 메시지에 내부 식별자를 담음)
+         */
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("catalogOnlyFailures")
+        @DisplayName("허용 목록 밖 코드는 디버그 메시지 대신 카탈로그 문구를 담는다 — 내부 식별자가 응답으로 새지 않는다")
+        void hidesDebugMessageOutsideWhitelist(ProductDomainException failure) {
+            BulkProductErrorView error = stoppedErrorFor(failure);
+
+            assertThat(error.code()).isEqualTo(failure.getErrorCode().getCode());
+            assertThat(error.message())
+                    .isEqualTo(failure.getErrorCode().getMessage())
+                    .doesNotContain(INTERNAL_ID.toString());
+        }
+
+        /**
+         * 허용 목록 코드의 대표 예외들.
+         */
+        static Stream<ProductDomainException> violationDetailFailures() {
+            return Stream.of(
+                    new InvalidProductOptionException("옵션 타입명이 중복됩니다: 색상"),
+                    new CategoryNotFoundException("카테고리를 찾을 수 없습니다: 1001"),
+                    new InvalidProductTagException("태그 형식이 올바르지 않습니다: #여름"),
+                    new TooManyCombinationsException("조합 수 600이 한도 500을 넘습니다"));
+        }
+
+        /**
+         * 허용 목록 밖 코드의 예외들 — 디버그 메시지에 내부 식별자를 담는다.
+         */
+        static Stream<ProductDomainException> catalogOnlyFailures() {
+            return Stream.of(
+                    new InvalidProductStateException("내부 상품 상태 전이 실패: " + INTERNAL_ID),
+                    new ProductConcurrentModificationException("낙관적 락 충돌: " + INTERNAL_ID),
+                    new ProductAccessDeniedException("소유자 불일치: " + INTERNAL_ID),
+                    new CombinationNotFoundException("조합 없음: " + INTERNAL_ID));
         }
     }
 }

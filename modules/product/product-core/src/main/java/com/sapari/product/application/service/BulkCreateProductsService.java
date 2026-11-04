@@ -7,6 +7,7 @@ import com.sapari.product.command.CreateProductCommand;
 import com.sapari.product.domain.exception.CategoryNotFoundException;
 import com.sapari.product.domain.exception.InvalidBulkUploadException;
 import com.sapari.product.domain.exception.ProductDomainException;
+import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.product.domain.model.combination.CombinationGenerator;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
@@ -19,6 +20,7 @@ import com.sapari.product.view.BulkCreatedProductView;
 import com.sapari.product.view.BulkProductErrorView;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -46,6 +48,17 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class BulkCreateProductsService implements BulkCreateProductsUseCase {
+
+    /**
+     * 위반 내용(디버그 메시지)을 응답에 그대로 실어도 되는 오류 코드. 이 코드들의 예외 메시지는 판매자가 올린 값(태그·옵션 이름·ref·금액·
+     * 카테고리 id)만 담는다. 그 밖의 코드는 메시지가 무엇을 담는지 보장되지 않으므로 카탈로그 문구로 대체한다 — 새 도메인 예외가 이 경로에
+     * 닿아도 내부 식별자가 응답으로 새지 않는 것이 기본값이 되도록, 노출을 허용 목록으로 연다.
+     */
+    private static final Set<ProductErrorCode> VIOLATION_DETAIL_CODES = EnumSet.of(
+            ProductErrorCode.INVALID_PRODUCT_OPTION,
+            ProductErrorCode.CATEGORY_NOT_FOUND,
+            ProductErrorCode.INVALID_PRODUCT_TAG,
+            ProductErrorCode.TOO_MANY_COMBINATIONS);
 
     private final CreateProductUseCase createProductUseCase;
     private final CategoryRepository categoryRepository;
@@ -191,13 +204,15 @@ public class BulkCreateProductsService implements BulkCreateProductsUseCase {
     }
 
     /**
-     * 도메인 예외를 상품별 오류로 번역한다. 메시지는 판매자가 올린 값만 담은 위반 내용(디버그 메시지)이다.
+     * 도메인 예외를 상품별 오류로 번역한다.
      *
      * <p>{@code BusinessException}의 디버그 메시지는 원래 로그 전용이다({@code GlobalExceptionHandler}는 카탈로그 메시지만 응답). 대량 등록 결과는
-     * 판매자가 파일을 고칠 수 있어야 해서 예외적으로 이를 응답에 담는다 — 여기에 도달하는 예외(태그·옵션 룰·조합 생성·카테고리)의 메시지에는
-     * 판매자 본인 입력값 외의 내부 식별자를 넣지 않는다.
+     * 판매자가 파일을 고칠 수 있어야 해서 {@link #VIOLATION_DETAIL_CODES}에 한해 위반 내용을 담고, 그 밖의 코드는 카탈로그 문구를 담는다.
      */
     private static BulkProductErrorView toError(String productCode, ProductDomainException e) {
-        return new BulkProductErrorView(productCode, e.getErrorCode().getCode(), e.getMessage());
+        String message = VIOLATION_DETAIL_CODES.contains(e.getErrorCode())
+                ? e.getMessage()
+                : e.getErrorCode().getMessage();
+        return new BulkProductErrorView(productCode, e.getErrorCode().getCode(), message);
     }
 }
