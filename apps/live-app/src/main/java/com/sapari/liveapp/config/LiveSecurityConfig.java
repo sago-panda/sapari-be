@@ -4,7 +4,12 @@ import tools.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.DispatcherType;
 
+import java.util.Set;
+import java.util.TreeSet;
+
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -74,9 +79,25 @@ public class LiveSecurityConfig {
      *
      * <p><b>여는 것은 두 엔드포인트뿐이고 나머지는 코드에서 막는다.</b> 노출 범위를 yaml 한 줄
      * ({@code exposure.include})에만 맡기면 거기에 {@code env} 나 {@code "*"} 를 더하는 순간
-     * {@code /actuator/env}·{@code /heapdump} 가 무인증으로 열리고, 그 응답에는 JWT 서명키와
-     * LiveKit API 시크릿이 담긴다. 설정 한 줄이 자격증명 공개가 되는 경로라 코드에서도 잠근다 —
-     * 정말로 하나 더 열어야 하면 여기를 함께 고쳐야 하고, 그건 diff 에 보인다.
+     * {@code /actuator/env} 같은 것이 무인증으로 열린다({@code include: "*"} 한 줄로 13종이 뜬다 —
+     * 실측). 무게가 다른 둘을 구분해 둔다:
+     *
+     * <p>{@code /heapdump} 는 <b>메모리 이미지</b>라 마스킹이라는 개념이 없다 — JWT 서명키와 LiveKit
+     * API 시크릿이 그 안에 평문으로 있다. 다만 {@code include: "*"} 만으로는 <b>생기지 않는다</b>:
+     * {@code @WebEndpoint} 의 {@code defaultAccess} 가 {@code NONE} 이라 access 축을 함께 뒤집어야
+     * 하고, 실측에서 그 경로는 13종에 없고 401 이었다. 즉 이 체인이 막는 최악은 heapdump 가 아니라
+     * 그걸 열려면 설정을 두 군데 뒤집어야 한다는 쪽이다.
+     *
+     * <p>{@code /actuator/env} 는 <b>값이 가려진다</b>(실측, 바이트코드):
+     * {@code management.endpoint.env.show-values} 기본값이 {@code Show.NEVER} 이고
+     * {@code Sanitizer.sanitize} 는 그 경우 {@code SanitizingFunction} 을 보지도 않고
+     * {@code "******"} 를 돌려준다. 그래서 이 엔드포인트가 내보내는 것은 시크릿 값이 아니라
+     * <b>프로퍼티 이름과 소스 전부</b> — 어떤 키가 있고 어떤 파일·환경변수가 쓰이는지의 설계도다.
+     * 한때 이 자리에 "그 응답에 시크릿이 담긴다" 고 적었는데 그건 틀렸다.
+     *
+     * <p>그런데 그 마스킹이 <b>기본값</b>이다. {@code show-values} 한 줄로 뒤집히고, 추적되는 설정
+     * 템플릿에는 그 키가 없다(0건) — 즉 이 방어는 우리가 리뷰하는 코드 밖에 있다. 그래서 코드에서
+     * 잠근다: 정말로 하나 더 열어야 하면 여기를 함께 고쳐야 하고, 그건 diff 에 보인다.
      */
     @Bean
     @Order(0)
@@ -141,6 +162,108 @@ public class LiveSecurityConfig {
         return new ManagementPortGuard();
     }
 
+    /**
+     * 관측에 필요한 엔드포인트. {@code health} 는 k8s 프로브용, {@code prometheus} 는 스크레이프용이다.
+     *
+     * <p>둘 중 하나만 있어도 되는 것이 아니다 — 하나는 파드가 Ready 가 되는 조건이고 하나는 지표가
+     * 존재하는 조건이라, 빠진 쪽이 조용히 죽는다.
+     */
+    private static final Set<String> REQUIRED_ENDPOINTS = Set.of("health", "prometheus");
+
+    /**
+     * {@code health}·{@code prometheus} 가 <b>실제로</b> 노출돼야 부팅한다.
+     *
+     * <p>액추에이터 기본 노출은 {@code health} 하나다. 그래서 {@code prometheus} 가 없으면 그
+     * 엔드포인트가 생기지 않고, 그 경로가 위 액추에이터 체인에 매칭되지 않아 기본 체인의
+     * {@code authenticated()} 에 걸려 <b>401</b> 이 된다 — 스크레이퍼는 로그인 수단이 없으므로
+     * <b>지표가 조용히 빈다</b>. 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다. {@code health} 가
+     * 없으면 같은 이유로 k8s 프로브가 401 을 받아 파드가 Ready 가 되지 못한다.
+     *
+     * <p>⚠️ <b>실측으로 드러났다.</b> 이 앱의 컨텍스트 테스트가 CI 에서 제외돼 있던 동안 그 줄은 운영
+     * 템플릿의 {@code optional} 항목이었고, 테스트를 CI 로 옮긴 첫 실행이 정확히 401 로 깨졌다.
+     * 설정 한 줄이 관측 전면 중단으로 이어지는데 그 사이에 아무 신호가 없어서, 조용히 뜨는 대신
+     * 시끄럽게 죽는 쪽으로 바꿨다({@code streaming-app} 이 같은 이유로 같은 가드를 갖는다).
+     *
+     * <p>⚠️ <b>설정 키를 읽지 않는다.</b> 전에는 {@code exposure.include}·{@code exposure.exclude} 두
+     * 키를 파싱했는데, 엔드포인트를 조용히 없애는 축이 그 둘뿐이 아니다. <b>실측</b>(같은 모양의
+     * streaming-app 을 실제로 띄워 {@code WebEndpointsSupplier} 를 조회):
+     * <pre>
+     * management.endpoint.prometheus.enabled=false    부팅 성공   노출 [health]
+     * management.endpoint.health.enabled=false        부팅 성공   노출 [prometheus]
+     * management.endpoints.enabled-by-default=false   부팅 성공   노출 []
+     * management.endpoint.prometheus.access=none      부팅 성공   노출 [health]
+     * management.endpoints.access.default=none        부팅 성공   노출 []
+     * </pre>
+     * 다섯 줄 모두 두 키만 보는 가드를 <b>통과했다</b>. 셋째·다섯째는 엔드포인트가 하나도 없는데
+     * 부팅에 성공한다 — 이 가드가 존재하는 이유 그 자체다. 축을 더 열거하는 길은 끝이 없어서
+     * 질문을 "설정이 무엇이라고 적혀 있나" 에서 "<b>무엇이 실제로 열려 있나</b>" 로 바꿨다.
+     *
+     * <p>목록을 <b>좁히는</b> 검사는 여기 없다(필수 집합을 <b>포함</b>하면 통과한다) — 이 앱은
+     * 액추에이터 체인이 {@code health}·{@code prometheus} 밖을 {@code denyAll} 로 막으므로 넓혀도
+     * 열리지 않는다. 그 체인이 실제로 막는지는 {@code ActuatorNotOnUserPortTest} 가 {@code env} 를
+     * 일부러 노출해 403 으로 밟는다. 시큐리티가 없는 {@code streaming-app} 은 그 반대라 집합이
+     * <b>정확히</b> 같아야 한다.
+     *
+     * <p>{@code ObjectProvider} 로 받는 이유: 액추에이터가 없는 컨텍스트에서는 건너뛴다. 이 앱에
+     * 액추에이터는 {@code implementation} 의존이라 운영에서는 항상 있고 빼는 변경은
+     * {@code build.gradle} diff 에 보인다. 이 설정을 {@code @Import} 로 올리는 MVC 조각 테스트가
+     * 없는 빈을 요구해 엉뚱하게 깨지는 쪽을 막으려는 것이다.
+     *
+     * <p>⚠️ <b>그 건너뛰기가 운영 구성에서 일어나지 않는지 따로 쟀다.</b> 관리 포트를 사용자 포트와
+     * 다르게 주면 Boot 는 관리 전용 <b>자식 컨텍스트</b>를 만든다 — {@code WebEndpointsSupplier} 가
+     * 그 자식에만 있다면 부모에서 도는 이 가드는 {@code null} 을 받아 <b>정확히 운영 구성에서만</b>
+     * 조용히 통과했을 것이다. 부팅을 막는 가드가 no-op 이 되는 모양이고, 그건 이 가드가 막으려던
+     * 침묵이 가드째로 조용해지는 것이다.
+     *
+     * <p><b>실측</b>(실제 서버 둘, 관리 포트 53154 / 사용자 포트 53151 — 즉 자식 컨텍스트가 생긴
+     * 구성): 부모 컨텍스트의 {@code WebEndpointsSupplier} 빈 <b>1건</b>, 정상 설정은 부팅 성공,
+     * {@code endpoints.enabled-by-default=false} 는 이 가드의 메시지로 컨텍스트 로드 실패. 즉
+     * 그 빈은 부모 쪽이고 건너뛰기는 액추에이터가 아예 없는 컨텍스트에서만 일어난다.
+     */
+    @Bean
+    public ObservabilityExposureGuard requiredEndpointsMustBeExposed(
+            ObjectProvider<WebEndpointsSupplier> webEndpoints) {
+
+        WebEndpointsSupplier supplier = webEndpoints.getIfAvailable();
+        if (supplier != null) {
+            verifyExposed(exposedIds(supplier));
+        }
+        return new ObservabilityExposureGuard();
+    }
+
+    /** 실제로 노출된 web 엔드포인트 id 들. 정렬해 둬서 실패 메시지가 안정적으로 읽힌다. */
+    static Set<String> exposedIds(WebEndpointsSupplier supplier) {
+        Set<String> ids = new TreeSet<>();
+        supplier.getEndpoints().forEach(endpoint -> ids.add(endpoint.getEndpointId().toString()));
+        return ids;
+    }
+
+    /**
+     * 필수 집합이 실제 노출에 <b>들어 있는지</b>만 본다.
+     *
+     * <p>스프링 없이 호출할 수 있게 집합만 받는다. 실패 메시지에 <b>어떤 키를 볼지</b>를 적는 이유는
+     * 이 가드가 더는 키를 읽지 않기 때문이다 — 원인이 되는 축이 여섯이고 운영자가
+     * {@code access.default} 같은 건 알지 못한다.
+     */
+    static void verifyExposed(Set<String> actual) {
+        Set<String> missing = new TreeSet<>(REQUIRED_ENDPOINTS);
+        missing.removeAll(actual);
+        if (missing.isEmpty()) {
+            return;
+        }
+        throw new IllegalStateException(
+                "액추에이터 엔드포인트 " + missing + " 가 실제로 노출되지 않았다 — 현재 " + actual
+                        + ". prometheus 가 없으면 스크레이퍼가 401 을 받아 지표가 조용히 비고, health 가 "
+                        + "없으면 k8s 프로브가 401 을 받아 파드가 Ready 가 되지 못한다. 볼 키: "
+                        + "management.endpoints.web.exposure.include/exclude, "
+                        + "management.endpoint.<id>.enabled, management.endpoints.enabled-by-default, "
+                        + "management.endpoint.<id>.access, management.endpoints.access.default.");
+    }
+
+    /** 노출 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */
+    public static final class ObservabilityExposureGuard {
+    }
+
     /** 위 검증을 부팅에 태우기 위한 표식 빈. 동작은 없다. */
     public static final class ManagementPortGuard {
     }
@@ -179,10 +302,22 @@ public class LiveSecurityConfig {
                         // LiveKit webhook — Spring Security가 아니라 본문 서명(LiveKit JWT)으로 인증하므로 열어둔다.
                         .requestMatchers(HttpMethod.POST, "/webhooks/livekit").permitAll()
                         // 공개 조회를 명시한다. 이후 추가되는 GET은 자동 공개하지 않는다.
+                        //
+                        // ⚠️ dev 가 와일드카드(`GET /api/v1/lives/**` permitAll)를 이 목록으로 조였고,
+                        // 그 조임이 chat 의 <b>이력 조회를 비공개로 만들었다</b> — 다시보기 채팅은 비회원도
+                        // 본다는 것이 설계 확정이라, 목록에 명시해 되살린다. 와일드카드로 되돌리지 말 것:
+                        // 조인 쪽이 맞고, chat 경로를 여기 적는 비용이 그 안전의 값이다.
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/lives/rooms",
                                 "/api/v1/lives/rooms/{roomId}",
-                                "/api/v1/lives/rooms/{roomId}/replay").permitAll()
+                                "/api/v1/lives/rooms/{roomId}/replay",
+                                "/api/v1/lives/{roomId}/chat/history").permitAll()
+                        // 채팅 강퇴는 판매자와 관리자 둘 다 — 관리자는 남의 방도 통제한다.
+                        // 아래 판매자 전용 규칙보다 먼저 와야 한다(먼저 맞는 규칙이 이긴다).
+                        // 실제 판정은 여기서 끝나지 않는다: 자기 방인지, 방이 진행 중인지, 대상이
+                        // 관리자는 아닌지는 KickUserService 가 본다. 이 줄은 그 앞의 거친 관문이다.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/lives/*/chat/kick")
+                                .hasAnyRole("SELLER", "ADMIN")
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

@@ -1,0 +1,98 @@
+// javadoc이 자기 선언에서 떨어져 나온 자리를 찾는다.
+//
+// javadoc은 "바로 다음 선언"에만 붙는다. 그래서 블록과 선언 사이에 무언가가 끼어들면 두 가지가 동시에
+// 깨진다 — 원래 주인은 문서를 잃고, 끼어든 쪽은 자기 것이 아닌 설명을 얻는다. 컴파일도 통과하고
+// javadoc 도구도 조용해서, 사람이 그 구간을 눈으로 다시 읽지 않으면 드러나지 않는다.
+//
+// 실제로 재발한 형태가 아래 ANOTHER_JAVADOC이다: 긴 근거 블록과 그 대상 사이에 새 메서드를 자기
+// javadoc째로 끼워 넣어, 앞 블록이 고아가 됐다.
+
+ext.orphanJavadocScan = { java.io.File file ->
+    List<String> lines = file.readLines('UTF-8')
+    List<Map> found = []
+
+    int i = 0
+    while (i < lines.size()) {
+        String t = lines[i].trim()
+        if (!t.startsWith('/**') || t.startsWith('/**/')) {
+            i++
+            continue
+        }
+
+        // 블록의 끝(*/)을 찾는다. 한 줄짜리 /** ... */도 여기서 같이 처리된다.
+        int end = (t.indexOf('*/', 2) >= 0) ? i : -1
+        if (end < 0) {
+            int j = i + 1
+            while (j < lines.size() && !lines[j].contains('*/')) {
+                j++
+            }
+            end = (j < lines.size()) ? j : -1
+        }
+        if (end < 0) {
+            break   // 닫히지 않은 블록 — 컴파일러가 잡을 문제라 여기서 판정하지 않는다
+        }
+
+        // 블록 뒤의 첫 내용 줄. 빈 줄은 세어 둔다(그 자체가 신호다).
+        int k = end + 1
+        int blanks = 0
+        while (k < lines.size() && lines[k].trim().isEmpty()) {
+            blanks++
+            k++
+        }
+
+        if (k >= lines.size()) {
+            found << [line: i + 1, kind: 'END_OF_FILE', next: '(파일 끝)']
+        } else {
+            String next = lines[k].trim()
+            if (next.startsWith('}')) {
+                found << [line: i + 1, kind: 'CLOSE_BRACE', next: next]
+            } else if (next.startsWith('/**')) {
+                found << [line: i + 1, kind: 'ANOTHER_JAVADOC', next: next]
+            } else if (blanks > 0) {
+                found << [line: i + 1, kind: 'BLANK_GAP', next: next]
+            }
+        }
+
+        i = end + 1
+    }
+    return found
+}
+
+tasks.register('checkOrphanJavadoc') {
+    group = 'verification'
+    description = 'javadoc 블록이 자기 선언에서 떨어져 나온 자리를 찾는다'
+
+    // 소스 트리를 입력으로 걸어 두면 변경이 없을 때 다시 돌지 않는다.
+    FileTree sources = fileTree(rootDir) {
+        include '**/src/main/java/**/*.java'
+        include '**/src/test/java/**/*.java'
+        exclude '**/build/**'
+    }
+    inputs.files(sources).withPropertyName('javaSources').withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.upToDateWhen { true }
+
+    doLast {
+        def scan = project.ext.orphanJavadocScan
+        List<String> problems = []
+        sources.each { file ->
+            scan(file).each { hit ->
+                String rel = rootDir.toPath().relativize(file.toPath()).toString()
+                problems << "  ${rel}:${hit.line}  [${hit.kind}] 다음 줄: ${hit.next}"
+            }
+        }
+        if (!problems.isEmpty()) {
+            throw new GradleException(
+                    "javadoc이 자기 선언에서 떨어져 있다 (${problems.size()}건).\n" +
+                    problems.join('\n') + '\n\n' +
+                    'javadoc은 바로 다음 선언에만 붙는다. 블록을 자기 선언 바로 위로 옮겨라.\n' +
+                    '  ANOTHER_JAVADOC — 블록과 그 대상 사이에 다른 선언이 자기 javadoc째로 끼어들었다\n' +
+                    '  CLOSE_BRACE     — 설명할 선언이 뒤에 없다\n' +
+                    '  BLANK_GAP       — 블록과 선언이 빈 줄로 갈라져 있다\n' +
+                    '  END_OF_FILE     — 파일 끝에 남은 블록')
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn 'checkOrphanJavadoc'
+}

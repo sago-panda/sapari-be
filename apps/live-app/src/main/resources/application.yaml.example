@@ -38,10 +38,22 @@ spring:
         # 정리 잡 3종이 서로를 막지 않게. 1이면 LiveKit 이 느린 회차에 뒤 잡이 밀린다.
         size: 3
 
+  # 강퇴 명단·밴 미러·강퇴 이벤트 발행이 여기로 간다. streaming-app 과 <b>같은 인스턴스</b>여야
+  # 전파가 성립한다 — 다른 Redis 를 가리키면 강퇴가 등록만 되고 아무도 끊기지 않는다.
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+
+  # 강퇴 증거 원문을 읽는다(쓰기 없음). streaming-app 과 같은 DB 여야 한다.
+  # ⚠️ 접두가 spring.data.mongodb 가 아니라 spring.mongodb 다 — Boot 4.0.0 에서 옛 이름이 제거됐고,
+  #    그대로 적으면 값이 바인딩되지 않아 조용히 localhost:27017 로 붙는다.
+  #    (redis 쪽 접두 spring.data.redis 는 바뀌지 않았다 — 둘이 달라 보이는 게 정상이다)
+  mongodb:
+    # 기본값을 비워 둔다. 채워 두면 환경변수가 빠졌을 때 로컬의 빈 Mongo 로 조용히 뜨고,
+    # 그러면 강퇴 증거 조회가 항상 empty 라 모든 강퇴가 400 인데 헬스체크는 정상으로 보인다.
+    # 비워 두면 ConnectionString 이 IllegalArgumentException 을 던져 부팅에서 죽는다(실측).
+    uri: ${MONGODB_URI:}                     # REQUIRED (운영)
 
 server:
   port: ${SERVER_PORT:8081}                  # api-app(8080)과 동시 실행되도록 분리
@@ -232,7 +244,18 @@ management:
         # 액추에이터 기본 노출은 health 하나뿐이다 — 이건 좁힌 값이 아니라 prometheus 를 더한 값이다.
         # 넓히지 말 것: LiveSecurityConfig 가 이 두 개만 permitAll 하고 나머지는 denyAll 이라,
         # 여기에 추가해도 열리지 않고 403 만 난다(코드도 함께 고쳐야 한다 = 리뷰에 보인다).
-        include: health,prometheus     # optional
+        include: health,prometheus     # REQUIRED(운영) — 둘 중 하나라도 실제로 노출되지 않으면
+                                       # 부팅이 실패한다(LiveSecurityConfig.requiredEndpointsMustBeExposed).
+                                       # 가드는 이 키를 읽지 않고 <b>실제 노출</b>을 묻는다 — 그래서
+                                       # exclude 로 되돌리거나 management.endpoint.<id>.enabled=false,
+                                       # endpoints.enabled-by-default=false, endpoint.<id>.access=none,
+                                       # endpoints.access.default=none 로 끄는 것도 전부 걸린다.
+                                       # health 가 빠지면 k8s 프로브가 401 을 받아 파드가 Ready 가
+                                       # 되지 못한다. 액추에이터 기본
+                                       # 노출은 health 하나라, 빠뜨리면 지표 엔드포인트가 생기지 않고
+                                       # 스크레이퍼가 401 을 받아 <b>지표가 조용히 빈다</b> — 빈 대시보드는
+                                       # "방송이 없어서" 와 구분되지 않는다. 종전 optional 표기는 그
+                                       # 결과를 과소평가한 것이었다(실측: CI 로 옮긴 첫 실행이 401 로 깨짐).
   endpoint:
     health:
       show-details: never              # optional — 상세는 DB 주소 등 내부 구조를 흘린다

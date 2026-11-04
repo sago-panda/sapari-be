@@ -52,3 +52,35 @@ public ResponseEntity<ResponseEnvelope<CreateLiveView>> createWithLocation(...) 
 
 Page types come back from the use-case port already assembled — the controller only wraps them:
 `ResponseEnvelope<CursorPage<LiveListView>>`. How the page itself is built is `common/AGENTS.md`.
+
+## Input validation — where a 400 comes from, and why the global handler stays narrow
+
+`GlobalExceptionHandler` handles three things: `BusinessException` (its own status), `ConstraintViolationException`,
+and a final `Exception` net that answers **500** and logs `Unhandled exception`. Everything else goes through
+Spring's own handling.
+
+Measured (2026-10-31), so don't re-derive it:
+
+| Bad input | Status | Who answers |
+|---|---|---|
+| Malformed `UUID` in the path | **400** | Spring's binding |
+| Non-numeric `@RequestParam int` | **400** | Spring's binding |
+| `@Valid` DTO violation | **400** | handler / Spring |
+| **`IllegalArgumentException` from a command record** | **500** + `Unhandled exception` | the final net |
+
+That last row is the trap. A command `record`'s compact constructor is the right place for its invariant, but
+reaching the web layer it reads as a server fault: a client bug pages someone, and the log says nothing was
+handled.
+
+**Two ways out, and both are per-endpoint on purpose:**
+
+- Put the rule on a `@Valid` request DTO, which is the repo's usual idiom (`ChatModerationController`).
+- Or translate at the controller boundary into a `BusinessException` with its own code — what
+  `ChatHistoryController` does (`CHAT-009`), because the rule there is cross-field (two mutually exclusive
+  query modes) and a class-level Bean Validation constraint would be more machinery than the translation.
+
+**Do not add `@ExceptionHandler(IllegalArgumentException.class)` to the global handler.** It looks like the
+structural fix and it is a regression: the same type arrives from infrastructure and from our own bugs, so a
+blanket 400 would move **server faults off the 5xx alerting path**. A client error that 500s is noisy but
+visible; a server bug that 400s is invisible. If a framework type genuinely needs mapping, add *that type*,
+not its supertype.

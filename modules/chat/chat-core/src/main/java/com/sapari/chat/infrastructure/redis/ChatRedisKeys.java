@@ -1,0 +1,86 @@
+package com.sapari.chat.infrastructure.redis;
+
+import java.util.UUID;
+
+/**
+ * chat이 소유한 Redis 키 패턴. package-private — 키 문자열이 어댑터 밖으로 새지 않게 한다.
+ *
+ * <p>이 패키지의 어댑터가 전부 여기를 거치므로, 읽는 쪽과 쓰는 쪽이 다른 키를 보는 drift가 생기지 않는다.
+ * 강퇴 쓰기(SADD)처럼 blocking 스택 어댑터가 나중에 붙어도 <b>같은 패키지</b>에 두면 그대로 공유된다 —
+ * 다른 모듈에서 쓰겠다고 public으로 열지 말 것. 키를 아는 코드가 늘어나는 만큼 drift 위험이 늘어난다.
+ *
+ * <p>밴 상태 키({@code chat:banned:{userId}})도 여기 있다 — 강퇴 에스컬레이션이 쓰는 chat 소유 키다.
+ * 반면 라이브 진행 여부처럼 live가 소유·판정하는 키는 여기 두지 않는다.
+ *
+ * <p><b>새 키는 {@code chat:}로 시작한다.</b> 네 앱이 같은 Redis 논리 DB를 쓰므로 이름이 겹치면 그 키는
+ * 타입이 어긋난 채 살아 있고, 그때부터 그 방의 해당 기능은 재시도로도 복구되지 않는다. 접두를 붙이면
+ * "이 키는 chat 것"이 규약이 아니라 구조가 된다. 예외는 {@code ratelimit:chat:} 하나로, 접두 위치만
+ * 다를 뿐 이미 소유가 이름에 드러나 있어 그대로 둔다.
+ */
+final class ChatRedisKeys {
+
+    private ChatRedisKeys() {
+    }
+
+    /** sessionId → userId 매핑 HASH (멀티탭 지원, 라이브 종료 시 삭제) */
+    static String sessions(UUID roomId) {
+        return "chat:room:" + roomId + ":sessions";
+    }
+
+    /** 방 강퇴 userId 집합 SET (재접속 차단, 라이브 종료 시 만료 부여) */
+    static String kicked(UUID roomId) {
+        return "chat:kicked:" + roomId;
+    }
+
+    /** 방 종료 마커 (종료 후 남은 토큰으로 재입장하는 것을 막는다) */
+    static String roomEnded(UUID roomId) {
+        return "chat:room:" + roomId + ":ended";
+    }
+
+    /**
+     * 플랫폼 밴 캐시. <b>키가 있으면 밴</b>이고 값은 보지 않는다 — 만료가 곧 해제라 상태를 따로 두지 않는다.
+     * 방이 아니라 사람에게 붙는다: 강퇴는 방 단위지만 밴은 플랫폼 전체다.
+     */
+    static String banned(UUID userId) {
+        return "chat:banned:" + userId;
+    }
+
+    /** 전송 레이트리밋 키 (3초 TTL). 면제는 운영자와 이 방을 진행하는 판매자뿐 — 남의 방 판매자도 대상이다. */
+    static String rateLimit(UUID userId) {
+        return "ratelimit:chat:" + userId;
+    }
+
+    /** Pod 간 채팅 중계 Pub/Sub 채널 prefix — 발행 키·구독 패턴·채널명 파싱의 단일 소스(drift 방지). */
+    static final String PUBSUB_PREFIX = "chat:pubsub:";
+
+    /** Pod 간 채팅 중계 Pub/Sub 채널 — CHAT·KICK_EVENT 봉투를 함께 실어 나른다 */
+    static String pubsub(UUID roomId) {
+        return PUBSUB_PREFIX + roomId;
+    }
+
+    /** 전 방 패턴 구독용 (RedisChatBroadcaster 상시 가동 hot 스트림) */
+    static String pubsubPattern() {
+        return PUBSUB_PREFIX + "*";
+    }
+
+    /**
+     * 계정 단위 조치 채널 — 방이 아니라 사람에 대한 신호가 여기로 간다.
+     *
+     * <p><b>{@link #PUBSUB_PREFIX} 아래에 두면 안 된다.</b> 방 채널 구독이 그 접두 뒤를 {@code UUID}로
+     * 파싱하므로, 이름이 그 밑에 있으면 전 Pod가 이벤트마다 파싱 실패를 찍고 봉투를 버린다.
+     */
+    static String accountEvents() {
+        return "chat:account:events";
+    }
+
+    /**
+     * 계정 이벤트 재발행 억제 키 — 존재하면 최근에 이미 알렸다는 뜻이다.
+     *
+     * <p>발행은 밴이 새로 걸렸든 이미 있던 것이든 나간다(그게 유일한 회수 경로다). 그래서 이미 밴된
+     * 대상을 반복 강퇴하면 호출마다 전 Pod가 로컬 세션을 훑는다 — 호출 횟수가 곧 함대 전체 스캔
+     * 횟수가 되고, 그 엔드포인트에는 레이트리밋이 없다.
+     */
+    static String accountEventDebounce(UUID userId) {
+        return "chat:account:pub:" + userId;
+    }
+}
