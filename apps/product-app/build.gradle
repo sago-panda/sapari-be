@@ -12,6 +12,9 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     implementation 'org.springframework.boot:spring-boot-starter-security'
 
+    // 상품 대량 등록 엑셀(xlsx) 스트리밍 읽기 — Boot BOM 미관리라 버전 고정
+    implementation 'org.apache.poi:poi-ooxml:5.4.1'
+
     runtimeOnly 'org.postgresql:postgresql'
 
     testImplementation 'com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19'
