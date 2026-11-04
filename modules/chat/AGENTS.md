@@ -123,8 +123,11 @@ which meant the module's own guide read as if the filter were closed. They are d
 - **An exhaustive 2- and 3-syllable sweep** needs a Korean word list, which this repo does not have.
   The two-way split sweep (below) bounds the 2-syllable class structurally; the 3-syllable class is not
   bounded.
-- **2B worst-case cost** scales with the longest entry (`K`), stated with numbers at the `maxWindow`
-  field, the 2B loop and `MAX_WORD_LENGTH`.
+- **2B worst-case cost** scales super-linearly with the longest entry (`K`) — measured `K` 7→64 is
+  9.1x but the cost is 19.7x. `MAX_WORD_LENGTH` caps `K` at **16** (SPR-165 lowered it from 64 once
+  the dictionary became runtime-mutable); the full table is at that constant, and the `maxWindow`
+  field and the 2B loop point at it. The cap replaced the work-budget fallback that used to be
+  prescribed in the 2B comment — do not re-add it.
 
 Numbers and vectors for each live in `ProfanityFilter`'s class javadoc and the two data headers; this
 list exists so the axes are visible from here.
@@ -281,7 +284,8 @@ cost.
 Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
 resources, with **one deliberate asymmetry**: shape for both keys (whitespace plus the invisible
 classes: NBSP, ZWSP, word joiner, BOM, Hangul fillers, variation selectors, tag characters,
-blank-looking symbols like U+2800; and 64 chars), and the whitelist rules above — except that at the
+blank-looking symbols like U+2800; and the 16-char latency budget), and the whitelist rules above —
+except that at the
 **config** entrance a *zero-width* invisible character is **stripped with a warning** instead of
 refusing the boot. Space-like characters still refuse, because trimming `개 새끼` to `개새끼` would be
 guessing the operator's intent. The repo's own stated boundary is that refusal is for what is *harmful*,

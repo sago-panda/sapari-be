@@ -38,15 +38,36 @@ public final class ProfanityDictionary {
     private static final String WORDS = "/chat/profanity-words.txt";
     private static final String WHITELIST = "/chat/profanity-whitelist.txt";
 
-    // 정본 DDL 의 live_schema.chat_filter_word.word 가 varchar(64) 다. 1계층이 붙을 때
-    // 파일이 테이블에 그대로 들어가야 하므로 같은 상한을 여기서 먼저 지킨다.
-    //
-    // ⚠️ 이 수는 동시에 <ProfanityFilter 2B 최악 비용의 천장>이다. 2B 는 인접 2~K 토큰을
-    // 조인하고 K = 사전 최장 항목 길이이므로, 여기를 올리면 최악 지연이 같이 오른다 —
-    // 실측 211 / 531 / 1,357 / 3,011 µs (여분 항목 0 / 16 / 32 / 64자), 64자에서 332 msg/s.
-    // 즉 정본 DDL 이 varchar 를 넓혀 이 상수를 따라 올릴 때, 그것은 스키마 변경만이 아니라
-    // 채팅 지연 변경이다. ProfanityFilter 의 maxWindow 필드와 2B 루프에 같은 표시가 있다.
-    private static final int MAX_WORD_LENGTH = 64;
+    /**
+     * 사전 항목 하나의 상한 — <b>길이 제약이 아니라 지연 예산이다.</b>
+     *
+     * <p>{@code ProfanityFilter} 의 2B 는 인접 2~K 토큰을 조인하고 K = 사전 <b>최장 항목</b>의
+     * 접은 길이다. 즉 이 수는 항목 하나의 모양이 아니라 <b>모든 사용자의 모든 메시지</b>가 치르는
+     * 비용의 천장이고, 그 천장을 정하는 것은 사전에서 가장 긴 한 줄이다.
+     *
+     * <p><b>2026-11-05 실측</b>(199자/100토큰 메시지 · 1,078항목 사전 · 1초 예산 × 3라운드 중간값.
+     * 추가 항목의 길이가 그대로 K 가 된다 — 번들 최장이 7 이므로):
+     * <pre>
+     *   K    µs/건   msg/s   배수
+     *   7    144.7    6,910   1.0x   ← 오늘 번들
+     *  12    296.7    3,371   2.1x
+     *  16    468.6    2,134   3.2x   ← 이 상수
+     *  32  1,272.0      786   8.8x
+     *  64  2,844.4      352  19.7x   ← 전에 허용했던 최대
+     * </pre>
+     *
+     * <p><b>64 에서 16 으로 내렸다</b>(SPR-165). 64 가 괜찮았던 이유는 그 값에 닿는 길이 배포뿐이었기
+     * 때문이다 — 코드 리뷰를 지난 설정 한 줄. 사전 전파가 붙으면서 ADMIN 요청 하나로 그 길이 열렸고,
+     * 오타로 문장을 붙여 넣으면 함대 처리량이 19.7x 떨어진다. 16 은 측정된 점이고 도달 가능한
+     * 열화의 83% 를 걷어낸다. 번들 최장이 7 이라 여유가 9 자 있다.
+     *
+     * <p>⚠️ <b>이 수를 올리는 것은 스키마 변경이 아니라 채팅 지연 변경이다.</b> 정본
+     * {@code live_schema.chat_filter_word.word} 는 {@code varchar(64)} 라 열 쪽은 64 까지 받지만,
+     * 런타임 예산이 그보다 엄하다 — 열이 넓은 것이 허락이 아니다. 올릴 때는 위 표에서 값을 읽고
+     * 그 배수를 받아들일 수 있는지 먼저 판단할 것. {@code ProfanityFilter} 의 {@code maxWindow}
+     * 필드와 2B 루프에 같은 표시가 있다.
+     */
+    static final int MAX_WORD_LENGTH = 16;
 
     private final Set<String> words;
     private final Set<String> whitelist;
@@ -117,6 +138,63 @@ public final class ProfanityDictionary {
         return new ProfanityDictionary(words, whitelist, warnings);
     }
 
+    /**
+     * 이미 메모리에 있는 두 집합을 <b>리소스와 같은 문으로</b> 들여보낸다 — 정본에서 전파돼 온 사전이
+     * 이 입구를 쓴다.
+     *
+     * <p><b>왜 같은 문이어야 하는가.</b> 전파가 붙으면 사전이 세 입구로 들어온다 — 번들 리소스 ·
+     * 설정 CSV · 정본 스냅샷. 세 번째에만 검사를 안 걸면 거부의 근거들이 그 입구에서 전부 무효가
+     * 된다: 보이지 않는 글자가 든 항목은 평범한 입력을 영원히 못 잡고(막은 것처럼 보인다),
+     * 예산을 넘는 항목 하나는 함대 처리량을 떨어뜨리고, 욕설 그 자체인 화이트리스트 항목 하나는
+     * 그 욕설을 사전 전체에서 푼다. 그 셋은 어디서 들어왔는지와 무관하게 같은 결함이다.
+     *
+     * <p><b>던지는 것이 곧 거부다.</b> 호출자가 이것을 잡아 <b>교체를 포기하고 이전 사전을 계속
+     * 쓴다</b> — 리소스 입구가 부팅을 세우는 것과 방향이 다른데, 도는 Pod 를 사전 한 줄의 오타로
+     * 죽이는 것이 그 오타보다 나쁘기 때문이다. 쓰기 경로(관리자 엔드포인트)가 같은 검사를 먼저
+     * 돌려 애초에 이 상태에 도달하지 않게 하고, 여기는 그 경로를 지나지 않은 쓰기(DB·Redis 직접
+     * 수정)를 받는 <b>마지막 문</b>이다.
+     *
+     * <p>빈 욕설 집합도 거부한다. 리소스가 비어 있을 때와 같은 이유다 — 비면 마스킹이 조용히
+     * 꺼지고({@code displayMessage == originalMessage}) 그걸 알아챌 때쯤 그 기간의 이력이 이미
+     * 남는다. 스냅샷이 아직 없는 상태와 "스냅샷이 비었다" 는 호출자가 가르고, 전자는 번들로 뜬다.
+     *
+     * @param origin 실패 메시지에 실을 출처 이름(예: {@code "chat:dict"}). 세 입구 중 어디서
+     *               떨어졌는지가 당직자에게 가야 한다
+     */
+    public static ProfanityDictionary of(String origin, Set<String> words, Set<String> whitelist) {
+        Set<String> admitted = new LinkedHashSet<>();
+        for (String word : words) {
+            String stripped = strip(word);
+            if (stripped.isEmpty()) {
+                continue;
+            }
+            reject(origin + ":words", stripped);
+            admitted.add(stripped);
+        }
+        Set<String> admittedWhitelist = new LinkedHashSet<>();
+        for (String entry : whitelist) {
+            String stripped = strip(entry);
+            if (stripped.isEmpty()) {
+                continue;
+            }
+            reject(origin + ":whitelist", stripped);
+            admittedWhitelist.add(stripped);
+        }
+        if (admitted.isEmpty()) {
+            throw new IllegalStateException(
+                    "전파된 사전의 욕설 집합이 비어 있다: " + origin + " — 적용하면 마스킹이 조용히 "
+                            + "꺼지므로 거부한다. 스냅샷이 아직 없는 것과 다르다.");
+        }
+        // 화이트리스트는 <전수> 단어 집합에 대고 본다. 번들 경로가 번들끼리만 보는 것은 설정으로
+        // 들어온 단어 하나가 부팅을 세우지 않게 하려는 완화이고, 여기는 평면이 하나다 — 두 집합이
+        // 같은 테이블에서 같이 왔으므로 '나중에 섞인 쪽' 이 없다.
+        for (String entry : admittedWhitelist) {
+            rejectUselessWhitelist(entry, admitted);
+        }
+        return new ProfanityDictionary(admitted, admittedWhitelist,
+                warningEntries(admitted, admittedWhitelist));
+    }
+
     public Set<String> words() {
         return Set.copyOf(words);
     }
@@ -178,10 +256,23 @@ public final class ProfanityDictionary {
                             + "어떤 토큰에도 안 맞고, 그 외 보이지 않는 글자가 든 항목은 같은 글자를 "
                             + "품은 입력 하나만 맞는다. 둘 다 평범한 입력은 못 잡으면서 막은 것처럼 보인다.");
         }
+        // ⚠️ 여기서 재는 길이가 K 와 같은 것은 <호출 순서> 덕이다. 이 메서드는 항상 strip() 뒤에
+        // 불리고 strip 의 마지막 줄이 normalizeEntry(NFC) 다 — 즉 받는 값이 이미 NFC 평면이고,
+        // ProfanityFilter 가 K 를 세는 평면도 같다(fold 는 NFC 위에서 1:1 이라 길이를 보존한다).
+        //
+        // 이 순서를 뒤집으면 예산이 뚫린다. NFC 는 <늘릴 수> 있다 — 유니코드 전수에서 코드포인트가
+        // 늘어나는 글자가 85건이고(실측 2026-11-05), 최악은 악기 기호다: U+1D160 하나가 NFC 에서
+        // 3 코드포인트 · UTF-16 6자가 된다. 그래서 '가'×14 + U+1D160 은 원문 16자인데 NFC 20자다.
+        // 길이 검사를 normalizeEntry <앞으로> 옮기면 그 줄이 통과하고 K 가 예산을 넘는다.
+        // 지금 그것을 막는 것은 이 호출 순서 하나이고, 그래서 그 벡터를 테스트가 못 박는다
+        // (ProfanityDictionaryTest 의 theBudgetIsMeasuredOnTheNfcPlane).
         if (word.length() > MAX_WORD_LENGTH) {
             throw new IllegalStateException(
-                    "사전 항목이 너무 길다: " + where + " (" + word.length() + "자) — "
-                            + "상한 " + MAX_WORD_LENGTH + "자. 단어 파일에 산문이 섞인 것이다.");
+                    "사전 항목이 예산보다 길다: " + where + " (" + word.length() + "자) — "
+                            + "상한 " + MAX_WORD_LENGTH + "자. 이 상한은 글자 수 제약이 아니라 "
+                            + "지연 예산이다: 가장 긴 항목 하나가 2B 윈도우 폭을 정하고 그 비용을 "
+                            + "모든 메시지가 치른다(MAX_WORD_LENGTH javadoc 의 실측 표). "
+                            + "단어 파일에 산문이 섞였거나, 구절이 예산을 넘은 것이다.");
         }
     }
 

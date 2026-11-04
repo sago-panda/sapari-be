@@ -549,9 +549,15 @@ class ProfanityDictionaryTest {
     /**
      * 사전 최장 항목 길이 K 를 못 박는다 — <b>2B 최악 비용의 축</b>이다.
      *
-     * <p>ProfanityFilter 의 2B 는 인접 2~K 토큰을 조인하므로 반복이 O(토큰수 × K) 다. 그래서
-     * 사전에 긴 항목 하나를 더하는 것은 데이터 변경이 아니라 <b>지연 변경</b>이다 — 실측
-     * 211 / 531 / 1,357 / 3,011 µs (여분 항목 0 / 16 / 32 / 64자), 64자에서 332 msg/s.
+     * <p>ProfanityFilter 의 2B 는 인접 2~K 토큰을 조인하므로 반복이 O(토큰수 × K) 이고 조인마다
+     * 다시 K 가 붙는다. 그래서 사전에 긴 항목 하나를 더하는 것은 데이터 변경이 아니라
+     * <b>지연 변경</b>이다 — 실측(2026-11-05, 199자/100토큰) K 7 / 12 / 16 / 32 / 64 에서
+     * 144.7 / 296.7 / 468.6 / 1,272.0 / 2,844.4 µs, K=64 에서 352 msg/s. K 가 9.1배인데
+     * 비용이 19.7배이므로 선형이 아니다. 전체 표는 {@code MAX_WORD_LENGTH} javadoc 에 있다.
+     *
+     * <p>SPR-165 가 그 상한을 64 에서 <b>16</b> 으로 내렸다. 이 테스트가 고정하는 K=7 은 번들
+     * 데이터의 값이고 상한과 다르다 — 둘을 섞지 말 것. 상한 쪽 경계는
+     * {@code seventeenCharactersIsOverBudget}·{@code sixteenCharactersIsWithinBudget} 가 잡는다.
      *
      * <p>바로 위 {@code theAsciiEntriesAreExactlyThese} 가 이 축을 <b>못 지킨다.</b> K=7 을 만드는
      * 항목은 둘인데 하나만 ASCII 다 — {@code fuckyou} 와 {@code s하고e싶다x}. ASCII 집합을 박아
@@ -670,12 +676,40 @@ class ProfanityDictionaryTest {
     }
 
     @Test
-    @DisplayName("상한을 넘는 항목은 거부한다 — 단어 파일에 산문이 섞인 것이다")
+    @DisplayName("예산을 넘는 항목은 거부한다 — 단어 파일에 산문이 섞인 것이다")
     void anOverlongEntryFailsBoot() {
         assertThatThrownBy(() -> ProfanityDictionary.load(
                 "/chat/long-entry-dictionary.txt", WHITELIST, null, null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("너무 길다");
+                .hasMessageContaining("예산보다 길다");
+    }
+
+    /**
+     * ⭐ <b>예산의 경계를 양쪽에서 못 박는 두 벡터 중 거부 쪽.</b>
+     *
+     * <p>위 {@code anOverlongEntryFailsBoot} 는 픽스처가 70자라 상한이 16 이든 64 이든 떨어진다 —
+     * 즉 그 테스트는 "거부가 존재한다" 만 재고 <b>수를 재지 않는다.</b> 상한을 64 에서 16 으로
+     * 내리는 변경이 그 테스트를 초록으로 지나갔고, 그래서 경계 벡터를 따로 둔다.
+     *
+     * <p>이 하나만으로는 모자란다 — 상한을 1 로 내려도 초록이다. 바로 아래 통과 쪽과 둘이
+     * 상한을 <b>위아래로</b> 집어야 그 수가 테스트에 박힌다.
+     */
+    @Test
+    @DisplayName("⭐ 예산 경계 — 17자는 거부한다")
+    void seventeenCharactersIsOverBudget() {
+        assertThatThrownBy(() -> ProfanityDictionary.load("가".repeat(17), null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("예산보다 길다")
+                .as("수를 메시지에 실어야 운영자가 무엇을 줄여야 하는지 안다")
+                .hasMessageContaining("상한 16자");
+    }
+
+    /** ⭐ 경계의 통과 쪽 — 이것이 없으면 상한을 더 내리는 변경이 조용히 지나간다. */
+    @Test
+    @DisplayName("⭐ 예산 경계 — 16자는 통과한다")
+    void sixteenCharactersIsWithinBudget() {
+        assertThatCode(() -> ProfanityDictionary.load("가".repeat(16), null))
+                .doesNotThrowAnyException();
     }
 
     /**
@@ -698,12 +732,41 @@ class ProfanityDictionaryTest {
                 .hasMessageContaining("3번째 항목");
     }
 
+    /**
+     * ⭐ 예산이 <b>NFC 평면</b>에서 재진다는 것을 못 박는다 — 깨지면 예산이 3배까지 뚫린다.
+     *
+     * <p>{@code reject} 가 재는 길이와 {@code ProfanityFilter} 가 K 를 세는 길이가 같은 것은
+     * {@code fold} 의 성질이 아니라 <b>호출 순서</b> 덕이다: {@code reject} 는 항상
+     * {@code strip()} 뒤에 불리고 {@code strip} 의 마지막 줄이 {@code normalizeEntry}(NFC) 다.
+     *
+     * <p>NFC 는 늘릴 수 있다. 유니코드 전수에서 코드포인트가 늘어나는 글자가 85건이고, 최악은
+     * 악기 기호다 — {@code U+1D160} 하나가 NFC 에서 3 코드포인트 · UTF-16 <b>6자</b>가 된다.
+     * 아래 벡터는 원문 16자(예산 안)인데 NFC 20자(예산 밖)다. 길이 검사를
+     * {@code normalizeEntry} 앞으로 옮기면 이 줄이 통과하고 K 가 20 이 된다.
+     *
+     * <p>되돌려 재면 이 테스트만 깨진다 — 다른 길이 벡터는 전부 ASCII·한글이라 NFC 가 항등이다.
+     */
     @Test
-    @DisplayName("설정 CSV 의 상한 초과 항목도 거부한다")
-    void anOverlongEntryFromConfigFailsBoot() {
-        assertThatThrownBy(() -> ProfanityDictionary.load(null, "가".repeat(65)))
+    @DisplayName("⭐ 예산은 NFC 뒤에 잰다 — 원문 16자지만 NFC 20자인 항목은 거부한다")
+    void theBudgetIsMeasuredOnTheNfcPlane() {
+        String widening = "가".repeat(14) + new String(Character.toChars(0x1D160));
+        assertThat(widening.length())
+                .as("원문 길이로 재면 예산 안이다 — 그래서 이 벡터가 순서를 가른다")
+                .isEqualTo(16);
+
+        assertThatThrownBy(() -> ProfanityDictionary.load(widening, null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("너무 길다")
+                .hasMessageContaining("예산보다 길다")
+                .as("보고되는 수가 NFC 길이여야 한다 — 원문 16 을 보여 주면 운영자가 무엇을 줄일지 모른다")
+                .hasMessageContaining("20자");
+    }
+
+    @Test
+    @DisplayName("설정 CSV 의 예산 초과 항목도 거부한다")
+    void anOverlongEntryFromConfigFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "가".repeat(17)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("예산보다 길다")
                 .hasMessageContaining("chat.profanity.whitelist");
     }
 
