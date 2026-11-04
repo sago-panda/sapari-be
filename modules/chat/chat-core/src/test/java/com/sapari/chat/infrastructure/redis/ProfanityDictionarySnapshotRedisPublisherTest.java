@@ -1,9 +1,11 @@
 package com.sapari.chat.infrastructure.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -74,6 +76,12 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
         return new LinkedHashSet<>(List.of(values));
     }
 
+    /** 경합이 없는 평시 경로 — 지금 버전을 집어 그대로 조건으로 넘긴다. */
+    private static long publish(Set<String> words, Set<String> whitelist) {
+        return publisher.publishIfUnchanged(publisher.currentVersion(), words, whitelist)
+                .orElseThrow(() -> new AssertionError("경합이 없는데 조건이 깨졌다"));
+    }
+
     @Test
     @DisplayName("⭐ 한 번의 발행이 버전·본문·알림을 모두 남긴다")
     void onePublishLeavesAllThreeEffects() throws Exception {
@@ -89,7 +97,7 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
         listener.start();
         try {
             // when
-            long version = publisher.publish(ordered("시발", "개새끼"), ordered("시발점"));
+            long version = publish(ordered("시발", "개새끼"), ordered("시발점"));
 
             // then: 버전 키
             assertThat(version).isEqualTo(1);
@@ -123,9 +131,9 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
     @Test
     @DisplayName("⭐ 버전은 발행마다 오른다 — 번호를 Redis 가 정한다")
     void theVersionAdvancesOnEveryPublish() {
-        assertThat(publisher.publish(ordered("시발"), Set.of())).isEqualTo(1);
-        assertThat(publisher.publish(ordered("시발", "지랄"), Set.of())).isEqualTo(2);
-        assertThat(publisher.publish(ordered("시발"), Set.of())).isEqualTo(3);
+        assertThat(publish(ordered("시발"), Set.of())).isEqualTo(1);
+        assertThat(publish(ordered("시발", "지랄"), Set.of())).isEqualTo(2);
+        assertThat(publish(ordered("시발"), Set.of())).isEqualTo(3);
 
         // 본문의 버전도 같이 올라간다 — 두 값이 어긋나 보이면 주기 확인이 틀린 판단을 한다.
         assertThat(ProfanityDictionarySnapshotCodec.decode(
@@ -142,10 +150,76 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
     void aCorruptedKeyIsOverwritten() {
         redisTemplate.opsForSet().add(SNAPSHOT, "이것은-집합이다");
 
-        publisher.publish(ordered("시발"), Set.of());
+        publish(ordered("시발"), Set.of());
 
         assertThat(ProfanityDictionarySnapshotCodec.decode(
                 redisTemplate.opsForValue().get(SNAPSHOT)).words()).containsExactly("시발");
+    }
+
+    /**
+     * ⭐ <b>이 테스트가 lost update 를 막는다.</b>
+     *
+     * <p>본문은 호출자가 정본에서 읽은 값이고 그 읽기는 발행 <i>밖</i>에서 일어난다. 조건이
+     * 없으면 이 끼어들기가 성립한다:
+     * <pre>
+     *   A: 정본 읽어 {시발} 손에 듦 (버전 0 을 집어 뒀다)
+     *   B:              {시발,지랄} 읽고 발행 → v1
+     *   A: 발행 → v2, 본문 {시발}      ← v2 가 최신이라 함대가 지랄 없는 사전을 집행한다
+     * </pre>
+     * 지랄은 테이블에 있어 관리자 목록에 보이는데 어느 Pod 도 막지 않고, 발행은 쓰기가 있을
+     * 때만이라 다음 쓰기나 부팅까지 어긋난 채로 남는다.
+     *
+     * <p>조건이 서면 A 의 쓰기가 거부되고 <b>아무것도 쓰이지 않는다</b> — B 의 본문이 그대로
+     * 남고 버전도 전진하지 않는다. 호출자가 정본을 다시 읽어 재시도한다.
+     */
+    @Test
+    @DisplayName("⭐ 집어 둔 버전이 밀렸으면 쓰지 않는다 — 낡은 본문이 새 본문을 덮지 못한다")
+    void aStaleExpectedVersionIsRefusedAndWritesNothing() {
+        // given: A 가 버전 0 을 집고 {시발} 을 손에 들었다
+        long expectedByA = publisher.currentVersion();
+        assertThat(expectedByA).isZero();
+
+        // B 가 먼저 발행한다 — 더 새 본문이다
+        long versionByB = publish(ordered("시발", "지랄"), Set.of());
+        assertThat(versionByB).isEqualTo(1);
+
+        // when: A 가 낡은 본문으로 들어온다
+        OptionalLong refused =
+                publisher.publishIfUnchanged(expectedByA, ordered("시발"), Set.of());
+
+        // then: 거부되고 아무것도 안 바뀐다
+        assertThat(refused).isEmpty();
+        assertThat(redisTemplate.opsForValue().get(VERSION))
+                .as("실패한 시도가 번호를 태우면 받는 쪽이 매 주기마다 헛읽기를 한다")
+                .isEqualTo("1");
+        ProfanityDictionarySnapshot survived = ProfanityDictionarySnapshotCodec.decode(
+                redisTemplate.opsForValue().get(SNAPSHOT));
+        assertThat(survived.version()).isEqualTo(1);
+        assertThat(survived.words())
+                .as("B 의 본문이 그대로 남아야 한다 — 지랄이 사라지면 그게 lost update 다")
+                .containsExactly("시발", "지랄");
+    }
+
+    @Test
+    @DisplayName("한 번도 발행되지 않았으면 현재 버전이 0 이다 — 스크립트도 없는 키를 0 으로 읽는다")
+    void theCurrentVersionIsZeroBeforeAnyPublish() {
+        assertThat(publisher.currentVersion()).isZero();
+
+        // 그 0 을 조건으로 넘기면 첫 발행이 성립한다 — 둘이 같은 기준을 써야 한다
+        assertThat(publisher.publishIfUnchanged(0L, ordered("시발"), Set.of()))
+                .hasValue(1L);
+    }
+
+    @Test
+    @DisplayName("버전 키가 숫자가 아니면 던진다 — 조건 비교가 영원히 어긋나는 것보다 낫다")
+    void aNonNumericVersionKeyThrows() {
+        redisTemplate.opsForValue().set(VERSION, "오염된값");
+
+        assertThatThrownBy(() -> publisher.currentVersion())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("숫자가 아니다")
+                .as("값을 그대로 실으면 개행 삽입으로 로그를 위조할 수 있다")
+                .hasMessageNotContaining("오염된값");
     }
 
     @Test
@@ -160,7 +234,7 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
             whitelist.add("정상어" + i);
         }
 
-        publisher.publish(words, whitelist);
+        publish(words, whitelist);
 
         // SADD 와 달리 SET 은 인자 하나라 Lua 스택 한계(unpack ~8,000)에 닿지 않는다 —
         // 강퇴 재적재가 청크를 써야 했던 이유가 여기엔 없다.

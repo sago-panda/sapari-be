@@ -64,6 +64,10 @@ public class ChatBeansConfig {
      * 또 만들게 된다. 구체 타입으로 주면 두 포트 주입이 같은 객체로 해결된다 — 읽는 쪽은
      * {@code SendChatService}, 쓰는 쪽은 {@code ProfanityDictionaryRefreshHandler} 다.
      */
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
     @Bean
     public SwappableProfanityFilter profanityFilterSource(
             @Value("${chat.profanity.words:}") String extraWords,
@@ -71,6 +75,24 @@ public class ChatBeansConfig {
         ProfanityDictionary dictionary = ProfanityDictionary.load(extraWords, extraWhitelist);
         log.info("욕설 사전 적재 — 욕설 {}개 · 화이트리스트 {}개",
                 dictionary.words().size(), dictionary.whitelist().size());
+        // ⚠️ 설정 CSV 항목의 <수명>을 적는다. 이 둘은 부팅 때 한 번 합쳐질 뿐이고, 정본
+        // 스냅샷이 도착하면 필터가 통째로 교체되면서 함께 빠진다
+        // (ProfanityDictionaryRefreshHandler 가 스냅샷만으로 새 필터를 만든다). 그 교체는
+        // live-app 이 한 번 뜨거나 ADMIN 이 한 번 쓰면 일어난다.
+        //
+        // 합치지 않는 것이 의도다 — 합치면 <집행되는 집합>이 live-app 의 쓰기 선검사가 보는
+        // <검증되는 집합>과 달라진다. 그러면 설정 단어 하나가 정본 화이트리스트 항목과 겹치는
+        // 순간 streaming-app 의 교체만 거부되고 쓰기는 통과해, 게이트 평면과 런타임 평면이
+        // 갈리는 그 결함이 되살아난다(이 티켓이 반복해 닫은 계급이다).
+        //
+        // 그래서 조용히 사라지지 않게 수명을 여기서 말한다. 운영 중 변경은 ADMIN API
+        // (/api/v1/chat/filter-words)로 — 그쪽은 감사되고 함대에 전파된다.
+        if (hasText(extraWords) || hasText(extraWhitelist)) {
+            log.warn("설정 CSV 사전 항목이 적재됐다 — 이 항목들은 <정본 스냅샷이 도착하면 교체와 "
+                    + "함께 빠진다>(live-app 부팅 또는 ADMIN 쓰기 한 번). 지속되는 변경은 "
+                    + "ADMIN API(/api/v1/chat/filter-words)로 할 것. words={} whitelist={}",
+                    extraWords, extraWhitelist);
+        }
         // 적재는 됐지만 아무 일도 하지 않는 항목을 알려 준다. 거부하지 않는 이유는 해롭지
         // 않기 때문이고(결과가 안 바뀐다), 방송 중에 쓰라고 둔 통로가 한 줄 오타로 전 파드
         // 채팅을 세우는 대가가 더 크다. 다만 "막았다" 로 믿고 넘어가는 것이 이 경고가 막으려는

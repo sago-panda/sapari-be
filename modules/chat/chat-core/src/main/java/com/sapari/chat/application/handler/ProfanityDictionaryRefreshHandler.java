@@ -148,6 +148,16 @@ public class ProfanityDictionaryRefreshHandler {
                 }))
                 .filter(published -> published != processedVersion)
                 .flatMap(published -> snapshotReader.read()
+                        // ⚠️ 버전은 있는데 본문이 없다. 이것이 한때 <유일하게 완전 무음인 분기>
+                        // 였다 — 에러도 로그도 없고 버전도 안 올라 1분마다 조용히 반복했다.
+                        // 두 키 모두 TTL 이 없지만 allkeys-lru 는 TTL 없는 키도 축출하고, 축출
+                        // 순서가 스냅샷에 불리하다(수십 KB · 변경 시에만 읽힘 vs 몇 바이트 ·
+                        // 분마다 읽힘). 버전을 올리지 않는 것은 전송 실패와 같은 방향이다 —
+                        // 다음 발행이 본문을 되살리면 그때 받는다.
+                        .switchIfEmpty(Mono.fromRunnable(() -> log.error(
+                                "사전 버전은 있는데 본문이 없다 — 이전 사전을 계속 쓴다. "
+                                        + "스냅샷 키가 축출됐을 수 있다(다음 발행이 되살린다) "
+                                        + "publishedVersion={} trigger={}", published, reason)))
                         .flatMap(snapshot -> apply(snapshot, reason))
                         // 코덱이 포맷을 거부한 것이다. 다시 읽어도 같은 이유로 거부되므로
                         // <확인 때 본 버전>을 처리한 것으로 적는다 — 손에 든 스냅샷이 없어
@@ -178,8 +188,24 @@ public class ProfanityDictionaryRefreshHandler {
      * 비교가 없으면 그 사실이 코드에 안 적힌다.
      */
     private Mono<Void> apply(ProfanityDictionarySnapshot snapshot, String reason) {
-        if (snapshot.version() <= processedVersion) {
+        if (snapshot.version() == processedVersion) {
+            // 같은 것을 다시 받았다 — 확인 때 본 수가 바뀌었는데 손에 든 것은 같은 경우다.
             return Mono.empty();
+        }
+        if (snapshot.version() < processedVersion) {
+            // ⚠️ 뒤로 갔다. 한때 이 경우를 <조용히 버렸다>(단조 비교가 {@code <=} 였다) —
+            // 매 분 수십 KB 를 읽고 아무것도 교체하지 않으며 로그도 0줄이었다. 도달 경로가
+            // 있다: FLUSHDB · 옛 RDB 복원 · 낡은 레플리카 페일오버(버전 1부터 다시 시작).
+            // 그때 버리면 이 Pod 이 함대와 영구히 갈린다 — 발행된 스냅샷이 정본이므로 적용이
+            // 맞고, 되돌아갔다는 사실만 시끄럽게 남긴다.
+            //
+            // 단조 비교를 포기해도 순서가 깨지지 않는 것은 새로고침이 직렬화돼 있기 때문이다
+            // (triggers() → concatMap, 교체하는 스레드가 하나). 그 비교는 방어였고 대가가
+            // 이 무음 분기였다.
+            log.warn("사전 버전이 뒤로 갔다 — 그래도 적용한다(발행된 스냅샷이 정본이다). "
+                            + "Redis 가 상태를 잃었을 수 있다(FLUSHDB · 옛 RDB 복원 · 레플리카 "
+                            + "페일오버) local={} published={} trigger={}",
+                    processedVersion, snapshot.version(), reason);
         }
         return Mono.fromCallable(() -> build(snapshot))
                 // 트라이 빌드는 CPU 다. 알림은 Redis 구독 스레드에서, 주기는 parallel 에서 오는데

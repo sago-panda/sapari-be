@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import java.util.Set;
@@ -104,6 +105,77 @@ class ManageFilterWordsServiceTest {
         assertThat(change.version())
                 .as("버전이 없으면 운영자가 자기 변경이 함대에 깔릴 번호를 모른다")
                 .isEqualTo(42);
+    }
+
+    /**
+     * ⭐ <b>저장되는 값이 집행되는 값과 같아야 한다.</b>
+     *
+     * <p>문은 {@code strip} + NFC 뒤의 값을 보는데 쓰기가 원문을 저장하면 한 요청에서 두 결과가
+     * 나온다. {@code "시발\n"} 이 가장 나쁘다 — 문은 {@code 시발} 로 보고 200 을 주는데 테이블에는
+     * 개행이 든 행이 남고, 그 뒤 <b>모든</b> 스냅샷이 코덱 자기검증에서 깨져 어느 Pod 도 사전을
+     * 다시 갈아 끼우지 못한다. 그리고 {@code guardSource} 가 같은 문을 쓰므로 그 상태를 영원히
+     * 감지하지 못한다(운영자는 200 과 올라가는 버전만 본다).
+     */
+    @Test
+    @DisplayName("⭐ 보낸 값이 아니라 접은 값을 저장한다 — 개행 한 글자가 전파를 멈추던 자리")
+    void theStoredWordIsTheFoldedWord() {
+        // given: 네 모양 모두 문은 '시발' 로 본다. 저장도 그래야 한다.
+        //   @CsvSource 를 쓰지 않는다 — 값에 개행이 들어가면 CSV 자체가 쪼개져 벡터가
+        //   조용히 다른 것이 된다(처음에 그렇게 썼고 인자 하나가 null 로 들어왔다).
+        for (String sent : new String[]{"시발\n", "\n시발", "  시발  ", "시발\t"}) {
+            sourceIs(Set.of("개새끼"), Set.of());
+
+            service.add(add("PROFANITY", sent, "ADMIN"));
+        }
+
+        // then: 네 번 모두 같은 값이 테이블로 간다 — 문이 본 값과 같은 값이다
+        verify(writeRecorder, times(4)).add(FilterWordKind.PROFANITY, "시발", admin);
+    }
+
+    /**
+     * ⭐ 반대 방향 — 삭제가 <b>성공을 돌려주며 아무것도 지우지 않던</b> 자리.
+     *
+     * <p>{@code "개새끼 "} 를 저장해 두면 {@code ?word=개새끼} 삭제가 0행이고 응답은
+     * {@code changed=false}("이미 그 상태였다") 인데, 실제로는 여전히 전 플랫폼에서 집행 중이다
+     * — 집행은 받는 쪽이 다시 접기 때문이다. 접어서 저장하면 삭제 키가 맞는다.
+     */
+    @Test
+    @DisplayName("⭐ 삭제도 접은 값으로 지운다 — 0행 삭제가 성공으로 보이던 자리")
+    void theDeletedWordIsTheFoldedWord() {
+        // 둘을 둔다 — 하나만 두면 마지막 욕설 거부에 먼저 걸려 이 축을 재지 못한다
+        sourceIs(Set.of("개새끼", "시발"), Set.of());
+
+        service.remove(remove("PROFANITY", " 개새끼 ", "ADMIN"));
+
+        verify(writeRecorder).remove(FilterWordKind.PROFANITY, "개새끼");
+    }
+
+    /**
+     * NFD 로 들어온 입력(macOS 복붙)도 같은 평면으로 접는다. 접지 않으면
+     * {@code uk (kind, word)} 가 원문 기준이라 <b>눈으로 구별 안 되는 두 번째 행</b>이 생긴다.
+     */
+    @Test
+    @DisplayName("⭐ NFD 입력도 NFC 로 접어 저장한다 — 구별 안 되는 두 번째 행을 막는다")
+    void anNfdInputIsStoredAsNfc() {
+        sourceIs(Set.of("개새끼"), Set.of());
+        String nfd = java.text.Normalizer.normalize("시발", java.text.Normalizer.Form.NFD);
+        assertThat(nfd).isNotEqualTo("시발");
+
+        service.add(add("PROFANITY", nfd, "ADMIN"));
+
+        verify(writeRecorder).add(FilterWordKind.PROFANITY, "시발", admin);
+    }
+
+    @Test
+    @DisplayName("접으면 아무것도 남지 않는 항목은 400 이다")
+    void aWordThatFoldsToNothingIsRejected() {
+        sourceIs(Set.of("개새끼"), Set.of());
+
+        // 커맨드의 isBlank 를 지나는 값이어야 이 검사에 도달한다 — BOM 은 isBlank 가 false 다.
+        assertThatThrownBy(() -> service.add(add("PROFANITY", "\uFEFF", "ADMIN")))
+                .isInstanceOf(FilterWordRejectedException.class);
+
+        verify(writeRecorder, never()).add(any(), anyString(), any());
     }
 
     /**

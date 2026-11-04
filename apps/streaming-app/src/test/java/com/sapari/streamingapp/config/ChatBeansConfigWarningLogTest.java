@@ -53,15 +53,29 @@ class ChatBeansConfigWarningLogTest {
         return appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
     }
 
+    /**
+     * 사전 <b>내용</b>에 대한 경고만 센다.
+     *
+     * <p>이 로거에 WARN 이 둘 생겼다 — 이것과 설정 CSV 항목의 <b>수명</b> 알림이다. 수명 알림은
+     * 설정 extras 가 비어 있지 않으면 <b>항상</b> 나가므로, 아래 벡터들이 전부 extras 를 넘기는
+     * 이상 {@code warnings()} 를 그대로 세면 "거짓 경고가 없다" 를 재는 테스트가 그 알림 하나
+     * 때문에 깨진다(실제로 깨졌다). 축이 둘이면 세는 자리도 둘이어야 한다.
+     */
+    private List<ILoggingEvent> dictionaryWarnings() {
+        return warnings().stream()
+                .filter(e -> e.getFormattedMessage().contains("확인할 항목이 있다"))
+                .toList();
+    }
+
     @Test
     @DisplayName("⭐ 화이트리스트 항목과 같은 단어는 WARN 에 실린다 — 어느 자리에서도 안 걸린다")
     void aWordIdenticalToAWhitelistEntryIsWarnedAbout() {
         new ChatBeansConfig().profanityFilterSource("시발점", "");
 
-        assertThat(warnings())
+        assertThat(dictionaryWarnings())
                 .as("안 걸린다는 사실을 아무 데도 안 남기면 '막았다' 와 구분되지 않는다")
                 .hasSize(1);
-        assertThat(warnings().get(0).getFormattedMessage()).contains("시발점");
+        assertThat(dictionaryWarnings().get(0).getFormattedMessage()).contains("시발점");
     }
 
     @Test
@@ -69,7 +83,7 @@ class ChatBeansConfigWarningLogTest {
     void aWordMerelyContainingAnEntryIsNotWarnedAbout() {
         new ChatBeansConfig().profanityFilterSource("전염병같은놈", "");
 
-        assertThat(warnings())
+        assertThat(dictionaryWarnings())
                 .as("거짓 경고는 진짜 경고를 묻는다 — 이 단어는 실제로 마스킹된다")
                 .isEmpty();
     }
@@ -86,8 +100,31 @@ class ChatBeansConfigWarningLogTest {
     void anIneffectiveWhitelistEntryIsWarnedAbout() {
         new ChatBeansConfig().profanityFilterSource("", "감사합니다");
 
-        assertThat(warnings()).hasSize(1);
-        assertThat(warnings().get(0).getFormattedMessage()).contains("감사합니다");
+        assertThat(dictionaryWarnings()).hasSize(1);
+        assertThat(dictionaryWarnings().get(0).getFormattedMessage()).contains("감사합니다");
+    }
+
+    /**
+     * ⭐ <b>설정 CSV 항목의 수명이 로그에 남는다.</b>
+     *
+     * <p>이 둘은 부팅 때 번들에 한 번 합쳐질 뿐이고, 정본 스냅샷이 도착하면 필터가 통째로
+     * 교체되면서 <b>함께 빠진다</b> — live-app 이 한 번 뜨거나 ADMIN 이 한 번 쓰면 일어난다.
+     * 합치지 않는 것이 의도인 이유는 합치면 집행되는 집합이 live-app 의 쓰기 선검사가 보는
+     * 집합과 달라지기 때문이다(게이트 평면 ≠ 런타임 평면).
+     *
+     * <p>그러니 남는 문제는 "사라진다" 가 아니라 <b>"조용히 사라진다"</b> 였다. 이 WARN 이 그
+     * 절반을 닫고, 이 테스트가 그 WARN 을 못 박는다 — 로그는 지워도 조용한 자리다.
+     */
+    @Test
+    @DisplayName("⭐ 설정 CSV 항목이 있으면 그 수명을 WARN 으로 알린다 — 조용히 사라지지 않게")
+    void theLifetimeOfConfigEntriesIsAnnounced() {
+        new ChatBeansConfig().profanityFilterSource("긴급차단어", "");
+
+        assertThat(warnings().stream().map(ILoggingEvent::getFormattedMessage))
+                .as("정본 스냅샷이 도착하면 이 항목이 빠진다는 사실이 어디에도 없으면 아무도 모른다")
+                .anySatisfy(message -> assertThat(message)
+                        .contains("정본 스냅샷이 도착하면")
+                        .contains("/api/v1/chat/filter-words"));
     }
 
     @Test

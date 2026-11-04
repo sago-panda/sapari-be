@@ -181,6 +181,35 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   as `SEC-11`). The two reachable causes are direct SQL and **tightening a rule later** — exactly what
   lowering the K budget 64 → 16 was; the table was empty then, so it cost nothing, but the next
   tightening will meet a populated one.
+- ⚠️ **What is stored is what is enforced.** The door judges `strip`+NFC of an entry, so the write
+  must store that same value — writing the raw input gave two outcomes from one request: `"시발\n"`
+  passed the gate (200) and left a newline row that broke the codec's self-check, **freezing every
+  later publish fleet-wide** (and `guardSource` uses the same door, so it could never detect it);
+  `"개새끼 "` made `DELETE ?word=개새끼` match 0 rows and answer `changed=false` while the word was
+  still being enforced. The plane is exposed as `ProfanityFilterFactory.normalize` precisely so the
+  checking side and the storing side cannot drift.
+- **Publishing is conditional, not an unconditional `INCR`.** The body is read *outside* the script,
+  so an unconditional bump let a later publisher win the version while carrying an older body — the
+  word stayed in the table (visible in the admin list) and absent from the fleet until the next write
+  or boot, which a rolling deploy reaches. The script now advances only if the version is still the
+  one the publisher took, and a lost race **re-reads the source** before retrying (re-sending the same
+  body would reinstate the very bug). A failed attempt writes nothing, so it cannot burn numbers and
+  break the version-key/snapshot invariant.
+- **The receiver applies a *regressed* version too, loudly.** A strict `<=` guard silently dropped it,
+  which is reachable (FLUSHDB, old RDB restore, stale replica failover) and left that pod diverged from
+  the fleet forever. Refreshes are serialized by `concatMap`, so monotonicity was defensive and its
+  price was a silent branch. "Version present, body absent" likewise used to be the one fully silent
+  branch — `allkeys-lru` evicts TTL-less keys and the odds favour evicting the snapshot (tens of KB,
+  read on change) over the counter (bytes, read every minute).
+- **The config CSV (`chat.profanity.words`) is boot-only and dies at the first swap.** It is *not*
+  merged into propagated filters on purpose: merging would make the enforced set differ from the set
+  live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps
+  while writes passed — the same gate-plane/runtime-plane split this ticket keeps closing. Its lifetime
+  is logged at boot so it does not vanish silently; durable changes go through the ADMIN API.
+- **Rule (1) crosses kinds, so two concurrent adds can each pass and still commit a violation**
+  (`rejectUselessWhitelist` tests a whitelist entry against the *word* set). No lock: it needs the same
+  string added to both kinds simultaneously at human typing rates, and it is recoverable by removing
+  either. What it gets instead is a post-write re-check that logs it against the request that caused it.
 - **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
   first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
   set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.

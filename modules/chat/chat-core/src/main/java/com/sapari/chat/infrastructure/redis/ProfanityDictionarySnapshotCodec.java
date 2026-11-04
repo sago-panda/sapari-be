@@ -110,10 +110,13 @@ final class ProfanityDictionarySnapshotCodec {
      */
     private static Set<String> collect(List<String> lines, int from, int count, String what) {
         Set<String> out = new LinkedHashSet<>();
-        for (String line : lines.subList(from, from + count)) {
+        for (int i = from; i < from + count; i++) {
+            String line = lines.get(i);
             if (line.isBlank()) {
+                // 줄 번호를 인덱스로 센다. 한때 out.size() 로 셌는데 out 이 Set 이라 빈 항목
+                // 앞에 중복이 있으면 번호가 그만큼 밀렸다 — 진단 문구가 엉뚱한 줄을 가리킨다.
                 throw new IllegalStateException(
-                        "사전 스냅샷의 " + what + " 항목이 비어 있다 — " + (from + out.size() + 1)
+                        "사전 스냅샷의 " + what + " 항목이 비어 있다 — " + (i + 1)
                                 + "번째 줄. 항목은 비어 있을 수 없다(로더가 공백 항목을 거부한다).");
             }
             out.add(line);

@@ -19,8 +19,25 @@ public interface ChatFilterWordJpaRepository extends JpaRepository<ChatFilterWor
      * 항목 수만큼 객체가 뜨고 {@code id}·{@code created_by}·{@code created_at} 가 함께 올라오는데,
      * 그 셋을 읽는 코드가 하류에 없다. 사전 규모가 1,078건이라 지금도 의미가 있고, 이 질의는
      * 사전이 바뀔 때마다 돈다.
+     *
+     * <p><b>{@code ORDER BY} 가 있어야 하는 이유.</b> 호출자가 순서를 보존하는 집합으로 받으면서
+     * 근거를 "두 Pod 의 출력을 눈으로 비교할 수 있게" 로 적었는데, 정렬이 없으면 Postgres 는
+     * 순서를 보장하지 않으므로 그 근거가 실현되지 않는다. 그리고 그 순서가 스냅샷 본문의 줄
+     * 순서가 되므로, 정렬이 없으면 <b>내용이 같은 스냅샷이 매번 다른 바이트</b>가 된다 —
+     * 왕복 비교와 진단이 둘 다 흔들린다.
+     *
+     * <p>비용은 0 에 가깝다. 이 질의는 사전이 바뀔 때만 돌고(사람 타이핑 빈도) 정렬 대상이
+     * 1,000여 건이다.
+     *
+     * <p>⚠️ <b>자바의 {@code String} 순서가 아니다.</b> Postgres 콜레이션이 한글을 다르게
+     * 정렬한다(실측, postgres:16.15 컨테이너: 지랄·개새끼·시발 → {@code 시발, 지랄, 개새끼}.
+     * 자바 {@code Collections.sort} 는 {@code 개새끼, 시발, 지랄}). 필요한 성질은 "어떤 순서" 가
+     * 아니라 <b>한 DB 안에서 같은 입력이 같은 순서</b>이므로 그 차이는 무해하다 — 그래서
+     * 테스트도 결정론만 잰다. 시드의 정렬(자바)과 이 정렬(DB)이 다른 것도 같은 이유로
+     * 무해하다: 시드 쪽은 모든 Pod 이 같은 순서로 행 락을 잡게 하려는 것이고 이쪽은 읽은
+     * 결과가 흔들리지 않게 하려는 것이다.
      */
-    @Query("SELECT e.word FROM ChatFilterWordEntity e WHERE e.kind = :kind")
+    @Query("SELECT e.word FROM ChatFilterWordEntity e WHERE e.kind = :kind ORDER BY e.word")
     List<String> findWordsByKind(@Param("kind") String kind);
 
     /**

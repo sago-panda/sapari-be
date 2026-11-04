@@ -2,6 +2,7 @@ package com.sapari.chat.application.service;
 
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.UUID;
 
 import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.command.AddFilterWordCommand;
@@ -66,19 +67,27 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
     public FilterWordChange add(AddFilterWordCommand command) {
         requireAdmin(command.actorRole());
         FilterWordKind kind = parseKind(command.kind());
+        String word = fold(command.word());
 
         Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
         Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
         // 변경 전이 이미 어기는가 — 그렇다면 원인은 운영자의 입력이 아니다.
         guardSource(words, whitelist);
 
-        Set<String> nextWords = plus(words, kind == FilterWordKind.PROFANITY ? command.word() : null);
+        Set<String> nextWords = plus(words, kind == FilterWordKind.PROFANITY ? word : null);
         Set<String> nextWhitelist =
-                plus(whitelist, kind == FilterWordKind.WHITELIST ? command.word() : null);
+                plus(whitelist, kind == FilterWordKind.WHITELIST ? word : null);
         // 변경 전이 멀쩡했으므로 여기서 떨어지면 차이는 보낸 항목 하나뿐이다.
-        guardRequested(nextWords, nextWhitelist, command.word());
+        guardRequested(nextWords, nextWhitelist, word);
 
-        boolean changed = writeRecorder.add(kind, command.word(), command.actorId());
+        boolean changed = writeRecorder.add(kind, word, command.actorId());
+        // ⚠️ 커밋된 집합을 다시 본다. 선검사는 <자기 요청의 결과>만 보는데 규칙 (1)은 두 kind 를
+        // 가로지르므로, 같은 문자열을 서로 다른 kind 에 동시에 넣는 두 요청이 각자 통과하고
+        // 커밋된 합집합만 어길 수 있다(ChatFilterWordWriteRecorder javadoc). 롤백하지 않는다 —
+        // 이미 커밋됐고, 성공한 쓰기에 오류를 돌려주면 누른 사람이 재시도한다. 하는 일은 그
+        // 상태가 <그 요청의 로그에 붙게> 하는 것이다. 다음 쓰기는 guardSource 가 409 로 막고,
+        // 복구는 어긴 둘 중 하나를 제거하는 것이다.
+        warnIfCommittedSourceViolates(command.actorId());
         // 멱등 호출(이미 있던 단어)에도 발행한다 — 건너뛰면 스냅샷이 유실된 상태를 되돌릴
         // 경로가 하나 줄어든다.
         long version = publishService.publishFromSource();
@@ -91,15 +100,16 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
     public FilterWordChange remove(RemoveFilterWordCommand command) {
         requireAdmin(command.actorRole());
         FilterWordKind kind = parseKind(command.kind());
+        String word = fold(command.word());
 
         Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
         Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
-        Set<String> nextWords = minus(words, kind == FilterWordKind.PROFANITY ? command.word() : null);
+        Set<String> nextWords = minus(words, kind == FilterWordKind.PROFANITY ? word : null);
         Set<String> nextWhitelist =
-                minus(whitelist, kind == FilterWordKind.WHITELIST ? command.word() : null);
+                minus(whitelist, kind == FilterWordKind.WHITELIST ? word : null);
         guardRemoval(nextWords, nextWhitelist);
 
-        boolean changed = writeRecorder.remove(kind, command.word());
+        boolean changed = writeRecorder.remove(kind, word);
         long version = publishService.publishFromSource();
         log.info("사전에서 항목을 뺐다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
@@ -112,6 +122,57 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         return new FilterWordsView(
                 repository.findWords(FilterWordKind.PROFANITY),
                 repository.findWords(FilterWordKind.WHITELIST));
+    }
+
+    /**
+     * 커밋된 정본이 문을 지나는지 본다 — <b>로그만</b> 남긴다.
+     *
+     * <p>선검사를 지나왔는데도 어길 수 있는 이유는 규칙 (1)이 두 kind 를 가로지르기 때문이다
+     * (조합은 {@code ChatFilterWordWriteRecorder} javadoc). 그 상태는 복구 가능하지만
+     * <b>조용하면</b> 운영자가 "사전을 고쳤는데 안 먹는다" 의 원인을 찾을 길이 이 로그뿐이고,
+     * 이 로그가 없으면 아무 데도 없다.
+     */
+    private void warnIfCommittedSourceViolates(UUID actorId) {
+        Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
+        Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
+        try {
+            filterFactory.from(SOURCE_ORIGIN, words, whitelist);
+        } catch (IllegalStateException e) {
+            log.error("사전 쓰기 뒤 정본이 문을 통과하지 못한다 — 동시 쓰기 둘이 각자 선검사를 "
+                            + "지나고 커밋된 합집합만 어긴 경우다. 전 Pod 가 교체를 거부하고 이후 "
+                            + "모든 추가가 409 가 된다 — 어긴 항목 중 하나를 제거해야 풀린다. "
+                            + "actorId={} 사유={}", actorId, e.getMessage());
+        }
+    }
+
+    /**
+     * 항목을 <b>문이 보는 평면</b>으로 접는다 — 검사하는 값과 저장하는 값을 같게 만든다.
+     *
+     * <p>⚠️ 이것이 없을 때 한 요청에서 두 결과가 나왔다. 문은 {@code strip} + NFC 뒤의 값을
+     * 보는데 쓰기는 원문을 저장했다:
+     * <ul>
+     *   <li>{@code "시발\n"} → 문은 {@code 시발} 로 보고 200. 테이블에는 개행이 든 행이 남고,
+     *       그 뒤 모든 스냅샷이 코덱 자기검증에서 깨져 <b>전 함대의 전파가 멈춘다</b>. 그리고
+     *       {@code guardSource} 도 같은 문을 쓰므로 그 상태를 영원히 감지하지 못한다 —
+     *       운영자는 200 과 올라가는 버전만 본다.
+     *   <li>{@code "개새끼 "} → 저장은 공백 포함. 집행은 받는 쪽이 다시 접으니 정상인데,
+     *       {@code ?word=개새끼} 삭제가 <b>0행</b>이고 응답은 "이미 그 상태였다"
+     *       ({@code changed=false}) 다 — 실제로는 여전히 전 플랫폼에서 집행 중이다. 그리고
+     *       {@code uk (kind, word)} 가 원문 기준이라 다시 더하면 눈으로 구별 안 되는 두 번째
+     *       행이 생긴다(macOS 복붙의 NFD 입력도 같은 모양이다).
+     * </ul>
+     *
+     * <p>접은 결과가 비면 400 이다. 커맨드의 {@code isBlank} 가 대부분을 끊지만 폭 없는 글자
+     * (ZWSP 등)는 {@code isBlank} 를 통과하고 여기서 빈 값이 되지 않는다 — 그쪽은 아래 문이
+     * 거부한다. 이 검사는 {@code strip} 이 전부 걷어낸 경우를 받는다.
+     */
+    private String fold(String word) {
+        String folded = filterFactory.normalize(word);
+        if (folded.isBlank()) {
+            throw new FilterWordRejectedException(
+                    "항목이 공백뿐이다 — 접은 뒤 남는 글자가 없다. 원문 길이=" + word.length());
+        }
+        return folded;
     }
 
     private void requireAdmin(String actorRole) {

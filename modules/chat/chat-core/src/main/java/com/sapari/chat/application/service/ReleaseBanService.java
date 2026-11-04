@@ -96,7 +96,34 @@ public class ReleaseBanService implements ReleaseBanUseCase {
         }
 
         // 조건 없이 지운다 — banExisted 로 게이팅하면 위 재시도 경로에서 미러에 도달할 코드가 안 남는다.
-        banWriteRepository.releaseMirror(command.targetUserId());
+        //
+        // ⚠️ 여기서 실패하면 <정본 행은 지워지고 기준선은 남았는데 미러는 그대로> 다. 그 상태의
+        // 피해가 크다: 영구 밴의 미러에는 TTL 이 없어 사람이 다시 누르지 않으면 영원히 과다
+        // 차단이다. 그런데 이 호출의 실패는 번역도 로그도 없었다 — 아래 두 로그가 전부 이 줄
+        // <뒤>에 있어서, 그 상태가 로그 한 줄 없이 남았고 응답은 일반 500 이었다.
+        //
+        // 복구 수단은 같은 요청의 멱등 재시도다(위 주석의 그 경로). 그 사실이 응답·로그에
+        // 없으면 누른 사람은 재시도할 이유를 모른다. 그래서 잃은 것을 적고, 경합은 위 정본
+        // 쓰기와 같은 409 로 접는다 — 같은 조치 안에서 같은 종류의 실패가 다른 등급으로 나가면
+        // ChatErrorCode 가 409 를 고른 근거("500 은 재시도해도 소용없다는 신호로 읽힌다")가
+        // 이 경로에서만 역전된다.
+        try {
+            banWriteRepository.releaseMirror(command.targetUserId());
+        } catch (PessimisticLockingFailureException | QueryTimeoutException e) {
+            log.error("밴 해제 — 미러 삭제가 경합으로 실패했다. 정본 행은 지워졌고 기준선도 남았는데 "
+                            + "미러가 남아 그 사용자는 계속 막힌다(영구 밴은 TTL 이 없어 스스로 "
+                            + "풀리지 않는다). 같은 요청을 다시 보내면 된다 — 해제는 멱등이다. "
+                            + "targetUserId={} actor={}", command.targetUserId(), command.actorId(), e);
+            throw new ChatKickContendedException(
+                    "밴 해제의 미러 삭제가 경합으로 실패했다 — 재시도하면 된다(해제는 멱등이다). "
+                            + "targetUserId=" + command.targetUserId(), e);
+        } catch (RuntimeException e) {
+            log.error("밴 해제 — 미러 삭제 실패. 정본 행은 지워졌고 기준선도 남았는데 미러가 남아 "
+                            + "그 사용자는 계속 막힌다(영구 밴은 TTL 이 없어 스스로 풀리지 않는다). "
+                            + "같은 요청을 다시 보내면 된다 — 해제는 멱등이다. targetUserId={} actor={}",
+                    command.targetUserId(), command.actorId(), e);
+            throw e;
+        }
 
         // 사람이 누른 제재 변경이라 흔적이 chat_ban_release 행과 이 줄뿐이다. 자동 승격이 같은 이유로
         // 로그를 남기고(ChatKickRecorder) 그쪽과 짝이 되게 적는다.

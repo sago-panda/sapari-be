@@ -1,5 +1,8 @@
 package com.sapari.chat.application.service;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 
 import org.springframework.transaction.annotation.Propagation;
@@ -46,7 +49,11 @@ public class ChatFilterWordSeedRecorder {
      *
      * <p>{@code REQUIRED} 로 둔다 — 부팅 러너가 트랜잭션 밖에서 부르므로 여기서 새로 열린다.
      * 쓰기가 {@code ON CONFLICT DO NOTHING} 이라 live-app Pod 여러 개가 동시에 "비었다" 를 보고
-     * 함께 심어도 결과가 같다. 그래서 락을 두지 않았다 — 락은 결과가 달라질 때 필요하다.
+     * 함께 심어도 <b>결과가</b> 같다. 그래서 락을 두지 않는다.
+     *
+     * <p>⚠️ 다만 결과가 같다는 것이 <b>교착이 없다는 뜻은 아니다</b> — 한때 그 둘을 같은 문장으로
+     * 적어 뒀다. 멱등성은 락 순서를 말하지 않으므로, 같은 두 행을 반대 순서로 잡는 두 트랜잭션은
+     * 그대로 교착한다. 락 대신 <b>정렬</b>로 닫는다(아래).
      *
      * @return 실제로 심었는가. {@code false} 는 이미 있었다는 뜻이고 오류가 아니다
      */
@@ -55,12 +62,25 @@ public class ChatFilterWordSeedRecorder {
         if (!repository.isEmpty()) {
             return false;
         }
-        for (String word : words) {
+        // ⚠️ 정렬해서 넣는다 — 교착 때문이다. ON CONFLICT DO NOTHING 이 결과를 멱등으로 만들지만
+        // <락 순서>는 보장하지 않는다. 입력이 Set 이고 그 이터레이션 순서가 JVM 실행마다 달라서
+        // (실측: 같은 10항목, 3회 실행 → 순서 2종) 두 Pod 이 같은 두 행을 반대 순서로 잡으면
+        // postgres 가 deadlock 을 낸다(실측 1/1). 레플리카 둘로 첫 배포하면 한 쪽 시드가 통째로
+        // abort 되고, 러너가 그것을 삼키므로 그 Pod 의 발행 한 번이 유실된다(데이터 손실은 없다 —
+        // 승자가 다 채운다). 모든 Pod 이 같은 순서로 잡으면 그 순환이 생기지 않는다.
+        for (String word : sorted(words)) {
             repository.add(FilterWordKind.PROFANITY, word, ChatConstants.SYSTEM_SENDER_ID);
         }
-        for (String entry : whitelist) {
+        for (String entry : sorted(whitelist)) {
             repository.add(FilterWordKind.WHITELIST, entry, ChatConstants.SYSTEM_SENDER_ID);
         }
         return true;
+    }
+
+    /** 두 kind 를 각각 정렬한다 — kind 가 유니크 키의 선두라 서로 다른 kind 는 같은 행을 잡지 않는다. */
+    private static List<String> sorted(Set<String> values) {
+        List<String> out = new ArrayList<>(values);
+        Collections.sort(out);
+        return out;
     }
 }

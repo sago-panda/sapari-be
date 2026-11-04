@@ -547,6 +547,23 @@ public final class ProfanityDictionary {
                 : Normalizer.normalize(word, Normalizer.Form.NFC);
     }
 
+    /**
+     * 이 문이 항목을 보는 평면 — <b>저장하는 쪽이 같은 평면을 써야 한다.</b>
+     *
+     * <p>이것을 열어 둔 이유가 결함 하나다. 관리자 쓰기 경로가 문에는 <i>접은</i> 값을 보여
+     * 주고 테이블에는 <i>원문</i>을 저장하고 있었다. 그러면 한 요청에서 두 결과가 나온다 —
+     * {@code "시발\n"} 은 문이 {@code 시발} 로 보고 통과시키는데 테이블에는 개행이 든 행이
+     * 남아, 그 뒤 모든 스냅샷이 코덱 자기검증에서 깨지고 <b>전 함대의 전파가 멈춘다</b>.
+     * 반대 방향도 있다: {@code "개새끼 "} 를 저장해 두면 {@code ?word=개새끼} 삭제가 0행이고
+     * 응답은 "이미 그 상태였다"({@code changed=false}) 인데 실제로는 여전히 집행 중이다.
+     *
+     * <p>그래서 쓰기 전에 이 메서드로 접는다. <b>저장되는 값이 집행되는 값과 같아야</b>
+     * {@code remove} 와 {@code uk (kind, word)} 가 성립한다.
+     */
+    public static String normalize(String word) {
+        return strip(word);
+    }
+
     // BOM(U+FEFF)을 뗀다. strip() 은 Character.isWhitespace 기준이라 BOM 을 남기는데, 남으면
     // 파일 1행이 주석 판정('#' 로 시작)을 비껴가 그 줄이 통째로 단어가 된다.
     // NBSP 등 다른 보이지 않는 글자는 여기서 안 떼지지만 아래 containsInvisible 이 거부한다.

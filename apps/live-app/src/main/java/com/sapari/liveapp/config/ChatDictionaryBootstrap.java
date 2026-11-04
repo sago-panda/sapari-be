@@ -37,8 +37,15 @@ public class ChatDictionaryBootstrap implements ApplicationRunner {
     private final ProfanityDictionaryPublishService publishService;
 
     /**
-     * ⚠️ <b>실패해도 부팅을 세우지 않는다</b> — 이 저장소의 "예외를 삼키지 말 것" 을 여기서
-     * 의도적으로 뒤집는다.
+     * ⚠️ <b>DB·Redis 실패에는 부팅을 세우지 않는다</b> — 이 저장소의 "예외를 삼키지 말 것" 을
+     * 그 둘에 대해서만 의도적으로 뒤집는다.
+     *
+     * <p><b>번들 리소스 부재·공백은 세운다.</b> {@code ProfanityDictionary.load} 가 아래
+     * {@code run} 의 두 {@code try} <b>밖</b>에서 불리므로 그 throw 는 그대로 올라가 live-app
+     * 부팅을 실패시킨다. 그게 맞는 방향이다 — 그것은 운영 장애가 아니라 패키징 결함이고,
+     * {@code modules/chat/AGENTS.md} 가 "Missing resource … is a boot failure" 로 선언한 축이다.
+     * 한때 이 자리에 "실패해도 부팅을 세우지 않는다" 로만 적어 뒀는데, {@code catch} 를 가르면서
+     * 그 호출이 밖으로 나왔고 그 선언이 한 걸음에서 거짓이 됐다.
      *
      * <p><b>근거를 고쳐 적는다.</b> 처음에 "streaming-app 은 이전 스냅샷이나 번들 사전으로 계속
      * 집행하므로 마스킹이 꺼지지 않는다" 를 근거로 적었다. 그 문장은 참이지만 <b>근거로는
@@ -47,8 +54,11 @@ public class ChatDictionaryBootstrap implements ApplicationRunner {
      *
      * <p>이 앱에서 계속 뜨는 것이 안전한 <b>실제 근거는 둘</b>이다:
      * <ul>
-     *   <li><b>발행이 시드와 같은 try 안이다.</b> 시드가 던지면 발행도 안 된다 — 빈 테이블이
-     *       스냅샷으로 나가 함대를 덮는 경로가 없다. 함대는 이전 스냅샷이나 번들로 돈다.
+     *   <li><b>시드가 던지면 발행도 안 된다.</b> ⚠️ 한때 그 값을 "빈 테이블이 함대를 덮는 것을
+     *       막는다" 로 적었는데 <b>거짓</b>이다 — 빈 욕설 집합은 받는 쪽 문이 거부하므로 교체는
+     *       애초에 일어나지 않는다. 실제 값은 더 작다: 전 Pod 가 ERROR 한 줄을 찍고
+     *       {@code processedVersion} 을 한 칸 태우는 것을 막는다. 근거를 크게 적으면 다음 사람이
+     *       "게이트가 어차피 잡는다" 로 이 반환을 지운다 — 그래서 작게 적는다.
      *   <li><b>정본이 세워지지 않은 동안 사전 쓰기가 거부된다.</b> {@code ManageFilterWordsService}
      *       의 선검사가 <i>변경 전</i> 집합을 사전 문에 통과시키고, 빈 욕설 집합은 그 문에서
      *       떨어진다 — 그래서 첫 단어를 넣으려는 요청이 409 로 막힌다. 이 게이트가 없으면
@@ -81,8 +91,9 @@ public class ChatDictionaryBootstrap implements ApplicationRunner {
      * 쓰기도 되며 다음 관리자 쓰기가 발행을 다시 한다. 한 줄로 뭉개면 당직자가 "ADMIN 이 단어를
      * 못 넣는 상태인가" 를 그 줄에서 알 수 없다.
      *
-     * @return 계속 진행해도 되는가. {@code false} 면 발행하지 않는다 — 빈 테이블을 스냅샷으로
-     *         내보내면 함대의 사전이 그것으로 교체된다
+     * @return 계속 진행해도 되는가. {@code false} 면 발행하지 않는다 — 교체를 막기 위해서가
+     *         아니라(빈 욕설 집합은 받는 쪽 문이 거부한다) 전 Pod 의 ERROR 한 줄과 버전 한 칸을
+     *         아끼기 위해서다
      */
     private boolean seed(ProfanityDictionary bundled) {
         try {
@@ -97,14 +108,19 @@ public class ChatDictionaryBootstrap implements ApplicationRunner {
             log.error("사전 정본 시드 실패 — 이 Pod 는 계속 뜨지만 정본이 비어 있을 수 있다. "
                     + "그 동안 ADMIN 사전 쓰기는 409 로 거부되고(빈 정본에 첫 단어를 넣는 것이 "
                     + "함대의 사전을 그 한 단어로 바꾸기 때문이다) streaming-app 은 번들 사전으로 "
-                    + "집행한다. 복구는 DB 를 고치고 이 앱을 다시 띄우는 것이다", e);
+                    + "집행한다. 복구는 DB 또는 <트랜잭션 배선>을 고치고 이 앱을 다시 띄우는 "
+                    + "것이다 — 이 catch 는 InvalidDataAccessApiUsageException(기록자가 프록시를 "
+                    + "잃어 @Transactional 이 안 걸린 경우)도 받는다", e);
             return false;
         }
     }
 
     private void publish() {
         try {
-            log.info("사전 스냅샷을 발행했다 — version={}", publishService.publishFromSource());
+            // 발행을 로거 인자 자리에 두지 않는다 — 지금은 동작하지만 레벨 가드
+            // (isInfoEnabled)를 넣는 순간 발행 자체가 사라진다.
+            long version = publishService.publishFromSource();
+            log.info("사전 스냅샷을 발행했다 — version={}", version);
         } catch (RuntimeException e) {
             log.error("사전 스냅샷 발행 실패 — 정본은 멀쩡하고 ADMIN 쓰기도 된다. 함대는 이전 "
                     + "스냅샷이나 번들 사전으로 집행하므로 마스킹이 꺼지지는 않지만, 정본과 함대가 "

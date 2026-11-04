@@ -1,9 +1,14 @@
 package com.sapari.chat.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import java.util.OptionalLong;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -44,9 +49,11 @@ class ProfanityDictionaryPublishServiceTest {
     @DisplayName("⭐ 욕설과 화이트리스트를 함께 발행하고 새 버전을 돌려준다")
     void publishesBothKindsAndReturnsTheVersion() {
         // given
+        given(snapshotPublisher.currentVersion()).willReturn(11L);
         given(repository.findWords(FilterWordKind.PROFANITY)).willReturn(Set.of("시발"));
         given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of("시발점"));
-        given(snapshotPublisher.publish(Set.of("시발"), Set.of("시발점"))).willReturn(12L);
+        given(snapshotPublisher.publishIfUnchanged(11L, Set.of("시발"), Set.of("시발점")))
+                .willReturn(OptionalLong.of(12L));
 
         // when
         long version = service.publishFromSource();
@@ -54,7 +61,56 @@ class ProfanityDictionaryPublishServiceTest {
         // then: 버전을 돌려줘야 호출자가 "내가 밀어 넣은 것이 함대에 깔렸는가" 를 받는 쪽 로그와
         // 맞출 수 있다
         assertThat(version).isEqualTo(12);
-        verify(snapshotPublisher).publish(Set.of("시발"), Set.of("시발점"));
+        verify(snapshotPublisher).publishIfUnchanged(11L, Set.of("시발"), Set.of("시발점"));
+    }
+
+    /**
+     * ⭐ <b>조건이 깨지면 정본을 다시 읽는다 — 같은 본문으로 다시 던지지 않는다.</b>
+     *
+     * <p>이것이 이 재시도의 전부다. 같은 본문을 재전송하면 낡은 본문을 밀어 넣는 것이고,
+     * 조건부 발행이 고치려던 결함을 그대로 재현한다 — 그래서 재시도가 어댑터가 아니라 정본을
+     * 쥔 이 서비스에 있다.
+     *
+     * <p>벡터: 1회차에 {X} 를 들고 밀렸다가, 2회차에 다시 읽어 {X,Y} 로 성공한다.
+     */
+    @Test
+    @DisplayName("⭐ 다른 발행에 밀리면 정본을 다시 읽어 재시도한다 — 같은 본문을 재전송하지 않는다")
+    void aLostRaceRereadsTheSource() {
+        // given: 1회차는 v5 를 집고 {시발} 을 읽어 밀린다. 2회차는 v6 을 집고 {시발,지랄} 을 읽는다.
+        given(snapshotPublisher.currentVersion()).willReturn(5L, 6L);
+        given(repository.findWords(FilterWordKind.PROFANITY))
+                .willReturn(Set.of("시발"), Set.of("시발", "지랄"));
+        given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of());
+        given(snapshotPublisher.publishIfUnchanged(5L, Set.of("시발"), Set.of()))
+                .willReturn(OptionalLong.empty());
+        given(snapshotPublisher.publishIfUnchanged(6L, Set.of("시발", "지랄"), Set.of()))
+                .willReturn(OptionalLong.of(7L));
+
+        // when
+        long version = service.publishFromSource();
+
+        // then: 두 번째 본문이 나갔다 — 첫 본문을 그대로 재전송하면 지랄이 함대에서 빠진다
+        assertThat(version).isEqualTo(7);
+        verify(snapshotPublisher).publishIfUnchanged(6L, Set.of("시발", "지랄"), Set.of());
+        verify(repository, times(2)).findWords(FilterWordKind.PROFANITY);
+    }
+
+    /**
+     * 상한까지 밀리면 실패로 알린다. 조용히 포기하면 호출자가 발행됐다고 믿고 정본과 함대가
+     * 갈린 채로 끝난다 — 관리자 쓰기 경로에서는 그게 "성공 응답 + 아무 Pod 도 집행 안 함" 이다.
+     */
+    @Test
+    @DisplayName("상한까지 밀리면 던진다 — 조용히 포기하면 정본과 함대가 갈린다")
+    void exhaustedRetriesThrow() {
+        given(snapshotPublisher.currentVersion()).willReturn(1L);
+        given(repository.findWords(FilterWordKind.PROFANITY)).willReturn(Set.of("시발"));
+        given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of());
+        given(snapshotPublisher.publishIfUnchanged(anyLong(), anySet(), anySet()))
+                .willReturn(OptionalLong.empty());
+
+        assertThatThrownBy(() -> service.publishFromSource())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("연속 다른 발행에 밀렸다");
     }
 
     /**
@@ -65,9 +121,11 @@ class ProfanityDictionaryPublishServiceTest {
     @Test
     @DisplayName("빈 정본도 발행한다 — 거부는 받는 쪽 문이 한다")
     void anEmptySourceIsStillPublished() {
+        given(snapshotPublisher.currentVersion()).willReturn(0L);
         given(repository.findWords(FilterWordKind.PROFANITY)).willReturn(Set.of());
         given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of());
-        given(snapshotPublisher.publish(Set.of(), Set.of())).willReturn(1L);
+        given(snapshotPublisher.publishIfUnchanged(0L, Set.of(), Set.of()))
+                .willReturn(OptionalLong.of(1L));
 
         assertThat(service.publishFromSource()).isEqualTo(1);
     }

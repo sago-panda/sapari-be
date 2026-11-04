@@ -28,4 +28,16 @@ public interface ProfanityFilterFactory {
      *         떨어졌는지가 들어 있어야 한다 — 호출자가 그것을 로그에 그대로 싣는다
      */
     ProfanityFilter from(String origin, Set<String> words, Set<String> whitelist);
+
+    /**
+     * 항목을 이 문이 보는 평면으로 접는다 — <b>저장하는 쪽이 쓸 값</b>이다.
+     *
+     * <p>문이 접은 값을 검사하는데 쓰기가 원문을 저장하면 한 요청에서 두 결과가 나온다.
+     * 그래서 이 평면이 포트에 있다: 검사하는 쪽과 저장하는 쪽이 <b>같은 구현</b>에서 값을
+     * 받아야 하고, 둘이 갈리면 저장된 것과 집행되는 것이 달라져 삭제가 성립하지 않는다.
+     *
+     * <p>접은 결과가 비어 있을 수 있다(공백만 들어온 경우). 그 판정은 호출자가 한다 —
+     * 이 메서드는 평면 변환이고 정책이 아니다.
+     */
+    String normalize(String word);
 }

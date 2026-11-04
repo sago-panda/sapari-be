@@ -22,7 +22,13 @@ import lombok.extern.slf4j.Slf4j;
  * 사실</b>이고 호출자의 판단이 들어갈 자리가 없기 때문이다.
  *
  * <p>{@code @Component} 다 — streaming-app 이 {@code com.sapari.chat} 을 스캔하므로 거기서
- * 올라온다. live-app 은 chat 을 스캔에서 빼고, 전파를 받지 않으므로 필요하지도 않다.
+ * 올라온다. <b>live-app 도 이 문을 쓴다</b>: 사전 쓰기의 선검사와 접는 평면이 같은 문이어야
+ * 하므로 그 앱이 {@code @Bean} 으로 따로 세운다({@code ChatModerationBeansConfig}).
+ *
+ * <p>⚠️ 한때 여기 "live-app 은 전파를 받지 않으므로 필요하지도 않다" 고 적어 뒀다. 관리 API 가
+ * 붙으면서 거짓이 됐다 — 쓰기 경로가 이 문을 지나고, 저장되는 값도 이 문의 평면으로 접힌다.
+ * 두 앱이 각자 인스턴스를 갖는 것은 {@code ChatMessageMapperImpl} 과 같은 모양이다(상태가 없는
+ * 변환이라 공유할 이유가 없다).
  */
 @Slf4j
 @Component
@@ -35,5 +41,14 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
             log.warn("사전에 확인할 항목이 있다: origin={} {}", origin, dictionary.warnings());
         }
         return new ProfanityFilter(dictionary.words(), dictionary.whitelist());
+    }
+
+    /**
+     * {@link ProfanityDictionary#normalize} 를 그대로 쓴다 — 여기서 다시 쓰면 검사하는 평면과
+     * 저장하는 평면이 갈리고, 그게 이 메서드가 생긴 이유인 결함이다.
+     */
+    @Override
+    public String normalize(String word) {
+        return ProfanityDictionary.normalize(word);
     }
 }

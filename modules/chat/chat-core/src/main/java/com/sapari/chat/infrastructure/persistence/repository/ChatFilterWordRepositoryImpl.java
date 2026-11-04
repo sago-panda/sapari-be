@@ -27,8 +27,12 @@ public class ChatFilterWordRepositoryImpl implements ChatFilterWordRepository {
 
     /**
      * {@code LinkedHashSet} 으로 받는다 — 질의가 {@code List} 를 주고 정본에 중복이 없음은
-     * {@code uk_chat_filter_word} 가 보장하지만, 순서를 잃으면 실패 메시지와 로그에 뜨는 항목
-     * 나열이 매 부팅 달라져 두 Pod 의 출력을 눈으로 비교할 수 없다.
+     * {@code uk_chat_filter_word} 가 보장하지만, 순서를 잃으면 스냅샷 본문의 줄 순서가 흔들려
+     * <b>내용이 같은 스냅샷이 매번 다른 바이트</b>가 된다.
+     *
+     * <p>그 순서를 실제로 만드는 것은 <b>질의의 {@code ORDER BY}</b> 이고 이 자료구조는 그것을
+     * 잃지 않는 역할만 한다 — 한때 근거를 이 자료구조에만 걸어 뒀는데, 질의에 정렬이 없어서
+     * 그 근거가 실현되지 않았다(Postgres 는 순서를 보장하지 않는다).
      */
     @Override
     public Set<String> findWords(FilterWordKind kind) {
