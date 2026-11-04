@@ -202,10 +202,28 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
      */
     @Modifying
     @Query(value = """
-            INSERT INTO live_schema.chat_ban_release (user_id, released_by_id, released_at)
-            VALUES (:userId, :releasedById, :releasedAt)
+            INSERT INTO live_schema.chat_ban_release
+                   (user_id, released_by_id, released_at,
+                    ban_existed, released_expires_at, released_banned_by_id)
+            VALUES (:userId, :releasedById, :releasedAt,
+                    :banExisted, :releasedExpiresAt, :releasedBannedById)
             """, nativeQuery = true)
     void appendRelease(@Param("userId") UUID userId,
                        @Param("releasedById") UUID releasedById,
-                       @Param("releasedAt") Instant releasedAt);
+                       @Param("releasedAt") Instant releasedAt,
+                       @Param("banExisted") boolean banExisted,
+                       @Param("releasedExpiresAt") Instant releasedExpiresAt,
+                       @Param("releasedBannedById") UUID releasedBannedById);
+
+    /**
+     * 만료 여부를 묻지 않고 그 사용자의 밴 행을 읽는다 — <b>지우기 전 스냅샷용</b>이다.
+     *
+     * <p>{@link #findActive} 와 다른 이유: 해제는 만료된 행도 지운다(다음 자동 승격의
+     * {@code ON CONFLICT} 대상이 되어 발급자·생성시각이 덮이기 때문). 그러니 스냅샷도 같은
+     * 범위를 봐야 한다 — 활성만 읽으면 만료된 행을 지우면서 무엇을 지웠는지 안 남긴다.
+     *
+     * <p>{@code uk_chat_ban_user_id} 가 많아야 하나를 보장한다.
+     */
+    @Query(value = "SELECT * FROM live_schema.chat_ban WHERE user_id = :userId", nativeQuery = true)
+    Optional<ChatBanEntity> findAnyByUserId(@Param("userId") UUID userId);
 }

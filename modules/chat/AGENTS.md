@@ -511,9 +511,24 @@ rooms each create their own ban and each write the mirror, so an unconditional `
 last win — and a short TTL landing last releases a user weeks early, because **the mirror is what enforces**.
 Re-reading the record for the longest ban was tried and only narrows it: it fixes *what* gets written, never
 *who writes last*. Ordering problems need order-independent writes. The cost is that this port can no longer
-shorten a ban — an admin reprieve needs `DEL` + set, in the same change that adds it.
+shorten a ban — an admin reprieve needs the mirror **deleted**, in the same change that adds it.
 
-Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Counting rows
+**That change landed (SPR-165).** `DELETE /api/v1/chat/bans/{userId}` (ADMIN, hosted in live-app) does
+three writes as one command: delete the record row, append an **amnesty baseline**, delete the mirror.
+The prescription above said "`DEL` + set" — a reprieve turned out to need only the delete, because the
+mirror's extend-only script returns 0 on a key with no TTL, so a permanent ban cannot be shortened by
+writing at all. Order is **record → mirror**, with the commit in between: the reverse leaves a row that
+the next kick re-mirrors, so the ban *resurrects*. The remaining mismatch is the mirror axis — a kick
+writes the mirror **after** its commit, outside the lock by design, so a release landing in that window
+is undone in the mirror only (over-blocking, repaired by pressing release again; that is why the mirror
+delete must not be gated on the row having existed).
+
+Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Since
+SPR-165 the window has **two lower bounds**: that 2 years *and the user's most recent ban release*,
+whichever is later (`countConfirmingKickersSince`, a correlated subquery over `chat_ban_release`).
+Without the second bound a release is not a release — the kick log is never deleted, so one more kick
+**in a new room** re-counts the old kickers and re-applies the same tier. Measuring that class needs a
+*new* room as the vector: `ChatKickRecorder` skips the counting step unless `firstKickInThisRoom`. Counting rows
 would let one seller reach the threshold alone: the log is unique per `(user, room)`, so three broadcasts and
 one kick in each makes three. Three broadcasts is an ordinary week, not a conspiracy, and that would hand
 every seller a platform-wide ban over anyone who chats in their rooms. Counting people makes the threshold
@@ -528,7 +543,13 @@ before — it lets a rotating user reach no threshold at all. Thresholds are rea
 gives the same answer while kicks arrive one at a time, and differs only where the table is silent (window
 shrink, a concurrent kick skipping a threshold). With people as the unit, **only the first rung is realistically reachable** — six or nine distinct
 moderators inside two years is rare, so the ladder effectively ends at one week. The numbers were kept
-deliberately; the ladder being sparse is the intended shape while no release path exists. **An `ADMIN` kick
+deliberately; the ladder being sparse is the intended shape. That used to read "…while no release path
+exists", and SPR-165 removed that premise — but the conclusion stands on a different leg: the reason not
+to automate a permanent ban is that **nothing should be server-applied that a human cannot undo**, and a
+release *is* a human pressing a button. A path for applying a manual ban still does not exist, which is
+why a released permanent ban cannot be re-applied through the app at all (the only `extendOrCreate` caller
+is `ChatKickRecorder`, whose tiers top out at one year) — the release therefore snapshots what it deleted
+into `chat_ban_release`. **An `ADMIN` kick
 counts as one like any other.** That is a decision, not an omission: "one admin ⇒ instant ban" would be a
 manual ban wearing `banned_by_id = SYSTEM`, which erases who decided. Admin judgement belongs in a manual
 ban path, not in automatic escalation. ⚠️ `V1__init_live.sql`'s comment still describes the old unit

@@ -35,10 +35,15 @@ public enum ChatRole {
      * {@code default}로 접으면 새 역할이 조용히 구매자 취급을 받는다.
      */
     public static Optional<ChatRole> fromPlatformRole(String platformRole) {
+        // null 을 먼저 가른다. valueOf 의 NPE 로 받던 것을 명시로 바꾼 이유는 의도가 드러나는 것과,
+        // 넓은 NPE catch 가 나중에 이 블록 안에서 생기는 <다른> NPE 를 삼킬 여지를 없애는 것이다.
+        if (platformRole == null) {
+            return Optional.empty();
+        }
         PlatformRole parsed;
         try {
             parsed = PlatformRole.valueOf(platformRole);
-        } catch (IllegalArgumentException | NullPointerException e) {
+        } catch (IllegalArgumentException e) {
             return Optional.empty();
         }
         return Optional.of(switch (parsed) {

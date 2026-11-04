@@ -18,10 +18,16 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
 
 - **schema = domain = owns its migrations.** Each domain gets its own PostgreSQL schema
   (`<domain>_schema`) with an independent `flyway_schema_history` and version sequence.
-  - **`chat` is an exception, by design.** It has no schema of its own: `chat_kick_log`, `chat_ban` and
-    `chat_filter_word` live in `live_schema` and their DDL is in `db/migration/live/`, so **live owns
-    those migrations even though chat owns the tables**. `migrate.sh`'s `SCHEMAS` has no chat entry.
-    A chat-side change to those tables goes through the live owner.
+  - **`chat` is an exception, by design.** It has no schema of its own: `chat_kick_log`, `chat_ban`,
+    `chat_ban_release` and `chat_filter_word` live in `live_schema` and their DDL is in
+    `db/migration/live/`, so **live owns those migrations even though chat owns the tables**.
+    `migrate.sh`'s `SCHEMAS` has no chat entry. A chat-side change to those tables goes through the
+    live owner.
+  - ⚠️ **`chat_ban_release` is read on the ordinary kick path**, so its migration leads the app the same
+    way shedlock's does (below). The ban-escalation count reads an amnesty baseline from it through a
+    correlated subquery, and that count runs on every first-kick-in-a-room — so if the app ships first,
+    `POST /api/v1/lives/*/chat/kick` fails with `relation "chat_ban_release" does not exist`, not just the
+    new release endpoint. No extra guard was added: this fails loudly with a 500 rather than silently.
   - **Mongo is outside Flyway entirely.** `chat_messages` and its indexes are created at boot by
     `ChatMongoConfig`, which only runs in **streaming-app** (its argument is a `ReactiveMongoTemplate`,
     which live-app does not have). So the indexes behind live-app's chat-history endpoint depend on a

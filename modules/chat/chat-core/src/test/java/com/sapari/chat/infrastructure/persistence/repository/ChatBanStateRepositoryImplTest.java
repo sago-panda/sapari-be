@@ -14,6 +14,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -407,7 +408,7 @@ class ChatBanStateRepositoryImplTest {
         assertThat(repository().findActive(userId, NOW)).isPresent();
 
         // when
-        boolean removed = repository().release(userId, ADMIN, NOW);
+        var removed = repository().release(userId, ADMIN, NOW).banExisted();
 
         // then
         assertThat(removed).isTrue();
@@ -423,7 +424,7 @@ class ChatBanStateRepositoryImplTest {
     @DisplayName("⭐ 풀 밴이 없어도 해제는 성공하고 기준선을 남긴다 — 멱등")
     void releaseIsIdempotentAndStillFoldsTheTally() {
         // when: 밴이 애초에 없다
-        boolean removed = repository().release(userId, ADMIN, NOW);
+        var removed = repository().release(userId, ADMIN, NOW).banExisted();
 
         // then
         assertThat(removed)
@@ -466,6 +467,130 @@ class ChatBanStateRepositoryImplTest {
         assertThat(kickLogs.countConfirmingKickersSince(userId, since))
                 .as("과거 강퇴자가 다시 세어지면 강퇴 1회로 같은 티어가 재적용된다 — 해제가 유예가 된다")
                 .isEqualTo(1);
+    }
+
+    /**
+     * ⭐ 사면 기준선의 <b>사용자 스코프</b>를 지킨다.
+     *
+     * <p>이 테스트가 없으면 상관 서브쿼리의 {@code WHERE user_id = :userId} 를 떼도 <b>전 스위트가
+     * 초록</b>이다 — 이 클래스의 다른 테스트가 대상 사용자를 하나만 쓰기 때문이다({@code kickBy} 의
+     * {@code randomUUID} 는 전부 강퇴자·방 쪽이고 대상은 늘 같은 {@code userId}). 한 사용자만 있는
+     * 데이터에서는 스코프가 있으나 없으나 결과가 같다.
+     *
+     * <p>스코프가 사라지면 <b>한 사람의 해제 1건이 플랫폼 전원의 누적을 접는다.</b> 증상이
+     * "아무도 밴이 안 걸린다" 라서 사고 중에 원인이 이 한 줄로 수렴하지 않는다.
+     */
+    @Test
+    @DisplayName("⭐ 사면 기준선은 그 사용자에게만 적용된다 — 스코프를 떼면 전원의 누적이 접힌다")
+    void theAmnestyBaselineIsScopedToItsUser() {
+        // given: 서로 다른 두 사용자가 각각 강퇴 이력을 갖는다
+        ChatKickLogRepositoryImpl kickLogs = new ChatKickLogRepositoryImpl(kickLogJpaRepository);
+        Instant since = NOW.minus(Duration.ofDays(730));
+        UUID otherUserId = UUID.randomUUID();
+        kickLogs.appendIfAbsent(kickBy(UUID.randomUUID(), NOW.minus(Duration.ofDays(2))));
+        kickLogs.appendIfAbsent(new ChatKickLog(otherUserId, UUID.randomUUID(), UUID.randomUUID(),
+                ChatRole.SELLER, "문제된 원문", NOW.minus(Duration.ofDays(2))));
+        assertThat(kickLogs.countConfirmingKickersSince(otherUserId, since)).isEqualTo(1);
+
+        // when: 한 사람만 해제한다
+        repository().release(userId, ADMIN, NOW);
+
+        // then
+        assertThat(kickLogs.countConfirmingKickersSince(userId, since))
+                .as("해제한 사용자의 누적은 접힌다")
+                .isZero();
+        assertThat(kickLogs.countConfirmingKickersSince(otherUserId, since))
+                .as("남의 누적이 같이 접히면 한 사람의 해제가 플랫폼 전원을 사면한다")
+                .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("⭐ 해제는 지운 밴의 스냅샷을 돌려준다 — 정본이 사라지면 그 내용이 어디에도 없다")
+    void releaseReturnsASnapshotOfWhatItRemoved() {
+        // given: 사람이 넣은 영구 밴(만료 없음). 수동 밴 경로가 0건이라 다시 걸 수 없는 값이다
+        UUID admin = UUID.randomUUID();
+        repository().extendOrCreate(new ChatBan(userId, admin, null, NOW.minus(Duration.ofDays(1))));
+
+        // when
+        var released = repository().release(userId, ADMIN, NOW);
+
+        // then
+        assertThat(released.banExisted()).isTrue();
+        assertThat(released.expiresAt())
+                .as("영구였다는 사실이 사라지면 무엇을 되돌려야 하는지 모른다")
+                .isNull();
+        assertThat(released.bannedById())
+                .as("발급자가 사라지면 자동 승격이었는지 사람이 걸었는지 모른다")
+                .isEqualTo(admin);
+    }
+
+    @Test
+    @DisplayName("⭐ 풀 밴이 없었다는 사실이 스냅샷에 남는다 — 활성 밴을 푼 것과 같은 행이면 안 된다")
+    void releaseRecordsThatThereWasNoBan() {
+        // when
+        var released = repository().release(userId, ADMIN, NOW);
+
+        // then: 오타 한 글자로 남의 누적을 접었을 때 그것이 기록에서 구분돼야 한다
+        assertThat(released.banExisted()).isFalse();
+        assertThat(released.expiresAt()).isNull();
+        assertThat(released.bannedById()).isNull();
+    }
+
+    /**
+     * ⭐ 해제의 두 쓰기가 <b>한 트랜잭션</b>인지, 슬라이스의 도움을 걷어내고 잰다.
+     *
+     * <p>{@code modules/chat/AGENTS.md} 가 처방을 명시한다 — "Unit tests cannot see this …
+     * {@code @DataJpaTest} opens a transaction for you. {@code ChatKickRecorderTest} calls with
+     * {@code Propagation.NOT_SUPPORTED} to remove that help." 이 클래스가 그 처방을 이미 세 번
+     * 쓰는데 해제 테스트에는 없었다. 그래서 {@code ReleaseBanService} 가 선언한 불변식("반환됐다는
+     * 것은 커밋이 확정됐다는 뜻")과 "DELETE + INSERT 가 같이 롤백된다" 가 어느 테스트에도 안 걸렸다 —
+     * {@code ChatModerationWiringTest} 는 프록시 <b>존재</b>만 본다.
+     *
+     * <p>여기서는 경계를 걷어내고 <b>포트를 직접</b> 부른다. 포트가 경계를 만들지 않는다는 계약이
+     * 참이면 {@code @Modifying} 네이티브 쿼리가 시끄럽게 죽어야 한다 — 조용히 통과하면 운영에서
+     * 인가를 지난 뒤 500 이 되고, 그게 이 처방이 생긴 두 사고 중 하나다.
+     */
+    @Test
+    @DisplayName("⭐ 경계 없이 해제를 부르면 시끄럽게 죽는다 — 조용히 통과하면 운영에서 500 이다")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void releaseWithoutATransactionFailsLoudly() {
+        // when & then: 두 쓰기가 모두 @Modifying 네이티브라 경계가 없으면 거부된다
+        assertThatThrownBy(() -> repository().release(userId, ADMIN, NOW))
+                .as("경계 없이 통과하면 '한 트랜잭션' 이라는 계약이 아무것도 아니게 된다")
+                .isInstanceOf(org.springframework.dao.InvalidDataAccessApiUsageException.class)
+                .hasMessageContaining("No active transaction");
+    }
+
+    /**
+     * ⭐ 두 쓰기가 <b>같이</b> 롤백되는지 — 갈라지면 둘 중 하나의 잔여 상태가 남는다.
+     *
+     * <p>기준선만 남고 밴이 남으면 다음 강퇴에서 티어가 내려가 보여 원인 추적이 어렵고, 밴만
+     * 지워지고 기준선이 없으면 해제가 새 방 강퇴 1회까지의 유예가 된다. 한 트랜잭션이면 둘 다
+     * 안 생기는데, 그 사실을 재려면 <b>중간에 실패시켜</b> 봐야 한다.
+     */
+    @Test
+    @DisplayName("⭐ 기준선 INSERT 가 실패하면 밴 삭제도 함께 되감긴다")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void bothWritesRollBackTogether() {
+        // given: 밴이 있고, 기준선 INSERT 를 실패시킬 상태를 만든다 — released_at NOT NULL 위반
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.executeWithoutResult(status -> repository().extendOrCreate(
+                new ChatBan(userId, SYSTEM, NOW.plus(Duration.ofDays(30)), NOW.minus(Duration.ofDays(1)))));
+
+        // when: now 를 null 로 넘겨 INSERT 만 깨뜨린다(삭제는 이미 돌았다)
+        assertThatThrownBy(() -> tx.executeWithoutResult(
+                status -> repository().release(userId, ADMIN, null)))
+                .isInstanceOf(RuntimeException.class);
+
+        // then: 밴이 그대로 있어야 한다 — 삭제만 커밋됐다면 "기준선 없는 해제" 가 남는다
+        TransactionTemplate read = new TransactionTemplate(transactionManager);
+        read.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        java.util.Optional<ChatBan> survivor =
+                read.execute(status -> repository().findActive(userId, NOW));
+        assertThat(survivor)
+                .as("기준선이 실패했는데 밴만 지워지면 해제가 '다음 강퇴 1회까지의 유예' 가 된다")
+                .isPresent();
     }
 
     @Test

@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -15,8 +16,10 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.chat.command.KickUserCommand;
+import com.sapari.chat.command.ClearRoomEndedMarkerCommand;
 import com.sapari.chat.command.ReconcileKickListCommand;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.liveapp.controller.chat.dto.KickUserRequest;
 import com.sapari.liveapp.security.LiveUserPrincipal;
@@ -48,6 +51,7 @@ public class ChatModerationController {
 
     private final KickUserUseCase kickUserUseCase;
     private final ReconcileKickListUseCase reconcileKickListUseCase;
+    private final ClearRoomEndedMarkerUseCase clearRoomEndedMarkerUseCase;
 
     @PostMapping("/kick")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -75,12 +79,38 @@ public class ChatModerationController {
     public ReconcileKickListResponse reconcileKickList(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal LiveUserPrincipal principal) {
-        int restored = reconcileKickListUseCase.reconcile(new ReconcileKickListCommand(
+        var outcome = reconcileKickListUseCase.reconcile(new ReconcileKickListCommand(
                 roomId, principal.userId(), principal.role()));
-        return new ReconcileKickListResponse(restored);
+        return new ReconcileKickListResponse(outcome.restored(), outcome.wasCorrupted());
     }
 
-    /** 복원한 사람 수. 운영자가 "복구할 것이 없었다" 와 "복구했다" 를 구분하는 유일한 값이다. */
-    public record ReconcileKickListResponse(int restored) {
+    /**
+     * 잘못 기록된 종료 마커를 해제한다 — 방 주인과 관리자.
+     *
+     * <p><b>끝난 방은 거부된다</b>(409 가 아니라 400 — {@code LiveNotActiveException}). 해제는
+     * 그 방이 live 정본에서 <b>실제로</b> 진행 중일 때만 되고, 그 검증이 이 엔드포인트의 존재
+     * 이유다: chat 은 받은 종료 신호의 진위를 확인할 수단이 없지만 이 앱은 정본을 읽는다.
+     * 그 검증이 있어서 판매자에게 열 수 있다 — 끝난 방을 되살리는 데는 쓸 수 없다.
+     *
+     * <p>성공은 204 다. <b>세션을 되살리지 않는다</b> — 종료 신호를 받은 Pod 들은 이미 그 방
+     * 세션을 닫았고, 이 호출이 하는 일은 "다시 들어올 수 있게" 하는 것이다. 재입장은 클라이언트가 한다.
+     */
+    @DeleteMapping("/ended")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void clearRoomEndedMarker(@PathVariable UUID roomId,
+                                     @AuthenticationPrincipal LiveUserPrincipal principal) {
+        clearRoomEndedMarkerUseCase.clear(new ClearRoomEndedMarkerCommand(
+                roomId, principal.userId(), principal.role()));
+    }
+
+    /**
+     * 복원한 사람 수와 <b>고치기 전 오염 여부</b>.
+     *
+     * <p>{@code restored} 는 운영자가 "복구할 것이 없었다" 와 "복구했다" 를 구분하는 값이고,
+     * {@code wasCorrupted} 는 <b>조치가 실제로 필요했는지</b>를 그 자리에서 보여 준다 —
+     * 키가 타입이 틀려 있었다는 것은 그 방의 강퇴 집행이 꺼져 있었다는 직접 증거다.
+     * {@code DEL} 뒤에는 알 수 없는 사실이라 어댑터가 미리 읽어 넘긴다.
+     */
+    public record ReconcileKickListResponse(int restored, boolean wasCorrupted) {
     }
 }

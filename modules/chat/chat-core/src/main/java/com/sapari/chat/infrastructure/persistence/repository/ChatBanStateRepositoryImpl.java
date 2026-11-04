@@ -7,6 +7,7 @@ import java.util.UUID;
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.Released;
 import com.sapari.chat.infrastructure.persistence.entity.ChatBanEntity;
 
 import lombok.RequiredArgsConstructor;
@@ -69,18 +70,34 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
     }
 
     /**
-     * 행 삭제와 기준선 추가가 <b>한 트랜잭션</b>이어야 한다 — 호출자가 경계를 연다.
+     * 읽기 → 삭제 → 기준선이 <b>한 트랜잭션</b>이어야 한다 — 호출자가 경계를 연다.
      *
-     * <p>순서는 삭제 먼저다. 기준선을 먼저 넣고 삭제가 실패하면 "누적은 접혔는데 밴은 남은" 상태가
-     * 되는데, 그쪽은 다음 강퇴에서 티어가 내려가 보이므로 원인 추적이 더 어렵다. 반대 순서의 잔여
-     * 상태(밴은 풀렸고 누적은 안 접힘)는 해제를 다시 눌러 수렴한다. 한 트랜잭션이면 둘 다
-     * 안 생기지만, 경계를 여는 것은 이 포트가 아니라 유스케이스다.
+     * <p><b>순서가 하중을 받는 이유는 잔여 상태가 아니다.</b> 한때 여기에 "기준선을 먼저 넣고
+     * 삭제가 실패하면 추적이 더 어렵다" 고 적혀 있었는데 <b>공허한 근거</b>였다 — 한 트랜잭션이라
+     * READ COMMITTED 독자에게 중간 상태가 보이지 않으므로 그 차이는 <b>관측 불가능</b>하다.
+     *
+     * <p>순서가 load-bearing 인 것은 <b>자원 순서 선언</b>의 일부이기 때문이다. 이 경로는
+     * {@code 어드바이저리 → chat_ban → chat_ban_release} 를 잡고 강퇴는
+     * {@code 어드바이저리 → chat_kick_log → chat_ban} 을 잡는다 — 어드바이저리가 양쪽 맨 앞이라
+     * 전순서가 유지되고 사이클이 없다({@code ChatBanReleaseRecorder.release} javadoc).
+     * 여기서 순서를 뒤집으면 그 선언을 다시 세워야 한다.
+     *
+     * <p>읽기가 맨 앞인 것은 별 이유다 — 지우고 나면 무엇을 지웠는지 알 수 없고, 그 내용은
+     * 감사 행 말고는 어디에도 남지 않는다. 수동 밴을 넣는 앱 경로가 0건이라 되돌릴 수도 없다.
      */
     @Override
-    public boolean release(UUID userId, UUID releasedById, Instant now) {
-        int removed = jpaRepository.deleteByUserId(userId);
-        jpaRepository.appendRelease(userId, releasedById, now);
-        return removed > 0;
+    public Released release(UUID userId, UUID releasedById, Instant now) {
+        // 지우기 전에 읽는다 — 정본 행이 사라지면 그 내용은 어디에도 남지 않고, 수동 밴을 넣는
+        // 경로가 0건이라 되돌릴 수도 없다. 만료 여부를 묻지 않는 쪽으로 읽는 이유는 해제가
+        // 만료된 행도 지우기 때문이다(다음 승격의 ON CONFLICT 대상이 되어 발급자가 덮인다).
+        Released snapshot = jpaRepository.findAnyByUserId(userId)
+                .map(e -> new Released(true, e.getExpiresAt(), e.getBannedById()))
+                .orElseGet(() -> new Released(false, null, null));
+
+        jpaRepository.deleteByUserId(userId);
+        jpaRepository.appendRelease(userId, releasedById, now,
+                snapshot.banExisted(), snapshot.expiresAt(), snapshot.bannedById());
+        return snapshot;
     }
 
     private static ChatBan toDomain(ChatBanEntity entity) {

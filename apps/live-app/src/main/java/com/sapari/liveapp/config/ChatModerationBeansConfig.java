@@ -12,6 +12,7 @@ import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
+import com.sapari.chat.application.service.ClearRoomEndedMarkerService;
 import com.sapari.chat.application.service.ReconcileKickListService;
 import com.sapari.chat.application.service.ReleaseBanService;
 import com.sapari.chat.domain.repository.ChatHistoryRepository;
@@ -23,6 +24,7 @@ import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
+import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanJpaRepository;
@@ -35,7 +37,9 @@ import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
+import com.sapari.chat.infrastructure.redis.ChatRoomEndedWriteRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.global.time.TimeProvider;
@@ -226,5 +230,22 @@ public class ChatModerationBeansConfig {
                                                              ChatKickLogRepository kickLogRepository,
                                                              ChatKickWriteRepository kickWriteRepository) {
         return new ReconcileKickListService(permissionPolicy, kickLogRepository, kickWriteRepository);
+    }
+
+    /**
+     * 종료 마커 해제 어댑터(블로킹). 기록·조회는 리액티브 쪽이 하고 streaming-app 이 쓴다 —
+     * 해제만 이 앱에 있는 이유는 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 하고,
+     * 그걸 읽을 수 있는 스택이 여기뿐이기 때문이다.
+     */
+    @Bean
+    public ChatRoomEndedWriteRepository chatRoomEndedWriteRepository(StringRedisTemplate redisTemplate) {
+        return new ChatRoomEndedWriteRedisRepository(redisTemplate);
+    }
+
+    @Bean
+    public ClearRoomEndedMarkerUseCase clearRoomEndedMarkerUseCase(
+            GetLiveRoomUseCase liveRoomReader,
+            ChatRoomEndedWriteRepository roomEndedWriteRepository) {
+        return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository);
     }
 }

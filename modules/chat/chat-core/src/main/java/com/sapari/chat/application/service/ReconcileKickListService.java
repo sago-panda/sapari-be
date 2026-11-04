@@ -10,6 +10,7 @@ import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.port.ReconcileKickListUseCase;
+import com.sapari.chat.port.ReconcileKickListUseCase.ReconcileOutcome;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,7 +44,7 @@ public class ReconcileKickListService implements ReconcileKickListUseCase {
     private final ChatKickWriteRepository kickWriteRepository;
 
     @Override
-    public int reconcile(ReconcileKickListCommand command) {
+    public ReconcileOutcome reconcile(ReconcileKickListCommand command) {
         ChatRole actorRole = ChatRole.fromPlatformRole(command.actorRole())
                 .orElseThrow(() -> new ChatPermissionDeniedException(
                         "알 수 없는 역할이다 — role=" + command.actorRole()));
@@ -53,13 +54,23 @@ public class ReconcileKickListService implements ReconcileKickListUseCase {
         }
 
         List<UUID> kicked = kickLogRepository.findKickedUserIds(command.roomId());
-        kickWriteRepository.reconcile(command.roomId(), kicked);
+        boolean wasCorrupted = kickWriteRepository.reconcile(command.roomId(), kicked);
 
         // 재적재는 운영자가 "집행이 꺼져 있다" 를 보고 누르는 것이라, 눌렀다는 사실과 그 결과가
         // 남아야 한다. 0 건도 결과다 — 그 방에 강퇴 기록이 없었다는 뜻이고, 그걸 안 남기면
         // 운영자는 "복구에 실패한 것" 과 "복구할 것이 없던 것" 을 구분할 수 없다.
-        log.info("강퇴 명단 재적재 — roomId={} 복원={}명 actor={}",
-                command.roomId(), kicked.size(), command.actorId());
-        return kicked.size();
+        //
+        // 오염이었는지를 <b>갈라서</b> 남긴다. 그 사실이 이 조치가 필요했다는 직접 증거이고,
+        // 등급도 달라야 한다 — 키가 사라진 것(축출·승격)은 인프라 사건이지만 타입이 틀린 것은
+        // 누군가 같은 이름을 썼다는 뜻이라 원인이 코드·설정 쪽이다.
+        if (wasCorrupted) {
+            log.warn("강퇴 명단 재적재 — 키가 우리 타입이 아니었다(집행이 꺼져 있었다). "
+                            + "roomId={} 복원={}명 actor={}",
+                    command.roomId(), kicked.size(), command.actorId());
+        } else {
+            log.info("강퇴 명단 재적재 — roomId={} 복원={}명 actor={}",
+                    command.roomId(), kicked.size(), command.actorId());
+        }
+        return new ReconcileOutcome(kicked.size(), wasCorrupted);
     }
 }

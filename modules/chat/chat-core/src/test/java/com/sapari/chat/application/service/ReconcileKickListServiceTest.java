@@ -70,10 +70,10 @@ class ReconcileKickListServiceTest {
         given(kickLogRepository.findKickedUserIds(roomId)).willReturn(fromSourceOfTruth);
 
         // when
-        int restored = service.reconcile(command("ADMIN"));
+        var outcome = service.reconcile(command("ADMIN"));
 
         // then
-        assertThat(restored).isEqualTo(2);
+        assertThat(outcome.restored()).isEqualTo(2);
         verify(kickWriteRepository).reconcile(eq(roomId), eq(fromSourceOfTruth));
     }
 
@@ -84,11 +84,34 @@ class ReconcileKickListServiceTest {
         given(kickLogRepository.findKickedUserIds(roomId)).willReturn(List.of());
 
         // when
-        int restored = service.reconcile(command("ADMIN"));
+        var outcome = service.reconcile(command("ADMIN"));
 
         // then: 실패로 가르면 운영자가 둘을 구분할 수 없다
-        assertThat(restored).isZero();
+        assertThat(outcome.restored()).isZero();
         verify(kickWriteRepository).reconcile(eq(roomId), eq(List.of()));
+    }
+
+    /**
+     * ⭐ 오염 사실이 결과로 나와야 한다.
+     *
+     * <p>{@code DEL} 뒤에는 "키가 타입이 틀려 있었다" 를 알 길이 없는데, 그 사실이 <b>그 방의 강퇴
+     * 집행이 꺼져 있었다는 직접 증거</b>다. 이 조치를 ADMIN 전용으로 둔 근거가 가청성이었으므로
+     * 복원 수만 돌려주면 가장 센 신호가 사라진다.
+     */
+    @Test
+    @DisplayName("⭐ 고치기 전 오염 여부가 결과에 실린다 — 집행이 꺼져 있었다는 직접 증거다")
+    void theCorruptionFactSurvivesTheRepair() {
+        // given
+        given(kickLogRepository.findKickedUserIds(roomId)).willReturn(List.of(UUID.randomUUID()));
+        given(kickWriteRepository.reconcile(eq(roomId), any())).willReturn(true);
+
+        // when
+        var outcome = service.reconcile(command("ADMIN"));
+
+        // then
+        assertThat(outcome.wasCorrupted())
+                .as("오염이었다는 사실이 사라지면 운영자는 조치가 필요했는지도 모른다")
+                .isTrue();
     }
 
     @ParameterizedTest(name = "{0}")

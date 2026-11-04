@@ -131,7 +131,11 @@ class BanDecisionLockContractTest {
     void releaseTakesTheBanDecisionLockFirst() throws Exception {
         String source = java.nio.file.Files.readString(java.nio.file.Path.of(
                 "src/main/java/com/sapari/chat/application/service/ChatBanReleaseRecorder.java"));
-        String body = source.substring(source.indexOf("public boolean release("));
+        // 앵커를 반환형에 묶지 않는다 — 처음에 "public boolean release(" 로 잡았는데 반환형이
+        // Released 로 바뀌면서 indexOf 가 -1 이 되어 이 테스트가 엉뚱한 이유로 깨졌다.
+        int at = source.indexOf(" release(UUID targetUserId");
+        assertThat(at).as("release 메서드를 못 찾았다 — 시그니처가 바뀌면 앵커도 옮길 것").isNotNegative();
+        String body = source.substring(at);
 
         int lockAt = body.indexOf("lockForBanDecision(");
         int releaseAt = body.indexOf("banStateRepository.release(");

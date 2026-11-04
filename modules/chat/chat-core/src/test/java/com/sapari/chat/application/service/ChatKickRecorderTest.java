@@ -307,7 +307,7 @@ class ChatKickRecorderTest {
             }
 
             @Override
-            public boolean release(UUID userId, UUID releasedById, Instant now) {
+            public ChatBanStateRepository.Released release(UUID userId, UUID releasedById, Instant now) {
                 // 이 테스트는 승격 경로의 트랜잭션 경계만 잰다. 해제는 그 경계에 들어오지 않는다 —
                 // 불리면 그건 이 테스트가 모르는 경로가 생긴 것이므로 조용히 통과시키지 않는다.
                 throw new UnsupportedOperationException("이 테스트는 해제를 쓰지 않는다");

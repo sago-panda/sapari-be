@@ -205,6 +205,9 @@ class ChatModerationWiringTest {
                 "ChatBanReleaseRecorder", "ReleaseBanService",
                 // 강퇴 집행 캐시의 역경로 — 정본을 읽어 Redis SET 을 다시 세운다.
                 "ReconcileKickListService",
+                // 종료 마커 해제 — 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 해서
+                // 이 앱에 있다. 기록·조회는 리액티브 쪽이고 streaming-app 이 쓴다.
+                "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",

@@ -6,6 +6,8 @@ import static org.mockito.Mockito.never;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.List;
@@ -30,6 +32,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.LiveSecurityConfig;
@@ -72,6 +75,8 @@ import java.time.ZoneOffset;
 class ChatKickAuthorizationTest {
 
     private static final UUID ROOM_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID PRINCIPAL_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final UUID TARGET_IN_BODY = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final String BODY = """
             {"targetUserId":"22222222-2222-2222-2222-222222222222","messageId":"665f1f77bcf86cd799439011"}
             """;
@@ -86,12 +91,14 @@ class ChatKickAuthorizationTest {
     private ReconcileKickListUseCase reconcileKickListUseCase;
 
     @MockitoBean
+    private ClearRoomEndedMarkerUseCase clearRoomEndedMarkerUseCase;
+
+    @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
 
     /** 실제 인증 필터를 태우지 않고 주체만 심는다 — 여기서 재는 것은 토큰 파싱이 아니라 인가 규칙이다. */
     private static RequestPostProcessor as(String role) {
-        LiveUserPrincipal principal = new LiveUserPrincipal(
-                UUID.fromString("33333333-3333-3333-3333-333333333333"), role, "닉", "a@b.c");
+        LiveUserPrincipal principal = new LiveUserPrincipal(PRINCIPAL_ID, role, "닉", "a@b.c");
         Authentication auth = new UsernamePasswordAuthenticationToken(
                 principal, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
         return authentication(auth);
@@ -144,6 +151,8 @@ class ChatKickAuthorizationTest {
     @Test
     @DisplayName("⭐ 재적재는 관리자가 지난다 — 판매자 전용 규칙보다 앞에 있어야만 성립한다")
     void adminPassesTheReconcileGate() throws Exception {
+        org.mockito.BDDMockito.given(reconcileKickListUseCase.reconcile(any()))
+                .willReturn(new ReconcileKickListUseCase.ReconcileOutcome(3, false));
         // when & then: 규칙 순서가 뒤집히면 /api/v1/lives/** → hasRole("SELLER") 가 먼저 맞아 403 이 된다
         mockMvc.perform(put("/api/v1/lives/{roomId}/chat/kicked", ROOM_ID).with(as("ADMIN")))
                 .andExpect(status().isOk());
@@ -159,6 +168,71 @@ class ChatKickAuthorizationTest {
 
         // then: 관문에서 끊겼으므로 서비스까지 가지 않는다
         then(reconcileKickListUseCase).should(never()).reconcile(any());
+    }
+
+    /**
+     * ⭐ 세 커맨드의 자리 배치를 한 자리에서 못 박는다.
+     *
+     * <p>{@code KickUserCommand}·{@code ReconcileKickListCommand}·{@code ClearRoomEndedMarkerCommand}
+     * 가 모두 앞 둘이 {@code UUID} 라 <b>뒤집어도 컴파일된다</b>. 관문 테스트는 상태 코드만 보므로
+     * 뒤집혀도 초록이고, 그 상태의 결과가 조치마다 다르게 틀린다 — 강퇴는 방 id 와 누른 사람이
+     * 바뀌고, 마커 해제는 엉뚱한 방의 진위를 묻는다.
+     *
+     * <p>타입 래퍼로 막는 길도 있지만 이 저장소의 커맨드는 전부 평평한 {@code UUID} 라 한 군데만
+     * 바꾸면 모양이 갈린다. 그래서 <b>경계에서 값의 출처</b>를 단언한다 — 경로 변수는 방·대상,
+     * 인증 주체는 행위자다.
+     */
+    @Test
+    @DisplayName("⭐ 경로 값이 방이고 인증 주체가 행위자다 — 세 커맨드 모두 뒤집어도 컴파일된다")
+    void thePathValueIsTheRoomAndThePrincipalIsTheActor() throws Exception {
+        // given
+        org.mockito.BDDMockito.given(reconcileKickListUseCase.reconcile(any()))
+                .willReturn(new ReconcileKickListUseCase.ReconcileOutcome(0, false));
+
+        // when: 세 조치를 각각 한 번씩 부른다
+        mockMvc.perform(post("/api/v1/lives/{roomId}/chat/kick", ROOM_ID).with(as("ADMIN"))
+                .contentType(MediaType.APPLICATION_JSON).content(BODY));
+        mockMvc.perform(put("/api/v1/lives/{roomId}/chat/kicked", ROOM_ID).with(as("ADMIN")));
+        mockMvc.perform(delete("/api/v1/lives/{roomId}/chat/ended", ROOM_ID).with(as("ADMIN")));
+
+        // then
+        var kick = org.mockito.ArgumentCaptor.forClass(com.sapari.chat.command.KickUserCommand.class);
+        org.mockito.Mockito.verify(kickUserUseCase).kick(kick.capture());
+        assertThat(kick.getValue().roomId()).as("강퇴의 방이 경로 값이 아니다").isEqualTo(ROOM_ID);
+        assertThat(kick.getValue().kickerId()).as("강퇴한 사람이 인증 주체가 아니다").isEqualTo(PRINCIPAL_ID);
+        assertThat(kick.getValue().targetUserId())
+                .as("강퇴 대상이 본문 값이 아니다 — 주체와 대상이 뒤집히면 자기를 강퇴한다")
+                .isEqualTo(TARGET_IN_BODY);
+
+        var reconcile = org.mockito.ArgumentCaptor.forClass(
+                com.sapari.chat.command.ReconcileKickListCommand.class);
+        org.mockito.Mockito.verify(reconcileKickListUseCase).reconcile(reconcile.capture());
+        assertThat(reconcile.getValue().roomId()).isEqualTo(ROOM_ID);
+        assertThat(reconcile.getValue().actorId()).isEqualTo(PRINCIPAL_ID);
+
+        var clear = org.mockito.ArgumentCaptor.forClass(
+                com.sapari.chat.command.ClearRoomEndedMarkerCommand.class);
+        org.mockito.Mockito.verify(clearRoomEndedMarkerUseCase).clear(clear.capture());
+        assertThat(clear.getValue().roomId())
+                .as("마커 해제의 방이 경로 값이 아니다 — 엉뚱한 방의 진위를 묻게 된다")
+                .isEqualTo(ROOM_ID);
+        assertThat(clear.getValue().actorId()).isEqualTo(PRINCIPAL_ID);
+    }
+
+    @Test
+    @DisplayName("⭐ 종료 마커 해제는 판매자도 지난다 — 막힌 것이 자기 방송이고 먼저 알아챈다")
+    void sellerPassesTheClearEndedGate() throws Exception {
+        mockMvc.perform(delete("/api/v1/lives/{roomId}/chat/ended", ROOM_ID).with(as("SELLER")))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    @DisplayName("종료 마커 해제는 일반 사용자를 막는다")
+    void buyerIsDeniedTheClearEndedGate() throws Exception {
+        mockMvc.perform(delete("/api/v1/lives/{roomId}/chat/ended", ROOM_ID).with(as("USER")))
+                .andExpect(status().isForbidden());
+
+        then(clearRoomEndedMarkerUseCase).should(never()).clear(any());
     }
 
     @Test

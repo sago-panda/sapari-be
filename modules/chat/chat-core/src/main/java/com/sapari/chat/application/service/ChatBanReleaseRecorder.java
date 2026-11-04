@@ -7,6 +7,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.Released;
 
 import lombok.RequiredArgsConstructor;
 
@@ -40,8 +41,13 @@ public class ChatBanReleaseRecorder {
      *
      * <p>같은 테이블에 같은 사용자 키로 쓰는 두 경로라 한쪽만 느슨하면 그쪽이 다른 쪽의 대기를
      * 늘린다. 이 경로도 같은 어드바이저리 잠금을 잡으므로(아래 javadoc) 그 줄서기를 공유한다.
+     *
+     * <p><b>값을 복사하지 않고 참조한다.</b> 처음에 {@code = 5} 를 손으로 적고 javadoc 에
+     * "같은 값이다" 라고 단정했는데, 그건 {@link ChatKickRecorder} 가 바로 그 사고를 실측으로
+     * 적어 둔 모양이다("2초로 줄이면 … 14개 전부 초록"). 한쪽을 고치면 다른 쪽이 조용히 갈린다.
+     * 같은 패키지라 상수 참조가 애너테이션의 컴파일 상수 요구를 만족한다.
      */
-    static final int TRANSACTION_TIMEOUT_SECONDS = 5;
+    static final int TRANSACTION_TIMEOUT_SECONDS = ChatKickRecorder.TRANSACTION_TIMEOUT_SECONDS;
 
     private final ChatBanStateRepository banStateRepository;
 
@@ -79,10 +85,10 @@ public class ChatBanReleaseRecorder {
      * <p>미러 축의 어긋남은 그대로 남는다 — 복구 수단이 <b>해제의 멱등성</b>이다. 지운 행이 없어도
      * 기준선은 남고 미러 삭제는 조건 없이 돌아가므로 같은 명령을 다시 눌러 수렴한다.
      *
-     * @return 실제로 밴 행을 지웠는가. 거짓이어도 기준선은 남았다 — 실패가 아니다
+     * @return 무엇을 지웠는가. 지울 밴이 없었어도 기준선은 남았다 — 실패가 아니다
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = TRANSACTION_TIMEOUT_SECONDS)
-    public boolean release(UUID targetUserId, UUID actorId, Instant now) {
+    public Released release(UUID targetUserId, UUID actorId, Instant now) {
         banStateRepository.lockForBanDecision(targetUserId);
         return banStateRepository.release(targetUserId, actorId, now);
     }

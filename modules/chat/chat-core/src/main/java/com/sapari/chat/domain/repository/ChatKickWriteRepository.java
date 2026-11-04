@@ -59,7 +59,14 @@ public interface ChatKickWriteRepository {
      *
      * <p>실패는 그대로 던진다. 복구하지 못했다는 사실이 호출자에게 가야 한다.
      *
-     * @param kickedUserIds 정본에서 읽은 그 방의 강퇴자 전체. 비어 있으면 키를 지운다
+     * <p><b>고치기 전의 타입을 돌려준다.</b> 오염은 이 경로에서 보고할 실패가 아니지만(고치려는
+     * 대상이다) <b>사실은 잃지 않아야 한다</b> — "키가 타입이 틀려 있었다" 는 그 방의 강퇴 집행이
+     * 꺼져 있었다는 직접 증거이고, 이 조치를 운영자 전용으로 둔 근거가 그 가청성이다.
+     * {@code DEL} 뒤에는 알 수 없으므로 어댑터가 {@code DEL} 앞에서 읽어야 한다.
+     *
+     * @param kickedUserIds 정본에서 읽은 그 방의 강퇴자 전체. 비어 있으면 키를 지운다.
+     *                      <b>무계</b>다 — 어댑터가 크기에 기대어 깨지지 않아야 한다
+     * @return 고치기 전 키가 우리 타입이 아니었는가
      */
-    void reconcile(UUID roomId, java.util.Collection<UUID> kickedUserIds);
+    boolean reconcile(UUID roomId, java.util.Collection<UUID> kickedUserIds);
 }

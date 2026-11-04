@@ -5,9 +5,16 @@ import java.time.Instant;
 import com.sapari.chat.command.ReleaseBanCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatRole;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.transaction.TransactionTimedOutException;
+
+import com.sapari.chat.domain.exception.ChatKickContendedException;
+import com.sapari.chat.domain.repository.ChatBanStateRepository.Released;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.port.ReleaseBanUseCase;
+import com.sapari.chat.port.ReleaseBanUseCase.ReleaseBanResult;
 import com.sapari.global.time.TimeProvider;
 
 import lombok.RequiredArgsConstructor;
@@ -38,7 +45,8 @@ import lombok.extern.slf4j.Slf4j;
  * <p>⚠️ <b>어긋남은 두 축인데 하나만 닫힌다.</b> Postgres 축은
  * {@code ChatBanReleaseRecorder}가 밴 판단 잠금을 잡아 닫았다 — 안 잡으면 강퇴가 세기와 쓰기
  * 사이에 해제를 끼워 "방금 접은 누적으로 해제 직후 1년 밴" 을 만든다. <b>미러 축은 열려 있다</b>:
- * 강퇴의 조기 반환이 <i>커밋 뒤에</i> 미러를 다시 쓰므로, 그 사이(밀리초)에 해제가 끼면 지운
+ * 강퇴가 <i>커밋 뒤에</i> 미러를 쓰므로(조기 반환만이 아니다 — {@code record()} 가 어느
+ * 갈래로 반환해도 그 쓰기는 커밋 밖이다) 그 사이(밀리초)에 해제가 끼면 지운
  * 밴이 미러에만 되살아난다. 그 쓰기는 설계상 잠금 밖이라 잠금으로 막히지 않고, 막으려면 미러
  * 쓰기를 트랜잭션 안으로 들여야 하는데 그러면 강퇴의 자가 치유(미러가 날아간 밴을 다음 강퇴에서
  * 되찾는 것)를 잃는다. <b>집행 안 되는 밴</b>이 <b>복구 가능한 과다 차단</b>보다 나쁘다고 보고
@@ -58,7 +66,7 @@ public class ReleaseBanService implements ReleaseBanUseCase {
     private final TimeProvider timeProvider;
 
     @Override
-    public void release(ReleaseBanCommand command) {
+    public ReleaseBanResult release(ReleaseBanCommand command) {
         // 조용히 구매자로 접지 않는다 — 플랫폼에 역할이 하나 늘었을 때 그 사람이 이유 없이
         // 실패하는 것으로만 드러난다.
         ChatRole actorRole = ChatRole.fromPlatformRole(command.actorRole())
@@ -70,20 +78,46 @@ public class ReleaseBanService implements ReleaseBanUseCase {
         }
 
         Instant now = timeProvider.now();
-        // DB 쓰기는 여기서 끝난다. 반환됐다는 것은 커밋이 확정됐다는 뜻이고, 그 다음에야 미러로 간다.
-        boolean removed = releaseRecorder.release(command.targetUserId(), command.actorId(), now);
+        Released released;
+        try {
+            // DB 쓰기는 여기서 끝난다. 반환됐다는 것은 커밋이 확정됐다는 뜻이고, 그 다음에야 미러로 간다.
+            released = releaseRecorder.release(command.targetUserId(), command.actorId(), now);
+        } catch (PessimisticLockingFailureException | QueryTimeoutException
+                 | TransactionTimedOutException e) {
+            // 경합을 5xx 로 흘리지 않는다. 이 경로의 복구 수단이 <멱등 재시도>인데, 500 은
+            // "재시도해도 소용없다" 는 신호로 읽히고 정상 혼잡이 알림을 울린다 — ChatErrorCode 가
+            // 409 를 고른 근거가 그것이고, 번역이 없으면 그 결정이 이 경로에서만 역전된다.
+            // 그리고 그 창이 열리는 때가 하필 해제를 누르는 가장 현실적인 상황(집중 강퇴 중)이다.
+            // 상한의 값(1s)이 문제가 아니라 실패의 번역이 빠져 있었다 — 강퇴 경로는 같은 세 타입을
+            // 같은 예외로 접는다(KickUserService).
+            throw new ChatKickContendedException(
+                    "밴 해제가 경합으로 실패했다 — 재시도하면 된다(해제는 멱등이다). targetUserId="
+                            + command.targetUserId(), e);
+        }
 
-        // 조건 없이 지운다 — removed 로 게이팅하면 위 재시도 경로에서 미러에 도달할 코드가 안 남는다.
+        // 조건 없이 지운다 — banExisted 로 게이팅하면 위 재시도 경로에서 미러에 도달할 코드가 안 남는다.
         banWriteRepository.releaseMirror(command.targetUserId());
 
         // 사람이 누른 제재 변경이라 흔적이 chat_ban_release 행과 이 줄뿐이다. 자동 승격이 같은 이유로
         // 로그를 남기고(ChatKickRecorder) 그쪽과 짝이 되게 적는다.
-        if (removed) {
-            log.info("밴 해제 — targetUserId={} actor={} 누적 사면 기준선={}",
-                    command.targetUserId(), command.actorId(), now);
+        //
+        // 무엇을 지웠는지를 같이 적는다. 정본 행이 사라지므로 영구였는지·누가 걸었는지는 감사 행과
+        // 이 줄 말고는 어디에도 없고, 수동 밴 경로가 0건이라 되돌릴 수도 없다.
+        if (released.banExisted()) {
+            log.info("밴 해제 — targetUserId={} actor={} 지운 밴(만료={} 발급자={}) 누적 사면 기준선={}",
+                    command.targetUserId(), command.actorId(),
+                    released.expiresAt() == null ? "영구" : released.expiresAt(),
+                    released.bannedById(), now);
         } else {
-            log.info("밴 해제 — 풀 밴이 없었다(멱등). 누적 사면 기준선만 남긴다 targetUserId={} actor={} 기준선={}",
+            log.warn("밴 해제 — 풀 밴이 <없었다>. 누적 사면 기준선만 남긴다 targetUserId={} actor={} 기준선={}"
+                            + " (대상 id 를 확인할 것 — 이 호출만으로 그 사용자의 730일 누적이 접힌다)",
                     command.targetUserId(), command.actorId(), now);
         }
+        // chat-api 는 chat-core 타입을 참조하지 않는다(모듈 규칙) — 경계에서 옮긴다.
+        // 발급자 id 는 넘기지 않는다: 그것까지 응답에 실으면 제3자 식별자가 누설된다.
+        // 감사가 필요한 쪽은 chat_ban_release 행과 로그가 들고, 응답은 누른 사람이 그 자리에서
+        // "풀 밴이 있었는가 · 영구였는가" 를 아는 데까지만 준다.
+        return new ReleaseBanResult(released.banExisted(),
+                released.banExisted() && released.expiresAt() == null);
     }
 }
