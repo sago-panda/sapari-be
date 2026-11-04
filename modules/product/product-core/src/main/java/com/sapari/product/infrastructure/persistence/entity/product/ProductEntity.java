@@ -61,14 +61,22 @@ public class ProductEntity extends UuidTimeEntity {
     @Column(updatable = false)
     private Boolean hasStock;
 
+    // 구매수·평점·리뷰수·조회수·찜수는 다른 흐름(주문 완료·리뷰·조회 버퍼·찜)이 올리는 집계 캐시다. 루트 save가 읽어 둔 스냅샷으로
+    // 통째로 덮어쓰면 그 사이의 증가분이 사라지므로(lost update) UPDATE 대상에서 뺀다(INSERT 초기값만 기록).
+    // 갱신은 각 흐름이 원자적 UPDATE(SET x = x + 1)로 직접 한다 — @Version을 올리지 않아 판매자 수정과 충돌하지 않는다.
+    @Column(updatable = false)
     private Integer purchaseCount;
 
+    @Column(updatable = false)
     private BigDecimal avgRating;
 
+    @Column(updatable = false)
     private Integer reviewCount;
 
+    @Column(updatable = false)
     private Integer viewCount;
 
+    @Column(updatable = false)
     private Integer wishlistCount;
 
     @Enumerated(EnumType.STRING)
@@ -139,21 +147,6 @@ public class ProductEntity extends UuidTimeEntity {
      */
     public void updateDeletedAt(Instant deletedAt) {
         this.deletedAt = deletedAt;
-    }
-
-    /**
-     * 정렬·필터용 비정규화 캐시 컬럼을 일괄 갱신한다.
-     *
-     * <p>구매수·평점·리뷰수·조회수·찜수는 DB가 계산하지 않고 앱이 집계해 채우는 캐시이므로, 재계산 시점에 한 번에 묶어 갱신한다.
-     * 최저가·재고유무는 조합 파생 캐시라 여기서 다루지 않는다({@code ProductRepository.refreshStockPriceCache}).
-     */
-    public void updateCacheColumns(Integer purchaseCount, BigDecimal avgRating, Integer reviewCount, Integer viewCount,
-                                   Integer wishlistCount) {
-        this.purchaseCount = purchaseCount;
-        this.avgRating = avgRating;
-        this.reviewCount = reviewCount;
-        this.viewCount = viewCount;
-        this.wishlistCount = wishlistCount;
     }
 
     /**

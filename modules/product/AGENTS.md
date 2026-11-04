@@ -79,6 +79,10 @@ pre-built slices had no caller and were removed. Build each slice together with 
   (READ COMMITTED): lock order is **combination rows → product row**; it bumps `updated_at` (re-index
   trigger) but not `version`. Hot paths (order reservations) will serialize on that product row — revisit
   before wiring them.
+- **Aggregate counters (`purchase_count`, `review_count`, `avg_rating`, `view_count`, `wishlist_count`) are
+  `updatable=false` too** — a root save carries a stale snapshot and would erase increments made meanwhile.
+  Whoever owns a counter updates it with an atomic statement (`SET x = x + 1`), never through `save`, and
+  without bumping `version` (so seller edits don't 409 on every view/like).
 
 ## Conventions (when you build services)
 

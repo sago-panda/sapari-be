@@ -255,6 +255,53 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
                             .map(ProductImageRef::imageKey)
                             .toList());
         }
+
+        @Test
+        @DisplayName("집계 카운터는 루트 save로 덮어쓰지 않는다 — 읽어 둔 스냅샷 이후의 원자적 증가분이 보존된다(lost update 방지)")
+        void save_does_not_overwrite_aggregate_counters() {
+            Product saved = productRepository.save(ProductFixtures.aProduct(SELLER_A, CATEGORY_1)
+                    .set("purchaseCount", 10)
+                    .set("reviewCount", 3)
+                    .set("viewCount", 100)
+                    .set("wishlistCount", 7)
+                    .set("avgRating", new BigDecimal("4.0"))
+                    .sample());
+            em.flush();
+            em.clear();
+            // 판매자 수정 폼이 읽어 둔 스냅샷
+            Product snapshot = productRepository.findById(saved.id())
+                    .orElseThrow();
+            // 그 사이 다른 흐름(주문 완료·리뷰·조회·찜)이 원자적으로 올린다
+            em.createNativeQuery("""
+                            UPDATE product_schema.products
+                               SET purchase_count = purchase_count + 1, review_count = review_count + 1,
+                                   view_count = view_count + 1, wishlist_count = wishlist_count + 1, avg_rating = 4.5
+                             WHERE id = :id
+                            """)
+                    .setParameter("id", saved.id())
+                    .executeUpdate();
+
+            // 스냅샷 기반 수정 저장 — 도메인 값으로 카운터를 바꿔 넣어도 반영되지 않아야 한다
+            productRepository.save(snapshot.toBuilder()
+                    .name("수정된 이름")
+                    .purchaseCount(0)
+                    .reviewCount(0)
+                    .viewCount(0)
+                    .wishlistCount(0)
+                    .avgRating(null)
+                    .build());
+            em.flush();
+            em.clear();
+
+            Product after = productRepository.findById(saved.id())
+                    .orElseThrow();
+            assertThat(after.name()).isEqualTo("수정된 이름");
+            assertThat(after.purchaseCount()).isEqualTo(11);
+            assertThat(after.reviewCount()).isEqualTo(4);
+            assertThat(after.viewCount()).isEqualTo(101);
+            assertThat(after.wishlistCount()).isEqualTo(8);
+            assertThat(after.avgRating()).isEqualByComparingTo("4.5");
+        }
     }
 
     @Nested
@@ -547,15 +594,15 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         @Test
         @DisplayName("findActiveSellerProductSummaries는 삭제 상품을 제외하고 스칼라·대표이미지(GALLERY 최소 sortOrder)를 채운다")
         void findActiveSellerProductSummaries_maps_and_excludes_deleted() {
-            // 최저가·재고유무는 갱신 save로 덮어쓸 수 없는 파생 캐시라(refreshStockPriceCache 전담) INSERT 시점 값으로 둔다
+            // 최저가·재고유무·집계 카운터는 갱신 save로 덮어쓸 수 없는 캐시라 INSERT 시점 값으로 둔다
             Product live = productRepository.save(ProductFixtures.aProduct(SELLER_A, CATEGORY_1)
                     .set("minPrice", 9_000)
                     .set("hasStock", true)
+                    .set("reviewCount", 5)
+                    .set("avgRating", new BigDecimal("4.5"))
                     .sample());
             productRepository.save(live.toBuilder()
                     .status(ProductStatus.ON_SALE)
-                    .reviewCount(5)
-                    .avgRating(new BigDecimal("4.5"))
                     .images(List.of(
                             new ProductImageRef(null, live.id(), null, ImageRole.GALLERY, "g1.jpg", (short) 1),
                             new ProductImageRef(null, live.id(), null, ImageRole.GALLERY, "g0.jpg", (short) 0),
