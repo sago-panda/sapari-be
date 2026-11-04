@@ -1,8 +1,9 @@
 # chat — live chat domain
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
-✅ connect / send / fan-out / room-end / kick + ban escalation (REST host: **live-app**).
-⬜ history (VOD). Run `./gradlew :modules:chat:chat-core:test`.
+✅ connect / send / fan-out / room-end / kick + ban escalation / history (VOD) / reverse paths —
+ban release, kick-list reconcile, end-marker clear, dictionary propagation + admin API
+(REST host: **live-app**). Run `./gradlew :modules:chat:chat-core:test`.
 
 ## One module, two stacks — the rule that governs everything else
 
@@ -80,7 +81,7 @@ it: when a handler swallows to keep a verdict, it still owes a counter and an in
 (`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
 put back).
 
-## Profanity dictionary — the file is the source, and the short words are the trap
+## Profanity dictionary — the table is the source, the file seeds it, and short words are the trap
 
 Before matching, the filter folds the message to **NFC** and folds case plus fullwidth Latin/digits.
 Without that, input that looks identical on screen walks past the whole dictionary — a decomposed
@@ -133,7 +134,14 @@ Numbers and vectors for each live in `ProfanityFilter`'s class javadoc and the t
 list exists so the axes are visible from here.
 
 All three canonical tiers now exist — `live_schema.chat_filter_word` → Redis snapshot → in-pod trie
-(SPR-165). The split is forced by the apps: streaming-app has **no DataSource at all**, so the app that
+(SPR-165). ⚠️ `db/migration/live/V1__init_live.sql:157` calls tier 2 "Redis Pub/Sub(변경 전파)", which
+is imprecise: the content travels in a **snapshot key**, and pub/sub only carries the new version
+number (content in a non-persistent channel would leave a pod that missed the message enforcing a
+different dictionary forever). That file is a **frozen migration** — it is on `origin/dev`, so editing
+even its comments changes its checksum and stops the deploy (`infra/AGENTS.md`). This paragraph is the
+correction; do not go fix the comment.
+
+The split is forced by the apps: streaming-app has **no DataSource at all**, so the app that
 can read the source of truth (live-app) reads it and leaves a snapshot where the app that cannot
 (streaming-app) will find it.
 
@@ -176,9 +184,19 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
 - **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
   first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
   set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.
-  Collapsing them tells an operator who sent a perfectly good word that their word is wrong. **Delete
-  does not check the pre-change set** — removing the offending row must stay possible, or there is no
-  app-level way out of the freeze.
+  Collapsing them tells an operator who sent a perfectly good word that their word is wrong.
+- **Delete does not go through the door at all** — it only refuses emptying the word set. Checking the
+  *result* closed the recovery path it was meant to open: with **two or more** violating rows, removing
+  one is refused because of the other, and the API removes one at a time, so nothing can be removed
+  (measured). And two-or-more is the *default* of that scenario, not an edge: tightening a rule — which
+  is exactly what K 64 → 16 was — makes many rows violate at once. The check buys nothing there,
+  because **removal cannot create a violation**: rule (1) fires on `entry ∈ words` and removal only
+  shrinks `words`; rule (3) looks at the residue after stripping profanities, which only grows; shape
+  and budget are per-entry. Measured exhaustively over the bundled dictionary: 1,116 single removals,
+  **0** new violations (control: an empty word set *is* refused, so the 0 is not a blind probe). What
+  remains refused is emptying the words — that is masking silently off. A still-violating result after
+  a delete is a **warning**, not a refusal: refusing blocks recovery, staying silent lets the operator
+  believe recovery finished.
 
 Missing resource, or zero words after comments, is a **boot failure**. An empty dictionary is not a
 degraded filter — it is the filter silently off (`displayMessage == originalMessage`), and that state

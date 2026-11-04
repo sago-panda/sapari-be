@@ -1,5 +1,8 @@
 # 화이트리스트(정상어 보호)
 #
+# 이 파일도 <시드의 원본>이고 정본이 아니다 — 정본은 live_schema.chat_filter_word 의
+# kind='WHITELIST' 행이다(근거와 운영 중 변경 경로는 profanity-words.txt 머리글에 있다).
+#
 # 출처: Tanat05/korcen 의 오탐 목록(290) + sapari-be-docs/seed/whitelist.seed.txt + 아래 '추가'.
 # 세 목록을 합쳐 아래 규칙으로 걸러 31건을 남겼고, 오탐을 닫으며 8건을 더해 39건이 됐다.
 # 2026-11-04 에 사전 15건을 빼면서 고아 둘(성교육 · 공개세)을 지우고 상년도 하나를 더해 38건이다.

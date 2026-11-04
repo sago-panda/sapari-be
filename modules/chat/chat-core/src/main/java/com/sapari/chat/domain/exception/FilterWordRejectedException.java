@@ -22,4 +22,15 @@ public class FilterWordRejectedException extends ChatException {
     public FilterWordRejectedException(String debugMessage, Throwable cause) {
         super(ChatErrorCode.FILTER_WORD_REJECTED, debugMessage, cause);
     }
+
+    /**
+     * 번역할 원인이 없을 때 — 서비스가 계약 위반을 <b>직접</b> 판정한 경우다(마지막 욕설 제거).
+     *
+     * <p>{@code null} 을 인자로 적는 호출부를 만들지 않으려고 생성자를 따로 둔다 — 읽는 쪽에서
+     * "왜 null 인가" 를 매번 되묻게 되기 때문이다({@code ChatHistoryQueryInvalidException} 가
+     * 같은 이유로 같은 모양을 쓴다).
+     */
+    public FilterWordRejectedException(String debugMessage) {
+        super(ChatErrorCode.FILTER_WORD_REJECTED, debugMessage, null);
+    }
 }

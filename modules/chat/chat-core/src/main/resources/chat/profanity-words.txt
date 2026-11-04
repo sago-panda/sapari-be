@@ -1,4 +1,9 @@
-# 욕설 사전
+# 욕설 사전 — 이 파일은 <시드의 원본>이고 정본이 아니다(SPR-165).
+#
+# 정본은 live_schema.chat_filter_word 다. 이 파일은 그 테이블이 비어 있을 때 한 번 들어가고,
+# 그 뒤로는 테이블이 저자다 — 여기를 고쳐도 이미 시드된 환경의 사전은 바뀌지 않는다.
+# 운영 중 변경은 ADMIN API(/api/v1/chat/filter-words)로 한다. 이 파일을 고치는 것이 의미 있는
+# 경우는 둘이다: 새 환경의 시드 내용을 바꿀 때, 그리고 스냅샷을 못 읽는 Pod 의 폴백을 바꿀 때.
 #
 # 출처 둘 (둘 다 MIT — LICENSE-thirdparty.txt 에 고지 전문).
 #   1) VaneProject/bad-word-filtering  — 기본 사전. 이 저장소의 설계 단계에서 이미 큐레이션해 둔

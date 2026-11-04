@@ -37,8 +37,9 @@ import lombok.extern.slf4j.Slf4j;
  * 항목 하나뿐이므로 {@link FilterWordRejectedException}(400)이다. 하나로 뭉개면 멀쩡한 단어를
  * 보낸 운영자에게 "당신 단어가 틀렸다" 는 거짓 안내가 간다.
  *
- * <p><b>제거는 변경 전을 검사하지 않는다.</b> 결과만 본다 — 어기는 항목을 <b>빼는 요청</b>이
- * 복구 경로여야 하기 때문이다. 변경 전을 검사하면 그 요청이 자기가 고치려는 상태 때문에 막힌다.
+ * <p><b>제거는 이 문을 통과시키지 않는다</b> — "욕설 집합이 비는가" 만 본다. 결과를 검사하면
+ * 복구가 자기 자신에게 막히고(위반이 둘 이상이면 하나씩 지우는 요청이 전부 거부된다) 그 검사가
+ * 거기서 버는 것도 없다(제거는 새 위반을 만들 수 없다). 근거와 실측은 {@link #guardRemoval} 에 있다.
  *
  * <p><b>검사가 트라이를 한 번 세운다</b>(1,078 항목에서 p50 0.54 ms). 문을 쓰면서 그 비용을 피할
  * 수 없는데, 문을 둘로 나누면(검사만 하는 것 / 만드는 것) 번들·설정·전파가 지나는 문과 갈릴
@@ -96,9 +97,7 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         Set<String> nextWords = minus(words, kind == FilterWordKind.PROFANITY ? command.word() : null);
         Set<String> nextWhitelist =
                 minus(whitelist, kind == FilterWordKind.WHITELIST ? command.word() : null);
-        // 변경 전을 보지 않는다 — 어기는 항목을 빼는 요청이 복구 경로여야 한다. 결과가 여전히
-        // 어기면 남은 항목 때문이고 그건 운영자가 보낸 것이 아니므로 409 다.
-        guardSource(nextWords, nextWhitelist);
+        guardRemoval(nextWords, nextWhitelist);
 
         boolean changed = writeRecorder.remove(kind, command.word());
         long version = publishService.publishFromSource();
@@ -149,6 +148,55 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
             throw new FilterWordSourceInvalidException(
                     "정본이 사전 문을 통과하지 못한다 — 이 상태로는 발행해도 전 Pod 가 교체를 "
                             + "거부한다. 사유=" + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 제거가 허용되는가 — <b>전체 문을 통과시키지 않는다.</b>
+     *
+     * <p>처음에는 결과 집합을 전체 문에 통과시켰다. 그게 복구 경로를 자기 자신에게 막았다:
+     * 위반이 <b>둘 이상</b>이면 하나씩 지우는 요청이 전부 "남은 것 때문에" 거부되고, 엔드포인트가
+     * 한 번에 하나를 지우므로 <b>어느 것도 못 지운다</b>. 실측:
+     * <pre>
+     *   사전 {시발, 병신, 개새끼} · 화이트 {시발, 병신}   변경 전 통과 false
+     *     화이트 '시발' 제거 → false      화이트 '병신' 제거 → false
+     *     둘 다 제거 → true
+     *   사전 {시발, 가×17, 나×18, 다×20}(예산 밖 셋)      변경 전 통과 false
+     *     셋 중 어느 하나를 제거 → 전부 false
+     * </pre>
+     * 그리고 둘 이상이 <b>그 시나리오의 기본값</b>이다 — 이 상태에 닿는 주된 길이 규칙 조이기이고
+     * (이 브랜치의 K 예산 64 → 16 이 바로 그것), 채워진 테이블에 적용되면 범위 밖 행이 한꺼번에
+     * 여럿 위반이 된다.
+     *
+     * <p><b>전체 문이 거기서 버는 것이 없다 — 제거는 새 위반을 만들 수 없다.</b> 구조로 그렇다:
+     * 규칙 (1)은 {@code 화이트 항목 ∈ 사전} 일 때 걸리는데 제거는 사전을 줄이므로 그 포함을
+     * 새로 만들 수 없고, 규칙 (3)은 욕설을 뺀 <i>잔여</i>를 보므로 단어를 지우면 잔여가 길어져
+     * 더 통과하기 쉬워지고(품는 욕설이 0건이 되면 아예 건너뛴다), 모양·예산 검사는 항목별이라
+     * 제거와 무관하다. 번들 전수로도 같다 — 단일 제거 1,116건(욕설 1,078 + 화이트 38) 중 새
+     * 위반 <b>0건</b>. (양성 대조군: 욕설 0개 집합은 거부된다 — 전수의 0 이 "도구가 못 봤다" 가
+     * 아니다.)
+     *
+     * <p><b>막아야 하는 것은 하나다 — 마지막 욕설.</b> 사전이 비면 마스킹이 조용히 꺼진다
+     * ({@code displayMessage == originalMessage}). 그 판정을 문에 맡기지 않고 여기서 먼저 보는
+     * 이유는 <b>귀속</b>이다: 문은 빈 집합 거부보다 항목별 모양 거부를 먼저 던질 수 있어, 문에
+     * 맡기면 "마지막 욕설을 지우려 한다" 를 엉뚱한 사유에 붙일 수 있다. 문은 교체 지점에서
+     * 여전히 백스톱으로 선다.
+     *
+     * <p>남은 위반은 <b>경고로 낸다.</b> 거부하면 복구가 막히고, 조용히 넘기면 운영자가 복구가
+     * 끝났다고 믿는다 — 그 둘 사이가 이 로그다.
+     */
+    private void guardRemoval(Set<String> words, Set<String> whitelist) {
+        if (words.isEmpty()) {
+            throw new FilterWordRejectedException(
+                    "마지막 욕설을 지울 수 없다 — 사전이 비면 마스킹이 조용히 꺼진다"
+                            + "(displayMessage == originalMessage).");
+        }
+        try {
+            filterFactory.from(SOURCE_ORIGIN, words, whitelist);
+        } catch (IllegalStateException e) {
+            log.warn("제거 후에도 정본이 사전 문을 통과하지 못한다 — 복구가 끝나지 않았다. "
+                            + "남은 욕설 {}개 · 화이트리스트 {}개 사유={}",
+                    words.size(), whitelist.size(), e.getMessage());
         }
     }
 

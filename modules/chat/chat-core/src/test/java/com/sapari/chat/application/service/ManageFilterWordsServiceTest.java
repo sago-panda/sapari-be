@@ -156,8 +156,11 @@ class ManageFilterWordsServiceTest {
     /**
      * ⭐ <b>복구 경로가 자기 자신에게 막히지 않는다.</b>
      *
-     * <p>제거는 변경 전을 검사하지 않고 결과만 본다. 검사했다면 어기는 항목을 <b>빼는 요청</b>이
-     * 고치려는 그 상태 때문에 거부되고, 전파 동결에서 빠져나올 길이 앱 경로에 없어진다.
+     * <p>제거는 사전 문을 통과시키지 않는다 — "욕설 집합이 비는가" 만 본다. 문을 지나게 하면
+     * 어기는 항목을 <b>빼는 요청</b>이 고치려는 그 상태 때문에 거부되고, 전파 동결에서 빠져나올
+     * 길이 앱 경로에 없어진다. 이 벡터는 위반이 <b>하나</b>인 경우이고, 바로 아래
+     * {@code removingOneOfTwoOffendersSucceeds} 가 둘 이상인 경우를 잡는다 — 결과를 검사하던
+     * 동안 통과했던 것이 이쪽이고 막혔던 것이 저쪽이다.
      */
     @Test
     @DisplayName("⭐ 어기는 항목을 빼는 요청은 통과한다 — 그게 동결에서 빠져나오는 길이다")
@@ -174,16 +177,66 @@ class ManageFilterWordsServiceTest {
         assertThat(change.changed()).isTrue();
     }
 
+    /**
+     * ⭐ <b>위반이 둘 이상일 때도 하나씩 지울 수 있어야 한다.</b>
+     *
+     * <p>처음 구현은 제거의 <i>결과</i>를 전체 문에 통과시켰고, 그래서 이 경우에 <b>어느 것도
+     * 못 지웠다</b> — 하나를 지우면 남은 것 때문에 거부되고, 이 API 가 한 번에 하나를 지우므로
+     * 전파 동결에서 빠져나올 길이 앱 경로에 없어진다. 실측으로 전부 거부였다:
+     * <pre>
+     *   사전 {시발, 가×17, 나×18, 다×20}  변경 전 통과 false
+     *     셋 중 어느 하나를 제거 → 전부 false
+     * </pre>
+     *
+     * <p>그리고 <b>둘 이상이 기본값</b>이다. 이 상태에 닿는 주된 길이 규칙 조이기이고(K 예산
+     * 64 → 16), 채워진 테이블에 적용되면 범위 밖 행이 한꺼번에 여럿 위반이 된다.
+     */
     @Test
-    @DisplayName("빼고도 여전히 어기면 409 다 — 남은 항목 때문이고 운영자가 보낸 것이 아니다")
-    void removingOneOfTwoOffendersStillFails() {
-        // given: 어기는 항목이 둘이다
+    @DisplayName("⭐ 위반이 둘이어도 하나씩 지울 수 있다 — 아니면 복구 경로가 닫힌다")
+    void removingOneOfTwoOffendersSucceeds() {
+        // given: 어기는 항목이 둘이다 — 지운 뒤에도 하나가 남는다
         sourceIs(Set.of(OVER_BUDGET, "나".repeat(18)), Set.of());
 
-        assertThatThrownBy(() -> service.remove(remove("PROFANITY", OVER_BUDGET, "ADMIN")))
-                .isInstanceOf(FilterWordSourceInvalidException.class);
+        // when
+        var change = service.remove(remove("PROFANITY", OVER_BUDGET, "ADMIN"));
+
+        // then: 진행한다. 남은 위반은 거부가 아니라 경고로 간다 — 거부하면 복구가 막히고
+        // 조용히 넘기면 운영자가 복구가 끝났다고 믿는다.
+        verify(writeRecorder).remove(FilterWordKind.PROFANITY, OVER_BUDGET);
+        verify(publishService).publishFromSource();
+        assertThat(change.changed()).isTrue();
+    }
+
+    /**
+     * ⭐ 제거가 막는 것은 <b>하나뿐</b>이다 — 마지막 욕설.
+     *
+     * <p>사전이 비면 마스킹이 조용히 꺼진다({@code displayMessage == originalMessage}). 이 거부가
+     * 없으면 제거 경로가 그 상태를 만들 수 있고, 교체 지점의 문이 받아 주지만 그때는 이미
+     * 정본이 비어 있어 모든 Pod 이 옛 사전으로 굳는다.
+     */
+    @Test
+    @DisplayName("⭐ 마지막 욕설은 지울 수 없다 — 사전이 비면 마스킹이 조용히 꺼진다")
+    void theLastProfanityCannotBeRemoved() {
+        // given: 욕설이 하나뿐이다
+        sourceIs(Set.of("시발"), Set.of("시발점"));
+
+        assertThatThrownBy(() -> service.remove(remove("PROFANITY", "시발", "ADMIN")))
+                .isInstanceOf(FilterWordRejectedException.class);
 
         verify(writeRecorder, never()).remove(any(), anyString());
+        verify(publishService, never()).publishFromSource();
+    }
+
+    /** 화이트리스트를 전부 지우는 것은 막지 않는다 — 비어도 마스킹은 돈다(보존만 사라진다). */
+    @Test
+    @DisplayName("화이트리스트는 전부 지울 수 있다 — 비어도 마스킹은 꺼지지 않는다")
+    void theLastWhitelistEntryMayBeRemoved() {
+        sourceIs(Set.of("시발"), Set.of("시발점"));
+
+        var change = service.remove(remove("WHITELIST", "시발점", "ADMIN"));
+
+        verify(writeRecorder).remove(FilterWordKind.WHITELIST, "시발점");
+        assertThat(change.changed()).isTrue();
     }
 
     /**
@@ -215,7 +268,12 @@ class ManageFilterWordsServiceTest {
         assertThatThrownBy(() -> service.list(new ListFilterWordsCommand(admin, role)))
                 .isInstanceOf(ChatPermissionDeniedException.class);
 
+        // "거부는 함대에 깔리지 않는다" 를 네 갈래 전부에 적는다 — 나머지 셋(add 409 · add 400 ·
+        // 마지막 욕설)이 발행까지 단언하는데 여기만 쓰기만 봤다. 권한이 먼저 걸려 오늘은 도달
+        // 불가지만, 같은 불변식을 한 갈래에만 안 적으면 그 갈래가 먼저 느슨해진다.
         verify(writeRecorder, never()).add(any(), anyString(), any());
+        verify(writeRecorder, never()).remove(any(), anyString());
+        verify(publishService, never()).publishFromSource();
     }
 
     @ParameterizedTest(name = "role={0}")
