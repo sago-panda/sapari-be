@@ -38,9 +38,11 @@ class ProfanityDictionaryTest {
             "미친놈", "미친년", "창녀", "강간", "쌍놈", "씹창", "s1bal", "sibal",
             // 'sex' 를 사전에서 빼면서 sexual·sexy 화이트리스트가 같이 빠졌다 — ASCII 자판만으로
             // 사전을 끄던 키가 사라진 자리다.
-            "sexyfuck", "sexy시발", "SEXY시발", "시발sexual",
-            // 손가락. 화이트리스트에서 ㅗ 조합을 전부 떨어뜨렸기 때문에 이제 실제로 잡힌다.
-            "ㅗ", "ㅗㅜㅑ"})
+            "sexyfuck", "sexy시발", "SEXY시발", "시발sexual"})
+            // 손가락 'ㅗ' 는 여기 있었다. 2026-11-04 에 사전에서 뺐다 — 1코드포인트라 결합이
+            // 무제한이고 'ㅗㅜㅑ'(흔한 감탄 표기) · '사이즈 ㅗ' 를 가렸다. 같은 기준으로 '똥' 을
+            // 뺀 선례가 사전 머리글에 있고, 그 집계가 [가-힣] 기준이라 자모를 안 세서 이 계급의
+            // 회귀가 돈 흔적이 없었다. 아래 ordinaryKoreanSurvives 가 반대 방향을 든다.
     @DisplayName("흔한 표기가 전부 걸린다 — 변형만 든 사전은 기본 표기를 통째로 흘려보냈다")
     void commonProfanityIsMasked(String word) {
         assertThat(filterFromDictionary().filter(word))
@@ -102,7 +104,26 @@ class ProfanityDictionaryTest {
             "구조까지", "참조까지", "충족까지 확인", "부족까지", "구조또는 참조", "보조또는",
             "새우젓까지", "액젓까지", "멸치액젓까지 주문",
             // 공백 없이 쓰는 복합명사. 화이트리스트 환불알·동봉알·검색키 로 닫았다.
-            "환불알림", "환불알려주세요", "환불알고리즘", "동봉알림", "검색키", "검색키워드"})
+            "환불알림", "환불알려주세요", "환불알고리즘", "동봉알림", "검색키", "검색키워드",
+            // 2분할 계급 (2026-11-04). 2B 는 인접 토큰을 이어 붙이고 <조인 결과가 사전 항목과
+            // 정확히 같을 때> 발화하므로, 양쪽이 각각 평범한 낱말이면 띄어 써도 걸린다. 머리글에
+            // "공백이 있으면 전부 원문이 나간다" 고 적혀 있었고 그것이 거짓이었다 — 사전 1,078건
+            // 중 1,048건이 안쪽 공백 하나로 걸린다. 사전 15건을 빼서 닫았다.
+            "개 세 마리 키워요", "강아지 세 마리랑 개 세 마리", "게 같은 갑각류 알레르기",
+            "개 똥 치우는 봉투", "개똥쑥차", "개똥쑥 말린 것", "띠 풀 뿌리 말린 거",
+            "나사를 박고 빼고 반복하면 됩니다", "개가 든 가방이에요",
+            "남성교복", "여성교사", "완성교체", "음성교환", "영속성 교체",
+            "에비앙 생수", "에미레이트 항공", "에미상 후보",
+            "3개년 계획", "5개년계획 수립", "중개세무 법인", "소개세션 안내",
+            "기저년도 대비", "돌을 쪼다", "정을 대고 쪼다",
+            // '…상년도' 는 사전 '상년' 에 걸렸다. 접미 하나가 계급 전체를 덮는 드문 자리라
+            // 화이트리스트 '상년도' 로 닫았다 — 열거가 아니다.
+            "예상년도", "결산년도", "기준년도", "회계 예상년도 기준",
+            // 1코드포인트 자모. 'ㅗ' 를 뺐다 — 결합이 무제한이고 흔한 감탄 표기를 가렸다.
+            "ㅗㅜㅑ", "사이즈 ㅗ", "ㅗㅗ",
+            // 이 저장소 자신의 주석이 검열되고 있었다 — '돌아이' 를 빼서 닫았다(표준 표기
+            // '또라이' 는 남는다).
+            "그쪽은 시큐리티 체인이 먼저 돌아 401 이 오는데", "돌아 이 제품 보세요"})
     @DisplayName("평범한 한국어는 그대로 나간다 — 판매자 설명이 검열되면 되돌릴 수 없다")
     void ordinaryKoreanIsNotMasked(String sentence) {
         assertThat(filterFromDictionary().filter(sentence))
@@ -133,7 +154,7 @@ class ProfanityDictionaryTest {
     /**
      * 같은 글자로 보이는 입력은 같게 판정한다.
      *
-     * <p>NFD 분해형과 전각은 <b>화면에 똑같이 보인다.</b> 접지 않으면 사전 1,093개가 통째로
+     * <p>NFD 분해형과 전각은 <b>화면에 똑같이 보인다.</b> 접지 않으면 사전 1,078개가 통째로
      * 지나가는데, 채움문자와 달리 글자를 끼울 필요조차 없다 — macOS 복사·전각 IME 로 그냥
      * 나온다. {@code displayMessage == originalMessage} 로 영속·팬아웃되고 화면상 구별이
      * 불가능하다.
@@ -208,7 +229,8 @@ class ProfanityDictionaryTest {
      * 종성(U+1100–11FF)과 반각(U+FFA1–FFDC) 표기가 더 있다. 평면 C 가 조합용을 되돌리지만
      * 역표를 {@code NFKD} 역으로만 만들면 <b>초성형만</b> 들어온다 — 유니코드가 종성과 호환
      * 자모를 호환 분해로 잇지 않기 때문이다. 실측으로 사전의 자모 항목 73건 중 <b>72건</b>이
-     * 종성 표기로, 84건 중 6건이 반각 표기로 통과했다.
+     * 종성 표기로, 84건 중 6건이 반각 표기로 통과했다(그 당시 분모다 — 호환 자모 항목은
+     * 2026-11-04 에 83건이 됐고 두 축의 현재 통과는 모두 0 이다).
      *
      * <p>아래 벡터는 축마다 하나씩이다. 가운데에 숫자나 기호가 끼면 평면 C 가 그것을 떼어내
      * 항목이 깨지므로, 접기는 길이를 보존하는 1-패스 {@code fold} 에서 일어나야 한다.
@@ -433,7 +455,8 @@ class ProfanityDictionaryTest {
      *
      * <p>이 잔재는 닫혔다. 한때 규칙을 지킨 항목도 전부 우회 스위치였다 — {@code 시발점씨발} 이
      * {@code 시발점} 때문에 통째로 통과했다. 마스킹을 span 단위로 바꿔(욕설 span 이 화이트리스트
-     * span 에 <b>완전히 덮일 때만</b> 버린다) 당시 31건 전수에서 0건이 됐다(지금은 39건 × 사전 전수 42,627케이스에서 0건). 아래
+     * span 에 <b>완전히 덮일 때만</b> 버린다) 당시 31건 전수에서 0건이 됐다(지금은 38건 × 사전 전수 × 양쪽 81,928케이스에서 1건 —
+     * 시발유니섹스 이고, 화이트 '시발유' 가 덮는 접미 계급이다. 화이트리스트 머리글 참조). 아래
      * {@code noWhitelistEntryIsAGlobalOffSwitch} 가 그것을 고정한다.
      */
     @ParameterizedTest(name = "{0}")
@@ -521,6 +544,34 @@ class ProfanityDictionaryTest {
                 "rotorl", "rotprl", "siba", "sibak", "sibal", "sibar", "sipal", "siqk",
                 "sival", "tlba", "tlbak", "tlbal", "tlbar", "tlpal", "tlqk", "tlqkd",
                 "tlqkf", "tlva", "tlval", "wlfkf");
+    }
+
+    /**
+     * 사전 최장 항목 길이 K 를 못 박는다 — <b>2B 최악 비용의 축</b>이다.
+     *
+     * <p>ProfanityFilter 의 2B 는 인접 2~K 토큰을 조인하므로 반복이 O(토큰수 × K) 다. 그래서
+     * 사전에 긴 항목 하나를 더하는 것은 데이터 변경이 아니라 <b>지연 변경</b>이다 — 실측
+     * 211 / 531 / 1,357 / 3,011 µs (여분 항목 0 / 16 / 32 / 64자), 64자에서 332 msg/s.
+     *
+     * <p>바로 위 {@code theAsciiEntriesAreExactlyThese} 가 이 축을 <b>못 지킨다.</b> K=7 을 만드는
+     * 항목은 둘인데 하나만 ASCII 다 — {@code fuckyou} 와 {@code s하고e싶다x}. ASCII 집합을 박아
+     * 두어도 8음절 순한글 항목 하나를 넣으면 K 가 8이 되고 그 테스트는 초록이다. 그리고 사전
+     * 추가가 실제로 일어나는 축이 그쪽이다(순한글 913/1,078).
+     *
+     * <p>K 는 항목 길이로 재고 fold 로 재지 않는다 — fold 는 BMP 안에서 1:1 이라 길이를 보존한다.
+     */
+    @Test
+    @DisplayName("⭐ 사전 최장 항목은 7자다 — 이 수가 2B 최악 비용(332 msg/s)의 축이다")
+    void theLongestEntryFixesTheTwoBWindow() {
+        var words = ProfanityDictionary.load(null, null).words();
+        int k = words.stream().mapToInt(String::length).max().orElseThrow();
+
+        assertThat(k)
+                .as("K 가 오르면 2B 반복이 O(토큰수 × K) 로 같이 오른다 — 올리려면 비용을 다시 재라")
+                .isEqualTo(7);
+        assertThat(words.stream().filter(w -> w.length() == k).sorted().toList())
+                .as("ASCII 집합 고정은 이 축을 못 지킨다 — 둘 중 하나가 순한글 혼합이다")
+                .containsExactly("fuckyou", "s하고e싶다x");
     }
 
     /**
@@ -800,18 +851,24 @@ class ProfanityDictionaryTest {
             // 한글 욕설 + 라틴 잔여인 'x시발' 이 이 축의 벡터다.
             //
             // 위 넷은 전부 <숫자> 접두라 isLetter 가 0 이고, 문턱을 '글자 둘' 에서 '하나' 로
-            // 내려도 그대로 거부된다 — 넷만으로는 문턱을 재지 못한다(실측: 그 돌연변이가
-            // 320건 전부 초록이었다). 아래 셋이 그 자리를 잡는다.
+            // 내려도 그대로 거부된다 — 넷만으로는 문턱을 재지 못한다. 아래 셋이 그 자리를 잡는다.
+            // 실측(2026-11-04, hasTwoLetters 의 >= 2 를 >= 1 로 돌연변이): ProfanityDictionaryTest
+            // 328건 중 <깨지는 것은 정확히 이 셋>(xpussy · xfuck · x시발)이고 숫자 접두 넷은
+            // 초록 그대로다. 집합과 날짜를 적는 이유는 전에 '320건' 만 적혀 있었고 그것이 어느
+            // 집합의 수도 아니었기 때문이다(오늘 도달 가능한 수는 이 클래스 328 · chat-core 745).
             //
             // 반대 방향(한글 음절 잔여를 수락하는 쪽)은 다른 테스트들이 든다 — hasHangulSyllable
-            // 항을 떼면 테스트 3건이 깨지고, 그중 번들 39건 전수 하나 안에서 <항목 25건>이
-            // 설정 입구에서 거부된다(시발점 · 전염병 · 일시불 · 성교육 …). 여기에 '가시발' 을
-            // 더하지 않는 이유가 그것이다 — 같은 보장을 25겹으로 이미 재고 있다.
+            // 항을 떼면 번들 화이트리스트 38건 중 <24건>이 규칙 (3)에 걸린다(잔여가 1음절:
+            // 시발점 '점' · 전염병 '전' · 일시불 '일' · 상년도 '도' …). 여기에 '가시발' 을
+            // 더하지 않는 이유가 그것이다 — 같은 보장을 24겹으로 이미 재고 있다.
             //
-            // ⚠️ 그 25건이 깨지는 곳은 <부팅이 아니라 이 테스트>다. 규칙 (3)은 설정 입구에만
-            // 걸리고 파일 경로(load(null, null))는 되돌림 상태에서도 그냥 통과한다 — 번들
-            // 화이트리스트를 지키는 것이 로더가 아니라 테스트라는 뜻이고, 그래서 이 파일의
-            // everyWhitelistEntryCoversSomeProfanity 가 운영 경로를 직접 부른다.
+            // ⚠️ 그 24건이 깨지는 곳이 2026-11-04 에 <테스트에서 부팅으로> 옮겨졌다. 전에는
+            // 규칙 (3)이 설정 입구에만 걸려서, 되돌림 상태에서도 파일 경로(load(null, null))가
+            // 그냥 통과했다 — 번들 화이트리스트를 지키는 것이 로더가 아니라 테스트 하나뿐이었다.
+            // 지금은 로더가 번들 항목도 보므로 되돌리면 적재 자체가 실패한다(실측: 이 클래스
+            // 328건 중 303건 실패 — 사전을 쓰는 테스트가 전부 부팅에서 넘어진다).
+            // 재는 자리가 바뀌었으므로 되돌림 확인을 할 때 <어디서 깨지는가>를 같이 볼 것:
+            // '안 깨진다' 와 '테스트에서만 깨진다' 와 '부팅에서 깨진다' 는 서로 다른 보장이다.
             "xpussy", "xfuck", "x시발"})
     @DisplayName("⭐ 싼 접두는 표기가 라틴이어도 거부한다 — 잔여가 한 글자면 '8시발' 과 같은 모양이다")
     void aCheapPrefixIsRejectedInEitherScript(String entry) {
@@ -917,22 +974,96 @@ class ProfanityDictionaryTest {
                 .isEqualTo("아 시발점 진짜");
     }
 
+    /**
+     * 폭 없는 보이지 않는 글자는 <b>리소스 입구에서만</b> 부팅을 세운다.
+     *
+     * <p>두 입구를 다르게 두는 것이 결정이다. 리소스 실패는 배포 시점이라 방송을 끊지 않는다.
+     * 설정 CSV 실패는 <b>방송 중 전 파드 기동 실패</b>이고, 죽는 것은 욕설 필터가 아니라 채팅
+     * 전체(WS 세션·입장·영속)다. 그리고 이 통로는 yml.example 자신이 "방송 중에 쓰라고" 둔
+     * 긴급 경로다.
+     *
+     * <p>이 저장소가 세운 경계는 "거부의 기준은 쓸모없음이 아니라 해로움" 인데, 폭 없는 글자가
+     * 붙은 항목은 해롭지 않다 — 우회로를 열지 않고 아무것도 안 막는다. 실측으로 이모지 피커의
+     * 표준형이 전부 거부였다(❤️ = U+2764 U+FE0F · 끝에 U+FE0F 가 붙은 fuck️). 그래서 설정
+     * 입구는 떼고 경고한다.
+     */
     @Test
-    @DisplayName("보이지 않는 글자가 섞여도 거부한다 — 공백보다 찾기 어려운 사문이다")
-    void anInvisibleCharacterEntryFailsBoot() {
-        assertThatThrownBy(() -> ProfanityDictionary.load("개\u200B새끼", null))
+    @DisplayName("⭐ 폭 없는 글자가 든 리소스 항목은 거부한다 — 배포 시점 실패라 방송을 끊지 않는다")
+    void anInvisibleCharacterInAResourceFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(
+                "/chat/invisible-entry-dictionary.txt", WHITELIST, null, null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("보이지 않는 글자")
                 .as("원문을 그대로 실으면 보이지 않는 글자를 지목할 수 없다")
-                .hasMessageContaining("u200B");
+                .hasMessageContaining("u200B")
+                .as("어느 줄인지 안 알려주면 1,000줄짜리 파일에서 찾을 수 없다")
+                .hasMessageContaining(":6");
+    }
+
+    @Test
+    @DisplayName("⭐ 설정 CSV 의 폭 없는 글자는 떼고 경고한다 — 긴급 통로를 부팅 실패로 막지 않는다")
+    void aZeroWidthCharacterInConfigIsStrippedWithAWarning() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load("개\u200B새끼", null);
+
+        assertThat(dictionary.words())
+                .as("떼고 적재해야 운영자가 의도한 차단이 실제로 걸린다")
+                .contains("개새끼");
+        assertThat(dictionary.warnings())
+                .as("조용히 고치면 운영자가 자기 값이 바뀐 것을 모른다")
+                .anySatisfy(entry -> assertThat(entry).contains("u200B").contains("개새끼"));
+        assertThat(new ProfanityFilter(dictionary.words(), dictionary.whitelist())
+                .filter("개새끼 진짜"))
+                .isEqualTo("*** 진짜");
     }
 
     /**
-     * 한글 채움문자는 넷이고 전부 Lo(문자)로 분류된다.
+     * 이모지 피커가 내보내는 표준형이 긴급 통로를 막고 있었다.
      *
-     * <p>{@code isWhitespace} 도 {@code isSpaceChar} 도 {@code FORMAT} 도 이들을 걸러 내지
-     * 못한다. 처음에 U+3164·U+1160 둘만 막았는데, 남긴 둘이 그대로 통로였다 — 셋을 막고
-     * 하나를 두는 것은 막지 않은 것과 같다.
+     * <p>{@code ProfanityDictionary} javadoc 이 "So 를 통째로 막지는 않는다 — 그러면 이모지
+     * 항목을 나중에 못 넣는다" 고 적었는데, 그 근거가 So 축에만 참이었다. 표준형은 변이
+     * 선택자(U+FE0F)나 ZWJ 를 달고 오고 그 둘은 FORMAT·Mn 가지에 걸린다 — 즉 So 를 안 막아도
+     * 이모지를 못 넣고 있었다.
+     */
+    @Test
+    @DisplayName("⭐ 이모지 표준형(변이 선택자 부착)도 설정으로 들어온다 — 전에는 부팅이 실패했다")
+    void anEmojiWithAVariationSelectorLoadsFromConfig() {
+        ProfanityDictionary dictionary = ProfanityDictionary.load("\u2764\uFE0F", null);
+
+        assertThat(dictionary.words())
+                .as("변이 선택자만 떼면 남는 것은 평범한 1코드포인트 항목이다")
+                .contains("\u2764");
+        assertThat(dictionary.warnings()).anySatisfy(entry -> assertThat(entry).contains("uFE0F"));
+    }
+
+    @Test
+    @DisplayName("설정 항목에 남은 공백은 그대로 거부한다 — 떼어 붙이면 운영자 의도를 추측하는 것이다")
+    void anInnerSpaceInConfigStillFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load("개 새끼", null))
+                .as("'개 새끼' 를 '개새끼' 로 고쳐 주면 무엇을 적재했는지가 값과 달라진다")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("공백");
+    }
+
+    /**
+     * 보이지 않는 글자는 <b>어느 입구로도 사전 항목 안에 남지 못한다.</b>
+     *
+     * <p>한글 채움문자는 넷이고 전부 Lo(문자)로 분류된다 — {@code isWhitespace} 도
+     * {@code isSpaceChar} 도 {@code FORMAT} 도 이들을 걸러 내지 못한다. 처음에 U+3164·U+1160
+     * 둘만 막았는데, 남긴 둘이 그대로 통로였다. 셋을 막고 하나를 두는 것은 막지 않은 것과 같아서,
+     * 이 테스트는 계급을 전수로 돈다.
+     *
+     * <p>재는 것이 "거부한다" 에서 "남지 못한다" 로 바뀌었다. 설정 CSV 입구가 폭 없는 글자를
+     * <b>떼고 경고</b>하게 됐기 때문이다(긴급 통로를 부팅 실패로 막지 않기 위해 — 위
+     * {@code aZeroWidthCharacterInConfigIsStrippedWithAWarning} 의 근거). 그러면 결과가 두
+     * 갈래가 된다:
+     * <ul>
+     *   <li>공백류(U+00A0 같은 {@code isSpaceChar}) → 그대로 거부. 떼어 붙이면 운영자 의도를
+     *       추측하는 것이 된다.</li>
+     *   <li>폭 없는 나머지 → 제거되고 경고. 항목은 적재되고 <b>실제로 작동한다.</b></li>
+     * </ul>
+     * 어느 쪽이든 그 코드포인트가 사전에 들어가는 일은 없다 — 들어가면 그 항목은 적재되고도
+     * 같은 글자를 품은 입력 하나만 맞는 사문이 된다. 그것이 원래 막으려던 것이고, 새 계약이
+     * 그것을 더 강하게 고정한다(거부 대신 '존재하지 않음' 을 단언하므로 입구가 늘어도 유효하다).
      */
     @ParameterizedTest(name = "U+{0}")
     @ValueSource(strings = {
@@ -941,14 +1072,26 @@ class ProfanityDictionaryTest {
             "FE0F", "0300",                   // 변이 선택자 · 결합 악센트 — 폭 0 인 Mn
             "E0001",                          // 태그 문자 — 보조평면이라 char 루프로는 안 잡힌다
             "2800", "FFFC"})                  // 공백처럼 렌더되는 So — 분류로는 안 잡혀 열거로 받는다
-    @DisplayName("보이지 않는 글자를 분류로 거부한다 — 열거는 빠뜨린 하나가 통로가 된다")
-    void everyInvisibleCharacterIsRejected(String codePoint) {
-        String entry = "개" + Character.toString(Integer.parseInt(codePoint, 16)) + "새끼";
+    @DisplayName("보이지 않는 글자는 사전에 남지 못한다 — 열거는 빠뜨린 하나가 통로가 된다")
+    void noInvisibleCharacterSurvivesIntoTheDictionary(String codePoint) {
+        String invisible = Character.toString(Integer.parseInt(codePoint, 16));
+        String entry = "개" + invisible + "새끼";
 
-        assertThatThrownBy(() -> ProfanityDictionary.load(entry, null))
-                .as("U+%s 가 통과한다 — 이 항목은 적재되고도 평범한 입력을 영원히 못 잡는다", codePoint)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("보이지 않는 글자");
+        ProfanityDictionary dictionary;
+        try {
+            dictionary = ProfanityDictionary.load(entry, null);
+        } catch (IllegalStateException rejected) {
+            assertThat(rejected)
+                    .as("U+%s 를 거부하면 메시지가 그 글자를 지목해야 한다", codePoint)
+                    .hasMessageContaining("보이지 않는 글자");
+            return;
+        }
+        assertThat(dictionary.words())
+                .as("U+%s 가 항목 안에 남았다 — 적재되고도 그 글자를 품은 입력 하나만 맞는다", codePoint)
+                .noneMatch(word -> word.contains(invisible));
+        assertThat(dictionary.warnings())
+                .as("U+%s 를 조용히 떼면 운영자가 자기 값이 바뀐 것을 모른다", codePoint)
+                .anySatisfy(warning -> assertThat(warning).contains("폭 없는 글자를 뗐다"));
     }
 
     /**

@@ -40,6 +40,12 @@ public final class ProfanityDictionary {
 
     // 정본 DDL 의 live_schema.chat_filter_word.word 가 varchar(64) 다. 1계층이 붙을 때
     // 파일이 테이블에 그대로 들어가야 하므로 같은 상한을 여기서 먼저 지킨다.
+    //
+    // ⚠️ 이 수는 동시에 <ProfanityFilter 2B 최악 비용의 천장>이다. 2B 는 인접 2~K 토큰을
+    // 조인하고 K = 사전 최장 항목 길이이므로, 여기를 올리면 최악 지연이 같이 오른다 —
+    // 실측 211 / 531 / 1,357 / 3,011 µs (여분 항목 0 / 16 / 32 / 64자), 64자에서 332 msg/s.
+    // 즉 정본 DDL 이 varchar 를 넓혀 이 상수를 따라 올릴 때, 그것은 스키마 변경만이 아니라
+    // 채팅 지연 변경이다. ProfanityFilter 의 maxWindow 필드와 2B 루프에 같은 표시가 있다.
     private static final int MAX_WORD_LENGTH = 64;
 
     private final Set<String> words;
@@ -57,7 +63,7 @@ public final class ProfanityDictionary {
      * 기본 사전을 읽고 추가 단어를 <b>더한다</b>(교체가 아니다).
      *
      * <p>더하는 쪽인 이유: 운영에서 급히 한 단어를 막아야 할 때 배포를 기다리지 않게 하려는 것이고,
-     * 교체로 두면 설정 한 줄이 사전 1,093개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
+     * 교체로 두면 설정 한 줄이 사전 1,078개를 조용히 날린다. 지금 이 두 프로퍼티를 쓰는 곳은 저장소에
      * 0건이라 교체 의미에 기대는 호출자도 없다.
      *
      * @param extraWords     쉼표로 구분한 추가 욕설. null·공백이면 무시한다.
@@ -75,17 +81,40 @@ public final class ProfanityDictionary {
             String extraWords, String extraWhitelist) {
         Set<String> words = readResource(wordsPath);
         Set<String> whitelist = readResource(whitelistPath);
-        Set<String> extraW = splitCsv("chat.profanity.words", extraWords);
-        Set<String> extraWl = splitCsv("chat.profanity.whitelist", extraWhitelist);
+        // 번들 항목은 번들 사전에 대해서만 판정한다 — 아래 루프가 쓴다. addAll 전에 떠 둬야 한다.
+        Set<String> bundledWords = Set.copyOf(words);
+        Set<String> bundledWhitelist = Set.copyOf(whitelist);
+        Set<String> sanitized = new LinkedHashSet<>();
+        Set<String> extraW = splitCsv("chat.profanity.words", extraWords, sanitized);
+        Set<String> extraWl = splitCsv("chat.profanity.whitelist", extraWhitelist, sanitized);
         words.addAll(extraW);
         whitelist.addAll(extraWl);
         // 두 집합이 다 모인 뒤에 검사한다 — 두 방향이 서로를 봐야 하기 때문이다(화이트리스트 항목은
         // 사전을 보고, 사전 항목은 화이트리스트를 본다). 한쪽을 먼저 검사하면 나머지 절반을 못 본다.
+        //
+        // 번들 파일 항목도 본다. 전에는 extraWl 만 돌렸고, 그래서 번들 .txt 에 '시발' 이나
+        // '8시발' 을 적으면 거부도 경고도 없이 적재됐다 — 그 파일을 지키는 것이 로더가 아니라
+        // 테스트 하나뿐이었다(실측: 번들 입구는 LOADED, 같은 값을 설정 CSV 로 주면 거부). 사전
+        // 파일만 고치는 커밋은 `build -x test` 로 통과하므로 그 한 겹은 끊기기 쉬운 겹이다.
+        // 지금 번들 38건은 (1)·(3)을 전부 지나므로 이 줄이 오늘 바꾸는 동작은 없다 —
+        // 바꾸는 것은 <앞으로 잘못 들어올 항목>이 어디서 걸리는지다.
+        //
+        // ⚠️ 번들 항목은 <번들 사전>에 대해서만 판정한다. 전수 집합에 대고 재면 설정으로 들어온
+        // 단어 하나가 번들 화이트리스트 항목과 같아지는 순간 규칙 (1)이 터지는데, 그 상황은
+        // 이미 <경고>로 결정돼 있다 — "부팅을 세우지 않는다" 를 고르고 거부를 걷은 자리다
+        // (warningEntries 의 첫 루프 · ChatBeansConfigWarningLogTest). 전수로 재면 그 결정이
+        // 조용히 뒤집히고, 방송 중 CHAT_PROFANITY_WORDS=시발점 한 줄이 전 파드를 세운다
+        // (되돌려 재면 테스트 1건이 바로 그것을 잡는다).
+        for (String entry : bundledWhitelist) {
+            rejectUselessWhitelist(entry, bundledWords);
+        }
         for (String entry : extraWl) {
             rejectUselessWhitelist(entry, words);
         }
         // 번들·설정을 가리지 않고 전부 본다. 설정만 보면 번들에 같은 모양이 들어와도 신호가 없다.
-        return new ProfanityDictionary(words, whitelist, warningEntries(words, whitelist));
+        Set<String> warnings = new LinkedHashSet<>(sanitized);
+        warnings.addAll(warningEntries(words, whitelist));
+        return new ProfanityDictionary(words, whitelist, warnings);
     }
 
     public Set<String> words() {
@@ -354,6 +383,12 @@ public final class ProfanityDictionary {
      * 분류하면서 공백처럼 렌더하는 글자가 있어 그쪽은 열거로 받는다 — 아래 {@code isBlankLooking}.
      * So 를 통째로 막지는 않는다. 그러면 이모지 항목을 나중에 못 넣는다.
      * 현재 사전·화이트리스트가 쓰는 분류는 Nd·Ll·Lo·Po·Sk·Sm 뿐이라(실측) 아래 거부군과 겹치지 않는다.
+     *
+     * <p>⚠️ 바로 위 "이모지 항목을 나중에 못 넣는다" 는 <b>So 축에 대해서만</b> 참이다. So 자체는
+     * 안 막지만 이모지 피커가 내보내는 <b>표준형</b>은 변이 선택자(U+FE0F)나 ZWJ 를 달고 오고,
+     * 그 둘은 FORMAT·NON_SPACING_MARK 가지에 걸린다 — 즉 ❤️(U+2764 U+FE0F) 를 그대로 붙여
+     * 넣으면 So 를 안 막았어도 거부됐다. 설정 CSV 입구에서는 그 폭 없는 글자를 떼고 경고로
+     * 바꿨다({@code dropZeroWidth}). 리소스 입구는 그대로 거부다.
      */
     private static boolean isInvisible(int cp) {
         if (Character.isWhitespace(cp) || Character.isSpaceChar(cp)
@@ -409,9 +444,9 @@ public final class ProfanityDictionary {
      *
      * <p>⚠️ 여기서 접는 것은 <b>NFC 까지</b>다. 매처의 2A·2B 전처리는 비한글 코드포인트에
      * NFKC 까지 쓰므로 그 둘은 같은 평면이 아니다 — "비교에 참여하는 평면은 전부 같아야
-     * 한다" 는 1-패스 축에만 참이다. 실해는 오늘 0 이다(사전 1,093·화이트리스트 39 중 평면
+     * 한다" 는 1-패스 축에만 참이다. 실해는 오늘 0 이다(사전 1,078·화이트리스트 38 중 평면
      * 차이로 사문화되는 항목 0건). 다만 설정으로 호환 문자가 섞인 항목이 들어오면 2A·2B
-     * 에서만 조용히 사문이 된다. 항목 쪽도 NFKC 로 접으려면 사전의 호환 자모 84건이 조합용
+     * 에서만 조용히 사문이 된다. 항목 쪽도 NFKC 로 접으려면 사전의 호환 자모 83건이 조합용
      * 으로 바뀌므로 그쪽을 먼저 옮겨야 한다.
      */
     private static String normalizeEntry(String word) {
@@ -429,7 +464,7 @@ public final class ProfanityDictionary {
         return normalizeEntry(out);
     }
 
-    private static Set<String> splitCsv(String property, String csv) {
+    private static Set<String> splitCsv(String property, String csv, Set<String> warnings) {
         if (csv == null || csv.isBlank()) {
             return Set.of();
         }
@@ -440,9 +475,49 @@ public final class ProfanityDictionary {
             if (word.isEmpty()) {
                 continue;
             }
-            reject(property + " 의 " + (i + 1) + "번째 항목", word);
+            String where = property + " 의 " + (i + 1) + "번째 항목";
+            word = dropZeroWidth(where, word, warnings);
+            if (word.isEmpty()) {
+                continue;
+            }
+            reject(where, word);
             out.add(word);
         }
+        return out;
+    }
+
+    /**
+     * 설정 CSV 항목에서 <b>폭 없는</b> 보이지 않는 글자를 떼고 경고를 남긴다. 공백은 떼지 않는다.
+     *
+     * <p>이 저장소가 세운 경계는 "거부의 기준은 쓸모없음이 아니라 해로움" 이다. 폭 없는 글자가
+     * 붙은 항목은 해롭지 않다 — 우회로를 열지 않고 그냥 아무것도 안 막는다. 그런데 {@code reject}
+     * 가 그것으로 던지고 있었고, 이 통로는 <b>방송 중에 쓰라고 둔 긴급 경로</b>다. 실측으로
+     * {@code words=❤️}(U+2764 U+FE0F)와 끝에 U+FE0F 가 붙은 {@code fuck️} 이 전부 거부였다 —
+     * 즉 이모지 피커가 내보내는 표준형(변이 선택자 부착·ZWJ 결합)을 그대로 붙여 넣으면 부팅이
+     * 실패하고, 죽는 것은 욕설 필터가 아니라 채팅 전체(WS 세션·입장·영속)이며 전 파드가 같이 죽는다.
+     *
+     * <p>공백을 남겨 두는 이유는 다르다. 공백이 든 항목은 토큰 경계를 넘으므로 어떤 토큰에도
+     * 안 맞는데, 그것을 떼어 붙이면(개 새끼 → 개새끼) 운영자의 의도를 <b>추측</b>하는 것이 된다.
+     * 그래서 공백은 그대로 {@code reject} 로 보낸다 — 메시지가 무엇을 고쳐야 하는지 알려 준다.
+     *
+     * <p>번들 리소스 쪽은 바꾸지 않는다. 그쪽 실패는 배포 시점이라 방송을 끊지 않는다.
+     */
+    private static String dropZeroWidth(String where, String word, Set<String> warnings) {
+        StringBuilder kept = new StringBuilder();
+        word.codePoints().forEach(cp -> {
+            if (isInvisible(cp) && !Character.isWhitespace(cp) && !Character.isSpaceChar(cp)) {
+                return;
+            }
+            kept.appendCodePoint(cp);
+        });
+        String out = kept.toString();
+        if (out.equals(word)) {
+            return word;
+        }
+        warnings.add("설정 항목 " + where + " \"" + visible(word) + "\" 에서 폭 없는 글자를 뗐다"
+                + (out.isEmpty() ? " — 남는 글자가 없어 버렸다" : " — \"" + out + "\" 로 적재한다")
+                + ". 이모지 변이 선택자(U+FE0F)·ZWJ·ZWSP 류가 붙으면 그 글자를 품은 입력 하나만"
+                + " 맞으므로, 떼는 쪽이 운영자가 의도한 차단에 가깝다.");
         return out;
     }
 }
