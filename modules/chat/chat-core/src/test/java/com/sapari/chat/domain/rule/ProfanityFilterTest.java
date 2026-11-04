@@ -99,6 +99,28 @@ class ProfanityFilterTest {
         assertThat(result).isEqualTo("***");
     }
 
+    /**
+     * 화이트리스트 거르기는 범위 병합보다 <b>먼저</b> 와야 한다.
+     *
+     * <p>순서를 뒤집으면 합쳐진 범위가 어느 화이트리스트 span 에도 들어가지 않아 보호가 통째로
+     * 날아간다. {@code ProfanityFilter.uncovered} javadoc 이 "{@code mergeRanges} 를 앞으로
+     * 옮기지 말 것" 이라고 적어 뒀는데, 그 주석만 있고 검사가 없어서 돌연변이가 217건을 전부
+     * 통과했다(실측). 번들 사전에서도 같은 자리가 재현된다 — {@code 전염병시발송!} 은 지금
+     * 그대로 나가지만 병합을 먼저 하면 {@code 전***송!} 이 된다. 그 벡터는 번들 사전을 쓰는
+     * {@code ProfanityDictionaryTest} 의 평범한 한국어 목록에 있다(이 클래스의 사전은 소형이다).
+     */
+    @Test
+    @DisplayName("화이트리스트 거르기가 병합보다 먼저다 — 뒤집으면 합쳐진 범위가 보호를 빠져나간다")
+    void whitelistFilteringHappensBeforeRangeMerging() {
+        // given: 사전 둘이 걸치고, 그중 앞쪽만 화이트리스트가 완전히 덮는다
+        ProfanityFilter crossing = new ProfanityFilter(Set.of("abc", "cde"), Set.of("xabc"));
+
+        // when & then: 거르기가 먼저면 abc 만 버려지고 cde 가 남는다
+        assertThat(crossing.filter("xabcde"))
+                .as("병합이 먼저면 [1,6) 한 덩어리가 되어 화이트 span 밖으로 나가 x*** 가 된다")
+                .isEqualTo("xab***");
+    }
+
     @Test
     @DisplayName("겹치는 욕설(하나가 다른 하나 안에 있음)도 한 덩어리로 나온다")
     void overlappingMatchesAreMerged() {

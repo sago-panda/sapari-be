@@ -80,6 +80,242 @@ it: when a handler swallows to keep a verdict, it still owes a counter and an in
 (`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
 put back).
 
+## Profanity dictionary — the file is the source, and the short words are the trap
+
+Before matching, the filter folds the message to **NFC** and folds case plus fullwidth Latin/digits.
+Without that, input that looks identical on screen walks past the whole dictionary — a decomposed
+`개새끼` and a fullwidth `ｆｕｃｋ` both did. The **output** plane stops at NFC on purpose: NFKC would
+rewrite the seller's own text (`㈜사파리` → `(주)사파리`, `Ⅲ단계` → `III단계`) and that text is what gets
+persisted. The 2A/2B **detection** planes go further — they expand compatibility forms per code point —
+because nothing there is sliced or returned; they only answer "does a profanity appear once this is
+folded". Do not extend "we stop at NFC" to them: collapsing the two is exactly how 829 cases were
+traded for 22 in one commit.
+
+`fold` also maps **jamo written in another encoding** back to the compatibility jamo the dictionary
+uses — conjoining (U+1100–11FF) and halfwidth (U+FFA1–FFDC). This has to happen in the
+length-preserving 1-pass fold, not in the 2A plane, because 2A strips non-letters and that breaks
+entries with a digit or symbol inside them (`ㄴ1ㄱ`, `@ㅐ미`). The reverse table is derived from the
+UCD, not hardcoded, but `NFKD` alone yields **choseong forms only** — Unicode does not link a
+jongseong to its compatibility jamo — so the table is filled a second time by character name
+(`HANGUL JONGSEONG PIEUP` ↔ `HANGUL LETTER PIEUP`). Measured: without that second pass, 72 of the
+73 jamo entries pass when written with jongseong forms.
+
+⚠️ **Evasion axes that are open, by decision.** The `ProfanityFilter` class javadoc held these alone,
+which meant the module's own guide read as if the filter were closed. They are declared, not fixed:
+
+- **Cyrillic / Latin homoglyphs** — `fold` normalises case, fullwidth and jamo encoding, not confusable
+  scripts. Closing it means pulling in the Unicode confusables table, a data dependency.
+- **Jamo spelled out** — writing an entry's syllables as separate **compatibility** jamo evades it:
+  measured 2026-11-04, **849 of the 1,024** entries that contain a Hangul syllable pass. Build the vector
+  with compatibility jamo (U+3131–318E); with conjoining jamo the entry NFC recomposes it and the
+  measurement reads 0. Seven all-conjoining forms are a separate sub-case, where the entry NFC recomposes into
+  a syllable (`ㅅㅣㅂㅏ` → `시바`) that the dictionary deliberately does not contain, because those
+  syllables are ordinary Korean (`시바견`, `보지 못했다`, `김씨`).
+- **Digit homoglyphs** — subscript and circled digits are not folded, so `ㅅ₁` and `s₁bal` pass while
+  `ㅅ1` and `s1bal` are caught. Same decision as the confusables axis.
+- **Halfwidth and jongseong are two axes with one name.** Writing a *jamo-spelled* entry in another
+  encoding is closed (83 and 73 entries, 0 pass); spreading a *syllable-spelled* entry into halfwidth
+  jamo is the spread-out axis above (1,024 entries, 16 pass — all 16 already contain a digit or symbol,
+  so they are inside the leet class). The construction, not the number, is the definition: state it
+  wherever you record a figure for this, and always run the control (0 unmasked originals; a denominator
+  of 0 means the vectors were never built). Four different numbers have been recorded under this one
+  name — see the table in `ProfanityFilter`'s class javadoc.
+- **An exhaustive 2- and 3-syllable sweep** needs a Korean word list, which this repo does not have.
+  The two-way split sweep (below) bounds the 2-syllable class structurally; the 3-syllable class is not
+  bounded.
+- **2B worst-case cost** scales with the longest entry (`K`), stated with numbers at the `maxWindow`
+  field, the 2B loop and `MAX_WORD_LENGTH`.
+
+Numbers and vectors for each live in `ProfanityFilter`'s class javadoc and the two data headers; this
+list exists so the axes are visible from here.
+
+The canonical design is three tiers — `live_schema.chat_filter_word` → Redis pub/sub → in-pod trie.
+Only the third exists. streaming-app has **no DB dependency at all**, so the table and the propagation
+are not wired, and `ProfanityDictionary` loads the words from two classpath resources in chat-core.
+⚠️ The table is therefore **not** the source of truth today, though
+`db/migration/live/V1__init_live.sql:157` still calls Postgres the source in its comment. It is
+deliberately **not seeded** either: seeding a table nothing reads would put the same list in two places
+with no way to tell which one is live. When tiers 1–2 land, generate the seed *from* these files.
+
+Missing resource, or zero words after comments, is a **boot failure**. An empty dictionary is not a
+degraded filter — it is the filter silently off (`displayMessage == originalMessage`), and that state
+already shipped once. `chat.profanity.words` / `.whitelist` **add to** the bundled list; they do not
+replace it, so one config line cannot wipe the dictionary.
+
+**The trap is short entries.** `ProfanityFilter` splits on `\S+` and matches substrings, with no notion
+of a word boundary — and Korean glues particles and auxiliary verbs onto stems. So any two-syllable
+entry that is also an ordinary morpheme censors ordinary speech: `새끼` kills *새끼 고양이*, `세끼` kills
+*하루 세끼*, `호로` kills *번호로*, `개떡` kills *쑥개떡*. A whitelist cannot rescue these — an entry only
+protects a token that **contains** it, so covering a bare two-syllable word needs an entry as short as
+the word itself, which then unmasks the real insult. Those four are dropped for that reason, as `보지`
+and `자지` already were upstream. **Do not add a short generic entry without running the false-positive
+regression**; in live commerce a censored seller description is worse than a missed insult, because the
+broadcast cannot be recalled and the masked text is what gets persisted.
+
+Masking is **span-scoped**: a profanity match is dropped only where a whitelist match *fully covers*
+it. That closed the oldest hole in this feature — a whitelist hit used to preserve the entire token, so
+every entry was an off switch for the whole dictionary and `시발점씨발` walked through. Measured across
+all 38 entries against the whole dictionary in **both** directions (81,928 cases), exactly **one** does:
+`시발유니섹스`, because the whitelist entry `시발유` covers the `시발` span. That is not a new hole — it is
+the suffix class stated below. The older `0/42,627` counted one direction only. Filtering happens
+**before** merging adjacent ranges; reverse that and overlapping matches re-open the hole, so do not
+move `mergeRanges` earlier.
+
+Whitelist entries obey three rules, pinned against the data by `ProfanityDictionaryTest`. An entry must
+**not be a bare profanity** (`시발점`, not `시발` — the two spans would coincide exactly and unmask that
+insult everywhere), and what is **left after removing the profanity must be a word worth keeping** —
+one Hangul syllable, or two letters in any script
+(`8시발` leaves `8`, handing an attacker a one-character prefix: `8시발` and `8시발이다` both pass.
+`8시발놈아` does **not** — it masks to `8***아`, because the dictionary span for `시발놈` runs past
+the whitelist span and survives. The rule stands on `8시발` alone; the earlier claim that
+`8시발놈아` passes was wrong, and the reason it is wrong is the crossing-span cost noted above).
+Those two are refused at load. Latin needs two letters because a single one is as cheap as `8`
+(`xpussy` and `xfuck` are refused; `pussycat` loads with a warning naming its residue `cat`). Entries
+whose residue has no Hangul syllable load **with a warning** rather than failing boot: judging by
+Hangul alone refused every legitimate Latin entry (`passivation`, `passivate`, `unisex`, `sexual`,
+`Essex`, `pussycat` — 6/6 with **both** this threshold and the no-profanity skip reverted; reverting
+the threshold alone gives 1/6, because after `sex` and `siva` left the dictionary the other five
+contain no profanity and the skip takes them first), and a Latin false positive during a broadcast then has no remedy but
+a deploy that drops the dictionary entry; `sex` and `siva` already went that way, each time losing the
+detection outright. An entry that contains **no** profanity skips this rule entirely — it frees
+nothing, so the "cheap prefix" wording would be false about it, and it is reported by rule three
+instead. That third rule — an entry should **contain** a profanity — is only warned
+about, because with span scoping an entry that covers nothing simply does nothing. The line for failing
+boot is harm, not uselessness.
+
+⚠️ Span coverage has a cost in the other direction, and the first number written here was wrong: a
+fragment that follows a protected word is masked where it sits, because the token is no longer kept
+whole. The claim "0 cases on current data" came from a sweep whose 22 suffixes were **all particles,
+no verb endings** — and the real false positives were verb endings (`유니섹스해요` → `유니***요`).
+The same claim was then wrong a second time with a wider suffix list — 60 suffixes found 10 hits and
+"no natural Korean", but the real false positives were **following nouns**: `전염병신고` → `전염***고`
+(`감염병 신고` is standard public-health phrasing), `시발점물류` → `시발***류`. A suffix list is not the
+population of this class, because what follows can be a particle, a verb ending or a noun.
+
+Count it structurally instead. The figure moves whenever either list changes, so **re-measure it rather
+than copying it**:
+
+| measured | dictionary / whitelist | crossing pairs | distinct dictionary entries | results | masked |
+|---|---|---|---|---|---|
+| 2026-11-03 | 1,093 / 39 | 130 | 99 | 127 | 121 |
+| 2026-11-04 | 1,078 / 38 | 124 | 93 | 121 | 115 |
+
+Reading the 121 masked results by hand found 12 natural compounds, and **those twelve** are closed —
+read that as *found so far*, never as the class being exhausted: the reading is by hand, there is no
+Korean word list to sweep against, and a later pass found nine more (`성교`, `에비`, `에미`, `개년`,
+`개똥`, `쪼다`, `개세`, `저년` were removed on 2026-11-04; `염병` is kept — `오염병`, `수염병`,
+`방염병풍` are contrived, and `염병` is a high-value catch). The 6 longer
+whitelist entries (`전염병신`, `감염병신`, `화염병신`, `시발택시발`, `다시팔년`, `일시불알`), which cost
+nothing (measured 12,936 cases = 6 × 1,078 × 2 — 0 evasions, every insult compound still masked), and
+4 dictionary removals (`섹스해`, `섹스하자`, `점물`, `육갑`). Three more whitelist entries (`환불알`,
+`동봉알`, `검색키`, 6,468 cases, 0 evasions) and five more removals (`조까`, `조또`, `족까`, `젓까`,
+`젖까`) closed the particle-attachment variant.
+
+`상년도` (2026-11-04) is the one entry of this kind that closes a whole class rather than a case: every
+`X상년도` compound contains it, so `예상년도`, `결산년도` and `기준년도` are covered by one entry instead
+of an open-ended list (2,156 cases, 0 evasions).
+
+⚠️ The same class also exists **with no whitelist involved**: `지점물류` → `지***류`, `교육갑니다` →
+`교***니다`. A two-syllable entry lands across a syllable boundary of an ordinary compound, and no
+whitelist entry can fix that (you would add `지점물`, `교육갑`, … forever) — the entry itself has to go.
+Neither sweep finds this: there is no Korean word list in the repo, so it is found by reading the
+crossing results (121 today — use the current value from the table above). Do not skip that reading when
+adding an entry, and run a corpus pass too — a suffix sweep cannot see a plain word that matches with no
+insertion at all (`검색스토리지` ← `색스` did).
+
+⚠️ **A space is not protection, and this was the largest wrong claim in the data.** `profanity-words.txt`
+asserted that "with a space the original always goes through, because tokenisation is `\S+`". It is
+false: 2B joins adjacent tokens *by design* — that is how `구매 시 발송` is caught — and **1,048 of the
+1,078 entries** are masked by a single space inserted anywhere inside them. The 30 that survive all
+contain a digit or a symbol, which the planes strip, so their join can never equal the entry.
+
+The real criterion is **the joined run must equal a dictionary entry exactly** (2B fires only on full
+consumption). `시 발` masks; `반드시 발급` does not, because `반드시발급` is no entry (written closed it
+masks as `반드***급` via the 1-pass instead). Digit tokens are not glue — they merely fail to break the
+join, since plane A deletes them: `돌아 401 이`, `돌아 1 이`, `돌아 ! 이` and `돌아 이` all behave alike.
+
+So the false-positive population is **two-way splits where each side is an independent word**, and that
+*is* structurally enumerable (measured 2026-11-04): collect the 16,442 pure-Hangul tokens that actually
+appear space-delimited in the repo's Korean, then for every entry test every internal split point for
+both halves being in that set — 2,366 split points → 103 both-in-corpus → 35 with each side clean, all
+masked. Most of the 35 are profanity written with a space (correct catches); the ones that form ordinary
+sentences were closed by removing 15 entries (`성교`, `에비`, `에미`, `개년`, `개똥`, `쪼다`, `개세`,
+`저년`, `띠풀`, `개가든`, `개가뜬`, `박고빼고`, `게같은`, `돌아이`, `ㅗ`) — they were censoring this
+platform's main categories (`개 세 마리`, `게 같은 갑각류`, `개 똥 치우는 봉투`, `에비앙`, `에미레이트`,
+`남성교복`, `3개년 계획`, `중개세무`, `돌을 쪼다`, `ㅗㅜㅑ`) and even this repo's own source comment
+(`돌아 401 이 오는데`). The synthetic sweep cannot see this class at all: it builds *closed* forms, never
+split pairs. Known remaining cases are stated in that file's header (`개 세끼`, `게 새끼`, `개 소리`,
+`개 쓰레기`, `똥 구멍`) — those come from core insults, so the entries stay.
+
+A fourth rule, *no entry already covered by a shorter one*, was retired. Its premise ("a longer entry
+cannot change the outcome") held only while a hit preserved the whole token. Under span coverage the
+longer entry covers a wider span and keeps matches the shorter cannot: with `cd` in the dictionary and
+`abc` whitelisted, `abcd` masks to `ab***`; add `abcd` and it stays whole. A duplicate-looking entry is
+a different protection, not dead weight.
+
+There is no exception to the rules. English `sexual`/`sexy` used to be one, and those two were the key
+that let `sexyfuck` and `sexy시발` through on an ASCII keyboard. Dropping `sex` removed their coverage
+and the exception with it. `sex` was not the only ASCII entry that is a substring of ordinary English,
+as that change claimed — `siva` was another (`passivation`), found a round later. Measure the class, do
+not trust the count.
+
+Span scoping has a cost in the other direction: a token is no longer preserved wholesale, so a fragment
+*after* a protected word can be masked. That cost is measured above — do not re-derive it from the
+suffix sweep in `ProfanityDictionaryTest`, which is **particles only** and is the sample that produced
+two wrong "zero cases" claims in this ticket.
+
+A second cost runs the other way, and the mechanism — not the count — is what to carry. Preservation
+keys on *the token **containing** the entry*, not on the token starting with it, so a tail unmasks both
+classes alike (measured 2026-11-04, four tails `ㅋㅋ` / `!!` / `123` / `" 짜증나"`):
+
+- **16 entries begin with the profanity they cover** (`시발점`, `시발유`, `지랄탄`, `상년도`, …) → 64/64 pass
+- **22 entries merely contain it** (`전염병`, `일시불`, `유니섹스`, `다시팔`, …) → 88/88 pass
+
+Most of the 22 are the *intended* protection — `전염병ㅋㅋ` going through whole is the point of the entry.
+What is dangerous is an entry that is not a standalone word but a **fragment**, because it then behaves
+exactly like the 16: `동시8`, `다시팔`, `엑섹스`, `아저씨바`, `나따까리`, `다시불러`, `다시불안`,
+`구로역시발`. When adding an entry, ask first whether it stands alone as a word. Narrowing preservation
+to a token/non-Hangul boundary would close both and break `시발점에서` with it, so it stays as a stated
+cost.
+
+Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
+resources, with **one deliberate asymmetry**: shape for both keys (whitespace plus the invisible
+classes: NBSP, ZWSP, word joiner, BOM, Hangul fillers, variation selectors, tag characters,
+blank-looking symbols like U+2800; and 64 chars), and the whitelist rules above — except that at the
+**config** entrance a *zero-width* invisible character is **stripped with a warning** instead of
+refusing the boot. Space-like characters still refuse, because trimming `개 새끼` to `개새끼` would be
+guessing the operator's intent. The repo's own stated boundary is that refusal is for what is *harmful*,
+not for what is *useless*, and a zero-width character opens no bypass — it only makes the entry match
+nothing. It was refusing every standard emoji form an emoji picker emits (`❤️` = U+2764 U+FE0F), on the
+one path the runbook tells an operator to use **mid-broadcast**, where a failed boot takes down all of
+chat (WS sessions, entry, persistence) on every pod. The bundled-resource entrance still refuses: that
+failure happens at deploy time and interrupts no broadcast.
+
+The whitelist rules (1) and (3) now run over the **bundled file** too, not only the config CSV. Before,
+a `시발` or `8시발` line in `profanity-whitelist.txt` loaded with no refusal and no warning, while the
+same value given as config was refused — the file's only gate was one test, and a dictionary-only commit
+passes `./gradlew build -x test`. Bundled entries are judged against the **bundled** dictionary only:
+judging them against the merged set would make a config word that happens to equal a bundled whitelist
+entry refuse the boot, and that situation is deliberately a **warning** (`ChatBeansConfigWarningLogTest`)
+— the refusal there was removed on purpose because its premise was false.
+All comparisons run on the same `asciiLower` plane the matcher uses, so `SIBAL` and `sibal` are not
+judged differently.
+
+A config **word** that is **identical to** a whitelist entry is loaded, not rejected, and reported as
+a warning (one that merely *contains* an entry is loaded silently — `CHAT_PROFANITY_WORDS=전염병같은놈`
+produces no warning, and `ProfanityDictionaryTest` pins that).
+It is tempting to reject — but "it can never match" is false. Only the literal 1-pass token is
+preserved; 2A and 2B never consult the whitelist, so `CHAT_PROFANITY_WORDS=전염병같은놈` still masks
+`전염병 같은놈`, `전염병1같은놈`, `전염병.같은놈` and `전염병 같 은놈` — four shapes out of five.
+Rejecting on that false premise turned the mid-broadcast emergency path into a boot failure for
+legitimate terms (measured: 5 of 5 ordinary new insults refused), and a refused bean is chat down on
+every pod.
+
+It has to be this strict. The emergency path is used mid-broadcast and every one of these failures is
+silent: the entry loads, the count goes up, and nothing is blocked — or, for a bare profanity in the
+whitelist, one line unmasks that word across the whole dictionary. Each was measured open before its
+check went in.
+
 ## Redis keys — one source, and it is package-private
 
 `ChatRedisKeys` (package-private, `infrastructure/redis`) owns every key string. Blocking and reactive

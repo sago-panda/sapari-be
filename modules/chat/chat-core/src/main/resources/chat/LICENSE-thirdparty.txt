@@ -1,0 +1,38 @@
+이 디렉터리의 profanity-words.txt · profanity-whitelist.txt 는 아래 두 프로젝트의 한국어
+패턴 목록에서 가져왔다. 코드는 가져오지 않았다 — 이 저장소는 자체 Aho-Corasick
+(ProfanityFilter)을 쓰고 필요한 것은 단어 목록뿐이었다.
+
+  1) VaneProject/bad-word-filtering  https://github.com/VaneProject/bad-word-filtering
+     기본 사전. 이 저장소 설계 단계에서 큐레이션해 둔 sapari-be-docs/seed 를 경유했다.
+  2) Tanat05/korcen                  https://github.com/Tanat05/korcen
+     우회 변형(기호·숫자·자모 섞인 형태, 3글자 이상 합성형)만.
+
+둘 다 MIT License 다.
+
+아래 두 줄은 각 저장소의 LICENSE 원문에서 그대로 옮겼다(2026-11-02 확인). MIT 가
+저작권 표시를 "그대로" 싣도록 요구하므로 조직명·계정명으로 바꾸지 않는다 — 1)의 보유자는
+조직명 VaneProject 가 아니라 PersesTitan 이고, 이 저장소의 seed 파일 머리글은 그 점이
+틀려 있다(그 줄을 옮겨 적지 말 것).
+
+Copyright (c) 2023 PersesTitan
+Copyright (c) 2026 Tanat
+
+--- MIT License (두 저작물에 공통으로 적용되는 허가 문구) ---
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
