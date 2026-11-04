@@ -113,6 +113,13 @@ which meant the module's own guide read as if the filter were closed. They are d
   syllables are ordinary Korean (`시바견`, `보지 못했다`, `김씨`).
 - **Digit homoglyphs** — subscript and circled digits are not folded, so `ㅅ₁` and `s₁bal` pass while
   `ㅅ1` and `s1bal` are caught. Same decision as the confusables axis.
+- **Halfwidth and jongseong are two axes with one name.** Writing a *jamo-spelled* entry in another
+  encoding is closed (83 and 73 entries, 0 pass); spreading a *syllable-spelled* entry into halfwidth
+  jamo is the spread-out axis above (1,024 entries, 16 pass — all 16 already contain a digit or symbol,
+  so they are inside the leet class). The construction, not the number, is the definition: state it
+  wherever you record a figure for this, and always run the control (0 unmasked originals; a denominator
+  of 0 means the vectors were never built). Four different numbers have been recorded under this one
+  name — see the table in `ProfanityFilter`'s class javadoc.
 - **An exhaustive 2- and 3-syllable sweep** needs a Korean word list, which this repo does not have.
   The two-way split sweep (below) bounds the 2-syllable class structurally; the 3-syllable class is not
   bounded.
