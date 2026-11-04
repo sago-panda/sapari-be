@@ -13,8 +13,9 @@ ranking/search-log, outbox. Internal layout + dependency rules: `modules/AGENTS.
 
 ## Schema is the real asset
 
-DDL — `db/migration/product/V1__init_product.sql` (schema `product_schema`), derived from the team
-ERD. Applied by the **infra Flyway runner**, never Hibernate (`apps/product-app` runs `ddl-auto: none`).
+DDL — `db/migration/product/` (schema `product_schema`): `V1__init_product.sql` is the seed DDL and is
+**never edited** (applied migrations are immutable — Flyway checksum); `V202611041925__migrate_product_schema_to_final_erd.sql`
+moves it to the final team ERD. The effective schema = V1 + every later `V<yyyyMMddHHmm>__*.sql`. Applied by the **infra Flyway runner**, never Hibernate (`apps/product-app` runs `ddl-auto: none`).
 Non-obvious facts that bite when you map entities:
 
 - **No physical FK** anywhere (root rule). Cross-/intra-domain refs are bare `uuid`/`bigint` id
