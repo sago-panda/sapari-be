@@ -1,0 +1,226 @@
+# streaming-app 설정 템플릿.
+#
+# application*.yml 은 .gitignore 대상이라 저장소에 없다 — 그래서 "어떤 키가 필요한지"를 아는 방법이
+# 이 파일뿐이다. 키를 추가·삭제하면 여기도 같이 고칠 것.
+#
+# 사용법: cp application.yml.example application.yml 후 아래 값을 채운다.
+#
+# ⚠️ 표기 규칙
+#   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다 — 그래서 두지 않는다.
+#             미설정이면 부팅이 실패하는데 가드가 값마다 다르다: 공개키는 RoomTokenConfig 가 직접
+#             거부하고, Mongo URI 는 드라이버가 거부한다. 후자는 진단 문구에 MONGODB_URI 라는
+#             이름이 나오지 않으니 아래 mongodb 주석을 함께 읽을 것.
+#   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
+#
+# ⚠️ ${VAR:} 의 빈 기본값을 둘지는 REQUIRED/optional 이 아니라 <b>대상 타입</b>이 정한다 (실측).
+#   env 가 없을 때 ${VAR:} 는 "미설정"이 아니라 <b>빈 문자열로 설정됨</b>이고, 그러면 코드의
+#   @Value("${키:기본값}") 에 있는 기본값이 쓰이지 않는다.
+#     String 타깃   빈 문자열이 그대로 바인딩된다 — 변환이 없으니 부팅이 그 자체로는 막히지 않는다.
+#                   그 다음은 <b>키마다 다르다</b>: public-key 는 코드가 isBlank() 로 거부해 친절한
+#                   부팅 실패가 되고(그래서 ${CHAT_ROOMTOKEN_PUBLICKEY:} 가 맞다 — 빈 기본값을 떼면
+#                   PlaceholderResolutionException 이 먼저 나 그 친절함이 사라진다),
+#                   chat.profanity.* 는 빈 값이 합법이라 마스킹이 pass-through 로 조용히 꺼지고,
+#                   spring.data.redis.host 는 스프링 기본값 localhost 로 간다. "String 이면 안전" 이
+#                   아니라 "String 이면 변환이 안 막으니 그 키의 코드를 봐야 한다" 가 규칙이다.
+#     Integer 타깃  Duration 과 같다 — 빈 문자열이 숫자로 변환되지 않는다. 아래 REDIS_PORT 가 그
+#                   경우이고, 그래서 ${REDIS_PORT:6379} 처럼 기본값이 플레이스홀더 안에 있다.
+#                   String 규칙을 적용해 ${REDIS_PORT:} 로 바꾸지 말 것.
+#     Duration 타깃 빈 문자열이 null 로 변환돼 가드가 "필수" 로 죽는다. 코드 기본값을 쓰려면 그 줄을
+#                   <b>주석 처리</b>해 키가 아예 없는 상태로 둘 것 — 아래 chat.session 이 그 모양이다.
+#                   (측정: 빈 문자열 → null / 키 부재 → 60m / 값 있음 → 그 값)
+#
+# ⚠️ 배포 전제 — 머지 전에 읽을 것
+#   CHAT_ROOMTOKEN_PUBLICKEY 가 <b>롤아웃 전에</b> 환경에 있어야 한다. 매니페스트가 먼저 가고 앱이
+#   따른다 — 없이 올리면 컨텍스트가 뜨지 않아 CrashLoopBackOff 다(실측된 부팅 실패).
+#   live-app 의 MANAGEMENT_PORT 가 같은 성격이고 그쪽 전제는 infra/AGENTS.md 에 적혀 있다.
+#
+# ⚠️ 이 파일에 실제 자격증명을 넣지 말 것. 전부 자리표시자다.
+#
+# ⚠️ 이 앱은 관계형 DB를 쓰지 않는다(DB-free). chat-core가 강퇴 로그 때문에 JPA를 의존해 스타터가
+#    전이로 올라오지만, StreamingAppApplication이 DataSource 자동설정을 잘라낸다. datasource 키를
+#    여기 추가하지 말 것 — 넣는 순간 이 앱이 관계형 DB에 묶인다.
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}          # optional (로컬 기본값)
+      port: ${REDIS_PORT:6379}               # optional
+
+      # 커맨드 상한. ⚠️ 아래가 주석인 것이 의도다 — Duration 타깃이라 ${VAR:} 로 적고 env 를 안
+      # 넣으면 빈 문자열이 코드 기본값을 밀어낸다(위 표기 규칙의 Duration 항목).
+      #
+      # 코드 기본값 1s 는 RedisTimeoutConfig 에 있고 <b>설정이 없어도 적용된다</b> — 이 파일이
+      # 추적되지 않으므로 여기에만 적으면 복사하지 않은 환경에 적용되지 않는다.
+      #
+      # 이 값이 chat 의 모든 Redis 호출에 대한 실질 상한이다. Lettuce 기본값(60s)으로 두면
+      # 패킷을 떨구는 장애에서 커맨드가 그만큼 pending 이고, 전송 경로가 직렬화돼 있어 그 세션의
+      # 채팅이 통째로 멈춘다(실측: 차가운 커넥션 60,245ms → 1s 설정 시 1,115ms).
+      # 내릴 때 주의 — 강퇴·밴·종료 마커 조회는 실패 시 fail-open 이라, 이 값을 넘기면
+      # "느린 Redis = 그 판정이 통과" 가 된다. 정본이 그 정책을 의도로 적어 두었지만 값을
+      # 더 내리면 그 쪽으로 더 자주 기운다.
+      # timeout: 1s
+
+  # ⚠️ 접두가 spring.data.mongodb 가 아니라 spring.mongodb 다.
+  #    Boot 4.0.0에서 spring.data.mongodb.* 가 제거됐고(replacement: spring.mongodb.*),
+  #    옛 이름으로 적으면 값이 바인딩되지 않아 MONGODB_URI를 넣어도 조용히 무시되고
+  #    기본값 localhost:27017 로 붙는다. 그 상태로 뜨면 부팅 인덱스 생성(ChatMongoConfig)이
+  #    30,053ms(실측 — 드라이버 serverSelectionTimeout 기본값) 뒤에 죽는다.
+  #    (redis 쪽 접두 spring.data.redis 는 바뀌지 않았다 — 둘이 달라 보이는 게 정상이다)
+  #
+  # ⚠️ 기본값을 두지 않는다. 위 범례가 적은 대로 REQUIRED 에 기본값을 두면 그 값으로 조용히 뜨는데,
+  #    여기서는 그 조용함이 두 갈래다 — 운영 호스트에 localhost Mongo 가 없으면 부팅 인덱스 생성이
+  #    죽어 부팅이 실패하고(시끄럽다), 무언가 떠 있으면 <b>입장도 되고 실시간 전달도 되는데 메시지만
+  #    엉뚱한 DB 에 쌓인다</b>. 이 설계가 "실시간 전달 best-effort, 영속만 보장"이라고 못 박은 바로
+  #    그 보장 쪽이라, 두 번째 갈래가 특히 나쁘다.
+  mongodb:
+    uri: ${MONGODB_URI}                                    # REQUIRED (운영) — 기본값 없음
+
+# 룸 토큰 검증용 live 공개키. live가 개인키로 서명하고 이 앱은 공개키로 검증만 한다.
+# 값은 live에서 받아 env로 주입한다(Base64 SPKI, PEM 헤더 없이 본문만).
+chat:
+  room-token:
+    public-key: ${CHAT_ROOMTOKEN_PUBLICKEY:}               # REQUIRED (운영)
+
+  # 욕설 사전. 비워 두면 마스킹이 전혀 일어나지 않는다(pass-through).
+  # 정본은 live_schema.chat_filter_word 테이블이지만 이 앱은 DB-free라 로더가 아직 없다.
+  profanity:
+    words: ${CHAT_PROFANITY_WORDS:}                        # optional (CSV)
+    whitelist: ${CHAT_PROFANITY_WHITELIST:}                # optional (CSV)
+
+  # 연결 하나에 걸리는 시간 상한 셋 — 셋 다 optional 이라 평소에는 건드릴 필요가 없다.
+  #
+  # ⚠️ 아래가 주석인 것이 의도다. 위 표기 규칙의 Duration 항목이 그 이유다 — ${VAR:} 로 적고 env 를
+  #    안 넣으면 빈 문자열이 코드 기본값을 밀어내 <b>부팅이 실패한다</b>. 이 파일은 그대로 복사하라고
+  #    지시하므로, 그 모양으로 두면 복사한 사람에게 CrashLoopBackOff 가 된다.
+  #
+  # ⚠️ env 로 주입하려고 플레이스홀더를 쓸 필요가 <b>없다.</b> 키가 yml 에 아예 없어도 env 는
+  #    완화 이름 해석으로 바인딩된다 (실측: 키 부재 + CHAT_SESSION_MAX_LIFETIME=17m → PT17M,
+  #    env 없음 → PT1H). 그 해석이 바인더가 아니라 프로퍼티 소스에 있어서 @Value 에도 적용된다.
+  #    굳이 플레이스홀더로 적겠다면 기본값을 <b>반드시</b> 안에 둘 것 — ${CHAT_SESSION_MAX_LIFETIME:60m}.
+  #    한 글자가 빠져 ${CHAT_SESSION_MAX_LIFETIME:} 가 되면 위 함정으로 돌아간다.
+  #
+  #    값을 바꾸려면 주석을 풀고 값을 적는 쪽이 가장 안전하다.
+  #
+  # 서로 제약한다(아니면 부팅 실패: SessionTimeouts). 셋 다 양수여야 하고,
+  #   ① 기한 >= 간격 × 2
+  #   ② 지터를 뺀 최소 수명 > 기한 + 간격
+  #
+  # ②가 두 군데서 직관과 어긋나므로 풀어 적는다.
+  #   - 수명은 아래로 15% 흩어진다(재접속이 한 점에 몰리지 않게). 그래서 비교 대상은 적은 값이
+  #     아니라 그 값의 85% 다
+  #   - 첫 생존 점검은 기한이 아니라 기한 + 간격이다(생존 시계가 등록 시각으로 초기화되므로,
+  #     기한에 바로 점검하면 첫 창에서만 유실 내성이 한 칸 짧아진다)
+  # 기본값(기한 90s·간격 30s)에서는 <b>max-lifetime > 141s</b> 가 된다 — 90s 보다 크면 된다고
+  # 읽고 2m 를 넣으면 거부된다(120 × 0.85 = 102 <= 120).
+  #
+  # ⚠️ <b>수명을 짧게 하려면 기한·간격을 같이 내려야 한다.</b> 아래 설명대로 이 값은 "권위 반영
+  #    상한" 이라, 그걸 조이려고 수명만 내리는 것이 가장 자연스러운 동작인데 그 길이 막혀 있다.
+  #    예: 2분으로 하려면 (max-lifetime 2m, ping-interval 20s, liveness-deadline 60s) — 첫 점검이
+  #    80s 가 되어 102s > 80s 로 통과한다. 수명만 2m 로 내리면 부팅이 실패한다.
+  #
+  #    ⚠️ <b>간격을 20s 로 함께 내리는 것이 핵심이다.</b> 두 가드만 보면 (2m, 30s, 60s) 도 통과하는데,
+  #    그 트리오는 기한/간격 비가 2배여서 연속 PONG 유실 내성이 <b>2회에서 1회로</b> 깎인다
+  #    (판정이 now - last >= 기한 이라 k회 연속 유실이 k × 간격을 만들고, 그것이 기한보다 작아야
+  #    산다 → 비율 3배면 2회, 2배면 1회). 네트워크가 조금 흔들리는 클라이언트가 그만큼 더 끊긴다.
+  #    기본값이 3배(90/30)인 이유가 그것이고, 보안을 조이면서 그 내성까지 지키려면 비율을 3배로
+  #    유지해야 한다.
+  #
+  #    일반식: 기한을 간격의 3배로 유지하려면 <b>간격 < 0.2125 × 수명</b>(= 0.85 × 수명 / 4).
+  #    수명 2분이면 간격 < 25.5s 다. 대가는 ping 주기가 30s → 20s 로 촘촘해지는 것뿐이다.
+  #
+  # 수명 상한이 있는 이유: 입장 토큰은 핸드셰이크 때 한 번만 검증되므로 그 뒤의 역할 강등·방
+  # 소유권 이전은 이 세션에 닿지 않는다. 재접속이 live 의 입장을 다시 타므로, 이 값이
+  # "접속 후 바뀐 권위가 반영되기까지의 상한"이 된다.
+  #
+  # ⚠️ <b>그 설명은 수명이 룸 토큰 창보다 클 때만 참이다.</b> 룸 토큰은 jti 가 없어 그 창 안에서
+  #    재사용이 가능하고(live 쪽 주석이 "창 자체가 방어" 라고 적는다) 기본 exp 가 90s 다. 수명을
+  #    그 아래로 내리면, 강등된 사용자가 수명 만료로 끊긴 뒤 <b>같은 토큰으로 낡은 role·방 소유로
+  #    재입장</b>한다 — 입장 게이트는 종료·강퇴·밴만 다시 보고 role 과 소유는 갱신하지 않는다.
+  #    그러면 실제 상한이 "수명" 이 아니라 "수명 + 남은 토큰 창" 이 된다(비마스킹 원문·senderEmail
+  #    열람·레이트리밋 면제가 그 창 동안 유지된다).
+  #    가드는 그 아래를 막지 않는다 — 가드의 하한은 (기한 + 간격) / 0.85 라서 (75s, 20s, 40s) 같은
+  #    조합이 통과한다.
+  #
+  #    ✅ <b>다만 그 구간이 이제 유계다.</b> RoomTokenVerifier 가 "토큰 나이 > 이 값" 이면 입장을
+  #    거부하므로, 재입장을 시작할 수 있는 창이 exp 가 아니라 <b>이 값</b>으로 묶인다. 낡은 role·소유가
+  #    쓰이는 마지막 시점이 (exp + 수명) 에서 (min(exp, 수명) + 수명) 으로 줄고, 이 값을 내리면 상한도
+  #    같이 내려간다 — 이 노브가 설명대로 작동한다는 뜻이다.
+  #    수명 >= exp 인 설정(기본값 60m, 위 탈출로 2m)에서는 이득이 0 이다. 그 조임이 사는 자리는
+  #    수명을 exp 아래로 내린 구성 하나다.
+  #    근본 수정(토큰을 한 번만 쓰게 하거나 입장 시 role·소유를 다시 읽기)은 live 소관이다.
+  #
+  # session:
+  #   max-lifetime: 60m          # 코드 기본값 (env: CHAT_SESSION_MAX_LIFETIME)
+  #   ping-interval: 30s         # 코드 기본값 (env: CHAT_SESSION_PING_INTERVAL)
+  #   liveness-deadline: 90s     # 코드 기본값, 3 × ping (env: CHAT_SESSION_LIVENESS_DEADLINE)
+
+# ── 관측 ──────────────────────────────────────────────────────────────────────
+#
+# 이 앱이 내보내는 지표는 chat 의 <b>가용성 정책이 발화한 사실</b>이다 — 게이트가 열린 구간,
+# 레이트리밋 강등, 실시간 전달 포기, 세션 종료 사유. 그 정책들은 전부 "지금은 집행되지 않는다" 를
+# 뜻하므로, 알림을 걸 수 있어야 그 선택이 의도대로 작동하는지 확인된다.
+#
+# ⚠️ 이 앱에는 Spring Security 가 없다. live-app 은 액추에이터 전용 필터체인으로 두 엔드포인트만
+#    허용하고 나머지를 거부하는데, 여기엔 그 체인을 걸 자리가 없다 — 즉 아래 두 줄이 유일한 관문이다.
+#    그래서 ObservabilityExposureConfig 가 부팅 시점에 둘 다 강제한다(틀리면 안 뜬다).
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8092}      # REQUIRED(운영) — server.port 와 달라야 한다. 같으면
+                                       # ObservabilityExposureConfig 가 부팅을 막는다. 사용자 포트는
+                                       # WS 핸드셰이크를 받는 포트라, 합치면 지표가 거기 열린다.
+                                       # (api-app 8080 · live-app 8081/8091 과도 겹치지 않게 둔다)
+  endpoints:
+    web:
+      exposure:
+        # 액추에이터 기본 노출은 health 하나뿐이다 — 이건 좁힌 값이 아니라 prometheus 를 더한 값이다.
+        # 넓히지 말 것: "*" 는 env·beans·configprops·threaddump 등 13종을 열고, 이 앱에는 시큐리티가
+        # 없어 그게 곧 무인증 공개다. /actuator/env 는 값이 가려지지만(기본값 show-values=NEVER)
+        # 프로퍼티 이름·소스 전부를 내보내고, 그 마스킹은 설정 한 줄로 뒤집힌다.
+        # ⚠️ heapdump 는 "*" 만으로는 생기지 않는다(실측: include="*" 의 노출 13종에 heapdump 없음,
+        #    /actuator/heapdump 는 401). @WebEndpoint(defaultAccess=NONE) 이라 access 축을 함께
+        #    뒤집어야 한다 — 종전 주석이 "*" 하나로 열린다고 과장했다.
+        # 가드는 이 키를 읽지 않고 실제 노출을 묻는다 — 정확히 {health, prometheus} 가 아니면 부팅을
+        # 거부하므로 하나 더 열려면 코드도 함께 고쳐야 한다 = 리뷰에 보인다. 그래서 include 만
+        # 지키는 것으로는 부족하다: endpoint.<id>.enabled / endpoints.enabled-by-default /
+        # endpoint.<id>.access / endpoints.access.default 로 끄는 것도 전부 부팅 실패가 된다.
+        include: health,prometheus     # REQUIRED(운영) — prometheus 가 빠지면 부팅이 실패한다
+                                       # (ObservabilityExposureConfig). 액추에이터 기본 노출은 health
+                                       # 하나라, 빠뜨리면 지표 엔드포인트가 아예 생기지 않는다. 이 앱에는
+                                       # 시큐리티가 없어 401 조차 나지 않고 404 이고, 어느 쪽이든 지표가
+                                       # 조용히 빈다 — 빈 대시보드는 "방송이 없어서" 와 구분되지 않는다.
+#
+# ⚠️ 관리 포트는 인증이 없고 모든 인터페이스에 바인딩된다(management.server.address 를 두지 않는다 —
+#    컨테이너에서 loopback 으로 묶으면 kubelet 프로브가 닿지 않는다). 따라서 클러스터 밖으로
+#    노출하면 안 된다: ClusterIP 로만 두고 인그레스에 태우지 않는다. live-app 과 같은 규율이고
+#    근거는 infra/AGENTS.md 에 있다.
+
+# ── 로그 ──────────────────────────────────────────────────────────────────────
+#
+# 아래 키는 모두 optional 이다 — 코드가 기본값을 심는다(common/global 의 StructuredLoggingDefaults).
+# 기본값은 ECS JSON 콘솔 출력 + 스택트레이스 상한이고, 여기 적은 값이 그것을 <b>이긴다</b>
+# (기본 프로퍼티 소스라 설정 파일이 우선한다 — 실측).
+#
+# ⚠️ 평문으로 되돌리려면 logging.structured.format.console 을 비우면 된다. 다만 그러면 MDC 가
+#    출력에서 사라진다 — 부트 기본 패턴에는 MDC 항이 없다(실측). 상관 식별자
+#    (session_id·room_id·user_id)를 보려면 패턴을 직접 써야 하고, 그 모양이 한 앱에만 있어서
+#    나머지가 조용히 비던 것이 이 설정이 생긴 이유다.
+#
+# logging:
+#   structured:
+#     format:
+#       console: ecs              # 코드 기본값 (ecs | logstash | gelf | 빈 값=평문)
+#     json:
+#       stacktrace:
+#         root: last              # 코드 기본값 — 잘릴 때 근본 원인이 남는다
+#         max-length: 4096        # 코드 기본값
+#         max-throwable-depth: 24 # 코드 기본값
+#   level:
+#     # 런타임 변경은 할 수 없다 — actuator loggers 엔드포인트는 POST 로 상태를 바꾸는데
+#     # 이 앱에는 시큐리티가 없어 관리 포트에 열 수 없다(ObservabilityExposureConfig 가 거부한다).
+#     # 레벨을 바꾸려면 이 키나 LOGGING_LEVEL_COM_SAPARI_CHAT 을 주고 재시작한다.
+#     com.sapari.chat: INFO       # 부트 기본값
+#
+# spring:
+#   application:
+#     name: streaming-app         # 코드가 메인 클래스에서 유도한다. ECS 의 service.name 이 이 값이고,
+#                                 # 다섯 앱 로그가 한 스트림에 섞일 때 그걸로 갈린다.
