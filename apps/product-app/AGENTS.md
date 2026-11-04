@@ -21,7 +21,10 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
   (validates every product first; any error ⇒ nothing saved). Validation failures are a **200** envelope with
   `status=REJECTED` + cell errors (`ErrorResponse` has no room for a list); only an unreadable file is 400 PRODUCT-012.
   Template contract (sheet names/headers) = `bulk/ProductWorkbookTemplate`, fixture `src/test/resources/bulk/`.
-  Multipart limits are set in code (`config/MultipartConfig`) because the yaml isn't committed.
+  Multipart limits are set in code (`config/MultipartConfig`) because the yaml isn't committed. Exceeding them
+  is mapped to the same **400 PRODUCT-012** (`exception/BulkUploadExceptionHandler`), not the common 413. Bodies far
+  over the limit (> Tomcat `max-swallow-size`, default 2MB past the limit) get the connection closed instead of a
+  response — intended; don't raise it to make huge uploads see the JSON error.
 - `@ComponentScan("com.sapari")` picks up `common/web`. JPA is split: `product-core`'s
   `JpaConfiguration` enables product persistence; this app's `config/UserPersistenceConfig` adds
   `com.sapari.user.infrastructure.persistence` (the JWT `UserDetailsService` needs it) — Spring Boot
