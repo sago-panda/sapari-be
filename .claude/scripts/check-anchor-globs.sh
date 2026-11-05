@@ -11,17 +11,36 @@
 
 set -eu
 exec python3 - <<'PY'
-import re, subprocess, sys
+import os, re, subprocess, sys
 sys.path.insert(0, ".claude/scripts")
 from anchorlib import logical_lines, glob_to_regex
 
-# split() 이 아니라 splitlines(). 공백이 든 경로가 두 개로 쪼개져 매칭이 어긋난다.
-tracked = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout.splitlines()
+# 목록은 <지금 저장소에 실재하는 파일>이다. 세 가지가 그 정의에 들어간다.
+#
+# ① --others --exclude-standard 로 <미추적 추가>를 포함한다. 인덱스만 보면 아직 add 하지
+#    않은 새 파일이 안 보여서, 파일을 rename 하는 중에(= 지우고 새로 만드는 중에) 글롭이
+#    죽은 것으로 판정된다. --exclude-standard 가 .gitignore 를 존중하므로 build/ 는 안 섞인다
+#    (실측: 두 목록 다 835개 · build/ 매칭 0건).
+# ② 디스크에 없는 경로를 뺀다. 추적 파일을 지우고 아직 stage 하지 않으면 git ls-files 는
+#    그것을 계속 내놓는데, 아래 content 검사가 그 경로를 open 해서 <FileNotFoundError 로
+#    죽었다>(실측: 그 상태에서 exit 1, 트레이스백만 남고 어떤 검사도 못 돈다). 그리고 지워진
+#    파일을 "글롭이 살아 있다" 는 증거로 세는 것도 틀리다 — 그 삭제가 글롭을 고아로 만드는
+#    것이 바로 이 게이트가 알려야 할 사실이다.
+# ③ split() 이 아니라 splitlines(). 공백이 든 경로가 두 개로 쪼개져 매칭이 어긋난다.
+listed = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                        capture_output=True, text=True, check=True).stdout.splitlines()
+present = [p for p in dict.fromkeys(listed) if os.path.isfile(p)]
 
 def matches_any(glob):
     rx = re.compile(glob_to_regex(glob))
-    return any(rx.fullmatch(p) for p in tracked)
+    return any(rx.fullmatch(p) for p in present)
 
+
+
+def read(path):
+    # 핸들을 닫는다 — 열어 두면 .java 693개를 패턴마다 다시 열어 디스크립터가 GC 를 기다린다.
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
 
 
 dead, bad_rx, cold_rx = [], [], []
@@ -37,8 +56,7 @@ for line in logical_lines(".claude/anchors.yml"):
             except re.error as e:
                 bad_rx.append((rx, str(e)))
                 continue
-            if not any(crx.search(open(p, encoding="utf-8", errors="replace").read())
-                       for p in tracked if p.endswith(".java")):
+            if not any(crx.search(read(p)) for p in present if p.endswith(".java")):
                 cold_rx.append(rx)
         continue
     if not (s.startswith("- trigger:") or s.startswith("anchors:")):
