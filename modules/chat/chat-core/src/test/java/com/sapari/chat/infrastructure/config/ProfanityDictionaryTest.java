@@ -1279,4 +1279,54 @@ class ProfanityDictionaryTest {
         assertThatThrownBy(() -> dictionary.whitelist().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
     }
+
+    /**
+     * ⭐ <b>적재 경고가 로그로 나가기 전에 보이지 않는 글자를 드러내고 상한에서 끊긴다.</b>
+     *
+     * <p>이 두 성질이 둘 다 빠져 있던 자리가 {@code DictionaryProfanityFilterFactory} 의 WARN 이고,
+     * 그것이 이 저장소에서 사전 항목을 <b>가장 자주</b> 내보내는 줄이다 — {@code from()} 은 ADMIN
+     * 추가·제거마다 2회 · 발행마다 1회 · <b>파드마다 스냅샷 교체마다 1회</b> 불린다.
+     *
+     * <p>{@code warningEntries} 는 항목을 원문으로 박는다(그 자리에서 접으면 거부 메시지와 문장
+     * 구조가 갈린다). 그래서 나가기 직전인 {@code summarize} 에서 한 번 접는다 — 보이는 글자는
+     * 그대로이므로 사람이 읽는 문장은 안 바뀌고, 보이지 않는 글자만 드러난다.
+     */
+    @Test
+    @DisplayName("⭐ 경고 요약이 보이지 않는 글자를 드러낸다 — 평문이면 로그에서도 안 보인다")
+    void theWarningSummaryRevealsInvisibleCharacters() {
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of("화이트리스트 항목 \"시발\uFEFF\" — 확인")));
+
+        assertThat(summary)
+                .as("보이지 않는 글자가 로그에서도 안 보이면 당직자가 그 항목을 지목할 수 없다")
+                .contains("\\uFEFF")
+                .as("보이는 글자는 그대로여야 사람이 읽는 문장이 안 바뀐다")
+                .contains("화이트리스트 항목")
+                .contains("시발");
+    }
+
+    @Test
+    @DisplayName("⭐ 경고 요약이 상한에서 끊긴다 — 매 교체마다 나가는 줄이라 길이가 비용이다")
+    void theWarningSummaryIsCapped() {
+        java.util.Set<String> many = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < 25; i++) {
+            many.add("화이트리스트 항목 \"정상어" + i + "\" — 아무것도 보호하지 않는다");
+        }
+
+        String summary = ProfanityDictionary.summarize(many);
+
+        assertThat(summary.split(" · "))
+                .as("상한이 없으면 줄 길이가 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
+                .hasSize(20);
+        assertThat(summary).endsWith("외 5건");
+    }
+
+    @Test
+    @DisplayName("상한 이하면 '외 N건' 이 없다 — 다 보여 준 것을 더 있다고 읽게 하면 안 된다")
+    void theWarningSummarySaysNothingMoreWhenItFits() {
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of("경고1", "경고2")));
+
+        assertThat(summary).isEqualTo("경고1 · 경고2").doesNotContain("외 ");
+    }
 }

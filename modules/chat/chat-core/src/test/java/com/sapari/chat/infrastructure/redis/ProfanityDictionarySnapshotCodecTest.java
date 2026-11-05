@@ -9,6 +9,8 @@ import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
 
@@ -159,6 +161,45 @@ class ProfanityDictionarySnapshotCodecTest {
                 .hasMessageContaining("길이 12")
                 .as("값을 그대로 실으면 개행 삽입으로 로그를 위조할 수 있다")
                 .hasMessageNotContaining("NOT_A_NUMBER");
+    }
+
+    /**
+     * ⭐ <b>머리 문법이 발행 토큰과 같다 — 여기가 세 번째 문법이었다.</b>
+     *
+     * <p>{@code decode} 가 {@code Long.parseLong(value.strip())} 였다. 토큰 문법은
+     * {@code 숫자 1~15 + (끝|개행)} 인데 이쪽은 공백·부호를 받는다 — 실측 일곱 벡터 중 넷이
+     * 갈렸다: {@code " 12"}·{@code "-5"}·{@code "+7"}·{@code "\t3"} 를 토큰은 거부하고 이쪽은
+     * 받았다. 정책 차이(0 이냐 던지냐)가 아니라 <b>수용 집합 차이</b>다.
+     *
+     * <p>그 차이의 대가: 버전 키 {@code "9"} + 손으로 고친 본문 머리 {@code "-5"} 면 리더가 9 를
+     * 주고 이 자리가 <b>-5</b> 를 줘서 {@code processedVersion = -5} 가 적힌다. 그 뒤 분마다
+     * {@code 9 != -5} 로 영구히 재빌드·재install 하고 "사전 버전이 뒤로 갔다" WARN 이 전 Pod 에서
+     * 분당 한 줄씩 나간다. 엄격 문법을 둔 이유가 "손으로 고친 본문" 인데 <b>적용 직전 경로만</b>
+     * 그 문법 밖에 있었다.
+     *
+     * <p>정책은 여전히 다르다 — 토큰은 "모른다 → 0"(다른 키로 떨어지고 발행이 덮어 고친다),
+     * 이쪽은 <b>던진다</b>(적용 직전이라 0 으로 접으면 깨진 스냅샷을 조용히 집행한다).
+     */
+    @ParameterizedTest(name = "머리=\"{0}\"")
+    @ValueSource(strings = {" 12", "-5", "+7", "\t3", "12abc", "1000000000000000"})
+    @DisplayName("⭐ 토큰 문법을 벗어난 머리는 거부한다 — 수용 집합이 발행 쪽과 같다")
+    void aHeadOutsideTheTokenGrammarIsRefused(String head) {
+        String payload = head + LINE + "1" + LINE + "0" + LINE + "시발" + LINE;
+
+        assertThatThrownBy(() -> ProfanityDictionarySnapshotCodec.decode(payload))
+                .as("이 값을 받으면 processedVersion 이 그것으로 적히고 전 Pod 이 분마다 헛돈다")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("문법을 벗어난다")
+                .as("값을 그대로 실으면 개행 삽입으로 로그를 위조할 수 있다")
+                .hasMessageNotContaining(head.strip());
+    }
+
+    @Test
+    @DisplayName("앞이 0 인 머리는 문법 안이다 — 숫자만 있고 뒤가 개행이다")
+    void aZeroPaddedHeadIsInsideTheGrammar() {
+        assertThat(ProfanityDictionarySnapshotCodec.decode(
+                        "007" + LINE + "1" + LINE + "0" + LINE + "시발" + LINE).version())
+                .isEqualTo(7L);
     }
 
     @Test

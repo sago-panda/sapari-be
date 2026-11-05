@@ -79,12 +79,20 @@ production log statements all pass `sessionId`/`roomId`/`userId`/`role` scalars.
 record that carries `email` or an unmasked body. Absorbing a failure is also not the same as silencing
 it: when a handler swallows to keep a verdict, it still owes a counter and an interval-throttled log
 (`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
-put back). ⚠️ **The counter half is only owed where a counter can live.** `domain_and_application_must
-_not_depend_on_metrics_library` (ArchUnit) forbids the metrics library in `domain/` and `application/`,
-so a swallow in an application service owes the log and a *structural* fallback instead — for
-`ManageFilterWordsService.warnIfCommittedSourceViolates` that fallback is the next write's `guardSource`,
-which turns the un-diagnosed state into a 409. Do not read the sentence above as "add a counter there";
-rule 12 would reject the commit.
+put back). ⚠️ **A previous version of this paragraph claimed a counter cannot live in `application/`.
+That was false** — rule 16 (`domain_and_application_must_not_depend_on_metrics_library`) bans the
+*library* (`io.micrometer..`), and its own javadoc says to put a port there instead. chat already has
+that port and injects it in `application/`: `application/port/ChatMetrics` →
+`application/service/SendChatService`, `application/handler/ChatBroadcastSubscriber`. Do not skip
+application-layer observation on the strength of that rule.
+
+What is true is narrower. `ChatMetrics` is deliberately written in **domain-event** vocabulary, not
+`counter`/`gauge`, so adding a signal means adding a method to that port — not injecting a
+`MeterRegistry`. And one swallow in this module does *not* carry a counter on purpose:
+`ManageFilterWordsService.warnIfCommittedSourceViolates` swallows a **diagnostic** read that runs after
+the write and the publish have both succeeded, and the state it would have reported is caught by the
+next write's `guardSource` as a 409 — an externally visible, structural signal. That is the argument for
+leaving it out; "the layer cannot hold one" is not.
 
 ## Profanity dictionary — the table is the source, the file seeds it, and short words are the trap
 

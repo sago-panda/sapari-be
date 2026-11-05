@@ -148,8 +148,9 @@ class ProfanityDictionaryPublishServiceTest {
      * <p>한때 한 문장이 셋을 같이 단정했다 — "(1) 전 Pod 이 교체를 거부 (2) 모든 ADMIN 쓰기가
      * 409 (3) 삭제가 0행". 실측하니 <b>선행 BOM 행에서는 (1)·(2)가 일어나지 않는다</b>:
      * {@code of()} 가 {@code strip} 뒤에 거부하므로 접기가 그 글자를 떼어 문에 닿지 않는다
-     * (전수 — 다섯 글자 × 선행·후행·내부 18칸 중 조용히 떼어지는 것은 선행 BOM 과 앞뒤 공백
-     * 둘뿐이다). 당직자가 그 ERROR 로 함대 동결을 의심하면 엉뚱한 곳을 본다.
+     * (전수 — 글자 여섯 × 선행·후행·내부 = 18칸, rejected=15 · passed=3. 조용히 떼어지는 세
+     * 칸은 선행 공백 · 후행 공백 · 선행 BOM 이다). 당직자가 그 ERROR 로 함대 동결을 의심하면
+     * 엉뚱한 곳을 본다.
      *
      * <p>그 행에서 <b>실제로</b> 일어나는 것이 메시지에 없었다. {@code uk (kind, word)} 가 원문
      * 기준이라 테이블이 {@code 시발} 과 {@code <BOM>시발} 을 같이 들 수 있고, 삭제가 한 행만
@@ -247,6 +248,35 @@ class ProfanityDictionaryPublishServiceTest {
         assertThat(errors.get(0).split(" · "))
                 .as("나열이 상한에서 끊기지 않으면 한 줄이 35,966자까지 간다")
                 .hasSize(20);
+    }
+
+    /**
+     * ⭐ <b>정확히 상한만큼일 때 "더 있다" 고 말하지 않는다.</b>
+     *
+     * <p>{@code capped()} 가 {@code total} 이 아니라 상한을 보고 있었다. 그러면 그림자 행이
+     * 정확히 20건일 때 {@code 전체 20건 중 20건: … 외 더 있음} 이 나간다 — 당직자가 20건을 다
+     * 보고도 더 있다고 읽고 SQL 로 다시 센다. 위 테스트가 50건만 재서 이 경계가 분모에 없었다.
+     */
+    @Test
+    @DisplayName("⭐ 정확히 상한만큼이면 '외 N건' 이 없다 — 다 보여 준 것을 더 있다고 읽게 하면 안 된다")
+    void exactlyTheLimitSaysNothingMoreRemains() {
+        Set<String> exactly = new LinkedHashSet<>();
+        for (int i = 0; i < 20; i++) {
+            exactly.add("\uFEFF시발" + i);
+        }
+        given(repository.findWords(FilterWordKind.PROFANITY)).willReturn(exactly);
+        given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of());
+        given(snapshotPublisher.currentVersion()).willReturn(0L);
+        given(snapshotPublisher.publishIfUnchanged(anyLong(), anySet(), anySet()))
+                .willReturn(OptionalLong.of(1L));
+
+        List<String> errors = captureErrors(service::publishFromSource);
+
+        assertThat(errors).hasSize(1);
+        assertThat(errors.get(0))
+                .contains("전체 20건 중 20건")
+                .as("다 보여 줬는데 더 있다고 말하면 당직자가 SQL 로 다시 센다")
+                .doesNotContain("외 ");
     }
 
     private static List<String> captureErrors(Runnable action) {

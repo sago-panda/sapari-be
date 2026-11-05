@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.domain.rule.ProfanityFilter;
 
 /**
@@ -507,6 +508,26 @@ public final class ProfanityDictionary {
     // 한쪽이 막는 것을 다른 쪽이 통과시킨다(로더만 닫고 매처를 열어 둔 적이 있다).
     private static boolean isHangulFiller(int cp) {
         return ProfanityFilter.isHangulFiller(cp);
+    }
+
+    /**
+     * 경고 집합을 로그 한 줄에 실을 모양으로 줄인다 — <b>보이지 않는 글자를 보이게</b> 하고
+     * {@link ProfanityFilterFactory#LOG_ENTRY_LIMIT} 에서 끊는다.
+     *
+     * <p>{@code warningEntries} 가 만드는 문장은 항목을 <b>원문으로</b> 박는다(그 자리에서
+     * {@code visible()} 을 쓰면 거부 메시지와 문장 구조가 갈린다). 그래서 로그로 나가기 직전인
+     * 이 자리에서 한 번 접는다 — 보이는 글자는 그대로이므로 사람이 읽는 문장은 안 바뀌고,
+     * 보이지 않는 글자만 {@code 역슬래시 uXXXX} 로 드러난다.
+     */
+    static String summarize(Set<String> warnings) {
+        List<String> shown = warnings.stream()
+                .limit(ProfanityFilterFactory.LOG_ENTRY_LIMIT)
+                .map(ProfanityDictionary::visible)
+                .toList();
+        String joined = String.join(" · ", shown);
+        return shown.size() < warnings.size()
+                ? joined + " … 외 " + (warnings.size() - shown.size()) + "건"
+                : joined;
     }
 
     /**

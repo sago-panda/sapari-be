@@ -95,7 +95,7 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             local function token(raw)
                 if type(raw) ~= 'string' then return 0 end
                 local digits = string.match(raw, '^(%d+)')
-                if digits == nil or #digits > 18 then return 0 end
+                if digits == nil or #digits > 15 then return 0 end
                 local tail = string.sub(raw, #digits + 1, #digits + 1)
                 if tail ~= '' and tail ~= '\\n' then return 0 end
                 return tonumber(digits)
@@ -116,9 +116,14 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                 return -1
             end
             local version = current + 1
-            redis.call('SET', KEYS[2], version)
-            redis.call('SET', KEYS[1], version .. '\\n' .. ARGV[2])
-            redis.call('PUBLISH', ARGV[3], version)
+            -- ⚠️ 쓰는 포맷도 하나여야 한다. KEYS[2] 는 Redis 의 숫자 인자 변환(정확)을 타는데
+            -- KEYS[1] 은 '..' 를 타고 그것은 %.14g 다 — 값이 15자리가 되면 1e+14 가 키에 써지고
+            -- 매 발행이 같은 머리를 다시 쓰니 자기치유가 없다(실측 3회차까지 1e+14 고정).
+            -- string.format('%d', ...) 로 양쪽을 같은 표기로 맞춘다.
+            local text = string.format('%d', version)
+            redis.call('SET', KEYS[2], text)
+            redis.call('SET', KEYS[1], text .. '\\n' .. ARGV[2])
+            redis.call('PUBLISH', ARGV[3], text)
             return version
             """, Long.class);
 

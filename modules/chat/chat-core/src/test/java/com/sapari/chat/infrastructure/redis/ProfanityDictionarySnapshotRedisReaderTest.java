@@ -93,12 +93,37 @@ class ProfanityDictionarySnapshotRedisReaderTest {
     }
 
     @Test
-    @DisplayName("버전 키가 있으면 그것을 쓴다 — 본문을 읽지 않는 빠른 길이다")
-    void thePresentVersionKeyWins() {
+    @DisplayName("버전 키가 더 크면 그것을 쓴다")
+    void theHigherVersionKeyWins() {
         set(VERSION, "9");
         set(SNAPSHOT, body(7));
 
         assertThat(reader.readVersion().blockOptional(CEILING)).contains(9L);
+    }
+
+    /**
+     * ⭐ <b>두 키의 큰 쪽을 집는다 — 발행 쪽과 같은 규칙이어야 한다.</b>
+     *
+     * <p>한때 "버전 키가 읽히면 그것, 비면 본문 머리로 폴백" 이었다. 발행 쪽은 같은 두 키를
+     * {@code max} 로 집고 근거를 "어느 한 키의 유실이 번호를 내리지 못한다" 로 적는데, 그 근거가
+     * 받는 쪽에는 적용되지 않는 <b>비대칭</b>이었다. 비대칭이 드러나는 칸은 <b>버전 키가 읽히면서
+     * 본문 머리보다 낮은</b> 하나뿐이다 — 그 칸이 없어서 리더 테스트 다섯 건이 비대칭을 그대로
+     * 통과시켰다(되돌림 실측: 5건 0실패).
+     *
+     * <p>그 상태에서 두 쪽 판정이 갈리면 전 Pod 이 분마다 스냅샷을 다시 읽고 아무것도 교체하지
+     * 않으며 로그도 0줄이 된다. 인밴드 도달 경로는 못 찾았다(두 키를 한 스크립트가 같은 수로
+     * 쓴다) — 맞추는 이유는 그 불변식이 <b>스크립트 밖 쓰기</b>에 대해 보장되지 않고, 두 쪽이
+     * 같은 규칙이면 그 축을 생각할 필요가 없어지기 때문이다.
+     */
+    @Test
+    @DisplayName("⭐ 버전 키가 머리보다 낮으면 머리를 쓴다 — 발행 쪽 max 와 같은 규칙이다")
+    void theSnapshotHeadWinsWhenTheVersionKeyIsLower() {
+        set(VERSION, "3");
+        set(SNAPSHOT, body(7));
+
+        assertThat(reader.readVersion().blockOptional(CEILING))
+                .as("발행 쪽은 max 로 집는다 — 받는 쪽이 낮은 쪽을 쓰면 두 판정이 갈린다")
+                .contains(7L);
     }
 
     /**

@@ -22,6 +22,19 @@ import com.sapari.chat.domain.rule.ProfanityFilter;
 public interface ProfanityFilterFactory {
 
     /**
+     * 사전 항목을 로그 한 줄에 나열할 때의 상한 — <b>이 수를 쓰는 두 자리의 단일 소스</b>다.
+     *
+     * <p>상한이 없을 때 전량이 걸리면 한 줄이 35,966자였다(측정: 욕설 1,078 · 화이트리스트 38).
+     * 평시에는 0건이라 안 드러나는데, 접기 평면을 바꾸는 변경이나 화이트리스트 경고 하나가
+     * 들어오면 그 줄이 발행·교체마다 나간다.
+     *
+     * <p>두 자리가 서로 다른 레이어라({@code application/service} 의 그림자 보고 ·
+     * {@code infrastructure/config} 의 적재 경고) 상수를 공유할 자리가 이 포트뿐이다. 각자
+     * 20 을 적어 두면 한쪽만 바뀌는 드리프트가 되고, 이 브랜치가 그 모양을 네 번 밟았다.
+     */
+    int LOG_ENTRY_LIMIT = 20;
+
+    /**
      * @param origin 실패 메시지에 실을 출처 이름(예: {@code "chat:dict"}). 세 입구 중 어디서
      *               떨어졌는지가 당직자에게 가야 한다
      * @throws IllegalStateException 항목이 문을 통과하지 못했을 때. 메시지에 무엇이 왜

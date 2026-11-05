@@ -380,4 +380,54 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                 .isPresent();
         assertThat(redisTemplate.opsForValue().get(VERSION)).isEqualTo("1");
     }
+
+    /**
+     * ⭐ <b>큰 버전이 키에 지수 표기로 써지지 않는다.</b>
+     *
+     * <p>Lua 가 두 키에 같은 수를 쓰는데 <b>포맷터가 둘</b>이었다. {@code SET KEYS[2], version} 은
+     * Redis 의 숫자 인자 변환(정확)을 타고 {@code version .. '\n' .. body} 는 Lua 의 {@code ..}
+     * 를 타는데 그것은 {@code %.14g} 다. 실측(Redis 7.4.12): 값이 15자리가 되는 순간
+     * {@code 100000000000000} → {@code 1e+14} 다.
+     *
+     * <p>그 상태가 <b>영구</b>다. 매 발행이 같은 머리를 다시 쓰므로 자기치유가 없고(3회 반복
+     * 실측에서 머리가 계속 {@code 1e+14}), {@code Codec.decode} 의 엄격 실패에 걸려 전 Pod 이
+     * 이후 모든 발행을 거부하는데 ADMIN 쓰기는 전부 200 이다. 복구는 두 키 동시 삭제뿐이었다.
+     *
+     * <p>도달 경로는 유기적 증가(10<sup>14</sup>회 발행)가 아니라 <b>키에 큰 수가 손으로/덤프
+     * 복원으로 들어오는 것</b>이고, 자리수 상한이 막으려던 적이 바로 그것이다 — 그런데 선언값
+     * 18 과 실제 경계 13 사이가 다섯 자리 비어 있었다. {@code string.format('%d', …)} 로 포맷을
+     * 모으고 상한을 산술 경계(15)로 맞췄다.
+     */
+    @Test
+    @DisplayName("⭐ 15자리 버전도 10진수로 써진다 — 지수 표기가 키에 들어가면 영구 동결이다")
+    void aFifteenDigitVersionIsWrittenInDecimal() {
+        // 14자리 토큰 → 다음 버전이 15자리다. '..' 면 여기서 1e+14 가 된다.
+        redisTemplate.opsForValue().set(VERSION, "99999999999999");
+
+        long token = publisher.currentVersion();
+        assertThat(token).isEqualTo(99_999_999_999_999L);
+        assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
+                .hasValue(100_000_000_000_000L);
+
+        assertThat(redisTemplate.opsForValue().get(VERSION)).isEqualTo("100000000000000");
+        assertThat(redisTemplate.opsForValue().get(SNAPSHOT))
+                .as("머리가 지수 표기면 양쪽 파서가 그것을 숫자로 못 읽고 자기치유가 없다")
+                .startsWith("100000000000000\n");
+        assertThat(publisher.currentVersion())
+                .as("다음 조건 비교가 그 머리를 다시 읽는다 — 못 읽으면 토큰이 떨어진다")
+                .isEqualTo(100_000_000_000_000L);
+    }
+
+    @Test
+    @DisplayName("⭐ 16자리 머리는 문법 밖이다 — double 산술이 정확한 범위에서 끊는다")
+    void aSixteenDigitHeadIsOutsideTheGrammar() {
+        redisTemplate.opsForValue().set(VERSION, "1000000000000000");
+
+        assertThat(publisher.currentVersion())
+                .as("2^53 위에서는 tonumber 와 +1 이 정확하지 않다 — 문법에서 받지 않는다")
+                .isZero();
+        assertThat(publisher.publishIfUnchanged(0L, ordered("시발"), Set.of()))
+                .as("못 읽은 키는 기여하지 않고 발행이 덮어 고친다")
+                .hasValue(1L);
+    }
 }

@@ -59,14 +59,18 @@ public class ProfanityDictionaryPublishService {
     private static final int MAX_ATTEMPTS = 5;
 
     /**
-     * 로그 한 줄의 상한.
+     * 로그 한 줄의 상한 — 수는 {@link ProfanityFilterFactory#LOG_ENTRY_LIMIT} 가 갖는다.
      *
      * <p>⚠️ 상한이 없을 때 전량이 걸리면 한 줄이 <b>35,966자</b>였다(측정: 욕설 1,078 ·
      * 화이트리스트 38). 평시에는 0 건이라 안 드러나는데, 접기 평면을 바꾸는 변경(예:
      * {@code normalizeEntry} 가 NFKC 로 가는 것)이 들어오면 <b>모든 행이 불일치</b>가 되어
      * 발행 1회당 그 줄이 나간다.
+     *
+     * <p>같은 상한이 적재 경고 쪽에도 필요하다({@code DictionaryProfanityFilterFactory}).
+     * 레이어가 달라 상수를 공유할 자리가 포트뿐이라 거기에 뒀다 — 각자 20 을 적어 두면 한쪽만
+     * 바뀌는 드리프트가 되고, 이 브랜치가 그 모양을 네 번 밟았다.
      */
-    private static final int REPORT_LIMIT = 20;
+    private static final int REPORT_LIMIT = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
 
     /** 문에 물어볼 때 실패 메시지에 실릴 출처 — 이 호출은 진단이고 집행 사전을 만들지 않는다. */
     private static final String DOOR_PROBE_ORIGIN = "chat:filter-word:probe";
@@ -128,8 +132,9 @@ public class ProfanityDictionaryPublishService {
      * {@code CHAT_PROFANITY_WORDS} 로 들어간 항목도 같은 모양일 수 있다.
      *
      * <p>⚠️ <b>두 부류는 포함관계가 아니라 직교다.</b> 한때 이 자리가 "접기 불일치" 하나로 둘을
-     * 덮는다고 보고 한 문장으로 단정했는데, 테스트가 그것을 깼다. 실측(다섯 글자 × 선행·후행·
-     * 내부 18칸):
+     * 덮는다고 보고 한 문장으로 단정했는데, 테스트가 그것을 깼다. 실측(글자 여섯 — NBSP ·
+     * ZWSP · 워드조이너 · BOM · 한글 채움문자 · 공백 — × 선행·후행·내부 = 18칸, rejected=15 ·
+     * passed=3):
      * <pre>
      *   선행 BOM      접기가 뗀다      문 통과   → 저장값 ≠ 집행값 (그림자)
      *   후행 BOM      접기가 보존한다   문 거부   → 저장값 = 집행값 (동결)
@@ -180,9 +185,12 @@ public class ProfanityDictionaryPublishService {
             filterFactory.from(DOOR_PROBE_ORIGIN, words, whitelist);
         } catch (IllegalStateException e) {
             log.error("정본이 사전 문을 통과하지 못한다 — 전 Pod 의 사전 교체가 거부되고 이후 모든 "
-                            + "ADMIN 쓰기가 409 다. 접기가 그 값을 보존하므로 같은 값을 그대로 보내면 "
-                            + "API(/api/v1/chat/filter-words)로 지울 수 있다 — 수동 SQL 이 아니다. "
-                            + "사유={}", e.getMessage());
+                            + "ADMIN 쓰기가 409 다. 문은 <첫 위반에서 즉시> 던지므로 아래 사유는 "
+                            + "한 건이고 전체 건수는 알 수 없다 — 하나를 지우면 다음 발행이 다음 "
+                            + "사유를 말한다. 접기가 그 값을 보존하는 행이면 같은 값을 그대로 보내 "
+                            + "API(/api/v1/chat/filter-words)로 지울 수 있고, 그림자 보고에도 같이 "
+                            + "뜨는 행이면(접기가 글자를 떼는 행) 삭제가 0행이므로 "
+                            + "chat_filter_word 에서 직접 지워야 한다. 사유={}", e.getMessage());
         }
     }
 
@@ -203,7 +211,7 @@ public class ProfanityDictionaryPublishService {
                         + "원문 기준이라 접으면 같아지는 행이 둘 이상 있을 수 있다. 그러면 삭제 요청이 "
                         + "한 행만 지우고 changed=true·버전 상승·성공 응답을 내는데 남은 행이 같은 "
                         + "단어를 계속 집행한다. 복구는 chat_filter_word 에서 이 행을 직접 지우는 "
-                        + "것이다. 전체 {}건 중 {}건: {}", total, shown.size(), capped(shown));
+                        + "것이다. 전체 {}건 중 {}건: {}", total, shown.size(), capped(shown, total));
     }
 
     private int collectShadowRows(FilterWordKind kind, Set<String> stored, List<String> shown) {
@@ -220,9 +228,17 @@ public class ProfanityDictionaryPublishService {
         return total;
     }
 
-    private static String capped(List<String> shown) {
-        return shown.size() < REPORT_LIMIT
-                ? String.join(" · ", shown)
-                : String.join(" · ", shown) + " … 외 더 있음(상한 " + REPORT_LIMIT + "건)";
+    /**
+     * ⚠️ 비교 대상이 {@code shown.size()} 와 <b>{@code total}</b> 이다 — 상한이 아니다.
+     *
+     * <p>한때 {@code shown.size() < REPORT_LIMIT} 였다. 그러면 그림자 행이 <b>정확히 20건</b>일 때
+     * {@code 전체 20건 중 20건: … 외 더 있음} 이 나간다 — 당직자가 20건을 다 보고도 더 있다고 읽고
+     * SQL 로 다시 센다. 테스트가 50건만 재서 그 경계가 분모에 없었다.
+     */
+    private static String capped(List<String> shown, int total) {
+        String joined = String.join(" · ", shown);
+        return shown.size() < total
+                ? joined + " … 외 " + (total - shown.size()) + "건(상한 " + REPORT_LIMIT + "건)"
+                : joined;
     }
 }

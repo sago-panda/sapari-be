@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -509,6 +510,32 @@ class ManageFilterWordsServiceTest {
                 .as("넓게 잡으면 이 결함이 WARN 한 줄로 사라진다")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("코드 결함");
+    }
+
+    /**
+     * ⭐ <b>진단이 발행 뒤라는 것을 순서로 못 박는다.</b>
+     *
+     * <p>이 순서를 옮긴 커밋에 <b>어떤 테스트도 걸리지 않았다</b> — 되돌려 전체 수트를 돌리면
+     * 895건 0실패였다. 삼킴이 남아 있어서 "발행을 잃는가" 축이 통과하기 때문이다.
+     *
+     * <p>그런데 삼킴을 {@code DataAccessException} 으로 좁힌 뒤에는 남는 벡터가 있다 — 진단
+     * 경로의 {@code IllegalStateException}(바로 위 테스트가 못 박은 그 타입)이 발행 <b>앞</b>에
+     * 있으면 발행을 통째로 잃는다. 그래서 순서 자체를 단언한다.
+     */
+    @Test
+    @DisplayName("⭐ 발행 → 감사 로그 → 진단 순서다 — 진단이 앞이면 발행을, 로그 앞이면 감사를 잃는다")
+    void theDiagnosticRunsAfterThePublish() {
+        sourceIs(Set.of("시발"), Set.of());
+
+        service.add(add("PROFANITY", "지랄", "ADMIN"));
+
+        // 선검사 읽기 2회 → 쓰기 → 발행 → 진단 읽기 2회.
+        var order = inOrder(repository, writeRecorder, publishService);
+        order.verify(repository).findWords(FilterWordKind.PROFANITY);
+        order.verify(repository).findWords(FilterWordKind.WHITELIST);
+        order.verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin);
+        order.verify(publishService).publishFromSource();
+        order.verify(repository, times(2)).findWords(any());
     }
 
     @Test

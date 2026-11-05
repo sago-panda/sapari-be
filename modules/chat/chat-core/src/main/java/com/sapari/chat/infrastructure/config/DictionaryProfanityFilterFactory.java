@@ -38,7 +38,17 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
     public ProfanityFilter from(String origin, Set<String> words, Set<String> whitelist) {
         ProfanityDictionary dictionary = ProfanityDictionary.of(origin, words, whitelist);
         if (!dictionary.warnings().isEmpty()) {
-            log.warn("사전에 확인할 항목이 있다: origin={} {}", origin, dictionary.warnings());
+            // ⚠️ 이 줄이 이 저장소에서 사전 항목을 <가장 자주> 내보내는 자리다. from() 호출은
+            // ADMIN 추가·제거마다 2회 · 발행마다 1회 · 그리고 파드마다 스냅샷 교체마다 1회다.
+            // 그런데 두 가지가 빠져 있었다:
+            //   - warningEntries 가 항목을 visible() 없이 원문으로 박는다 → 보이지 않는 글자가
+            //     로그에서도 안 보인다. 그 글자가 바로 이 경고들이 다루는 결함이다.
+            //   - 상한이 없다 → 화이트리스트에 경고 걸리는 항목이 늘면 줄 길이가 그만큼 자라고,
+            //     그것이 모든 쓰기·모든 발행·모든 파드의 모든 교체에서 나간다.
+            // 값을 빼지는 않는다 — 이 경고가 요구하는 조치가 "그 항목을 찾아 고치기" 다.
+            Set<String> warnings = dictionary.warnings();
+            log.warn("사전에 확인할 항목이 있다({}건): origin={} {}",
+                    warnings.size(), origin, ProfanityDictionary.summarize(warnings));
         }
         return new ProfanityFilter(dictionary.words(), dictionary.whitelist());
     }

@@ -44,11 +44,28 @@ public class ProfanityDictionarySnapshotRedisReader implements ProfanityDictiona
      * <p>도달 경로가 발행자가 안내하는 복구 절차(버전 키 삭제) 자신이기도 했다. 본문 머리로
      * 떨어지면 빈 {@code Mono} 는 <b>두 키가 함께 없을 때</b>, 즉 진짜로 한 번도 발행되지 않은
      * 상태에만 나온다.
+     *
+     * <p>⚠️ <b>발행 쪽과 같은 규칙으로 두 키의 큰 쪽을 집는다 — "버전 키 우선" 이 아니다.</b>
+     *
+     * <p>한때 "버전 키가 읽히면 그것, 비면 본문 머리로 폴백" 이었다. 발행 쪽은 같은 두 키를
+     * {@code max} 로 집고 그 근거를 "어느 한 키의 유실이 번호를 내리지 못한다" 로 적는데, 같은
+     * 근거가 받는 쪽에 적용되지 않는 <b>비대칭</b>이었다. 버전 키가 <b>읽히면서 본문 머리보다
+     * 낮은</b> 상태에서 두 쪽 판정이 갈리고, 그러면 전 Pod 이 분마다 스냅샷을 다시 읽고 아무것도
+     * 교체하지 않으며 로그도 0줄이 된다.
+     *
+     * <p>인밴드 도달 경로는 못 찾았다 — 두 키를 한 스크립트가 같은 수로 쓴다. 그래도 맞추는
+     * 이유는 그 불변식이 <b>스크립트 밖 쓰기</b>에 대해 보장되지 않고(이 클래스에 {@code TYPE}
+     * 가드가 있는 이유가 바로 그것이다), 두 쪽이 같은 규칙이면 그 축을 생각할 필요가 없어지기
+     * 때문이다. 비용은 폴링 1회당 {@code GET} 한 번 더다(Pod 당 분당 1회).
+     *
+     * <p>빈 {@code Mono} 는 <b>두 키가 다 읽히지 않을 때</b>만 나온다 — 그것이 "한 번도 발행되지
+     * 않았다" 다.
      */
     @Override
     public Mono<Long> readVersion() {
         return token(ChatRedisKeys.dictVersion())
-                .switchIfEmpty(Mono.defer(() -> token(ChatRedisKeys.dictSnapshot())));
+                .concatWith(Mono.defer(() -> token(ChatRedisKeys.dictSnapshot())))
+                .reduce(Math::max);
     }
 
     /**

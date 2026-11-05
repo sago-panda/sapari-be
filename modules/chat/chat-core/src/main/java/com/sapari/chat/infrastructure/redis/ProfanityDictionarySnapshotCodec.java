@@ -38,14 +38,24 @@ final class ProfanityDictionarySnapshotCodec {
     private static final String LINE = "\n";
 
     /**
-     * 머리 버전의 자리 수 상한.
+     * 머리 버전의 자리 수 상한 — <b>Lua 의 double 산술이 정확한 범위</b>다.
      *
-     * <p>Lua 의 {@code tonumber} 는 double 을 돌려준다 — 19자리 이상은 정확히 담기지 않고
-     * {@code 1e+20} 같은 값이 된다. 그 값이 {@code SET} 으로 <b>두 키에 다시 써지면</b>
-     * 그때부터 양쪽 파서가 그것을 숫자로 읽지 못해 사람 손 없이는 안 풀린다. 그래서 문법에서
-     * 아예 받지 않는다. 18자리는 발행 10<sup>18</sup>회라 도달하지 않는다.
+     * <p>⚠️ 한때 18 이었고 근거가 두 군데 틀렸다. 실측(Redis 7.4.12):
+     * <ul>
+     *   <li>부정확이 시작되는 자리는 19자리가 아니라 <b>2<sup>53</sup> = 9007199254740992</b>
+     *       (16자리)다 — {@code 9007199254740993} 을 넣으면 {@code …992} 가 써진다.
+     *   <li>{@code 1e+NN} 이 <b>키에 써지기</b> 시작하는 자리는 또 다르다. 그것은 {@code tonumber}
+     *       가 아니라 Lua 의 {@code ..} 가 {@code %.14g} 를 쓰기 때문이고, 값이 15자리가 되는
+     *       순간이다({@code 100000000000000} → {@code 1e+14}). 자리올림을 감당하면 토큰 13자리가
+     *       한계였다 — 선언값 18 과 다섯 자리 어긋나 있었다.
+     * </ul>
+     *
+     * <p>포맷 쪽은 {@code string.format('%d', version)} 으로 닫았으므로({@code PUBLISH_SNAPSHOT})
+     * 남는 경계는 <b>산술</b>뿐이다. 15자리면 {@code 999999999999999 + 1 = 10}<sup>15</sup> 이고
+     * 2<sup>53</sup> 아래라 {@code +1} 과 비교가 정확하다. 발행 10<sup>15</sup>회는 도달하지 않고,
+     * 이 상한이 막는 적은 유기적 증가가 아니라 <b>키에 손으로/덤프 복원으로 들어오는 큰 수</b>다.
      */
-    private static final int MAX_VERSION_DIGITS = 18;
+    private static final int MAX_VERSION_DIGITS = 15;
 
     private ProfanityDictionarySnapshotCodec() {
     }
@@ -137,7 +147,7 @@ final class ProfanityDictionarySnapshotCodec {
             throw new IllegalStateException(
                     "사전 스냅샷에 머리가 없다 — 줄 " + lines.size() + "개(버전·욕설 수·화이트리스트 수가 필요하다).");
         }
-        long version = parse(lines.get(0), "버전");
+        long version = parseVersionHead(lines.get(0));
         int wordCount = (int) parse(lines.get(1), "욕설 수");
         int whitelistCount = (int) parse(lines.get(2), "화이트리스트 수");
         if (wordCount < 0 || whitelistCount < 0) {
@@ -179,6 +189,29 @@ final class ProfanityDictionarySnapshotCodec {
             out.add(line);
         }
         return out;
+    }
+
+    /**
+     * 머리 줄의 버전 — <b>토큰과 같은 문법</b>으로 읽고, 문법을 벗어나면 <b>던진다.</b>
+     *
+     * <p>⚠️ 한때 이 자리가 {@code Long.parseLong(value.strip())} 이었다. 그러면 문법이 셋이 된다 —
+     * 실측으로 일곱 벡터 중 넷이 갈렸다({@code " 12"}·{@code "-5"}·{@code "+7"}·{@code "\t3"} 을
+     * 토큰은 거부하고 이쪽은 받았다). 정책 차이가 아니라 <b>수용 집합 차이</b>다.
+     *
+     * <p>그 차이의 대가: 버전 키 {@code "9"} + 손으로 고친 본문 머리 {@code "-5"} 면 리더가 9 를
+     * 주고 이 자리가 <b>-5</b> 를 줘서 {@code processedVersion = -5} 가 적힌다. 그 뒤 분마다
+     * {@code 9 != -5} 로 영구히 재빌드·재install 하고 "사전 버전이 뒤로 갔다" WARN 이 전 Pod 에서
+     * 분당 한 줄씩 나간다 — 발행이 한 번 덮기 전까지 안 풀린다. 엄격 문법을 둔 이유가 "손으로
+     * 고친 본문" 인데 <b>적용 직전 경로만 그 문법 밖에</b> 있었다.
+     *
+     * <p>정책은 토큰 쪽과 다르다 — 거기서는 "모른다 → 0"(다른 키로 떨어지고 발행이 덮어 고친다)
+     * 이고 여기서는 <b>던진다.</b> 이 자리는 그 스냅샷을 <b>적용하기 직전</b>이라, 0 으로 접으면
+     * 깨진 스냅샷을 조용히 받아 집행한다. 호출자가 이 예외를 잡아 교체를 포기하는 것이 설계다.
+     */
+    private static long parseVersionHead(String value) {
+        return readVersionToken(value).orElseThrow(() -> new IllegalStateException(
+                "사전 스냅샷의 버전이 문법을 벗어난다 — 길이 " + value.length()
+                        + ". 숫자 1~" + MAX_VERSION_DIGITS + "자여야 한다(발행 쪽 토큰과 같은 문법)."));
     }
 
     private static long parse(String value, String what) {

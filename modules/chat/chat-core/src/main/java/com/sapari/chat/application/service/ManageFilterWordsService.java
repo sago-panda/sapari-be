@@ -92,12 +92,16 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         // 멱등 호출(이미 있던 단어)에도 발행한다 — 건너뛰면 스냅샷이 유실된 상태를 되돌릴
         // 경로가 하나 줄어든다.
         long version = publishOrLogLoss("추가", kind, word.length(), changed, command.actorId());
-        // 진단은 발행 <뒤>다. 앞에 두면 이 읽기의 일시 오류가 전파를 잃게 하고, 그래서 삼킴의
-        // 근거를 "올리면 발행을 잃는다" 로 세울 수밖에 없었다. 뒤로 옮기면 그 근거가 필요 없다 —
-        // 쓰기도 발행도 이미 끝났고 남은 것은 응답과 로그뿐이다.
-        warnIfCommittedSourceViolates(command.actorId());
+        // ⚠️ 감사 로그가 진단 <앞>이다. 진단은 DataAccessException 밖을 다시 던지므로, 뒤에 두면
+        // 쓰기와 발행이 둘 다 성공한 권한 있는 조정 변경이 <누가 무엇을 바꿨는지 한 줄도 없이>
+        // 일반 500 으로 나간다(발행이 성공했으니 publishOrLogLoss 의 ERROR 도 안 찍힌다).
+        // 줄 순서만으로 닫히고 재던지기 성질은 그대로다.
         log.info("사전에 항목을 더했다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
+        // 진단은 발행 <뒤>다. 앞에 두면 이 읽기의 일시 오류가 전파를 잃게 하고, 그래서 삼킴의
+        // 근거를 "올리면 발행을 잃는다" 로 세울 수밖에 없었다. 뒤로 옮기면 그 근거가 필요 없다 —
+        // 쓰기도 발행도 이미 끝났고 남은 것은 응답뿐이다.
+        warnIfCommittedSourceViolates(command.actorId());
         return new FilterWordChange(changed, version);
     }
 
@@ -159,11 +163,17 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
     /**
      * 커밋된 정본이 문을 지나는지 본다 — <b>로그만</b> 남긴다.
      *
-     * <p>⚠️ 삼킴은 <b>카운터를 빚지지 않는다</b> — 못 갖기 때문이다. {@code modules/chat/AGENTS.md}
-     * 는 "삼키면 카운터와 간격 제한 로그를 같이 빚는다" 로 적는데, ArchUnit
-     * {@code domain_and_application_must_not_depend_on_metrics_library} 가 {@code application/} 에
-     * 메트릭 라이브러리를 금지한다. 이 자리의 구조적 대체물은 <b>다음 쓰기의
-     * {@link #guardSource}</b> 다 — 진단되지 않은 위반 상태를 409 로 바꾼다.
+     * <p>⚠️ <b>삼킴에 카운터를 안 달았다 — 못 달아서가 아니다.</b> 한때 이 자리에 "ArchUnit 이
+     * {@code application/} 에 메트릭을 금지하므로 못 갖는다" 고 적었는데 <b>거짓이었다.</b> 그
+     * 규칙(16번)은 {@code io.micrometer..} <b>라이브러리</b>만 막고 javadoc 자신이 "포트를 두라"
+     * 고 적으며, chat 은 그 포트를 이미 갖고 application 에서 쓴다
+     * ({@code application/port/ChatMetrics} → {@code SendChatService} ·
+     * {@code ChatBroadcastSubscriber}).
+     *
+     * <p>안 단 근거는 이것이다 — 이 삼킴의 대상은 쓰기와 발행이 <b>둘 다 성공한 뒤</b>의 진단
+     * 읽기이고, 그것이 알리려던 상태는 다음 쓰기의 {@link #guardSource} 가 409 로 바꿔 밖에서
+     * 보인다. 즉 구조적 신호가 이미 있다. 그래도 세고 싶으면 {@code ChatMetrics} 에 메서드를
+     * 더하는 것이 길이다({@code MeterRegistry} 주입이 아니다).
      *
      * <p>선검사를 지나왔는데도 어길 수 있는 이유는 규칙 (1)이 두 kind 를 가로지르기 때문이다
      * (조합은 {@code ChatFilterWordWriteRecorder} javadoc). 그 상태는 복구 가능하지만
