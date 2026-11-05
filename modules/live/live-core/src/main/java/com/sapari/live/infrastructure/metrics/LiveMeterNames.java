@@ -21,6 +21,12 @@ final class LiveMeterNames {
     /** 입장 상한이 거부한 건수. 집단은 {@code population} 태그로 가른다(값은 소문자). */
     static final String ENTER_REJECTED = "live.enter.rejected";
 
+    /** 폐기된 토큰의 인증을 거둔 건수. 축은 {@code axis} 태그로 가른다(값은 소문자). */
+    static final String TOKEN_REVOKED = "live.token.revoked";
+
+    /** 폐기 여부를 묻지 못한 건수(저장소 장애). 적중과 <b>다른 이름</b>이다 — 대응이 반대다. */
+    static final String TOKEN_REVOCATION_FAILED = "live.token.revocation.failed";
+
     static final String TAG_JOB = "job";
     static final String TAG_OUTCOME = "outcome";
     static final String TAG_REASON = "reason";
@@ -29,6 +35,7 @@ final class LiveMeterNames {
     static final String TAG_RESULT = "result";
     static final String TAG_POPULATION = "population";
     static final String TAG_GATE = "gate";
+    static final String TAG_AXIS = "axis";
     static final String TAG_FROM = "from";
     static final String TAG_TO = "to";
     static final String TAG_TRIGGER = "trigger";

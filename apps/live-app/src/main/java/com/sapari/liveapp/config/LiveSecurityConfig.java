@@ -25,18 +25,34 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
+import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.StatelessJwtAuthenticationFilter;
+import com.sapari.liveapp.security.TokenRevocationFilter;
 
 /**
  * live-app 보안 설정 (stateless).
  *
  * <p>시청(조회)은 공개, 라이브 생성/시작/종료 등 변경은 판매자 전용이다. 홈랩이 발급한 access JWT를
- * {@link StatelessJwtAuthenticationFilter}가 서명·claims만으로 검증하며, user DB·폐기 저장소에
- * 의존하지 않는다.
+ * {@link StatelessJwtAuthenticationFilter}가 서명·claims만으로 검증하며, user DB에 의존하지 않는다.
+ *
+ * <p><b>필터 셋의 순서가 설계다.</b> 인증({@link StatelessJwtAuthenticationFilter}) → 입장 상한
+ * ({@link EnterRateLimitFilter}) → 폐기 조회({@link TokenRevocationFilter}) 이고, 셋 다
+ * {@code AuthorizationFilter} 앞이라 아래 {@code authorizeHttpRequests} 판정은 이미 거둬진
+ * 컨텍스트를 본다. 상한이 폐기 조회보다 앞인 이유는 비용이다 — 거부될 요청이 Redis 왕복을
+ * 치지 않는다. 그 셋을 바꿔 끼우면 둘 중 하나가 깨진다.
+ *
+ * <p>⚠️ <b>아래 {@code permitAll} 목록이 폐기 조회의 실패 방향을 정한다.</b> 공개 경로에서는
+ * 인증이 거둬져도 요청이 통과하고 principal 만 {@code null} 이 되므로, 폐기 조회가 실패를
+ * "거두기" 로 처리하면 입장이 <b>조용히 게스트로 내려간다</b>
+ * ({@code RevocationOnPublicRouteTest} 가 그 경로에서 200 + GUEST 를 고정한다). 그래서
+ * {@link TokenRevocationFilter} 는 조회 실패를 {@code 503} 으로 끊는다 — 그 판단의 근거가
+ * 이 목록이니, 공개 경로를 더하거나 뺄 때 그 필터를 함께 읽을 것.
  */
 @Configuration
 @EnableWebSecurity
@@ -64,6 +80,26 @@ public class LiveSecurityConfig {
             JwtTokenProvider jwtTokenProvider
     ) {
         return new StatelessJwtAuthenticationFilter(jwtTokenProvider);
+    }
+
+    /**
+     * 폐기된 토큰의 인증을 거두는 필터. 체커 둘은 {@code common/auth} 의 Redis 리더다
+     * (키 규약은 {@code TokenStoreKeys} 하나에서 온다).
+     *
+     * <p><b>체커와 지표를 다르게 받는다.</b> 체커 둘은 필수 인자다 — {@code ObjectProvider} 로
+     * 받아 없을 때 건너뛰게 두면 의존이 빠진 배포가 조용히 폐기 조회를 끄고, 그 상태가 로그 한 줄
+     * 없이 정상으로 보인다. 지표는 반대로 {@code ObjectProvider} 다: 형제
+     * {@code EnterRateLimitConfig} 가 적은 그대로 <b>관측 부재가 집행을 못 뜨게 하면 관측을 위해
+     * 집행을 잃는다</b>({@code LiveMetricsConfig} 가 슬라이스에서 빠질 수 있다).
+     */
+    @Bean
+    public TokenRevocationFilter tokenRevocationFilter(
+            AccessTokenRevocationChecker accessTokenRevocationChecker,
+            SessionRevocationChecker sessionRevocationChecker,
+            ObjectProvider<LiveMetrics> metricsProvider
+    ) {
+        return new TokenRevocationFilter(accessTokenRevocationChecker, sessionRevocationChecker,
+                metricsProvider.getIfAvailable(() -> LiveMetrics.NOOP));
     }
 
     /**
@@ -274,6 +310,7 @@ public class LiveSecurityConfig {
             HttpSecurity http,
             StatelessJwtAuthenticationFilter statelessJwtAuthenticationFilter,
             EnterRateLimitFilter enterRateLimitFilter,
+            TokenRevocationFilter tokenRevocationFilter,
             JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint,
             JwtAccessDeniedHandler jwtAccessDeniedHandler
     ) throws Exception {
@@ -379,6 +416,12 @@ public class LiveSecurityConfig {
                 // SecurityContextHolder 가 채워진 뒤여야 한다. 체인 밖 최상위 필터로 두면
                 // springSecurityFilterChain 자체가 하나의 필터라 그 순서가 보장되지 않는다.
                 .addFilterAfter(enterRateLimitFilter, StatelessJwtAuthenticationFilter.class)
+                // 폐기 조회는 상한 <뒤>다 — 상한에 걸려 거부될 입장 요청이 Redis 왕복을 치지
+                // 않게 한다(상한은 CPU 천장이라 그 비용을 막아 주지 못한다). 그런데도
+                // AuthorizationFilter 보다는 앞이라 아래 역할 규칙은 거둬진 컨텍스트를 본다.
+                // 입장 밖 경로는 상한 필터가 EnterPaths.isEnterRequest 로 즉시 통과시키므로
+                // 이 순서가 그쪽 비용을 늘리지 않는다.
+                .addFilterAfter(tokenRevocationFilter, EnterRateLimitFilter.class)
                 .build();
     }
 }

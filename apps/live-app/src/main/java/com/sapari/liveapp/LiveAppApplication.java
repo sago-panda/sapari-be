@@ -9,6 +9,7 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
+import com.sapari.common.auth.RefreshTokenRedisRepository;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 
 // 리액티브 Mongo 자동설정을 끈다. chat-core 가 streaming-app 과 공유되면서 리액티브 드라이버를
@@ -21,9 +22,16 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
         "org.springframework.boot.data.mongodb.autoconfigure.DataMongoReactiveAutoConfiguration",
         "org.springframework.boot.data.mongodb.autoconfigure.DataMongoReactiveRepositoriesAutoConfiguration"
 })
-// live-app은 토큰을 검증만 하고 발급/갱신하지 않는다. 발급 담당인 JwtTokenLifecycle은
-// RefreshTokenStore 등 stateful store(common/auth)를 요구하므로 스캔에서 제외한다.
+// live-app은 토큰을 검증만 하고 발급/갱신하지 않는다. 발급 담당인 JwtTokenLifecycle과,
+// 그것이 요구하는 RefreshTokenStore 구현(RefreshTokenRedisRepository)을 스캔에서 제외한다.
 // 토큰 검증용 JwtTokenProvider는 그대로 스캔된다.
+//
+// common/auth 는 클래스패스에 있다 — 폐기 조회(TokenRevocationFilter)가 그 모듈의 읽는 구현
+// 둘을 쓴다(AccessTokenBlacklistRedisRepository · SessionRevocationRedisRepository). 셋 다
+// @Repository 라 basePackages="com.sapari" 스캔이 전부 집으므로, 빼는 것을 하나 적는다.
+// 클래스로 빼는 이유: 그 모듈은 파일이 3개이고 늘어날 자리가 아니다(패키지로 빼면 쓰려는
+// 둘까지 같이 빠진다). 이 줄이 없으면 쓰지 않는 refresh 저장소가 빈으로 뜨고, 그때부터
+// "이 앱은 발급/갱신을 하지 않는다" 는 위 문장이 빈 목록에서 거짓이 된다.
 // chat 은 통째로 스캔에서 뺀다. chat-core 는 streaming-app 과 공유하는 모듈이라 리액티브 어댑터가
 // @Repository 를 달고 있고, 그중 브로드캐스터는 생성자에서 Redis 에 즉시 접속한다 — 스캔에 걸리면
 // 이 앱이 쓰지도 않는 리액티브 스택을 요구하고 채팅 팬아웃 노드가 되어 버린다.
@@ -34,7 +42,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
         excludeFilters = {
                 @ComponentScan.Filter(
                         type = FilterType.ASSIGNABLE_TYPE,
-                        classes = JwtTokenLifecycle.class
+                        classes = {JwtTokenLifecycle.class, RefreshTokenRedisRepository.class}
                 ),
                 @ComponentScan.Filter(
                         type = FilterType.REGEX,

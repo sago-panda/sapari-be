@@ -78,6 +78,30 @@ public interface LiveMetrics {
     void enterRateLimited(EnterPopulation population, EnterRejectionGate gate);
 
     /**
+     * 폐기된 access 토큰의 인증을 거뒀다.
+     *
+     * <p><b>이게 없으면 폐기 조회가 한 번이라도 작동했는지 알 수 없다.</b> 적중은 거부 응답을
+     * 만들지 않는다 — 공개 경로에서는 그냥 게스트로 내려가고 역할 요구 경로에서만 401 이 된다.
+     * 즉 바깥에서 보면 "폐기 조회가 꺼진 것" 과 "폐기가 한 건도 없는 것" 이 똑같다.
+     *
+     * <p>축 태그의 이유는 {@link TokenRevocationAxis} 에 있다.
+     */
+    void tokenRevocationHit(TokenRevocationAxis axis);
+
+    /**
+     * 폐기 여부를 <b>묻지 못했다</b>(저장소 장애).
+     *
+     * <p>{@link #tokenRevocationHit} 과 <b>같은 카운터의 다른 태그가 아니라 별도 메서드</b>다 —
+     * 적중은 보안 사건이고 이쪽은 인프라 사건이라 대응이 정반대다(그 계정을 보라 vs Redis 를
+     * 보라). {@link #reconcileRoundAborted} 와 {@link #reconcileRoundFailed} 를 가른 것과 같다.
+     *
+     * <p>그리고 이쪽만 <b>볼륨이 장애 규모에 비례</b>한다. 그래서 로그는 10초에 한 줄로 솎고
+     * 규모는 이 수로 본다 — 형제 {@code EnterRateLimitFilter} 가 거부마다의 WARN 을 피한 것과
+     * 같은 이유다(그쪽 실측: 거부 50건에 핸들러 WARN 50줄).
+     */
+    void tokenRevocationLookupFailed();
+
+    /**
      * 아무것도 하지 않는 구현. <b>단위 테스트가 registry 없이 돌게 하는 것</b>이 실제 용도다.
      *
      * <p>(오해 주의: 지금 {@code live-core} 를 의존하는 앱은 {@code live-app} 하나뿐이다 — 확인함:
@@ -95,5 +119,7 @@ public interface LiveMetrics {
         @Override public void liveKitActiveEgressRooms(int rooms) { }
         @Override public void enterRateLimited(
                 EnterPopulation population, EnterRejectionGate gate) { }
+        @Override public void tokenRevocationHit(TokenRevocationAxis axis) { }
+        @Override public void tokenRevocationLookupFailed() { }
     };
 }

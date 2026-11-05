@@ -16,6 +16,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
+import com.sapari.live.application.port.TokenRevocationAxis;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
@@ -151,6 +152,21 @@ public class MicrometerLiveMetrics implements LiveMetrics {
         safe(() -> Counter.builder(LiveMeterNames.ENTER_REJECTED)
                 .tag(LiveMeterNames.TAG_POPULATION, tag(population))
                 .tag(LiveMeterNames.TAG_GATE, tag(gate))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void tokenRevocationHit(TokenRevocationAxis axis) {
+        safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOKED)
+                .tag(LiveMeterNames.TAG_AXIS, tag(axis))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void tokenRevocationLookupFailed() {
+        safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOCATION_FAILED)
                 .register(registry)
                 .increment());
     }

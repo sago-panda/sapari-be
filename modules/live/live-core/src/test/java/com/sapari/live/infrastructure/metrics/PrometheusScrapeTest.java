@@ -110,4 +110,39 @@ class PrometheusScrapeTest {
                 .contains("gate=\"shard\"")
                 .contains("gate=\"global\"");
     }
+
+    /**
+     * ⭐ <b>폐기 조회의 두 지표가 스크레이프에 있고, 서로 다른 이름이다.</b>
+     *
+     * <p>적중과 조회 실패를 <b>같은 이름의 다른 태그</b>로 두면 안 되는 이유가 여기서 두 겹이다.
+     * 하나는 대응이 반대라는 설계 이유({@code LiveMetrics} javadoc)이고, 하나는 이 파일의 머리글이
+     * 적은 제약이다 — 같은 이름의 미터는 태그 키 집합이 같아야 하고, 적중에는 {@code axis} 가
+     * 있고 실패에는 없으므로 한 이름에 넣으면 <b>나중에 등록되는 쪽이 조용히 사라진다.</b>
+     * 중단 시계열이 실제로 그렇게 사라진 적이 있다.
+     */
+    @Test
+    @DisplayName("⭐ 폐기 적중·조회 실패 지표의 이름·태그 값이 스크레이프 출력에 있다")
+    void tokenRevocation_appearsInScrape() {
+        metrics.tokenRevocationHit(com.sapari.live.application.port.TokenRevocationAxis.JTI);
+        metrics.tokenRevocationHit(com.sapari.live.application.port.TokenRevocationAxis.SID);
+        metrics.tokenRevocationLookupFailed();
+
+        String scrape = registry.scrape();
+
+        assertThat(scrape)
+                .as("적중과 실패는 이름이 달라야 한다 — 태그 키 집합이 다르기 때문이다")
+                .contains("live_token_revoked_total")
+                .contains("live_token_revocation_failed_total");
+        assertThat(scrape)
+                .as("축 태그 값은 소문자다 — 문서가 대문자로 적으면 쿼리가 시계열을 못 찾는다")
+                .contains("axis=\"jti\"")
+                .contains("axis=\"sid\"");
+        assertThat(scrape)
+                .as("대문자 값은 나오지 않는다 — 문서 쪽 드리프트를 잡는 면이다")
+                .doesNotContain("axis=\"JTI\"")
+                .doesNotContain("axis=\"SID\"");
+        assertThat(scrape)
+                .as("실패 쪽에는 축이 없다 — 묻지 못한 것에 어느 축이 적중했는지가 없다")
+                .doesNotContain("live_token_revocation_failed_total{axis");
+    }
 }

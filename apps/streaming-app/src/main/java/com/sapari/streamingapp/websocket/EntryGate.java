@@ -175,13 +175,26 @@ public class EntryGate {
     }
 
     /**
-     * 플랫폼 밴은 어느 방에도 들어갈 수 없다.
+     * 플랫폼 밴은 <b>신원이 실린 입장</b>이면 어느 방에도 들어갈 수 없다.
      *
      * <p>방을 묻지 않는 것이 강퇴와의 차이다 — 그래서 {@code roomId}가 인자에 없다.
+     *
+     * <p>⚠️ <b>"어느 방에도" 를 신원 조건 없이 적으면 거짓이다.</b> 아래가 {@code GUEST} 를
+     * 건너뛰고, live 의 게스트 입장은 <b>입장마다 새 임의 userId</b> 를 발급한다
+     * ({@code EnterLiveService.issueGuestToken}). 그래서 밴된 사람이 Authorization 헤더를 떼고
+     * 입장하면 이 조회의 키가 아예 없다. 피해는 작다 — 게스트는 수신 전용이고 발언·특권 뷰가
+     * 없다. 막으려면 게스트 신원을 안정화해야 하는데 그건 추적 가능한 비회원 식별자를 만드는
+     * 일이라 이 게이트의 범위가 아니다(별 티켓).
      *
      * <p>여기도 <b>fail-open</b>이다. Redis가 죽으면 밴된 사람이 잠시 들어올 수 있는데, 그 대가로
      * 정상 사용자 전원이 채팅을 잃는 쪽을 택하지 않는다 — 종료 마커·강퇴 조회와 같은 저울질이다.
      * 열린 구간은 사유를 따로 세어 남긴다.
+     *
+     * <p>그 저울질은 live-app 이 폐기 조회를 갖게 된 뒤에도 <b>그대로다</b>. 같은 Redis 가 흔들리면
+     * 회원은 live 쪽에서 503 을 받아 <b>새 룸 토큰을 못 받으므로</b>, 이 구간에 도달하는 것은
+     * 장애 직전에 발급된 토큰(≤ 룸 토큰 {@code exp})뿐이다. 즉 열리는 창이 좁아졌을 뿐 방향은
+     * 같다. 한때 그 경로가 회원을 <b>GUEST 로 강등</b>시켜 이 조회를 건너뛰게 만들었는데, 그건
+     * 결함으로 닫혔다({@code TokenRevocationFilter}).
      */
     private Mono<Void> verifyNotBanned(ChatSession session) {
         if (session.role() == ChatRole.GUEST) {

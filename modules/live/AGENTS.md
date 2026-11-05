@@ -376,6 +376,50 @@ neither the `findById` nor the signature is paid.
 Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp`.
 **email is PII** — never log the raw token. **Not single-use** — replayable within the TTL.
 
+- **A revoked access token cannot get one.** `TokenRevocationFilter` consults both axes —
+  `jti` (that one token) and `sid` (every token of that login session) — so logout, withdrawal and
+  refresh-reuse detection (`JwtTokenLifecycle.revoke`/`revokeAll`) now block re-entry. `jti` is
+  checked first and short-circuits, so a known-revoked token costs one round trip, not two.
+  **Role demotion is not covered**, because no code path changes a role: it is fixed at creation
+  (`UserEntity`'s two static factories, zero update writes). A path that demotes must revoke the
+  token, or the claim is only as fresh as the token.
+- **The window that remains is the token already issued.** Revocation gates *issuance*; it cannot
+  recall a room token in flight, so the exposure is that token's `exp` plus — for an open WS
+  session — whatever `ChatSessionRegistry` bounds. Before this filter the same window was the
+  **access** TTL (3600s default), because entry could simply be re-taken.
+- **It sits after the enter rate limit, before `AuthorizationFilter`** (`LiveSecurityConfig`).
+  After the limit so a rejected entry pays no Redis round trip — the limit is a CPU ceiling and
+  cannot absorb that cost. Before authorization so the SELLER/ADMIN rules (kick, ban release,
+  dictionary) judge an already-cleared context. `LiveFilterOrderTest` pins the order itself and
+  `TokenRevocationFilterTest` pins its consequence; both exist because either alone lets the other
+  flip silently.
+- **Confirmed revocation and a failed lookup are not the same answer.** Confirmed: the context is
+  cleared and the chain continues — a role-gated route becomes 401, and a `permitAll` route
+  **downgrades to guest**, which is correct (a revoked user who drops the header gets exactly what
+  any stranger gets, so the power gained is zero). `RevocationOnPublicRouteTest` asserts that
+  downgrade on purpose, so widening the fix to "stop both" cannot pass quietly.
+- **A failed lookup returns 503 and stops the chain.** Clearing the context there would make the
+  public enter route answer **200 + a GUEST room token** — `RevocationOnPublicRouteTest` pins that
+  path with its confirmed-revocation case (cleared context → 200 + GUEST), and reverting the
+  failure branch to "clear" breaks its sibling case. During a Redis outage a
+  seller entering their own live would get `role=GUEST, owner=false`, losing chat voice and the
+  unmasked-original view, with a 200 and no `error.code`, so neither the client nor the user has a
+  signal. That is worse than 401, which is at least visible. The cost is that **a request carrying
+  a token** is blocked during the outage; an unauthenticated one never reaches the lookup, so
+  public viewing and guest entry stay up. `Retry-After` is a flat 5s — shorter would pile retries
+  onto a struggling store, and the cause here is infrastructure, not the caller.
+- **Both are counted**, because neither produces a distinctive response on its own:
+  `live.token.revoked{axis="jti"|"sid"}` and `live.token.revocation.failed`. Separate *names*, not
+  one name with an extra tag — a Prometheus meter requires one tag-key set per name, so merging
+  them would silently drop whichever registers second. The axes call for opposite responses (`jti`
+  is one token, routine after a re-issue; `sid` is a whole login session, so a spike means mass
+  logout or token-theft response). Failure logs are throttled to one line per 10s with a running
+  total, like the enter limiter — this path's volume is in the outage's hands, not an attacker's.
+- **An active token costs two round trips** (`jti` then `sid`); the early return only saves one for
+  an *already revoked* token. Ordering after the rate limit saves the rejected portion, not this.
+- The checkers come from `common/auth`; only its refresh-token repository is kept out of the scan
+  (`LiveAppApplication`), since this app still issues and rotates nothing.
+
 ## Errors & tests
 
 Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`RuntimeException` escapes a service.

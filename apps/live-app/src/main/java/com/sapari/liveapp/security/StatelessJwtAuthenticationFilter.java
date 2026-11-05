@@ -27,10 +27,16 @@ import com.sapari.common.securityjwt.jwt.JwtTokenType;
  * 존 경계를 넘는 stateless 인증 필터.
  *
  * <p>홈랩이 발급한 access JWT를 <b>서명·만료 + claims</b>만으로 검증한다. 공통
- * {@code JwtAuthenticationFilter}와 달리 user DB({@code UserDetailsService})·폐기 저장소(Redis)에
- * 의존하지 않으므로, live-app은 홈랩의 stateful 자산 없이 독립적으로 인가를 수행한다.
+ * {@code JwtAuthenticationFilter}와 달리 user DB({@code UserDetailsService})에 의존하지 않으므로,
+ * live-app은 사용자 테이블 없이 신원·역할을 이 토큰 하나에서 읽는다.
  *
- * <p>트레이드오프: 로그아웃/차단된 토큰은 access TTL이 만료될 때까지 유효하다(폐기 갭).
+ * <p><b>폐기 조회는 이 필터가 하지 않는다 — 안 하는 것이 아니라 뒤에서 한다.</b>
+ * {@link TokenRevocationFilter}가 입장 상한({@link EnterRateLimitFilter}) <b>뒤</b>에서
+ * {@code jti}·{@code sid}를 조회해 폐기된 토큰의 인증을 거둔다(묻지 못하면 거두는 대신
+ * {@code 503}으로 끊는다 — 그쪽 javadoc 참고). 그 자리가 여기가 아닌 이유는
+ * 비용이다 — 상한은 인증 여부로 버킷을 가르므로 이 필터 뒤에 서고, 폐기 조회를 여기에 넣으면
+ * 상한에 걸려 거부될 요청까지 Redis 왕복을 치고 간다. 그래서 claims에서 읽은 두 식별자를
+ * {@link LiveUserPrincipal}에 실어 넘긴다(재파싱 없음).
  *
  * <p>principal name = userId(UUID 문자열)로 설정해 {@code CurrentUserIdArgumentResolver} 계약을
  * 충족하고, 권한은 role claim에 {@code ROLE_} 접두사를 붙여 구성한다({@code JwtUserDetails}와 동일 규칙).
@@ -90,8 +96,10 @@ public class StatelessJwtAuthenticationFilter extends OncePerRequestFilter {
 
         // principal에 userId뿐 아니라 role·nickname·email까지 실어, 채팅 룸 토큰 발급에 필요한 신원을
         // 추가 조회 없이 확보한다. LiveUserPrincipal.getName()=userId라 CurrentUserIdArgumentResolver는 그대로 동작.
+        // jti·sid는 TokenRevocationFilter가 상한 뒤에서 폐기를 조회할 때 쓴다 — 여기서 이미 파싱된 값이다.
         LiveUserPrincipal principal = new LiveUserPrincipal(
-                claims.userId(), claims.role(), claims.nickname(), claims.email());
+                claims.userId(), claims.tokenId(), claims.sessionId(),
+                claims.role(), claims.nickname(), claims.email());
 
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(

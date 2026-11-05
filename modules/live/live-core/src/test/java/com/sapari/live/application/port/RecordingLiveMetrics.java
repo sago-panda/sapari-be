@@ -24,11 +24,23 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public int liveKitEgressRooms = -1;
     public final List<EnterPopulation> enterRejections = new ArrayList<>();
     public final List<EnterRejectionGate> enterRejectionGates = new ArrayList<>();
+    public final List<TokenRevocationAxis> tokenRevocationHits = new ArrayList<>();
+    public int tokenRevocationLookupFailures;
 
     @Override
     public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
         enterRejections.add(population);
         enterRejectionGates.add(gate);
+    }
+
+    @Override
+    public void tokenRevocationHit(TokenRevocationAxis axis) {
+        tokenRevocationHits.add(axis);
+    }
+
+    @Override
+    public void tokenRevocationLookupFailed() {
+        tokenRevocationLookupFailures++;
     }
 
     @Override
