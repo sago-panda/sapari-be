@@ -20,6 +20,9 @@ final class ChatMeterNames {
     /** 서버가 세션을 끊은 건수. */
     static final String SESSION_CUT = "chat.session.cut";
 
+    /** 사전 전파의 빠른 길을 잃은 건수. */
+    static final String DICTIONARY_FAST_PATH_LOST = "chat.dictionary.fastpath.lost";
+
     static final String TAG_POLICY = "policy";
     static final String TAG_CHECKPOINT = "checkpoint";
     static final String TAG_FAILURE = "failure";

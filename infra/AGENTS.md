@@ -18,10 +18,16 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
 
 - **schema = domain = owns its migrations.** Each domain gets its own PostgreSQL schema
   (`<domain>_schema`) with an independent `flyway_schema_history` and version sequence.
-  - **`chat` is an exception, by design.** It has no schema of its own: `chat_kick_log`, `chat_ban` and
-    `chat_filter_word` live in `live_schema` and their DDL is in `db/migration/live/`, so **live owns
-    those migrations even though chat owns the tables**. `migrate.sh`'s `SCHEMAS` has no chat entry.
-    A chat-side change to those tables goes through the live owner.
+  - **`chat` is an exception, by design.** It has no schema of its own: `chat_kick_log`, `chat_ban`,
+    `chat_ban_release` and `chat_filter_word` live in `live_schema` and their DDL is in
+    `db/migration/live/`, so **live owns those migrations even though chat owns the tables**.
+    `migrate.sh`'s `SCHEMAS` has no chat entry. A chat-side change to those tables goes through the
+    live owner.
+  - ⚠️ **`chat_ban_release` is read on the ordinary kick path**, so its migration leads the app the same
+    way shedlock's does (below). The ban-escalation count reads an amnesty baseline from it through a
+    correlated subquery, and that count runs on every first-kick-in-a-room — so if the app ships first,
+    `POST /api/v1/lives/*/chat/kick` fails with `relation "chat_ban_release" does not exist`, not just the
+    new release endpoint. No extra guard was added: this fails loudly with a 500 rather than silently.
   - **Mongo is outside Flyway entirely.** `chat_messages` and its indexes are created at boot by
     `ChatMongoConfig`, which only runs in **streaming-app** (its argument is a `ReactiveMongoTemplate`,
     which live-app does not have). So the indexes behind live-app's chat-history endpoint depend on a
@@ -33,6 +39,23 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
 - **Version naming: `V<yyyyMMddHHmm>__description.sql`** (current `V1__init_*` are the seed DDL).
 - **Adding a schema:** one `folder:schema` line in `migrate.sh`'s `SCHEMAS` list **+** create
   `db/migration/<folder>/`. Nothing else.
+
+- ⚠️ **An applied migration file is frozen — comments included.** Flyway's checksum covers the whole
+  file, so editing a comment in a file that has already run is the same as editing its DDL. `migrate.sh`
+  passes no `-validateOnMigrate=false` / `-ignoreMigrationPatterns`, so validation is on by default: a
+  mismatch aborts that schema, and `set -eu` means the schemas after it never run either. The runner is
+  a **Helm pre-upgrade Job**, so this stops the deploy.
+  - **The test for "may I edit it" is whether it exists on a remote branch**, not whether the change
+    looks harmless: `git branch -r --contains <the commit that added the file>`. Empty ⇒ it has run
+    nowhere, edit freely. Non-empty ⇒ frozen; put the correction in the **next new migration file**
+    (`V1__init_live.sql`'s stale escalation comment is recorded in `V202609061437` for exactly this reason).
+  - **Testcontainers cannot catch this, structurally** — those tests run Flyway against an empty database,
+    where a mismatch cannot arise. Build, ArchUnit and the harness scripts all stay green while a frozen
+    file is edited. There is no gate here; the rule is the gate.
+  - If a database already applied the older bytes, `flyway repair` rewrites the stored checksum. That is
+    recovery, not permission — it is still the frozen-file rule that decides whether the edit was allowed.
+  - Measured on 2026-11-05 (SPR-165): a 6-line comment edit to `V202609061437__chat_ban_one_row_per_user.sql`
+    moved its checksum from `-721420016` to `-1766037485`. The commit that added that file is on `origin/dev`.
 
 - **Deployment prerequisite — the migration leads, live-app follows.** Since SPR-142 the reconcile
   schedulers take a ShedLock lock on `live_schema.shedlock`, created by `db/migration/live/V*__shedlock.sql`.

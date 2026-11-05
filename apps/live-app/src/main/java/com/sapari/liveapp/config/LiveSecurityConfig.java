@@ -304,7 +304,7 @@ public class LiveSecurityConfig {
                         // 공개 조회를 명시한다. 이후 추가되는 GET은 자동 공개하지 않는다.
                         //
                         // ⚠️ dev 가 와일드카드(`GET /api/v1/lives/**` permitAll)를 이 목록으로 조였고,
-                        // 그 조임이 chat 의 <b>이력 조회를 비공개로 만들었다</b> — 다시보기 채팅은 비회원도
+                        // 그 조임이 chat 의 이력 조회를 비공개로 만들었다 — 다시보기 채팅은 비회원도
                         // 본다는 것이 설계 확정이라, 목록에 명시해 되살린다. 와일드카드로 되돌리지 말 것:
                         // 조인 쪽이 맞고, chat 경로를 여기 적는 비용이 그 안전의 값이다.
                         .requestMatchers(HttpMethod.GET,
@@ -318,6 +318,56 @@ public class LiveSecurityConfig {
                         // 관리자는 아닌지는 KickUserService 가 본다. 이 줄은 그 앞의 거친 관문이다.
                         .requestMatchers(HttpMethod.POST, "/api/v1/lives/*/chat/kick")
                                 .hasAnyRole("SELLER", "ADMIN")
+                        // 밴 해제는 ADMIN 전용이고 방 경로 밖이다 — 밴은 방이 아니라 사람에
+                        // 붙으므로 어느 방에서 눌렀는지가 판정을 바꾸지 않는다. 아래
+                        // `anyRequest().authenticated()` 에 맡기지 않는 이유: 그 줄은 역할을 보지
+                        // 않아 구매자도 통과하고, 거부가 서비스의 권한 검사 하나에만 걸리게 된다.
+                        // 강퇴를 명시한 것과 같은 이유로 거친 관문을 여기 둔다 — 실제 판정은
+                        // ReleaseBanService 의 canReleaseBan 이 한 번 더 본다.
+                        //
+                        // ⚠️ 이 한 줄이 여는 권한의 무게: ADMIN 한 명이 그 사용자의 <2년치 누적을
+                        // 조용히 접을 수 있다>. 해제는 밴만 푸는 것이 아니라 사면 기준선을 남겨
+                        // 730일 창의 과거 강퇴자를 전부 세지 않게 만든다(그게 없으면 해제가 새 방
+                        // 강퇴 1회까지의 유예가 되므로 그쪽이 맞는 설계다). 추적은 chat_ban_release
+                        // 행이 들지만 <막는 것은 이 역할 하나>다. SELLER 를 여기 더하면 자동 승격이
+                        // 요구한 '서로 다른 판매자 3·6·9명' 의 독립성을 그중 한 명이 되돌리게 된다.
+                        // 메서드를 한정하지 않는다. 기준은 "폴스루에 역할 바닥이 있는가" 다 —
+                        // 한정하면 그 경로의 <다른> 메서드가 이 규칙에 안 걸려 더 아래로 떨어지고,
+                        // 그 아래가 /api/v1/chat/** 에는 anyRequest().authenticated()(역할 안 봄),
+                        // /api/v1/lives/** 에는 SELLER 바닥이다. 둘 다 틀린 답을 준다:
+                        //   chat  → 구매자가 통과 (실측: OPTIONS 가 USER 에게 200 이었다)
+                        //   lives → ADMIN 전용 엔드포인트의 OPTIONS 가 <판매자에게 200, 관리자에게
+                        //           403> 이 된다. Allow 헤더가 그 경로의 수락 메서드까지 흘린다.
+                        // 지금 뚫리는 것은 없지만 뒤집힌 모양이고, 그 경로에 나중에 GET 이 붙으면
+                        // (예: 명단 조회) 판매자에게 열리고 관리자에게 닫힌다. 그래서 아래 셋 다
+                        // 메서드를 한정하지 않는다 — /chat/bans/** · /chat/kicked · /chat/ended.
+                        .requestMatchers("/api/v1/chat/bans/**").hasRole("ADMIN")
+                        // 사전 관리도 ADMIN 전용이고 방 경로 밖이다 — 사전은 글로벌 1개라 어느
+                        // 방에서 눌렀는지가 판정을 바꾸지 않는다. 메서드를 한정하지 않는 이유는
+                        // 위와 같다(폴스루가 /api/v1/chat/** 에는 역할 바닥이 없다).
+                        // ⚠️ GET 도 여기 걸린다. 그게 의도다 — 이 목록은 "플랫폼이 무엇을 막는가"
+                        // 의 전체이고, 우회하려는 사람에게 어떤 표기가 사전에 <없는지>를 알려 준다.
+                        // 쓰기만 ADMIN 으로 두고 읽기를 아래로 떨어뜨리면 구매자가 그것을 받는다.
+                        // ⚠️ /** 하나로 <그 경로 자신>까지 덮인다 — 한 줄 더 적지 않는다.
+                        // 실측(2026-11-05): 패턴 /api/v1/chat/filter-words/** 가 경로
+                        // /api/v1/chat/filter-words 에 맞는다(PathPattern true · AntPathMatcher
+                        // true, 끝 슬래시 유무 무관). 처음에 "** 는 하위 세그먼트에만 맞는다" 로
+                        // 적고 같은 경로를 두 줄로 두려 했는데 그 전제가 거짓이었다.
+                        .requestMatchers("/api/v1/chat/filter-words/**").hasRole("ADMIN")
+                        // 강퇴 명단 재적재도 ADMIN 전용이다. 경로가 방 아래라 아래 판매자 전용
+                        // 규칙에 걸리므로 그보다 먼저 와야 한다 — 먼저 맞는 규칙이 이긴다.
+                        // 순서가 뒤집히면 관리자가 403 을 받고, 집행이 꺼진 방을 고칠 사람이 없어진다.
+                        // 판매자에게 열지 않는 이유는 위험이 아니라 가청성이다 — 입력이 정본이라
+                        // 과다 차단을 새로 만들 수 없고(ReconcileKickListService), 이 조치가
+                        // 필요하다는 신호는 KickStoreCorruptedException 로그이고 그건 운영자가 읽는다.
+                        .requestMatchers("/api/v1/lives/*/chat/kicked").hasRole("ADMIN")
+                        // 종료 마커 해제는 강퇴와 같은 관문이다 — 오발행으로 막히는 것이 판매자의
+                        // 진행 중인 방송이고, 그걸 초 단위로 알아채는 사람도 판매자다. 재적재를
+                        // ADMIN 전용으로 둔 것과 반대 방향인데, 그쪽 신호는 운영자만 읽는 로그이고
+                        // 이쪽은 당사자가 즉시 아는 증상이다 — 가청성이 권한을 정한다는 같은 기준의
+                        // 다른 답이다. 끝난 방을 되살리는 데 쓰이지 못하게 막는 것은 역할이 아니라
+                        // 유스케이스의 LIVE 검증이다(ClearRoomEndedMarkerService).
+                        .requestMatchers("/api/v1/lives/*/chat/ended").hasAnyRole("SELLER", "ADMIN")
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

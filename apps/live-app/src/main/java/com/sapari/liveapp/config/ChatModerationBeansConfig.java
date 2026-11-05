@@ -8,9 +8,25 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
+import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
+import com.sapari.chat.application.port.ProfanityFilterFactory;
+import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
+import com.sapari.chat.application.service.ManageFilterWordsService;
+import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
+import com.sapari.chat.port.ManageFilterWordsUseCase;
+import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
+import com.sapari.chat.application.service.ProfanityDictionaryPublishService;
+import com.sapari.chat.domain.repository.ChatFilterWordRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordJpaRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordRepositoryImpl;
+import com.sapari.chat.infrastructure.redis.ProfanityDictionarySnapshotRedisPublisher;
+import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
+import com.sapari.chat.application.service.ClearRoomEndedMarkerService;
+import com.sapari.chat.application.service.ReconcileKickListService;
+import com.sapari.chat.application.service.ReleaseBanService;
 import com.sapari.chat.domain.repository.ChatHistoryRepository;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapper;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapperImpl;
@@ -20,6 +36,7 @@ import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
+import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanJpaRepository;
@@ -32,7 +49,11 @@ import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
+import com.sapari.chat.infrastructure.redis.ChatRoomEndedWriteRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
+import com.sapari.chat.port.ReconcileKickListUseCase;
+import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
 
@@ -135,6 +156,81 @@ public class ChatModerationBeansConfig {
                 permissionPolicy);
     }
 
+    /**
+     * 사전 정본 접근. 이 앱만 가진다 — streaming-app 에는 DataSource 가 없다.
+     */
+    @Bean
+    public ChatFilterWordRepository chatFilterWordRepository(ChatFilterWordJpaRepository jpaRepository) {
+        return new ChatFilterWordRepositoryImpl(jpaRepository);
+    }
+
+    /**
+     * 사전 스냅샷 발행(블로킹). 받는 쪽은 streaming-app 이고, 두 앱이 같은 Redis 를 봐야 전파가
+     * 성립한다 — 이 앱의 {@code spring.data.redis} 설정이 streaming-app 과 같은 인스턴스를
+     * 가리켜야 한다(강퇴 이벤트 발행과 같은 전제다).
+     */
+    @Bean
+    public ProfanityDictionarySnapshotPublisher profanityDictionarySnapshotPublisher(
+            StringRedisTemplate redisTemplate) {
+        return new ProfanityDictionarySnapshotRedisPublisher(redisTemplate);
+    }
+
+    /**
+     * 번들 시드의 DB 쓰기를 감싸는 트랜잭션 빈 — 위 {@code chatKickRecorder} 와 같은 이유로
+     * 별도 빈이다. 한 트랜잭션이어야 하는 이유는 따로 있다: 나누면 Pod 이 중간에 죽을 때
+     * "비지 않았지만 절반인" 테이블이 남고, 그 뒤로는 비어 있지 않으니 다시 심지 않는다.
+     */
+    @Bean
+    public ChatFilterWordSeedRecorder chatFilterWordSeedRecorder(ChatFilterWordRepository repository) {
+        return new ChatFilterWordSeedRecorder(repository);
+    }
+
+    /**
+     * 정본 → 스냅샷. 시드 트랜잭션과 <b>다른 빈</b>이고 호출 순서가 계약이다 — 트랜잭션 안에서
+     * 발행하면 롤백된 단어가 함대에 깔린다.
+     */
+    @Bean
+    public ProfanityDictionaryPublishService profanityDictionaryPublishService(
+            ChatFilterWordRepository repository,
+            ProfanityDictionarySnapshotPublisher snapshotPublisher,
+            ProfanityFilterFactory filterFactory) {
+        return new ProfanityDictionaryPublishService(repository, snapshotPublisher, filterFactory);
+    }
+
+    /**
+     * 사전의 <b>문</b>. 쓰기 경로의 선검사가 이것을 쓴다 — 번들·설정·전파가 지나는 문과 같아야
+     * 하므로 chat-core 의 구현을 그대로 세운다. 스테레오타입이 붙어 있지만 이 앱은
+     * {@code com.sapari.chat} 을 스캔하지 않으므로 직접 등록해야 한다.
+     */
+    @Bean
+    public ProfanityFilterFactory profanityFilterFactory() {
+        return new DictionaryProfanityFilterFactory();
+    }
+
+    /**
+     * 사전 한 줄 쓰기의 트랜잭션 빈 — 위 {@code chatKickRecorder} 와 같은 이유로 별도 빈이다
+     * ({@code @Modifying} 쿼리가 트랜잭션을 요구하고, 자기 호출은 프록시를 타지 않는다).
+     */
+    @Bean
+    public ChatFilterWordWriteRecorder chatFilterWordWriteRecorder(ChatFilterWordRepository repository) {
+        return new ChatFilterWordWriteRecorder(repository);
+    }
+
+    /**
+     * 사전 관리(ADMIN). 쓰기가 발행으로 끝나므로 발행 서비스를 받는다 — 정본만 고치고 발행하지
+     * 않으면 함대가 그 변경을 영원히 모른다(받는 쪽이 버전을 본다).
+     */
+    @Bean
+    public ManageFilterWordsUseCase manageFilterWordsUseCase(
+            ChatPermissionPolicy permissionPolicy,
+            ChatFilterWordRepository repository,
+            ChatFilterWordWriteRecorder writeRecorder,
+            ProfanityDictionaryPublishService publishService,
+            ProfanityFilterFactory filterFactory) {
+        return new ManageFilterWordsService(
+                permissionPolicy, repository, writeRecorder, publishService, filterFactory);
+    }
+
     @Bean
     public ChatKickWriteRepository chatKickWriteRepository(StringRedisTemplate redisTemplate) {
         return new ChatKickWriteRedisRepository(redisTemplate);
@@ -186,5 +282,63 @@ public class ChatModerationBeansConfig {
         return new KickUserService(liveRoomReader, evidenceRepository, kickRecorder,
                 banWriteRepository, kickWriteRepository, kickEventPublisher,
                 accountEventPublisher, permissionPolicy, timeProvider);
+    }
+
+    /**
+     * 밴 해제의 DB 쓰기를 감싸는 트랜잭션 빈 — 위 {@code chatKickRecorder}와 같은 이유로 별도 빈이다.
+     */
+    @Bean
+    public ChatBanReleaseRecorder chatBanReleaseRecorder(ChatBanStateRepository banStateRepository) {
+        return new ChatBanReleaseRecorder(banStateRepository);
+    }
+
+    /**
+     * 밴 해제. 방을 읽지 않으므로 {@code GetLiveRoomUseCase}를 받지 않는다 — 밴은 사람에 붙고
+     * 해제는 ADMIN 전용이라, 어느 방에서 눌렀는지가 판정을 바꾸지 않는다.
+     *
+     * <p>발행도 하지 않는다. 밴이 <b>걸릴</b> 때는 당사자 세션을 끊어야 해서 계정 채널로 발행하지만
+     * (위 {@code chatAccountEventPublisher}), 풀릴 때 끊을 세션이 없다 — 막혀 있던 사람은 애초에
+     * 접속하지 못했고, 다음 접속에서 입장 게이트가 미러를 다시 읽는다.
+     */
+    @Bean
+    public ReleaseBanUseCase releaseBanUseCase(ChatPermissionPolicy permissionPolicy,
+                                               ChatBanReleaseRecorder releaseRecorder,
+                                               ChatBanWriteRepository banWriteRepository,
+                                               TimeProvider timeProvider) {
+        return new ReleaseBanService(permissionPolicy, releaseRecorder, banWriteRepository, timeProvider);
+    }
+
+    /**
+     * 강퇴 명단 재적재. 트랜잭션 빈이 없다 — 정본은 읽기만 하고 쓰기는 Redis 한 번이라
+     * {@code @Modifying} 경계가 필요하지 않다.
+     *
+     * <p>{@code GetLiveRoomUseCase} 를 받는 것은 <b>권한 때문이 아니다</b> — 재적재는 방 소유와
+     * 무관한 ADMIN 전용이다. 끝난 방에 되살리면 회수 만료가 걷히고 다시 붙여 줄 경로가 없어서,
+     * "되살릴 의미가 있는 방인가" 를 정본에 묻는다({@code ReconcileKickListService}).
+     */
+    @Bean
+    public ReconcileKickListUseCase reconcileKickListUseCase(ChatPermissionPolicy permissionPolicy,
+                                                             GetLiveRoomUseCase liveRoomReader,
+                                                             ChatKickLogRepository kickLogRepository,
+                                                             ChatKickWriteRepository kickWriteRepository) {
+        return new ReconcileKickListService(
+                permissionPolicy, liveRoomReader, kickLogRepository, kickWriteRepository);
+    }
+
+    /**
+     * 종료 마커 해제 어댑터(블로킹). 기록·조회는 리액티브 쪽이 하고 streaming-app 이 쓴다 —
+     * 해제만 이 앱에 있는 이유는 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 하고,
+     * 그걸 읽을 수 있는 스택이 여기뿐이기 때문이다.
+     */
+    @Bean
+    public ChatRoomEndedWriteRepository chatRoomEndedWriteRepository(StringRedisTemplate redisTemplate) {
+        return new ChatRoomEndedWriteRedisRepository(redisTemplate);
+    }
+
+    @Bean
+    public ClearRoomEndedMarkerUseCase clearRoomEndedMarkerUseCase(
+            GetLiveRoomUseCase liveRoomReader,
+            ChatRoomEndedWriteRepository roomEndedWriteRepository) {
+        return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository);
     }
 }

@@ -32,6 +32,7 @@ import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatMessageRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.domain.rule.ProfanityFilter;
+import com.sapari.chat.infrastructure.config.SwappableProfanityFilter;
 import com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics;
 import com.sapari.global.time.TimeProvider;
 
@@ -90,7 +91,7 @@ class SendChatServiceMetricsTest {
     private SendChatService newService(ChatMetrics metrics) {
         return new SendChatService(
                 new ChatPermissionPolicy(),
-                new ProfanityFilter(Set.of("욕설"), Set.of()),
+                new SwappableProfanityFilter(new ProfanityFilter(Set.of("욕설"), Set.of())),
                 kickRepository, banRepository, rateLimiter, chatMessageRepository, broadcaster,
                 new TimeProvider(Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC)),
                 metrics);

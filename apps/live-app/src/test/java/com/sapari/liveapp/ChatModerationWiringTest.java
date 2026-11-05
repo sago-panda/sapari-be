@@ -24,6 +24,9 @@ import org.springframework.util.ClassUtils;
 
 import com.mongodb.MongoClientSettings;
 import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
+import com.sapari.chat.application.service.ChatBanReleaseRecorder;
+import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
+import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.port.KickUserUseCase;
 
@@ -89,7 +92,7 @@ class ChatModerationWiringTest {
         // 것과 무관하지만 채워야 뜬다.
         registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus");
 
-        // ⚠️ 재조정 잡 셋을 끈다. 마스터 스위치가 matchIfMissing=true라 설정이 없으면 <b>켜진다</b> —
+        // ⚠️ 재조정 잡 셋을 끈다. 마스터 스위치가 matchIfMissing=true라 설정이 없으면 켜진다 —
         //    저장소에 application.yaml이 없으니 이 테스트에서는 부재가 곧 활성이다. 그대로 두면
         //    컨텍스트가 크론과 함께 뜨고, 컨텍스트는 테스트 JVM 수명 동안 캐시되므로 10분 경계를 넘기면
         //    실제로 발화한다. 그중 둘은 방송을 시작시키거나 켜진 방송을 끝낼 수 있다.
@@ -130,6 +133,62 @@ class ChatModerationWiringTest {
         // when & then
         assertThat(AopUtils.isAopProxy(recorder))
                 .as("ChatKickRecorder가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /**
+     * ⭐ 해제도 같은 축을 갖는다.
+     *
+     * <p>해제의 DB 쓰기 둘(행 DELETE + 사면 기준선 INSERT)이 모두 {@code @Modifying} 네이티브
+     * 쿼리라 경계가 없으면 {@code "No active transaction for update or delete query"}로 실패한다.
+     * 그리고 둘이 한 트랜잭션이 아니면 "밴은 풀렸는데 누적은 안 접힘" 또는 그 반대가 생긴다.
+     *
+     * <p>위 {@code recorderIsATransactionalProxy}와 따로 두는 이유: 같은 테스트에 둘을 담으면
+     * 한쪽 빈 등록을 잃었을 때 어느 쪽인지가 메시지로 안 나온다.
+     */
+    @Test
+    @DisplayName("⭐ 밴 해제 기록자도 트랜잭션 프록시다 — 두 쓰기가 한 트랜잭션이어야 한다")
+    void banReleaseRecorderIsATransactionalProxy() {
+        // given
+        ChatBanReleaseRecorder recorder = context.getBean(ChatBanReleaseRecorder.class);
+
+        // when & then
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatBanReleaseRecorder가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /**
+     * ⭐ 사전 쓰기 둘도 같은 축을 갖는다 — <b>다만 깨지는 시점이 다르다.</b>
+     *
+     * <p>위 둘(강퇴·밴 해제)은 프록시를 잃으면 그 조치가 500 이 된다. 사전 쪽은 더 늦게 보인다:
+     * {@code @Modifying} 네이티브 쿼리가 트랜잭션 없이 돌면 {@code TransactionRequiredException}
+     * 인데, 그 경로가 <b>ADMIN 요청과 부팅 시드뿐</b>이라 평범한 테스트가 밟지 않는다. 시드 쪽은
+     * {@code ChatDictionaryBootstrap} 이 예외를 잡아 ERROR 로 넘기므로 <b>부팅도 성공한다</b> —
+     * 그러면 테이블이 비어 있는데 아무도 모르고, 함대는 번들 사전으로 집행한다.
+     *
+     * <p>그래서 이 단언이 없으면 프록시 상실이 "ADMIN 이 단어를 못 넣는다 + 시드가 조용히
+     * 안 된다" 로만 드러난다. 둘을 한 테스트에 담지 않는 것은 위 둘과 같은 이유다.
+     */
+    @Test
+    @DisplayName("⭐ 사전 시드 기록자가 트랜잭션 프록시다 — 아니면 시드가 조용히 안 된다")
+    void filterWordSeedRecorderIsATransactionalProxy() {
+        ChatFilterWordSeedRecorder recorder = context.getBean(ChatFilterWordSeedRecorder.class);
+
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatFilterWordSeedRecorder가 프록시가 아니다 — 시드가 "
+                        + "TransactionRequiredException 으로 실패하고 부팅은 성공한다")
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("⭐ 사전 쓰기 기록자도 트랜잭션 프록시다 — 아니면 모든 ADMIN 쓰기가 실패한다")
+    void filterWordWriteRecorderIsATransactionalProxy() {
+        ChatFilterWordWriteRecorder recorder = context.getBean(ChatFilterWordWriteRecorder.class);
+
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatFilterWordWriteRecorder가 프록시가 아니다 — @Modifying 쿼리가 "
+                        + "TransactionRequiredException 으로 터진다")
                 .isTrue();
     }
 
@@ -178,6 +237,13 @@ class ChatModerationWiringTest {
         Set<String> expected = Set.of(
                 // ChatModerationBeansConfig 가 세우는 것
                 "ChatPermissionPolicy", "ChatKickRecorder", "KickUserService",
+                // 밴 해제 — 이 도메인의 첫 역경로. 해제는 ADMIN 전용이고 방을 읽지 않는다.
+                "ChatBanReleaseRecorder", "ReleaseBanService",
+                // 강퇴 집행 캐시의 역경로 — 정본을 읽어 Redis SET 을 다시 세운다.
+                "ReconcileKickListService",
+                // 종료 마커 해제 — 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 해서
+                // 이 앱에 있다. 기록·조회는 리액티브 쪽이고 streaming-app 이 쓴다.
+                "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",
@@ -185,7 +251,17 @@ class ChatModerationWiringTest {
                 // 이력 조회(VOD 다시보기) — 강퇴와 같은 이유로 이 앱이다: 방 주인과 방송 시작 시각을
                 // 묻는 빈이 live-core 에 있다. 매퍼는 생성된 MapStruct 구현을 손으로 세운 것이다
                 // (componentModel=spring 이지만 이 앱은 com.sapari.chat 을 스캔하지 않는다).
-                "GetChatHistoryService", "ChatHistoryMongoRepository", "ChatMessageMapperImpl");
+                "GetChatHistoryService", "ChatHistoryMongoRepository", "ChatMessageMapperImpl",
+                // 사전 전파의 <쓰는 쪽>. 정본이 Postgres 인데 그것을 평가하는 앱(streaming-app)에는
+                // DataSource 가 없어서, 읽을 수 있는 이 앱이 읽어 Redis 스냅샷으로 내놓는다.
+                // 받는 쪽 빈(구독·재빌드·교체)은 전부 streaming-app 이고 여기 없다 — 그것이
+                // 이 목록이 보여 주는 비대칭이다.
+                "ChatFilterWordRepositoryImpl", "ProfanityDictionarySnapshotRedisPublisher",
+                "ChatFilterWordSeedRecorder", "ProfanityDictionaryPublishService",
+                // 사전 관리(ADMIN). 쓰기 선검사가 사전의 <문>을 쓰므로 그 구현도 이 앱에 있다 —
+                // 번들·설정·전파가 지나는 문과 같아야 하기 때문이다.
+                "DictionaryProfanityFilterFactory", "ChatFilterWordWriteRecorder",
+                "ManageFilterWordsService");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())

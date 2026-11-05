@@ -39,9 +39,12 @@ public class ChatRoomEndedRedisRepository implements ChatRoomEndedRepository {
      * 자동으로 잘못 판정될 수 있다. live 쪽에 전량 오판을 막는 가드는 있지만 방 단위 오판은 남는다.
      * 이 상한이 그 경우의 회복 시간이 된다.
      */
-    private static final Duration ENDED_TTL = Duration.ofMinutes(30);
+    // package-private: 같은 패키지의 블로킹 해제 어댑터가 되돌림에 같은 값을 써야 한다.
+    // 복사하면 한쪽을 고칠 때 되돌린 마커가 원래보다 짧거나 길게 살아난다 — 그 사고를
+    // ChatKickRecorder 가 실측으로 적어 둔 적이 있다(상한 상수 복사).
+    static final Duration ENDED_TTL = Duration.ofMinutes(30);
 
-    private static final String MARKER = "1";   // 값은 안 쓴다 — 키 존재 자체가 신호
+    static final String MARKER = "1";   // 값은 안 쓴다 — 키 존재 자체가 신호
 
     private final ReactiveStringRedisTemplate redisTemplate;
 
@@ -51,9 +54,14 @@ public class ChatRoomEndedRedisRepository implements ChatRoomEndedRepository {
                 .set(ChatRedisKeys.roomEnded(roomId), MARKER, ENDED_TTL)
                 // 성공도 남긴다 — 이 한 줄이 그 방을 TTL 동안 입장·전송 불가로 만든다. 잘못된 신호였을 때
                 // "언제 어느 방이 잠겼는지"를 되짚을 근거가 이것뿐이고, 해제는 키를 직접 지우는 수밖에 없다.
+                // 해제 안내가 바뀌었다 — 이제 엔드포인트가 있다(DELETE /api/v1/lives/{id}/chat/ended).
+                // 다만 그것은 그 방이 live 정본에서 진행 중일 때만 지운다. 이 로그가 남은 사고가
+                // 앱 경로의 오발행(배치 오판 등)이면 방이 이미 Ended 라 그 엔드포인트가 거부하므로,
+                // 그때는 여전히 DEL 뿐이다 — 둘을 함께 적는다.
                 .doOnSuccess(ignored -> log.info("방 종료 마커 기록 — 이 방은 만료까지 입장·전송이 막힌다 "
-                        + "roomId={} ttl={}분 (해제: DEL {})", roomId, ENDED_TTL.toMinutes(),
-                        ChatRedisKeys.roomEnded(roomId)))
+                        + "roomId={} ttl={}분 (해제: 진행 중인 방이면 DELETE "
+                        + "/api/v1/lives/{}/chat/ended, 이미 Ended 면 DEL {})",
+                        roomId, ENDED_TTL.toMinutes(), roomId, ChatRedisKeys.roomEnded(roomId)))
                 .then();
     }
 

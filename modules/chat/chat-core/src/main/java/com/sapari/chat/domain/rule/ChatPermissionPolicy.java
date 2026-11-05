@@ -105,4 +105,58 @@ public final class ChatPermissionPolicy {
     public boolean usesPrivilegedViewInSomeoneElsesRoom(ChatRole role, boolean isRoomOwner) {
         return seesUnmaskedContent(role, isRoomOwner) && !isRoomOwner;
     }
+
+    /**
+     * 밴을 풀 수 있는가 — <b>ADMIN 만이다.</b>
+     *
+     * <p>{@link #canKick}과 축이 다르다. 강퇴는 방 안의 일이라 방 주인(SELLER)에게 열려 있지만,
+     * 밴은 플랫폼 전역이라 방 주인이 자기 방에서 겪은 일로 전역 제재를 풀 자리가 없다. 특히
+     * 자동 승격은 <b>서로 다른 판매자 3·6·9명</b>의 독립된 판단으로 걸리는데, 그중 한 명이 혼자
+     * 되돌릴 수 있으면 그 임계가 요구한 독립성이 무의미해진다.
+     *
+     * <p>{@code roomOwnerId}를 받지 않는 것이 그 사실의 표현이다 — 방을 보지 않으므로 어느 방에서
+     * 눌렀는지가 판정을 바꿀 수 없다. 서명에 그 자리를 두면 다음 사람이 "자기 방이면" 가지를 더하게 된다.
+     *
+     * <p>자기 밴 해제도 막힌다. ADMIN 은 애초에 밴 대상이 아니지만({@code canKick}이 ADMIN 을
+     * 보호한다) 수동 밴 경로가 생기면 그 전제가 깨지므로, 그때 이 자리에 자기 대상 검사를 더해야 한다 —
+     * 지금은 대상 id 를 받지 않아 그 검사를 <b>할 수 없다</b>는 것이 이 javadoc 의 요점이다.
+     */
+    public boolean canReleaseBan(ChatRole actorRole) {
+        return actorRole == ChatRole.ADMIN;
+    }
+
+    /**
+     * 강퇴 집행 명단을 정본에서 다시 세울 수 있는가 — <b>ADMIN 만이다.</b>
+     *
+     * <p>{@link #canReleaseBan}과 값이 같고 <b>이유는 다르다.</b> 그쪽은 "판매자 한 명이 3·6·9명의
+     * 판단을 되돌릴 수 없다" 이고, 이쪽은 <b>이 조치를 필요로 하는 사람이 누구인가</b>다. 재적재가
+     * 필요하다는 신호는 {@code KickStoreCorruptedException} 로그이고 그 로그를 읽는 사람은 플랫폼
+     * 운영자다 — 판매자는 자기 방의 강퇴가 조용히 꺼진 것을 알 방법이 없으므로, 그에게 권한을 줘도
+     * 쓸 계기가 없다. 두 판정을 하나로 합치지 않는 이유가 이것이다: 값이 갈릴 날의 근거가 서로 다르다.
+     *
+     * <p>이 조치 자체는 <b>과다 차단을 새로 만들지 못한다</b> — 입력이 정본이라 정본에 없는 사람을
+     * 올릴 수 없다. 그래서 위험이 아니라 가청성이 권한의 기준이 된다.
+     */
+    public boolean canReconcileKickList(ChatRole actorRole) {
+        return actorRole == ChatRole.ADMIN;
+    }
+
+    /**
+     * 욕설 사전을 고칠 수 있는가 — <b>ADMIN 만이다.</b>
+     *
+     * <p>위 둘과 값이 같고 <b>이유는 또 다르다.</b> 이쪽 근거는 <b>영향 범위</b>다. 강퇴와 밴은
+     * 한 사람에게 붙지만 사전은 <b>전 방 공용</b>이라, 한 줄이 플랫폼 전체의 마스킹을 바꾼다 —
+     * 판매자에게 열면 자기 방송에서 쓰이는 말을 전 플랫폼에서 막거나 풀 수 있다.
+     *
+     * <p>그리고 양방향이 다 위험하다. 더하는 쪽은 정상어를 걸어 오탐을 만들고(그 복구가 또 이
+     * 경로다), 빼는 쪽은 막혀 있던 욕설을 푼다. 강퇴 재적재처럼 "입력이 정본이라 새로 해로울 수
+     * 없다" 가 성립하지 않는다.
+     *
+     * <p><b>조회도 같은 판정을 쓴다.</b> 목록은 "플랫폼이 무엇을 막는가" 의 전체이고, 우회하려는
+     * 사람에게는 어떤 표기가 사전에 없는지를 알려 주는 값이다. 쓰기와 읽기를 가르지 않는 이유가
+     * 그것이다 — 읽기 쪽이 더 느슨해질 근거가 없다.
+     */
+    public boolean canManageFilterWords(ChatRole actorRole) {
+        return actorRole == ChatRole.ADMIN;
+    }
 }

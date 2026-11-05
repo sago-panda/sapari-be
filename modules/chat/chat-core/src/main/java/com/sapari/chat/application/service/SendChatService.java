@@ -31,7 +31,7 @@ import com.sapari.chat.domain.repository.ChatBanRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatMessageRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
-import com.sapari.chat.domain.rule.ProfanityFilter;
+import com.sapari.chat.application.port.ProfanityFilterSource;
 import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.chat.view.ChatMessageView;
 import com.sapari.global.time.TimeProvider;
@@ -63,7 +63,7 @@ public class SendChatService implements SendChatUseCase {
     private static final Duration DEGRADED_LOG_INTERVAL = Duration.ofSeconds(10);
 
     private final ChatPermissionPolicy permissionPolicy;
-    private final ProfanityFilter profanityFilter;
+    private final ProfanityFilterSource profanityFilterSource;
     private final ChatKickRepository kickRepository;
     private final ChatBanRepository banRepository;
     private final RateLimiter rateLimiter;
@@ -199,12 +199,12 @@ public class SendChatService implements SendChatUseCase {
         // 통과시키되 흔적은 남긴다 — 이 경로가 열린 구간은 집행이 무력화된 구간이라, 시작 시점과 규모를
         // 남겨야 사후에 "언제 몇 건이 우회했는가"를 짚을 수 있다.
         //
-        // 밴을 여기서도 보는 이유: 입장 게이트는 <b>새 접속만</b> 막는다. 한 사람이 여러 방에 동시 접속한
+        // 밴을 여기서도 보는 이유: 입장 게이트는 새 접속만 막는다. 한 사람이 여러 방에 동시 접속한
         // 상태에서 한 방의 강퇴로 밴이 걸리면, 그 방 세션만 닫히고 나머지 방 세션은 그대로 살아 계속
         // 발화한다 — "어느 방에도 참여할 수 없다"는 밴의 정의와 어긋난다. 이 검사가 그 세션을 첫 발화에서
         // 끊는다(전송 계층이 사유를 보낸 뒤 세션을 닫는다).
         //
-        // zip 으로 <b>동시에</b> 띄운다. 이어 붙이면 메시지마다 왕복이 하나 더 늘고, 그 비용은 방 크기에
+        // zip 으로 동시에 띄운다. 이어 붙이면 메시지마다 왕복이 하나 더 늘고, 그 비용은 방 크기에
         // 비례해 커진다. 두 조회는 서로의 결과를 쓰지 않으므로 순서를 지킬 이유가 없다.
         Mono<Boolean> kickedCheck = kickRepository.isKicked(command.roomId(), command.senderId())
                 .onErrorResume(err -> {
@@ -251,7 +251,14 @@ public class SendChatService implements SendChatUseCase {
     /** 6) 욕설필터 → 도메인 생성 → 저장(먼저) → 발행. DuplicateKey(재전송)는 기존 메시지 재조회로 멱등 처리(재발행 생략). */
     private Mono<ChatMessageView> persistAndPublish(SendChatCommand command, ChatRole role,
                                                     ChatMessageType type, String content) {
-        String displayMessage = profanityFilter.filter(content);
+        // 매 메시지마다 "지금 것" 을 묻는다 — 사전이 런타임에 바뀔 수 있어서다. 필터를 생성자로
+        // 직접 받으면 빈을 교체해도 이 필드에 안 닿고(final 이고 서비스는 부팅 때 한 번 조립된다)
+        // 사전을 바꾸는 유일한 길이 배포가 된다. 비용은 메시지당 0.022 µs (filter() 자체의 0.11%,
+        // 실측 — SwappableProfanityFilter javadoc).
+        //
+        // 한 번 집어 들고 그것으로 끝까지 간다. 교체가 중간에 일어나도 이 메시지는 이전 사전이나
+        // 다음 사전 중 하나를 쓰고, 두 사전이 섞인 상태를 보지 않는다.
+        String displayMessage = profanityFilterSource.current().filter(content);
         ChatMessage message = ChatMessage.builder()
                 .id(null)                          // ObjectId는 save 시점에 reactive 드라이버가 부여
                 .roomId(command.roomId())

@@ -20,7 +20,15 @@ import java.util.Optional;
  * 없는 상태에서 되돌릴 수 없는 제재를 자동으로 거는 것은 그 판단들과 어긋난다.
  *
  * <p>영구 밴 자체는 남아 있다 — {@code chat_ban.expires_at}이 NULL인 행이고, 그건 <b>사람이 넣는다</b>.
- * 그 경로(수동 밴·해제)는 admin-app 소관이고 아직 없다.
+ *
+ * <p><b>해제는 이제 있다</b>({@code ReleaseBanService} · {@code DELETE /api/v1/chat/bans/{userId}},
+ * ADMIN 전용). 위 단락의 "되돌리는 코드가 없는 상태" 라는 전제가 그만큼 약해졌지만 결론은 그대로다 —
+ * 자동 제재에 영구를 두지 않는 근거는 "풀 수 있는가" 가 아니라 <b>사람 손 없이 되돌릴 수 없는 것을
+ * 걸지 않는다</b> 이고, 해제는 사람이 누르는 것이다. 수동 밴을 넣는 경로는 여전히 없다.
+ *
+ * <p>해제가 푸는 것은 둘이다 — 사람이 넣은 영구 밴, 그리고 <b>자동 기한제 밴의 조기 해제</b>
+ * (오판정 하나가 최소 7일·최대 1년이라 뒤쪽이 더 자주 쓰인다). 설계 정본은 그 경로를 admin-app
+ * 소관으로 적었는데 호스트는 live-app이다 — 근거는 {@code ChatKickRecorder}의 승격 분기 주석에 있다.
  */
 public enum ChatBanTier {
 

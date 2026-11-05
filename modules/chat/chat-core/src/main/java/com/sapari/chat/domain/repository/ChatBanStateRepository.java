@@ -118,6 +118,59 @@ public interface ChatBanStateRepository {
     BanWrite extendOrCreate(ChatBan ban);
 
     /**
+     * 밴을 푼다 — <b>행을 지우고, 사면 기준선을 남긴다.</b> 두 쓰기가 한 트랜잭션이어야 한다.
+     *
+     * <p>이 포트는 정본만 다룬다. <b>집행은 미러가 하므로 이것만으로는 아무도 풀리지 않는다</b> —
+     * {@link ChatBanWriteRepository#releaseMirror}가 같은 유스케이스 안에서 뒤따라야 하고,
+     * 순서는 <b>정본 → 미러</b>다(위 {@link #extendOrCreate} javadoc 의 근거: 반대 순서는 남은 행이
+     * 다음 강퇴 때 미러에 다시 써져 밴이 되살아난다).
+     *
+     * <p><b>기준선을 남기는 것이 이 메서드의 절반이다.</b> 행만 지우면 강퇴 로그가 그대로 남아,
+     * 해제된 사용자가 <b>새 방에서</b> 강퇴 한 번을 더 받는 순간 같은 티어가 재적용된다
+     * ({@link ChatKickLogRepository#countConfirmingKickersSince}). 그래서 활성 밴이 없어도
+     * 기준선은 남긴다 — 운영자의 뜻은 "이 사람의 누적을 접는다" 이고, 만료가 이미 지난 뒤에
+     * 누르는 것도 그 뜻이다.
+     *
+     * <p><b>멱등해야 한다.</b> 지울 행이 없어도 실패가 아니다. 정본을 먼저 지운 뒤 미러 삭제가
+     * 실패했을 때 재시도가 "지울 밴이 없다" 로 끊기면 미러 삭제에 도달할 코드가 영영 안 남는다.
+     *
+     * <p><b>호출자가 {@link #lockForBanDecision}을 먼저 잡아야 한다.</b> 안 잡으면 Postgres 축에
+     * 끼어들기가 열린다 — {@code ChatKickRecorder.record}가 세기와 쓰기를 둘 다 그 잠금 안에
+     * 두고 커밋까지 쥐므로, 해제가 잠금 없이 다른 테이블만 건드리면 <b>어느 자원에서도 충돌하지
+     * 않고</b> 그 사이에 끼어 "방금 접은 누적으로 해제 직후 1년 밴이 새로 생기는" 결과를 만든다.
+     * 근거와 자원 순서는 {@code ChatBanReleaseRecorder.release} javadoc 에 있다.
+     *
+     * <p><b>그래도 미러 축과는 어긋난다.</b> 강퇴가 커밋 <i>뒤에</i> 미러를 쓰므로 — 조기 반환만이
+     * 아니라 승격 갈래도 같다 — 그 사이에 해제가 끼면 지운 밴이 미러에만 되살아난다(과다 차단). <b>이쪽은
+     * 잠금으로 막히지 않는다</b> — 그 쓰기는 설계상 잠금 밖이다. 창은 밀리초이고 <b>복구 수단은
+     * 해제를 다시 누르는 것</b>이다 — 그래서 미러 삭제를 행 존재로 게이팅하면 안 된다. 막으려면
+     * 미러 쓰기를 트랜잭션 안으로 들여야 하는데, 그건 강퇴 자가치유(미러가 날아간 밴을 다음
+     * 강퇴에서 되찾는 것)를 잃는 쪽이라 더 나쁘다고 보고 두었다.
+     *
+     * <p><b>지운 것을 돌려준다.</b> 정본 행이 사라지므로 그 내용(영구였는지·누가 걸었는지)은
+     * 감사 행과 이 반환값 말고는 어디에도 남지 않는다. 그리고 <b>되돌릴 수도 없다</b> — 수동 밴을
+     * 넣는 앱 경로가 0건이라(밴 생성 호출처는 {@code ChatKickRecorder} 하나이고 그 티어에 영구가
+     * 없다) 사람이 넣은 영구 밴을 한 번 지우면 어떤 앱 경로로도 다시 걸 수 없다.
+     *
+     * @return 무엇을 지웠는가. 지울 밴이 없었어도 기준선은 남았다 — 실패가 아니다
+     */
+    Released release(UUID userId, UUID releasedById, Instant now);
+
+    /**
+     * 해제가 지운 것.
+     *
+     * @param banExisted 실제로 밴 행이 있었는가. 거짓이면 "밴 없는 사람에게 버튼을 눌렀다" 이고,
+     *                   그것이 활성 밴을 푼 것과 <b>구분돼야</b> 한다 — 오타 한 글자로 실존하는
+     *                   다른 사용자의 누적을 접을 수 있고 이 테이블은 append-only 라 앱 경로로
+     *                   기준선을 낮출 수 없다
+     * @param expiresAt  지운 밴의 만료. {@code null} 이면 영구였거나 밴이 없었다
+     *                   ({@code banExisted} 로 가른다)
+     * @param bannedById 지운 밴의 발급자. 자동 승격이면 SYSTEM 이다. 밴이 없었으면 {@code null}
+     */
+    record Released(boolean banExisted, Instant expiresAt, UUID bannedById) {
+    }
+
+    /**
      * 쓰기의 결과.
      *
      * @param effective 이 호출 뒤 정본에 남아 있는 밴 — 미러에 실을 값이다

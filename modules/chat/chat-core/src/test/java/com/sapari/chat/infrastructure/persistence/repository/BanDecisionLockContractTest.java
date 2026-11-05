@@ -54,9 +54,9 @@ class BanDecisionLockContractTest {
                 .as("대기 상한이 트랜잭션 범위가 아니다 — 커넥션에 남아 풀을 공유하는 다른 도메인을 끊는다")
                 .startsWith("SET LOCAL ")
                 .contains("lock_timeout")
-                // ⚠️ 상수를 넣으면 <b>동어반복</b>이다 — 쿼리 문자열이 그 상수로 조립되므로 값을
+                // ⚠️ 상수를 넣으면 동어반복이다 — 쿼리 문자열이 그 상수로 조립되므로 값을
                 // 바꿀 때 양쪽이 같이 바뀌어 아무것도 안 걸린다. 리뷰어 실측: 상수를 "0"으로 바꿔도
-                // 통과했고, Postgres 에서 lock_timeout='0' 은 <b>상한 해제(영구 대기)</b>라
+                // 통과했고, Postgres 에서 lock_timeout='0' 은 상한 해제(영구 대기)라
                 // boundLockWait 가 막으려는 바로 그 상태다. 리터럴로 적어 "바꾸려면 여기도 고치게"
                 // 만든다 — seed 단언과 같은 이유다.
                 .contains("'1s'");
@@ -101,5 +101,50 @@ class BanDecisionLockContractTest {
         assertThat(lockQuery.value())
                 .as("잠금 키가 그 seed 로 유도되지 않는다")
                 .contains(ChatBanJpaRepository.BAN_DECISION_LOCK_SEED);
+    }
+
+    /**
+     * ⭐ <b>해제도 같은 잠금을 잡는다</b> — 안 잡으면 접은 누적이 레이스로 되살아난다.
+     *
+     * <p>{@code ChatKickRecorder.record}는 세기와 쓰기를 둘 다 이 잠금 안에 두고 커밋까지 쥔다.
+     * 해제가 잠금 없이 {@code chat_ban}·{@code chat_ban_release}만 건드리면 <b>어느 자원에서도
+     * 충돌하지 않고</b> 그 사이에 끼어든다:
+     * <pre>
+     *   T1(강퇴)  잠금 → append → findActive(없음) → 세기(기준선 없음 → 9명)
+     *   R(해제)                            ├─ DELETE + 기준선 INSERT, 커밋
+     *   T1                                 └→ extendOrCreate(ONE_YEAR), 커밋
+     * </pre>
+     * 결과는 운영자가 방금 접은 누적으로 <b>해제 직후 1년 밴</b>이다. 사면 기준선을 들인 이유인
+     * 그 구멍이 레이스로 다시 열리는 것이라 심각도가 낮지 않다.
+     *
+     * <p><b>레이스를 재현하지 않는다.</b> 이 파일의 다른 단언과 같은 이유다 — 경쟁 테스트는 도구에
+     * 시간을 쓰게 하고 그 결과가 환경에 딸려간다. 여기서 재는 것은 <b>계약</b>이다: 해제 경로가
+     * 잠금을 잡는 호출이 소스에 있는가. 잠금을 떼면 이 한 건이 깨진다.
+     *
+     * <p>자원 순서도 같이 본다. 잠금 호출이 <b>release 호출보다 먼저</b>여야 전순서가 유지된다 —
+     * 강퇴는 {@code 어드바이저리 → chat_kick_log → chat_ban}, 해제는
+     * {@code 어드바이저리 → chat_ban → chat_ban_release}이고, 어드바이저리가 맨 앞이라 사이클이
+     * 없다. 뒤로 옮기면 그 보장이 사라지고 운영에서 {@code 40P01}로 처음 드러난다.
+     */
+    @Test
+    @DisplayName("⭐ 밴 해제가 밴 판단 잠금을 먼저 잡는다 — 떼면 접은 누적이 되살아난다")
+    void releaseTakesTheBanDecisionLockFirst() throws Exception {
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/java/com/sapari/chat/application/service/ChatBanReleaseRecorder.java"));
+        // 앵커를 반환형에 묶지 않는다 — 처음에 "public boolean release(" 로 잡았는데 반환형이
+        // Released 로 바뀌면서 indexOf 가 -1 이 되어 이 테스트가 엉뚱한 이유로 깨졌다.
+        int at = source.indexOf(" release(UUID targetUserId");
+        assertThat(at).as("release 메서드를 못 찾았다 — 시그니처가 바뀌면 앵커도 옮길 것").isNotNegative();
+        String body = source.substring(at);
+
+        int lockAt = body.indexOf("lockForBanDecision(");
+        int releaseAt = body.indexOf("banStateRepository.release(");
+
+        assertThat(lockAt)
+                .as("해제가 밴 판단 잠금을 잡지 않는다 — 강퇴의 세기와 쓰기 사이에 끼어들 수 있다")
+                .isNotNegative();
+        assertThat(lockAt)
+                .as("잠금이 쓰기보다 뒤다 — 어드바이저리가 맨 앞이어야 두 경로의 자원 순서가 유지된다")
+                .isLessThan(releaseAt);
     }
 }

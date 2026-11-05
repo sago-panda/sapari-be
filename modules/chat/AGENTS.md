@@ -1,8 +1,9 @@
 # chat — live chat domain
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
-✅ connect / send / fan-out / room-end / kick + ban escalation (REST host: **live-app**).
-⬜ history (VOD). Run `./gradlew :modules:chat:chat-core:test`.
+✅ connect / send / fan-out / room-end / kick + ban escalation / history (VOD) / reverse paths —
+ban release, kick-list reconcile, end-marker clear, dictionary propagation + admin API
+(REST host: **live-app**). Run `./gradlew :modules:chat:chat-core:test`.
 
 ## One module, two stacks — the rule that governs everything else
 
@@ -78,9 +79,22 @@ production log statements all pass `sessionId`/`roomId`/`userId`/`role` scalars.
 record that carries `email` or an unmasked body. Absorbing a failure is also not the same as silencing
 it: when a handler swallows to keep a verdict, it still owes a counter and an interval-throttled log
 (`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
-put back).
+put back). ⚠️ **A previous version of this paragraph claimed a counter cannot live in `application/`.
+That was false** — rule 16 (`domain_and_application_must_not_depend_on_metrics_library`) bans the
+*library* (`io.micrometer..`), and its own javadoc says to put a port there instead. chat already has
+that port and injects it in `application/`: `application/port/ChatMetrics` →
+`application/service/SendChatService`, `application/handler/ChatBroadcastSubscriber`. Do not skip
+application-layer observation on the strength of that rule.
 
-## Profanity dictionary — the file is the source, and the short words are the trap
+What is true is narrower. `ChatMetrics` is deliberately written in **domain-event** vocabulary, not
+`counter`/`gauge`, so adding a signal means adding a method to that port — not injecting a
+`MeterRegistry`. And one swallow in this module does *not* carry a counter on purpose:
+`ManageFilterWordsService.warnIfCommittedSourceViolates` swallows a **diagnostic** read that runs after
+the write and the publish have both succeeded, and the state it would have reported is caught by the
+next write's `guardSource` as a 409 — an externally visible, structural signal. That is the argument for
+leaving it out; "the layer cannot hold one" is not.
+
+## Profanity dictionary — the table is the source, the file seeds it, and short words are the trap
 
 Before matching, the filter folds the message to **NFC** and folds case plus fullwidth Latin/digits.
 Without that, input that looks identical on screen walks past the whole dictionary — a decomposed
@@ -123,19 +137,153 @@ which meant the module's own guide read as if the filter were closed. They are d
 - **An exhaustive 2- and 3-syllable sweep** needs a Korean word list, which this repo does not have.
   The two-way split sweep (below) bounds the 2-syllable class structurally; the 3-syllable class is not
   bounded.
-- **2B worst-case cost** scales with the longest entry (`K`), stated with numbers at the `maxWindow`
-  field, the 2B loop and `MAX_WORD_LENGTH`.
+- **2B worst-case cost** scales super-linearly with the longest entry (`K`) — measured `K` 7→64 is
+  9.1x but the cost is 19.7x. `MAX_WORD_LENGTH` caps `K` at **16** (SPR-165 lowered it from 64 once
+  the dictionary became runtime-mutable); the full table is at that constant, and the `maxWindow`
+  field and the 2B loop point at it. The cap replaced the work-budget fallback that used to be
+  prescribed in the 2B comment — do not re-add it.
 
 Numbers and vectors for each live in `ProfanityFilter`'s class javadoc and the two data headers; this
 list exists so the axes are visible from here.
 
-The canonical design is three tiers — `live_schema.chat_filter_word` → Redis pub/sub → in-pod trie.
-Only the third exists. streaming-app has **no DB dependency at all**, so the table and the propagation
-are not wired, and `ProfanityDictionary` loads the words from two classpath resources in chat-core.
-⚠️ The table is therefore **not** the source of truth today, though
-`db/migration/live/V1__init_live.sql:157` still calls Postgres the source in its comment. It is
-deliberately **not seeded** either: seeding a table nothing reads would put the same list in two places
-with no way to tell which one is live. When tiers 1–2 land, generate the seed *from* these files.
+All three canonical tiers now exist — `live_schema.chat_filter_word` → Redis snapshot → in-pod trie
+(SPR-165). ⚠️ `db/migration/live/V1__init_live.sql:157` calls tier 2 "Redis Pub/Sub(변경 전파)", which
+is imprecise: the content travels in a **snapshot key**, and pub/sub only carries the new version
+number (content in a non-persistent channel would leave a pod that missed the message enforcing a
+different dictionary forever). That file is a **frozen migration** — it is on `origin/dev`, so editing
+even its comments changes its checksum and stops the deploy (`infra/AGENTS.md`). This paragraph is the
+correction; do not go fix the comment.
+
+The split is forced by the apps: streaming-app has **no DataSource at all**, so the app that
+can read the source of truth (live-app) reads it and leaves a snapshot where the app that cannot
+(streaming-app) will find it.
+
+- **live-app writes.** `ChatDictionaryBootstrap` seeds the table from the bundled `.txt` **only when it
+  is empty** — re-pushing every boot would resurrect words an operator deleted, which is the same as
+  `remove` not working. After the seed, the table is the author and the files are just its origin.
+  Then it publishes, on every boot: idempotent, and it makes "snapshot missing or stale" self-clear with
+  one deploy.
+- **The snapshot is one key.** `chat:dict:snapshot` holds version + both sets in one value, so a reader
+  cannot see "half new" — a whitelist entry only means something next to the profanity it covers.
+  The version bump + `SET` + `PUBLISH` are **one Lua script**; split them and you get "version
+  advanced, body did not", after which the receiver's poll reads the old body and advances its version
+  anyway. The bump is `current + 1` under a CAS, not an `INCR` — see the next bullet.
+- **streaming-app reads.** `ProfanityDictionaryRefreshHandler` merges three triggers (boot, notify,
+  poll) into one `concatMap` stream, so only one refresh runs at a time and monotonicity is a field
+  comparison. ⚠️ The **poll** is what makes propagation work, not the notification: Redis pub/sub is
+  non-persistent, so a pod whose subscription was down during a publish never gets that message and
+  would enforce the old dictionary until restart. The notification only saves the poll interval.
+- **Failure directions are deliberate.** A transport failure does **not** advance the local version
+  (otherwise the poll sees "same" and never retries — that ordering is the load-bearing part of the
+  self-heal, pinned by a revert test). A **content** refusal does advance it, because re-reading the
+  same snapshot refuses for the same reason and would ERROR every minute on every pod; a fix is a new
+  publish, so the version rises and it is picked up.
+- **The last gate is the swap point.** A propagated dictionary goes through the *same* door as the
+  bundled and config ones (`ProfanityFilterFactory` → `ProfanityDictionary.of`), K budget included.
+  Rejection means **keep the previous filter** — not boot failure: one ADMIN request must not CrashLoop
+  the fleet. The write path pre-checks so this state is not reached normally; this gate catches writes
+  that bypassed it (direct SQL or Redis).
+- **The operator surface is `/api/v1/chat/filter-words`** (GET / POST / DELETE, ADMIN, live-app).
+  GET is ADMIN too, deliberately: the list is "everything the platform blocks", which tells an evader
+  which spellings are *absent* — and without a read, delete is unusable. A single
+  `requestMatchers("/api/v1/chat/filter-words/**")` covers the bare path as well (measured: PathPattern
+  and AntPathMatcher both match it; pinned by `ChatFilterWordAuthorizationTest`, which fails on all
+  three methods if that line goes).
+- ⚠️ **The write path validates the resulting *whole set*, not the submitted word** — otherwise one
+  pre-existing violating row freezes propagation: the write succeeds, every pod refuses the swap on that
+  old row, and the operator sees their word in the list while no pod enforces it (same dead-letter shape
+  as `SEC-11`). The two reachable causes are direct SQL and **tightening a rule later** — exactly what
+  lowering the K budget 64 → 16 was; the table was empty then, so it cost nothing, but the next
+  tightening will meet a populated one.
+- ⚠️ **What is stored is what is enforced.** The door judges `strip`+NFC of an entry, so the write
+  must store that same value — writing the raw input gave two outcomes from one request: `"시발\n"`
+  passed the gate (200) and left a newline row that broke the codec's self-check, **freezing every
+  later publish fleet-wide** (and `guardSource` uses the same door, so it could never detect it);
+  `"개새끼 "` made `DELETE ?word=개새끼` match 0 rows and answer `changed=false` while the word was
+  still being enforced. The plane is exposed as `ProfanityFilterFactory.normalize` precisely so the
+  checking side and the storing side cannot drift.
+- **Publishing is conditional, not an unconditional `INCR`.** The body is read *outside* the script,
+  so an unconditional bump let a later publisher win the version while carrying an older body — the
+  word stayed in the table (visible in the admin list) and absent from the fleet until the next write
+  or boot, which a rolling deploy reaches. The script now advances only if the version is still the
+  one the publisher took, and a lost race **re-reads the source** before retrying (re-sending the same
+  body would reinstate the very bug). A failed attempt writes nothing, so it cannot burn numbers and
+  break the version-key/snapshot invariant.
+- **The receiver applies a *regressed* version too, loudly** — but an *equal* one it drops in
+  silence. The `<` branch logs and swaps; the `==` branch (and the upstream
+  `filter(published != processedVersion)`, which sits *above* the body read) returns without a line.
+  That asymmetry matters because the publisher **can restart at v1**: see the next bullet. Do not read
+  "applies a regressed version loudly" as covering the equal case. A strict `<=` guard used to drop the
+  regressed case too, which is reachable (FLUSHDB, old RDB restore, stale replica failover) and left
+  that pod diverged from the fleet forever. Refreshes are serialized by `concatMap`, so monotonicity
+  was defensive and its price was a silent branch. "Version present, body absent" likewise used to be
+  the one fully silent branch — `allkeys-lru` evicts TTL-less keys and the odds favour evicting the
+  snapshot (tens of KB, read on change) over the counter (bytes, read every minute).
+- **The version has a digit ceiling, and "can be read" is a *different axis* from "can be built on".**
+  `MAX_VERSION_DIGITS` bounds exact double arithmetic in Lua (above 2^53 `tonumber` and `+1` stop being
+  exact), and Lua's `..` would write `1e+14` for a 15-digit value, so the script formats with
+  `string.format('%d', …)`. Two predicates, deliberately not one:
+  - `readVersionToken` (**readable**; shared by reader, publisher and codec) — digits ≤ ceiling *and*
+    the successor's digits ≤ ceiling.
+  - `isEligibleBase` (**buildable on**; publisher only) — readable *and* the successor is readable too.
+
+  `eligible(b)` therefore implies `readable(b+1)`, i.e. **everything the publisher writes can be read
+  by the fleet** — by definition, not by luck. One axis cannot give that: a finite counter has a last
+  cell, and narrowing acceptance only moves the cell. Two earlier attempts failed there (refusing →
+  every dictionary write 500s forever; resetting to 1 → the same number carried two different bodies
+  and pods holding 1 skipped it in silence).
+- **At the boundary cell the base falls to 0 and the next publish restarts at v1 — and that restart is
+  logged.** v1 *is* readable, which is what separates this from the discarded reset: the reset reused a
+  number *silently*, this one says so. Reaching the cell needs one out-of-band write plus one
+  eviction/`DEL`, so it is not exotic.
+
+  Two things that paragraph used to get wrong. **The residual is not "irreducible with ephemeral
+  state"** — the receiver has the decoded body in hand (`apply(snapshot, …)`), so comparing *content*
+  would close it; what keeps it open is the *choice* to compare only versions. ⚠️ That choice's price
+  is **not** "a trie rebuild per equal-version poll" — an earlier draft said so and it is false in both
+  readings: today the upstream `filter(published != processedVersion)` sits *above* `read()`, so an
+  equal-version poll ends at the version `GET` and builds **nothing**; and a content comparison would
+  still only build when the content differs. The price is the **body transfer plus decode — ~11 KB per
+  pod per poll** (1,078 + 38 bundled entries), which is exactly the cost the version key exists to
+  avoid. Do not read "irreducible" as a reason to stop looking at that axis, and do not price the axis
+  by trie builds. And **the recovery is not "delete both keys"** — that reproduces the
+  deadlock (base 0 → v1 again). Measured: boundary + write → v1 (fleet at 1 skips) → `DEL` both →
+  v1 again → skip again; whereas *re-sending the same ADMIN write* bases on the 1 this publish just
+  wrote → v2 → the fleet applies. Adds are idempotent and publish even when nothing changed, so "send
+  it once more" is the whole procedure. Verify by the receiver's `갈아 끼웠다 … version=` INFO (its
+  absence for the response's `version` is the verdict) — the same check `FilterWordChange.version`'s
+  javadoc already prescribes; the functional check (does the word mask?) is the backup, since there is
+  no dry-run endpoint and it needs a live room.
+- **The config CSV (`chat.profanity.words`) is boot-only and dies at the first swap.** It is *not*
+  merged into propagated filters on purpose: merging would make the enforced set differ from the set
+  live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps
+  while writes passed — the same gate-plane/runtime-plane split this ticket keeps closing. Its lifetime
+  is logged at boot so it does not vanish silently; durable changes go through the ADMIN API.
+- **Rule (1) crosses kinds, so two concurrent adds can each pass and still commit a violation**
+  (`rejectUselessWhitelist` tests a whitelist entry against the *word* set). No lock — and the reason is
+  **not** that closing it is expensive: `ChatKickRecorder.record` already shows the cheap shape (advisory
+  lock as the first statement inside `REQUIRES_NEW`, Redis only after it returns), so there would be no
+  external call inside the transaction. The real cost is **one more lock resource**, which
+  `ChatKickRecorder` obliges you to order or prove acyclic. It is left open because the probability is
+  low (same string, both kinds, simultaneously, at human typing rates), the result is recoverable
+  (remove either), and a post-write re-check now logs it against the request that caused it. If any of
+  those three changes — e.g. dictionary writes become automated — revisit it.
+- **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
+  first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
+  set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.
+  Collapsing them tells an operator who sent a perfectly good word that their word is wrong.
+- **Delete does not go through the door at all** — it only refuses emptying the word set. Checking the
+  *result* closed the recovery path it was meant to open: with **two or more** violating rows, removing
+  one is refused because of the other, and the API removes one at a time, so nothing can be removed
+  (measured). And two-or-more is the *default* of that scenario, not an edge: tightening a rule — which
+  is exactly what K 64 → 16 was — makes many rows violate at once. The check buys nothing there,
+  because **removal cannot create a violation**: rule (1) fires on `entry ∈ words` and removal only
+  shrinks `words`; rule (3) looks at the residue after stripping profanities, which only grows; shape
+  and budget are per-entry. Measured exhaustively over the bundled dictionary: 1,116 single removals,
+  **0** new violations (control: an empty word set *is* refused, so the 0 is not a blind probe). What
+  remains refused is emptying the words — that is masking silently off. A still-violating result after
+  a delete is a **warning**, not a refusal: refusing blocks recovery, staying silent lets the operator
+  believe recovery finished.
 
 Missing resource, or zero words after comments, is a **boot failure**. An empty dictionary is not a
 degraded filter — it is the filter silently off (`displayMessage == originalMessage`), and that state
@@ -281,7 +429,8 @@ cost.
 Config (`chat.profanity.words` / `.whitelist`) goes through the same validation as the bundled
 resources, with **one deliberate asymmetry**: shape for both keys (whitespace plus the invisible
 classes: NBSP, ZWSP, word joiner, BOM, Hangul fillers, variation selectors, tag characters,
-blank-looking symbols like U+2800; and 64 chars), and the whitelist rules above — except that at the
+blank-looking symbols like U+2800; and the 16-char latency budget), and the whitelist rules above —
+except that at the
 **config** entrance a *zero-width* invisible character is **stripped with a warning** instead of
 refusing the boot. Space-like characters still refuse, because trimming `개 새끼` to `개새끼` would be
 guessing the operator's intent. The repo's own stated boundary is that refusal is for what is *harmful*,
@@ -326,7 +475,7 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
 | `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
 | `chat:room:{id}:ended` | String | 30m — floor = longest room token, ceiling = blast radius of a false end signal |
-| `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` |
+| `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
@@ -459,6 +608,22 @@ This mattered less while the write path was broken and the set was never created
 lost end signal leaks a key. Room ids are UUIDs so nothing malfunctions — it is pure leak, and it belongs to
 live's delivery guarantee, not chat's.
 
+**Recovery for this key now exists, and it lives in live-app** (`PUT /api/v1/lives/{roomId}/chat/kicked`,
+ADMIN, `ReconcileKickListService`). It reads the source of truth (`chat_kick_log`) and tops the set up.
+Three properties of it are load-bearing and each closed a way it could have made things worse:
+
+- It **only adds** to a healthy key. Deleting first raced the kick path — a kick is DB-first (log commits,
+  then `SADD`), so a kick committing after the reconcile's `SELECT` was erased by its `DEL`, permanently and
+  silently. Adding is sufficient because `SET ⊆ source of truth` always holds on the app path: the only
+  writer of members is a kick, and a kick commits its log first. `DEL` is used **only** on a key whose type
+  is not ours, where there is nothing to lose because the content was never readable by us.
+- It **refuses a room that is not live**. Otherwise `PERSIST` strips the room-end expiry above and nothing
+  re-attaches it — the prescription for this is already written in `ChatKickWriteRepository.register`'s
+  javadoc ("block it upstream: read the room and refuse if it is not live"), which the kick path follows and
+  this one did not.
+- It **reports whether the key was corrupted**, read before the `DEL`. That fact is the strongest evidence
+  that enforcement was off, and it is unrecoverable afterwards — `DEL` succeeds whatever the type was.
+
 ⚠️ **The signal can also arrive and then be undone.** Room-end sets the 24h expiry; a kick that lands in that
 window runs `SADD` + `PERSIST` and strips it, and the two callers sit on different pods so nothing orders
 them. `PERSIST` is not removable — it exists because `SADD` inherits a leftover expiry and the whole list
@@ -511,9 +676,24 @@ rooms each create their own ban and each write the mirror, so an unconditional `
 last win — and a short TTL landing last releases a user weeks early, because **the mirror is what enforces**.
 Re-reading the record for the longest ban was tried and only narrows it: it fixes *what* gets written, never
 *who writes last*. Ordering problems need order-independent writes. The cost is that this port can no longer
-shorten a ban — an admin reprieve needs `DEL` + set, in the same change that adds it.
+shorten a ban — an admin reprieve needs the mirror **deleted**, in the same change that adds it.
 
-Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Counting rows
+**That change landed (SPR-165).** `DELETE /api/v1/chat/bans/{userId}` (ADMIN, hosted in live-app) does
+three writes as one command: delete the record row, append an **amnesty baseline**, delete the mirror.
+The prescription above said "`DEL` + set" — a reprieve turned out to need only the delete, because the
+mirror's extend-only script returns 0 on a key with no TTL, so a permanent ban cannot be shortened by
+writing at all. Order is **record → mirror**, with the commit in between: the reverse leaves a row that
+the next kick re-mirrors, so the ban *resurrects*. The remaining mismatch is the mirror axis — a kick
+writes the mirror **after** its commit, outside the lock by design, so a release landing in that window
+is undone in the mirror only (over-blocking, repaired by pressing release again; that is why the mirror
+delete must not be gated on the row having existed).
+
+Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Since
+SPR-165 the window has **two lower bounds**: that 2 years *and the user's most recent ban release*,
+whichever is later (`countConfirmingKickersSince`, a correlated subquery over `chat_ban_release`).
+Without the second bound a release is not a release — the kick log is never deleted, so one more kick
+**in a new room** re-counts the old kickers and re-applies the same tier. Measuring that class needs a
+*new* room as the vector: `ChatKickRecorder` skips the counting step unless `firstKickInThisRoom`. Counting rows
 would let one seller reach the threshold alone: the log is unique per `(user, room)`, so three broadcasts and
 one kick in each makes three. Three broadcasts is an ordinary week, not a conspiracy, and that would hand
 every seller a platform-wide ban over anyone who chats in their rooms. Counting people makes the threshold
@@ -528,7 +708,13 @@ before — it lets a rotating user reach no threshold at all. Thresholds are rea
 gives the same answer while kicks arrive one at a time, and differs only where the table is silent (window
 shrink, a concurrent kick skipping a threshold). With people as the unit, **only the first rung is realistically reachable** — six or nine distinct
 moderators inside two years is rare, so the ladder effectively ends at one week. The numbers were kept
-deliberately; the ladder being sparse is the intended shape while no release path exists. **An `ADMIN` kick
+deliberately; the ladder being sparse is the intended shape. That used to read "…while no release path
+exists", and SPR-165 removed that premise — but the conclusion stands on a different leg: the reason not
+to automate a permanent ban is that **nothing should be server-applied that a human cannot undo**, and a
+release *is* a human pressing a button. A path for applying a manual ban still does not exist, which is
+why a released permanent ban cannot be re-applied through the app at all (the only `extendOrCreate` caller
+is `ChatKickRecorder`, whose tiers top out at one year) — the release therefore snapshots what it deleted
+into `chat_ban_release`. **An `ADMIN` kick
 counts as one like any other.** That is a decision, not an omission: "one admin ⇒ instant ban" would be a
 manual ban wearing `banned_by_id = SYSTEM`, which erases who decided. Admin judgement belongs in a manual
 ban path, not in automatic escalation. ⚠️ `V1__init_live.sql`'s comment still describes the old unit

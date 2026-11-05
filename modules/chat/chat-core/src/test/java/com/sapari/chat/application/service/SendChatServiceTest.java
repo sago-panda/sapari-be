@@ -51,6 +51,7 @@ import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatMessageRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.domain.rule.ProfanityFilter;
+import com.sapari.chat.infrastructure.config.SwappableProfanityFilter;
 import com.sapari.global.time.TimeProvider;
 
 import reactor.core.publisher.Mono;
@@ -84,17 +85,54 @@ class SendChatServiceTest {
     private final UUID roomId = UUID.randomUUID();
     private final UUID senderId = UUID.randomUUID();
 
+    /** 사전 교체를 재려면 테스트가 같은 셀을 쥐고 있어야 한다. */
+    private SwappableProfanityFilter filterCell;
+
     @BeforeEach
     void setUp() {
+        filterCell = new SwappableProfanityFilter(new ProfanityFilter(Set.of("욕설"), Set.of()));
         service = new SendChatService(
                 new ChatPermissionPolicy(),
-                new ProfanityFilter(Set.of("욕설"), Set.of()),
+                filterCell,
                 kickRepository, banRepository, rateLimiter, chatMessageRepository, broadcaster,
                 new TimeProvider(Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC)),
                 ChatMetrics.NOOP);
         // 기본은 "밴 아님". 강퇴와 밴 조회는 zip으로 함께 뜨므로 강퇴 검사에 닿는 모든 테스트가 이걸
         // 부르지만, 그 앞(권한·검증)에서 끝나는 테스트는 부르지 않는다 — 그래서 lenient다.
         lenient().when(banRepository.isBanned(any())).thenReturn(Mono.just(false));
+    }
+
+    /**
+     * ⭐ 사전 교체가 <b>이 서비스의 다음 메시지</b>에 닿는지.
+     *
+     * <p>셀 자체의 원자성은 {@code SwappableProfanityFilterTest} 가 잰다. 여기서 재는 것은 다른
+     * 것이다 — 이 서비스가 <b>매 메시지마다 다시 묻는지</b>. 전에는 필터를 생성자로 직접 받았고
+     * 그러면 빈을 갈아 끼워도 안 닿았다(필드가 {@code final}, 서비스는 부팅 때 한 번 조립).
+     * 그게 사전 변경의 유일한 길이 배포였던 이유다.
+     *
+     * <p><b>되돌림으로 확인했다</b>: 서비스가 필터를 한 번만 집어 들어 캐시하게 고치면 이 테스트
+     * 하나만 깨진다. 셀 테스트는 그 돌연변이에 전부 초록이었다 — 그래서 이 테스트가 필요하다.
+     */
+    @Test
+    @DisplayName("⭐ 사전을 교체하면 다음 메시지부터 적용된다 — 서비스가 매번 다시 묻는다")
+    void aDictionarySwapAppliesToTheNextMessage() {
+        // given
+        stubAllowedAndSaved();
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "신상어 삽니다", "c1")))
+                .assertNext(view -> assertThat(view.displayMessage())
+                        .as("전제: 이 말은 아직 사전에 없다")
+                        .isEqualTo("신상어 삽니다"))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // when: 운영자가 런타임에 사전을 바꿨다(배포 없이)
+        filterCell.install(new ProfanityFilter(Set.of("신상어"), Set.of()));
+
+        // then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "신상어 삽니다", "c2")))
+                .assertNext(view -> assertThat(view.displayMessage())
+                        .as("서비스가 필터를 캐시하면 교체가 영원히 안 닿는다 — 배포만이 길이 된다")
+                        .isEqualTo("*** 삽니다"))
+                .expectComplete().verify(VERIFY_CEILING);
     }
 
     private SendChatCommand command(String role, boolean isRoomOwner, boolean isRoomAlive,

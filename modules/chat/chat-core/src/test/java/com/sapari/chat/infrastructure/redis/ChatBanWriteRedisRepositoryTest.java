@@ -236,4 +236,54 @@ class ChatBanWriteRedisRepositoryTest {
         // then
         assertThat(ttlMillis()).isGreaterThan(MONTH.toMillis() - 2_000L);
     }
+
+    /**
+     * 해제가 쓰기가 아니라 <b>삭제</b>여야 하는 이유를 그대로 잰다.
+     *
+     * <p>영구 밴은 TTL 이 없다. 위 {@code EXTEND_ONLY} 스크립트는 {@code PTTL == -1}(만료 없음)에서
+     * 즉시 0 을 돌려주므로, 어떤 값을 넘겨도 영구 밴은 <b>줄어들지도 사라지지도 않는다</b>.
+     * 그래서 해제는 이 경로를 타면 안 되고, 그 사실이 이 테스트의 내용이다.
+     */
+    @Test
+    @DisplayName("⭐ 영구 밴(TTL 없음)도 해제로 지워진다 — 늘리기 전용 쓰기로는 못 지운다")
+    void releaseMirrorRemovesAPermanentBan() {
+        // given: 만료 없는 영구 밴
+        repository.ban(userId, null, NOW);
+        assertThat(redisTemplate.hasKey(key())).isTrue();
+        assertThat(ttlMillis())
+                .as("영구 밴은 TTL 이 없어야 한다 — 그래서 스스로 풀리지 않는다")
+                .isNegative();
+
+        // when
+        repository.releaseMirror(userId);
+
+        // then
+        assertThat(redisTemplate.hasKey(key()))
+                .as("미러가 남으면 아무도 풀리지 않는다 — 집행은 이 키가 한다")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("⭐ 없는 키를 지워도 조용히 성공한다 — 해제 명령의 멱등성이 이 성질에 걸려 있다")
+    void releaseMirrorIsANoOpWhenNothingIsThere() {
+        // given: 키가 없다(정본은 지워졌고 미러 삭제만 재시도하는 상태)
+        assertThat(redisTemplate.hasKey(key())).isFalse();
+
+        // when & then: 여기서 던지면 재시도 경로가 끊긴다
+        repository.releaseMirror(userId);
+        assertThat(redisTemplate.hasKey(key())).isFalse();
+    }
+
+    @Test
+    @DisplayName("기한부 밴도 해제로 즉시 지워진다 — 만료를 기다리지 않는다")
+    void releaseMirrorRemovesATimedBan() {
+        // given
+        ban(MONTH);
+
+        // when
+        repository.releaseMirror(userId);
+
+        // then: 오판정 하나가 최소 7일·최대 1년이던 것이 이 삭제로 끝난다
+        assertThat(redisTemplate.hasKey(key())).isFalse();
+    }
 }

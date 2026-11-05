@@ -172,4 +172,58 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
                         @Param("bannedById") UUID bannedById,
                         @Param("expiresAt") Instant expiresAt,
                         @Param("createdAt") Instant createdAt);
+
+    /**
+     * 이 사용자의 밴 행을 지운다 — 만료 여부를 묻지 않는다.
+     *
+     * <p>만료를 조건에 넣지 않는 이유: 만료된 행이 남아 있어도 다음 자동 승격의
+     * {@code ON CONFLICT} 대상이 되고, 거기서 {@code banned_by_id}·{@code created_at}이 덮인다.
+     * 해제를 누른 운영자의 뜻은 "이 사람의 현재 제재를 없앤다" 이므로 사용자당 한 행 전체가 대상이다
+     * ({@code uk_chat_ban_user_id}가 많아야 하나를 보장한다).
+     *
+     * @return 지운 행 수 — 0 또는 1. 0 은 실패가 아니다(멱등)
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = "DELETE FROM live_schema.chat_ban WHERE user_id = :userId", nativeQuery = true)
+    int deleteByUserId(@Param("userId") UUID userId);
+
+    /**
+     * 사면 기준선을 남긴다 — append-only.
+     *
+     * <p>{@code chat_ban} 행을 지우는 것만으로는 해제가 완결되지 않는다. 강퇴 로그가 남아 있어
+     * 새 방 강퇴 1회로 같은 티어가 재적용되기 때문이고, 그 재적용을 막는 것이 이 행이다
+     * ({@code ChatKickLogJpaRepository.countConfirmingKickersSince}의 상관 서브쿼리가 읽는다).
+     *
+     * <p>{@code id}는 테이블 기본값이 만들고 {@code released_at}은 명시로 넣는다 — 시각이 주입된
+     * 시계에서 와야 테스트가 고정 시계로 기준선 효과를 검증할 수 있다.
+     *
+     * <p>지울 행이 없었어도 이 행은 남긴다. 만료가 이미 지난 사용자에게 해제를 누르는 것도
+     * "누적을 접는다" 는 뜻이고, 그 뜻을 버리면 운영자가 같은 버튼을 두 번 눌러도 누적이 안 접힌다.
+     */
+    @Modifying
+    @Query(value = """
+            INSERT INTO live_schema.chat_ban_release
+                   (user_id, released_by_id, released_at,
+                    ban_existed, released_expires_at, released_banned_by_id)
+            VALUES (:userId, :releasedById, :releasedAt,
+                    :banExisted, :releasedExpiresAt, :releasedBannedById)
+            """, nativeQuery = true)
+    void appendRelease(@Param("userId") UUID userId,
+                       @Param("releasedById") UUID releasedById,
+                       @Param("releasedAt") Instant releasedAt,
+                       @Param("banExisted") boolean banExisted,
+                       @Param("releasedExpiresAt") Instant releasedExpiresAt,
+                       @Param("releasedBannedById") UUID releasedBannedById);
+
+    /**
+     * 만료 여부를 묻지 않고 그 사용자의 밴 행을 읽는다 — <b>지우기 전 스냅샷용</b>이다.
+     *
+     * <p>{@link #findActive} 와 다른 이유: 해제는 만료된 행도 지운다(다음 자동 승격의
+     * {@code ON CONFLICT} 대상이 되어 발급자·생성시각이 덮이기 때문). 그러니 스냅샷도 같은
+     * 범위를 봐야 한다 — 활성만 읽으면 만료된 행을 지우면서 무엇을 지웠는지 안 남긴다.
+     *
+     * <p>{@code uk_chat_ban_user_id} 가 많아야 하나를 보장한다.
+     */
+    @Query(value = "SELECT * FROM live_schema.chat_ban WHERE user_id = :userId", nativeQuery = true)
+    Optional<ChatBanEntity> findAnyByUserId(@Param("userId") UUID userId);
 }

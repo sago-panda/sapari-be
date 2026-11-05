@@ -51,9 +51,9 @@ as clean.
   Name the item and the path you could not open.
 
 ## Enforced by ArchUnit — do NOT re-report **if the gate ran**
-All 20 rules below live in `architecture-test/.../ArchitectureTest.java`, and a violation really does
+All 21 rules below live in `architecture-test/.../ArchitectureTest.java`, and a violation really does
 fail — verified by mutation on 2026-11-05: planting one `Instant.now()` in an application-layer service
-makes `time_must_come_from_time_provider()` fail. Locally the suite is 20 rules in ~5 s
+makes `time_must_come_from_time_provider()` fail. Locally the suite is 21 rules in ~5 s
 (`./gradlew :architecture-test:test`).
 
 ⚠️ **It does not block the merge "without you" right now.** That sentence used to sit here as a fact and
@@ -61,16 +61,16 @@ it is false: the CI pipeline is deliberately not executing — the shared runner
 exhausted (`ci_quota_exceeded`), recorded at the top of `.gitlab/ci/build.yml`, and the local-runner
 replacement was reverted for reasons written there. The `build` and `harness-check` jobs still only have
 `merge_request_event` / `FORCE_REVIEW` rules, and the MR bot review is commented out in
-`.gitlab-ci.yml` as well. So while that holds, **nothing but a local run enforces these 20.**
+`.gitlab-ci.yml` as well. So while that holds, **nothing but a local run enforces these 21.**
 
 That is why the deterministic gate is now a step of the `/review` skill rather than an assumption of
 this file. What you owe the reader depends on what happened:
 
-- **The gate ran and passed** (the `/review` report says so) → do not re-report these 20. The tool is
+- **The gate ran and passed** (the `/review` report says so) → do not re-report these 21. The tool is
   better at them than you are, and it is deterministic.
 - **The gate did not run, or you cannot tell** → say so once, as `증거부족` on the item closest to the
-  change, naming `./gradlew :architecture-test:test`. Do not emulate the 20 rules by hand and do not
-  stay silent: silence here reads as "checked, fine", which is exactly how these 20 came to have no
+  change, naming `./gradlew :architecture-test:test`. Do not emulate the 21 rules by hand and do not
+  stay silent: silence here reads as "checked, fine", which is exactly how these 21 came to have no
   coverage at all — CI could not run them and reviewers were told to skip them.
 - **The gate failed** → the failure is the finding. Report the rule name; do not re-derive it.
 
@@ -103,6 +103,7 @@ it means you are the only review that ran.
 18. `live-app` → reactive chat use cases — `live_app_must_not_call_reactive_chat_use_cases`
 19. `OutboundMessage` built outside its type factories (positional-arg slip = PII leak) — `outbound_message_must_be_built_through_factories`
 20. `@Mapper` without `unmappedTargetPolicy = ERROR`, outside `live` (silent unmapped domain field; attribute removal reports the `WARN` default, so this one rule covers both) — `mapstruct_mappers_must_fail_on_unmapped_targets`
+21. a second **caller** of `install(..)` on the profanity-filter cell (the refresh handler serialises applies with `concatMap`, and the monotonic version guard was *removed* on that premise — a second applier would have nothing stopping an older dictionary landing last). Targets the method, not the type, because the bean's declared type is the concrete cell: a class injecting it directly bypassed a type-level rule, measured — only the application-layer variant was caught, by rule 15 — `only_the_refresh_handler_may_install_a_profanity_filter`
 
 A one-line heads-up is fine only for a genuinely new pattern it can't guard. **This list is checked
 against the test file in CI** — if they diverge, the build fails, so fix the list rather than working

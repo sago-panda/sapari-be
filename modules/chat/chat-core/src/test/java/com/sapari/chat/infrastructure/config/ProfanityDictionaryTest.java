@@ -4,11 +4,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import org.assertj.core.api.InstanceOfAssertFactories;
+
+import java.util.Set;
+
+import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.domain.rule.ProfanityFilter;
 
 /**
@@ -23,6 +31,42 @@ import com.sapari.chat.domain.rule.ProfanityFilter;
 class ProfanityDictionaryTest {
 
     private static final String WHITELIST = "/chat/profanity-whitelist.txt";
+
+    /**
+     * ⭐ <b>거부 메시지의 항목 보간은 길이가 묶이고 <i>지목이 남는다</i>.</b>
+     *
+     * <p>전파된 스냅샷은 요청 검증도 정본 {@code varchar(64)} 도 안 지난다 — 코덱의 상한은
+     * 버전 자리수뿐이고 항목 길이를 보는 자리가 없다. 그 거부 메시지는
+     * {@code ProfanityDictionaryRefreshHandler} 의
+     * {@code log.error("전파된 사전을 거부했다 … 이유={}")} 로 나간다.
+     *
+     * <p>⚠️ <b>자르는 순서가 두 성질을 가른다.</b> {@code visible()} 로 먼저 늘린 뒤 자르면
+     * 짧은 항목에서도 꼬리 글자가 사라지고({@code varchar(64)} 안인데도) 꼬리의 {@code N} 이
+     * 확장 뒤 길이가 돼서 64자 열에서 "30만자 항목" 을 찾게 된다. 그래서 두 칸을 같이 잰다 —
+     * 짧은 쪽은 <b>끝까지 남고</b>, 긴 쪽은 <b>묶이면서 원래 길이를 말한다</b>.
+     */
+    @Test
+    @DisplayName("⭐ 거부 메시지의 항목 보간은 묶이고 지목이 남는다")
+    void aRejectionMessageBoundsTheEntryWithoutLosingItsTail() {
+        String shortEntry = "시" + "\u200B".repeat(40) + "발";
+        assertThatThrownBy(
+                () -> ProfanityDictionary.of("chat:dict", Set.of(shortEntry), Set.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .extracting(Throwable::getMessage, InstanceOfAssertFactories.STRING)
+                .as("varchar(64) 안인 항목의 꼬리가 사라지면 당직자가 그 행을 못 집는다")
+                .contains("시")
+                .contains("발")
+                .doesNotContain("…(");
+
+        String huge = "시" + "\u200B".repeat(50_000);
+        assertThatThrownBy(() -> ProfanityDictionary.of("chat:dict", Set.of(huge), Set.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .extracting(Throwable::getMessage, InstanceOfAssertFactories.STRING)
+                .as("항목 길이가 안 묶이면 전파 거부 한 줄이 수십만 자가 된다")
+                .hasSizeLessThan(3_200)
+                .as("꼬리의 수가 원래 항목의 코드포인트여야 당직자가 그 행을 찾는다")
+                .contains("…(50001자)");
+    }
 
     private static ProfanityFilter filterFromDictionary() {
         ProfanityDictionary dictionary = ProfanityDictionary.load(null, null);
@@ -549,9 +593,15 @@ class ProfanityDictionaryTest {
     /**
      * 사전 최장 항목 길이 K 를 못 박는다 — <b>2B 최악 비용의 축</b>이다.
      *
-     * <p>ProfanityFilter 의 2B 는 인접 2~K 토큰을 조인하므로 반복이 O(토큰수 × K) 다. 그래서
-     * 사전에 긴 항목 하나를 더하는 것은 데이터 변경이 아니라 <b>지연 변경</b>이다 — 실측
-     * 211 / 531 / 1,357 / 3,011 µs (여분 항목 0 / 16 / 32 / 64자), 64자에서 332 msg/s.
+     * <p>ProfanityFilter 의 2B 는 인접 2~K 토큰을 조인하므로 반복이 O(토큰수 × K) 이고 조인마다
+     * 다시 K 가 붙는다. 그래서 사전에 긴 항목 하나를 더하는 것은 데이터 변경이 아니라
+     * <b>지연 변경</b>이다 — 실측(2026-11-05, 199자/100토큰) K 7 / 12 / 16 / 32 / 64 에서
+     * 144.7 / 296.7 / 468.6 / 1,272.0 / 2,844.4 µs, K=64 에서 352 msg/s. K 가 9.1배인데
+     * 비용이 19.7배이므로 선형이 아니다. 전체 표는 {@code MAX_WORD_LENGTH} javadoc 에 있다.
+     *
+     * <p>SPR-165 가 그 상한을 64 에서 <b>16</b> 으로 내렸다. 이 테스트가 고정하는 K=7 은 번들
+     * 데이터의 값이고 상한과 다르다 — 둘을 섞지 말 것. 상한 쪽 경계는
+     * {@code seventeenCharactersIsOverBudget}·{@code sixteenCharactersIsWithinBudget} 가 잡는다.
      *
      * <p>바로 위 {@code theAsciiEntriesAreExactlyThese} 가 이 축을 <b>못 지킨다.</b> K=7 을 만드는
      * 항목은 둘인데 하나만 ASCII 다 — {@code fuckyou} 와 {@code s하고e싶다x}. ASCII 집합을 박아
@@ -670,12 +720,89 @@ class ProfanityDictionaryTest {
     }
 
     @Test
-    @DisplayName("상한을 넘는 항목은 거부한다 — 단어 파일에 산문이 섞인 것이다")
+    @DisplayName("예산을 넘는 항목은 거부한다 — 단어 파일에 산문이 섞인 것이다")
     void anOverlongEntryFailsBoot() {
         assertThatThrownBy(() -> ProfanityDictionary.load(
                 "/chat/long-entry-dictionary.txt", WHITELIST, null, null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("너무 길다");
+                .hasMessageContaining("예산보다 길다");
+    }
+
+    /**
+     * ⭐ <b>{@code normalize} 가 고정점이어야 한다 — {@code normalize(normalize(x)) == normalize(x)}.</b>
+     *
+     * <p>그게 깨지면 관리자 쓰기에서 <b>저장값 ≠ 집행값</b>이 된다. 쓰기 경로는 한 번 접어
+     * 저장하고({@code ManageFilterWordsService.fold}) 사전 문은 받은 값에 {@code strip} 을 한 번
+     * 더 걸어 판정하므로, 두 번째 접기에서 더 떨어지는 글자가 있으면 저장된 행이 문에는 다르게
+     * 보인다. 실제로 선행 BOM 2개 이상에서 그랬다 — 저장 {@code <BOM>시발} · 집행 {@code 시발}.
+     *
+     * <p>피해가 삭제 불가다. {@code ?word=시발} 삭제는 접혀서 {@code 시발} 로 가고 DB 행은
+     * {@code <BOM>시발} 이라 <b>0행</b>이며 응답은 "이미 그 상태였다" 다. 정확히 같은 2중 BOM 을
+     * 다시 보내야만 맞는데, 접기가 모든 평범한 후보를 {@code 시발} 로 접으므로 <b>그 행을 가리킬
+     * 수 있는 입력이 없다.</b>
+     *
+     * <p><b>벡터를 손으로 적지 않고 생성한다.</b> 전에 이 축의 벡터가 넷이었고
+     * ({@code "시발\n"}·{@code "\n시발"}·{@code "  시발  "}·{@code "시발\t"}) 전부
+     * {@code String.strip()} 이 떼는 류 하나였다 — <b>이미 찾은 버그에서만 온 벡터</b>라 BOM 축을
+     * 보지 못했다. 글자 클래스 × 위치 × 반복 횟수로 돌리면 그 축이 나온다.
+     */
+    @Test
+    @DisplayName("⭐ normalize 는 고정점이다 — 저장값과 집행값이 갈리지 않는다")
+    void normalizeIsAFixedPoint() {
+        // 글자 클래스: strip 이 떼는 것 · BOM(떼지만 isWhitespace 가 아님) · 둘의 조합
+        String[] trimmable = {" ", "\t", "\n", "\r", "\u000B", "\f"};
+        String bom = "\uFEFF";
+        List<String> inputs = new ArrayList<>();
+        for (int repeat = 0; repeat <= 3; repeat++) {
+            String bomRun = bom.repeat(repeat);
+            for (String ws : trimmable) {
+                // 위치: 앞 · 뒤 · 양쪽 · BOM 사이에 공백이 끼는 모양
+                inputs.add(bomRun + "시발");
+                inputs.add("시발" + bomRun);
+                inputs.add(bomRun + ws + "시발");
+                inputs.add(ws + bomRun + "시발");
+                inputs.add(bomRun + ws + bomRun + "시발");
+                inputs.add(ws + bomRun + ws + "시발" + ws);
+            }
+        }
+
+        // 분모를 세어 적는다 — "통과" 만 적으면 다음 사람이 이 축이 얼마나 덮였는지 모른다.
+        assertThat(inputs).hasSize(144);
+        assertThat(inputs).allSatisfy(input -> {
+            String once = ProfanityDictionary.normalize(input);
+            assertThat(ProfanityDictionary.normalize(once))
+                    .as("normalize 가 고정점이 아니면 저장값과 집행값이 갈린다: %s",
+                            input.replace("\uFEFF", "<BOM>"))
+                    .isEqualTo(once);
+        });
+    }
+
+    /**
+     * ⭐ <b>예산의 경계를 양쪽에서 못 박는 두 벡터 중 거부 쪽.</b>
+     *
+     * <p>위 {@code anOverlongEntryFailsBoot} 는 픽스처가 70자라 상한이 16 이든 64 이든 떨어진다 —
+     * 즉 그 테스트는 "거부가 존재한다" 만 재고 <b>수를 재지 않는다.</b> 상한을 64 에서 16 으로
+     * 내리는 변경이 그 테스트를 초록으로 지나갔고, 그래서 경계 벡터를 따로 둔다.
+     *
+     * <p>이 하나만으로는 모자란다 — 상한을 1 로 내려도 초록이다. 바로 아래 통과 쪽과 둘이
+     * 상한을 <b>위아래로</b> 집어야 그 수가 테스트에 박힌다.
+     */
+    @Test
+    @DisplayName("⭐ 예산 경계 — 17자는 거부한다")
+    void seventeenCharactersIsOverBudget() {
+        assertThatThrownBy(() -> ProfanityDictionary.load("가".repeat(17), null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("예산보다 길다")
+                .as("수를 메시지에 실어야 운영자가 무엇을 줄여야 하는지 안다")
+                .hasMessageContaining("상한 16자");
+    }
+
+    /** ⭐ 경계의 통과 쪽 — 이것이 없으면 상한을 더 내리는 변경이 조용히 지나간다. */
+    @Test
+    @DisplayName("⭐ 예산 경계 — 16자는 통과한다")
+    void sixteenCharactersIsWithinBudget() {
+        assertThatCode(() -> ProfanityDictionary.load("가".repeat(16), null))
+                .doesNotThrowAnyException();
     }
 
     /**
@@ -698,12 +825,41 @@ class ProfanityDictionaryTest {
                 .hasMessageContaining("3번째 항목");
     }
 
+    /**
+     * ⭐ 예산이 <b>NFC 평면</b>에서 재진다는 것을 못 박는다 — 깨지면 예산이 3배까지 뚫린다.
+     *
+     * <p>{@code reject} 가 재는 길이와 {@code ProfanityFilter} 가 K 를 세는 길이가 같은 것은
+     * {@code fold} 의 성질이 아니라 <b>호출 순서</b> 덕이다: {@code reject} 는 항상
+     * {@code strip()} 뒤에 불리고 {@code strip} 의 마지막 줄이 {@code normalizeEntry}(NFC) 다.
+     *
+     * <p>NFC 는 늘릴 수 있다. 유니코드 전수에서 코드포인트가 늘어나는 글자가 85건이고, 최악은
+     * 악기 기호다 — {@code U+1D160} 하나가 NFC 에서 3 코드포인트 · UTF-16 <b>6자</b>가 된다.
+     * 아래 벡터는 원문 16자(예산 안)인데 NFC 20자(예산 밖)다. 길이 검사를
+     * {@code normalizeEntry} 앞으로 옮기면 이 줄이 통과하고 K 가 20 이 된다.
+     *
+     * <p>되돌려 재면 이 테스트만 깨진다 — 다른 길이 벡터는 전부 ASCII·한글이라 NFC 가 항등이다.
+     */
     @Test
-    @DisplayName("설정 CSV 의 상한 초과 항목도 거부한다")
-    void anOverlongEntryFromConfigFailsBoot() {
-        assertThatThrownBy(() -> ProfanityDictionary.load(null, "가".repeat(65)))
+    @DisplayName("⭐ 예산은 NFC 뒤에 잰다 — 원문 16자지만 NFC 20자인 항목은 거부한다")
+    void theBudgetIsMeasuredOnTheNfcPlane() {
+        String widening = "가".repeat(14) + new String(Character.toChars(0x1D160));
+        assertThat(widening.length())
+                .as("원문 길이로 재면 예산 안이다 — 그래서 이 벡터가 순서를 가른다")
+                .isEqualTo(16);
+
+        assertThatThrownBy(() -> ProfanityDictionary.load(widening, null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("너무 길다")
+                .hasMessageContaining("예산보다 길다")
+                .as("보고되는 수가 NFC 길이여야 한다 — 원문 16 을 보여 주면 운영자가 무엇을 줄일지 모른다")
+                .hasMessageContaining("20자");
+    }
+
+    @Test
+    @DisplayName("설정 CSV 의 예산 초과 항목도 거부한다")
+    void anOverlongEntryFromConfigFailsBoot() {
+        assertThatThrownBy(() -> ProfanityDictionary.load(null, "가".repeat(17)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("예산보다 길다")
                 .hasMessageContaining("chat.profanity.whitelist");
     }
 
@@ -812,10 +968,13 @@ class ProfanityDictionaryTest {
     void anEntryThatContainsNoProfanityNeverTripsTheResidueRule(String entry) {
         ProfanityDictionary dictionary = ProfanityDictionary.load(null, entry);
 
+        // ⚠️ 축을 <메시지 문자열>로 고른다. anySatisfy 만 쓰면 다른 축의 경고가 우연히 그 토큰을
+        // 품을 때 통과하므로 분모를 같이 박는다 — 이 입력이 내야 하는 경고는 정확히 하나다.
         assertThat(dictionary.warnings())
                 .as("'%s' 은(는) 푸는 것이 0건인데 '싼 접두를 준다' 로 거부되고 있었다 — 그 문면이 "
                         + "그 값에 대해 거짓이다", entry)
-                .anySatisfy(message -> assertThat(message).contains("아무것도"));
+                .hasSize(1)
+                .allSatisfy(message -> assertThat(message).contains("아무것도"));
     }
 
     /**
@@ -1160,5 +1319,211 @@ class ProfanityDictionaryTest {
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> dictionary.whitelist().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    /**
+     * ⭐ <b>경고 요약이 상한에서 끊기고, 그 20건이 실행마다 같다.</b>
+     *
+     * <p>상한이 필요한 이유는 그 줄이 ADMIN 쓰기마다 2회 · 발행마다 1회 · <b>파드마다 스냅샷
+     * 교체마다 1회</b> 나가고, 상한 없이 전량이 걸리면 한 줄이 35,966자였기 때문이다.
+     *
+     * <p>⚠️ <b>결정론이 상한과 같이 필요하다.</b> {@code warnings()} 가 {@code Set.copyOf} 를
+     * 돌려줄 때 그 집합의 순회 순서가 JVM 실행마다 달라져 상한이 <b>무작위 20건</b>을 골랐다 —
+     * 경고가 21건 이상이면 파드 둘이 같은 사전에 대해 다른 20건을 찍고, 운영자가 "외 N건" 을
+     * 보려고 재시작하면 또 다른 20건을 받는다. 값을 싣는 근거가 "그 행을 지목하기" 인데 21번째
+     * 이후에서는 지목이 성립하지 않았다.
+     *
+     * <p>상한 수는 {@link ProfanityFilterFactory#LOG_ENTRY_LIMIT} 를 참조한다 — 리터럴 20 을
+     * 적으면 상수를 내리는 변경에서 이 테스트만 갈린다(그 상수의 근거가 "두 자리가 같은 수를
+     * 쓰게 하는 단일 소스" 인데 테스트 면 참조가 0건이었다).
+     */
+    @Test
+    @DisplayName("⭐ 경고 요약이 상한에서 끊기고 그 선택이 실행마다 같다")
+    void theWarningSummaryIsCappedAndDeterministic() {
+        int limit = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
+        // ⚠️ 한때 여기에 같은 수의 픽스처(many)를 또 만들어 <아무 데도 먹이지 않고>
+        // assertThat(many).hasSize(...) 로 자기 자신을 단언했다 — 죽은 픽스처 + 항진명제다.
+        // summarize() 에 직접 먹이지 않고 warnings() 를 지난다. 직접 먹이면 순서를 버리는
+        // 결함(Set.copyOf)이 이 테스트를 비껴간다 — 실측으로 변이가 통과했다.
+        Set<String> whitelist = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < limit + 5; i++) {
+            whitelist.add("정상어" + i);
+        }
+        Set<String> warnings = ProfanityDictionary.of("probe", Set.of("시발"), whitelist).warnings();
+
+        // ⚠️ 표본이 <전수>여야 한다. 한때 첫 원소만 봤는데(`get(0)` 비교) 그러면 Set.copyOf 의
+        // SALT 가 우연히 그 원소를 머리에 놓는 1/25 에서 변이가 생존한다 — 테스트가 실행마다
+        // 흔들린다는 뜻이다. 그리고 `startsWith(List.copyOf(warnings).get(0))` 는 양변이 같은
+        // 순회 순서에서 나오므로 <항진명제>였다: 순서를 아무리 망가뜨려도 통과한다.
+        List<String> expected = whitelist.stream()
+                .map(entry -> "화이트리스트 항목 \"" + entry + "\" — 어떤 욕설도 품지 않아 "
+                        + "아무것도 보호하지 않는다")
+                .toList();
+        assertThat(warnings)
+                .as("순서를 버리면 같은 사전에서 파드마다 다른 %d건이 찍힌다 — Set.copyOf 의 순회 "
+                        + "순서는 JVM 실행마다 다르다", limit)
+                .containsExactlyElementsOf(expected);
+
+        String summary = ProfanityDictionary.summarize(warnings,
+                "나머지는 chat.profanity.words · chat.profanity.whitelist 를 직접 확인");
+
+        // ⚠️ 메시지 전체를 " · " 로 쪼개면 안 된다 — 꼬리 안내문에도 그 구분자가 들어간다.
+        // 나열 부분만 센다.
+        String listed = summary.substring(0, summary.indexOf(" … 외 "));
+        assertThat(listed.split(" · "))
+                .as("상한이 없으면 줄 길이가 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
+                .hasSize(limit);
+        // 마지막 원소에 꼬리(… 외 N건)가 붙으므로 split 전수 비교가 아니라 접두로 본다.
+        // 기대 문자열을 whitelist 에서 독립으로 만들었으므로 항진명제가 아니다.
+        assertThat(summary)
+                .as("보여 주는 %d건이 적재 순서의 앞 %d건이어야 지목이 재현된다", limit, limit)
+                .startsWith(String.join(" · ", expected.subList(0, limit)));
+        assertThat(summary).contains("외 5건").contains("직접 확인");
+    }
+
+    /**
+     * ⭐ <b>공개 요약이 항목 하나의 길이도 막는다 — 개수 상한만으로는 한 줄이 안 묶인다.</b>
+     *
+     * <p>{@code reject} 의 {@code MAX_WORD_LENGTH} 는 {@code of()}/{@code load()} <b>안에만</b>
+     * 있고 이 메서드의 공개 계약에는 없다. 그 계약이 "{@code reject} 를 안 지난 집합을 받을 수
+     * 있다" 를 <b>명시로 인정하므로</b>, 개수만 막으면 한 줄이 {@code 20 × 무한}이다 — 상한이
+     * 없을 때 35,966자가 나왔던 그 축이고, 제어문자 접기는 쪼개짐만 막고 길이는 안 막는다.
+     */
+    @Test
+    @DisplayName("⭐ 공개 요약이 항목 하나의 길이도 끊는다 — 개수 상한은 한 줄을 안 묶는다")
+    void thePublicSummaryTruncatesALongEntry() {
+        String long1 = "화이트리스트 항목 \"" + "가".repeat(5_000) + "\" — 아무것도 보호하지 않는다";
+
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of(long1)), "직접 확인");
+
+        assertThat(summary.length())
+                .as("개수만 막으면 한 줄이 항목 길이만큼 자란다 — 그 줄이 모든 교체에서 나간다")
+                .isLessThan(400);
+        assertThat(summary)
+                .as("자른 사실과 원래 길이를 적어야 당직자가 무엇을 못 보고 있는지 안다")
+                .contains("…(" + long1.length() + "자)")
+                .as("앞부분은 남아야 어느 항목인지 가늠할 수 있다")
+                .contains("화이트리스트 항목");
+    }
+
+    /**
+     * ⭐ <b>공개된 요약이 제어문자를 접는다 — 호출자를 묶는 규칙이 없기 때문이다.</b>
+     *
+     * <p>이 메서드는 지난 라운드에 {@code public} 이 됐다(소비처가 다른 모듈에 하나 더 있다).
+     * 그 순간 <b>{@code reject} 를 안 지난 집합</b>을 받을 수 있는 모양이 됐고, 호출자를 묶는
+     * 규칙은 없다(ArchUnit 규칙 21은 {@code install} 전용). 개행이 든 문장 하나가 로그 한 줄을
+     * 여러 줄로 쪼개면 그 줄을 읽는 쪽이 어긋난다.
+     *
+     * <p>⚠️ <b>이 벡터는 오늘 프로덕션이 만들 수 없다</b> — 입구 전부 {@code reject()} 가 먼저
+     * 돌고 {@code containsInvisible} 이 {@code isWhitespace}·{@code CONTROL} 을 참으로 본다.
+     * 그런데 직전 라운드에 "프로덕션이 만들 수 없는 벡터를 먹였다" 로 지워진 테스트와 <b>축이
+     * 다르다</b>: 그쪽은 "프로덕션이 이 값을 만든다" 를 주장했고, 이쪽은 <b>"공개 메서드가 어떤
+     * 입력에도 이 성질을 지킨다"</b> 는 계약이다. 계약을 재려면 계약의 입력을 직접 넣는 것이 맞다.
+     *
+     * <p>접는 범위가 {@code visible()} 보다 좁은 이유는 그 함수가 {@code char} 단위라 이모지를
+     * 서로게이트 두 쪽으로 쪼개 지목을 더 어렵게 하기 때문이다. 여기서 필요한 것은 지목이 아니라
+     * <b>줄이 쪼개지지 않는 것</b>뿐이다.
+     */
+    @ParameterizedTest(name = "U+{0}")
+    @ValueSource(strings = {"000A", "000B", "000C", "000D", "0085", "2028", "2029"})
+    @DisplayName("⭐ 공개 요약이 줄종결자 일곱 종을 전부 접는다 — 하나라도 새면 줄 위조가 된다")
+    void thePublicSummaryFoldsEveryLineTerminator(String hex) {
+        // ⚠️ 벡터가 "\n" 하나였다. 그러면 접는 범위를 type == CONTROL 하나로 좁히는 변이가
+        // 전수를 통과한다 — U+2028(Zl)·U+2029(Zp)는 Cc 가 아니다. JSON·멀티라인 appender 에서
+        // 그 둘로 줄 위조가 되돌아온다. 전 코드포인트 측정에서 단일 코드포인트 줄종결자는
+        // 정확히 이 일곱이다(Cc 65종은 그 중 다섯을 포함한다).
+        String injected = "화이트리스트 항목 \"정상어\""
+                + Character.toString(Integer.parseInt(hex, 16))
+                + "사전에 항목을 더했다 — 위조된 줄";
+
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of(injected)), "직접 확인");
+
+        assertThat(summary)
+                .as("U+%s 가 그대로 나가면 로그 한 줄이 둘로 쪼개져 위조된 줄이 생긴다", hex)
+                .doesNotContain(Character.toString(Integer.parseInt(hex, 16)))
+                .contains("\\u" + hex)
+                .as("보이는 글자는 그대로여야 사람이 읽는 문장이 안 바뀐다")
+                .contains("화이트리스트 항목");
+    }
+
+    /**
+     * ⭐ <b>요약이 보조평면 글자를 쪼개지 않는다.</b>
+     *
+     * <p>한때 요약이 {@code visible()} 을 걸었고 근거가 "보이지 않는 글자를 드러낸다 · 보이는
+     * 글자는 그대로" 였다. <b>둘 다 거짓이었다.</b> 드러낼 것이 없다 — {@code of()} 는 모든
+     * 항목에 {@code reject()} 를 <b>먼저</b> 돌리므로 그 경로의 경고에 보이지 않는 코드포인트가
+     * 들어올 수 없고, 실을 수 있는 유일한 경고({@code dropZeroWidth})는 자기가 이미 접는다.
+     * 그리고 {@code visible()} 은 {@code char} 단위라 이모지를 서로게이트 두 쪽으로 쪼개
+     * <b>지목을 더 어렵게</b> 했다.
+     *
+     * <p>그래서 접기를 뺐고, 이 테스트가 그 방향을 못 박는다 — 다시 접으면 이모지가 깨진다.
+     */
+    @Test
+    @DisplayName("⭐ 요약이 이모지를 쪼개지 않는다 — 접으면 지목이 더 어려워진다")
+    void theWarningSummaryDoesNotSplitSupplementaryCharacters() {
+        String warning = "화이트리스트 항목 \"시발abc😀\" — 욕설을 빼면 한글 음절이 남지 않는다";
+
+        assertThat(ProfanityDictionary.summarize(
+                        new java.util.LinkedHashSet<>(List.of(warning)), "직접 확인"))
+                .as("당직자는 CSV·테이블에서 그 항목을 찾아야 한다 — 서로게이트로 쪼개면 못 찾는다")
+                .isEqualTo(warning);
+    }
+
+    /**
+     * ⭐ <b>절단 경계에서도 이모지를 쪼개지 않는다.</b>
+     *
+     * <p>⚠️ 위 테스트의 벡터가 <b>57자</b>라 {@code truncate} 가 아예 돌지 않았다 — 이름이
+     * 주장하는 성질이 240 초과에서 거짓인데 그 모양을 구조적으로 볼 수 없었다.
+     * {@code substring} 이 {@code char} 경계라 경계에 이모지가 걸리면 짝 없는 서로게이트가
+     * 나간다.
+     *
+     * <p>프로덕션에서 도달한다: 설정 CSV {@code "😀시발" + ZWSP×28} → {@code dropZeroWidth} 가
+     * 333자 경고를 만들고 그 경계에 서로게이트가 놓인다. 그리고 <b>{@code visible()} 을 뺀 근거가
+     * 정확히 이 축</b>이었다 — 바로 아래 새 코드가 같은 축을 다시 연 모양이었다.
+     */
+    @Test
+    @DisplayName("⭐ 절단 경계에 이모지가 걸려도 쪼개지지 않는다 — 벡터가 57자라 안 돌던 자리다")
+    void truncationDoesNotSplitSupplementaryCharactersAtTheBoundary() {
+        String warning = "가".repeat(239) + "\uD83D\uDE00" + "꼬리".repeat(60);
+
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of(warning)), "직접 확인");
+
+        // ⚠️ 단위가 <코드포인트>다. 절단이 코드포인트 경계인데 꼬리의 수가 UTF-16 char 였고,
+        // 이모지가 섞이면 운영자가 세는 수와 두 배까지 벌어졌다. 그 단위를 여기서 핀으로 박는다 —
+        // char 로 되돌리는 변이가 이 단언에서 깨진다.
+        int codePoints = warning.codePointCount(0, warning.length());
+        assertThat(codePoints)
+                .as("벡터가 두 단위를 실제로 가르는지 먼저 확인한다 — 같으면 이 핀이 아무것도 안 잰다")
+                .isNotEqualTo(warning.length());
+        assertThat(summary)
+                .as("절단이 일어나야 이 테스트가 무언가를 잰다")
+                .contains("…(" + codePoints + "자)");
+        // 짝이 맞는 서로게이트는 codePoints() 에서 하나의 보조평면 코드포인트로 합쳐지고,
+        // <짝 없는> 쪽만 D800..DFFF 범위의 코드포인트로 남는다. 그 0 을 단언한다.
+        assertThat(summary.codePoints().filter(cp -> cp >= 0xD800 && cp <= 0xDFFF).count())
+                .as("짝 없는 서로게이트가 나가면 당직자가 CSV 에서 그 항목을 못 찾는다")
+                .isZero();
+    }
+
+    /**
+     * 도달 가능한 경고가 실제로 어떤 모양인지 못 박는다 — <b>프로덕션이 만들 수 있는 값</b>으로.
+     *
+     * <p>지운 테스트는 {@code summarize} 에 손으로 만든 {@code "… \"시발<BOM>\" …"} 을 먹였다.
+     * 프로덕션이 만들 수 없는 모양이고, 값을 단언하는 테스트가 프로덕션이 그 값을 만든다는
+     * 증거는 아니다.
+     */
+    @Test
+    @DisplayName("도달 가능한 경고에는 보이지 않는 글자가 없다 — 문이 먼저 거부한다")
+    void aReachableWarningCarriesNoInvisibleCodePoint() {
+        Set<String> warnings =
+                ProfanityDictionary.of("probe", Set.of("시발"), Set.of("시발abc")).warnings();
+
+        assertThat(warnings).isNotEmpty();
+        assertThat(ProfanityDictionary.summarize(warnings, "직접 확인"))
+                .as("of() 가 reject() 를 먼저 돌리므로 이 경로의 경고에는 들어올 수 없다")
+                .doesNotContain("\\u");
     }
 }

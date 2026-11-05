@@ -83,7 +83,7 @@ public class KickUserService implements KickUserUseCase {
 
         ChatRole kickerRole = kickerRole(command.kickerRole());
 
-        // 증거를 읽기 전에 거는 <b>거친</b> 관문이다. 방 주인도 관리자도 아니면 대상이 누구든 결론이 같아서,
+        // 증거를 읽기 전에 거는 거친 관문이다. 방 주인도 관리자도 아니면 대상이 누구든 결론이 같아서,
         // 대상의 역할을 몰라도 여기서 끝낼 수 있다. 이게 없으면 권한 없는 호출자도 증거 조회까지 도달해
         // 응답 차이로 messageId 존재를 훑는다. 최종 판정은 아래 정책이 한다 — 여기서는 정책을 흉내 내지
         // 않고, 정책이 확실히 거부할 경우만 앞당겨 끊는다.
@@ -130,7 +130,7 @@ public class KickUserService implements KickUserUseCase {
         // 강퇴는 당사자에게 KICKED 대신 BANNED로 렌더될 수 있고, 그게 더 정확한 값이다
         // ("다른 방으로 가면 되는가"가 두 코드를 가르는 기준이다).
         //
-        // 계정 발행은 <b>맨 뒤다.</b> 앞에 두면 이 발행이 실패할 때 그 뒤 문장이 통째로 건너뛰어지는데,
+        // 계정 발행은 맨 뒤다. 앞에 두면 이 발행이 실패할 때 그 뒤 문장이 통째로 건너뛰어지는데,
         // 그중 하나가 강퇴 명단 등록이다 — PUBLISH만 실패하는 일시 장애 중에 강퇴가 들어오면 그 방의
         // 강퇴가 아예 성립하지 않고, 밴이 만료되면 그 사람은 강퇴당한 적 없는 사람으로 돌아온다.
         // 이 발행이 하는 일은 "조용히 앉아 있는 세션을 지금 끊는 것"이라 주 집행보다 뒤에 서야 한다.
@@ -236,34 +236,9 @@ public class KickUserService implements KickUserUseCase {
      * 늘었을 때 그 사람이 이유 없이 강퇴에 실패하는 것으로만 드러난다.
      */
     private static ChatRole kickerRole(String platformRole) {
-        try {
-            return toChatRole(UserRole.valueOf(platformRole));
-        } catch (IllegalArgumentException e) {
-            throw new ChatPermissionDeniedException("알 수 없는 역할이다 — role=" + platformRole);
-        }
+        return ChatRole.fromPlatformRole(platformRole)
+                .orElseThrow(() -> new ChatPermissionDeniedException(
+                        "알 수 없는 역할이다 — role=" + platformRole));
     }
 
-    /**
-     * 플랫폼 역할 → 채팅 역할.
-     *
-     * <p>{@code default}를 쓰지 않는다. 목록이 늘면 컴파일이 깨져서 알려주도록 세 갈래를 모두 나열한다 —
-     * {@code default}로 접으면 새 역할이 조용히 구매자 취급을 받는다.
-     */
-    private static ChatRole toChatRole(UserRole role) {
-        return switch (role) {
-            case USER -> ChatRole.BUYER;
-            case SELLER -> ChatRole.SELLER;
-            case ADMIN -> ChatRole.ADMIN;
-        };
-    }
-
-    /**
-     * 플랫폼 역할 이름 — user 도메인의 열거와 같은 이름을 갖는다.
-     *
-     * <p>그쪽 타입을 직접 참조하지 않는 이유는 이 경로가 사용자 계정 도메인에 닿지 않기 위해서다.
-     * 이름이 갈라지면 위 파싱이 거부로 드러난다.
-     */
-    private enum UserRole {
-        USER, SELLER, ADMIN
-    }
 }
