@@ -73,7 +73,7 @@ public class ProfanityDictionaryPublishService {
     private static final int REPORT_LIMIT = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
 
     /** 문에 물어볼 때 실패 메시지에 실릴 출처 — 이 호출은 진단이고 집행 사전을 만들지 않는다. */
-    private static final String DOOR_PROBE_ORIGIN = "chat:filter-word:probe";
+    private static final String DOOR_PROBE_ORIGIN = ProfanityFilterFactory.ORIGIN_PROBE;
 
     /**
      * 정본을 그대로 한 장 떠서 발행한다.

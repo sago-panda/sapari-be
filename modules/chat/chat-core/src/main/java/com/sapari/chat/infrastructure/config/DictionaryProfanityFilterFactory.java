@@ -66,31 +66,33 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
     /**
      * 꼬리에 도달하는 길 — <b>{@code origin} 마다 다르다.</b>
      *
-     * <p>⚠️ 한때 이 자리가 "전량은 ADMIN 조회로 받아 다시 센다" 문자열 하나였고 주석이 "이
-     * 입구의 집합은 정본 테이블에서 왔으므로" 였다. {@code from()} 호출처 전수 6곳 /
-     * {@code origin} 4종에서 그 전제가 참인 것은 둘뿐이다:
-     * <pre>
-     *   source     guardSource (변경 전 테이블)        findWords 그대로        참
-     *   probe      PublishService 의 문 질의           findWords 그대로        참
-     *   source     guardRemoval (테이블 − 제거 항목)   조회가 더 많다          거짓
-     *   admin      guardRequested (테이블 + 요청)      그 항목이 조회에 없다   거짓
-     *   chat:dict  RefreshHandler (Redis 스냅샷)       조회와 무관             거짓
-     * </pre>
-     * 마지막 줄은 {@code of()} javadoc 이 스스로 "DB·Redis 직접 수정을 받는 마지막 문" 이라
-     * 적는 경로다. 그리고 {@code guardRequested} 쪽은 요청 항목이 {@code plus()} 로 <b>꼬리</b>에
-     * 들어가므로 상한 초과 시 잘리는 바로 그 항목이기도 하다 — 당직자가 조회를 쳐도 빈손이다.
+     * <p>한때 이 자리가 "전량은 ADMIN 조회로 받아 다시 센다" 문자열 하나였고 주석이 "이 입구의
+     * 집합은 정본 테이블에서 왔으므로" 였다. 그 전제는 {@code origin} 에 따라 참/거짓이 갈린다 —
+     * 스냅샷 입구의 집합은 Redis 에서 왔고, 운영자가 보낸 항목은 커밋 전이라 조회에 없다.
      *
-     * <p>{@code guardRemoval} 과 {@code guardSource} 가 같은 {@code origin} 을 쓰므로 그 둘은
-     * 안내가 같다("조회로 받아 다시 센다"). {@code guardRemoval} 쪽에서는 조회가 <b>더 많이</b>
-     * 돌려주는데, 그것은 빈손이 아니라 과다라서 당직자가 꼬리를 찾는 데는 쓸 수 있다.
+     * <p>⚠️ <b>호출처를 열거하지 않는다</b>({@link ProfanityFilterFactory} 의 같은 규칙).
+     * 열거했더니 바로 다음 라운드에 그 표가 5행인데 실제 호출처는 6곳이고 "참인 것은 둘" 이
+     * 실제로는 셋이었다. 세는 방법만 적는다:
+     * {@code grep -rn "filterFactory.from(\|\.from(" --include="*.java"} 에서 {@code build/} 를
+     * 뺀 것이 호출처이고, 각 호출처가 넘기는 {@code origin} 이 아래 분기를 고른다.
+     *
+     * <p>분기 키는 <b>리터럴이 아니라 포트 상수</b>다. 복제했을 때는 값이 바뀌면 조용히 일반
+     * 분기로 떨어지고, 그때 틀리는 것이 바로 이 안내였다.
      */
     private static String recoveryFor(String origin) {
-        if (origin.startsWith("chat:filter-word:source")
-                || origin.startsWith("chat:filter-word:probe")) {
+        if (ProfanityFilterFactory.ORIGIN_SOURCE.equals(origin)
+                || ProfanityFilterFactory.ORIGIN_PROBE.equals(origin)) {
             return "전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받아 다시 센다";
         }
-        if (origin.startsWith("chat:filter-word:admin")) {
-            return "요청 항목이 꼬리에 들어가므로 잘린 쪽이 그 항목일 수 있다 — 보낸 값을 확인";
+        if (ProfanityFilterFactory.ORIGIN_ADMIN.equals(origin)) {
+            // ⚠️ 조회 포인터를 <같이> 남긴다. 한때 이 분기가 "보낸 값을 확인" 만 말했는데,
+            // 잘리는 꼬리가 보통 요청 항목이 아니다 — warningEntries 가 words 루프를 먼저,
+            // whitelist 루프를 나중에 돌므로 kind=PROFANITY 추가에서 요청 항목의 경고는 머리
+            // 블록에 들고 꼬리는 화이트리스트 경고로 채워진다. 그 행들은 조회로 전부 받을 수
+            // 있다. kind=WHITELIST 추가에서만 요청 항목이 꼬리다 — 두 kind 중 하나에서만 참인
+            // 문구였다.
+            return "전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받되, 보낸 항목은 아직 커밋 "
+                    + "전이라 조회에 없다 — 그 항목이 잘렸는지는 보낸 값으로 확인";
         }
         return "이 집합은 ADMIN 조회로 못 본다(출처=" + origin + ") — 그 출처를 직접 확인";
     }

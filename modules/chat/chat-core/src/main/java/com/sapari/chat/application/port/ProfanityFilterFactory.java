@@ -54,8 +54,27 @@ public interface ProfanityFilterFactory {
     int LOG_ENTRY_LIMIT = 20;
 
     /**
-     * @param origin 실패 메시지에 실을 출처 이름(예: {@code "chat:dict"}). 세 입구 중 어디서
-     *               떨어졌는지가 당직자에게 가야 한다
+     * 입구 이름 — <b>생산하는 쪽과 그것으로 분기하는 쪽이 같은 상수를 쓰게 하는 단일 소스.</b>
+     *
+     * <p>⚠️ 한때 생산자는 각자 자기 클래스에 리터럴을 두고, 그것으로 분기하는
+     * {@code DictionaryProfanityFilterFactory.recoveryFor} 는 <b>리터럴을 복제</b>했다. 값이
+     * 바뀌면 조용히 일반 분기로 떨어지고, 그때 틀리는 것이 바로 운영자 복구 안내다. 레이어를
+     * 가로지르는 상수라 공유할 자리가 이 포트뿐이다({@link #LOG_ENTRY_LIMIT} 과 같은 이유).
+     */
+    String ORIGIN_SOURCE = "chat:filter-word:source";
+
+    /** 운영자가 보낸 항목이 섞인 결과 집합 — 그 항목은 아직 커밋 전이라 조회에 없다. */
+    String ORIGIN_ADMIN = "chat:filter-word:admin";
+
+    /** 발행 전 진단 질의. 집합이 정본 그대로다. */
+    String ORIGIN_PROBE = "chat:filter-word:probe";
+
+    /** 전파돼 온 스냅샷 — 집합이 Redis 에서 왔고 조회와 무관하다. */
+    String ORIGIN_SNAPSHOT = "chat:dict";
+
+    /**
+     * @param origin 실패 메시지에 실을 출처 이름. 세 입구 중 어디서 떨어졌는지가 당직자에게
+     *               가야 한다 — 위 {@code ORIGIN_*} 중 하나를 쓴다
      * @throws IllegalStateException 항목이 문을 통과하지 못했을 때. 메시지에 무엇이 왜
      *         떨어졌는지가 들어 있어야 한다 — 호출자가 그것을 로그에 그대로 싣는다
      */

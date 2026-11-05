@@ -233,11 +233,22 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   every dictionary write 500s forever; resetting to 1 → the same number carried two different bodies
   and pods holding 1 skipped it in silence).
 - **At the boundary cell the base falls to 0 and the next publish restarts at v1 — and that restart is
-  logged.** v1 *is* readable, which is the point; the residual is that a pod already holding 1 skips it,
-  and that residual is irreducible with ephemeral state (the publisher's javadoc records the axis).
-  Reaching the cell needs one out-of-band write plus one eviction/`DEL`, so it is not exotic. The WARN
-  deliberately tells the operator to verify **functionally** (does the word actually get masked?)
-  rather than by pod logs, because the receiving side leaves no trace for the equal case.
+  logged.** v1 *is* readable, which is what separates this from the discarded reset: the reset reused a
+  number *silently*, this one says so. Reaching the cell needs one out-of-band write plus one
+  eviction/`DEL`, so it is not exotic.
+
+  Two things that paragraph used to get wrong. **The residual is not "irreducible with ephemeral
+  state"** — the receiver has the decoded body in hand (`apply(snapshot, …)`), so comparing *content*
+  would close it; what keeps it open is the *choice* to compare only versions, and that choice is
+  cheap-but-not-free (a trie rebuild per equal-version poll). Do not read "irreducible" as a reason to
+  stop looking at that axis. And **the recovery is not "delete both keys"** — that reproduces the
+  deadlock (base 0 → v1 again). Measured: boundary + write → v1 (fleet at 1 skips) → `DEL` both →
+  v1 again → skip again; whereas *re-sending the same ADMIN write* bases on the 1 this publish just
+  wrote → v2 → the fleet applies. Adds are idempotent and publish even when nothing changed, so "send
+  it once more" is the whole procedure. Verify by the receiver's `갈아 끼웠다 … version=` INFO (its
+  absence for the response's `version` is the verdict) — the same check `FilterWordChange.version`'s
+  javadoc already prescribes; the functional check (does the word mask?) is the backup, since there is
+  no dry-run endpoint and it needs a live room.
 - **The config CSV (`chat.profanity.words`) is boot-only and dies at the first swap.** It is *not*
   merged into propagated filters on purpose: merging would make the enforced set differ from the set
   live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps

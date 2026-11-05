@@ -69,7 +69,7 @@ public class ProfanityDictionaryRefreshHandler {
     static final Duration VERSION_CHECK_INTERVAL = Duration.ofMinutes(1);
 
     /** 실패 메시지에 실을 출처 — 사전이 들어오는 세 입구 중 어디서 떨어졌는지가 당직자에게 가야 한다. */
-    private static final String ORIGIN = "chat:dict";
+    private static final String ORIGIN = ProfanityFilterFactory.ORIGIN_SNAPSHOT;
 
     private final ProfanityDictionaryChangedSource changedSource;
     private final ProfanityDictionarySnapshotReader snapshotReader;

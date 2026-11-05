@@ -1,9 +1,11 @@
 package com.sapari.chat.infrastructure.redis;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalLong;
 import java.util.Set;
 
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 
@@ -193,10 +195,11 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
     public long currentVersion() {
         boolean snapshotPresent = isPresent(ChatRedisKeys.dictSnapshot());
         boolean versionPresent = isPresent(ChatRedisKeys.dictVersion());
-        long head = tokenOf(ChatRedisKeys.dictSnapshot(), "스냅샷 본문");
-        long counter = tokenOf(ChatRedisKeys.dictVersion(), "버전 키");
-        long base = Math.max(head, counter);
-        if (base == 0L && (snapshotPresent || versionPresent)) {
+        List<String> reasons = new ArrayList<>();
+        OptionalLong head = tokenOf(ChatRedisKeys.dictSnapshot(), "스냅샷 본문", reasons);
+        OptionalLong counter = tokenOf(ChatRedisKeys.dictVersion(), "버전 키", reasons);
+        long base = Math.max(head.orElse(0L), counter.orElse(0L));
+        if (head.isEmpty() && counter.isEmpty() && (snapshotPresent || versionPresent)) {
             // ⚠️ 키가 <있는데> 기준이 0 이다 = 다음 발행이 v1 에서 다시 시작한다. 이 칸이
             // 한때 <전 경로 무음>이었다 — 발행은 200 이고 함대가 그 번호를 읽지 못하거나
             // 이미 들고 있어서 집행하지 않는데 로그가 한 줄도 없었다.
@@ -205,18 +208,34 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             // 함대가 이미 1 을 들고 있는 경우이고 — 그러면 그 발행을 건너뛴다 — 그것은 휘발
             // 저장만으로 환원되지 않는 잔차다(PUBLISH_SNAPSHOT javadoc). 그래서 적어도
             // <보이게> 만든다.
-            // ⚠️ 확인 방법을 <받는 쪽 로그로> 안내하지 않는다. 그 경로에 흔적이 없다 —
-            // RefreshHandler 가 published == processedVersion 을 로그 0줄로 떨어뜨리고(그 자리가
-            // 분마다 도는 평시 경로라 한 줄을 두면 Pod 당 분당 한 줄이 된다) 그 아래 동치 분기도
-            // 0줄이다. 되돌아간 버전(<)만 WARN 이 있고 같은 번호는 전 경로 무음이다.
-            // 그래서 <기능 확인>을 지시한다 — 그것이 이 상태에서 실제로 가능한 유일한 검증이다.
+            // ⚠️ 이 한 줄이 사유·확인·복구 셋을 말하는데 <셋 다 틀렸던> 자리다. 각각 고친 근거:
+            //
+            // 사유 — "기여 없음" 과 "값 0" 을 같은 0L 로 뭉개면 정상 값 "0" 에도 "문법 밖이다" 가
+            //   붙는다. tokenOf 가 OptionalLong 을 돌려주게 해서 그 둘을 가른다.
+            //
+            // 확인 — "받는 쪽에 흔적이 없으니 기능 확인이 유일하다" 가 거짓이었다. 적용 <성공>은
+            //   RefreshHandler 가 "갈아 끼웠다 … version=" INFO 로 남기므로 <기대 version 의 그
+            //   INFO 가 없음>이 그대로 판정이다. 그리고 그 방법이 이미 운영자에게 지시돼 있다
+            //   (ManageFilterWordsUseCase.FilterWordChange 의 version javadoc ·
+            //   ChatFilterWordController). 새 WARN 이 같은 저장소의 기존 안내와 반대를 말했다.
+            //   기능 확인은 보조로 둔다 — 전용 dry-run 경로가 0건이라 살아 있는 방과 WS 세션이
+            //   있어야만 되고, 사고 중에 그것이 보장되지 않는다.
+            //
+            // 복구 — "두 키를 지워 v1 을 다시 세울 것" 이 <교착을 재생산>했다. 실측:
+            //   두 키 자격 없음 + 긴급 쓰기 → v1(함대가 1 이면 건너뛴다)
+            //   그 뒤 두 키 DEL → 기준 0 → 또 v1 → 또 건너뛴다
+            //   그 뒤 지우지 않고 같은 요청 한 번 더 → 기준 1 → v2 → 함대가 적용
+            //   v1 발행이 두 키에 1 을 이미 써 놨으므로 다음 발행의 기준이 1 이고 그것은 자격을
+            //   통과한다. ADMIN 추가는 멱등 호출에도 발행하므로 "한 번 더" 로 끝난다.
             log.warn("사전 버전 기준이 0 으로 떨어졌다 — 키가 있는데 어느 쪽도 다음 번호의 기준이 "
-                            + "못 된다(문법 밖이거나, 읽히지만 +1 을 쌓으면 읽을 수 없는 번호가 "
-                            + "된다). 다음 발행이 v1 에서 다시 시작한다 — 함대가 이미 1 을 들고 "
-                            + "있으면 그 발행을 <조용히> 건너뛴다(받는 쪽에 흔적이 남지 않는다). "
-                            + "확인은 로그가 아니라 기능으로 한다: 방금 넣은 항목이 실제로 마스킹 "
-                            + "되는지 테스트 메시지로 보고, 안 되면 두 키를 지워 v1 을 다시 세울 "
-                            + "것. snapshot={} version={}", snapshotPresent, versionPresent);
+                            + "못 된다({}). 다음 발행이 v1 에서 다시 시작하고, 함대가 이미 1 을 "
+                            + "들고 있으면 그 발행을 조용히 건너뛴다. "
+                            + "확인: 받는 쪽 Pod 로그에서 \"갈아 끼웠다 … version=<응답의 version>\" "
+                            + "줄이 나왔는지 본다(없으면 안 깔린 것이다). "
+                            + "복구: 같은 ADMIN 쓰기를 한 번 더 보낸다 — 이 발행이 두 키를 1 로 "
+                            + "세웠으므로 다음 발행은 v2 가 되고 함대가 적용한다. 그래도 아니면 "
+                            + "수신 Pod 을 재시작한다. snapshot={} version={}",
+                    reasons, snapshotPresent, versionPresent);
         }
         return base;
     }
@@ -260,14 +279,22 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
     private boolean isPresent(String key) {
         try {
             return Boolean.TRUE.equals(redisTemplate.hasKey(key));
-        } catch (RuntimeException e) {
+        } catch (DataAccessException e) {
             // 타입과 무관하게 존재만 본다. 실패하면 "없다" 로 본다 — 진단이 본선을 죽이지 않는다.
             //
-            // ⚠️ 삼키면 <이 커밋의 유일한 관측 수단>이 같이 사라진다(두 키 다 실패하면 경계 칸
-            // WARN 이 안 나간다). 창은 좁다 — 같은 커넥션이면 뒤의 GET 이 터져 발행이 시끄럽게
-            // 실패한다. 그래도 삼킨 사실은 남긴다: 루트 AGENTS.md 가 "삼키려면 번역하거나
-            // 다시 던지라" 고 적고, 여기서 할 수 있는 것이 로그다.
-            log.debug("사전 키 존재 확인이 실패했다 — '없다' 로 본다. 두 키가 다 실패하면 경계 칸 "
+            // ⚠️ 두 가지를 고쳤다. (1) 레벨: 한때 debug 였고 주석이 "그래도 삼킨 사실은 남긴다"
+            // 를 적었는데 <배포 형상에서 0줄>이다 — application.yml.example 의
+            // `com.sapari.chat: INFO` 가 주석 처리된 한 줄이고 logback 파일이 0개이며, 레벨
+            // 런타임 변경 경로가 없어 재시작해야 한다. 그런데 재시작 자체가 이 상태의 복구
+            // 수단이라 그 로그가 필요한 순간에는 상태가 이미 사라진다.
+            // (2) 범위: RuntimeException 이었다. 같은 파일의 tokenOf 는 WRONGTYPE 아니면 다시
+            // 던지고, ManageFilterWordsService 는 "RuntimeException 이면 이 경로의 NPE 같은 코드
+            // 결함까지 한 줄로 사라진다" 를 근거로 좁혔다 — 여기만 더 넓게 잡고 더 낮게 적었다.
+            //
+            // 창은 좁다: 같은 커넥션이면 뒤의 GET 이 터져 발행이 시끄럽게 실패한다(tokenOf 가
+            // WRONGTYPE 외를 rethrow 한다). 그래도 삼킨 사실은 남겨야 하고, 이 경로의 실패가
+            // 경계 칸 WARN 을 없애는 것이라 WARN 이 맞는 레벨이다.
+            log.warn("사전 키 존재 확인이 실패했다 — '없다' 로 본다. 두 키가 다 실패하면 경계 칸 "
                     + "WARN 이 사라진다. key={} 사유={}", key, e.getClass().getSimpleName());
             return false;
         }
@@ -279,28 +306,31 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      * <p>세 경우를 가르지 않는 것이 의도다 — 토큰에 대해서는 전부 "이 키는 기준을 못 준다" 로
      * 같고, 셋 다 다음 발행이 {@code SET} 으로 덮어 고친다. 가르는 것은 로그뿐이다.
      */
-    private long tokenOf(String key, String what) {
+    private OptionalLong tokenOf(String key, String what, List<String> reasons) {
         String raw;
         try {
             raw = redisTemplate.opsForValue().get(key);
         } catch (RuntimeException e) {
             if (RedisWrongType.matches(e)) {
-                log.warn("사전 {}의 타입이 우리 것이 아니다 — 조건 비교에 기여하지 않는다(0). "
+                log.warn("사전 {}의 타입이 우리 것이 아니다 — 조건 비교에 기여하지 않는다. "
                                 + "다음 발행이 이 키를 덮어 고친다. key={}", what, key);
-                return 0L;
+                reasons.add(what + "=타입이 다르다");
+                return OptionalLong.empty();
             }
             throw e;
         }
         if (raw == null) {
-            return 0L;
+            return OptionalLong.empty();
         }
         OptionalLong token = ProfanityDictionarySnapshotCodec.readVersionToken(raw);
         if (token.isEmpty()) {
-            log.warn("사전 {}의 머리를 읽을 수 없다 — 조건 비교에 기여하지 않는다(0). 다음 발행이 "
+            log.warn("사전 {}의 머리를 읽을 수 없다 — 조건 비교에 기여하지 않는다. 다음 발행이 "
                             + "이 키를 덮어 고친다. key={} 길이={}", what, key, raw.length());
-            return 0L;
+            reasons.add(what + "=문법 밖이다");
+            return OptionalLong.empty();
         }
         if (!ProfanityDictionarySnapshotCodec.isEligibleBase(token.getAsLong())) {
+            reasons.add(what + "=읽히지만 +1 을 쌓으면 읽을 수 없는 번호가 된다");
             // 읽히기는 하는데 <여기에 다음 번호를 쌓을 수> 없다. 기준에 기여하지 않고, 다른 키가
             // 자격을 통과하면 그쪽으로 떨어진다.
             //
@@ -311,9 +341,9 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             log.warn("사전 {}의 값이 다음 번호의 기준이 못 된다 — 여기에 +1 을 쌓으면 함대가 읽을 "
                             + "수 없는 번호가 된다. 다른 키로 떨어진다. key={} 자리수={}",
                     what, key, Long.toString(token.getAsLong()).length());
-            return 0L;
+            return OptionalLong.empty();
         }
-        return token.getAsLong();
+        return token;
     }
 
     @Override

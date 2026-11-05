@@ -563,8 +563,22 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                     .as("키가 있는데 기준이 0 이면 다음 발행이 v1 에서 다시 시작한다 — 조용하면 "
                             + "함대가 그것을 건너뛰어도 아무도 모른다")
                     .anySatisfy(message -> assertThat(message)
+                            // 사유 — "기여 없음" 과 "값 0" 을 뭉개면 정상 값 0 에도 거짓 사유가 붙는다.
                             .contains("기준이 0 으로 떨어졌다")
-                            .contains("v1 에서 다시 시작"));
+                            .contains("v1 에서 다시 시작")
+                            .as("어느 키가 왜 기준이 못 됐는지가 없으면 당직자가 둘을 다 뒤진다")
+                            .contains("읽히지만 +1 을 쌓으면")
+                            // 확인 — 적용 성공은 받는 쪽 INFO 로 남으므로 그 부재가 판정이다.
+                            // 한때 이 WARN 이 "받는 쪽에 흔적이 없다 · 기능 확인이 유일" 이라
+                            // 적었는데, 같은 저장소의 FilterWordChange.version javadoc 이 이미
+                            // 그 INFO 와 맞춰 보라고 지시하고 있었다.
+                            .as("확인 방법이 틀리면 당직자가 없는 줄을 찾다가 '확인했다' 로 닫는다")
+                            .contains("갈아 끼웠다")
+                            // 복구 — 두 키 DEL 은 교착을 재생산한다(실측: 또 v1 → 또 건너뛴다).
+                            // 실효 복구는 같은 쓰기를 한 번 더 보내는 것이다(기준 1 → v2).
+                            .as("지시를 그대로 따르면 그 상태가 풀려야 한다 — DEL 은 v1 을 다시 쓴다")
+                            .contains("한 번 더 보낸다")
+                            .doesNotContain("두 키를 지워"));
         } finally {
             logger.detachAppender(appender);
             appender.stop();
