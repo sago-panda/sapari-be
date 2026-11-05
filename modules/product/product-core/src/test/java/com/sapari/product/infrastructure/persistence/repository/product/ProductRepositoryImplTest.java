@@ -7,8 +7,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sapari.product.domain.model.combination.CombinationKey;
+import com.sapari.product.domain.model.combination.ExclusionRule;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.model.combination.Stock;
+import com.sapari.product.domain.model.combination.SurchargeRule;
 import com.sapari.product.domain.model.product.ImageRole;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductImageRef;
@@ -19,6 +21,7 @@ import com.sapari.product.domain.model.product.ProductStatus;
 import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.domain.repository.product.ProductRepository;
+import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionConfigEntity;
 import com.sapari.product.support.AbstractRepositoryIntegrationTest;
 import com.sapari.product.support.ProductFixtures;
 import jakarta.persistence.EntityManager;
@@ -33,6 +36,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.orm.jpa.JpaObjectRetrievalFailureException;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * {@link ProductRepositoryImpl} 통합 테스트. 실제 Postgres(Testcontainers) + 실제 마이그레이션 스키마에서 루트 upsert와 자식(태그/이미지/옵션
@@ -52,6 +56,11 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
     ProductOptionValueJpaRepository optionValueJpaRepository;
     @Autowired
     ProductOptionCombinationRepository combinationRepository;
+    @Autowired
+    ProductOptionConfigJpaRepository optionConfigJpaRepository;
+
+    /** 저장된 jsonb 비교용 — 공백·키 순서와 무관하게 트리로 비교한다. */
+    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @PersistenceContext
     EntityManager em;
@@ -158,17 +167,17 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         }
 
         @Test
-        @DisplayName("jsonb(옵션 config)를 왕복 저장한다")
+        @DisplayName("옵션 config 룰을 jsonb로 왕복 저장한다 (빈 쪽은 빈 목록)")
         void persists_jsonb() {
-            Product reloaded = saveAndReload(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            Product input = ProductFixtures.full(SELLER_A, CATEGORY_1);
 
-            assertThat(reloaded.optionConfig()).isNotNull();
-            // jsonb는 정규화(공백/키 순서)되므로 부분 비교
+            Product reloaded = saveAndReload(input);
+
+            assertThat(reloaded.optionConfig()).isEqualTo(input.optionConfig());
             assertThat(reloaded.optionConfig()
-                    .surchargeRules()).contains("amount")
-                    .contains("1000");
+                    .surchargeRules()).hasSize(1);
             assertThat(reloaded.optionConfig()
-                    .exclusionRules()).isNull();
+                    .exclusionRules()).isEmpty();
         }
 
         @Test
@@ -358,8 +367,10 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
     @DisplayName("옵션 config 단독 교체(replaceOptionConfig)")
     class ReplaceOptionConfig {
 
-        private static final String SURCHARGE_JSON = "[{\"valueIds\":[\"00000000-0000-0000-0000-000000000001\"],\"amount\":700}]";
-        private static final String EXCLUSION_JSON = "[{\"valueIds\":[\"00000000-0000-0000-0000-000000000002\"],\"reason\":\"미생산\"}]";
+        private static final SurchargeRule SURCHARGE =
+                new SurchargeRule(List.of(UUID.fromString("00000000-0000-0000-0000-000000000001")), 700);
+        private static final ExclusionRule EXCLUSION =
+                new ExclusionRule(List.of(UUID.fromString("00000000-0000-0000-0000-000000000002")), "미생산");
 
         private Product reload(UUID productId) {
             em.flush();
@@ -384,32 +395,58 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         void inserts_when_absent() {
             Product saved = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
 
-            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(SURCHARGE_JSON, EXCLUSION_JSON));
+            productRepository.replaceOptionConfig(saved.id(),
+                    ProductOptionConfigModel.of(List.of(SURCHARGE), List.of(EXCLUSION)));
 
             Product after = reload(saved.id());
-            // jsonb는 정규화(공백/키 순서)되므로 부분 비교
             assertThat(after.optionConfig()
-                    .surchargeRules()).contains("\"amount\"")
-                    .contains("700");
+                    .surchargeRules()).containsExactly(SURCHARGE);
             assertThat(after.optionConfig()
-                    .exclusionRules()).contains("\"reason\"")
-                    .contains("미생산");
+                    .exclusionRules()).containsExactly(EXCLUSION);
+            // 저장 포맷은 DDL 주석의 jsonb 형식 그대로 — [{valueIds, amount}] / [{valueIds, reason}]
+            ProductOptionConfigEntity row = optionConfigJpaRepository.findById(saved.id())
+                    .orElseThrow();
+            assertThat(JSON.readTree(row.getSurchargeRules())).isEqualTo(JSON.readTree(
+                    "[{\"valueIds\":[\"00000000-0000-0000-0000-000000000001\"],\"amount\":700}]"));
+            assertThat(JSON.readTree(row.getExclusionRules())).isEqualTo(JSON.readTree(
+                    "[{\"valueIds\":[\"00000000-0000-0000-0000-000000000002\"],\"reason\":\"미생산\"}]"));
         }
 
         @Test
-        @DisplayName("기존 행이 있으면 두 룰 컬럼을 함께 교체한다(한쪽을 null로 비우는 것 포함)")
+        @DisplayName("기존 행이 있으면 두 룰 컬럼을 함께 교체한다(빈 쪽은 컬럼을 null로 비움)")
         void updates_when_present() {
             Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
             em.flush();
             em.clear();
 
-            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(null, EXCLUSION_JSON));
+            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(List.of(), List.of(EXCLUSION)));
 
             Product after = reload(saved.id());
             assertThat(after.optionConfig()
-                    .surchargeRules()).isNull();
+                    .surchargeRules()).isEmpty();
             assertThat(after.optionConfig()
-                    .exclusionRules()).contains("미생산");
+                    .exclusionRules()).containsExactly(EXCLUSION);
+            assertThat(optionConfigJpaRepository.findById(saved.id())
+                    .orElseThrow()
+                    .getSurchargeRules()).isNull();
+        }
+
+        @Test
+        @DisplayName("이미 저장된 jsonb 행(키 순서·공백이 달라도)을 룰 목록으로 읽는다 — 저장 포맷 호환")
+        void reads_existing_jsonb_row() {
+            Product saved = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+            optionConfigJpaRepository.save(ProductOptionConfigEntity.builder()
+                    .productId(saved.id())
+                    .surchargeRules("[ {\"amount\": 700, \"valueIds\": [\"00000000-0000-0000-0000-000000000001\"]} ]")
+                    .exclusionRules("[{\"reason\":\"미생산\",\"valueIds\":[\"00000000-0000-0000-0000-000000000002\"]}]")
+                    .build());
+
+            Product after = reload(saved.id());
+
+            assertThat(after.optionConfig()
+                    .surchargeRules()).containsExactly(SURCHARGE);
+            assertThat(after.optionConfig()
+                    .exclusionRules()).containsExactly(EXCLUSION);
         }
 
         @Test
@@ -440,7 +477,7 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
             List<UUID> before = optionValueIds(reload(saved.id()));
 
-            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(SURCHARGE_JSON, null));
+            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(List.of(SURCHARGE), List.of()));
 
             Product after = reload(saved.id());
             assertThat(before).isNotEmpty();
@@ -448,7 +485,7 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         }
 
         @Test
-        @DisplayName("같은 트랜잭션에서 save(옛 config 재기록) 직후 교체해도 새 룰이 남는다 (옵션 수정 유스케이스 경로)")
+        @DisplayName("같은 트랜잭션에서 save 직후 교체해도 새 룰이 남는다 (옵션 수정 유스케이스 경로)")
         void replaces_right_after_save_in_same_transaction() {
             Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
             em.flush();
@@ -456,15 +493,15 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             Product loaded = productRepository.findById(saved.id())
                     .orElseThrow();
 
-            // flush/clear 없이 연속 호출 — save가 옛 config를 관리 엔티티로 올린 상태에서 교체
+            // flush/clear 없이 연속 호출 — 옵션 수정 유스케이스처럼 루트 save 직후 같은 트랜잭션에서 교체
             productRepository.save(loaded);
-            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(null, EXCLUSION_JSON));
+            productRepository.replaceOptionConfig(saved.id(), ProductOptionConfigModel.of(List.of(), List.of(EXCLUSION)));
 
             Product after = reload(saved.id());
             assertThat(after.optionConfig()
-                    .surchargeRules()).isNull();
+                    .surchargeRules()).isEmpty();
             assertThat(after.optionConfig()
-                    .exclusionRules()).contains("미생산");
+                    .exclusionRules()).containsExactly(EXCLUSION);
         }
     }
 

@@ -32,8 +32,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 @DisplayName("ProductOptionRuleAssembler")
 class ProductOptionRuleAssemblerTest {
@@ -48,7 +46,6 @@ class ProductOptionRuleAssemblerTest {
     private static final int DEFAULT_STOCK = 100;
     private static final Map<String, UUID> REF_TO_ID = Map.of("c-red", RED, "c-blue", BLUE, "s-s", S, "s-m", M);
 
-    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private static ProductOptionValueCommand value(String value, String ref) {
         return new ProductOptionValueCommand(value, null, null, 0, (short) 1, ref);
@@ -377,40 +374,29 @@ class ProductOptionRuleAssemblerTest {
         }
 
         @Test
-        @DisplayName("DDL jsonb 형식으로 직렬화한다 — [{valueIds, amount}] / [{valueIds, reason}]")
-        void serializesInDdlShape() {
-            ProductOptionConfigModel config = ProductOptionRuleAssembler.toConfig(
-                    List.of(new SurchargeRule(List.of(RED, M), 500)),
-                    List.of(new ExclusionRule(List.of(BLUE, S), "미생산")));
+        @DisplayName("룰 목록을 그대로 config에 담는다 (직렬화는 영속 매퍼 몫)")
+        void carriesRulesAsIs() {
+            SurchargeRule surcharge = new SurchargeRule(List.of(RED, M), 500);
+            ExclusionRule exclusion = new ExclusionRule(List.of(BLUE, S), "미생산");
 
-            JsonNode surcharge = JSON.readTree(config.surchargeRules());
-            assertThat(surcharge.isArray()).isTrue();
-            assertThat(surcharge).hasSize(1);
-            assertThat(surcharge.get(0).propertyNames()).containsExactlyInAnyOrder("valueIds", "amount");
-            assertThat(surcharge.get(0).get("valueIds").valueStream().map(JsonNode::asString))
-                    .containsExactly(RED.toString(), M.toString());
-            assertThat(surcharge.get(0).get("amount").asInt()).isEqualTo(500);
+            ProductOptionConfigModel config = ProductOptionRuleAssembler.toConfig(List.of(surcharge), List.of(exclusion));
 
-            JsonNode exclusion = JSON.readTree(config.exclusionRules());
-            assertThat(exclusion).hasSize(1);
-            assertThat(exclusion.get(0).propertyNames()).containsExactlyInAnyOrder("valueIds", "reason");
-            assertThat(exclusion.get(0).get("valueIds").valueStream().map(JsonNode::asString))
-                    .containsExactly(BLUE.toString(), S.toString());
-            assertThat(exclusion.get(0).get("reason").asString()).isEqualTo("미생산");
+            assertThat(config.surchargeRules()).containsExactly(surcharge);
+            assertThat(config.exclusionRules()).containsExactly(exclusion);
         }
 
         @Test
-        @DisplayName("한쪽 룰만 있으면 다른 쪽 컬럼은 null")
+        @DisplayName("한쪽 룰만 있으면 다른 쪽은 빈 목록")
         void emptySideIsNull() {
             ProductOptionConfigModel onlySurcharge = ProductOptionRuleAssembler.toConfig(
                     List.of(new SurchargeRule(List.of(RED), 100)), List.of());
             ProductOptionConfigModel onlyExclusion = ProductOptionRuleAssembler.toConfig(
                     List.of(), List.of(new ExclusionRule(List.of(RED), null)));
 
-            assertThat(onlySurcharge.surchargeRules()).isNotNull();
-            assertThat(onlySurcharge.exclusionRules()).isNull();
-            assertThat(onlyExclusion.surchargeRules()).isNull();
-            assertThat(onlyExclusion.exclusionRules()).isNotNull();
+            assertThat(onlySurcharge.surchargeRules()).hasSize(1);
+            assertThat(onlySurcharge.exclusionRules()).isEmpty();
+            assertThat(onlyExclusion.surchargeRules()).isEmpty();
+            assertThat(onlyExclusion.exclusionRules()).hasSize(1);
         }
     }
 }

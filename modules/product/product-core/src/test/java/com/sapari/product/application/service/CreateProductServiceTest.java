@@ -24,7 +24,9 @@ import com.sapari.product.domain.exception.InvalidProductOptionException;
 import com.sapari.product.domain.exception.InvalidProductTagException;
 import com.sapari.product.domain.model.category.Category;
 import com.sapari.product.domain.model.combination.CombinationKey;
+import com.sapari.product.domain.model.combination.ExclusionRule;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
+import com.sapari.product.domain.model.combination.SurchargeRule;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductOptionModel;
@@ -54,14 +56,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("CreateProductService")
 class CreateProductServiceTest {
 
-    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private static final UUID SELLER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a1");
     private static final UUID SHIPPING_POLICY_ID = UUID.fromString("00000000-0000-0000-0000-0000000000c1");
@@ -380,7 +379,7 @@ class CreateProductServiceTest {
         }
 
         @Test
-        @DisplayName("룰을 저장된 옵션값 id로 직렬화해 config 행만 기록하고, 상품 save는 한 번만 한다 (옵션값 id 재발급 방지)")
+        @DisplayName("룰을 저장된 옵션값 id로 해석해 config 행만 기록하고, 상품 save는 한 번만 한다 (옵션값 id 재발급 방지)")
         void writesConfigWithResolvedIdsWithoutResaving() {
             stubHappyPath();
 
@@ -390,17 +389,10 @@ class CreateProductServiceTest {
             then(productRepository).should().replaceOptionConfig(eq(PRODUCT_ID), captor.capture());
             then(productRepository).should(times(1)).save(any());
 
-            JsonNode surcharge = JSON.readTree(captor.getValue().surchargeRules());
-            assertThat(surcharge).hasSize(1);
-            assertThat(surcharge.get(0).get("valueIds").valueStream().map(JsonNode::asString))
-                    .containsExactly(RED_ID.toString(), M_ID.toString());
-            assertThat(surcharge.get(0).get("amount").asInt()).isEqualTo(SURCHARGE);
-
-            JsonNode exclusion = JSON.readTree(captor.getValue().exclusionRules());
-            assertThat(exclusion).hasSize(1);
-            assertThat(exclusion.get(0).get("valueIds").valueStream().map(JsonNode::asString))
-                    .containsExactly(BLUE_ID.toString(), S_ID.toString());
-            assertThat(exclusion.get(0).get("reason").asString()).isEqualTo("미생산");
+            assertThat(captor.getValue().surchargeRules())
+                    .containsExactly(new SurchargeRule(List.of(RED_ID, M_ID), SURCHARGE));
+            assertThat(captor.getValue().exclusionRules())
+                    .containsExactly(new ExclusionRule(List.of(BLUE_ID, S_ID), "미생산"));
         }
 
         @Test

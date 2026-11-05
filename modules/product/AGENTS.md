@@ -30,6 +30,8 @@ Non-obvious facts that bite when you map entities:
   discount).
 - **`product_option_configs`** (1:1 with products) holds option authoring rules as `jsonb`
   (`surcharge_rules` / `exclusion_rules`) — materialized into combinations at write time, not read at runtime.
+  The domain holds typed `SurchargeRule`/`ExclusionRule` lists; the JSON shape lives only in the persistence
+  mapper (`OptionRuleJsonCodec`).
 - `products` sort/filter columns (`min_price`, `has_stock`, `purchase_count`, `avg_rating`,
   `*_count`) are **app-maintained denormalized caches**, not DB-computed.
 
