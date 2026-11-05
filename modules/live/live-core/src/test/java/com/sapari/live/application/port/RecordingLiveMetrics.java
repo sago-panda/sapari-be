@@ -22,6 +22,14 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public final List<String> transitions = new ArrayList<>();
     public final List<PromotionTrigger> promotions = new ArrayList<>();
     public int liveKitEgressRooms = -1;
+    public final List<EnterPopulation> enterRejections = new ArrayList<>();
+    public final List<EnterRejectionGate> enterRejectionGates = new ArrayList<>();
+
+    @Override
+    public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
+        enterRejections.add(population);
+        enterRejectionGates.add(gate);
+    }
 
     @Override
     public void reconcileRoundCompleted(ReconcileJob job, Duration took) {

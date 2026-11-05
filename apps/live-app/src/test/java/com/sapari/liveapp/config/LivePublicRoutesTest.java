@@ -27,6 +27,9 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
+import com.sapari.liveapp.security.EnterRateLimitFilter;
+import com.sapari.liveapp.security.EnterRateLimitProperties;
+import com.sapari.liveapp.security.EnterRateLimiter;
 import com.sapari.liveapp.security.StatelessJwtAuthenticationFilter;
 
 class LivePublicRoutesTest {
@@ -58,8 +61,15 @@ class LivePublicRoutesTest {
                 invocation.getArgument(1, HttpServletResponse.class).setStatus(401);
                 return null;
             }).when(entryPoint).commence(any(), any(), any());
+            // 입장 상한은 이 테스트의 축이 아니다 — 공개 경로 판정만 본다. 한도를 넉넉히
+            // 둬서 상한이 경로 판정 결과를 가리지 않게 한다.
+            EnterRateLimitFilter enterRateLimitFilter = new EnterRateLimitFilter(
+                    new EnterRateLimiter(new EnterRateLimitProperties(
+                            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
+                            com.sapari.live.application.port.LiveMetrics.NOOP));
             return new LiveSecurityConfig().liveFilterChain(http,
-                    new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)), entryPoint,
+                    new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
+                    enterRateLimitFilter, entryPoint,
                     mock(JwtAccessDeniedHandler.class));
         }
 

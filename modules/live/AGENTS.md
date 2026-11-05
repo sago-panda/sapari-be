@@ -290,6 +290,86 @@ through a bounded stream, not `@RequestBody byte[]`.
   status, so `updateEntityFromDomain` must write it from there or a re-save wipes it.
 - Ranking reads Redis only (`LiveRoomCache`), no DB.
 
+## Enter rate limit — the signing ceiling
+
+`enter` issues an RS256 token per call, so **every request costs a private-key signature**:
+measured 685µs (RSA-2048) = ~1,458/s per core. (The webhook path is *not* a comparison — it does no
+RSA verification; the LiveKit API secret is symmetric, which is why that path's own measurements
+scale with body size.) Two population buckets cap it (`live.enter.rate-limit.guest-*` and
+`.member-*`, defaults 500/s · burst 1000 each), with `member-shards` per-account buckets under the
+member one sized to let the global stay binding, in `EnterRateLimitFilter`, inside the security chain
+**after** the
+JWT filter; a rejected call returns **429 with `Retry-After`** and never reaches the use case, so
+neither the `findById` nor the signature is paid.
+
+- **This is a CPU ceiling, not availability protection** — the same requirement the webhook limit
+  carries, and **rps fairness belongs upstream**. The guest/member split covers one direction: a guest
+  flood cannot starve logged-in viewers. The room owner has no reserved capacity, so a saturated
+  member bucket blocks a seller from recovering the `owner` claim by reconnecting — bounded to the
+  reconnect moment, since existing WS sessions survive.
+- **Member traffic passes two gates with different jobs.** A shard bucket bounds **one account**;
+  the **global bucket enforces the aggregate ceiling**. `member-shards` (default 64) fixed-size
+  buckets are sized `ceil(global/shards)` — refill as is, burst times a headroom factor — so the
+  shard sums *exceed* the global and the global is the binding constraint. That is what makes the
+  configured number the real ceiling: with floor division the sums fell *below* it, and the defaults
+  enforced **448/s · burst 960** while the config said 500/s · burst 1000.
+  - **Shard first, then global.** Checking the global first lets a request the shard will reject burn
+    a global token anyway, so one account could drain the global while being refused. The mirror
+    image is real but smaller: a request rejected *by the global* has already spent its shard token.
+  - **Burst does not pool across shards.** Splitting the burst means the binomial tail becomes 429s:
+    with the burst split evenly, a 1,000-member reconnect storm — the demand vector this section
+    itself names — lost **12.0%** (measured, 3,000 trials). The headroom factor is set at mean + ~4σ,
+    where the same storm measures **0.0%**. The cost is that one account's one-shot rises to 32
+    (3.2% of the global burst); its sustained share stays at the shard refill (8/s).
+  - This bounds **blast radius, not fairness**: members hashed to the same shard are refused
+    together (~1.6% at 64 shards). Covering every shard is possible but superlinear — coupon
+    collector, **~301 accounts** for all 64, with 64 accounts reaching 63.5% coverage (measured).
+- **The shard key carries a process-local salt** — without it the shard is **targetable**. The key is
+  `sub` (= userId), `String.hashCode` is specified by the JDK, and the unauthenticated list response
+  (`GetLiveView.LiveRoomSummary.sellerId`) hands out a live seller's userId. An attacker could
+  compute that seller's shard offline and hold it empty with one account, which denies the seller the
+  `owner` claim that chat's kick and unmasked-original gates depend on. With the salt, placement
+  differs per instance; what remains is spraying, not aiming.
+- **Not per-IP, and not an unbounded per-principal map.** Per-IP for the same reason as the webhook
+  path (`X-Forwarded-For` is attacker-controlled → unbounded key space; `getRemoteAddr` collapses
+  everyone onto one proxy IP). A per-principal **map** is the same memory-growth path — which is why
+  this is a fixed-size **array**, bounded by construction *and* by an explicit `member-shards`
+  ceiling (4096); without that ceiling a typo could pass validation and allocate an array that fails
+  at allocation rather than at config validation.
+- **Rejections are counted** — `live.enter.rejected{population="guest"|"member", gate="shard"|"global"}`.
+  The `gate` tag exists because the two gates call for **opposite responses**: `shard` means one
+  account exceeded its own share (go find it), `global` means the aggregate hit the ceiling (raise the
+  limit or add capacity). Since the shard sums now exceed the global, most rejections under
+  distributed load are `global`, so merging them would hide exactly the signal the shard exists for.
+  Guest rejections are always `global` — guests have no shard.
+  - Tag values are lowercase (`name().toLowerCase()`); querying the uppercase form returns *no
+    series*, which is indistinguishable from no alert, so `PrometheusScrapeTest` pins the name and
+    every tag string against real scrape output.
+  - The limiter's log names its gate but is throttled per population, so one window can print only
+    one of the two — read the split from the metric, not the log. Scale is what separates "attack"
+    from "limit set too low"; the limit was derived from CPU cost, not from measured normal traffic.
+- **The pool is a denominator, but the signature no longer holds a connection.** `EnterLiveService`
+  `.enter` carries **no** `@Transactional` — the single `findById` runs in Spring Data's own read-only
+  transaction and the connection is returned before `issue(...)` signs (685µs). Hikari's default max
+  pool is **10** and no `maximum-pool-size` is set anywhere in this repo, so `findById` still shares
+  that budget. If `enter` ever grows a second read, wrap **only the read**.
+- **The limit does not throw.** `GlobalExceptionHandler` logs every 4xx, so throwing would emit one
+  WARN per rejected request and let an attacker saturate log I/O; the limiter's own throttling only
+  covers its own logger. The webhook filter avoids this the same way. The cost is that this 429
+  carries **no `error.code`**, unlike every other error on the endpoint.
+- **A controller must not assemble this.** `apps/AGENTS.md` forbids it and its raw-DTO exemption
+  covers success bodies only — that is why the cap is a filter, not a branch in `enterRoom`.
+- **`guest-permits-per-second` / `guest-burst` / `member-*` refuse to boot** when a limit is ≤0, a
+  burst is below its permits, `member-shards` is outside `1..4096`, or
+  `member-permits-per-second < member-shards` (the shard refills would then far exceed the global and
+  the shard would bound nothing) — the same fail-closed shape as the reconcile guards.
+- **Every bucket is instance-local** (population and shard alike), so the fleet limit is
+  `limit × replicas`; there is none.
+- **Recovery is a rolling restart** — the buckets are built once in the constructor and nothing here
+  is `@RefreshScope`.
+- The cap is on **issuance**, not on WS sessions: a room token is replayable within its TTL, so it
+  does not bound `MAX_SESSIONS_PER_USER_PER_ROOM` fan-out in streaming-app.
+
 ## Room token — chat entry auth
 
 `enter` issues an RS256 token; distinct key/alg/`aud` from the api-app HMAC token, never interchangeable.

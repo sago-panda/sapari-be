@@ -202,4 +202,36 @@ class EnterLiveServiceTest {
                 .isInstanceOf(InvalidLiveStateException.class);
         verify(roomTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any());
     }
+
+    /**
+     * ⭐ <b>{@code enter} 는 트랜잭션 안에서 돌지 않는다 — RS256 서명이 풀 커넥션을 쥐면
+     * 점유시간이 처리량 천장이 된다.</b>
+     *
+     * <p>서명은 실측 685µs(RSA-2048)이고 Hikari 기본 최대 풀은 10 이다. 읽기를 트랜잭션으로
+     * 감싸면 그 685µs 가 커넥션을 쥔 채 돌고, 고갈되면 피해자는 같은 풀을 쓰는
+     * 상태 전이들의 행 잠금 읽기다({@code StartLiveService}·{@code EndLiveService} 의
+     * {@code findByIdAndSellerIdForUpdate} 등 — 전수는 {@code EnterLiveService} javadoc).
+     *
+     * <p>⚠️ <b>이 단정이 재는 것은 애너테이션의 부재뿐이다.</b> 실제로 트랜잭션이 열리는지는
+     * 트랜잭션 매니저가 있는 컨텍스트에서만 관측되고 이 클래스는 Mockito 단위 테스트다. 그래도
+     * 벡터를 두는 이유는 이 결함의 모양이 <b>애너테이션을 다시 붙이는 것</b>이고, 그것을 막는
+     * 다른 칸이 없기 때문이다(그 모양으로 선재 결함이 있었다). 메서드 시그니처가 바뀌면
+     * {@code NoSuchMethodException} 으로 시끄럽게 깨진다.
+     */
+    @Test
+    @DisplayName("⭐ enter 는 트랜잭션 안에서 돌지 않는다 — 서명이 커넥션을 쥐지 않게")
+    void enterIsNotWrappedInATransaction() throws Exception {
+        java.lang.reflect.Method enter = EnterLiveService.class
+                .getDeclaredMethod("enter", EnterLiveCommand.class);
+
+        assertThat(enter.getAnnotation(
+                org.springframework.transaction.annotation.Transactional.class))
+                .as("트랜잭션을 다시 붙이면 RS256 서명(685µs)이 풀 커넥션을 점유한다. "
+                        + "읽기만 감싸야 한다면 그 읽기를 별 빈으로 떼라 — 이 메서드에 붙이지 말고.")
+                .isNull();
+        assertThat(EnterLiveService.class.getAnnotation(
+                org.springframework.transaction.annotation.Transactional.class))
+                .as("클래스에 붙이면 메서드에 붙인 것과 같다")
+                .isNull();
+    }
 }

@@ -34,6 +34,7 @@ import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
@@ -62,7 +63,7 @@ import org.mockito.ArgumentCaptor;
 // GlobalExceptionHandler 를 명시로 올린다 — 이 슬라이스에는 컴포넌트 스캔이 없어서
 // @RestControllerAdvice 가 자동으로 잡히지 않는다. 없으면 도메인 예외가 매핑되지 않고
 // ServletException 으로 터져 "400 이 아니다" 가 아니라 "테스트가 못 돈다" 가 된다.
-@Import({ChatHistoryController.class, LiveSecurityConfig.class, GlobalExceptionHandler.class})
+@Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, GlobalExceptionHandler.class})
 @DisplayName("이력 엔드포인트 — 비회원도 지나고, 신원은 인증 주체에서만 온다")
 class ChatHistoryControllerTest {
 

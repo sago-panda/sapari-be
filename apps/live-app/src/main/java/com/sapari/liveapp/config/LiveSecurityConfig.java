@@ -28,6 +28,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.StatelessJwtAuthenticationFilter;
 
 /**
@@ -272,6 +273,7 @@ public class LiveSecurityConfig {
     public SecurityFilterChain liveFilterChain(
             HttpSecurity http,
             StatelessJwtAuthenticationFilter statelessJwtAuthenticationFilter,
+            EnterRateLimitFilter enterRateLimitFilter,
             JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint,
             JwtAccessDeniedHandler jwtAccessDeniedHandler
     ) throws Exception {
@@ -373,6 +375,10 @@ public class LiveSecurityConfig {
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(statelessJwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                // 입장 상한은 JWT 필터 <뒤>에 선다 — 인증 여부로 버킷을 가르므로
+                // SecurityContextHolder 가 채워진 뒤여야 한다. 체인 밖 최상위 필터로 두면
+                // springSecurityFilterChain 자체가 하나의 필터라 그 순서가 보장되지 않는다.
+                .addFilterAfter(enterRateLimitFilter, StatelessJwtAuthenticationFilter.class)
                 .build();
     }
 }

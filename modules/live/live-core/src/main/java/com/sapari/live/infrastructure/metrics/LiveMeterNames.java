@@ -18,12 +18,17 @@ final class LiveMeterNames {
     static final String ROOM_ACTIVE = "live.room.active";
     static final String LIVEKIT_EGRESS_ROOMS = "live.livekit.egress.rooms";
 
+    /** 입장 상한이 거부한 건수. 집단은 {@code population} 태그로 가른다(값은 소문자). */
+    static final String ENTER_REJECTED = "live.enter.rejected";
+
     static final String TAG_JOB = "job";
     static final String TAG_OUTCOME = "outcome";
     static final String TAG_REASON = "reason";
     static final String TAG_ACTION = "action";
     static final String TAG_OP = "op";
     static final String TAG_RESULT = "result";
+    static final String TAG_POPULATION = "population";
+    static final String TAG_GATE = "gate";
     static final String TAG_FROM = "from";
     static final String TAG_TO = "to";
     static final String TAG_TRIGGER = "trigger";
