@@ -61,4 +61,74 @@ class TokenBucketTest {
 
         assertThat(drained).describedAs("유휴 300ms 뒤 꺼낼 수 있는 토큰").isEqualTo(capacity);
     }
+
+    /**
+     * ⭐ <b>동시 소비가 용량을 넘기지 않는다 — 상한 자체를 재는 유일한 칸.</b>
+     *
+     * <p>⚠️ 다른 칸들은 전부 단일 스레드다. 그래서 {@code tryAcquire} 의 CAS 소비를
+     * {@code set(current - SCALE); return true;} 로 되돌리는 회귀가 그 칸들을 <b>통째로
+     * 통과한다</b>(단일 스레드 대조에서 원본·변이 구분 불가). 그 회귀는 "상한" 자체를
+     * 거짓으로 만든다.
+     *
+     * <p>⚠️ <b>한 라운드로는 그 회귀가 33% 빠져나간다.</b> 첫 판이 한 라운드였고, 변이를
+     * <b>한 번</b> 돌려 잡힌 것을 보고 "닫혔다" 고 적었다 — 15회 반복에서는 5회가 생존한다.
+     * 생존은 상계가 느슨해서가 아니라 <b>경합이 안 일어나서</b>다: 경과가 8~20ms 라 스레드들이
+     * 경합 보장 전에 끝난다(생존 회차의 허용 건수가 용량과 같았다). 그래서 라운드를 쌓는다 —
+     * 라운드마다 새 버킷을 만들고 각 라운드의 상계를 따로 단정하면 적발이 전수가 된다.
+     *
+     * <p>단정은 <b>창 기반</b>이다 — 허용 건수가 {@code capacity + refill × 경과} 를 넘지
+     * 않아야 한다. 절대값을 못 박지 않는 이유는 리필이 실시간으로 돌아 경과가 측정값이기
+     * 때문이고, 여유를 한 토큰 두는 이유는 마지막 성공 뒤에도 시계가 흐르기 때문이다.
+     */
+    @Test
+    @DisplayName("⭐ 동시 소비가 용량을 넘기지 않는다")
+    void concurrentConsumptionNeverExceedsTheCeiling() throws Exception {
+        // 라운드마다 새 버킷. 한 라운드만 보면 경합이 안 일어난 회차가 그대로 통과한다.
+        for (int round = 0; round < 20; round++) {
+            assertOneRoundStaysUnderTheCeiling();
+        }
+    }
+
+    private static void assertOneRoundStaysUnderTheCeiling() throws Exception {
+        int capacity = 50;
+        int refillPerSecond = 50;
+        TokenBucket bucket = new TokenBucket(capacity, refillPerSecond);
+        int threads = 32;
+        java.util.concurrent.atomic.AtomicInteger granted =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch done =
+                new java.util.concurrent.CountDownLatch(threads);
+        long begin = System.nanoTime();
+
+        for (int t = 0; t < threads; t++) {
+            Thread worker = new Thread(() -> {
+                try {
+                    start.await();
+                    for (int i = 0; i < 2_000; i++) {
+                        if (bucket.tryAcquire()) {
+                            granted.incrementAndGet();
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
+            worker.setDaemon(true);
+            worker.start();
+        }
+        start.countDown();
+        assertThat(done.await(30, java.util.concurrent.TimeUnit.SECONDS))
+                .as("30초 안에 끝나야 한다 — 아니면 이 칸이 다른 것을 잰다")
+                .isTrue();
+
+        double elapsedSeconds = (System.nanoTime() - begin) / 1_000_000_000.0;
+        double ceiling = capacity + refillPerSecond * elapsedSeconds + 1;
+        assertThat(granted.get())
+                .as("동시 소비가 용량+리필을 넘으면 상한이 거짓이다 — 경과 %.3fs, 상계 %.1f",
+                        elapsedSeconds, ceiling)
+                .isLessThanOrEqualTo((int) Math.ceil(ceiling));
+    }
 }

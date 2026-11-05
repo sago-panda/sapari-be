@@ -290,6 +290,45 @@ through a bounded stream, not `@RequestBody byte[]`.
   status, so `updateEntityFromDomain` must write it from there or a re-save wipes it.
 - Ranking reads Redis only (`LiveRoomCache`), no DB.
 
+## Enter rate limit — the signing ceiling
+
+`enter` issues an RS256 token per call, so **every request costs a private-key signature**:
+measured 685µs (RSA-2048) = ~1,458/s per core. (The webhook path is *not* a comparison — it does no
+RSA verification; the LiveKit API secret is symmetric, which is why that path's own measurements
+scale with body size.) Two token buckets cap it (`live.enter.rate-limit.guest-*` and `.member-*`,
+defaults 500/s · burst 1000 each) in `EnterRateLimitFilter`, inside the security chain **after** the
+JWT filter; a rejected call returns **429 with `Retry-After`** and never reaches the use case, so
+neither the `findById` nor the signature is paid.
+
+- **This is a CPU ceiling, not availability protection** — the same requirement the webhook limit
+  carries, and **rps fairness belongs upstream**. Two buckets split one direction only: a guest flood
+  cannot starve logged-in viewers. **One member can still starve all members** (signup has no captcha
+  or email verification), and the room owner has no reserved capacity, so a saturated member bucket
+  blocks a seller from recovering the `owner` claim by reconnecting — bounded to the reconnect moment,
+  since existing WS sessions survive. Do not read "two buckets" as closing those.
+- **Not per-IP, and not per-principal.** Per-IP for the same reason as the webhook path. Per-principal
+  because self-service signup makes an unbounded **map** the same memory-growth path. That rebuttal
+  does *not* cover a fixed-size shard array or a `roomId` key — both finite; both considered and
+  declined, because this ticket's axis is the CPU ceiling.
+- **The cap raises the pool's exposure too.** The signature sits inside `EnterLiveService`'s
+  `@Transactional(readOnly = true)` (pre-existing), so each call holds a connection for it. Hikari's
+  default max pool is **10** and no `maximum-pool-size` is set anywhere in this repo; raising the
+  limit shrinks the exhaustion margin with it. Moving `issue(...)` out of the transaction is the fix
+  and is a separate ticket.
+- **The limit does not throw.** `GlobalExceptionHandler` logs every 4xx, so throwing would emit one
+  WARN per rejected request and let an attacker saturate log I/O; the limiter's own throttling only
+  covers its own logger. The webhook filter avoids this the same way. The cost is that this 429
+  carries **no `error.code`**, unlike every other error on the endpoint.
+- **A controller must not assemble this.** `apps/AGENTS.md` forbids it and its raw-DTO exemption
+  covers success bodies only — that is why the cap is a filter, not a branch in `enterRoom`.
+- **`guest-permits-per-second` / `guest-burst` / `member-*` refuse to boot** when a limit is ≤0 or a
+  burst is below its permits — the same fail-closed shape as the reconcile guards.
+- **Both buckets are instance-local**, so the fleet limit is `limit × replicas`; there is none.
+- **Recovery is a rolling restart** — the buckets are built once in the constructor and nothing here
+  is `@RefreshScope`.
+- The cap is on **issuance**, not on WS sessions: a room token is replayable within its TTL, so it
+  does not bound `MAX_SESSIONS_PER_USER_PER_ROOM` fan-out in streaming-app.
+
 ## Room token — chat entry auth
 
 `enter` issues an RS256 token; distinct key/alg/`aud` from the api-app HMAC token, never interchangeable.

@@ -35,6 +35,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
@@ -53,7 +54,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 @WebMvcTest(controllers = ChatBanController.class,
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
-@Import({ChatBanController.class, LiveSecurityConfig.class,
+@Import({ChatBanController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
         ChatBanReleaseAuthorizationTest.FixedClockConfig.class})
 @DisplayName("밴 해제 엔드포인트 — 관리자만 관문을 지난다")
 class ChatBanReleaseAuthorizationTest {

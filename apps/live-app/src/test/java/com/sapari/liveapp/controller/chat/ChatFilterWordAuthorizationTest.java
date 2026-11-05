@@ -40,6 +40,7 @@ import com.sapari.chat.port.ManageFilterWordsUseCase;
 import com.sapari.chat.view.FilterWordsView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
@@ -61,7 +62,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 @WebMvcTest(controllers = ChatFilterWordController.class,
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
-@Import({ChatFilterWordController.class, LiveSecurityConfig.class,
+@Import({ChatFilterWordController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
         ChatFilterWordAuthorizationTest.FixedClockConfig.class})
 @DisplayName("사전 관리 엔드포인트 — 세 메서드 전부 관리자만 지난다")
 class ChatFilterWordAuthorizationTest {

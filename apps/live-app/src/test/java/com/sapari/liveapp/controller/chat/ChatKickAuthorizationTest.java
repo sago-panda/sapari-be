@@ -35,6 +35,7 @@ import com.sapari.chat.port.KickUserUseCase;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
@@ -69,7 +70,7 @@ import java.time.ZoneOffset;
                 "management.endpoints.web.exposure.include=health,prometheus"})
 // 컨트롤러를 명시로 등록한다. 아래 TestApplication 은 @SpringBootConfiguration 뿐이라 컴포넌트
 // 스캔이 없고, 스캔이 없으면 @WebMvcTest 의 controllers 지정만으로는 빈이 생기지 않아 404 가 된다.
-@Import({ChatModerationController.class, LiveSecurityConfig.class,
+@Import({ChatModerationController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
         ChatKickAuthorizationTest.FixedClockConfig.class})
 @DisplayName("강퇴 엔드포인트 — 판매자와 관리자만 관문을 지난다")
 class ChatKickAuthorizationTest {

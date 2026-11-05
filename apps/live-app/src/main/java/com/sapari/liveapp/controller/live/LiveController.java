@@ -94,6 +94,10 @@ public class LiveController {
             @AuthenticationPrincipal LiveUserPrincipal principal
     ) {
         // 시청은 공개라 미인증(principal=null, 게스트)도 입장. 인증 회원은 신원을 실어 룸 토큰을 발급받는다.
+        //
+        // 발급 상한은 여기에 없다 — EnterRateLimitFilter 가 시큐리티 체인 안에서 먼저 본다.
+        // 컨트롤러에 두면 거부 응답을 여기서 조립해야 하고 그것이 apps/AGENTS.md 위반이다
+        // ("실패는 던진다, 조립하지 않는다"; 원시 DTO 면제는 성공 본문에 한정된다).
         EnterLiveCommand command = (principal == null)
                 ? new EnterLiveCommand(roomId, null, null, null, null)
                 : new EnterLiveCommand(roomId, principal.userId(), principal.role(),
