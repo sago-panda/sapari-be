@@ -321,7 +321,7 @@ class EnterRateLimitFilterTest {
     @Test
     @DisplayName("⭐ 거부가 집단 태그와 함께 지표로 나간다")
     void rejectionsAreCounted() throws Exception {
-        CountingEnterMetrics metrics = new CountingEnterMetrics();
+        CountingLiveMetrics metrics = new CountingLiveMetrics();
         EnterRateLimitFilter filter = filter(props(1, 1), metrics);
         CountingChain chain = new CountingChain();
 

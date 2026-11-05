@@ -75,7 +75,8 @@ class LivePublicRoutesTest {
             // 세우기 위한 것이고, 호출이 생기면 Mockito 기본값(false=폐기 아님)이라
             // 경로 판정을 가리지 않는다.
             TokenRevocationFilter tokenRevocationFilter = new TokenRevocationFilter(
-                    mock(AccessTokenRevocationChecker.class), mock(SessionRevocationChecker.class));
+                    mock(AccessTokenRevocationChecker.class), mock(SessionRevocationChecker.class),
+                    com.sapari.live.application.port.LiveMetrics.NOOP);
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
                     enterRateLimitFilter, tokenRevocationFilter, entryPoint,

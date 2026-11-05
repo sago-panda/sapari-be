@@ -30,7 +30,7 @@ class EnterRateLimiterTest {
     @Test
     @DisplayName("⭐ 주체 없는 인증 요청도 전역 천장을 받는다")
     void nullSubjectStillHitsTheGlobalCeiling() {
-        CountingEnterMetrics metrics = new CountingEnterMetrics();
+        CountingLiveMetrics metrics = new CountingLiveMetrics();
         EnterRateLimiter limiter = new EnterRateLimiter(
                 new EnterRateLimitProperties(1, 1, 2, 2, 2), metrics, () -> 0L);
 

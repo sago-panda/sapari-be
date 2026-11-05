@@ -98,7 +98,8 @@ class LiveFilterOrderTest {
                             new EnterRateLimitProperties(1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
                             LiveMetrics.NOOP));
             TokenRevocationFilter tokenRevocationFilter = new TokenRevocationFilter(
-                    mock(AccessTokenRevocationChecker.class), mock(SessionRevocationChecker.class));
+                    mock(AccessTokenRevocationChecker.class), mock(SessionRevocationChecker.class),
+                    LiveMetrics.NOOP);
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
                     enterRateLimitFilter, tokenRevocationFilter,

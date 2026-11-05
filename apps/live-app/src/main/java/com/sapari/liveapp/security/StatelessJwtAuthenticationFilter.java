@@ -32,7 +32,8 @@ import com.sapari.common.securityjwt.jwt.JwtTokenType;
  *
  * <p><b>폐기 조회는 이 필터가 하지 않는다 — 안 하는 것이 아니라 뒤에서 한다.</b>
  * {@link TokenRevocationFilter}가 입장 상한({@link EnterRateLimitFilter}) <b>뒤</b>에서
- * {@code jti}·{@code sid}를 조회해 폐기된 토큰의 인증을 거둔다. 그 자리가 여기가 아닌 이유는
+ * {@code jti}·{@code sid}를 조회해 폐기된 토큰의 인증을 거둔다(묻지 못하면 거두는 대신
+ * {@code 503}으로 끊는다 — 그쪽 javadoc 참고). 그 자리가 여기가 아닌 이유는
  * 비용이다 — 상한은 인증 여부로 버킷을 가르므로 이 필터 뒤에 서고, 폐기 조회를 여기에 넣으면
  * 상한에 걸려 거부될 요청까지 Redis 왕복을 치고 간다. 그래서 claims에서 읽은 두 식별자를
  * {@link LiveUserPrincipal}에 실어 넘긴다(재파싱 없음).

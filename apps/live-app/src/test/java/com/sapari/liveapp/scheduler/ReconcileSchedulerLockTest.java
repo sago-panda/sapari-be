@@ -488,11 +488,19 @@ class ReconcileSchedulerLockTest {
             return skippedLocks.get();
         }
 
-        /** 이 페이크가 세는 축이 아니다 — 입장 상한은 다른 테스트가 센다. */
+        /** 이 페이크가 세는 축이 아니다 — 입장 상한과 폐기 조회는 다른 테스트가 센다. */
         @Override
         public void enterRateLimited(
                 com.sapari.live.application.port.EnterPopulation population,
                 com.sapari.live.application.port.EnterRejectionGate gate) {
+        }
+
+        @Override
+        public void tokenRevocationHit(com.sapari.live.application.port.TokenRevocationAxis axis) {
+        }
+
+        @Override
+        public void tokenRevocationLookupFailed() {
         }
 
         @Override
