@@ -20,7 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
 /**
- * Product 애그리거트 영속 어댑터. 루트 upsert + 자식(tags/images/options/config) replace. 트랜잭션 경계는 application 레이어가 소유한다(여기서는 선언하지
+ * Product 애그리거트 영속 어댑터. 루트 upsert + 태그·이미지 replace, 옵션 트리는 신규 INSERT 또는 {@link #replaceOptionTypes}로만 쓴다. 트랜잭션 경계는 application 레이어가 소유한다(여기서는 선언하지
  * 않음).
  */
 @Repository
@@ -53,8 +53,25 @@ public class ProductRepositoryImpl implements ProductRepository {
             }
             mapper.updateEntityFromDomain(entity, product);
             entity = productJpaRepository.save(entity);
+            // 기존 상품은 태그·이미지만 동기화 — 옵션 트리를 다시 쓰면 옵션값 id가 재발급돼 조합·룰의 참조가 깨진다
+            replaceTagsAndImages(entity.getId(), product);
+            return loadAggregate(entity);
         }
-        replaceChildren(entity.getId(), product);
+        UUID productId = entity.getId();
+        replaceTagsAndImages(productId, product);
+        insertOptionTypes(productId, product.optionTypes());
+        if (product.optionConfig() != null) {
+            optionConfigJpaRepository.save(mapper.toConfigEntity(productId, product.optionConfig()));
+        }
+        return loadAggregate(entity);
+    }
+
+    @Override
+    public Product replaceOptionTypes(UUID productId, List<ProductOptionTypeModel> optionTypes) {
+        ProductEntity entity = productJpaRepository.findById(productId)
+                .orElseThrow(() -> new EntityNotFoundException("상품을 찾을 수 없습니다: " + productId));
+        deleteOptionTypes(productId);
+        insertOptionTypes(productId, optionTypes);
         return loadAggregate(entity);
     }
 
@@ -79,9 +96,9 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     /**
-     * 자식 컬렉션을 단순 replace(전체 삭제 후 재삽입)로 동기화한다.
+     * 태그·이미지를 단순 replace(전체 삭제 후 재삽입)로 동기화한다. 둘 다 다른 행이 id로 참조하지 않으므로 재삽입해도 안전하다.
      */
-    private void replaceChildren(UUID productId, Product product) {
+    private void replaceTagsAndImages(UUID productId, Product product) {
         tagJpaRepository.deleteByProductId(productId);
         if (!product.tags()
                 .isEmpty()) {
@@ -99,19 +116,31 @@ public class ProductRepositoryImpl implements ProductRepository {
                     .map(mapper::toImageEntity)
                     .toList());
         }
+    }
 
+    /**
+     * 상품의 옵션 타입/값 행을 모두 삭제하고, 이어지는 INSERT보다 먼저 DB에 반영한다.
+     */
+    private void deleteOptionTypes(UUID productId) {
         List<ProductOptionTypeEntity> existingTypes = optionTypeJpaRepository.findByProductId(productId);
-        if (!existingTypes.isEmpty()) {
-            optionValueJpaRepository.deleteByOptionTypeIdIn(
-                    existingTypes.stream()
-                            .map(ProductOptionTypeEntity::getId)
-                            .toList());
-            optionTypeJpaRepository.deleteByProductId(productId);
-            // 삭제를 INSERT보다 먼저 DB에 반영한다. Hibernate는 한 flush 안에서 INSERT를 DELETE보다 먼저 실행하므로,
-            // 동일 (product_id, name) 옵션 타입을 교체하면 부분 유니크(deleted_at IS NULL) 제약과 충돌한다.
-            optionTypeJpaRepository.flush();
+        if (existingTypes.isEmpty()) {
+            return;
         }
-        for (ProductOptionTypeModel typeModel : product.optionTypes()) {
+        optionValueJpaRepository.deleteByOptionTypeIdIn(
+                existingTypes.stream()
+                        .map(ProductOptionTypeEntity::getId)
+                        .toList());
+        optionTypeJpaRepository.deleteByProductId(productId);
+        // 삭제를 INSERT보다 먼저 DB에 반영한다. Hibernate는 한 flush 안에서 INSERT를 DELETE보다 먼저 실행하므로,
+        // 동일 (product_id, name) 옵션 타입을 교체하면 부분 유니크(deleted_at IS NULL) 제약과 충돌한다.
+        optionTypeJpaRepository.flush();
+    }
+
+    /**
+     * 옵션 타입과 그 값을 INSERT한다. 각 행은 새 id를 받는다.
+     */
+    private void insertOptionTypes(UUID productId, List<ProductOptionTypeModel> optionTypes) {
+        for (ProductOptionTypeModel typeModel : optionTypes) {
             ProductOptionTypeEntity savedType = optionTypeJpaRepository.save(mapper.toTypeEntity(productId, typeModel));
             if (!typeModel.values()
                     .isEmpty()) {
@@ -120,12 +149,6 @@ public class ProductRepositoryImpl implements ProductRepository {
                         .map(v -> mapper.toValueEntity(savedType.getId(), v))
                         .toList());
             }
-        }
-
-        if (product.optionConfig() != null) {
-            optionConfigJpaRepository.save(mapper.toConfigEntity(productId, product.optionConfig()));
-        } else if (optionConfigJpaRepository.existsById(productId)) {
-            optionConfigJpaRepository.deleteById(productId);
         }
     }
 

@@ -41,6 +41,10 @@ JPA entities live in `infrastructure/persistence/entity/<aggregate>/`, split by 
 types/values/config are **inside the Product aggregate**, edited with the product), `combination` (own
 aggregate — runtime stock/price, referenced by orders by id).
 
+**Option value ids must stay stable** — combinations (and option rules) reference them by id. `ProductRepository.save`
+on an existing product writes the root + tags/images only; the option tree is written only on INSERT or by
+`replaceOptionTypes` (delete + re-insert ⇒ new ids — the option-replace use case alone).
+
 **DDL-only tables** — `product_group_*`, `stock_reservations`, `discount_*`, `combination_winning_discounts`,
 `product_faq`/`product_inquiry_images`, `weekly_best_products`, `audit_logs`, `product_search_logs`,
 `search_keyword_daily_stats`, `outbox_events` — have **no entity/repository/domain code** on purpose: their
