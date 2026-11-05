@@ -313,10 +313,13 @@ neither the `findById` nor the signature is paid.
   global capacity while being refused.
   - This bounds **blast radius, not fairness**: members hashed to the same shard are refused together,
     and `member-shards` accounts drain every shard.
-  - ⚠️ With a non-null `sub` the **global bucket's reject branch is unreachable** — boot validation
-    forces `burst >= permits >= shards`, so integer division makes the shard capacities sum to at most
-    the global capacity (the same holds for refill). The global bucket enforces alone only on the
-    `sub == null` path, which `EnterRateLimiterTest` is the vector for.
+  - ⚠️ **While every call carries a non-null `sub`, the global bucket's reject branch is
+    unreachable** — boot validation forces `burst >= permits >= shards`, integer division makes the
+    shard capacities and refills sum to at most the global ones, and each global consumption is
+    paired with a shard consumption. A `sub == null` call breaks the pairing (it skips the shard and
+    spends only a global token), which is why the global check is not narrowed to that path;
+    `EnterRateLimiterTest` is its vector. `EnterRateLimitFilter` never produces one — it passes
+    `member.userId().toString()`, which would NPE on a null id rather than pass null.
 - **Not per-IP, and not an unbounded per-principal map.** Per-IP for the same reason as the webhook
   path (`X-Forwarded-For` is attacker-controlled → unbounded key space; `getRemoteAddr` collapses
   everyone onto one proxy IP). A per-principal **map** is the same memory-growth path — which is why

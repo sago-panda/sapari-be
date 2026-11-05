@@ -133,9 +133,16 @@ public class EnterRateLimiter {
      * <b>샤드에서 떨어질 요청까지 전역 토큰을 소모</b>하므로, 한 계정이 자기 샤드 용량이 아니라
      * 전역 용량만큼의 토큰을 거부당하면서 태울 수 있다.
      *
-     * <p>⚠️ 샤드를 지난 뒤 전역이 거부하는 분기는 {@code subject != null} 에서 <b>도달하지
-     * 않는다</b> — 설정 검증이 {@code burst >= permits >= shards} 를 강제해 샤드 용량의 합이
-     * 전역 용량을 넘지 못한다. 전역 버킷이 혼자 집행하는 경우는 아래 {@code null} 경로뿐이다.
+     * <p>⚠️ 샤드를 지난 뒤 전역이 거부하는 분기는 <b>모든 호출이 {@code subject != null} 인
+     * 동안</b> 도달하지 않는다 — 설정 검증이 {@code burst >= permits >= shards} 를 강제하고
+     * 정수 나눗셈이라 샤드 용량·리필의 합이 전역의 그것을 넘지 못하고, 전역 소모 1건마다
+     * 샤드 소모 1건이 짝지어지기 때문이다.
+     *
+     * <p>⚠️ <b>{@code null} 호출이 섞이면 그 전제가 깨진다</b> — 그 호출은 샤드를 건너뛰고
+     * 전역만 소모하므로 짝이 없고, 그만큼 전역이 샤드보다 먼저 빌 수 있다. 그래서 전역 검사를
+     * {@code null} 경로 전용으로 좁히지 않는다. {@code EnterRateLimitFilter} 는 {@code null}
+     * 을 만들지 않으므로({@code member.userId().toString()} — {@code userId} 가 {@code null}
+     * 이면 거기서 NPE 다) 운영에서는 짝이 유지된다.
      *
      * @param subject 검증된 JWT 의 주체. {@code null} 이면 샤드를 건너뛴다 — 신원 없는 인증
      *                요청은 없어야 하지만, 있다면 전역 천장은 그대로 적용돼야 한다.
