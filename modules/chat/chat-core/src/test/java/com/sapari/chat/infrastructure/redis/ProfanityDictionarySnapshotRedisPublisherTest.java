@@ -17,6 +17,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -429,9 +430,10 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                 new Vector(" 12", false, false, 0L),
                 new Vector("-5", false, false, 0L),
                 new Vector("+7", false, false, 0L),
-                new Vector("12abc", false, false, 0L));
+                new Vector("12abc", false, false, 0L),
+                new Vector("", false, false, 0L));
 
-        assertThat(table).hasSize(13);
+        assertThat(table).hasSize(14);
         for (Vector v : table) {
             redisTemplate.delete(List.of(SNAPSHOT, VERSION));
             redisTemplate.opsForValue().set(VERSION, v.versionKey());
@@ -561,12 +563,15 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
      * 조용히 건너뛴다 — 경계 칸과 <b>같은 피해</b>다. "문법 밖이라서" 가 아니라 "기준이 0 이라서"
      * 가 그 WARN 의 조건이다.
      */
-    @ParameterizedTest(name = "version=\"{0}\"")
-    @ValueSource(strings = {"0", "0\n1\n0\n시발\n", "999999999999998", "999999999999999",
-            "1000000000000000", " 12", "-5", "12abc"})
-    @DisplayName("⭐ 기준이 0 인 모든 칸에서 WARN 이 나간다 — 술어가 덮는 집합을 잰다")
-    void everyZeroBaseCellWarns(String versionKey) {
-        redisTemplate.opsForValue().set(VERSION, versionKey);
+    @ParameterizedTest(name = "{0}=\"{1}\"")
+    @MethodSource("zeroBaseCells")
+    @DisplayName("⭐ 기준이 0 인 모든 칸에서 WARN 이 나간다 — 두 축 다")
+    void everyZeroBaseCellWarns(String axis, String raw) {
+        // ⚠️ 한때 이 벡터가 VERSION 만 세팅했다. @BeforeEach 가 SNAPSHOT 을 지우므로 여덟 칸
+        // 전부 <머리가 부재>였고, 게이트를 `base == 0 && head.isEmpty()` 로 좁히는 역변이가
+        // chat-core 전량(946건) 초록으로 통과했다 — C15 가 고친 바로 그 모양("좁힘을 요구한
+        // 테스트가 0건")이 반대 축에 그대로 남아 있었다. 그래서 두 축을 다 돈다.
+        redisTemplate.opsForValue().set(SNAPSHOT.equals(axis) ? SNAPSHOT : VERSION, raw);
 
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
@@ -575,8 +580,8 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
         logger.addAppender(appender);
         try {
             assertThat(publisher.currentVersion())
-                    .as("이 벡터는 기준이 0 이어야 한다 — 아니면 이 테스트가 다른 것을 잰다: %s",
-                            versionKey.replace("\n", "\\n"))
+                    .as("이 벡터는 기준이 0 이어야 한다 — 아니면 이 테스트가 다른 것을 잰다: %s=%s",
+                            axis, raw.replace("\n", "\\n"))
                     .isZero();
 
             assertThat(appender.list.stream()
@@ -584,8 +589,8 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                     .map(ILoggingEvent::getFormattedMessage)
                     .toList())
                     .as("기준이 0 이면 다음 발행이 v1 이고 함대가 1 을 들고 있으면 조용히 "
-                            + "건너뛴다 — 그 칸이 무음이면 아무도 모른다: %s",
-                            versionKey.replace("\n", "\\n"))
+                            + "건너뛴다 — 그 칸이 무음이면 아무도 모른다: %s=%s",
+                            axis, raw.replace("\n", "\\n"))
                     .anySatisfy(message -> assertThat(message)
                             .contains("기준이 0 으로 떨어졌다")
                             .as("어느 키가 왜 기준이 못 됐는지가 비면 '어느 키가 왜' 를 싣겠다는 "
@@ -595,6 +600,59 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
             logger.detachAppender(appender);
             appender.stop();
         }
+    }
+
+    /**
+     * ⭐ <b>두 축이 섞인 칸에서 사유가 둘 다 뜬다.</b>
+     *
+     * <p>⚠️ 사유를 {@code reasons.isEmpty()} 일 때만 채우던 때는, 다른 키에 사유가 있으면
+     * <b>base 를 0 으로 붙잡고 있는 또 한 축(값 0 키)이 WARN 에서 사라졌다</b> — 225칸 중
+     * 36칸이 그 모양이다. 게이트 주석이 "사유는 {@code reasons} 가 따로 말한다" 로 분업을
+     * 선언했으므로 그 칸에서 선언이 깨진다.
+     *
+     * <p>위의 두 축 벡터는 <b>한 키만</b> 세팅하므로 이 모양을 못 본다 — 그래서 별 칸이다.
+     * "그 수정이 덮는 집합" 을 벡터로 못 박는 것이 이 아크의 남은 질문이고, 이것이 그 한 칸이다.
+     */
+    @Test
+    @DisplayName("⭐ 머리는 값 0 · 버전은 문법 밖 — 사유가 둘 다 뜬다")
+    void aMixedZeroBaseCellNamesBothReasons() {
+        redisTemplate.opsForValue().set(SNAPSHOT, "0\n1\n0\n시발\n");
+        redisTemplate.opsForValue().set(VERSION, "12abc");
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                ProfanityDictionarySnapshotRedisPublisher.class);
+        logger.addAppender(appender);
+        try {
+            assertThat(publisher.currentVersion()).isZero();
+
+            assertThat(appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("기준이 0 으로 떨어졌다"))
+                    .toList())
+                    .as("한 축만 뜨면 당직자가 나머지 축을 고치고도 기준이 안 올라가는 것을 본다")
+                    .singleElement()
+                    .satisfies(message -> assertThat(message)
+                            .contains("스냅샷 본문=읽히고 자격도 통과하는데 값이 0 이다")
+                            .contains("버전 키=문법 밖이다")
+                            .as("키가 사라진 것이 아니다 — 그 사유가 뜨면 진단이 엉뚱해진다")
+                            .doesNotContain("키가 사라졌다"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> zeroBaseCells() {
+        // 기준을 0 으로 만드는 값들 — 값 0(읽힘·자격 ○) · 읽히지만 자격 없음 · 문법 밖 넷.
+        List<String> raws = List.of("0", "0\n1\n0\n시발\n", "999999999999998",
+                "999999999999999", "1000000000000000", "9007199254740993", " 12", "-5", "+7",
+                "12abc");
+        return raws.stream().flatMap(raw -> java.util.stream.Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of(VERSION, raw),
+                org.junit.jupiter.params.provider.Arguments.of(SNAPSHOT, raw)));
     }
 
     /**

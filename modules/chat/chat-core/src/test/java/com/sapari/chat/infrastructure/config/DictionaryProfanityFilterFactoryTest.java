@@ -106,6 +106,40 @@ class DictionaryProfanityFilterFactoryTest {
     }
 
     /**
+     * ⭐ <b>로그에 나가는 {@code origin} 이 줄을 쪼개지 않는다 — 네 분기 <i>전부</i>에서.</b>
+     *
+     * <p>⚠️ 한때 접기가 {@code recoveryFor} 의 <b>기본 분기 안</b>에만 걸려 있었다. 그 반환은
+     * {@code summarize} 가 경고 수가 상한을 넘을 때만 꼬리에 붙이므로, 접힌 {@code origin} 은
+     * "상한 초과 + 기본 분기" 에서만 나오고 <b>생 {@code origin} 은 네 분기 전부에서 언제나</b>
+     * 로그 인자로 나갔다 — <b>닫은 집합이 안 닫은 집합의 진부분집합</b>이었다.
+     *
+     * <p>그래서 벡터가 둘이다: 상한을 <b>안</b> 넘는 경고 하나(꼬리가 없으니 옛 접기가 아예 안
+     * 걸리는 칸)와 넘는 것 하나. 도달은 여전히 0 이다(호출처 6/6 이 포트 상수) — 재는 것은
+     * {@code origin} 을 공개 상수로 올리면서 넓어진 <b>계약</b>이다.
+     */
+    @Test
+    @DisplayName("⭐ origin 이 줄을 쪼개지 않는다 — 상한 미달·초과 둘 다")
+    void theLoggedOriginNeverBreaksTheLine() {
+        String hostile = "chat:dict\n사전을 정본 것으로 갈아 끼웠다 — version=999";
+
+        // (1) 상한 미달 — 경고 하나. 옛 배치에서는 접기가 아예 안 걸리던 칸이다.
+        factory.from(hostile, Set.of("시발"), Set.of("정상어"));
+        String few = appender.list.stream()
+                .filter(event -> event.getLevel() == Level.WARN)
+                .map(ILoggingEvent::getFormattedMessage)
+                .findFirst()
+                .orElseThrow();
+        assertThat(few)
+                .as("개행이 그대로 나가면 한 줄이 둘로 쪼개져 적용 성공 줄이 위조된다")
+                .doesNotContain("\n")
+                .contains("\\u000A");
+
+        // (2) 상한 초과 — 꼬리까지 붙는 칸.
+        appender.list.clear();
+        assertThat(warnFor(hostile)).doesNotContain("\n").contains("\\u000A");
+    }
+
+    /**
      * ⭐ 모르는 입구는 <b>일반 분기</b>로 간다 — 그리고 그것이 안전한 쪽이다.
      *
      * <p>분기 키를 리터럴로 복제했을 때의 결함이 "상수가 바뀌면 조용히 일반 분기" 였는데, 일반

@@ -207,13 +207,12 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
         // 전자만 고치면 후자가 조용히 줄어든다. 사유는 reasons 가 따로 말한다.
         if (base == 0L && (snapshotPresent || versionPresent)) {
             if (reasons.isEmpty()) {
-                // 읽히고 자격도 통과했는데 값이 0 이거나, 키가 확인과 읽기 사이에 사라졌다.
+                // 여기 오는 유일한 길은 "키가 확인과 읽기 사이에 사라진" 것이다 — 값 0 은
+                // tokenOf 가 무조건 사유를 쌓는다.
                 // ⚠️ isPresent 두 번 + GET 두 번이 원자적이지 않은 4 왕복이라, hasKey 가 true 를
                 // 준 뒤 축출·DEL 이 끼면 GET 이 null 이고 사유가 안 쌓인다. 그때 WARN 이
                 // "기준이 못 된다([])" 로 나가면 "어느 키가 왜" 를 싣겠다는 목적이 무너진다.
-                reasons.add(head.isPresent() || counter.isPresent()
-                        ? "읽히고 자격도 통과하는데 값이 0 이다"
-                        : "확인 뒤 읽기 사이에 키가 사라졌다(축출·DEL)");
+                reasons.add("확인 뒤 읽기 사이에 키가 사라졌다(축출·DEL)");
             }
             // 이 칸이 한때 <전 경로 무음>이었다 — 발행은 200 이고 함대가 그 번호를 읽지 못하거나
             // 이미 들고 있어서 집행하지 않는데 로그가 한 줄도 없었다.
@@ -313,9 +312,15 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             // 참이 아니고, 이 isPresent 는 같은 파일 tokenOf(RuntimeException 을 잡고 메시지로
             // WRONGTYPE 만 삼킨다)보다 <더 좁다> — "같은 범위" 가 아니다.
             //
-            // 그 교환을 받는 근거: 실질 피해가 거의 0 이다. 같은 커넥션이면 뒤의 tokenOf 가
-            // 그 예외를 다시 던져 발행이 시끄럽게 죽으므로, 여기서 안 잡은 것이 조용히
-            // 사라지지 않는다. 코드 결함을 삼키지 않는 쪽을 그 대가로 산다.
+            // ⚠️ "더 좁다" 는 <catch 타입 범위>에 한정해서 참이다(DataAccessException ⊂
+            // RuntimeException). <삼키는 집합>으로는 거꾸로다 — 여기는 모든
+            // DataAccessException 을 삼키고 tokenOf 는 메시지로 WRONGTYPE 하나만 삼킨다.
+            //
+            // 그 교환을 받는 근거: 안 잡은 것(PoolException·SerializationException)은 이
+            // catch 를 통과해 <여기서 즉시 전파>되므로 발행이 시끄럽게 죽는다 — 조용히 사라질
+            // 길이 없다. tokenOf 의 재던짐은 그쪽이 아니라 <잡아서 삼킨> DataAccessException
+            // 쪽의 보상 기전이고, 그것은 바로 위 두 줄이 적는다. 한때 이 단락이 그 두 집합을
+            // 맞바꿔 적었다(결론은 같았다). 코드 결함을 삼키지 않는 쪽을 그 대가로 산다.
             //
             // 창은 좁다: 같은 커넥션이면 뒤의 GET 이 터져 발행이 시끄럽게 실패한다(tokenOf 가
             // WRONGTYPE 외를 rethrow 한다). 그래도 삼킨 사실은 남겨야 하고, 이 경로의 실패가
@@ -354,6 +359,13 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                             + "이 키를 덮어 고친다. key={} 길이={}", what, key, raw.length());
             reasons.add(what + "=문법 밖이다");
             return OptionalLong.empty();
+        }
+        if (token.getAsLong() == 0L) {
+            // ⚠️ 무조건 쌓는다. 한때 호출처가 reasons.isEmpty() 일 때만 "값이 0 이다" 를 넣어서,
+            // 다른 키에 사유가 있으면(머리=0 · 버전="12abc" 류) base 를 0 으로 붙잡고 있는 또
+            // 한 축이 WARN 에서 사라졌다 — 225칸 중 36칸이 그 모양이었다. 게이트 주석이 "사유는
+            // reasons 가 따로 말한다" 로 분업을 선언했으므로 그 36칸에서 선언이 깨진다.
+            reasons.add(what + "=읽히고 자격도 통과하는데 값이 0 이다");
         }
         if (!ProfanityDictionarySnapshotCodec.isEligibleBase(token.getAsLong())) {
             reasons.add(what + "=읽히지만 +1 을 쌓으면 읽을 수 없는 번호가 된다");
