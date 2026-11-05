@@ -69,8 +69,13 @@ public interface LiveMetrics {
      *
      * <p>집단 태그가 필요한 이유: 게스트 거부와 회원 거부는 다른 사건이다. 전자는 대체로
      * 정상 상태에서도 생길 수 있고 후자는 로그인 사용자가 막히고 있다는 뜻이다.
+     *
+     * <p>관문 태그가 필요한 이유는 같은 모양이고 <b>한 단계 더 안쪽</b>이다 —
+     * {@link EnterRejectionGate#SHARD} 는 한 계정을 찾으라는 신호이고
+     * {@link EnterRejectionGate#GLOBAL} 은 한도를 올리라는 신호다. 두 경로가 같은 지표·같은
+     * 로그를 쓰면 그 둘이 합쳐져 당직자가 반대 방향의 대응을 고를 수 있다.
      */
-    void enterRateLimited(EnterPopulation population);
+    void enterRateLimited(EnterPopulation population, EnterRejectionGate gate);
 
     /**
      * 아무것도 하지 않는 구현. <b>단위 테스트가 registry 없이 돌게 하는 것</b>이 실제 용도다.
@@ -88,6 +93,7 @@ public interface LiveMetrics {
         @Override public void roomTransitioned(LiveStatus from, LiveStatus to) { }
         @Override public void rtmpPromoted(PromotionTrigger trigger) { }
         @Override public void liveKitActiveEgressRooms(int rooms) { }
-        @Override public void enterRateLimited(EnterPopulation population) { }
+        @Override public void enterRateLimited(
+                EnterPopulation population, EnterRejectionGate gate) { }
     };
 }

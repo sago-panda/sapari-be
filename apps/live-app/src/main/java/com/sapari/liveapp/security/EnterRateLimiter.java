@@ -6,6 +6,7 @@ import java.util.function.LongSupplier;
 import lombok.extern.slf4j.Slf4j;
 
 import com.sapari.live.application.port.EnterPopulation;
+import com.sapari.live.application.port.EnterRejectionGate;
 import com.sapari.live.application.port.LiveMetrics;
 
 /**
@@ -151,8 +152,10 @@ public class EnterRateLimiter {
         }
         // 지표가 먼저다 — 로그는 집단당 10초 1줄로 솎이므로 규모를 못 주고, 규모가 바로
         // "공격인가 한도가 낮은가" 를 가르는 축이다. 어댑터는 던지지 않는다(포트 계약).
-        metrics.enterRateLimited(EnterPopulation.GUEST);
-        logThrottled("게스트", guestLastLogNanos, guestRejected.incrementAndGet(),
+        // 게스트는 샤드가 없어 관문이 항상 전역이다.
+        metrics.enterRateLimited(EnterPopulation.GUEST, EnterRejectionGate.GLOBAL);
+        logThrottled("게스트", EnterRejectionGate.GLOBAL, guestLastLogNanos,
+                guestRejected.incrementAndGet(),
                 properties.guestPermitsPerSecond(), properties.guestBurst());
         return false;
     }
@@ -180,36 +183,43 @@ public class EnterRateLimiter {
      */
     public boolean tryMemberEntry(String subject) {
         if (subject != null && !shardFor(subject).tryAcquire()) {
-            // 샤드에서 막힌 것도 회원 거부다 — 같은 지표·같은 로그를 쓴다.
-            metrics.enterRateLimited(EnterPopulation.MEMBER);
-            logThrottled("회원", memberLastLogNanos, memberRejected.incrementAndGet(),
+            // 같은 지표를 쓰되 관문을 가른다 — 이 거부는 "그 계정을 찾아라" 이고, 아래
+            // 전역 거부는 "한도를 올려라" 다. 합치면 당직자가 반대 대응을 고를 수 있다.
+            metrics.enterRateLimited(EnterPopulation.MEMBER, EnterRejectionGate.SHARD);
+            logThrottled("회원", EnterRejectionGate.SHARD, memberLastLogNanos,
+                    memberRejected.incrementAndGet(),
                     properties.memberPermitsPerSecond(), properties.memberBurst());
             return false;
         }
         if (memberBucket.tryAcquire()) {
             return true;
         }
-        metrics.enterRateLimited(EnterPopulation.MEMBER);
-        logThrottled("회원", memberLastLogNanos, memberRejected.incrementAndGet(),
+        metrics.enterRateLimited(EnterPopulation.MEMBER, EnterRejectionGate.GLOBAL);
+        logThrottled("회원", EnterRejectionGate.GLOBAL, memberLastLogNanos,
+                memberRejected.incrementAndGet(),
                 properties.memberPermitsPerSecond(), properties.memberBurst());
         return false;
     }
 
-    private void logThrottled(String which, AtomicLong gate, long count,
-            int permitsPerSecond, int burst) {
-        if (!shouldLog(gate)) {
+    private void logThrottled(String which, EnterRejectionGate gate, AtomicLong lastLogNanos,
+            long count, int permitsPerSecond, int burst) {
+        if (!shouldLog(lastLogNanos)) {
             return;
         }
         // 이 줄이 뜬다는 것은 입장이 실제로 거부되고 있다는 뜻이다. 한도는 정상 트래픽에서
         // 역산한 값이 <아니므로>(properties javadoc) 공격일 수도, 한도가 낮은 것일 수도 있다.
         // 둘을 가르는 것은 같은 시각의 반대쪽 집단 수치이고, 그래서 양쪽 누적을 한 줄에 같이
-        // 싣는다 — 게이트가 집단별이라 두 줄이 같은 창에 뜰 수 있고 한 줄만 봐도 비율이 보인다.
+        // 싣는다 — 억제는 집단별이라 두 줄이 같은 창에 뜰 수 있고 한 줄만 봐도 비율이 보인다.
         // 복구는 롤링 재시작이다(한도가 생성자 1회 조립).
         //
         // ⚠️ 누적은 <프로세스 수명> 누적이다(리셋 없음) — "이 창의 건수" 가 아니다.
-        log.warn("{} 입장 상한 초과 — 공격이거나 한도가 낮다. 한도={}/s(burst {}), "
+        //
+        // ⚠️ 관문은 <이 줄이 어디서 났는지>만 말한다. 억제가 집단별이라 한 창에 두 관문이
+        // 모두 거부해도 먼저 찍힌 쪽 한 줄만 뜬다 — 관문별 비율은 로그가 아니라
+        // live.enter.rejected 의 gate 태그에서 본다.
+        log.warn("{} 입장 상한 초과({} 관문) — 공격이거나 한도가 낮다. 한도={}/s(burst {}), "
                         + "프로세스 누적 거부: 이 집단={}건 게스트={}건 회원={}건",
-                which, permitsPerSecond, burst, count,
+                which, gate, permitsPerSecond, burst, count,
                 guestRejected.get(), memberRejected.get());
     }
 

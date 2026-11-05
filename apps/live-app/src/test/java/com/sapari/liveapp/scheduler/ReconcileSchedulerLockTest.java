@@ -491,7 +491,8 @@ class ReconcileSchedulerLockTest {
         /** 이 페이크가 세는 축이 아니다 — 입장 상한은 다른 테스트가 센다. */
         @Override
         public void enterRateLimited(
-                com.sapari.live.application.port.EnterPopulation population) {
+                com.sapari.live.application.port.EnterPopulation population,
+                com.sapari.live.application.port.EnterRejectionGate gate) {
         }
 
         @Override

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.sapari.live.application.port.EnterPopulation;
+import com.sapari.live.application.port.EnterRejectionGate;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
@@ -22,10 +23,12 @@ import com.sapari.live.domain.model.LiveStatus;
 class CountingEnterMetrics implements LiveMetrics {
 
     final List<EnterPopulation> rejections = new ArrayList<>();
+    final List<EnterRejectionGate> gates = new ArrayList<>();
 
     @Override
-    public void enterRateLimited(EnterPopulation population) {
+    public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
         rejections.add(population);
+        gates.add(gate);
     }
 
     @Override

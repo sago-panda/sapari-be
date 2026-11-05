@@ -85,8 +85,12 @@ class PrometheusScrapeTest {
     @Test
     @DisplayName("⭐ 입장 거부 지표의 이름·태그 값이 스크레이프 출력에 있다")
     void enterRejected_appearsInScrape() {
-        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.GUEST);
-        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.MEMBER);
+        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.GUEST,
+                com.sapari.live.application.port.EnterRejectionGate.GLOBAL);
+        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.MEMBER,
+                com.sapari.live.application.port.EnterRejectionGate.SHARD);
+        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.MEMBER,
+                com.sapari.live.application.port.EnterRejectionGate.GLOBAL);
 
         String scrape = registry.scrape();
 
@@ -99,6 +103,11 @@ class PrometheusScrapeTest {
                 .contains("population=\"member\"");
         assertThat(scrape)
                 .as("대문자 값은 나오지 않는다 — 이 단정이 문서 쪽 드리프트를 잡는 면이다")
-                .doesNotContain("population=\"GUEST\"");
+                .doesNotContain("population=\"GUEST\"")
+                .doesNotContain("gate=\"SHARD\"");
+        assertThat(scrape)
+                .as("관문이 갈려 나와야 '그 계정을 찾아라' 와 '한도를 올려라' 를 구분한다")
+                .contains("gate=\"shard\"")
+                .contains("gate=\"global\"");
     }
 }

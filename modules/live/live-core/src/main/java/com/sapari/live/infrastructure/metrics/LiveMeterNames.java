@@ -28,6 +28,7 @@ final class LiveMeterNames {
     static final String TAG_OP = "op";
     static final String TAG_RESULT = "result";
     static final String TAG_POPULATION = "population";
+    static final String TAG_GATE = "gate";
     static final String TAG_FROM = "from";
     static final String TAG_TO = "to";
     static final String TAG_TRIGGER = "trigger";

@@ -327,12 +327,22 @@ class EnterRateLimitFilterTest {
 
         filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
         filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        // 회원은 세 번 보낸다. 샤드 몫이 ⌈1/1⌉×2 = 2 이고 전역 버스트가 1 이므로 두 번째
+        // 호출은 <전역>에서, 세 번째는 샤드가 비어 <샤드>에서 떨어진다 — 두 관문을 한 칸에서
+        // 본다. (헤드룸 때문에 전역이 먼저 구속한다는 사실 자체가 여기 박힌다.)
         authenticate();
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
         filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
         filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
 
         assertThat(metrics.rejections)
                 .as("두 집단의 거부가 각자 태그로 세어져야 둘을 가를 수 있다")
-                .containsExactly(EnterPopulation.GUEST, EnterPopulation.MEMBER);
+                .containsExactly(EnterPopulation.GUEST, EnterPopulation.MEMBER,
+                        EnterPopulation.MEMBER);
+        assertThat(metrics.gates)
+                .as("관문이 갈려야 '그 계정을 찾아라'(샤드)와 '한도를 올려라'(전역)를 구분한다")
+                .containsExactly(com.sapari.live.application.port.EnterRejectionGate.GLOBAL,
+                        com.sapari.live.application.port.EnterRejectionGate.GLOBAL,
+                        com.sapari.live.application.port.EnterRejectionGate.SHARD);
     }
 }

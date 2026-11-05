@@ -336,12 +336,18 @@ neither the `findById` nor the signature is paid.
   this is a fixed-size **array**, bounded by construction *and* by an explicit `member-shards`
   ceiling (4096); without that ceiling a typo could pass validation and allocate an array that fails
   at allocation rather than at config validation.
-- **Rejections are counted** — `live.enter.rejected{population="guest"|"member"}`. The tag values are
-  lowercase (`name().toLowerCase()`); querying the uppercase form returns *no series*, which is
-  indistinguishable from no alert, so `PrometheusScrapeTest` pins the name and both tag strings
-  against real scrape output. The limiter's log is throttled to one line per population per 10s, and
-  scale is what separates "attack" from "limit set too low"; the limit was derived from CPU cost, not
-  from measured normal traffic.
+- **Rejections are counted** — `live.enter.rejected{population="guest"|"member", gate="shard"|"global"}`.
+  The `gate` tag exists because the two gates call for **opposite responses**: `shard` means one
+  account exceeded its own share (go find it), `global` means the aggregate hit the ceiling (raise the
+  limit or add capacity). Since the shard sums now exceed the global, most rejections under
+  distributed load are `global`, so merging them would hide exactly the signal the shard exists for.
+  Guest rejections are always `global` — guests have no shard.
+  - Tag values are lowercase (`name().toLowerCase()`); querying the uppercase form returns *no
+    series*, which is indistinguishable from no alert, so `PrometheusScrapeTest` pins the name and
+    every tag string against real scrape output.
+  - The limiter's log names its gate but is throttled per population, so one window can print only
+    one of the two — read the split from the metric, not the log. Scale is what separates "attack"
+    from "limit set too low"; the limit was derived from CPU cost, not from measured normal traffic.
 - **The pool is a denominator, but the signature no longer holds a connection.** `EnterLiveService`
   `.enter` carries **no** `@Transactional` — the single `findById` runs in Spring Data's own read-only
   transaction and the connection is returned before `issue(...)` signs (685µs). Hikari's default max
