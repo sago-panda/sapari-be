@@ -436,6 +436,11 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                     .as("기준 자격 기대와 다르다: %s", v.versionKey())
                     .isEqualTo(v.eligibleBase());
 
+            // ⚠️ readable 열이 한 번도 안 읽히던 것을 고친다 — 선언된 분모가 장식이었다.
+            assertThat(ProfanityDictionarySnapshotCodec.readVersionToken(v.versionKey()).isPresent())
+                    .as("읽힘 기대와 다르다: %s", v.versionKey())
+                    .isEqualTo(v.readable());
+
             long published = publisher
                     .publishIfUnchanged(base, ordered("시발"), Set.of())
                     .orElseThrow(() -> new AssertionError(
@@ -486,6 +491,48 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                 .as("드라이버가 수를 안 주면 발행 여부를 확인할 수 없다 — 재시도로도 안 낫는다")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("재시도로 낫지 않는다");
+    }
+
+    @Test
+    @DisplayName("⭐ 평시 첫 발행에는 경계 칸 WARN 이 안 나간다 — 거짓양성이면 그 WARN 이 죽는다")
+    void aCleanFirstPublishProducesNoBoundaryWarning() {
+        // 두 키가 다 없다 = 한 번도 발행되지 않았다. 기준이 0 이지만 그것은 정상이다.
+        // ⚠️ 이 축에 단언이 0건이었다 — (snapshotPresent || versionPresent) 게이팅을 지우는
+        // 변경이 조용히 통과하고, 그 변이는 <발행마다> WARN 을 뿌려 그 줄을 죽인다.
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                ProfanityDictionarySnapshotRedisPublisher.class);
+        logger.addAppender(appender);
+        try {
+            assertThat(publisher.currentVersion()).isZero();
+            assertThat(publisher.publishIfUnchanged(0L, ordered("시발"), Set.of())).hasValue(1L);
+
+            assertThat(appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .toList())
+                    .as("평시 경로에서 WARN 이 나가면 그 줄이 신호가 아니라 배경이 된다")
+                    .isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("⭐ 두 키가 다 있고 한쪽만 자격 없으면 다른 키로 떨어진다 — 1차 구현이 깨뜨린 성질")
+    void oneIneligibleKeyFallsBackToTheOther() {
+        // ⚠️ 이 칸이 테스트에 없었다 — 문법 표가 VERSION 한 키만 세팅한다. 1차 구현(거부)이
+        // 깨뜨린 성질이 <부재> 쪽만 덮여 있었고, "둘 다 있는데 한쪽만" 이 분모 밖이었다.
+        redisTemplate.opsForValue().set(SNAPSHOT, "7\n1\n0\n시발\n");
+        redisTemplate.opsForValue().set(VERSION, "999999999999998");
+
+        assertThat(publisher.currentVersion())
+                .as("자격 없는 키는 기여하지 않고 자격 있는 머리가 기준이 된다")
+                .isEqualTo(7L);
+        assertThat(publisher.publishIfUnchanged(7L, ordered("시발"), Set.of()))
+                .as("멈추지 않는다 — 1차 구현은 이 칸까지 거부해서 자기치유를 깼다")
+                .hasValue(8L);
     }
 
     /**

@@ -49,9 +49,7 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
             Set<String> warnings = dictionary.warnings();
             log.warn("사전에 확인할 항목이 있다({}건): origin={} {}",
                     warnings.size(), origin,
-                    // 이 입구의 집합은 정본 테이블에서 왔으므로 꼬리를 ADMIN 조회로 다시 셀 수 있다.
-                    ProfanityDictionary.summarize(warnings,
-                            "전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받아 다시 센다"));
+                    ProfanityDictionary.summarize(warnings, recoveryFor(origin)));
         }
         return new ProfanityFilter(dictionary.words(), dictionary.whitelist());
     }
@@ -63,6 +61,38 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
     @Override
     public String normalize(String word) {
         return ProfanityDictionary.normalize(word);
+    }
+
+    /**
+     * 꼬리에 도달하는 길 — <b>{@code origin} 마다 다르다.</b>
+     *
+     * <p>⚠️ 한때 이 자리가 "전량은 ADMIN 조회로 받아 다시 센다" 문자열 하나였고 주석이 "이
+     * 입구의 집합은 정본 테이블에서 왔으므로" 였다. {@code from()} 호출처 전수 6곳 /
+     * {@code origin} 4종에서 그 전제가 참인 것은 둘뿐이다:
+     * <pre>
+     *   source     guardSource (변경 전 테이블)        findWords 그대로        참
+     *   probe      PublishService 의 문 질의           findWords 그대로        참
+     *   source     guardRemoval (테이블 − 제거 항목)   조회가 더 많다          거짓
+     *   admin      guardRequested (테이블 + 요청)      그 항목이 조회에 없다   거짓
+     *   chat:dict  RefreshHandler (Redis 스냅샷)       조회와 무관             거짓
+     * </pre>
+     * 마지막 줄은 {@code of()} javadoc 이 스스로 "DB·Redis 직접 수정을 받는 마지막 문" 이라
+     * 적는 경로다. 그리고 {@code guardRequested} 쪽은 요청 항목이 {@code plus()} 로 <b>꼬리</b>에
+     * 들어가므로 상한 초과 시 잘리는 바로 그 항목이기도 하다 — 당직자가 조회를 쳐도 빈손이다.
+     *
+     * <p>{@code guardRemoval} 과 {@code guardSource} 가 같은 {@code origin} 을 쓰므로 그 둘은
+     * 안내가 같다("조회로 받아 다시 센다"). {@code guardRemoval} 쪽에서는 조회가 <b>더 많이</b>
+     * 돌려주는데, 그것은 빈손이 아니라 과다라서 당직자가 꼬리를 찾는 데는 쓸 수 있다.
+     */
+    private static String recoveryFor(String origin) {
+        if (origin.startsWith("chat:filter-word:source")
+                || origin.startsWith("chat:filter-word:probe")) {
+            return "전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받아 다시 센다";
+        }
+        if (origin.startsWith("chat:filter-word:admin")) {
+            return "요청 항목이 꼬리에 들어가므로 잘린 쪽이 그 항목일 수 있다 — 보낸 값을 확인";
+        }
+        return "이 집합은 ADMIN 조회로 못 본다(출처=" + origin + ") — 그 출처를 직접 확인";
     }
 
     /** {@link ProfanityDictionary#visible} 을 그대로 쓴다 — 거부 메시지와 같은 렌더링이어야 한다. */

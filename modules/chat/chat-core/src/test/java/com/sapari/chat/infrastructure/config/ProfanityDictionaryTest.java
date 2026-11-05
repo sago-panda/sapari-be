@@ -1453,9 +1453,16 @@ class ProfanityDictionaryTest {
         String summary = ProfanityDictionary.summarize(
                 new java.util.LinkedHashSet<>(List.of(warning)), "직접 확인");
 
+        // ⚠️ 단위가 <코드포인트>다. 절단이 코드포인트 경계인데 꼬리의 수가 UTF-16 char 였고,
+        // 이모지가 섞이면 운영자가 세는 수와 두 배까지 벌어졌다. 그 단위를 여기서 핀으로 박는다 —
+        // char 로 되돌리는 변이가 이 단언에서 깨진다.
+        int codePoints = warning.codePointCount(0, warning.length());
+        assertThat(codePoints)
+                .as("벡터가 두 단위를 실제로 가르는지 먼저 확인한다 — 같으면 이 핀이 아무것도 안 잰다")
+                .isNotEqualTo(warning.length());
         assertThat(summary)
                 .as("절단이 일어나야 이 테스트가 무언가를 잰다")
-                .contains("…(" + warning.length() + "자)");
+                .contains("…(" + codePoints + "자)");
         // 짝이 맞는 서로게이트는 codePoints() 에서 하나의 보조평면 코드포인트로 합쳐지고,
         // <짝 없는> 쪽만 D800..DFFF 범위의 코드포인트로 남는다. 그 0 을 단언한다.
         assertThat(summary.codePoints().filter(cp -> cp >= 0xD800 && cp <= 0xDFFF).count())

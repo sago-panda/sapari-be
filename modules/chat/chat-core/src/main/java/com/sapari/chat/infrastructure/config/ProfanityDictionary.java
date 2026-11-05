@@ -591,8 +591,11 @@ public final class ProfanityDictionary {
      * 뒤에 붙는 "적재된 값" 이다. {@code of()} 경로(복구 = 그 행을 직접 지우기)는 최대 126자라
      * 절단이 안 걸린다.
      *
-     * <p>⚠️ {@code …(N자)} 의 {@code N} 은 <b>제어문자 접기 뒤</b> 길이다({@link #summarize} 의
-     * 순서) — 공개 계약으로 제어문자가 섞인 입력이 들어오면 운영자의 원래 항목 길이와 다르다.
+     * <p>⚠️ {@code …(N자)} 의 {@code N} 은 <b>코드포인트 수</b>이고 <b>제어문자 접기 뒤</b>
+     * 길이다({@link #summarize} 의 순서). 단위를 절단 단위와 맞춘 것이고 — 한때 UTF-16
+     * {@code char} 수였는데 절단은 코드포인트라 이모지에서 두 배까지 벌어졌다 — 접기 뒤라는
+     * 점은 남는다: 공개 계약으로 제어문자가 섞인 입력이 들어오면 운영자의 원래 항목 길이와
+     * 다르다.
      */
     private static final int MAX_WARNING_LENGTH = 240;
 
@@ -607,7 +610,11 @@ public final class ProfanityDictionary {
         // 코드포인트 경계로 맞춘다.
         int end = message.offsetByCodePoints(0,
                 message.codePointCount(0, Math.min(message.length(), MAX_WARNING_LENGTH)));
-        return message.substring(0, end) + "…(" + message.length() + "자)";
+        // ⚠️ 단위를 절단 단위와 맞춘다. 절단은 코드포인트인데 length() 는 UTF-16 char 라,
+        // 이모지가 섞이면 운영자가 세는 수와 로그의 수가 두 배까지 벌어진다(실측: 이모지 200자
+        // 입력 → 꼬리가 "…(400자)").
+        return message.substring(0, end)
+                + "…(" + message.codePointCount(0, message.length()) + "자)";
     }
 
     /**

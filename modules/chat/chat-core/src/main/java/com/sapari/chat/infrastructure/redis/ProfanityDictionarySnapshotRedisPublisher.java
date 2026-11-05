@@ -205,11 +205,18 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             // 함대가 이미 1 을 들고 있는 경우이고 — 그러면 그 발행을 건너뛴다 — 그것은 휘발
             // 저장만으로 환원되지 않는 잔차다(PUBLISH_SNAPSHOT javadoc). 그래서 적어도
             // <보이게> 만든다.
+            // ⚠️ 확인 방법을 <받는 쪽 로그로> 안내하지 않는다. 그 경로에 흔적이 없다 —
+            // RefreshHandler 가 published == processedVersion 을 로그 0줄로 떨어뜨리고(그 자리가
+            // 분마다 도는 평시 경로라 한 줄을 두면 Pod 당 분당 한 줄이 된다) 그 아래 동치 분기도
+            // 0줄이다. 되돌아간 버전(<)만 WARN 이 있고 같은 번호는 전 경로 무음이다.
+            // 그래서 <기능 확인>을 지시한다 — 그것이 이 상태에서 실제로 가능한 유일한 검증이다.
             log.warn("사전 버전 기준이 0 으로 떨어졌다 — 키가 있는데 어느 쪽도 다음 번호의 기준이 "
                             + "못 된다(문법 밖이거나, 읽히지만 +1 을 쌓으면 읽을 수 없는 번호가 "
                             + "된다). 다음 발행이 v1 에서 다시 시작한다 — 함대가 이미 1 을 들고 "
-                            + "있으면 그 발행을 건너뛰므로 적용 여부를 확인할 것. snapshot={} "
-                            + "version={}", snapshotPresent, versionPresent);
+                            + "있으면 그 발행을 <조용히> 건너뛴다(받는 쪽에 흔적이 남지 않는다). "
+                            + "확인은 로그가 아니라 기능으로 한다: 방금 넣은 항목이 실제로 마스킹 "
+                            + "되는지 테스트 메시지로 보고, 안 되면 두 키를 지워 v1 을 다시 세울 "
+                            + "것. snapshot={} version={}", snapshotPresent, versionPresent);
         }
         return base;
     }
@@ -254,8 +261,14 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
         try {
             return Boolean.TRUE.equals(redisTemplate.hasKey(key));
         } catch (RuntimeException e) {
-            // 타입과 무관하게 존재만 본다. 실패하면 "없다" 로 보고 아래 WARN 을 포기한다 —
-            // 진단이 본선을 죽이지 않는다.
+            // 타입과 무관하게 존재만 본다. 실패하면 "없다" 로 본다 — 진단이 본선을 죽이지 않는다.
+            //
+            // ⚠️ 삼키면 <이 커밋의 유일한 관측 수단>이 같이 사라진다(두 키 다 실패하면 경계 칸
+            // WARN 이 안 나간다). 창은 좁다 — 같은 커넥션이면 뒤의 GET 이 터져 발행이 시끄럽게
+            // 실패한다. 그래도 삼킨 사실은 남긴다: 루트 AGENTS.md 가 "삼키려면 번역하거나
+            // 다시 던지라" 고 적고, 여기서 할 수 있는 것이 로그다.
+            log.debug("사전 키 존재 확인이 실패했다 — '없다' 로 본다. 두 키가 다 실패하면 경계 칸 "
+                    + "WARN 이 사라진다. key={} 사유={}", key, e.getClass().getSimpleName());
             return false;
         }
     }
@@ -289,7 +302,12 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
         }
         if (!ProfanityDictionarySnapshotCodec.isEligibleBase(token.getAsLong())) {
             // 읽히기는 하는데 <여기에 다음 번호를 쌓을 수> 없다. 기준에 기여하지 않고, 다른 키가
-            // 자격을 통과하면 그쪽으로 떨어진다. 둘 다 못 되면 스크립트가 멈춘다(-3).
+            // 자격을 통과하면 그쪽으로 떨어진다.
+            //
+            // ⚠️ 둘 다 자격이 없으면 <멈추지 않는다> — 기준이 0 으로 떨어지고 v1 을 쓴다.
+            // 한때 이 주석이 "스크립트가 멈춘다(-3)" 였는데 그 센티넬은 폐기됐고, 같은 커밋이
+            // 추가한 readReturn 의 @ValueSource 가 -3 을 <규약 위반>으로 못 박고 있었다.
+            // 그 재시작은 currentVersion() 이 WARN 으로 남긴다.
             log.warn("사전 {}의 값이 다음 번호의 기준이 못 된다 — 여기에 +1 을 쌓으면 함대가 읽을 "
                             + "수 없는 번호가 된다. 다른 키로 떨어진다. key={} 자리수={}",
                     what, key, Long.toString(token.getAsLong()).length());

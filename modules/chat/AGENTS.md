@@ -209,12 +209,35 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   one the publisher took, and a lost race **re-reads the source** before retrying (re-sending the same
   body would reinstate the very bug). A failed attempt writes nothing, so it cannot burn numbers and
   break the version-key/snapshot invariant.
-- **The receiver applies a *regressed* version too, loudly.** A strict `<=` guard silently dropped it,
-  which is reachable (FLUSHDB, old RDB restore, stale replica failover) and left that pod diverged from
-  the fleet forever. Refreshes are serialized by `concatMap`, so monotonicity was defensive and its
-  price was a silent branch. "Version present, body absent" likewise used to be the one fully silent
-  branch — `allkeys-lru` evicts TTL-less keys and the odds favour evicting the snapshot (tens of KB,
-  read on change) over the counter (bytes, read every minute).
+- **The receiver applies a *regressed* version too, loudly** — but an *equal* one it drops in
+  silence. The `<` branch logs and swaps; the `==` branch (and the upstream
+  `filter(published != processedVersion)`, which sits *above* the body read) returns without a line.
+  That asymmetry matters because the publisher **can restart at v1**: see the next bullet. Do not read
+  "applies a regressed version loudly" as covering the equal case. A strict `<=` guard used to drop the
+  regressed case too, which is reachable (FLUSHDB, old RDB restore, stale replica failover) and left
+  that pod diverged from the fleet forever. Refreshes are serialized by `concatMap`, so monotonicity
+  was defensive and its price was a silent branch. "Version present, body absent" likewise used to be
+  the one fully silent branch — `allkeys-lru` evicts TTL-less keys and the odds favour evicting the
+  snapshot (tens of KB, read on change) over the counter (bytes, read every minute).
+- **The version has a digit ceiling, and "can be read" is a *different axis* from "can be built on".**
+  `MAX_VERSION_DIGITS` bounds exact double arithmetic in Lua (above 2^53 `tonumber` and `+1` stop being
+  exact), and Lua's `..` would write `1e+14` for a 15-digit value, so the script formats with
+  `string.format('%d', …)`. Two predicates, deliberately not one:
+  - `readVersionToken` (**readable**; shared by reader, publisher and codec) — digits ≤ ceiling *and*
+    the successor's digits ≤ ceiling.
+  - `isEligibleBase` (**buildable on**; publisher only) — readable *and* the successor is readable too.
+
+  `eligible(b)` therefore implies `readable(b+1)`, i.e. **everything the publisher writes can be read
+  by the fleet** — by definition, not by luck. One axis cannot give that: a finite counter has a last
+  cell, and narrowing acceptance only moves the cell. Two earlier attempts failed there (refusing →
+  every dictionary write 500s forever; resetting to 1 → the same number carried two different bodies
+  and pods holding 1 skipped it in silence).
+- **At the boundary cell the base falls to 0 and the next publish restarts at v1 — and that restart is
+  logged.** v1 *is* readable, which is the point; the residual is that a pod already holding 1 skips it,
+  and that residual is irreducible with ephemeral state (the publisher's javadoc records the axis).
+  Reaching the cell needs one out-of-band write plus one eviction/`DEL`, so it is not exotic. The WARN
+  deliberately tells the operator to verify **functionally** (does the word actually get masked?)
+  rather than by pod logs, because the receiving side leaves no trace for the equal case.
 - **The config CSV (`chat.profanity.words`) is boot-only and dies at the first swap.** It is *not*
   merged into propagated filters on purpose: merging would make the enforced set differ from the set
   live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps
