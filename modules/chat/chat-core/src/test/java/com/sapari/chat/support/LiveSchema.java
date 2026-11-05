@@ -73,6 +73,11 @@ public final class LiveSchema {
         return Long.parseLong(name.substring(1, end));
     }
 
+    /** {@code db/migration} 아래 정본 DDL 파일들. 스키마 본문을 읽어 단정하는 테스트가 쓴다. */
+    public static List<Path> migrationFiles() throws IOException {
+        return migrations();
+    }
+
     /** 테스트 작업 디렉터리는 모듈이라 저장소 루트까지 올라간다 — settings.gradle이 그 표지다. */
     private static Path repositoryRoot() {
         Path here = Path.of(System.getProperty("user.dir")).toAbsolutePath();
