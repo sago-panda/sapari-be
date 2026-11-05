@@ -60,6 +60,19 @@ public interface LiveMetrics {
     void liveKitActiveEgressRooms(int rooms);
 
     /**
+     * 입장 상한이 요청 하나를 거부했다.
+     *
+     * <p><b>로그만으로는 부족해서 있다.</b> 거부 로그는 집단당 10초에 한 줄로 솎이므로 규모를
+     * 못 준다 — 그리고 규모가 바로 "공격인가, 한도가 낮은가" 를 가르는 축이다. 한도는 정상
+     * 트래픽에서 역산한 값이 아니라 CPU 천장에서 역산한 값이므로
+     * ({@code EnterRateLimitProperties} javadoc) 그 판정을 지표 없이 할 수 없다.
+     *
+     * <p>집단 태그가 필요한 이유: 게스트 거부와 회원 거부는 다른 사건이다. 전자는 대체로
+     * 정상 상태에서도 생길 수 있고 후자는 로그인 사용자가 막히고 있다는 뜻이다.
+     */
+    void enterRateLimited(EnterPopulation population);
+
+    /**
      * 아무것도 하지 않는 구현. <b>단위 테스트가 registry 없이 돌게 하는 것</b>이 실제 용도다.
      *
      * <p>(오해 주의: 지금 {@code live-core} 를 의존하는 앱은 {@code live-app} 하나뿐이다 — 확인함:
@@ -75,5 +88,6 @@ public interface LiveMetrics {
         @Override public void roomTransitioned(LiveStatus from, LiveStatus to) { }
         @Override public void rtmpPromoted(PromotionTrigger trigger) { }
         @Override public void liveKitActiveEgressRooms(int rooms) { }
+        @Override public void enterRateLimited(EnterPopulation population) { }
     };
 }

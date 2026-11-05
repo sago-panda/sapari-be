@@ -53,7 +53,10 @@ public class EnterRateLimitFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
             return;
         }
-        boolean allowed = authenticated() ? rateLimiter.tryMemberEntry() : rateLimiter.tryGuestEntry();
+        LiveUserPrincipal member = member();
+        boolean allowed = member != null
+                ? rateLimiter.tryMemberEntry(member.userId().toString())
+                : rateLimiter.tryGuestEntry();
         if (allowed) {
             filterChain.doFilter(request, response);
             return;
@@ -63,15 +66,18 @@ public class EnterRateLimitFilter extends OncePerRequestFilter {
     }
 
     /**
-     * 인증 요청인가.
+     * 인증 요청이면 그 신원, 아니면 {@code null}. 회원 쪽은 {@code sub} 로 샤드를 고른다.
      *
      * <p>{@code isAuthenticated()} 만 보지 않는다 — 익명 인증이 채워져 있으면 그것도 참이다.
      * 컨트롤러의 분기 기준이 {@code @AuthenticationPrincipal LiveUserPrincipal} 이므로
      * <b>같은 기준</b>으로 본다: principal 이 그 타입인가. 두 기준이 갈리면 상한이 걸리는
      * 집단과 토큰에 실리는 신원이 달라진다.
      */
-    private static boolean authenticated() {
+    private static LiveUserPrincipal member() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        return auth != null && auth.getPrincipal() instanceof LiveUserPrincipal;
+        if (auth != null && auth.getPrincipal() instanceof LiveUserPrincipal principal) {
+            return principal;
+        }
+        return null;
     }
 }

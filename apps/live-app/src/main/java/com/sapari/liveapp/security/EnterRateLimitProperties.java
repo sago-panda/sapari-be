@@ -18,19 +18,24 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * ({@code StatelessJwtAuthenticationFilter} javadoc) 가입 1회로 TTL(기본 3600s) 동안 무제한
  * 호출이 된다. 버킷을 가르면 두 성질이 같이 성립한다.
  *
- * <p>⚠️ <b>가른 것은 "미인증 → 회원" 한 방향뿐이다.</b> 회원 버킷은 집단 전역 하나라
- * <b>회원 한 명이 회원 전체를 굶힐 수 있다</b> — 가입에 캡차·이메일 인증이 없으므로 계정
- * 하나로 그 버킷을 상시 비울 수 있고, 같은 호스트가 {@code Authorization} 을 빼면 게스트
- * 버킷도 같이 비운다. 이것은 <b>닫지 않았다.</b> 호출자 단위 rps 공정성은
- * {@code modules/live/AGENTS.md} 가 형제 상한에 적는 그대로 상류(Ingress·WAF)의 몫이고
- * ("rps limiting belongs upstream"), 이 버킷들은 <b>CPU 천장</b>이다. 그 구분을 지우고
- * "가용성을 해결했다" 로 읽지 말 것.
+ * <p><b>회원 쪽은 샤드로 한 번 더 가른다.</b> 회원 버킷이 집단 전역 하나면 <b>회원 한 명이
+ * 회원 전체를 굶힌다</b> — 가입에 캡차·이메일 인증이 없으므로 계정 하나로 그 버킷을 상시
+ * 비울 수 있다. {@code sub} 를 <b>고정 크기 샤드 배열</b>({@code memberShards})에 해싱해
+ * 샤드마다 자기 버킷을 주면 한 계정이 먹는 것이 자기 샤드 하나로 묶인다.
  *
- * <p><b>principal 단위 버킷이 아닌 이유.</b> {@code sub} 는 검증된 JWT 에서 오니 조작은
- * 불가하지만, 가입이 셀프서비스라 <b>무한 맵</b>은 형제가 반박한 IP 축과 같은 메모리 증식
- * 경로가 된다. ⚠️ 그 반박이 덮지 <b>않는</b> 축이 있다 — 고정 크기 샤드 배열은 메모리가
- * 구조적으로 묶이고 {@code roomId} 는 DB 행 수로 유한하다. 둘 다 검토만 하고 받지 않았다:
- * 이 티켓의 축은 CPU 천장이고 공정성은 위에 적은 대로 상류 몫이다.
+ * <p>⚠️ <b>무한 맵과 다른 점이 그 "고정" 이다.</b> {@code sub} 는 검증된 JWT 에서 오니 조작은
+ * 불가하지만 가입이 셀프서비스라 <b>키마다 버킷을 만드는 맵</b>은 형제가 반박한 IP 축과 같은
+ * 메모리 증식 경로가 된다. 배열은 메모리가 구조적으로 {@code memberShards} 에 묶이고 충돌은
+ * 샤드 공유로 끝난다 — 계정을 양산해도 늘어나는 것이 없다.
+ *
+ * <p>⚠️ <b>그래도 공정성을 해결한 것은 아니다.</b> 한 계정이 자기 샤드를 비우면 같은 샤드에
+ * 해싱된 회원(기본 64샤드에서 약 1.6%)은 같이 거부된다. 계정을 샤드 수만큼 만들면 전 샤드를
+ * 비울 수 있다. 호출자 단위 rps 공정성은 {@code modules/live/AGENTS.md} 가 형제 상한에 적는
+ * 그대로 상류(Ingress·WAF)의 몫이고("rps limiting belongs upstream"), 이 버킷들은 <b>CPU
+ * 천장</b>이다 — 샤딩이 바꾼 것은 <b>한 계정의 피해 반경</b>이지 그 결론이 아니다.
+ *
+ * <p>게스트는 샤딩하지 않는다. 신원이 없어 키가 없고, 요청마다 새로 만들 수 있는 값
+ * (IP·헤더)을 키로 쓰면 형제가 반박한 그 모양이 된다.
  *
  * <p><b>끄는 스위치는 없다.</b> 빠져나갈 길은 한도를 올리는 것이고, 그러면 "제한 없음" 을
  * 표현하는 설정이 하나로 유지된다. ⚠️ 다만 버킷은 생성자에서 한 번 조립되고 이 레코드는
@@ -42,7 +47,8 @@ public record EnterRateLimitProperties(
         Integer guestPermitsPerSecond,
         Integer guestBurst,
         Integer memberPermitsPerSecond,
-        Integer memberBurst
+        Integer memberBurst,
+        Integer memberShards
 ) {
     /**
      * <b>CPU 상한에서 역산했고, 정상 트래픽은 측정되지 않았다.</b>
@@ -59,14 +65,17 @@ public record EnterRateLimitProperties(
      * 재시작이면 전 게스트가 새 입장을 받아야 하고 그 전부가 이 버킷을 지난다.
      *
      * <p>⚠️ <b>분모가 CPU 하나만은 아니다.</b> 같은 요청이 {@code findById} 로 커넥션 풀을 쓰고,
- * 그 서명이 {@code EnterLiveService} 의 {@code @Transactional(readOnly = true)} <b>안</b>에
- * 있어 커넥션을 점유한 채 0.7ms 를 더 쓴다(선재 구조이고 이 티켓이 안 건드렸다). Hikari 기본
- * 최대 풀은 <b>10</b> 이고 이 저장소 어디에도 {@code maximum-pool-size} 가 없다 — 한도를
- * 올리면 풀 고갈 여유가 같이 줄어든다(100/s 에서 {@code findById} ≥ 100ms 였던 것이 1,000/s
- * 에서 ≥ 9.3ms 다). 그 지연은 여기서 측정할 수 없다. 서명을 트랜잭션 밖으로 빼는 것이 그
- * 결합을 끊는 수정이고 별 티켓이다.
- *
- * <p>그래서 형제와 같은 높이(500/s)에서 시작한다. 두 버킷 합 1,000/s 는 서명 천장의 69%다 —
+     * Hikari 기본 최대 풀은 <b>10</b> 이며 이 저장소 어디에도 {@code maximum-pool-size} 가 없다 —
+     * 한도를 올리면 풀 고갈 여유가 같이 줄어든다: 두 버킷 합 1,000/s 를 커넥션 10 개로 받으면
+     * 커넥션당 100/s 이므로 {@code findById} 가 <b>10ms</b> 를 넘는 순간 풀이 고갈된다.
+     * (서명이 트랜잭션 안에 있던 동안은 그 예산이 9.3ms 였다 — 0.7ms 를 같은 커넥션에서 썼다.)
+     * 실제 지연은 이 저장소에서 측정할 수 없다.
+     *
+     * <p>다만 <b>서명은 그 분모에 들어가지 않는다</b>: {@code EnterLiveService.enter} 에
+     * {@code @Transactional} 이 없어 단건 읽기가 자기 트랜잭션으로 끝나고 커넥션이 반납된 뒤에
+     * 서명이 돈다. 그 부재 자체를 {@code EnterLiveServiceTest} 가 단정한다.
+     *
+     * <p>그래서 형제와 같은 높이(500/s)에서 시작한다. 두 버킷 합 1,000/s 는 서명 천장의 69%다 —
      * <b>그 위는 숫자로 못 올린다</b>: 한도를 더 올리면 RS256 서명이 이 엔드포인트의 용량 벽이
      * 되고, 그때 필요한 것은 큰 한도가 아니라 서명을 줄이는 설계다(캐시·HMAC 분리). 지금 한도는
      * 그 벽을 가리고 있을 뿐이다.
@@ -77,6 +86,18 @@ public record EnterRateLimitProperties(
     private static final int DEFAULT_PERMITS_PER_SECOND = 500;
     /** 라이브 시작 직후·롤링 재시작 뒤 시청자가 한꺼번에 몰리는 것을 정상 트래픽으로 흡수한다. */
     private static final int DEFAULT_BURST = 1_000;
+    /**
+     * 회원 샤드 수.
+     *
+     * <p>64 를 고른 근거는 두 축의 교환이다. <b>크게</b> 할수록 한 계정의 피해 반경이 작아지고
+     * (64 면 같이 거부되는 회원이 약 1.6%), <b>작게</b> 할수록 샤드당 허용량이 커져 정상
+     * 버스트를 덜 깎는다(500/64 ≈ 7.8/s · burst 1000/64 ≈ 15). 재접속 폭풍에서 한 샤드에
+     * 몰리는 수요는 전체의 1/64 이므로 그 비율은 보존된다.
+     *
+     * <p>메모리는 샤드 수에 선형이고 버킷 하나가 필드 몇 개라 64개는 무시할 수준이다 —
+     * 이것이 무한 맵과 다른 점이다.
+     */
+    private static final int DEFAULT_MEMBER_SHARDS = 64;
 
     public EnterRateLimitProperties {
         if (guestPermitsPerSecond == null) {
@@ -91,8 +112,23 @@ public record EnterRateLimitProperties(
         if (memberBurst == null) {
             memberBurst = DEFAULT_BURST;
         }
+        if (memberShards == null) {
+            memberShards = DEFAULT_MEMBER_SHARDS;
+        }
         validate("guest", guestPermitsPerSecond, guestBurst);
         validate("member", memberPermitsPerSecond, memberBurst);
+        if (memberShards <= 0) {
+            throw new IllegalArgumentException(
+                    "live.enter.rate-limit.member-shards 는 양수여야 합니다: " + memberShards);
+        }
+        if (memberPermitsPerSecond < memberShards) {
+            // 샤드마다 permits/shards 를 주므로 샤드가 더 많으면 샤드당 허용량이 0 으로
+            // 절삭돼 회원 입장이 전량 막힌다.
+            throw new IllegalArgumentException(
+                    "live.enter.rate-limit.member-shards 는 member-permits-per-second 이하여야 "
+                            + "합니다(샤드당 허용량이 0 이 된다): "
+                            + memberShards + " > " + memberPermitsPerSecond);
+        }
     }
 
     private static void validate(String which, int permitsPerSecond, int burst) {

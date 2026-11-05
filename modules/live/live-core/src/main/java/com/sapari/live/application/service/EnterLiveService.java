@@ -6,7 +6,6 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.live.application.port.RoomTokenClaims;
 import com.sapari.live.application.port.RoomTokenIssuer;
@@ -27,8 +26,27 @@ public class EnterLiveService implements EnterLiveUseCase {
     private final LiveRoomRepository liveRoomRepository;
     private final RoomTokenIssuer roomTokenIssuer;
 
+    /**
+     * ⚠️ <b>{@code @Transactional} 이 없다 — 의도다.</b> 이 메서드가 하는 일은 PK 단건 읽기
+     * 하나와 <b>RS256 서명</b>이고, 서명은 실측 685µs(RSA-2048)다. 읽기를 트랜잭션으로 감싸면
+     * 그 서명이 <b>풀 커넥션을 점유한 채</b> 돌아간다 — Hikari 기본 최대 풀이 10 이고 이
+     * 엔드포인트는 미인증도 받으므로(상한은 {@code EnterRateLimitFilter}) 점유시간이 그대로
+     * 처리량 천장이 된다. 고갈되면 피해자는 같은 풀에서 <b>행 잠금 읽기</b>를 하는 상태 전이들이다
+     * — {@code StartLiveService}·{@code EndLiveService} 의
+     * {@code findByIdAndSellerIdForUpdate}, 그리고 {@code findByIdForUpdate} 를 쓰는
+     * {@code GoLiveByRtmpService}·{@code EndStaleLiveService}·{@code ExpireOrphanLiveService}.
+     *
+     * <p>떼도 안전한 근거: 읽기가 <b>한 문장</b>이라 어댑터의 Spring Data 호출이 자기
+     * 읽기전용 트랜잭션을 갖고, {@code LiveRoomEntity} 에 JPA 연관이 <b>0건</b>이라
+     * ({@code OneToMany}/{@code ManyToOne}/{@code FetchType}/{@code Embedded}/
+     * {@code ElementCollection} 전수 0) 매퍼가 돌려준 레코드가 완성 상태다 — 트랜잭션 밖에서
+     * 접근할 지연 프록시가 없다.
+     *
+     * <p>⚠️ 읽기가 둘 이상이 되거나 엔티티에 연관이 생기면 이 전제가 깨진다. 그때는
+     * 트랜잭션을 다시 붙이는 대신 <b>읽기만</b> 감싸고 서명을 밖에 두라 — 감싸는 범위가
+     * 넓어지는 것이 이 결함의 모양이었다.
+     */
     @Override
-    @Transactional(readOnly = true)
     public EnterLiveView enter(EnterLiveCommand command) {
         LiveRoom room = liveRoomRepository.findById(command.roomId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));

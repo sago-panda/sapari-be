@@ -65,7 +65,8 @@ class LivePublicRoutesTest {
             // 둬서 상한이 경로 판정 결과를 가리지 않게 한다.
             EnterRateLimitFilter enterRateLimitFilter = new EnterRateLimitFilter(
                     new EnterRateLimiter(new EnterRateLimitProperties(
-                            1_000_000, 1_000_000, 1_000_000, 1_000_000)));
+                            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
+                            com.sapari.live.application.port.LiveMetrics.NOOP));
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
                     enterRateLimitFilter, entryPoint,

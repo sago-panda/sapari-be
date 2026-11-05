@@ -5,6 +5,9 @@ import java.util.function.LongSupplier;
 
 import lombok.extern.slf4j.Slf4j;
 
+import com.sapari.live.application.port.EnterPopulation;
+import com.sapari.live.application.port.LiveMetrics;
+
 /**
  * 입장(=룸 토큰 발급) 상한. 게스트와 회원이 각자 버킷을 갖는다.
  *
@@ -19,12 +22,13 @@ import lombok.extern.slf4j.Slf4j;
  * 지문이다: 512B 4.5µs → 64KB 425µs. RSA 검증은 고정비용이다). 즉 31µs 는 <b>이 시스템이
  * 치르지 않는 연산</b>의 수였다. 비교를 지우고 이 경로의 실측값만 남긴다.
  *
- * <p>축을 왜 이렇게 갈랐는지(전역 둘 · IP 아님 · principal 아님 · 회원→회원은 안 닫았음)는
+ * <p>축을 왜 이렇게 갈랐는지(집단 둘 · 회원은 샤드 배열 · IP 아님 · 무한 맵 아님)는
  * {@link EnterRateLimitProperties} javadoc 이 적는다.
  *
- * <p>⚠️ <b>방 주인에게 예약 용량이 없다.</b> 회원 버킷이 집단 전역이라 거부되면 입장이 도달하지
- * 않고 {@code owner} 클레임이 실린 룸 토큰도 발급되지 않는다 — 그 클레임이 chat 의 강퇴·
- * 비마스킹 원문 게이트다. 즉 회원 버킷 포화 시 진행 중 방송의 판매자가 <b>재접속으로</b>
+ * <p>⚠️ <b>방 주인에게 예약 용량이 없다.</b> 샤드가 한 계정의 피해 반경을 묶지만 판매자 자신의
+ * 샤드를 비우는 것은 막지 않는다 — 같은 샤드에 해싱된 회원들이나 자기 재시도만으로도 비워진다.
+ * 거부되면 입장이 도달하지 않고 {@code owner} 클레임이 실린 룸 토큰도 발급되지 않는데, 그
+ * 클레임이 chat 의 강퇴·비마스킹 원문 게이트다. 즉 진행 중 방송의 판매자가 <b>재접속으로</b>
  * 조정 권한을 복구할 수 없다. 기존 WS 세션은 유지되므로 영향은 (재)접속 순간에 한정된다.
  *
  * <p><b>던지지 않고 {@code false} 를 돌려준다.</b> 던지면 공용
@@ -48,8 +52,14 @@ public class EnterRateLimiter {
     private static final long LOG_INTERVAL_NANOS = 10_000_000_000L; // 10s
 
     private final EnterRateLimitProperties properties;
+    private final LiveMetrics metrics;
     private final TokenBucket guestBucket;
     private final TokenBucket memberBucket;
+    /**
+     * 회원 샤드 버킷 — {@code sub} 해시로 고른다. 길이가 고정이라 계정을 양산해도 늘어나는
+     * 것이 없다({@link EnterRateLimitProperties} javadoc).
+     */
+    private final TokenBucket[] memberShards;
     private final AtomicLong guestRejected = new AtomicLong();
     private final AtomicLong memberRejected = new AtomicLong();
     /**
@@ -65,8 +75,8 @@ public class EnterRateLimiter {
     private final AtomicLong memberLastLogNanos;
     private final LongSupplier nanoClock;
 
-    public EnterRateLimiter(EnterRateLimitProperties properties) {
-        this(properties, System::nanoTime);
+    public EnterRateLimiter(EnterRateLimitProperties properties, LiveMetrics metrics) {
+        this(properties, metrics, System::nanoTime);
     }
 
     /**
@@ -77,13 +87,27 @@ public class EnterRateLimiter {
      * 플레이크다). 설정으로는 닫을 수 없어({@code permitsPerSecond} 가 양의 int) 이음을 낸다.
      * 같은 시계가 로그 억제 간격에도 쓰여 그쪽 단정도 결정론이 된다.
      */
-    EnterRateLimiter(EnterRateLimitProperties properties, LongSupplier nanoClock) {
+    EnterRateLimiter(EnterRateLimitProperties properties, LiveMetrics metrics,
+            LongSupplier nanoClock) {
         this.properties = properties;
+        this.metrics = metrics;
         this.nanoClock = nanoClock;
         this.guestBucket = new TokenBucket(
                 properties.guestBurst(), properties.guestPermitsPerSecond(), nanoClock);
         this.memberBucket = new TokenBucket(
                 properties.memberBurst(), properties.memberPermitsPerSecond(), nanoClock);
+        int shards = properties.memberShards();
+        this.memberShards = new TokenBucket[shards];
+        for (int i = 0; i < shards; i++) {
+            // 샤드당 허용량은 전역을 나눈 <몫>이다. 정수 나눗셈이라 샤드 용량의 합이 전역을
+            // 넘지 않고, 그 부등식이 "전역 거부 분기는 subject != null 에서 도달 불가" 의
+            // 근거다(tryMemberEntry javadoc). 0 으로 절삭되는 조합은 부팅에서 막히므로
+            // (properties 가 memberPermitsPerSecond >= memberShards 를 요구한다) 하한 가드를
+            // 두지 않는다 — 두면 합이 전역을 넘어 그 부등식이 깨진다.
+            this.memberShards[i] = new TokenBucket(
+                    properties.memberBurst() / shards,
+                    properties.memberPermitsPerSecond() / shards, nanoClock);
+        }
         this.guestLastLogNanos = new AtomicLong(nanoClock.getAsLong() - LOG_INTERVAL_NANOS);
         this.memberLastLogNanos = new AtomicLong(nanoClock.getAsLong() - LOG_INTERVAL_NANOS);
     }
@@ -93,16 +117,41 @@ public class EnterRateLimiter {
         if (guestBucket.tryAcquire()) {
             return true;
         }
+        // 지표가 먼저다 — 로그는 집단당 10초 1줄로 솎이므로 규모를 못 주고, 규모가 바로
+        // "공격인가 한도가 낮은가" 를 가르는 축이다. 어댑터는 던지지 않는다(포트 계약).
+        metrics.enterRateLimited(EnterPopulation.GUEST);
         logThrottled("게스트", guestLastLogNanos, guestRejected.incrementAndGet(),
                 properties.guestPermitsPerSecond(), properties.guestBurst());
         return false;
     }
 
-    /** 인증 입장 한 건. 게스트 버킷과 분리돼 있어 미인증 폭주가 이쪽을 굶기지 않는다. */
-    public boolean tryMemberEntry() {
+    /**
+     * 인증 입장 한 건. 게스트 버킷과 분리돼 있어 미인증 폭주가 이쪽을 굶기지 않는다.
+     *
+     * <p><b>두 관문을 지난다.</b> 샤드 버킷이 한 계정의 피해 반경을 자기 샤드로 묶고, 전역
+     * 버킷이 집단 전체의 CPU 천장을 지킨다. 순서는 <b>샤드가 먼저</b>다 — 전역을 먼저 두면
+     * <b>샤드에서 떨어질 요청까지 전역 토큰을 소모</b>하므로, 한 계정이 자기 샤드 용량이 아니라
+     * 전역 용량만큼의 토큰을 거부당하면서 태울 수 있다.
+     *
+     * <p>⚠️ 샤드를 지난 뒤 전역이 거부하는 분기는 {@code subject != null} 에서 <b>도달하지
+     * 않는다</b> — 설정 검증이 {@code burst >= permits >= shards} 를 강제해 샤드 용량의 합이
+     * 전역 용량을 넘지 못한다. 전역 버킷이 혼자 집행하는 경우는 아래 {@code null} 경로뿐이다.
+     *
+     * @param subject 검증된 JWT 의 주체. {@code null} 이면 샤드를 건너뛴다 — 신원 없는 인증
+     *                요청은 없어야 하지만, 있다면 전역 천장은 그대로 적용돼야 한다.
+     */
+    public boolean tryMemberEntry(String subject) {
+        if (subject != null && !shardFor(subject).tryAcquire()) {
+            // 샤드에서 막힌 것도 회원 거부다 — 같은 지표·같은 로그를 쓴다.
+            metrics.enterRateLimited(EnterPopulation.MEMBER);
+            logThrottled("회원", memberLastLogNanos, memberRejected.incrementAndGet(),
+                    properties.memberPermitsPerSecond(), properties.memberBurst());
+            return false;
+        }
         if (memberBucket.tryAcquire()) {
             return true;
         }
+        metrics.enterRateLimited(EnterPopulation.MEMBER);
         logThrottled("회원", memberLastLogNanos, memberRejected.incrementAndGet(),
                 properties.memberPermitsPerSecond(), properties.memberBurst());
         return false;
@@ -124,6 +173,16 @@ public class EnterRateLimiter {
                         + "프로세스 누적 거부: 이 집단={}건 게스트={}건 회원={}건",
                 which, permitsPerSecond, burst, count,
                 guestRejected.get(), memberRejected.get());
+    }
+
+    /**
+     * 주체를 샤드에 붙인다.
+     *
+     * <p>{@code floorMod} 를 쓰는 이유: {@code hashCode()} 는 음수일 수 있고 {@code %} 는 그
+     * 부호를 보존해 배열 인덱스가 음수가 된다.
+     */
+    private TokenBucket shardFor(String subject) {
+        return memberShards[Math.floorMod(subject.hashCode(), memberShards.length)];
     }
 
     /**

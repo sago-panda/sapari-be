@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
@@ -142,6 +143,14 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     @Override
     public void liveKitActiveEgressRooms(int rooms) {
         liveKitEgressRooms.set(rooms);
+    }
+
+    @Override
+    public void enterRateLimited(EnterPopulation population) {
+        safe(() -> Counter.builder(LiveMeterNames.ENTER_RATE_LIMITED)
+                .tag(LiveMeterNames.TAG_POPULATION, tag(population))
+                .register(registry)
+                .increment());
     }
 
     /**

@@ -295,35 +295,51 @@ through a bounded stream, not `@RequestBody byte[]`.
 `enter` issues an RS256 token per call, so **every request costs a private-key signature**:
 measured 685µs (RSA-2048) = ~1,458/s per core. (The webhook path is *not* a comparison — it does no
 RSA verification; the LiveKit API secret is symmetric, which is why that path's own measurements
-scale with body size.) Two token buckets cap it (`live.enter.rate-limit.guest-*` and `.member-*`,
-defaults 500/s · burst 1000 each) in `EnterRateLimitFilter`, inside the security chain **after** the
+scale with body size.) Two population buckets cap it (`live.enter.rate-limit.guest-*` and
+`.member-*`, defaults 500/s · burst 1000 each), with `member-shards` per-account buckets under the
+member one, in `EnterRateLimitFilter`, inside the security chain **after** the
 JWT filter; a rejected call returns **429 with `Retry-After`** and never reaches the use case, so
 neither the `findById` nor the signature is paid.
 
 - **This is a CPU ceiling, not availability protection** — the same requirement the webhook limit
-  carries, and **rps fairness belongs upstream**. Two buckets split one direction only: a guest flood
-  cannot starve logged-in viewers. **One member can still starve all members** (signup has no captcha
-  or email verification), and the room owner has no reserved capacity, so a saturated member bucket
-  blocks a seller from recovering the `owner` claim by reconnecting — bounded to the reconnect moment,
-  since existing WS sessions survive. Do not read "two buckets" as closing those.
-- **Not per-IP, and not per-principal.** Per-IP for the same reason as the webhook path. Per-principal
-  because self-service signup makes an unbounded **map** the same memory-growth path. That rebuttal
-  does *not* cover a fixed-size shard array or a `roomId` key — both finite; both considered and
-  declined, because this ticket's axis is the CPU ceiling.
-- **The cap raises the pool's exposure too.** The signature sits inside `EnterLiveService`'s
-  `@Transactional(readOnly = true)` (pre-existing), so each call holds a connection for it. Hikari's
-  default max pool is **10** and no `maximum-pool-size` is set anywhere in this repo; raising the
-  limit shrinks the exhaustion margin with it. Moving `issue(...)` out of the transaction is the fix
-  and is a separate ticket.
+  carries, and **rps fairness belongs upstream**. The guest/member split covers one direction: a guest
+  flood cannot starve logged-in viewers. The room owner has no reserved capacity, so a saturated
+  member bucket blocks a seller from recovering the `owner` claim by reconnecting — bounded to the
+  reconnect moment, since existing WS sessions survive.
+- **Member traffic passes two gates: a shard bucket, then the global one.** `member-shards` (default
+  64) fixed-size buckets are keyed by `Math.floorMod(sub.hashCode(), n)`, which bounds **how much one
+  account can take** to its own shard. Shard first, because checking the global bucket first lets a
+  request that the shard will reject burn a global token anyway — so one account could burn the whole
+  global capacity while being refused.
+  - This bounds **blast radius, not fairness**: members hashed to the same shard are refused together,
+    and `member-shards` accounts drain every shard.
+  - ⚠️ With a non-null `sub` the **global bucket's reject branch is unreachable** — boot validation
+    forces `burst >= permits >= shards`, so integer division makes the shard capacities sum to at most
+    the global capacity (the same holds for refill). The global bucket enforces alone only on the
+    `sub == null` path, which `EnterRateLimiterTest` is the vector for.
+- **Not per-IP, and not an unbounded per-principal map.** Per-IP for the same reason as the webhook
+  path (`X-Forwarded-For` is attacker-controlled → unbounded key space; `getRemoteAddr` collapses
+  everyone onto one proxy IP). A per-principal **map** is the same memory-growth path — which is why
+  this is a fixed-size **array**, where the key space is bounded by construction.
+- **Rejections are counted** — `live.enter.rate_limited{population=GUEST|MEMBER}`. The limiter's log
+  is throttled to one line per population per 10s, and scale is what separates "attack" from "limit
+  set too low"; the limit was derived from CPU cost, not from measured normal traffic.
+- **The pool is a denominator, but the signature no longer holds a connection.** `EnterLiveService`
+  `.enter` carries **no** `@Transactional` — the single `findById` runs in Spring Data's own read-only
+  transaction and the connection is returned before `issue(...)` signs (685µs). Hikari's default max
+  pool is **10** and no `maximum-pool-size` is set anywhere in this repo, so `findById` still shares
+  that budget. If `enter` ever grows a second read, wrap **only the read**.
 - **The limit does not throw.** `GlobalExceptionHandler` logs every 4xx, so throwing would emit one
   WARN per rejected request and let an attacker saturate log I/O; the limiter's own throttling only
   covers its own logger. The webhook filter avoids this the same way. The cost is that this 429
   carries **no `error.code`**, unlike every other error on the endpoint.
 - **A controller must not assemble this.** `apps/AGENTS.md` forbids it and its raw-DTO exemption
   covers success bodies only — that is why the cap is a filter, not a branch in `enterRoom`.
-- **`guest-permits-per-second` / `guest-burst` / `member-*` refuse to boot** when a limit is ≤0 or a
-  burst is below its permits — the same fail-closed shape as the reconcile guards.
-- **Both buckets are instance-local**, so the fleet limit is `limit × replicas`; there is none.
+- **`guest-permits-per-second` / `guest-burst` / `member-*` refuse to boot** when a limit is ≤0, a
+  burst is below its permits, `member-shards` is ≤0, or `member-permits-per-second < member-shards`
+  (the per-shard allowance would truncate to 0) — the same fail-closed shape as the reconcile guards.
+- **Every bucket is instance-local** (population and shard alike), so the fleet limit is
+  `limit × replicas`; there is none.
 - **Recovery is a rolling restart** — the buckets are built once in the constructor and nothing here
   is `@RefreshScope`.
 - The cap is on **issuance**, not on WS sessions: a room token is replayable within its TTL, so it

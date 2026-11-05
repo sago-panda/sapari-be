@@ -1,8 +1,11 @@
 package com.sapari.liveapp.config;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import com.sapari.live.application.port.LiveMetrics;
 
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
@@ -24,9 +27,16 @@ import com.sapari.liveapp.security.EnterRateLimiter;
 @EnableConfigurationProperties(EnterRateLimitProperties.class)
 public class EnterRateLimitConfig {
 
+    /**
+     * {@code LiveMetrics} 는 {@code ObjectProvider} 로 받는다 — {@code LiveMetricsConfig} 가
+     * {@code MeterRegistry} 없을 때 {@code NOOP} 을 고르지만, 그 설정이 슬라이스에서 빠질 수
+     * 있다. 없으면 {@code NOOP} 으로 떨어뜨린다: 지표 부재가 상한 자체를 못 뜨게 하면
+     * 관측을 위해 집행을 잃는다.
+     */
     @Bean
-    public EnterRateLimiter enterRateLimiter(EnterRateLimitProperties properties) {
-        return new EnterRateLimiter(properties);
+    public EnterRateLimiter enterRateLimiter(EnterRateLimitProperties properties,
+            ObjectProvider<LiveMetrics> metricsProvider) {
+        return new EnterRateLimiter(properties, metricsProvider.getIfAvailable(() -> LiveMetrics.NOOP));
     }
 
     /**

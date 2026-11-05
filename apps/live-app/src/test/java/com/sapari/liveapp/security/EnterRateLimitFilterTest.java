@@ -22,6 +22,9 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import com.sapari.live.application.port.EnterPopulation;
+import com.sapari.live.application.port.LiveMetrics;
+
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 
 /**
@@ -41,13 +44,19 @@ class EnterRateLimitFilterTest {
         SecurityContextHolder.clearContext();
     }
 
+    /** 샤드 1 — 샤드 축을 재는 칸이 아니면 전역 버킷과 같게 둔다. */
     private static EnterRateLimitProperties props(int guest, int member) {
-        return new EnterRateLimitProperties(guest, guest, member, member);
+        return new EnterRateLimitProperties(guest, guest, member, member, 1);
     }
 
     /** 멈춘 시계 — 가장 느린 버킷도 초당 1개는 차서 실시계면 "비었다" 단정의 창이 1초다. */
     private static EnterRateLimitFilter filter(EnterRateLimitProperties properties) {
-        return new EnterRateLimitFilter(new EnterRateLimiter(properties, () -> 0L));
+        return filter(properties, LiveMetrics.NOOP);
+    }
+
+    private static EnterRateLimitFilter filter(
+            EnterRateLimitProperties properties, LiveMetrics metrics) {
+        return new EnterRateLimitFilter(new EnterRateLimiter(properties, metrics, () -> 0L));
     }
 
     /** 체인이 몇 번 통과했는지 센다 — 거부된 요청이 뒤로 새는지가 핵심이다. */
@@ -67,8 +76,11 @@ class EnterRateLimitFilterTest {
     }
 
     private static void authenticate() {
-        LiveUserPrincipal principal =
-                new LiveUserPrincipal(UUID.randomUUID(), "USER", "닉", "a@b.c");
+        authenticate(UUID.randomUUID());
+    }
+
+    private static void authenticate(UUID userId) {
+        LiveUserPrincipal principal = new LiveUserPrincipal(userId, "USER", "닉", "a@b.c");
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(principal, null, java.util.List.of()));
     }
@@ -200,12 +212,14 @@ class EnterRateLimitFilterTest {
     @Test
     @DisplayName("기본값은 500/s · burst 1000 이고, 잘못된 값은 부팅에서 막는다")
     void defaultsAreFixedAndInvalidLimitsRefuseToBoot() {
-        EnterRateLimitProperties defaults = new EnterRateLimitProperties(null, null, null, null);
+        EnterRateLimitProperties defaults =
+                new EnterRateLimitProperties(null, null, null, null, null);
         // 세 면(코드·yaml·AGENTS.md)에 같은 수가 적혀 있다 — 한 면만 고치면 여기서 깨진다.
         assertThat(defaults.guestPermitsPerSecond()).isEqualTo(500);
         assertThat(defaults.guestBurst()).isEqualTo(1_000);
         assertThat(defaults.memberPermitsPerSecond()).isEqualTo(500);
         assertThat(defaults.memberBurst()).isEqualTo(1_000);
+        assertThat(defaults.memberShards()).isEqualTo(64);
 
         for (String[] bad : new String[][] {
                 {"live.enter.rate-limit.guest-permits-per-second=0"},
@@ -213,7 +227,11 @@ class EnterRateLimitFilterTest {
                 {"live.enter.rate-limit.guest-permits-per-second=100",
                         "live.enter.rate-limit.guest-burst=99"},
                 {"live.enter.rate-limit.member-permits-per-second=100",
-                        "live.enter.rate-limit.member-burst=99"}}) {
+                        "live.enter.rate-limit.member-burst=99"},
+                {"live.enter.rate-limit.member-shards=0"},
+                // 샤드가 허용량보다 많으면 샤드당 허용량이 0 으로 절삭된다.
+                {"live.enter.rate-limit.member-permits-per-second=10",
+                        "live.enter.rate-limit.member-shards=11"}}) {
             new ApplicationContextRunner()
                     .withUserConfiguration(EnterRateLimitConfig.class)
                     .withPropertyValues(bad)
@@ -224,5 +242,88 @@ class EnterRateLimitFilterTest {
                 .run(context -> assertThat(context)
                         .hasSingleBean(EnterRateLimiter.class)
                         .hasSingleBean(EnterRateLimitFilter.class));
+    }
+
+    /**
+     * ⭐ <b>회원 한 명이 회원 전체를 굶히지 못한다 — 샤드가 피해 반경을 묶는다.</b>
+     *
+     * <p>회원 버킷이 집단 전역 하나였을 때는 가입 1회로 그 버킷을 상시 비울 수 있었고
+     * (가입에 캡차·이메일 인증이 없다) 정상 로그인 회원 전원이 429 였다. {@code sub} 해시로
+     * 고른 <b>고정 크기 샤드 배열</b>이 한 계정이 먹는 것을 자기 샤드로 묶는다 — 무한 맵과
+     * 다른 점은 길이가 고정이라 계정을 양산해도 늘어나는 것이 없다는 것이다.
+     *
+     * <p>⚠️ 이것은 공정성 해결이 <b>아니다</b> — 같은 샤드에 해싱된 회원은 같이 거부되고,
+     * 계정을 샤드 수만큼 만들면 전 샤드를 비울 수 있다. 재는 것은 <b>피해 반경</b>이다.
+     */
+    @Test
+    @DisplayName("⭐ 회원 한 명이 회원 전체를 굶히지 못한다 — 샤드가 피해 반경을 묶는다")
+    void oneMemberCannotStarveAllMembers() throws Exception {
+        // 전역 1,000/s · 샤드 2개 → 샤드당 500/s. 한 샤드를 비워도 다른 샤드는 남는다.
+        EnterRateLimitFilter filter = filter(
+                new EnterRateLimitProperties(1, 1, 1_000, 1_000, 2));
+        CountingChain chain = new CountingChain();
+
+        // 같은 샤드로 가는 주체를 찾는다 — 해시가 같은 샤드에 떨어지는 두 UUID.
+        UUID attacker = UUID.randomUUID();
+        int attackerShard = Math.floorMod(attacker.toString().hashCode(), 2);
+        UUID victim = null;
+        UUID bystander = null;
+        for (int i = 0; i < 200 && (victim == null || bystander == null); i++) {
+            UUID candidate = UUID.randomUUID();
+            int shard = Math.floorMod(candidate.toString().hashCode(), 2);
+            if (shard == attackerShard && victim == null && !candidate.equals(attacker)) {
+                victim = candidate;
+            } else if (shard != attackerShard && bystander == null) {
+                bystander = candidate;
+            }
+        }
+        assertThat(victim).as("전제 — 같은 샤드 주체를 찾아야 한다").isNotNull();
+        assertThat(bystander).as("전제 — 다른 샤드 주체를 찾아야 한다").isNotNull();
+
+        // 공격자가 전역 용량(1,000)보다 많이 때린다. 샤드가 먼저라 500 만 통과하고 나머지는
+        // 샤드에서 떨어지며 전역 토큰을 쓰지 않는다 — 전역을 먼저 두면 거부된 요청까지
+        // 전역 토큰을 태워 1,001회로 전역이 빈다. 그 순서를 이 호출 수가 가른다.
+        authenticate(attacker);
+        for (int i = 0; i < 1_001; i++) {
+            filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        }
+
+        authenticate(victim);
+        MockHttpServletResponse sameShard = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), sameShard, chain);
+        assertThat(sameShard.getStatus())
+                .as("같은 샤드는 같이 거부된다 — 샤딩이 없애는 것이 아니라 묶는 것이다")
+                .isEqualTo(429);
+
+        authenticate(bystander);
+        MockHttpServletResponse otherShard = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), otherShard, chain);
+        assertThat(otherShard.getStatus())
+                .as("샤드가 없으면 여기도 429 다 — 한 계정이 회원 전체를 굶힌다")
+                .isEqualTo(200);
+    }
+
+    /**
+     * ⭐ <b>거부가 지표로 나간다 — 로그만으로는 규모를 못 준다.</b>
+     *
+     * <p>거부 로그는 집단당 10초에 한 줄로 솎이는데, 규모가 바로 "공격인가 한도가 낮은가" 를
+     * 가르는 축이다. 한도는 정상 트래픽에서 역산한 값이 아니므로 그 판정을 지표 없이 할 수 없다.
+     */
+    @Test
+    @DisplayName("⭐ 거부가 집단 태그와 함께 지표로 나간다")
+    void rejectionsAreCounted() throws Exception {
+        CountingEnterMetrics metrics = new CountingEnterMetrics();
+        EnterRateLimitFilter filter = filter(props(1, 1), metrics);
+        CountingChain chain = new CountingChain();
+
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        authenticate();
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+
+        assertThat(metrics.rejections)
+                .as("두 집단의 거부가 각자 태그로 세어져야 둘을 가를 수 있다")
+                .containsExactly(EnterPopulation.GUEST, EnterPopulation.MEMBER);
     }
 }
