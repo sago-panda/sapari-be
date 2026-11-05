@@ -147,7 +147,7 @@ public class MicrometerLiveMetrics implements LiveMetrics {
 
     @Override
     public void enterRateLimited(EnterPopulation population) {
-        safe(() -> Counter.builder(LiveMeterNames.ENTER_RATE_LIMITED)
+        safe(() -> Counter.builder(LiveMeterNames.ENTER_REJECTED)
                 .tag(LiveMeterNames.TAG_POPULATION, tag(population))
                 .register(registry)
                 .increment());

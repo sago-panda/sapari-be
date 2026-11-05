@@ -229,6 +229,12 @@ class EnterRateLimitFilterTest {
                 {"live.enter.rate-limit.member-permits-per-second=100",
                         "live.enter.rate-limit.member-burst=99"},
                 {"live.enter.rate-limit.member-shards=0"},
+                // 상한이 없으면 이 조합이 통과해 그 길이의 배열을 할당하려 든다 —
+                // 기동 실패 자리가 설정 검증이 아니라 할당이 된다.
+                {"live.enter.rate-limit.member-permits-per-second=2147483647",
+                        "live.enter.rate-limit.member-burst=2147483647",
+                        "live.enter.rate-limit.member-shards=2147483647"},
+                {"live.enter.rate-limit.member-shards=4097"},
                 // 샤드가 허용량보다 많으면 샤드당 허용량이 0 으로 절삭된다.
                 {"live.enter.rate-limit.member-permits-per-second=10",
                         "live.enter.rate-limit.member-shards=11"}}) {
@@ -248,30 +254,33 @@ class EnterRateLimitFilterTest {
      * ⭐ <b>회원 한 명이 회원 전체를 굶히지 못한다 — 샤드가 피해 반경을 묶는다.</b>
      *
      * <p>회원 버킷이 집단 전역 하나였을 때는 가입 1회로 그 버킷을 상시 비울 수 있었고
-     * (가입에 캡차·이메일 인증이 없다) 정상 로그인 회원 전원이 429 였다. {@code sub} 해시로
-     * 고른 <b>고정 크기 샤드 배열</b>이 한 계정이 먹는 것을 자기 샤드로 묶는다 — 무한 맵과
-     * 다른 점은 길이가 고정이라 계정을 양산해도 늘어나는 것이 없다는 것이다.
+     * (가입에 캡차·이메일 인증이 없다) 정상 로그인 회원 전원이 429 였다. 샤드 배열이 한 계정이
+     * 먹는 것을 자기 샤드 몫으로 묶는다.
      *
-     * <p>⚠️ 이것은 공정성 해결이 <b>아니다</b> — 같은 샤드에 해싱된 회원은 같이 거부되고,
-     * 계정을 샤드 수만큼 만들면 전 샤드를 비울 수 있다. 재는 것은 <b>피해 반경</b>이다.
+     * <p>⚠️ 이것은 공정성 해결이 <b>아니다</b> — 같은 샤드에 해싱된 회원은 같이 거부된다.
+     * 재는 것은 <b>피해 반경</b>이고, 이 칸이 그 두 면(같은 샤드는 같이 / 다른 샤드는 안)을
+     * HTTP 축에서 본다.
+     *
+     * <p>배치는 {@code shardIndexFor} 로 묻는다 — 해시 식을 테스트가 복제하면 솔트가 섞이는
+     * 변경에서 테스트만 조용히 틀린 샤드를 고른다(실제로 그 모양이었다).
      */
     @Test
     @DisplayName("⭐ 회원 한 명이 회원 전체를 굶히지 못한다 — 샤드가 피해 반경을 묶는다")
     void oneMemberCannotStarveAllMembers() throws Exception {
-        // 전역 1,000/s · 샤드 2개 → 샤드당 500/s. 한 샤드를 비워도 다른 샤드는 남는다.
-        EnterRateLimitFilter filter = filter(
-                new EnterRateLimitProperties(1, 1, 1_000, 1_000, 2));
+        // 전역 burst 100 · 샤드 4개 → 샤드 몫 ⌈100/4⌉×2 = 50. 한 샤드를 비워도 전역에 50 남는다.
+        EnterRateLimiter limiter = new EnterRateLimiter(
+                new EnterRateLimitProperties(1, 1, 100, 100, 4), LiveMetrics.NOOP, () -> 0L);
+        EnterRateLimitFilter filter = new EnterRateLimitFilter(limiter);
         CountingChain chain = new CountingChain();
 
-        // 같은 샤드로 가는 주체를 찾는다 — 해시가 같은 샤드에 떨어지는 두 UUID.
         UUID attacker = UUID.randomUUID();
-        int attackerShard = Math.floorMod(attacker.toString().hashCode(), 2);
+        int attackerShard = limiter.shardIndexFor(attacker.toString());
         UUID victim = null;
         UUID bystander = null;
-        for (int i = 0; i < 200 && (victim == null || bystander == null); i++) {
+        for (int i = 0; i < 500 && (victim == null || bystander == null); i++) {
             UUID candidate = UUID.randomUUID();
-            int shard = Math.floorMod(candidate.toString().hashCode(), 2);
-            if (shard == attackerShard && victim == null && !candidate.equals(attacker)) {
+            int shard = limiter.shardIndexFor(candidate.toString());
+            if (shard == attackerShard && victim == null) {
                 victim = candidate;
             } else if (shard != attackerShard && bystander == null) {
                 bystander = candidate;
@@ -280,11 +289,11 @@ class EnterRateLimitFilterTest {
         assertThat(victim).as("전제 — 같은 샤드 주체를 찾아야 한다").isNotNull();
         assertThat(bystander).as("전제 — 다른 샤드 주체를 찾아야 한다").isNotNull();
 
-        // 공격자가 전역 용량(1,000)보다 많이 때린다. 샤드가 먼저라 500 만 통과하고 나머지는
-        // 샤드에서 떨어지며 전역 토큰을 쓰지 않는다 — 전역을 먼저 두면 거부된 요청까지
-        // 전역 토큰을 태워 1,001회로 전역이 빈다. 그 순서를 이 호출 수가 가른다.
+        // 공격자가 자기 샤드 몫(50)보다 훨씬 많이, 전역 용량(100)보다도 많이 때린다.
+        // 샤드가 먼저라 50 만 통과하고 나머지는 전역 토큰을 쓰지 않는다 — 전역을 먼저 두면
+        // 400 회를 다 태워 아래 bystander 도 429 가 된다. 그 순서를 이 호출 수가 가른다.
         authenticate(attacker);
-        for (int i = 0; i < 1_001; i++) {
+        for (int i = 0; i < 400; i++) {
             filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
         }
 
@@ -299,7 +308,7 @@ class EnterRateLimitFilterTest {
         MockHttpServletResponse otherShard = new MockHttpServletResponse();
         filter.doFilter(get(ENTER_URI), otherShard, chain);
         assertThat(otherShard.getStatus())
-                .as("샤드가 없으면 여기도 429 다 — 한 계정이 회원 전체를 굶힌다")
+                .as("샤드가 없거나 전역을 먼저 검사하면 여기도 429 다")
                 .isEqualTo(200);
     }
 

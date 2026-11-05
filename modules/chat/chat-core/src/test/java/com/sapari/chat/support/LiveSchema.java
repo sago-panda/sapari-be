@@ -73,7 +73,13 @@ public final class LiveSchema {
         return Long.parseLong(name.substring(1, end));
     }
 
-    /** {@code db/migration} 아래 정본 DDL 파일들. 스키마 본문을 읽어 단정하는 테스트가 쓴다. */
+    /**
+     * {@code db/migration/live} 의 DDL 파일들, <b>Flyway 와 같은 순서</b>로. 스키마 본문을
+     * 읽어 단정하는 테스트가 쓴다.
+     *
+     * <p>⚠️ <b>live 도메인만</b>이다({@link #MIGRATION_DIR}) — {@code db/migration} 전체가
+     * 아니다. 다른 도메인의 열을 이걸로 재면 조용히 못 찾는다.
+     */
     public static List<Path> migrationFiles() throws IOException {
         return migrations();
     }

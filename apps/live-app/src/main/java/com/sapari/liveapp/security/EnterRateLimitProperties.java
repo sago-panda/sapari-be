@@ -29,10 +29,18 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 샤드 공유로 끝난다 — 계정을 양산해도 늘어나는 것이 없다.
  *
  * <p>⚠️ <b>그래도 공정성을 해결한 것은 아니다.</b> 한 계정이 자기 샤드를 비우면 같은 샤드에
- * 해싱된 회원(기본 64샤드에서 약 1.6%)은 같이 거부된다. 계정을 샤드 수만큼 만들면 전 샤드를
- * 비울 수 있다. 호출자 단위 rps 공정성은 {@code modules/live/AGENTS.md} 가 형제 상한에 적는
- * 그대로 상류(Ingress·WAF)의 몫이고("rps limiting belongs upstream"), 이 버킷들은 <b>CPU
- * 천장</b>이다 — 샤딩이 바꾼 것은 <b>한 계정의 피해 반경</b>이지 그 결론이 아니다.
+ * 해싱된 회원(기본 64샤드에서 약 1.6%)은 같이 거부된다. 샤드를 <b>전부</b> 덮는 것도 가능하되
+ * 비용이 선형이 아니다 — 쿠폰 수집 문제라 64샤드 전수에 평균 <b>301개</b> 계정이 들고 64개로는
+ * 기대 커버리지가 63.5% 다(측정: 균일 분배 3,000회 시행). 호출자 단위 rps 공정성은
+ * {@code modules/live/AGENTS.md} 가 형제 상한에 적는 그대로 상류(Ingress·WAF)의 몫이고
+ * ("rps limiting belongs upstream"), 이 버킷들은 <b>CPU 천장</b>이다 — 샤딩이 바꾼 것은
+ * <b>한 계정의 피해 반경</b>이지 그 결론이 아니다.
+ *
+ * <p>⚠️ <b>샤드 키에 프로세스 로컬 솔트를 섞는다 — 없으면 조준이 가능했다.</b> 샤드 키가
+ * {@code sub}(=userId)이고 {@code String.hashCode} 는 JDK 규격이라 재현되는데, 미인증으로
+ * 열린 목록 응답({@code GetLiveView.LiveRoomSummary.sellerId})이 방송 중 판매자의 userId 를
+ * 준다. 솔트가 없으면 그 샤드를 오프라인에서 계산해 계정 하나(지속 8/s)로 특정 판매자를
+ * 상시 끊을 수 있었다. 근거와 남는 위험은 {@code EnterRateLimiter.shardSalt} javadoc.
  *
  * <p>게스트는 샤딩하지 않는다. 신원이 없어 키가 없고, 요청마다 새로 만들 수 있는 값
  * (IP·헤더)을 키로 쓰면 형제가 반박한 그 모양이 된다.
@@ -90,14 +98,38 @@ public record EnterRateLimitProperties(
      * 회원 샤드 수.
      *
      * <p>64 를 고른 근거는 두 축의 교환이다. <b>크게</b> 할수록 한 계정의 피해 반경이 작아지고
-     * (64 면 같이 거부되는 회원이 약 1.6%), <b>작게</b> 할수록 샤드당 허용량이 커져 정상
-     * 버스트를 덜 깎는다(500/64 ≈ 7.8/s · burst 1000/64 ≈ 15). 재접속 폭풍에서 한 샤드에
-     * 몰리는 수요는 전체의 1/64 이므로 그 비율은 보존된다.
+     * (64 면 같이 거부되는 회원이 약 1.6%), <b>작게</b> 할수록 샤드당 몫이 커져 한 계정의
+     * 일회분이 커진다. 기본값에서 샤드당 지속 <b>8/s</b>(= ⌈500/64⌉) · 버스트 <b>32</b>
+     * (= ⌈1000/64⌉ × 헤드룸 2)다.
      *
-     * <p>메모리는 샤드 수에 선형이고 버킷 하나가 필드 몇 개라 64개는 무시할 수준이다 —
-     * 이것이 무한 맵과 다른 점이다.
+     * <p>⚠️ <b>"한 샤드 수요는 전체의 1/64 이라 비율이 보존된다" 는 거짓이다</b> — 비율은
+     * 기댓값에서만 보존되고 <b>버스트 보장은 보존되지 않는다.</b> 쪼개면 여유가 샤드 간에
+     * 풀링되지 않아 이항분포의 꼬리가 그대로 거부가 된다. 그래서 샤드 버스트에 헤드룸을 둔다
+     * ({@code EnterRateLimiter.BURST_HEADROOM} — 실측 12.0% → 0.0%).
+     *
+     * <p>메모리는 샤드 수에 선형이고 버킷 하나가 필드 몇 개다. 다만 그 "고정" 은
+     * <b>상한이 있어야</b> 성립한다 — 아래 생성자가 샤드 수를 묶는다.
      */
     private static final int DEFAULT_MEMBER_SHARDS = 64;
+
+    /**
+     * 샤드 수 상한 — <b>배열이 "고정" 이라는 근거를 실제로 세우는 수</b>다.
+     *
+     * <p>하한만 닫아 두면 {@code member-permits-per-second: 2147483647} +
+     * {@code member-shards: 2147483647} 같은 오타가 <b>검증을 통과</b>한다(그 조합은
+     * {@code burst >= permits >= shards} 를 만족한다). 그러면 생성자가 그 길이의 배열을
+     * 시도하고, 기동이 실패하는 자리가 설정 검증이 아니라 할당이 된다 — 그때 운영자가 받는 것은
+     * 어느 키가 틀렸다는 메시지가 아니다.
+     *
+     * <p>4,096 은 쓸모의 끝에서 잡았다. 피해 반경이 이미 1/4,096 ≈ 0.024% 이고 그 위로는
+     * 줄어드는 폭이 측정 불가에 가깝다. 샤드 전수를 덮는 비용은 반대로 계속 오르지만
+     * (쿠폰 수집 n·H(n) ≈ 36,000 계정) 그 이득은 살포 공격에만 듣고, 같은 공격은 계정 수가
+     * 아니라 집계 천장(전역 버킷)에서 먼저 막힌다.
+     *
+     * <p>메모리는 버킷당 {@code long} 3 + {@code AtomicLong} 2 + 참조 1 이라 4,096개도
+     * 수백 KB 규모다(바이트 총량은 측정하지 않았다 — 상한의 근거는 쓸모이고 메모리가 아니다).
+     */
+    private static final int MAX_MEMBER_SHARDS = 4_096;
 
     public EnterRateLimitProperties {
         if (guestPermitsPerSecond == null) {
@@ -121,9 +153,15 @@ public record EnterRateLimitProperties(
             throw new IllegalArgumentException(
                     "live.enter.rate-limit.member-shards 는 양수여야 합니다: " + memberShards);
         }
+        if (memberShards > MAX_MEMBER_SHARDS) {
+            throw new IllegalArgumentException(
+                    "live.enter.rate-limit.member-shards 는 " + MAX_MEMBER_SHARDS
+                            + " 이하여야 합니다(그 위는 피해 반경이 더 줄지 않고 배열만 커진다): "
+                            + memberShards);
+        }
         if (memberPermitsPerSecond < memberShards) {
-            // 샤드마다 permits/shards 를 주므로 샤드가 더 많으면 샤드당 허용량이 0 으로
-            // 절삭돼 회원 입장이 전량 막힌다.
+            // 샤드마다 ⌈permits/shards⌉ 를 주므로, 샤드가 더 많으면 샤드 리필의 합이 전역
+            // permits 를 크게 넘어 샤드가 아무것도 묶지 못한다(전역만 남는다 = 샤딩 무효).
             throw new IllegalArgumentException(
                     "live.enter.rate-limit.member-shards 는 member-permits-per-second 이하여야 "
                             + "합니다(샤드당 허용량이 0 이 된다): "

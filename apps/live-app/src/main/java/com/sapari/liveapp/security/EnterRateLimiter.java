@@ -51,6 +51,39 @@ public class EnterRateLimiter {
      */
     private static final long LOG_INTERVAL_NANOS = 10_000_000_000L; // 10s
 
+    /**
+     * 샤드 버스트에 주는 배수 — <b>정상 재접속 폭풍을 거부 없이 흡수하는 데 필요한 여유</b>다.
+     *
+     * <p>샤드로 쪼개면 버스트 여유가 샤드 간에 <b>풀링되지 않는다.</b> 1,000명이 동시에
+     * 재입장하면 샤드별 도착 수가 이항분포를 따르고(기본 64샤드에서 평균 15.6 · σ 3.9)
+     * 샤드 버스트가 그 평균과 같으면 절반쯤의 샤드가 넘친다 — 실측으로 <b>12.0%(평균
+     * 120.2건)가 거부</b>됐다. 전역 버스트 1,000 은 남아 있는데도 그렇다.
+     *
+     * <p>2 는 평균 + 약 4σ 에 해당하고 그 지점에서 같은 폭풍의 거부가 <b>0.0%</b> 였다
+     * (측정: 1,000명 균일 분배 3,000회 시행 · 3 으로 올려도 0.0% 로 더 얻는 것이 없다).
+     *
+     * <p>⚠️ 대가는 한 계정의 <b>일회분</b>이 커지는 것이다 — 기본값에서 15 → 32(전역 버스트
+     * 1,000 의 3.2%). 지속분은 샤드 리필이 잡으므로(기본 8/s) 계정 하나로 전역을 <b>계속</b>
+     * 비워 두지는 못한다. 사람을 막는 것은 지속분이고, 일회분 32 는 다음 초에 회복된다.
+     */
+    private static final int BURST_HEADROOM = 2;
+
+    /**
+     * 샤드 선택에 섞는 <b>프로세스 로컬 솔트</b> — 샤드를 <b>조준 불가</b>로 만든다.
+     *
+     * <p>솔트가 없으면 공격자가 대상의 샤드를 <b>오프라인에서</b> 계산한다: 샤드 키가
+     * {@code sub}(=userId)이고 {@code String.hashCode} 는 JDK 규격이라 값이 재현되며,
+     * 미인증으로 열린 목록 응답({@code GetLiveView.LiveRoomSummary.sellerId})이 방송 중
+     * 판매자의 userId 를 그대로 준다. 그 샤드에 떨어지는 계정이 나올 때까지 가입만 하면
+     * (가입 스로틀 없음) 계정 하나로 그 샤드를 상시 비울 수 있고, 그러면 판매자가 재입장으로
+     * {@code owner} 클레임을 복구할 수 없다 — chat 의 강퇴·비마스킹 원문 게이트가 그 클레임이다.
+     *
+     * <p>솔트는 인스턴스마다 다르므로 같은 판매자가 레플리카마다 다른 샤드에 떨어진다. 남는
+     * 위험은 조준이 아니라 <b>살포</b>다(샤드 전부를 덮으려면 계정이 많이 필요하다 — 아래
+     * {@code shardFor} javadoc).
+     */
+    private final String shardSalt = java.util.UUID.randomUUID().toString();
+
     private final EnterRateLimitProperties properties;
     private final LiveMetrics metrics;
     private final TokenBucket guestBucket;
@@ -98,15 +131,14 @@ public class EnterRateLimiter {
                 properties.memberBurst(), properties.memberPermitsPerSecond(), nanoClock);
         int shards = properties.memberShards();
         this.memberShards = new TokenBucket[shards];
+        // 샤드 몫을 <올림>으로 내고 버스트에 헤드룸을 준다. 합이 전역을 넘으므로 집계 천장은
+        // 전역 버킷이 집행하고(그래서 설정에 적은 수가 실제 천장이다) 샤드는 <한 계정>의
+        // 몫만 묶는다. 바닥 나눗셈이면 합이 전역보다 작아 설정값이 집행되지 않는다 —
+        // 기본값에서 지속 448/s · 버스트 960(설정은 500/1,000)이었다.
+        int shardBurst = ceilDiv(properties.memberBurst(), shards) * BURST_HEADROOM;
+        int shardRefill = ceilDiv(properties.memberPermitsPerSecond(), shards);
         for (int i = 0; i < shards; i++) {
-            // 샤드당 허용량은 전역을 나눈 <몫>이다. 정수 나눗셈이라 샤드 용량의 합이 전역을
-            // 넘지 않고, 그 부등식이 "전역 거부 분기는 subject != null 에서 도달 불가" 의
-            // 근거다(tryMemberEntry javadoc). 0 으로 절삭되는 조합은 부팅에서 막히므로
-            // (properties 가 memberPermitsPerSecond >= memberShards 를 요구한다) 하한 가드를
-            // 두지 않는다 — 두면 합이 전역을 넘어 그 부등식이 깨진다.
-            this.memberShards[i] = new TokenBucket(
-                    properties.memberBurst() / shards,
-                    properties.memberPermitsPerSecond() / shards, nanoClock);
+            this.memberShards[i] = new TokenBucket(shardBurst, shardRefill, nanoClock);
         }
         this.guestLastLogNanos = new AtomicLong(nanoClock.getAsLong() - LOG_INTERVAL_NANOS);
         this.memberLastLogNanos = new AtomicLong(nanoClock.getAsLong() - LOG_INTERVAL_NANOS);
@@ -128,24 +160,23 @@ public class EnterRateLimiter {
     /**
      * 인증 입장 한 건. 게스트 버킷과 분리돼 있어 미인증 폭주가 이쪽을 굶기지 않는다.
      *
-     * <p><b>두 관문을 지난다.</b> 샤드 버킷이 한 계정의 피해 반경을 자기 샤드로 묶고, 전역
-     * 버킷이 집단 전체의 CPU 천장을 지킨다. 순서는 <b>샤드가 먼저</b>다 — 전역을 먼저 두면
-     * <b>샤드에서 떨어질 요청까지 전역 토큰을 소모</b>하므로, 한 계정이 자기 샤드 용량이 아니라
-     * 전역 용량만큼의 토큰을 거부당하면서 태울 수 있다.
+     * <p><b>두 관문을 지나고 역할이 다르다.</b> 샤드 버킷은 <b>한 계정</b>의 몫을 묶고,
+     * 전역 버킷이 <b>집계 천장</b>을 집행한다 — 샤드 용량의 합이 전역을 넘도록 올려 두었으니
+     * (생성자 참조) 둘 중 구속하는 쪽은 전역이고, 그래서 설정에 적은 수가 실제 천장이다.
      *
-     * <p>⚠️ 샤드를 지난 뒤 전역이 거부하는 분기는 <b>모든 호출이 {@code subject != null} 인
-     * 동안</b> 도달하지 않는다 — 설정 검증이 {@code burst >= permits >= shards} 를 강제하고
-     * 정수 나눗셈이라 샤드 용량·리필의 합이 전역의 그것을 넘지 못하고, 전역 소모 1건마다
-     * 샤드 소모 1건이 짝지어지기 때문이다.
+     * <p>순서는 <b>샤드가 먼저</b>다. 전역을 먼저 두면 <b>샤드에서 떨어질 요청까지 전역
+     * 토큰을 소모</b>하므로 한 계정이 자기 몫을 넘어 전역을 비울 수 있다. 샤드를 먼저 두면
+     * 그 요청은 전역을 건드리지 않는다.
      *
-     * <p>⚠️ <b>{@code null} 호출이 섞이면 그 전제가 깨진다</b> — 그 호출은 샤드를 건너뛰고
-     * 전역만 소모하므로 짝이 없고, 그만큼 전역이 샤드보다 먼저 빌 수 있다. 그래서 전역 검사를
-     * {@code null} 경로 전용으로 좁히지 않는다. {@code EnterRateLimitFilter} 는 {@code null}
-     * 을 만들지 않으므로({@code member.userId().toString()} — {@code userId} 가 {@code null}
-     * 이면 거기서 NPE 다) 운영에서는 짝이 유지된다.
+     * <p>⚠️ 거울상이 하나 있다 — <b>전역에서 떨어지는 요청은 샤드 토큰을 이미 썼다</b>
+     * (샤드 소모가 전역 검사보다 앞이다). 집계 포화 시 회원이 자기 샤드도 같이 소모하므로
+     * 회복이 그만큼 늦다. 순서를 바꿔 닫히는 것이 아니고(위 단락이 그 대가다) 전역 포화는
+     * 지속분이 전역 리필을 넘을 때만 생긴다.
      *
      * @param subject 검증된 JWT 의 주체. {@code null} 이면 샤드를 건너뛴다 — 신원 없는 인증
-     *                요청은 없어야 하지만, 있다면 전역 천장은 그대로 적용돼야 한다.
+     *                요청은 없어야 하지만({@code EnterRateLimitFilter} 는
+     *                {@code member.userId().toString()} 이라 {@code null} 이면 거기서 NPE 다)
+     *                있다면 전역 천장은 그대로 적용돼야 한다.
      */
     public boolean tryMemberEntry(String subject) {
         if (subject != null && !shardFor(subject).tryAcquire()) {
@@ -183,13 +214,32 @@ public class EnterRateLimiter {
     }
 
     /**
-     * 주체를 샤드에 붙인다.
+     * 주체를 샤드에 붙인다 — {@link #shardSalt} 를 앞에 붙여 조준을 막는다.
      *
      * <p>{@code floorMod} 를 쓰는 이유: {@code hashCode()} 는 음수일 수 있고 {@code %} 는 그
      * 부호를 보존해 배열 인덱스가 음수가 된다.
+     *
+     * <p>⚠️ <b>남는 위험은 살포다.</b> 솔트는 어느 계정이 어느 샤드인지를 가리지만 계정을
+     * 여러 개 만들어 샤드를 넓게 덮는 것은 막지 않는다. 쿠폰 수집 문제라 비용이 선형이
+     * 아니다 — 64샤드를 <b>전부</b> 덮는 데 평균 <b>301개</b>(측정: 균일 분배 3,000회 시행)가
+     * 들고, 64개로는 기대 커버리지가 63.5% 다.
      */
     private TokenBucket shardFor(String subject) {
-        return memberShards[Math.floorMod(subject.hashCode(), memberShards.length)];
+        return memberShards[shardIndexFor(subject)];
+    }
+
+    /**
+     * 배치를 테스트에서 직접 볼 수 있게 낸 이음 — 조준 불가는 <b>인덱스</b>에 대한 성질이라
+     * 통과/거부로 간접 관측하면 재는 축이 흐려진다(처음에 그렇게 썼다가 지문이 샤드가 아니라
+     * 샤드 용량이었다).
+     */
+    int shardIndexFor(String subject) {
+        return Math.floorMod((shardSalt + subject).hashCode(), memberShards.length);
+    }
+
+    /** 올림 나눗셈. 샤드 몫이 전역을 <b>넘도록</b> 올려야 집계 천장이 전역에서 집행된다. */
+    private static int ceilDiv(int dividend, int divisor) {
+        return -Math.floorDiv(-dividend, divisor);
     }
 
     /**

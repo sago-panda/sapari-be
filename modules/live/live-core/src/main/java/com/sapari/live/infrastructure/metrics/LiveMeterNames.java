@@ -18,8 +18,8 @@ final class LiveMeterNames {
     static final String ROOM_ACTIVE = "live.room.active";
     static final String LIVEKIT_EGRESS_ROOMS = "live.livekit.egress.rooms";
 
-    /** 입장 상한이 거부한 건수. */
-    static final String ENTER_RATE_LIMITED = "live.enter.rate_limited";
+    /** 입장 상한이 거부한 건수. 집단은 {@code population} 태그로 가른다(값은 소문자). */
+    static final String ENTER_REJECTED = "live.enter.rejected";
 
     static final String TAG_JOB = "job";
     static final String TAG_OUTCOME = "outcome";

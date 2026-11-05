@@ -69,4 +69,36 @@ class PrometheusScrapeTest {
 
         assertThat(rounds).isEqualTo(2);
     }
+
+    /**
+     * ⭐ <b>입장 거부 지표의 이름과 태그 <i>값</i>이 스크레이프 출력에 그대로 있다.</b>
+     *
+     * <p>이 칸이 없던 동안 {@code modules/live/AGENTS.md} 가 태그 값을 {@code population=GUEST}
+     * 로 적었다 — 코드는 {@code name().toLowerCase()} 라 실제 값이 {@code "guest"} 다. 당직자가
+     * 문서대로 쿼리하면 <b>0건이 아니라 시계열 없음</b>이 나오고, 그것은 "알림이 안 온 것" 과
+     * 구분되지 않는다. 그 면(이름·태그 문자열)을 재는 칸이 저장소에 하나도 없었다 —
+     * 다른 테스트들은 전부 포트 호출 여부만 센다.
+     *
+     * <p>그래서 단정을 스크레이프 <b>문자열</b>에 둔다. 상수를 참조하면 상수와 문서가 어긋나는
+     * 바로 그 결함을 못 본다.
+     */
+    @Test
+    @DisplayName("⭐ 입장 거부 지표의 이름·태그 값이 스크레이프 출력에 있다")
+    void enterRejected_appearsInScrape() {
+        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.GUEST);
+        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.MEMBER);
+
+        String scrape = registry.scrape();
+
+        assertThat(scrape)
+                .as("이름은 점으로 구분한 소문자 명사구 → 프로메테우스에서 밑줄 + _total")
+                .contains("live_enter_rejected_total");
+        assertThat(scrape)
+                .as("태그 값은 소문자다 — 문서가 대문자로 적으면 쿼리가 시계열을 못 찾는다")
+                .contains("population=\"guest\"")
+                .contains("population=\"member\"");
+        assertThat(scrape)
+                .as("대문자 값은 나오지 않는다 — 이 단정이 문서 쪽 드리프트를 잡는 면이다")
+                .doesNotContain("population=\"GUEST\"");
+    }
 }
