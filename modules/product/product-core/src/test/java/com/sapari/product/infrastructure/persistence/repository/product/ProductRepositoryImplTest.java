@@ -67,6 +67,30 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
                 .orElseThrow();
     }
 
+    /**
+     * 애그리거트의 옵션 타입 id를 정렬 순서대로 펼친다.
+     */
+    private static List<UUID> optionTypeIds(Product product) {
+        return product.optionTypes()
+                .stream()
+                .map(ProductOptionTypeModel::id)
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * 애그리거트의 모든 옵션값 id를 정렬해 펼친다(조회 순서와 무관하게 비교하려고).
+     */
+    private static List<UUID> optionValueIds(Product product) {
+        return product.optionTypes()
+                .stream()
+                .flatMap(type -> type.values()
+                        .stream())
+                .map(ProductOptionValueModel::id)
+                .sorted()
+                .toList();
+    }
+
     @Nested
     @DisplayName("신규 저장(INSERT)")
     class SaveNew {
@@ -186,22 +210,19 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         }
 
         @Test
-        @DisplayName("자식 컬렉션을 전체 교체한다(옛 행 삭제 후 재삽입)")
-        void replaces_children() {
-            Product input = ProductFixtures.full(SELLER_A, CATEGORY_1);
-            Product saved = productRepository.save(input);
+        @DisplayName("태그는 전체 교체하되, 옵션 타입/값·config는 건드리지 않는다 — 옵션값 id가 재발급되지 않는다")
+        void replaces_tags_keeps_option_tree() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
             em.flush();
             em.clear();
-            int inputValueCount = input.optionTypes()
-                    .stream()
-                    .mapToInt(t -> t.values()
-                            .size())
-                    .sum();
-            assertThat(optionValueJpaRepository.count()).isEqualTo(inputValueCount);
+            Product before = productRepository.findById(saved.id())
+                    .orElseThrow();
+            long typeRows = optionTypeJpaRepository.count();
+            long valueRows = optionValueJpaRepository.count();
 
-            Product updated = productRepository.findById(saved.id())
-                    .orElseThrow()
-                    .toBuilder()
+            // 도메인에 다른 옵션 트리·null config를 담아도 기존 상품 save는 옵션을 쓰지 않는다
+            Product updated = before.toBuilder()
+                    .name("수정된 상품명")
                     .tags(List.of("단독"))
                     .optionTypes(List.of(ProductOptionTypeModel.create("색상", null, (short) 1,
                             List.of(ProductOptionValueModel.create("검정", null, null, 0, (short) 1)))))
@@ -213,16 +234,45 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
 
             Product after = productRepository.findById(saved.id())
                     .orElseThrow();
+            assertThat(after.name()).isEqualTo("수정된 상품명");
             assertThat(after.tags()).containsExactly("단독");
-            assertThat(after.optionTypes()).hasSize(1);
-            assertThat(after.optionTypes()
-                    .get(0)
-                    .values()).extracting(ProductOptionValueModel::value)
-                    .containsExactly("검정");
-            assertThat(after.optionConfig()).isNull();
-            // 옛 옵션 타입/값 행이 남지 않았는지 행 수준으로 확인
-            assertThat(optionTypeJpaRepository.count()).isEqualTo(1);
-            assertThat(optionValueJpaRepository.count()).isEqualTo(1);
+            assertThat(optionTypeIds(after)).isNotEmpty()
+                    .isEqualTo(optionTypeIds(before));
+            assertThat(optionValueIds(after)).isNotEmpty()
+                    .isEqualTo(optionValueIds(before));
+            assertThat(after.optionConfig()).isEqualTo(before.optionConfig());
+            assertThat(optionTypeJpaRepository.count()).isEqualTo(typeRows);
+            assertThat(optionValueJpaRepository.count()).isEqualTo(valueRows);
+        }
+
+        @Test
+        @DisplayName("판매상태 전이·소프트 삭제 저장도 옵션값 id를 보존한다")
+        void status_change_and_soft_delete_keep_option_value_ids() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            em.flush();
+            em.clear();
+            List<UUID> before = optionValueIds(productRepository.findById(saved.id())
+                    .orElseThrow());
+
+            productRepository.save(productRepository.findById(saved.id())
+                    .orElseThrow()
+                    .approve(Instant.parse("2026-02-02T00:00:00Z")));
+            em.flush();
+            em.clear();
+            List<UUID> afterApprove = optionValueIds(productRepository.findById(saved.id())
+                    .orElseThrow());
+
+            productRepository.save(productRepository.findById(saved.id())
+                    .orElseThrow()
+                    .softDelete(Instant.parse("2026-03-03T00:00:00Z")));
+            em.flush();
+            em.clear();
+            List<UUID> afterDelete = optionValueIds(productRepository.findById(saved.id())
+                    .orElseThrow());
+
+            assertThat(before).isNotEmpty();
+            assertThat(afterApprove).isEqualTo(before);
+            assertThat(afterDelete).isEqualTo(before);
         }
 
         @Test
@@ -584,6 +634,99 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
             assertThat(after.name()).isEqualTo("이름만 수정");
             assertThat(after.minPrice()).isEqualTo(4_321);
             assertThat(after.hasStock()).isTrue();
+        }
+    }
+
+    @Nested
+    @DisplayName("옵션 트리 교체(replaceOptionTypes)")
+    class ReplaceOptionTypes {
+
+        @Test
+        @DisplayName("옵션 타입/값을 새 id로 전체 교체하고, 옛 행은 남기지 않는다")
+        void replaces_with_new_ids() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            em.flush();
+            em.clear();
+            List<UUID> oldValueIds = optionValueIds(productRepository.findById(saved.id())
+                    .orElseThrow());
+
+            Product returned = productRepository.replaceOptionTypes(saved.id(), List.of(
+                    ProductOptionTypeModel.create("색상", null, (short) 1, List.of(
+                            ProductOptionValueModel.create("검정", null, null, 0, (short) 1),
+                            ProductOptionValueModel.create("흰색", null, null, 500, (short) 2)))));
+            em.flush();
+            em.clear();
+
+            Product after = productRepository.findById(saved.id())
+                    .orElseThrow();
+            // 반환값이 확정된 새 id를 담는다 — 호출측이 이 id로 조합을 만든다
+            assertThat(optionValueIds(returned)).isEqualTo(optionValueIds(after));
+            assertThat(after.optionTypes()).singleElement()
+                    .satisfies(type -> {
+                        assertThat(type.name()).isEqualTo("색상");
+                        assertThat(type.values()).extracting(ProductOptionValueModel::value)
+                                .containsExactlyInAnyOrder("검정", "흰색");
+                    });
+            assertThat(optionValueIds(after)).doesNotContainAnyElementsOf(oldValueIds);
+            assertThat(optionTypeJpaRepository.count()).isEqualTo(1);
+            assertThat(optionValueJpaRepository.count()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("같은 이름의 옵션 타입으로 교체해도 부분 유니크 제약과 충돌하지 않는다(삭제를 INSERT보다 먼저 반영)")
+        void replaces_same_type_names() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            em.flush();
+            em.clear();
+            Product before = productRepository.findById(saved.id())
+                    .orElseThrow();
+
+            productRepository.replaceOptionTypes(saved.id(), ProductFixtures.optionTypes(before.optionTypes()
+                    .size()));
+            em.flush();
+            em.clear();
+
+            Product after = productRepository.findById(saved.id())
+                    .orElseThrow();
+            assertThat(after.optionTypes()).extracting(ProductOptionTypeModel::name)
+                    .containsExactlyInAnyOrderElementsOf(before.optionTypes()
+                            .stream()
+                            .map(ProductOptionTypeModel::name)
+                            .toList());
+            assertThat(optionValueIds(after)).doesNotContainAnyElementsOf(optionValueIds(before));
+        }
+
+        @Test
+        @DisplayName("루트·태그·config는 건드리지 않는다")
+        void keeps_root_tags_and_config() {
+            Product saved = productRepository.save(ProductFixtures.full(SELLER_A, CATEGORY_1));
+            em.flush();
+            em.clear();
+            Product before = productRepository.findById(saved.id())
+                    .orElseThrow();
+
+            productRepository.replaceOptionTypes(saved.id(), List.of());
+            em.flush();
+            em.clear();
+
+            Product after = productRepository.findById(saved.id())
+                    .orElseThrow();
+            assertThat(after.optionTypes()).isEmpty();
+            assertThat(after.name()).isEqualTo(before.name());
+            assertThat(after.version()).isEqualTo(before.version());
+            assertThat(after.updatedAt()).isEqualTo(before.updatedAt());
+            assertThat(after.tags()).containsExactlyInAnyOrderElementsOf(before.tags());
+            assertThat(after.optionConfig()).isEqualTo(before.optionConfig());
+            assertThat(optionTypeJpaRepository.count()).isZero();
+            assertThat(optionValueJpaRepository.count()).isZero();
+        }
+
+        @Test
+        @DisplayName("존재하지 않는 상품이면 예외(@Repository 예외 변환으로 JpaObjectRetrievalFailureException)")
+        void unknown_product_throws() {
+            assertThatThrownBy(() -> productRepository.replaceOptionTypes(UUID.randomUUID(), List.of()))
+                    .isInstanceOf(JpaObjectRetrievalFailureException.class)
+                    .hasCauseInstanceOf(EntityNotFoundException.class);
         }
     }
 

@@ -103,7 +103,7 @@ public class CreateProductService implements CreateProductUseCase {
         // 목록·검색이 쓰는 최저가·재고유무 캐시를 방금 저장한 조합으로 계산 (생성 시점 캐시 불일치 제거)
         productRepository.refreshStockPriceCache(saved.id(), now);
 
-        // 룰이 있으면 config 행만 기록 — save 재호출은 옵션값 id를 재발급해 방금 만든 조합의 참조를 깨뜨린다
+        // 룰이 있으면 config 행만 기록 — 룰은 방금 확정된 옵션값 id를 참조하므로 상품 저장 뒤에 따로 쓴다(기존 상품 save는 config를 쓰지 않음)
         ProductOptionConfigModel config = ProductOptionRuleAssembler.toConfig(surchargeRules, exclusionRules);
         if (config != null) {
             productRepository.replaceOptionConfig(saved.id(), config);

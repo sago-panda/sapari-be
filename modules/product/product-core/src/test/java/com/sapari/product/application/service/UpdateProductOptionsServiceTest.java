@@ -85,7 +85,7 @@ class UpdateProductOptionsServiceTest {
                 .build();
     }
 
-    /** productRepository.save가 돌려줄, 새 옵션값 id가 부여된 저장본. */
+    /** productRepository.replaceOptionTypes가 돌려줄, 새 옵션값 id가 부여된 저장본. */
     private static Product savedWithNewOptions() {
         ProductOptionValueModel s = new ProductOptionValueModel(NEW_S, null, "S", null, 0, (short) 1);
         ProductOptionValueModel m = new ProductOptionValueModel(NEW_M, null, "M", null, 0, (short) 2);
@@ -113,27 +113,57 @@ class UpdateProductOptionsServiceTest {
 
         private void stubHappyPath() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
-            given(productRepository.save(any())).willReturn(savedWithNewOptions());
+            given(productRepository.replaceOptionTypes(eq(PRODUCT_ID), any())).willReturn(savedWithNewOptions());
             given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
         }
 
         @Test
-        @DisplayName("새 옵션 타입으로 상품을 저장한다 (영속 전이라 옵션값 id는 null)")
-        void savesProductWithNewOptions() {
+        @DisplayName("루트는 클라이언트가 본 version·수정 시각으로 저장하고, 옵션 트리는 기존 그대로 넘긴다(save는 옵션을 쓰지 않음)")
+        void savesRootWithExpectedVersion() {
             stubHappyPath();
 
             service.update(command());
 
             ArgumentCaptor<Product> productCaptor = ArgumentCaptor.forClass(Product.class);
             then(productRepository).should().save(productCaptor.capture());
-            assertThat(productCaptor.getValue().optionTypes()).singleElement()
+            // 클라이언트가 본 version으로 덮어써 stale 비교가 동작하도록 보장한다(§13)
+            assertThat(productCaptor.getValue().version()).isEqualTo(EXPECTED_VERSION);
+            assertThat(productCaptor.getValue().updatedAt()).isEqualTo(LATER);
+            assertThat(productCaptor.getValue().optionTypes()).isEqualTo(onSaleProduct(SELLER_ID).optionTypes());
+        }
+
+        @Test
+        @DisplayName("새 옵션 타입/값은 replaceOptionTypes로 교체한다 (영속 전이라 옵션값 id는 null)")
+        void replacesOptionTypes() {
+            stubHappyPath();
+
+            service.update(command());
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<ProductOptionTypeModel>> typesCaptor = ArgumentCaptor.forClass(List.class);
+            then(productRepository).should().replaceOptionTypes(eq(PRODUCT_ID), typesCaptor.capture());
+            assertThat(typesCaptor.getValue()).singleElement()
                     .satisfies(type -> {
                         assertThat(type.name()).isEqualTo("사이즈");
                         assertThat(type.values()).extracting(ProductOptionValueModel::value).containsExactly("S", "M");
                         assertThat(type.values()).extracting(ProductOptionValueModel::id).containsOnlyNulls();
                     });
-            // 클라이언트가 본 version으로 덮어써 stale 비교가 동작하도록 보장한다(§13)
-            assertThat(productCaptor.getValue().version()).isEqualTo(EXPECTED_VERSION);
+        }
+
+        @Test
+        @DisplayName("단종 → 루트 저장(version 검사) → 옵션 교체 → 새 조합 저장 → 캐시 재계산 → config 교체 순으로 진행한다")
+        void runsStepsInOrder() {
+            stubHappyPath();
+
+            service.update(command());
+
+            InOrder order = inOrder(combinationRepository, productRepository);
+            order.verify(combinationRepository).discontinueAllByProductId(PRODUCT_ID, LATER);
+            order.verify(productRepository).save(any());
+            order.verify(productRepository).replaceOptionTypes(eq(PRODUCT_ID), any());
+            order.verify(combinationRepository).saveAll(any());
+            order.verify(productRepository).refreshStockPriceCache(PRODUCT_ID, LATER);
+            order.verify(productRepository).replaceOptionConfig(PRODUCT_ID, null);
         }
 
         @Test
@@ -206,7 +236,7 @@ class UpdateProductOptionsServiceTest {
         @DisplayName("옵션을 비우면 기존 조합은 벌크 단종하고 기본 조합 1개(재고=defaultStock)를 새로 저장한다 (단일 상품 전환)")
         void emptyOptionsRetiresAllAndCreatesDefaultCombination() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
-            given(productRepository.save(any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
+            given(productRepository.replaceOptionTypes(eq(PRODUCT_ID), any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
 
             service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50, EXPECTED_VERSION, null, null, null));
 
@@ -246,7 +276,7 @@ class UpdateProductOptionsServiceTest {
 
         private void stubHappyPath() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
-            given(productRepository.save(any())).willReturn(savedWithNewOptions());
+            given(productRepository.replaceOptionTypes(eq(PRODUCT_ID), any())).willReturn(savedWithNewOptions());
             given(combinationRepository.saveAll(any())).willAnswer(invocation -> invocation.getArgument(0));
         }
 
@@ -310,6 +340,7 @@ class UpdateProductOptionsServiceTest {
             then(combinationRepository).should(never()).discontinueAllByProductId(any(), any());
             then(combinationRepository).should(never()).saveAll(any());
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).replaceOptionTypes(any(), any());
             then(productRepository).should(never()).replaceOptionConfig(any(), any());
         }
 
@@ -330,6 +361,7 @@ class UpdateProductOptionsServiceTest {
 
             then(combinationRepository).shouldHaveNoInteractions();
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).replaceOptionTypes(any(), any());
         }
     }
 
@@ -344,7 +376,7 @@ class UpdateProductOptionsServiceTest {
                     new ProductOptionTypeModel(UUID.randomUUID(), null, "색상", (short) 1, List.of());
             Product savedWithEmptyType = onSaleProduct(SELLER_ID).toBuilder().optionTypes(List.of(emptyType)).build();
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
-            given(productRepository.save(any())).willReturn(savedWithEmptyType);
+            given(productRepository.replaceOptionTypes(eq(PRODUCT_ID), any())).willReturn(savedWithEmptyType);
 
             ProductOptionTypeCommand colorWithoutValues =
                     new ProductOptionTypeCommand("색상", null, (short) 1, List.of());
@@ -370,6 +402,7 @@ class UpdateProductOptionsServiceTest {
                     .isInstanceOf(ProductNotFoundException.class);
 
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).replaceOptionTypes(any(), any());
             then(productRepository).should(never()).refreshStockPriceCache(any(), any());
             then(combinationRepository).shouldHaveNoInteractions();
         }
@@ -383,6 +416,7 @@ class UpdateProductOptionsServiceTest {
                     .isInstanceOf(ProductAccessDeniedException.class);
 
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).replaceOptionTypes(any(), any());
             then(productRepository).should(never()).refreshStockPriceCache(any(), any());
             then(combinationRepository).shouldHaveNoInteractions();
         }

@@ -45,8 +45,8 @@ public class UpdateProductOptionsService implements UpdateProductOptionsUseCase 
     private final TimeProvider timeProvider;
 
     /**
-     * 상품 옵션을 교체하고 조합을 재생성한다. 존재·소유권·옵션 룰을 확인하고, 기존 조합 단종 → 상품 옵션 교체 저장 → 룰·오버라이드를 반영한 새 조합
-     * 생성·저장 → config 교체 순으로 진행한다.
+     * 상품 옵션을 교체하고 조합을 재생성한다. 존재·소유권·옵션 룰을 확인하고, 기존 조합 단종 → 루트 저장(version 검사) → 옵션 타입/값 교체 →
+     * 룰·오버라이드를 반영한 새 조합 생성·저장 → config 교체 순으로 진행한다.
      *
      * @throws ProductNotFoundException      상품이 없거나 삭제된 경우
      * @throws ProductAccessDeniedException  요청 판매자가 소유자가 아닌 경우
@@ -74,14 +74,14 @@ public class UpdateProductOptionsService implements UpdateProductOptionsUseCase 
         // 기존 조합 일괄 단종 — 주문 참조 보존을 위해 삭제 대신 isAvailable=false로 은퇴 (건당 save N+1 대신 벌크 UPDATE)
         combinationRepository.discontinueAllByProductId(product.id(), now);
 
-        // 새 옵션 타입/값으로 교체 저장 → 옵션값 id 확정
-        // 클라이언트가 본 version으로 덮어써야 저장 시 stale 비교가 동작한다(§13)
-        Product withNewOptions = product.toBuilder()
-                .optionTypes(ProductOptionCommandMapper.toOptionTypeModels(command.optionTypes()))
+        // 루트 갱신 — 클라이언트가 본 version으로 덮어써야 저장 시 stale 비교가 동작한다(§13). save는 옵션 트리를 건드리지 않는다
+        productRepository.save(product.toBuilder()
                 .updatedAt(now)
                 .version(command.expectedVersion())
-                .build();
-        Product saved = productRepository.save(withNewOptions);
+                .build());
+        // 새 옵션 타입/값으로 교체 → 옵션값 id 확정
+        Product saved = productRepository.replaceOptionTypes(
+                product.id(), ProductOptionCommandMapper.toOptionTypeModels(command.optionTypes()));
 
         // 요청의 ref를 확정된 새 옵션값 id로 해석해 룰을 만든다
         Map<String, UUID> refToId = ProductOptionRuleAssembler.resolveRefs(command.optionTypes(), saved.optionTypes());
