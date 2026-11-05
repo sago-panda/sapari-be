@@ -51,9 +51,13 @@ final class ProfanityDictionarySnapshotCodec {
      * </ul>
      *
      * <p>포맷 쪽은 {@code string.format('%d', version)} 으로 닫았으므로({@code PUBLISH_SNAPSHOT})
-     * 남는 경계는 <b>산술</b>뿐이다. 15자리면 {@code 999999999999999 + 1 = 10}<sup>15</sup> 이고
-     * 2<sup>53</sup> 아래라 {@code +1} 과 비교가 정확하다. 발행 10<sup>15</sup>회는 도달하지 않고,
-     * 이 상한이 막는 적은 유기적 증가가 아니라 <b>키에 손으로/덤프 복원으로 들어오는 큰 수</b>다.
+     * 이 수가 정하는 것은 <b>산술이 정확한 범위</b>다 — 15자리는 2<sup>53</sup> 아래라 {@code +1}
+     * 과 비교가 정확하다. 발행 10<sup>15</sup>회는 도달하지 않고, 이 상한이 막는 적은 유기적
+     * 증가가 아니라 <b>키에 손으로/덤프 복원으로 들어오는 큰 수</b>다.
+     *
+     * <p>⚠️ 한때 이 자리가 "남는 경계는 산술<b>뿐</b>이다" 로 끝났다. 거짓이다 — 20줄 아래가
+     * 적는 대로 <b>공간의 마지막 칸</b>이라는 경계가 하나 더 있고, 그것은 자리수 상한으로 못
+     * 얻는다. 그 칸을 다루는 것은 이 상수가 아니라 {@link #isEligibleBase} 다.
      */
     static final int MAX_VERSION_DIGITS = 15;
 
@@ -64,8 +68,15 @@ final class ProfanityDictionarySnapshotCodec {
      * 머리 버전의 <b>문법</b> — 이 자리가 그 문법의 단일 소스다.
      *
      * <p>문법: <b>숫자 1~{@value #MAX_VERSION_DIGITS}자로 시작하고, 그 뒤는 문자열의 끝이거나
-     * 개행이다.</b> 그 밖은 전부 "읽을 수 없다"({@link OptionalLong#empty()})다. 버전 키는 끝 쪽,
-     * 스냅샷 본문은 개행 쪽을 쓰므로 한 규칙이 둘을 덮는다.
+     * 개행이며, <i>그 수의 +1 도 {@value #MAX_VERSION_DIGITS}자 안</i>이다.</b> 그 밖은 전부
+     * "읽을 수 없다"({@link OptionalLong#empty()})다. 버전 키는 끝 쪽, 스냅샷 본문은 개행 쪽을
+     * 쓰므로 한 규칙이 둘을 덮는다.
+     *
+     * <p>⚠️ 마지막 조건을 한때 <b>문법 선언에 안 적었다</b> — 설계 동기로만 아래 단락에 적고
+     * 선언문은 "숫자 1~N자" 로 뒀다. 그래서 {@code 999999999999999} 는 <b>적힌 문법을 만족하는데
+     * 거부</b>됐고, 그 거부 메시지가 운영자에게 {@code "길이 15. 숫자 1~15자여야 한다"} 로
+     * 갔다(자기모순이고 실제 원인을 안 가리킨다). 선언이 단일 소스라고 적은 자리에서 선언이
+     * 구현보다 좁았다.
      *
      * <p>⚠️ <b>이 문법은 자기가 만드는 값에 대해 닫혀 있지 않다 — 그 닫힘은 자리수 상한으로는
      * 못 얻는다.</b> 상한 d 는 최대 토큰 {@code 10}<sup>d</sup>{@code  − 1} 을 받고 그 후계자는
@@ -133,13 +144,39 @@ final class ProfanityDictionarySnapshotCodec {
             return OptionalLong.empty();
         }
         long value = Long.parseLong(raw.substring(0, end));
-        if (Long.toString(value + 1).length() > MAX_VERSION_DIGITS) {
-            // 문법은 <후계자까지> 닫혀 있어야 한다 — 이 값을 토큰으로 받으면 다음 발행이 문법
-            // 밖인 수를 써야 하고, 그 뒤로는 어떤 선택도 나쁘다(위 javadoc). 받지 않으면 기준이
-            // 다른 키로 떨어지고 발행이 그 키를 덮어 고친다.
+        if (!fitsIn(value + 1)) {
+            // 문법은 <후계자까지> 닫혀 있어야 한다 — 이 값을 받으면 다음 발행이 문법 밖인 수를
+            // 써야 한다(근거는 위 javadoc).
             return OptionalLong.empty();
         }
         return OptionalLong.of(value);
+    }
+
+    /**
+     * 이 값을 <b>다음 번호의 기준으로 쌓을 수 있는가</b> — 발행자만 쓴다.
+     *
+     * <p>{@link #readVersionToken} 과 <b>다른 축</b>이다. 그쪽은 "읽을 수 있는가"(= 발행이 쓸 수
+     * 있는 값인가)이고 이쪽은 "여기에 +1 을 쌓아도 그 결과가 <b>읽히는가</b>" 다. 둘을 하나로
+     * 두면 유한 공간에서 모순이 된다:
+     * <ul>
+     *   <li>축이 하나면 수락되는 마지막 토큰에서 쓴 값이 <b>자기 리더에게 거부된다</b> — 발행은
+     *       200 인데 함대 전 Pod 이 그 버전을 읽지 못하고, 받는 쪽의 "아직 없다" 분기는 부팅에만
+     *       로그를 남기므로 <b>전 경로 무음</b>이다. 그 모양을 한 번 만들었다.
+     *   <li>수락을 한 칸 좁혀도 경계가 한 칸 내려갈 뿐이다 — 유한 공간에는 마지막 칸이 있다.
+     * </ul>
+     *
+     * <p>그래서 축을 쪼개고 <b>경계 칸에서는 쓰지 않고 시끄럽게 멈춘다.</b> 그 칸에 닿는 데는
+     * 두 키가 <i>함께</i> 기준이 못 되는 상태가 필요하고(한 키만 오염되면 다른 키로 떨어진다)
+     * 그것은 아웃오브밴드 쓰기 둘 또는 발행 10<sup>15</sup>회다. 멈추면 쓰기가 500 이지만
+     * <b>함대는 마지막으로 읽은 버전을 그대로 집행</b>하고 당직자는 복구 지시를 받는다 — 쓸 수
+     * 없는 번호를 조용히 쓰는 것보다 낫다.
+     */
+    static boolean isEligibleBase(long value) {
+        return fitsIn(value) && fitsIn(value + 1) && fitsIn(value + 2);
+    }
+
+    private static boolean fitsIn(long value) {
+        return Long.toString(value).length() <= MAX_VERSION_DIGITS;
     }
 
     /**
@@ -253,7 +290,10 @@ final class ProfanityDictionarySnapshotCodec {
     private static long parseVersionHead(String value) {
         return readVersionToken(value).orElseThrow(() -> new IllegalStateException(
                 "사전 스냅샷의 버전이 문법을 벗어난다 — 길이 " + value.length()
-                        + ". 숫자 1~" + MAX_VERSION_DIGITS + "자여야 한다(발행 쪽 토큰과 같은 문법)."));
+                        + ". 숫자 1~" + MAX_VERSION_DIGITS + "자이고 그 수의 +1 도 "
+                        + MAX_VERSION_DIGITS + "자 안이어야 한다(발행 쪽 토큰과 같은 문법). "
+                        + "자리수가 상한 안인데도 거부되면 +1 이 " + (MAX_VERSION_DIGITS + 1)
+                        + "자가 되는 경우다 — 그 번호는 발행이 쓸 수 없다."));
     }
 
     private static long parse(String value, String what) {

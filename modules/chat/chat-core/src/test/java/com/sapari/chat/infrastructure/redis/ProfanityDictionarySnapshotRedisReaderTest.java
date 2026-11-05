@@ -134,7 +134,8 @@ class ProfanityDictionarySnapshotRedisReaderTest {
      * 갈림의 대가는 발행 쪽에서 더 컸지만(조건이 평시에도 어긋나 재시도만 소진) 받는 쪽에서도
      * 버전 비교가 틀어진다.
      *
-     * <p>문법: 숫자 1~{@code MAX_VERSION_DIGITS}자로 시작하고 그 뒤는 끝이거나 개행. 그 밖은
+     * <p>문법: 숫자 1~{@code MAX_VERSION_DIGITS}자로 시작하고 그 뒤는 끝이거나 개행이며, 그
+     * 수의 +1 도 상한 안이다. 그 밖은
      * "모른다" 다. 자리수는 상수가 갖는다 — 한때 이 설명문이 18 을 가리키는데 상수는 15 였다.
      */
     @Test

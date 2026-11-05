@@ -62,6 +62,14 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      * 구분할 수 없어</b> 이 축은 Redis 만으로 닫히지 않는다. 완전히 닫으려면 버전이 정본(DB)에서
      * 와야 한다 — 그쪽은 삭제돼도 번호가 재사용되지 않는다.
      *
+     * <p>⚠️ <b>그 잔차의 피해를 좁게 적었던 것을 고친다.</b> 한때 "그 상태에서는 덮을 새 본문도
+     * 이미 없어서 피해가 'v1 을 들고 있던 Pod 이 다시 읽지 않는다' 로 좁아진다" 고 적었다.
+     * <b>축출 도달에는 참이고 오염 도달에는 거짓이다</b> — 두 키에 큰 수가 손으로 들어온 뒤
+     * 긴급 ADMIN 쓰기가 오면 그때 v1 로 나가는 본문이 <b>긴급 사전 자신</b>이다. 즉 "덮을 새
+     * 본문이 없다" 가 아니라 <b>가장 급한 새 본문이 버려진다</b>. 실측으로 확인했다(두 키 오염 →
+     * 긴급 쓰기 → 반환 1 · 본문이 새 사전). 환원 불가 판정은 그대로이고 적어야 할 것은 피해다 —
+     * 그래서 {@link #currentVersion()} 이 그 재시작을 WARN 으로 남긴다.
+     *
      * <p>⚠️ 알림 본문은 <b>버전 하나</b>다. 사전 내용을 실으면 Pub/Sub 이 비영속이라 놓친 Pod 이
      * 영구히 다른 사전으로 집행한다. 버전만 실으면 그 Pod 이 주기 확인에서 스스로 복구한다 —
      * 알림은 빠른 길이고 정본은 스냅샷이다({@code ChatRedisKeys.dictChanged} javadoc).
@@ -100,35 +108,43 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      */
     private static final String PUBLISH_SCRIPT = """
             -- 머리 문법의 거울 — ProfanityDictionarySnapshotCodec.readVersionToken 과 같아야 한다.
-            -- 숫자 1~%d자로 시작하고 그 뒤는 끝이거나 개행. 그 밖은 0("모른다").
+            -- 숫자 1~%d자로 시작하고 그 뒤는 끝이거나 개행이며 그 수의 +1 도 상한 안.
+            -- 그 밖은 nil("읽을 수 없다"). 기준 자격은 아래 eligible() — <다른 축>이다.
             local function token(raw)
-                if type(raw) ~= 'string' then return 0 end
+                if type(raw) ~= 'string' then return nil end
                 local digits = string.match(raw, '^(%%d+)')
-                if digits == nil or #digits > %d then return 0 end
+                if digits == nil or #digits > %d then return nil end
                 local tail = string.sub(raw, #digits + 1, #digits + 1)
-                if tail ~= '' and tail ~= '\\n' then return 0 end
+                if tail ~= '' and tail ~= '\\n' then return nil end
                 local value = tonumber(digits)
-                -- 문법은 후계자까지 닫혀 있어야 한다 — 이 값을 받으면 다음 발행이 문법 밖인
-                -- 수를 써야 한다. 받지 않으면 기준이 다른 키로 떨어지고 발행이 덮어 고친다.
-                if #string.format('%%d', value + 1) > %d then return 0 end
+                -- 문법(= 읽힐 수 있는 값): 자리수와 그 +1 의 자리수가 상한 안.
+                if #string.format('%%d', value + 1) > %d then return nil end
                 return value
             end
-            local counter = 0
+            -- 기준 자격은 <다른 축>이다 — 여기에 +1 을 쌓은 결과도 읽혀야 한다.
+            -- 축을 하나로 두면 마지막 칸에서 쓴 값이 자기 리더에게 거부되고 그 상태가 무음이다.
+            local function eligible(value)
+                return value ~= nil and #string.format('%%d', value + 2) <= %d
+            end
+            local counter = nil
             if redis.call('TYPE', KEYS[2])['ok'] == 'string' then
                 counter = token(redis.call('GET', KEYS[2]))
             end
-            local head = 0
+            local head = nil
             if redis.call('TYPE', KEYS[1])['ok'] == 'string' then
                 head = token(redis.call('GET', KEYS[1]))
             end
-            local current = counter
-            if head > current then
-                current = head
-            end
+            -- 기준은 <자격을 통과한> 키들의 큰 쪽이다. 자격이 문법보다 한 칸 좁은 이유:
+            -- 여기에 +1 을 쌓은 결과도 읽혀야 한다. 둘 다 자격이 없으면 0 에서 다시 시작하고,
+            -- 그것이 쓰는 v1 은 <읽히는> 번호다 — 읽을 수 없는 번호를 쓰는 것보다 낫다.
+            -- 그 재시작을 자바 쪽이 WARN 으로 남긴다(무음이 이 칸의 결함이었다).
+            local current = 0
+            if eligible(counter) then current = counter end
+            if eligible(head) and head > current then current = head end
             if current ~= tonumber(ARGV[1]) then
                 return -1
             end
-            -- 문법이 후계자를 포함하므로 이 수는 언제나 문법 안이다 — 고갈 분기가 없다.
+            -- 기준이 자격을 통과했으므로 이 수는 <문법 안>이다 = 함대가 읽을 수 있다.
             local version = current + 1
             -- ⚠️ 쓰는 포맷도 하나여야 한다. KEYS[2] 는 Redis 의 숫자 인자 변환(정확)을 타는데
             -- KEYS[1] 은 '..' 를 타고 그것은 %%.14g 다 — 값이 15자리가 되면 1e+14 가 키에 써지고
@@ -175,9 +191,73 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      */
     @Override
     public long currentVersion() {
+        boolean snapshotPresent = isPresent(ChatRedisKeys.dictSnapshot());
+        boolean versionPresent = isPresent(ChatRedisKeys.dictVersion());
         long head = tokenOf(ChatRedisKeys.dictSnapshot(), "스냅샷 본문");
         long counter = tokenOf(ChatRedisKeys.dictVersion(), "버전 키");
-        return Math.max(head, counter);
+        long base = Math.max(head, counter);
+        if (base == 0L && (snapshotPresent || versionPresent)) {
+            // ⚠️ 키가 <있는데> 기준이 0 이다 = 다음 발행이 v1 에서 다시 시작한다. 이 칸이
+            // 한때 <전 경로 무음>이었다 — 발행은 200 이고 함대가 그 번호를 읽지 못하거나
+            // 이미 들고 있어서 집행하지 않는데 로그가 한 줄도 없었다.
+            //
+            // v1 은 <읽히는> 번호다(그게 읽을 수 없는 번호를 쓰는 것보다 낫다). 남는 위험은
+            // 함대가 이미 1 을 들고 있는 경우이고 — 그러면 그 발행을 건너뛴다 — 그것은 휘발
+            // 저장만으로 환원되지 않는 잔차다(PUBLISH_SNAPSHOT javadoc). 그래서 적어도
+            // <보이게> 만든다.
+            log.warn("사전 버전 기준이 0 으로 떨어졌다 — 키가 있는데 어느 쪽도 다음 번호의 기준이 "
+                            + "못 된다(문법 밖이거나, 읽히지만 +1 을 쌓으면 읽을 수 없는 번호가 "
+                            + "된다). 다음 발행이 v1 에서 다시 시작한다 — 함대가 이미 1 을 들고 "
+                            + "있으면 그 발행을 건너뛰므로 적용 여부를 확인할 것. snapshot={} "
+                            + "version={}", snapshotPresent, versionPresent);
+        }
+        return base;
+    }
+
+    /**
+     * 스크립트 반환을 규약으로 읽는다 — <b>{@code -1} 아닌 모든 값이 "발행된 버전" 이 아니다.</b>
+     *
+     * <p>⚠️ 한때 그 모양이었다. 오늘 스크립트가 {@code -1} 또는 {@code current + 1}(≥1)만
+     * 돌려주므로 틀리지 않았는데, 센티넬이 하나 더 추가되는 순간 조용히 틀린다 — 실측으로
+     * 그 모양을 봤다: 리셋을 {@code -2} 로 되돌린 변이에서 이 메서드의 전신이
+     * {@code OptionalLong[-2]} 를 <b>성공으로</b> 반환하면서 동시에 "발행은 정상" 로그를 남겼다.
+     *
+     * <p>판정을 메서드로 꺼낸 것은 <b>테스트가 닿을 자리</b>를 만들기 위해서다. 스크립트가 정적
+     * 상수라 반환값을 주입할 수 없고, 그래서 이 가드에 테스트가 0건이었다.
+     *
+     * @throws IllegalStateException 규약 밖의 값일 때. 성공으로 뭉개면 호출자가 "발행됐다" 로
+     *         로그를 남기고 함대에 안 깔린 것을 모른다
+     */
+    static OptionalLong readReturn(Long version) {
+        if (version == null) {
+            // 스크립트가 항상 수를 돌려주므로 여기 오면 드라이버 쪽이 어긋난 것이다.
+            //
+            // ⚠️ 이 경로는 <재시도로 낫지 않는다> — 호출자의 ERROR 가 "같은 요청을 다시 보내면
+            // 된다" 를 적는데 그 조언이 이 분기에서는 참이 아니다. 사실상 도달 불가라(스크립트가
+            // 항상 수를 돌려준다) 분기를 더 두지 않고 메시지에 적는다.
+            throw new IllegalStateException(
+                    "사전 스냅샷 발행이 버전을 돌려주지 않았다 — 발행 여부를 확인할 수 없다. "
+                            + "드라이버·직렬화 쪽 문제이므로 재시도로 낫지 않는다.");
+        }
+        if (version == CAS_FAILED) {
+            return OptionalLong.empty();
+        }
+        if (version < 1) {
+            throw new IllegalStateException(
+                    "사전 스냅샷 발행이 규약 밖의 값을 돌려줬다 — 발행 여부를 확인할 수 없다. "
+                            + "값=" + version);
+        }
+        return OptionalLong.of(version);
+    }
+
+    private boolean isPresent(String key) {
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(key));
+        } catch (RuntimeException e) {
+            // 타입과 무관하게 존재만 본다. 실패하면 "없다" 로 보고 아래 WARN 을 포기한다 —
+            // 진단이 본선을 죽이지 않는다.
+            return false;
+        }
     }
 
     /**
@@ -207,6 +287,14 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                             + "이 키를 덮어 고친다. key={} 길이={}", what, key, raw.length());
             return 0L;
         }
+        if (!ProfanityDictionarySnapshotCodec.isEligibleBase(token.getAsLong())) {
+            // 읽히기는 하는데 <여기에 다음 번호를 쌓을 수> 없다. 기준에 기여하지 않고, 다른 키가
+            // 자격을 통과하면 그쪽으로 떨어진다. 둘 다 못 되면 스크립트가 멈춘다(-3).
+            log.warn("사전 {}의 값이 다음 번호의 기준이 못 된다 — 여기에 +1 을 쌓으면 함대가 읽을 "
+                            + "수 없는 번호가 된다. 다른 키로 떨어진다. key={} 자리수={}",
+                    what, key, Long.toString(token.getAsLong()).length());
+            return 0L;
+        }
         return token.getAsLong();
     }
 
@@ -218,27 +306,6 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                 String.valueOf(expectedVersion),
                 ProfanityDictionarySnapshotCodec.encodeBody(words, whitelist),
                 ChatRedisKeys.dictChanged());
-        if (version == null) {
-            // 스크립트가 항상 수를 돌려주므로 여기 오면 드라이버 쪽이 어긋난 것이다. 성공으로
-            // 뭉개면 호출자가 "발행됐다" 로 로그를 남기고 함대에 안 깔린 것을 모른다.
-            //
-            // ⚠️ 이 경로는 <재시도로 낫지 않는다> — 호출자의 ERROR 가 "같은 요청을 다시 보내면
-            // 된다" 를 적는데 그 조언이 이 분기에서는 참이 아니다. 사실상 도달 불가라(스크립트가
-            // 항상 수를 돌려준다) 분기를 더 두지 않고 메시지에 적는다.
-            throw new IllegalStateException(
-                    "사전 스냅샷 발행이 버전을 돌려주지 않았다 — 발행 여부를 확인할 수 없다. "
-                            + "드라이버·직렬화 쪽 문제이므로 재시도로 낫지 않는다.");
-        }
-        if (version != CAS_FAILED && version < 1) {
-            // ⚠️ 반환 규약을 <전역>으로 둔다. 전에는 "-1 이 아닌 모든 값 = 발행된 버전" 이었고,
-            // 오늘 스크립트가 -1 또는 current+1(≥1)만 돌려주므로 틀리지 않았다. 그런데 센티넬을
-            // 하나 더 두는 순간 조용히 틀린다 — 실측: 리셋을 -2 로 되돌린 변이에서
-            // publishIfUnchanged 가 OptionalLong[-2] 를 <성공으로> 반환하면서 동시에 "발행은
-            // 정상이다" 로그를 남겼다. 그 모양을 한 줄로 막는다.
-            throw new IllegalStateException(
-                    "사전 스냅샷 발행이 규약 밖의 값을 돌려줬다 — 발행 여부를 확인할 수 없다. "
-                            + "값=" + version);
-        }
-        return version == CAS_FAILED ? OptionalLong.empty() : OptionalLong.of(version);
+        return readReturn(version);
     }
 }

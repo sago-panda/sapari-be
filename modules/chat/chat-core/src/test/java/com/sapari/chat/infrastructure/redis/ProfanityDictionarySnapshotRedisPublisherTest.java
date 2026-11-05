@@ -16,6 +16,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -25,6 +27,12 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 
 /**
  * 사전 발행의 <b>세 효과가 갈라지지 않는지</b>를 실제 Redis에서 고정한다.
@@ -382,90 +390,137 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
     }
 
     /**
-     * ⭐ <b>벡터 하나마다 두 명제를 같이 잰다 — 일치와 닫힘.</b>
+     * ⭐ <b>벡터 하나마다 세 명제를 잰다 — 일치 · 쓴 값이 읽히는가 · 그 칸이 보이는가.</b>
      *
-     * <p>이 표가 생긴 이유: <b>일치만 재면 영원히 안 걸리는 결함이 있다.</b> 읽는 넷(Lua
-     * {@code token()} · {@code readVersionToken} · {@code decode} · 리더)은 이미 일치했고 쓰는
-     * 포맷도 하나였는데, 결함은 그 사이가 아니라 <b>문법이 자기가 만드는 값에 대해 닫혀 있지
-     * 않다</b>는 데서 나왔다. 그래서 명제를 둘로 적는다:
+     * <p>이 표가 자란 이력이 그대로 설계의 이력이다.
      * <ol>
-     *   <li><b>일치</b> — 그 벡터를 자바와 Lua 가 같은 판정으로 보는가. CAS 로 잰다(자바가 집은
-     *       토큰을 그대로 조건으로 넘기므로 Lua 가 다른 수를 읽으면 그 자리에서 {@code -1} 이다).
-     *   <li><b>닫힘</b> — 수락된 토큰이 만드는 후계자가 <b>다시 수락되는가</b>. 안 되면 다음
-     *       발행이 기준을 잃고, 그 뒤 어떤 선택도 나쁘다(거부 = 영구 500 · 리셋 = 같은 번호가
-     *       본문 둘을 날라 함대가 건너뛴다).
+     *   <li><b>일치</b>(처음) — 자바와 Lua 가 같은 판정인가. CAS 로 잰다.
+     *   <li><b>닫힘</b>(다음) — 수락된 토큰의 후계자가 다시 수락되는가. <b>유한 공간에서는
+     *       불가능하다</b>는 것이 여기서 드러났다 — 수락을 한 칸 좁히면 경계도 한 칸 내려간다.
+     *   <li><b>쓴 값이 읽히는가 + 그 칸이 보이는가</b>(지금) — 2번을 문법 하나로 밀어붙였더니
+     *       마지막 칸에서 <b>쓴 값이 자기 리더에게 거부됐다.</b> 발행은 200, 함대는 그 번호를
+     *       읽지 못하고, 받는 쪽의 "아직 없다" 분기는 부팅에만 로그를 남기므로 <b>전 경로
+     *       무음</b>이었다. 그래서 축을 둘로 쪼갰다 — 문법(읽힘)과 기준 자격(여기에 +1 을 쌓은
+     *       결과도 읽힘). 경계 칸에서는 기준이 0 으로 떨어지고 v1 을 쓰는데, 그 v1 은 <b>읽히는
+     *       번호</b>이고 그 재시작이 WARN 으로 남는다.
      * </ol>
      *
-     * <p>⚠️ <b>닫힘을 문법에 넣기까지 두 번 틀렸다.</b> 처음엔 거부, 다음엔 리셋이었고 둘 다
-     * 쓰는 쪽만 보고 읽는 쪽을 안 봤다. 리셋은 특히 조용했다 — 받는 쪽이
-     * {@code published != processedVersion} 으로 <b>본문 읽기보다 먼저</b> 거르므로, 1 을 들고
-     * 있는 Pod 에게 리셋된 1 은 읽히지도 않는다. 실측 대조군:
-     * <pre>
-     *   리셋 구현   긴급 쓰기 → 반환 1 · 본문 BODY_B   → 함대(1)가 건너뛴다(미집행)
-     *   지금 구현   긴급 쓰기 → 반환 2 · 본문 BODY_B   → 함대(1)가 집어 간다
-     *   둘 다       그 뒤 낡은 발행자 → -1             → ABA 는 양쪽 다 닫힘
-     * </pre>
-     * 지금은 15자리가 <b>토큰으로 수락되지 않으므로</b> 기준이 스냅샷 머리로 떨어지고 그 +1 이
-     * 나간다. 고갈 분기 자체가 없다.
-     *
-     * <p>⚠️ <b>그래도 공간의 마지막 한 칸은 닫히지 않는다 — 유한 카운터에는 마지막 값이 있고,
-     * 어떤 수락 규칙으로도 그 칸이 남는다</b>(수락을 한 칸 좁히면 경계도 한 칸 내려간다). 이 표가
-     * 그 칸을 분모에 넣는다: 수락되는 마지막 토큰에서 쓴 값은 <b>다시 수락되지 않고</b>, 다음
-     * 발행은 기준 0 에서 v1 을 쓴다. <b>그것이 안전한 이유는 그때 함대가 들고 있는 값이
-     * 그 큰 수이기 때문</b>이다 — 1 과 달라서 건너뛰지 않는다. 리셋이 위험했던 것은 반대 상황
-     * (함대가 1 을 들고 있는데 1 을 쓴 것)이었다.
+     * <p>2번을 분모에 넣은 것만으로는 부족했다 — 칸의 <b>존재</b>는 기록됐는데 그 칸에서
+     * <b>무엇이 관측되는지</b>를 아무 단언도 재지 않았다. 그래서 이 표가 이제 그것도 잰다.
      */
     @Test
-    @DisplayName("⭐ 문법 표 — 벡터마다 일치(CAS)와 닫힘(후계자 재수락)을 같이 잰다")
-    void theGrammarIsConsistentAndClosedUnderItsOwnSuccessor() {
-        record Vector(String versionKey, boolean accepted) { }
+    @DisplayName("⭐ 문법 표 — 일치(CAS) · 쓴 값이 다시 읽히는가 · 경계 칸이 보이는가")
+    void theGrammarIsConsistentAndEveryWrittenVersionIsReadable() {
+        record Vector(String versionKey, boolean readable, boolean eligibleBase) { }
         List<Vector> table = List.of(
-                new Vector("1", true),
-                new Vector("007", true),
-                new Vector("99999999999999", true),        // 14자리 → 후계자 15자리, 수락
-                new Vector("999999999999998", true),        // 수락되는 마지막 토큰
-                new Vector("999999999999999", false),       // 후계자가 16자리 — 문법 밖
-                new Vector("1000000000000000", false),      // 16자리
-                new Vector("9007199254740993", false),      // 2^53+1
-                new Vector(" 12", false),
-                new Vector("-5", false),
-                new Vector("+7", false),
-                new Vector("12abc", false));
+                new Vector("1", true, true),
+                new Vector("007", true, true),
+                new Vector("99999999999999", true, true),
+                new Vector("999999999999997", true, true),   // 자격 있는 마지막 토큰
+                new Vector("999999999999998", true, false),   // 읽히지만 +1 을 쌓으면 못 읽는다
+                new Vector("999999999999999", false, false),  // 후계자가 16자리 — 문법 밖
+                new Vector("1000000000000000", false, false),
+                new Vector("9007199254740993", false, false),
+                new Vector(" 12", false, false),
+                new Vector("-5", false, false),
+                new Vector("+7", false, false),
+                new Vector("12abc", false, false));
 
-        assertThat(table).hasSize(11);
+        assertThat(table).hasSize(12);
         for (Vector v : table) {
             redisTemplate.delete(List.of(SNAPSHOT, VERSION));
             redisTemplate.opsForValue().set(VERSION, v.versionKey());
 
-            long token = publisher.currentVersion();
-            assertThat(token != 0L)
-                    .as("수락 기대와 다르다: %s", v.versionKey())
-                    .isEqualTo(v.accepted());
+            long base = publisher.currentVersion();
+            assertThat(base != 0L)
+                    .as("기준 자격 기대와 다르다: %s", v.versionKey())
+                    .isEqualTo(v.eligibleBase());
 
             long published = publisher
-                    .publishIfUnchanged(token, ordered("시발"), Set.of())
+                    .publishIfUnchanged(base, ordered("시발"), Set.of())
                     .orElseThrow(() -> new AssertionError(
-                            "자바가 " + token + " 을 집었는데 Lua 가 다른 수를 읽었다: "
+                            "자바가 " + base + " 을 집었는데 Lua 가 다른 수를 읽었다: "
                                     + v.versionKey()));
 
-            // 닫힘: 방금 쓴 값이 <다시 토큰으로 수락>되어야 다음 발행이 기준을 잃지 않는다.
-            // 예외가 정확히 하나 — 공간의 마지막 값이다(유한 카운터의 끝).
-            long reread = publisher.currentVersion();
-            if (reread == published) {
-                continue;
+            // ⭐ 쓴 값은 <언제나 읽혀야> 한다. 이것이 안 지켜졌을 때가 전 경로 무음이었다.
+            assertThat(ProfanityDictionarySnapshotCodec.readVersionToken(
+                            redisTemplate.opsForValue().get(VERSION)))
+                    .as("쓴 값을 리더가 거부하면 함대가 그 버전을 읽지 못하고 그 상태가 무음이다: "
+                            + "쓴 값=%s", published)
+                    .hasValue(published);
+
+            if (!v.eligibleBase()) {
+                assertThat(published)
+                        .as("기준이 0 으로 떨어진 칸은 v1 에서 다시 시작한다: %s", v.versionKey())
+                        .isEqualTo(1L);
             }
-            assertThat(published)
-                    .as("다시 수락되지 않는 쓴 값은 <공간의 마지막 값> 하나여야 한다: 쓴 값=%s",
-                            published)
-                    .isEqualTo(999_999_999_999_999L);
-            assertThat(reread)
-                    .as("그 자리에서는 기준이 0 으로 떨어진다 — 두 키가 다 수락되지 않는다")
-                    .isZero();
-            assertThat(publisher.publishIfUnchanged(0L, ordered("시발"), Set.of()))
-                    .as("다음 발행은 v1 이고, 함대가 들고 있는 값(%s)과 달라서 건너뛰지 않는다 — "
-                            + "리셋이 위험했던 것은 함대가 1 을 들고 있는데 1 을 쓴 반대 상황이다",
-                            published)
-                    .hasValue(1L);
+        }
+    }
+
+    /**
+     * ⭐ <b>반환 규약이 전역이다 — "{@code -1} 아닌 모든 값 = 발행된 버전" 이 아니다.</b>
+     *
+     * <p>⚠️ 이 가드에 테스트가 <b>0건</b>이었다. 근거로 적어 둔 것이 "리셋을 {@code -2} 로
+     * 되돌린 변이에서 {@code OptionalLong[-2]} 를 성공으로 반환했다" 는 <b>일회성 관찰</b>이라,
+     * 가드를 지우는 변경이 조용히 통과했다. 스크립트가 정적 상수라 반환값을 주입할 수 없어서
+     * 판정을 메서드로 꺼냈고, 이 테스트가 그 자리를 전수로 잰다.
+     */
+    @ParameterizedTest(name = "반환={0}")
+    @ValueSource(longs = {-2L, -3L, -100L, 0L})
+    @DisplayName("⭐ 규약 밖의 반환을 성공으로 읽지 않는다 — 센티넬이 하나 늘면 조용히 틀린다")
+    void aReturnOutsideTheContractIsNotReadAsSuccess(long returned) {
+        assertThatThrownBy(() -> ProfanityDictionarySnapshotRedisPublisher.readReturn(returned))
+                .as("성공으로 뭉개면 호출자가 '발행됐다' 로 로그를 남기고 함대에 안 깔린 것을 "
+                        + "모른다: 반환=%s", returned)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("규약 밖의 값");
+    }
+
+    @Test
+    @DisplayName("규약 안의 반환은 그대로 읽는다 — -1 은 조건 실패(빈 값), 1 이상은 버전")
+    void aReturnInsideTheContractIsReadAsIs() {
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.readReturn(-1L)).isEmpty();
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.readReturn(1L)).hasValue(1L);
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.readReturn(42L)).hasValue(42L);
+        assertThatThrownBy(() -> ProfanityDictionarySnapshotRedisPublisher.readReturn(null))
+                .as("드라이버가 수를 안 주면 발행 여부를 확인할 수 없다 — 재시도로도 안 낫는다")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("재시도로 낫지 않는다");
+    }
+
+    /**
+     * ⭐ <b>경계 칸이 조용하지 않다.</b>
+     *
+     * <p>이 칸의 결함은 번호 선택이 아니라 <b>전 경로 무음</b>이었다 — 발행 200 · 함대 미집행 ·
+     * 로그 0줄. 쓰는 번호를 "읽히는 값" 으로 바꿨어도 남는 위험이 하나 있다(함대가 이미 1 을
+     * 들고 있으면 그 v1 을 건너뛴다). 그것은 휘발 저장만으로 환원되지 않으므로 <b>보이게</b>
+     * 만드는 것이 이 자리에서 할 수 있는 전부다.
+     */
+    @Test
+    @DisplayName("⭐ 기준이 0 으로 떨어지면 WARN 이 남는다 — 이 칸이 무음이던 것이 결함이었다")
+    void aBaseThatFallsToZeroIsNotSilent() {
+        redisTemplate.opsForValue().set(VERSION, "999999999999998");
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                ProfanityDictionarySnapshotRedisPublisher.class);
+        logger.addAppender(appender);
+        try {
+            assertThat(publisher.currentVersion()).isZero();
+
+            assertThat(appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("키가 있는데 기준이 0 이면 다음 발행이 v1 에서 다시 시작한다 — 조용하면 "
+                            + "함대가 그것을 건너뛰어도 아무도 모른다")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("기준이 0 으로 떨어졌다")
+                            .contains("v1 에서 다시 시작"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
         }
     }
 

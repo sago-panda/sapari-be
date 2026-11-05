@@ -1434,6 +1434,36 @@ class ProfanityDictionaryTest {
     }
 
     /**
+     * ⭐ <b>절단 경계에서도 이모지를 쪼개지 않는다.</b>
+     *
+     * <p>⚠️ 위 테스트의 벡터가 <b>57자</b>라 {@code truncate} 가 아예 돌지 않았다 — 이름이
+     * 주장하는 성질이 240 초과에서 거짓인데 그 모양을 구조적으로 볼 수 없었다.
+     * {@code substring} 이 {@code char} 경계라 경계에 이모지가 걸리면 짝 없는 서로게이트가
+     * 나간다.
+     *
+     * <p>프로덕션에서 도달한다: 설정 CSV {@code "😀시발" + ZWSP×28} → {@code dropZeroWidth} 가
+     * 333자 경고를 만들고 그 경계에 서로게이트가 놓인다. 그리고 <b>{@code visible()} 을 뺀 근거가
+     * 정확히 이 축</b>이었다 — 바로 아래 새 코드가 같은 축을 다시 연 모양이었다.
+     */
+    @Test
+    @DisplayName("⭐ 절단 경계에 이모지가 걸려도 쪼개지지 않는다 — 벡터가 57자라 안 돌던 자리다")
+    void truncationDoesNotSplitSupplementaryCharactersAtTheBoundary() {
+        String warning = "가".repeat(239) + "\uD83D\uDE00" + "꼬리".repeat(60);
+
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of(warning)), "직접 확인");
+
+        assertThat(summary)
+                .as("절단이 일어나야 이 테스트가 무언가를 잰다")
+                .contains("…(" + warning.length() + "자)");
+        // 짝이 맞는 서로게이트는 codePoints() 에서 하나의 보조평면 코드포인트로 합쳐지고,
+        // <짝 없는> 쪽만 D800..DFFF 범위의 코드포인트로 남는다. 그 0 을 단언한다.
+        assertThat(summary.codePoints().filter(cp -> cp >= 0xD800 && cp <= 0xDFFF).count())
+                .as("짝 없는 서로게이트가 나가면 당직자가 CSV 에서 그 항목을 못 찾는다")
+                .isZero();
+    }
+
+    /**
      * 도달 가능한 경고가 실제로 어떤 모양인지 못 박는다 — <b>프로덕션이 만들 수 있는 값</b>으로.
      *
      * <p>지운 테스트는 {@code summarize} 에 손으로 만든 {@code "… \"시발<BOM>\" …"} 을 먹였다.

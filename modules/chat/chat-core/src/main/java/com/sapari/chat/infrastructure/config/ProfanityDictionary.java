@@ -580,15 +580,34 @@ public final class ProfanityDictionary {
      * 한 줄이 {@code 20 × 무한}이다(상한 없을 때 35,966자가 나왔던 그 축). 제어문자 접기는
      * 쪼개짐만 막고 길이는 안 막는다.
      *
-     * <p>경고 문장 자체가 설명문을 포함해 길다(정상 100자 안쪽). 240 은 그 문장을 자르지 않고
-     * 비정상 입력만 자르는 자리다.
+     * <p>⚠️ 한때 근거를 "경고 문장 자체가 정상 100자 안쪽" 으로 적었다. <b>4모양 전수 실측에서
+     * 두 모양이 그보다 길다</b>: {@code warningEntries} 의 셋은 각각 최대 60 · 57 · 126자로
+     * 240 에 도달 불가이고, {@code dropZeroWidth} 가 만드는 모양은 <b>무한(평시에도 최소
+     * 153자)</b>이다. 즉 잘릴 수 있는 유일한 모양이 평시에도 153자다 — 결론(240 이 정상 문장을
+     * 안 자른다)은 참이고 근거만 틀렸다.
+     *
+     * <p>그 모양이 잘려도 <b>복구가 안 깨진다</b>: 그 문장의 머리가 지목자
+     * ({@code 설정 항목 chat.profanity.words 의 N번째 항목})이고 240 안에 전부 남는다. 잃는 쪽은
+     * 뒤에 붙는 "적재된 값" 이다. {@code of()} 경로(복구 = 그 행을 직접 지우기)는 최대 126자라
+     * 절단이 안 걸린다.
+     *
+     * <p>⚠️ {@code …(N자)} 의 {@code N} 은 <b>제어문자 접기 뒤</b> 길이다({@link #summarize} 의
+     * 순서) — 공개 계약으로 제어문자가 섞인 입력이 들어오면 운영자의 원래 항목 길이와 다르다.
      */
     private static final int MAX_WARNING_LENGTH = 240;
 
     private static String truncate(String message) {
-        return message.length() <= MAX_WARNING_LENGTH
-                ? message
-                : message.substring(0, MAX_WARNING_LENGTH) + "…(" + message.length() + "자)";
+        if (message.length() <= MAX_WARNING_LENGTH) {
+            return message;
+        }
+        // ⚠️ char 경계로 자르면 서로게이트 짝이 쪼개진다 — 바로 위에서 visible() 을 뺀 근거가
+        // 정확히 그 축이었는데(이모지를 두 쪽으로 쪼개면 지목이 더 어려워진다) 이 코드가 같은
+        // 축을 다시 열었다. 실측으로 도달한다: 설정 CSV 에 "😀시발" + ZWSP 28개를 주면
+        // dropZeroWidth 가 333자 경고를 만들고 index 239 에 짝 없는 상위 서로게이트가 나왔다.
+        // 코드포인트 경계로 맞춘다.
+        int end = message.offsetByCodePoints(0,
+                message.codePointCount(0, Math.min(message.length(), MAX_WARNING_LENGTH)));
+        return message.substring(0, end) + "…(" + message.length() + "자)";
     }
 
     /**
