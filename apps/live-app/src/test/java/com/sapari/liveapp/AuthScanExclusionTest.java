@@ -13,7 +13,7 @@ import org.springframework.context.annotation.ClassPathScanningCandidateComponen
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
-import org.springframework.stereotype.Repository;
+import org.springframework.stereotype.Component;
 
 import com.sapari.common.auth.RefreshTokenRedisRepository;
 
@@ -39,28 +39,60 @@ class AuthScanExclusionTest {
 
     private static final String AUTH_PACKAGE = "com.sapari.common.auth";
 
+    /** 이 앱의 설정 패키지 — 아래 "스테레오타입 하나만 보지 않는다" 를 재는 대조군이다. */
+    private static final String LIVEAPP_CONFIG_PACKAGE = "com.sapari.liveapp.config";
+
     /** 오늘 그 패키지에 있는 전부. 늘면 이 칸이 깨지고, 그때 제외 목록을 판단한다. */
-    private static final Set<String> KNOWN_REPOSITORIES = Set.of(
+    private static final Set<String> KNOWN_COMPONENTS = Set.of(
             "AccessTokenBlacklistRedisRepository",   // 읽는 쪽 — 쓴다(jti)
             "SessionRevocationRedisRepository",      // 읽는 쪽 — 쓴다(sid)
             "RefreshTokenRedisRepository");          // 발급·갱신 쪽 — 스캔에서 뺀다
 
-    private static Set<String> repositoriesInAuthPackage() {
+    /**
+     * {@code @ComponentScan} 이 집는 것과 <b>같은 기준</b>으로 센다.
+     *
+     * <p>⚠️ 한때 이 필터가 {@code @Repository} 였다. 그러면 <b>가드의 분모가 가드 대상보다
+     * 좁다</b> — 지키는 것은 {@code @ComponentScan} 이고 그쪽 기준은 {@code @Component} 라,
+     * 그 패키지에 {@code @Service} 로 발급 쪽이 하나 생기면 스캔에는 들어오는데 이 칸은 초록으로
+     * 남는다. {@code Component.class} 를 주면 세 스테레오타입이 모두 그 메타 애너테이션을
+     * 달고 있으므로 함께 잡힌다 — 그 순회가 실제로 도는지는 아래 대조군 칸이 잰다.
+     */
+    private static Set<String> componentsIn(String basePackage) {
         ClassPathScanningCandidateComponentProvider scanner =
                 new ClassPathScanningCandidateComponentProvider(false);
-        scanner.addIncludeFilter(new AnnotationTypeFilter(Repository.class));
-        return scanner.findCandidateComponents(AUTH_PACKAGE).stream()
+        scanner.addIncludeFilter(new AnnotationTypeFilter(Component.class));
+        return scanner.findCandidateComponents(basePackage).stream()
                 .map(definition -> definition.getBeanClassName())
                 .map(name -> name.substring(name.lastIndexOf('.') + 1))
                 .collect(Collectors.toCollection(TreeSet::new));
     }
 
     @Test
-    @DisplayName("⭐ 그 패키지의 @Repository 집합이 알려진 셋과 같다 — 네 번째가 생기면 제외를 판단해야 한다")
-    void theAuthPackageHoldsExactlyTheKnownRepositories() {
-        assertThat(repositoriesInAuthPackage())
+    @DisplayName("⭐ 그 패키지의 스테레오타입 집합이 알려진 셋과 같다 — 네 번째가 생기면 제외를 판단해야 한다")
+    void theAuthPackageHoldsExactlyTheKnownComponents() {
+        assertThat(componentsIn(AUTH_PACKAGE))
                 .as("늘었거나 줄었다 — LiveAppApplication 의 제외 목록과 그 주석을 함께 볼 것")
-                .containsExactlyInAnyOrderElementsOf(KNOWN_REPOSITORIES);
+                .containsExactlyInAnyOrderElementsOf(KNOWN_COMPONENTS);
+    }
+
+    /**
+     * ⭐ <b>위 칸이 {@code @Repository} 하나만 보는 것이 아님을 잰다.</b>
+     *
+     * <p>위 필터는 {@code Component.class} 인데, 그 패키지에는 오늘 {@code @Repository} 만 있다
+     * (실측: {@code @Service}·{@code @Component}·{@code @Configuration} 0건). 그래서 <b>위 칸만으로는
+     * 필터가 넓어졌는지 좁은 채인지 구분되지 않는다</b> — 두 경우의 결과가 같다. 메타 애너테이션
+     * 순회가 실제로 도는지를 <b>{@code @Repository} 가 아닌 스테레오타입</b>으로 확인해야 뜻이 선다.
+     *
+     * <p>{@code @Configuration} 은 {@code @Component} 를 메타로 달고 있으므로, 같은 스캐너가
+     * 이 앱의 설정 클래스를 집으면 그 순회가 돈 것이다. 즉 나중에 {@code @Service} 로 들어오는
+     * 발급 쪽도 위 칸이 잡는다.
+     */
+    @Test
+    @DisplayName("⭐ 같은 스캐너가 @Repository 아닌 스테레오타입도 집는다 — 분모가 @ComponentScan 과 같다")
+    void theScannerFollowsMetaAnnotationsSoNonRepositoryStereotypesAreCountedToo() {
+        assertThat(componentsIn(LIVEAPP_CONFIG_PACKAGE))
+                .as("메타 순회가 안 돌면 위 칸의 필터가 사실상 @Component 직접 부착만 본다")
+                .contains("EnterRateLimitConfig", "LiveSecurityConfig");
     }
 
     @Test
