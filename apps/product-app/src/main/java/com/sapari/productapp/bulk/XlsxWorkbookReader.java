@@ -44,6 +44,8 @@ import com.sapari.product.domain.exception.InvalidBulkUploadException;
  *   <li>DOM(usermodel) 대신 SAX로 시트를 읽어 행 단위로만 메모리를 쓴다. 시트당 행 수, 템플릿 밖 열, 셀 길이에 상한을 둔다.
  *   <li>ZIP 엔트리 크기 상한을 낮춘다(zip bomb). 압축률 하한은 POI 기본값을 유지한다.
  *   <li>공유 문자열 표는 SAX로 흘려 읽을 수 없고 통째로 힙에 올라가므로(셀이 인덱스로 참조) 엔트리 상한보다 낮은 별도 상한을 둔다.
+ *   <li>셀 문자 수의 워크북 합계에 상한을 둔다. 여러 셀이 같은 공유 문자열을 참조하면 파일은 작아도 셀마다 처리·복사(잘림·공백 제거)가 일어나므로,
+ *       바이트 상한만으로는 메모리·CPU가 묶이지 않는다.
  *   <li>조작된 파일에서 POI가 던지는 런타임 예외도 입력 파일 문제(400)로 번역한다.
  * </ul>
  */
@@ -58,6 +60,14 @@ public class XlsxWorkbookReader {
 
     /** 셀 문자열 길이 상한 — 가장 긴 필드(상세설명 50,000자)보다 한 글자 길게 둬, 초과 여부는 입력 제약이 판단하게 한다. */
     static final int MAX_CELL_CHARS = 50_001;
+
+    /**
+     * 워크북 전체 셀 문자 수(잘리기 전 길이, 템플릿 밖 열 포함) 합계 상한. 공유 문자열 하나를 수많은 셀이 참조하는 작은 파일이 셀마다 사본을 만들어
+     * 힙·CPU를 증폭시키는 것을 막는다 — 사본은 셀 길이를 넘지 않으므로 증폭이 이 합계에 비례하는 수준으로 묶인다.
+     * 실측: 한도 안 최대치를 넘는 정상 파일(상품 100개 × 상세설명 32,767자 + 조합 행 50,000개) ≈ 6.06M자. 상세설명을 inline으로
+     * 50,000자까지 쓰고 [2.옵션]을 채워도 9M자 안팎이라, 여유를 둔다.
+     */
+    static final long MAX_TOTAL_CELL_CHARS = 24_000_000L;
 
     /**
      * 풀린 ZIP 엔트리 하나의 크기 상한. 시트 XML은 SAX로 흘려 읽어 힙에 머물지 않으므로 CPU·디스크 상한 성격이다.
@@ -82,7 +92,7 @@ public class XlsxWorkbookReader {
      * @param file       xlsx 파일
      * @param sheetNames 읽을 시트 이름들
      * @return 시트 이름 → 비어 있지 않은 행들(행 번호 오름차순)
-     * @throws InvalidBulkUploadException xlsx가 아니거나 손상됐거나 행 수 상한을 넘은 경우
+     * @throws InvalidBulkUploadException xlsx가 아니거나 손상됐거나 행 수·공유 문자열·셀 문자 수 합계 상한을 넘은 경우
      */
     public Map<String, List<WorkbookRow>> read(File file, Set<String> sheetNames) {
         try (OPCPackage pkg = OPCPackage.open(file, PackageAccess.READ)) {
@@ -92,6 +102,7 @@ public class XlsxWorkbookReader {
             DataFormatter formatter = new DataFormatter();
 
             Map<String, List<WorkbookRow>> result = new HashMap<>();
+            CellCharBudget budget = new CellCharBudget();
             XSSFReader.SheetIterator sheets = (XSSFReader.SheetIterator) reader.getSheetsData();
             while (sheets.hasNext()) {
                 try (InputStream sheet = sheets.next()) {
@@ -99,7 +110,7 @@ public class XlsxWorkbookReader {
                     if (!sheetNames.contains(name)) {
                         continue;
                     }
-                    RowCollector collector = new RowCollector(name);
+                    RowCollector collector = new RowCollector(name, budget);
                     XMLReader parser = XMLHelper.newXMLReader();
                     // 수식 셀은 저장된 결과값을 읽는다(formulasNotResults=false)
                     parser.setContentHandler(new XSSFSheetXMLHandler(styles, strings, collector, formatter, false));
@@ -111,6 +122,9 @@ public class XlsxWorkbookReader {
         } catch (RowLimitExceededException e) {
             throw new InvalidBulkUploadException(
                     "시트 '" + e.sheetName + "'의 행이 " + MAX_ROWS_PER_SHEET + "개를 넘습니다.", e);
+        } catch (CellCharsLimitExceededException e) {
+            throw new InvalidBulkUploadException(
+                    "셀 문자 수 합계가 상한(" + MAX_TOTAL_CELL_CHARS + "자)을 넘습니다.", e);
         } catch (SharedStringsLimitExceededException e) {
             throw new InvalidBulkUploadException(
                     "공유 문자열 표가 상한(" + MAX_SHARED_STRINGS_BYTES + " bytes)을 넘습니다.", e);
@@ -146,11 +160,13 @@ public class XlsxWorkbookReader {
     private static final class RowCollector implements SheetContentsHandler {
 
         private final String sheetName;
+        private final CellCharBudget budget;
         private final List<WorkbookRow> rows = new ArrayList<>();
         private Map<Integer, String> currentCells;
 
-        private RowCollector(String sheetName) {
+        private RowCollector(String sheetName, CellCharBudget budget) {
             this.sheetName = sheetName;
+            this.budget = budget;
         }
 
         /**
@@ -182,6 +198,8 @@ public class XlsxWorkbookReader {
             if (cellReference == null || formattedValue == null) {
                 return;
             }
+            // 열 필터·잘림보다 먼저 센다 — 버리거나 자를 셀도 POI가 이미 처리했고, 잘린 사본도 메모리를 쓴다
+            budget.consume(formattedValue.length());
             int column = new CellReference(cellReference).getCol();
             // 템플릿이 쓰지 않는 열은 읽을 이유가 없다 — 행마다 수십 열을 채운 파일의 메모리 증폭을 막는다
             if (column >= ProductWorkbookTemplate.MAX_COLUMNS) {
@@ -191,6 +209,37 @@ public class XlsxWorkbookReader {
                     ? formattedValue.substring(0, MAX_CELL_CHARS)
                     : formattedValue;
             currentCells.put(column, value);
+        }
+    }
+
+    /**
+     * 워크북 전체 셀 문자 수를 누적해 {@link #MAX_TOTAL_CELL_CHARS}를 넘으면 파싱을 중단시키는 카운터(요청마다 새로 만든다).
+     */
+    private static final class CellCharBudget {
+
+        private long used;
+
+        /**
+         * 셀 하나의 문자 수를 더한다.
+         *
+         * @param chars 셀 문자열 길이
+         * @throws CellCharsLimitExceededException 합계가 상한을 넘은 경우
+         */
+        private void consume(int chars) {
+            used += chars;
+            if (used > MAX_TOTAL_CELL_CHARS) {
+                throw new CellCharsLimitExceededException();
+            }
+        }
+    }
+
+    /**
+     * SAX 콜백 안에서 셀 문자 수 합계 상한을 넘었음을 알리는 신호. {@link #read}가 입력 오류로 번역한다.
+     */
+    private static final class CellCharsLimitExceededException extends RuntimeException {
+
+        private CellCharsLimitExceededException() {
+            super(null, null, false, false);
         }
     }
 

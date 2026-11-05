@@ -306,6 +306,83 @@ class XlsxWorkbookReaderTest {
         }
 
         /**
+         * 공유 문자열 하나(엑셀 셀 한도 안의 30,000자)를 {@code references}개 셀이 참조하는 작은 파일을 만든다. 공유 문자열 표는 중복을 제거하므로
+         * 파일은 작지만 셀 문자 수 합계는 30,000 × references가 된다.
+         *
+         * @param column     참조 셀을 둘 열(템플릿 밖 열이면 읽기 결과에서 버려진다)
+         * @param references 참조 셀 수
+         */
+        private File sharedStringReferencedBy(int column, int references) throws IOException {
+            XSSFWorkbook workbook = new XSSFWorkbook();
+            Sheet sheet = workbook.createSheet(ProductWorkbookTemplate.PRODUCT_SHEET);
+            String text = koreanText(30_000);
+            for (int i = 0; i < references; i++) {
+                sheet.createRow(i).createCell(column).setCellValue(text);
+            }
+            return write(workbook);
+        }
+
+        /**
+         * 셀 문자 수 합계가 상한과 정확히 같으면 읽고, 한 셀만 더해 넘으면 거절하는지(경계) — 상한은 잘리기 전 길이로 센다.
+         */
+        @Test
+        @DisplayName("셀 문자 수 합계 상한(24M자) — 같으면 읽고, 넘으면 거절한다")
+        void enforcesTotalCellCharsBoundary() throws IOException {
+            int atLimit = (int) (XlsxWorkbookReader.MAX_TOTAL_CELL_CHARS / 30_000);
+
+            Map<String, List<WorkbookRow>> sheets = reader.read(
+                    sharedStringReferencedBy(ProductWorkbookTemplate.P_DESCRIPTION, atLimit),
+                    Set.of(ProductWorkbookTemplate.PRODUCT_SHEET));
+
+            assertThat((long) atLimit * 30_000).isEqualTo(XlsxWorkbookReader.MAX_TOTAL_CELL_CHARS);
+            assertThat(sheets.get(ProductWorkbookTemplate.PRODUCT_SHEET)).hasSize(atLimit);
+            assertThatThrownBy(() -> reader.read(
+                    sharedStringReferencedBy(ProductWorkbookTemplate.P_DESCRIPTION, atLimit + 1),
+                    Set.of(ProductWorkbookTemplate.PRODUCT_SHEET)))
+                    .isInstanceOf(InvalidBulkUploadException.class)
+                    .hasMessageContaining("셀 문자 수 합계");
+        }
+
+        /**
+         * 템플릿 밖 열의 셀도 합계에 넣는지 — 결과에서 버리는 셀도 POI는 이미 처리했으므로 CPU 증폭을 막으려면 세야 한다.
+         */
+        @Test
+        @DisplayName("템플릿 밖 열의 셀도 셀 문자 수 합계에 넣는다")
+        void countsCellsOutsideTemplateColumns() throws IOException {
+            int overLimit = (int) (XlsxWorkbookReader.MAX_TOTAL_CELL_CHARS / 30_000) + 1;
+            File file = sharedStringReferencedBy(ProductWorkbookTemplate.MAX_COLUMNS + 10, overLimit);
+
+            assertThatThrownBy(() -> reader.read(file, Set.of(ProductWorkbookTemplate.PRODUCT_SHEET)))
+                    .isInstanceOf(InvalidBulkUploadException.class)
+                    .hasMessageContaining("셀 문자 수 합계");
+        }
+
+        /**
+         * 리뷰에서 재현된 공격 — 상한 길이를 넘는 공유 문자열 하나를 여러 셀이 참조하면 셀마다 잘린 사본이 생겨 1MB 미만 파일로 힙이 GB 단위로 불어났다.
+         * 이제는 사본을 만들기 전에 합계 상한에서 멈춘다.
+         */
+        @Test
+        @DisplayName("상한을 넘는 공유 문자열을 많은 셀이 참조하는 1MB 미만 조작 파일은 셀마다 잘린 사본을 만들기 전에 거절한다")
+        void rejectsAmplifiedOversizedSharedString() throws IOException {
+            XSSFWorkbook workbook = new XSSFWorkbook();
+            Sheet sheet = workbook.createSheet(ProductWorkbookTemplate.PRODUCT_SHEET);
+            for (int i = 0; i < 3_000; i++) {
+                sheet.createRow(i).createCell(ProductWorkbookTemplate.P_DESCRIPTION).setCellValue("PLACEHOLDER");
+            }
+            // 엑셀로는 만들 수 없는 1,000,000자 공유 문자열 — 3,000셀이 참조하면 합계 3G자. 임의 영문이라 압축률 하한에 걸리지 않고 1MB 안에 든다
+            StringBuilder huge = new StringBuilder(1_000_000);
+            for (int i = 0; i < 1_000_000; i++) {
+                huge.append((char) ('a' + random.nextInt(26)));
+            }
+            File crafted = replaceZipText(write(workbook), "xl/sharedStrings.xml", "PLACEHOLDER", huge.toString());
+
+            assertThat(crafted.length()).isLessThan(1024 * 1024);
+            assertThatThrownBy(() -> reader.read(crafted, Set.of(ProductWorkbookTemplate.PRODUCT_SHEET)))
+                    .isInstanceOf(InvalidBulkUploadException.class)
+                    .hasMessageContaining("셀 문자 수 합계");
+        }
+
+        /**
          * xlsx(zip) 안 엔트리의 풀린 크기.
          */
         private long entrySize(File file, String entryName) throws IOException {

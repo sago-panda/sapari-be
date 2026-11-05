@@ -16,7 +16,8 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
   DTOs only enforce scalar limits. Pending: image (④) fields.
 - ✅ **Bulk upload (SPR-150)** `POST /api/v1/seller/products/bulk` (multipart `file`, xlsx ≤ 5MB, ≤ 100 products).
   Excel is an input format, so parsing lives here in `bulk/` (not core): streaming POI reader (temp file +
-  SAX + row cap + zip entry cap 24MB + heap-resident shared-strings cap 16MB, both from measured maxima) → `ProductWorkbookParser` builds the **same `CreateProductRequest`** so
+  SAX + row cap + zip entry cap 24MB + heap-resident shared-strings cap 16MB + workbook total cell-chars cap 24M
+  — one shared string referenced by many cells makes a tiny file expand per cell — all from measured maxima) → `ProductWorkbookParser` builds the **same `CreateProductRequest`** so
   Bean Validation rules are reused, violations mapped back to sheet/row/column → core `BulkCreateProductsUseCase`
   (validates every product first; any error ⇒ nothing saved). Validation failures are a **200** envelope with
   `status=REJECTED` + cell errors (`ErrorResponse` has no room for a list); only an unreadable file is 400 PRODUCT-012.
