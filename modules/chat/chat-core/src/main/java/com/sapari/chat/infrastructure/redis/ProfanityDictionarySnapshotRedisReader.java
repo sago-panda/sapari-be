@@ -47,38 +47,27 @@ public class ProfanityDictionarySnapshotRedisReader implements ProfanityDictiona
      */
     @Override
     public Mono<Long> readVersion() {
-        return redisTemplate.opsForValue().get(ChatRedisKeys.dictVersion())
-                .map(ProfanityDictionarySnapshotRedisReader::parseVersion)
-                .switchIfEmpty(Mono.defer(this::snapshotHeadVersion));
-    }
-
-    /** 본문 머리의 버전. 본문이 없거나 머리가 숫자가 아니면 빈 {@code Mono} 다. */
-    private Mono<Long> snapshotHeadVersion() {
-        return redisTemplate.opsForValue().get(ChatRedisKeys.dictSnapshot())
-                .flatMap(snapshot -> {
-                    int newline = snapshot.indexOf('\n');
-                    String head = newline < 0 ? snapshot : snapshot.substring(0, newline);
-                    try {
-                        return Mono.just(Long.parseLong(head.strip()));
-                    } catch (NumberFormatException e) {
-                        // 머리가 깨졌으면 "버전을 모른다" 다. 던지지 않는 이유는 호출자가 그것을
-                        // 전송 실패로 분류해 버전을 올리지 않고 재시도하는데, 이 상태는 재시도로
-                        // 낫지 않기 때문이다 — 빈 값으로 주면 "아직 없음" 분기가 로그를 남긴다.
-                        return Mono.empty();
-                    }
-                });
+        return token(ChatRedisKeys.dictVersion())
+                .switchIfEmpty(Mono.defer(() -> token(ChatRedisKeys.dictSnapshot())));
     }
 
     /**
-     * 값을 실패 메시지에 싣지 않는다 — 신뢰경계 밖 문자열이라 개행 삽입으로 로그를 위조할 수 있다.
-     * 길이는 남긴다: "빈 값" 과 "숫자가 아닌 긴 값" 은 원인이 다르다.
+     * 키 하나의 버전. 없거나 머리가 문법에 안 맞으면 빈 {@code Mono} 다.
+     *
+     * <p>문법은 {@link ProfanityDictionarySnapshotCodec#readVersionToken} 한 곳에 있다 —
+     * 발행 스크립트·발행 어댑터와 <b>같은 규칙</b>이어야 한다. 한때 이쪽만
+     * {@code Long.parseLong(strip())} 이라 {@code " 12\nbody"} 를 12 로 읽었는데 스크립트는
+     * 0 으로 읽었다.
+     *
+     * <p>깨진 머리에 <b>던지지 않는다.</b> 호출자가 예외를 전송 실패로 분류해 버전을 올리지
+     * 않고 재시도하는데 이 상태는 재시도로 낫지 않는다 — 빈 값으로 주면 "아직 없음" 분기가
+     * 로그를 남긴다.
      */
-    private static long parseVersion(String raw) {
-        try {
-            return Long.parseLong(raw.strip());
-        } catch (NumberFormatException e) {
-            throw new IllegalStateException(
-                    "사전 버전이 숫자가 아니다 — 길이 " + raw.length() + ".", e);
-        }
+    private Mono<Long> token(String key) {
+        return redisTemplate.opsForValue().get(key)
+                .flatMap(raw -> ProfanityDictionarySnapshotCodec.readVersionToken(raw)
+                        .stream().boxed().findFirst()
+                        .map(Mono::just)
+                        .orElseGet(Mono::empty));
     }
 }

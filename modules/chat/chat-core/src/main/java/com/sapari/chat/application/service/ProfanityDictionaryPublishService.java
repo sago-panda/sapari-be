@@ -33,7 +33,12 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>주기 재발행을 두지 않은 것은 의도다. 앱이 여럿이라 스케줄러에 분산 잠금(ShedLock 류)이
  * 필요한데, 그 배선의 값은 "아무도 쓰지 않고 아무도 재배포하지 않는 구간" 에서만 나온다 —
- * 그 구간에서 함대가 쓰는 사전은 번들이고, 번들은 비어 있지 않다(부팅이 그것을 강제한다).
+ * 그 구간에서 함대가 쓰는 사전은 번들이고, 번들은 비어 있지 않다 — 그것을 강제하는 부팅은
+ * <b>streaming-app</b> 이다({@code ChatBeansConfig} 의 {@code profanityFilterSource} 가
+ * {@code ProfanityDictionary.load} 를 부르고, {@code @Bean} 팩토리라 던지면 컨텍스트 refresh 가
+ * 실패한다). 윗단락이 발행 트리거로 live-app 부팅을 말하고 있어 그쪽으로 읽히는데, 그 독법에서는
+ * 이 전제가 약해진다 — live-app 이 죽은 채 함대만 돌 수 있다. 함대 자신의 부팅이 강제하므로
+ * 그 경우에도 번들은 비어 있지 않다.
  * 즉 잃는 것은 <b>최근 ADMIN 변경</b>이고 되찾는 비용은 <b>쓰기 한 번</b>이다. 그 교환이
  * 뒤집히면(사전이 커져 번들과 정본의 차이가 운영상 유의미해지면) 그때 넣을 것이고, 그 판단의
  * 입력은 "번들과 테이블의 항목 수 차이" 다.
@@ -52,6 +57,19 @@ public class ProfanityDictionaryPublishService {
      * (스크립트 밖에서 누가 그 키를 쓰고 있는 경우)에서 이 스레드가 영구히 돌지 않게 하는 것이다.
      */
     private static final int MAX_ATTEMPTS = 5;
+
+    /**
+     * 로그 한 줄의 상한.
+     *
+     * <p>⚠️ 상한이 없을 때 전량이 걸리면 한 줄이 <b>35,966자</b>였다(측정: 욕설 1,078 ·
+     * 화이트리스트 38). 평시에는 0 건이라 안 드러나는데, 접기 평면을 바꾸는 변경(예:
+     * {@code normalizeEntry} 가 NFKC 로 가는 것)이 들어오면 <b>모든 행이 불일치</b>가 되어
+     * 발행 1회당 그 줄이 나간다.
+     */
+    private static final int REPORT_LIMIT = 20;
+
+    /** 문에 물어볼 때 실패 메시지에 실릴 출처 — 이 호출은 진단이고 집행 사전을 만들지 않는다. */
+    private static final String DOOR_PROBE_ORIGIN = "chat:filter-word:probe";
 
     /**
      * 정본을 그대로 한 장 떠서 발행한다.
@@ -84,7 +102,7 @@ public class ProfanityDictionaryPublishService {
             Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
             Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
             if (attempt == 1) {
-                errorIfRowsCannotBeAddressed(words, whitelist);
+                errorIfRowsAreDefective(words, whitelist);
             }
 
             OptionalLong version =
@@ -102,52 +120,109 @@ public class ProfanityDictionaryPublishService {
     }
 
     /**
-     * 접기로 <b>가리킬 수 없는 행</b>이 정본에 있는지 본다 — 로그만 남긴다.
+     * 정본에 <b>두 부류의 결함 행</b>이 있는지 본다 — 로그만 남긴다.
      *
      * <p>이 티켓은 쓰기 경로가 접은 값을 저장하게 고쳤고({@code ManageFilterWordsService.fold})
      * 접기가 고정점임을 테스트로 못 박았다. 그 둘은 <b>앞으로</b> 그런 행이 생기지 않게 한다.
      * 이미 있는 행에는 둘 다 닿지 않는다 — 이 브랜치 전의 쓰기 경로는 원문을 저장했고,
      * {@code CHAT_PROFANITY_WORDS} 로 들어간 항목도 같은 모양일 수 있다.
      *
-     * <p><b>그 행 하나가 전파를 영구 동결시킨다.</b> 보이지 않는 글자가 든 항목은 사전 문에서
-     * 떨어지므로 (1) 전 Pod 이 스냅샷 교체를 거부하고 (2) 다음 ADMIN 쓰기가 전부 409 가 되고
-     * (3) 그 행을 지우려는 삭제 요청은 접혀서 다른 값을 찾으므로 <b>0행</b>이다. 운영자에게
-     * 보이는 것은 "성공했다는 응답과 올라가는 버전, 그런데 아무것도 안 막힌다" 다.
+     * <p>⚠️ <b>두 부류는 포함관계가 아니라 직교다.</b> 한때 이 자리가 "접기 불일치" 하나로 둘을
+     * 덮는다고 보고 한 문장으로 단정했는데, 테스트가 그것을 깼다. 실측(다섯 글자 × 선행·후행·
+     * 내부 18칸):
+     * <pre>
+     *   선행 BOM      접기가 뗀다      문 통과   → 저장값 ≠ 집행값 (그림자)
+     *   후행 BOM      접기가 보존한다   문 거부   → 저장값 = 집행값 (동결)
+     *   내부 ZWSP·BOM 접기가 보존한다   문 거부   → 저장값 = 집행값 (동결)
+     * </pre>
+     * 즉 <b>동결 행은 접기 불일치가 아니다</b> — 저장값과 집행값이 같고, 문이 그 값을 거부할
+     * 뿐이다. 그래서 두 축을 각자 잰다.
      *
-     * <p><b>막지 않는다.</b> 여기서 예외를 올리면 그 상태에서 발행이 아예 못 돌아 동결이
-     * 한 겹 더 굳는다(부팅까지 실패한다). 하는 일은 <b>무엇을 지워야 하는지</b>를 코드 포인트로
-     * 찍어 주는 것이다 — 문제가 보이지 않는 글자라서, 평문으로 적으면 로그에서도 안 보인다.
+     * <p><b>부류 1 — 문이 거부한다(동결).</b> {@code of()} 가 {@code strip} 뒤에 거부하므로,
+     * 접은 뒤에도 보이지 않는 글자가 남거나 예산을 넘는 행이 여기다. (1) 전 Pod 이 스냅샷 교체를
+     * 거부하고 (2) 다음 ADMIN 쓰기가 전부 409 다. 접기가 그 값을 보존하므로 <b>같은 값을 그대로
+     * 보내면 API 로 지울 수 있다</b> — 복구가 수동 SQL 이 아니다. 판정은 <b>문에게 전체 집합을
+     * 한 번 물어서</b> 한다: 문이 이미 그 일을 하고 어느 항목인지까지 메시지에 담으므로, 여기서
+     * 행마다 다시 묻는 것은 트라이를 1,116번 세우는 것이고 판정을 재구현하는 것이다.
+     *
+     * <p><b>부류 2 — 문이 통과시킨다(그림자 행).</b> 접기가 그 글자를 전부 떼는 행이다. 함대는
+     * 멀쩡히 집행하는데 {@code uk (kind, word)} 가 <b>원문 기준</b>이라 테이블이 {@code 시발} 과
+     * {@code <BOM>시발} 을 같이 들 수 있고, {@code remove("시발")} 은 <b>한 행만</b> 지우고
+     * {@code changed=true}·버전 상승·성공 응답을 낸다. 그런데 남은 그림자 행이 같은 평면으로
+     * 접히므로 <b>그 단어는 계속 막힌다</b> — 운영자가 "풀었는데 여전히 걸린다" 를 본다.
+     * {@code fold} javadoc 이 경계한 "이미 그 상태였다 인데 실제로는 집행 중" 의 반대 방향이고,
+     * 이쪽은 삭제가 <i>성공으로 보이는</i> 점이 더 나쁘다. 복구는 그림자 행을 직접 지우는 것이다.
+     *
+     * <p>⚠️ <b>이 로그는 항목 값을 싣는다 — 이 배치의 다른 두 자리와 반대이고 의도다.</b>
+     * {@code ManageFilterWordsService.publishOrLogLoss} 와 {@code ChatBeansConfig} 의 설정 WARN
+     * 은 값을 빼고 개수만 싣는다(그 둘은 <i>정상 경로</i>라 상시 나가고, 값이 로그에 쌓이는 것
+     * 말고 얻는 것이 없다). 이쪽은 비정상 경로이고 복구 수단이 "그 행을 지목하기" 라 <b>정확한
+     * 값이 없으면 복구가 불가능하다</b>. 보이지 않는 글자만 {@code \\uXXXX} 로 바꾸므로
+     * ({@code ProfanityFilterFactory.describe}) 되돌릴 수 있는 표기이고, 가리는 것이 목적이 아니다.
+     *
+     * <p><b>막지 않는다.</b> 여기서 예외를 올리면 그 상태에서 발행이 아예 못 돌아 부류 1 의
+     * 동결이 한 겹 더 굳는다 — 쓰기도 부팅 발행도 전파를 못 내보낸다. (부팅 자체는 뜬다:
+     * {@code ChatDictionaryBootstrap} 이 발행 실패를 받아 ERROR 만 남긴다. 한때 이 괄호가
+     * "부팅까지 실패한다" 였는데 거짓이고, 그 자리에서 진짜로 부팅을 죽이는 것은 같은 러너의
+     * <b>번들 로드</b>다 — 두 축이 섞여 적혀 있었다.)
      *
      * <p>첫 시도에서만 센다. 재시도는 같은 정본을 다시 읽는 것이라 결과가 같고, 경합이 심한
      * 구간에서 같은 ERROR 를 다섯 번 찍을 이유가 없다.
      */
-    private void errorIfRowsCannotBeAddressed(Set<String> words, Set<String> whitelist) {
-        List<String> unreachable = new ArrayList<>();
-        collectUnreachable(FilterWordKind.PROFANITY, words, unreachable);
-        collectUnreachable(FilterWordKind.WHITELIST, whitelist, unreachable);
-        if (unreachable.isEmpty()) {
+    private void errorIfRowsAreDefective(Set<String> words, Set<String> whitelist) {
+        errorIfTheDoorRefusesTheSource(words, whitelist);
+        errorIfShadowRowsExist(words, whitelist);
+    }
+
+    /** 부류 1 — 문에게 전체 집합을 한 번 묻는다. 어느 항목인지는 문의 메시지가 담는다. */
+    private void errorIfTheDoorRefusesTheSource(Set<String> words, Set<String> whitelist) {
+        try {
+            filterFactory.from(DOOR_PROBE_ORIGIN, words, whitelist);
+        } catch (IllegalStateException e) {
+            log.error("정본이 사전 문을 통과하지 못한다 — 전 Pod 의 사전 교체가 거부되고 이후 모든 "
+                            + "ADMIN 쓰기가 409 다. 접기가 그 값을 보존하므로 같은 값을 그대로 보내면 "
+                            + "API(/api/v1/chat/filter-words)로 지울 수 있다 — 수동 SQL 이 아니다. "
+                            + "사유={}", e.getMessage());
+        }
+    }
+
+    /**
+     * 부류 2 — 접기가 저장값과 집행값을 갈라 놓은 행.
+     *
+     * <p>이쪽은 문이 통과시키므로 문에게 물어서는 찾을 수 없다. 접기 한 번씩이라 행당 비용이
+     * 트라이가 아니고, 걸린 행만 렌더링한다.
+     */
+    private void errorIfShadowRowsExist(Set<String> words, Set<String> whitelist) {
+        List<String> shown = new ArrayList<>();
+        int total = collectShadowRows(FilterWordKind.PROFANITY, words, shown)
+                + collectShadowRows(FilterWordKind.WHITELIST, whitelist, shown);
+        if (total == 0) {
             return;
         }
-        log.error("정본에 <접기로 가리킬 수 없는 행>이 {}건 있다 — 이 행 하나로 전 Pod 의 사전 "
-                        + "교체가 거부되고 이후 모든 ADMIN 쓰기가 409 가 되며, 그 행을 지우려는 "
-                        + "요청은 접혀서 0행이 된다(이 브랜치 전의 쓰기 경로가 원문을 저장했다). "
-                        + "복구는 chat_filter_word 에서 아래 행을 직접 지우는 것이다 — 코드 포인트는 "
-                        + "U+XXXX 로 적었다: {}",
-                unreachable.size(), unreachable);
+        log.error("정본에 <그림자 행>이 있다 — 문은 통과하므로 집행은 정상인데, uk (kind, word) 가 "
+                        + "원문 기준이라 접으면 같아지는 행이 둘 이상 있을 수 있다. 그러면 삭제 요청이 "
+                        + "한 행만 지우고 changed=true·버전 상승·성공 응답을 내는데 남은 행이 같은 "
+                        + "단어를 계속 집행한다. 복구는 chat_filter_word 에서 이 행을 직접 지우는 "
+                        + "것이다. 전체 {}건 중 {}건: {}", total, shown.size(), capped(shown));
     }
 
-    private void collectUnreachable(FilterWordKind kind, Set<String> stored, List<String> out) {
+    private int collectShadowRows(FilterWordKind kind, Set<String> stored, List<String> shown) {
+        int total = 0;
         for (String word : stored) {
-            if (!word.equals(filterFactory.normalize(word))) {
-                out.add(kind + ":" + describe(word));
+            if (word.equals(filterFactory.normalize(word))) {
+                continue;
+            }
+            total++;
+            if (shown.size() < REPORT_LIMIT) {
+                shown.add(kind + ":" + filterFactory.describe(word));
             }
         }
+        return total;
     }
 
-    /** 코드 포인트로 적는다 — 평문으로 적으면 BOM·ZWSP 가 로그에서도 안 보인다. */
-    private static String describe(String word) {
-        StringBuilder out = new StringBuilder();
-        word.codePoints().forEach(cp -> out.append(String.format("U+%04X ", cp)));
-        return out.toString().strip();
+    private static String capped(List<String> shown) {
+        return shown.size() < REPORT_LIMIT
+                ? String.join(" · ", shown)
+                : String.join(" · ", shown) + " … 외 더 있음(상한 " + REPORT_LIMIT + "건)";
     }
 }

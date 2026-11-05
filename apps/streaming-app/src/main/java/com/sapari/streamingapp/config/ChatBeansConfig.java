@@ -97,7 +97,20 @@ public class ChatBeansConfig {
         // 채팅을 세우는 대가가 더 크다. 다만 "막았다" 로 믿고 넘어가는 것이 이 경고가 막으려는
         // 것이라, 조용히 넘기지도 않는다.
         if (!dictionary.warnings().isEmpty()) {
-            log.warn("사전 설정에 확인할 항목이 있다: {}", dictionary.warnings());
+            // ⚠️ 위 WARN 은 개수만 싣는데 이 줄은 <항목이 든 문장>을 싣는다. 같은 정책을 두 줄이
+            // 다르게 쓰는 것처럼 보이므로 근거를 적는다 — 두 줄의 성질이 다르다.
+            //
+            // 위쪽은 설정 항목이 <있으면 언제나> 나가는 정상 경로다. 거기서 값을 싣는 것은 로그에
+            // 욕설을 상시로 쌓는 것이고, 운영자는 자기 설정을 이미 들고 있으니 얻는 것이 없다.
+            // 이 줄은 <적재는 됐지만 아무 일도 하지 않는> 항목만 나가는 비정상 경로이고, 운영자가
+            // 해야 하는 일이 "그 항목을 CSV 에서 찾아 고치기" 라 어느 항목인지가 필요하다.
+            //
+            // 그 문장의 렌더링은 사전 문이 만든다(ProfanityDictionary.visible) — 보이지 않는
+            // 글자만 U+XXXX 표기로 바꾸고 보이는 글자는 그대로 둔다. 가리기가 아니라 지목이다.
+            // (주석에 역슬래시-u 를 그대로 쓰면 자바가 그것을 유니코드 이스케이프로 먼저
+            //  읽어 'illegal unicode escape' 로 컴파일이 깨진다 — 주석도 예외가 아니다.)
+            log.warn("사전 설정에 확인할 항목이 있다({}건): {}",
+                    dictionary.warnings().size(), dictionary.warnings());
         }
         return new SwappableProfanityFilter(
                 new ProfanityFilter(dictionary.words(), dictionary.whitelist()));
@@ -107,8 +120,16 @@ public class ChatBeansConfig {
         return value != null && !value.isBlank();
     }
 
-    /** 로그에 실을 개수 — 빈 칸도 센다. 운영자가 세는 위치와 맞아야 "3번째" 가 통한다. */
+    /**
+     * 로그에 실을 항목 개수 — <b>로더가 번호를 매기는 방식과 같게</b> 센다.
+     *
+     * <p>⚠️ 한때 {@code split(",", -1)} 이었고 근거가 "빈 칸도 센다. 운영자가 세는 위치와
+     * 맞아야 \"3번째\" 가 통한다" 였다. <b>그 근거가 거꾸로였다.</b> "3번째" 를 찍는 쪽인
+     * {@code ProfanityDictionary.splitCsv} 는 {@code csv.split(",")} 로 세는데 그것은 <b>후행
+     * 빈 칸을 버린다.</b> 실측: {@code "시발,지랄,"} → 이쪽은 3, 로더 인덱스는 최대 2. 후행
+     * 콤마 하나로 이 로그가 존재하지 않는 "3번째" 를 가리켰다.
+     */
     private static int countCsv(String value) {
-        return hasText(value) ? value.split(",", -1).length : 0;
+        return hasText(value) ? value.split(",").length : 0;
     }
 }

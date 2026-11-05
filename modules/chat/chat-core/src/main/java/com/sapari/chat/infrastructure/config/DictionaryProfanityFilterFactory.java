@@ -51,4 +51,10 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
     public String normalize(String word) {
         return ProfanityDictionary.normalize(word);
     }
+
+    /** {@link ProfanityDictionary#visible} 을 그대로 쓴다 — 거부 메시지와 같은 렌더링이어야 한다. */
+    @Override
+    public String describe(String word) {
+        return ProfanityDictionary.visible(word);
+    }
 }

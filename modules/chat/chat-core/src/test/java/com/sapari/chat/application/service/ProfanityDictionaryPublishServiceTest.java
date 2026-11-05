@@ -8,6 +8,8 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.OptionalLong;
 import java.util.Set;
 
@@ -141,55 +143,58 @@ class ProfanityDictionaryPublishServiceTest {
     }
 
     /**
-     * ⭐ <b>접기로 가리킬 수 없는 행을 찍어 준다 — 막지는 않는다.</b>
+     * ⭐ <b>문이 거부하는 행(동결)과 통과시키는 행(그림자)을 갈라 적는다.</b>
      *
-     * <p>이 티켓은 쓰기 경로가 접은 값을 저장하게 고쳤고 접기가 고정점임을 못 박았다. 그 둘은
-     * <b>앞으로</b> 그런 행이 생기지 않게 할 뿐이고, <b>이미 있는 행</b>에는 둘 다 닿지 않는다 —
-     * 이 브랜치 전의 쓰기 경로는 원문을 저장했다.
+     * <p>한때 한 문장이 셋을 같이 단정했다 — "(1) 전 Pod 이 교체를 거부 (2) 모든 ADMIN 쓰기가
+     * 409 (3) 삭제가 0행". 실측하니 <b>선행 BOM 행에서는 (1)·(2)가 일어나지 않는다</b>:
+     * {@code of()} 가 {@code strip} 뒤에 거부하므로 접기가 그 글자를 떼어 문에 닿지 않는다
+     * (전수 — 다섯 글자 × 선행·후행·내부 18칸 중 조용히 떼어지는 것은 선행 BOM 과 앞뒤 공백
+     * 둘뿐이다). 당직자가 그 ERROR 로 함대 동결을 의심하면 엉뚱한 곳을 본다.
      *
-     * <p>그 행 하나가 전파를 영구 동결시킨다: 전 Pod 이 교체를 거부하고, 다음 ADMIN 쓰기가 전부
-     * 409 가 되고, 그 행을 지우려는 삭제는 접혀서 0행이다. 운영자가 보는 것은 "성공 응답과
-     * 올라가는 버전, 그런데 아무것도 안 막힌다" 다. 탐지가 없으면 이 상태를 <b>알 방법 자체가
-     * 없다.</b>
+     * <p>그 행에서 <b>실제로</b> 일어나는 것이 메시지에 없었다. {@code uk (kind, word)} 가 원문
+     * 기준이라 테이블이 {@code 시발} 과 {@code <BOM>시발} 을 같이 들 수 있고, 삭제가 한 행만
+     * 지우고 성공을 내는데 남은 행이 같은 단어를 계속 집행한다.
      *
-     * <p>로그가 코드 포인트여야 한다. 문제가 보이지 않는 글자라서 평문으로 적으면 로그에서도
-     * 안 보이고, 운영자는 무엇을 지워야 하는지 모른다.
+     * <p>⚠️ <b>그리고 이 테스트가 판정축까지 고쳤다.</b> 처음에는 두 부류를 "접기 불일치"
+     * 하나로 찾고 문에게 물어 가르려 했는데, 이 벡터에서 동결 쪽({@code 시발<BOM>})이 <b>아예
+     * 걸리지 않았다</b> — {@code normalize("시발<BOM>")} 이 자기 자신이라 불일치가 아니다. 두
+     * 부류는 포함관계가 아니라 직교이고, 그래서 동결은 <b>문에게 전체 집합을 한 번 묻고</b>
+     * 그림자는 <b>행마다 접어서</b> 찾는다.
      */
     @Test
-    @DisplayName("⭐ 접기로 가리킬 수 없는 행을 코드 포인트로 찍는다 — 그래도 발행은 간다")
-    void unaddressableRowsAreReportedWithCodePoints() {
-        // given: 이 브랜치 전에 들어간, 선행 BOM 이 붙은 행
+    @DisplayName("⭐ 문이 거부하는 행은 '동결' 로, 통과시키는 행은 '그림자' 로 적는다")
+    void theTwoClassesGetDifferentMessages() {
+        // 후행 BOM 은 접기가 보존하므로 문이 거부한다(동결).
+        // 선행 BOM 은 접기가 떼므로 문을 통과한다(그림자).
         given(repository.findWords(FilterWordKind.PROFANITY))
-                .willReturn(Set.of("\uFEFF시발"));
+                .willReturn(new LinkedHashSet<>(List.of("시발\uFEFF", "\uFEFF지랄")));
         given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of());
-        given(snapshotPublisher.currentVersion()).willReturn(7L);
+        given(snapshotPublisher.currentVersion()).willReturn(0L);
         given(snapshotPublisher.publishIfUnchanged(anyLong(), anySet(), anySet()))
-                .willReturn(OptionalLong.of(8L));
+                .willReturn(OptionalLong.of(1L));
 
-        ListAppender<ILoggingEvent> appender = new ListAppender<>();
-        appender.start();
-        Logger logger =
-                (Logger) LoggerFactory.getLogger(ProfanityDictionaryPublishService.class);
-        logger.addAppender(appender);
-        try {
-            // when: 막지 않는다 — 여기서 올리면 그 상태에서 부팅까지 실패해 동결이 더 굳는다
-            assertThat(service.publishFromSource()).isEqualTo(8L);
+        List<String> errors = captureErrors(() ->
+                assertThat(service.publishFromSource())
+                        .as("막으면 그 상태에서 발행이 아예 못 돌아 동결이 한 겹 더 굳는다")
+                        .isEqualTo(1L));
 
-            // then
-            assertThat(appender.list.stream()
-                    .filter(e -> e.getLevel() == Level.ERROR)
-                    .map(ILoggingEvent::getFormattedMessage)
-                    .toList())
-                    .as("이 상태가 조용하면 운영자는 전파 동결의 원인을 알 방법이 없다")
-                    .anySatisfy(message -> assertThat(message)
-                            .contains("가리킬 수 없는 행")
-                            .as("평문으로 적으면 BOM 이 로그에서도 안 보인다")
-                            .contains("U+FEFF")
-                            .contains("U+C2DC"));
-        } finally {
-            logger.detachAppender(appender);
-            appender.stop();
-        }
+        assertThat(errors)
+                .as("두 부류의 처방이 다르므로 한 문장으로 뭉개면 당직자가 엉뚱한 곳을 본다")
+                .hasSize(2);
+        assertThat(errors)
+                .anySatisfy(message -> assertThat(message)
+                        .contains("정본이 사전 문을 통과하지 못한다")
+                        .contains("409")
+                        .as("접기가 그 글자를 보존하므로 API 로 지울 수 있다 — 복구가 수동 SQL 이 아니다")
+                        .contains("API")
+                        .as("문의 메시지가 어느 항목인지를 담는다 — 보이지 않는 글자만 \\uXXXX 로")
+                        .contains("\\uFEFF"))
+                .anySatisfy(message -> assertThat(message)
+                        .contains("그림자 행")
+                        .as("이쪽에서 일어나는 것은 '삭제가 성공으로 보이는데 계속 집행된다' 다")
+                        .contains("한 행만 지우고")
+                        .as("동결 쪽 문면이 섞이면 처방이 틀어진다")
+                        .doesNotContain("409"));
     }
 
     @Test
@@ -201,16 +206,61 @@ class ProfanityDictionaryPublishServiceTest {
         given(snapshotPublisher.publishIfUnchanged(anyLong(), anySet(), anySet()))
                 .willReturn(OptionalLong.of(1L));
 
+        assertThat(captureErrors(service::publishFromSource))
+                .as("멀쩡한 정본에서 ERROR 가 나면 당직자가 이 줄을 무시하게 된다")
+                .isEmpty();
+    }
+
+    /**
+     * ⭐ <b>한 줄에 상한이 있다.</b>
+     *
+     * <p>상한이 없을 때 전량이 걸리면 한 줄이 35,966자였다(측정: 욕설 1,078 · 화이트리스트 38).
+     * 평시 0건이라 안 드러나는데, 접기 평면을 바꾸는 변경이 들어오면 <b>모든 행이 불일치</b>가
+     * 되어 발행 1회당 그 줄이 나간다. 그리고 그때 부류를 가르려고 문을 1,116번 세우는 것도
+     * 같이 막아야 한다.
+     */
+    @Test
+    @DisplayName("⭐ 보고가 상한에서 끊긴다 — 평면을 바꾸는 변경이 들어오면 전 행이 걸린다")
+    void theReportIsCapped() {
+        Set<String> many = new LinkedHashSet<>();
+        for (int i = 0; i < 50; i++) {
+            // 선행 BOM = 그림자 축. 후행 BOM 은 접기가 보존해 불일치가 아니다(그 축이 아니다).
+            many.add("\uFEFF시발" + i);
+        }
+        given(repository.findWords(FilterWordKind.PROFANITY)).willReturn(many);
+        given(repository.findWords(FilterWordKind.WHITELIST)).willReturn(Set.of());
+        given(snapshotPublisher.currentVersion()).willReturn(0L);
+        given(snapshotPublisher.publishIfUnchanged(anyLong(), anySet(), anySet()))
+                .willReturn(OptionalLong.of(1L));
+
+        List<String> errors = captureErrors(service::publishFromSource);
+
+        assertThat(errors).hasSize(1);
+        // ⚠️ "상한 20건" 이라는 접미만 단언하면 상한이 집히지 않는다 — 상한을 지워도 그 접미는
+        // 그대로 붙는다(실측: 변이가 통과했다). 집어야 하는 것은 <나열한 수>다.
+        assertThat(errors.get(0))
+                .contains("그림자 행")
+                .as("전체 수는 그대로 알려야 한다 — 상한은 나열에만 걸린다")
+                .contains("전체 50건 중 20건")
+                .as("상한을 넘겼다는 사실이 없으면 50건을 다 봤다고 읽는다")
+                .contains("상한 20건");
+        assertThat(errors.get(0).split(" · "))
+                .as("나열이 상한에서 끊기지 않으면 한 줄이 35,966자까지 간다")
+                .hasSize(20);
+    }
+
+    private static List<String> captureErrors(Runnable action) {
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
         Logger logger =
                 (Logger) LoggerFactory.getLogger(ProfanityDictionaryPublishService.class);
         logger.addAppender(appender);
         try {
-            service.publishFromSource();
-            assertThat(appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList())
-                    .as("멀쩡한 정본에서 ERROR 가 나면 당직자가 이 줄을 무시하게 된다")
-                    .isEmpty();
+            action.run();
+            return appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.ERROR)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
         } finally {
             logger.detachAppender(appender);
             appender.stop();

@@ -79,7 +79,12 @@ production log statements all pass `sessionId`/`roomId`/`userId`/`role` scalars.
 record that carries `email` or an unmasked body. Absorbing a failure is also not the same as silencing
 it: when a handler swallows to keep a verdict, it still owes a counter and an interval-throttled log
 (`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
-put back).
+put back). ⚠️ **The counter half is only owed where a counter can live.** `domain_and_application_must
+_not_depend_on_metrics_library` (ArchUnit) forbids the metrics library in `domain/` and `application/`,
+so a swallow in an application service owes the log and a *structural* fallback instead — for
+`ManageFilterWordsService.warnIfCommittedSourceViolates` that fallback is the next write's `guardSource`,
+which turns the un-diagnosed state into a 409. Do not read the sentence above as "add a counter there";
+rule 12 would reject the commit.
 
 ## Profanity dictionary — the table is the source, the file seeds it, and short words are the trap
 
@@ -152,8 +157,9 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   one deploy.
 - **The snapshot is one key.** `chat:dict:snapshot` holds version + both sets in one value, so a reader
   cannot see "half new" — a whitelist entry only means something next to the profanity it covers.
-  `INCR` + `SET` + `PUBLISH` are **one Lua script**; split them and you get "version advanced, body did
-  not", after which the receiver's poll reads the old body and advances its version anyway.
+  The version bump + `SET` + `PUBLISH` are **one Lua script**; split them and you get "version
+  advanced, body did not", after which the receiver's poll reads the old body and advances its version
+  anyway. The bump is `current + 1` under a CAS, not an `INCR` — see the next bullet.
 - **streaming-app reads.** `ProfanityDictionaryRefreshHandler` merges three triggers (boot, notify,
   poll) into one `concatMap` stream, so only one refresh runs at a time and monotonicity is a field
   comparison. ⚠️ The **poll** is what makes propagation work, not the notification: Redis pub/sub is

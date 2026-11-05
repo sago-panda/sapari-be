@@ -25,7 +25,14 @@ description: sapari-be 코드 리뷰를 돌린다 — 변경 경로를 .claude/a
    sh .claude/scripts/check-item-ids.sh      # anchors.yml 이 켜는 ID 가 실재하는가
    sh .claude/scripts/check-anchor-globs.sh  # 글롭이 실재 파일을 잡는가
    ```
-   결과를 보고서 맨 위에 **한 줄로** 싣는다(`결정론 게이트: ArchUnit 21/21 · 하네스 3/3 통과`).
+   `.claude/scripts/` 의 `check-*` 는 **넷**이다. 위 셋만 상시고, 넷째
+   `check-ascii-entries.sh`(순 ASCII 욕설 항목이 평범한 영단어의 부분문자열이 되는지 영어 사전
+   전수로 대조)는 **조건부**다 — 그 스크립트 머리글이 "상시 CI 가 아니라 사전을 손댈 때 돌린다"
+   를 명시하고, 영단어 목록이 저장소에 없어 OS 제공 파일에 기댄다. 변경이
+   `modules/chat/**/resources/chat/*.txt` 또는 사전 항목 집합을 건드렸으면 **넷을 돌리고 4/4 로
+   싣는다**. 이 줄이 없을 때 넷 중 셋만 도는 상태였다 — 템플릿이 셋이고 `check-archunit-sync.sh`
+   는 이름 집합만 보므로 "sync 통과" 가 이것을 덮지 못한다.
+   결과를 보고서 맨 위에 **한 줄로** 싣는다(`결정론 게이트: ArchUnit 21/21 · 하네스 3/3 통과` — 사전을 손댔으면 `하네스 4/4`).
    하나라도 실패하면 그 실패가 최상위 발견이다 — 규칙·스크립트 이름을 그대로 적고, LLM 리뷰어에게
    재도출시키지 않는다.
 

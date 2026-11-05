@@ -420,10 +420,13 @@ class ManageFilterWordsServiceTest {
     /**
      * ⭐ <b>커밋 뒤의 진단 읽기가 본선을 죽이지 않는다.</b>
      *
-     * <p>{@code warnIfCommittedSourceViolates} 의 두 읽기가 {@code try} <b>밖</b>에 있었다.
-     * 호출 위치가 쓰기 커밋 뒤 · 발행 앞이라, 그 읽기의 일시 오류가 <b>쓰기는 커밋됐는데 발행은
-     * 안 되고 응답은 일반 500</b> 을 만들었다 — 진단이 자기가 알리려던 바로 그 상태를 만드는
-     * 모양이다.
+     * <p>{@code warnIfCommittedSourceViolates} 의 두 읽기가 {@code try} <b>밖</b>에 있었고 호출
+     * 위치도 발행 <b>앞</b>이었다. 그 읽기의 일시 오류가 <b>쓰기는 커밋됐는데 발행은 안 되고
+     * 응답은 일반 500</b> 을 만들었다 — 진단이 자기가 알리려던 바로 그 상태를 만드는 모양이다.
+     *
+     * <p>지금은 둘 다 고쳤다: 호출이 <b>발행 뒤</b>로 갔고(그래서 진단이 전파를 잃게 할 수
+     * 없다) 읽기도 {@code try} 안이다. 이 벡터는 그 둘이 되돌려지는 것을 같이 막는다 — 호출만
+     * 앞으로 되돌리면 삼킴이 남아 통과하지만, {@code try} 를 걷으면 그때 발행을 잃는다.
      */
     @Test
     @DisplayName("⭐ 커밋 뒤 진단 읽기가 실패해도 발행은 간다 — 진단이 본선을 죽이면 안 된다")
@@ -483,6 +486,29 @@ class ManageFilterWordsServiceTest {
             logger.detachAppender(appender);
             appender.stop();
         }
+    }
+
+    /**
+     * ⭐ <b>삼키는 범위가 삼키는 근거와 같다.</b>
+     *
+     * <p>잡는 타입이 {@code RuntimeException} 이었다. 삼킴의 근거는 "읽기가 일시적으로 실패할
+     * 수 있다" 인데 그 범위는 {@code DataAccessException} 이고, 넓게 잡으면 이 경로의 코드 결함
+     * (NPE 등)까지 WARN 한 줄로 사라진다 — 진단이 자기 버그를 숨기는 모양이다.
+     */
+    @Test
+    @DisplayName("⭐ 진단 경로의 코드 결함은 삼키지 않는다 — 삼킴은 DB 실패에만 적용된다")
+    void aCodeDefectInTheDiagnosticIsNotSwallowed() {
+        given(repository.findWords(FilterWordKind.PROFANITY))
+                .willReturn(Set.of("시발"))
+                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
+        given(repository.findWords(FilterWordKind.WHITELIST))
+                .willReturn(Set.of())
+                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
+
+        assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
+                .as("넓게 잡으면 이 결함이 WARN 한 줄로 사라진다")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("코드 결함");
     }
 
     @Test

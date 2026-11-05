@@ -10,6 +10,7 @@ import org.springframework.data.redis.core.script.RedisScript;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * {@link ProfanityDictionarySnapshotPublisher} 구현 — 블로킹. live-app 이 {@code @Bean} 으로 세운다.
@@ -18,6 +19,7 @@ import lombok.RequiredArgsConstructor;
  * streaming-app 은 {@code com.sapari.chat} 을 스캔하므로 붙이면 거기서도 빈이 만들어진다 —
  * 그 앱은 정본을 읽을 수 없으니 발행할 것도 없다.
  */
+@Slf4j
 @RequiredArgsConstructor
 public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDictionarySnapshotPublisher {
 
@@ -74,16 +76,37 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      * 기여하지 않고({@code 0}) 쓰기가 그대로 덮는다 — 복구가 유지된다. 강퇴 명단이 {@code TYPE}
      * 을 먼저 보는 것과 같은 이유이고, 그쪽은 더하기라 고칠 수 없었다는 점만 다르다.
      *
+     * <p>⚠️ <b>그 성질을 두 키에 같이 준다.</b> 한때 이 문단이 키를 구분하지 않고 단정했는데
+     * 자바 쪽은 <b>버전 키</b>에서 던지고 있었다 — {@code LPUSH} 한 줄로 모든 ADMIN 쓰기와 부팅
+     * 발행이 500 이고, 스크립트는 그 키를 덮어 고칠 수 있는데 그 스크립트가 애초에 돌지 못했다.
+     * 지금은 양쪽 모두 "기여하지 않는다(0)" 이고, 못 읽은 키는 WARN 한 줄로 남긴다.
+     *
+     * <p><b>머리 문법은 {@code ProfanityDictionarySnapshotCodec.readVersionToken} 한 곳에
+     * 있고 아래 {@code token()} 이 그 거울이다.</b> 같은 문자열을 Lua 와 자바가 각자 읽는데
+     * 규칙이 달랐고(열 벡터 중 여섯 갈림, 근거는 그 메서드 javadoc) 갈리면 조건이 평시에도
+     * 어긋나 재시도만 소진한 뒤 엉뚱한 키를 가리키는 메시지를 던졌다. 한쪽을 고치면 다른 쪽도
+     * 고친다 — 둘이 같다는 것을 테스트가 같은 벡터로 못 박는다.
+     *
      * <p>{@code PUBLISH} 를 Lua 안에서 부르는 것은 실측으로 확인했다(Redis 7.4.12, 반환 정상).
      */
     private static final RedisScript<Long> PUBLISH_SNAPSHOT = RedisScript.of("""
+            -- 머리 문법의 거울 — ProfanityDictionarySnapshotCodec.readVersionToken 과 같아야 한다.
+            -- 숫자 1~18자로 시작하고 그 뒤는 끝이거나 개행. 그 밖은 0("모른다").
+            local function token(raw)
+                if type(raw) ~= 'string' then return 0 end
+                local digits = string.match(raw, '^(%d+)')
+                if digits == nil or #digits > 18 then return 0 end
+                local tail = string.sub(raw, #digits + 1, #digits + 1)
+                if tail ~= '' and tail ~= '\\n' then return 0 end
+                return tonumber(digits)
+            end
             local counter = 0
             if redis.call('TYPE', KEYS[2])['ok'] == 'string' then
-                counter = tonumber(redis.call('GET', KEYS[2])) or 0
+                counter = token(redis.call('GET', KEYS[2]))
             end
             local head = 0
             if redis.call('TYPE', KEYS[1])['ok'] == 'string' then
-                head = tonumber(string.match(redis.call('GET', KEYS[1]), '^(%d+)')) or 0
+                head = token(redis.call('GET', KEYS[1]))
             end
             local current = counter
             if head > current then
@@ -105,82 +128,57 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
     private final StringRedisTemplate redisTemplate;
 
     /**
-     * 조건 비교의 기준 — <b>스크립트와 같은 규칙</b>으로 잡는다(두 키의 큰 쪽).
+     * 조건 비교의 기준 — <b>스크립트와 같은 문법</b>으로 두 키를 읽어 큰 쪽을 집는다.
      *
-     * <p>여기와 스크립트가 다른 규칙을 쓰면 평시에도 조건이 어긋나 재시도만 소진한다. 그리고
-     * 버전 키만 보던 때가 ABA 였다 — 그 벡터와 남는 축은 {@code PUBLISH_SNAPSHOT} javadoc 에 있다.
+     * <p>여기와 스크립트가 다른 규칙을 쓰면 평시에도 조건이 어긋나 재시도만 소진한다. 그래서
+     * 문법이 {@link ProfanityDictionarySnapshotCodec#readVersionToken} 한 곳에 있고 Lua 가 그
+     * 거울이다. 버전 키만 보던 때가 ABA 였다 — 그 벡터와 남는 축은 {@code PUBLISH_SNAPSHOT}
+     * javadoc 에 있다.
+     *
+     * <p><b>못 읽은 키는 던지지 않고 기여하지 않는다(0).</b> 한때 버전 키에서 던졌는데, 그러면
+     * 스크립트가 그 키를 덮어 고칠 수 있는데도 <b>그 스크립트가 돌지 못했다</b> — 숫자 아닌 값
+     * 하나 또는 {@code LPUSH} 한 줄로 모든 발행이 500 이고 복구가 수동 {@code DEL} 뿐이었다.
+     * 두 키가 다 안 읽히면 토큰이 0 이고, 그때 발행이 v1 을 세워 양쪽을 다시 쓴다.
+     *
+     * <p>못 읽었다는 사실은 WARN 으로 남긴다 — 조용하면 ABA 가 다시 열린 것(토큰이 한 키로
+     * 떨어진 상태)을 아무도 모른다. <b>값은 싣지 않는다</b>: 신뢰경계 밖 문자열이라 개행 삽입으로
+     * 로그를 위조할 수 있고, 길이만으로 "빈 값" 과 "긴 쓰레기" 가 갈린다.
      */
     @Override
     public long currentVersion() {
-        long head = snapshotHeadVersion();
-        String raw;
-        try {
-            raw = redisTemplate.opsForValue().get(ChatRedisKeys.dictVersion());
-        } catch (RuntimeException e) {
-            if (RedisWrongType.matches(e)) {
-                // 버전 키가 다른 타입이다. 비숫자와 같은 상태이고 복구도 같다(키 삭제) —
-                // 다만 그 안내가 WRONGTYPE 으로 가려지지 않게 여기서 번역한다.
-                throw new IllegalStateException(
-                        "사전 버전 키가 우리 타입이 아니다 — 조건부 발행을 할 수 없다. 이 키("
-                                + ChatRedisKeys.dictVersion()
-                                + ")를 지우면 다음 발행이 버전을 다시 세운다.", e);
-            }
-            throw e;
-        }
-        if (raw == null) {
-            // 버전 키가 없다. 본문이 남아 있으면 그 머리가 기준이고, 둘 다 없으면 0 —
-            // 그 0 만이 "한 번도 발행되지 않았다" 다.
-            return head;
-        }
-        try {
-            return Math.max(head, Long.parseLong(raw.strip()));
-        } catch (NumberFormatException e) {
-            // 값을 싣지 않는다 — 신뢰경계 밖 문자열이라 개행 삽입으로 로그를 위조할 수 있다.
-            // 여기서 던지는 쪽이 낫다: 조건 비교가 영원히 어긋나 재시도만 소진하는 것보다
-            // 당직자에게 원인이 바로 간다.
-            //
-            // ⚠️ 본문 키와 달리 이 키에는 "다음 발행이 덮어 고친다" 가 없다 — 조건 비교의
-            // 기준이라 깨지면 모든 발행이 여기서 막힌다. 그래서 복구를 메시지에 적는다:
-            // <이 키를 지우면> currentVersion() 이 0 을 돌려주고 다음 발행이 v1 을 세운다.
-            // 받는 쪽이 뒤로 간 버전도 적용하므로(ProfanityDictionaryRefreshHandler.apply)
-            // 함대가 그 v1 을 집어 간다 — 그 처리가 없던 동안에는 이 키를 지워도 전 Pod 가
-            // 더 낮은 버전을 조용히 버려서 복구가 안 됐다.
-            throw new IllegalStateException(
-                    "사전 버전 키가 숫자가 아니다 — 길이 " + raw.length()
-                            + ". 조건부 발행을 할 수 없다. 이 키("
-                            + ChatRedisKeys.dictVersion()
-                            + ")를 지우면 다음 발행이 버전을 다시 세우고 함대가 그것을 집어 간다.", e);
-        }
+        long head = tokenOf(ChatRedisKeys.dictSnapshot(), "스냅샷 본문");
+        long counter = tokenOf(ChatRedisKeys.dictVersion(), "버전 키");
+        return Math.max(head, counter);
     }
 
     /**
-     * 스냅샷 본문 머리의 버전. 본문이 없거나 머리가 숫자가 아니면 {@code 0} 이다.
+     * 키 하나의 토큰 기여분. 없거나 타입이 다르거나 문법에 안 맞으면 {@code 0} 이다.
      *
-     * <p>본문이 깨져 있어도 여기서 던지지 않는다 — 발행은 그 본문을 <b>덮어</b> 고치는 쪽이라,
-     * 읽기에서 막으면 복구 경로가 자기 자신에게 막힌다. 머리를 못 읽으면 기준이 버전 키로
-     * 떨어지고, 그쪽도 없으면 0 이다.
+     * <p>세 경우를 가르지 않는 것이 의도다 — 토큰에 대해서는 전부 "이 키는 기준을 못 준다" 로
+     * 같고, 셋 다 다음 발행이 {@code SET} 으로 덮어 고친다. 가르는 것은 로그뿐이다.
      */
-    private long snapshotHeadVersion() {
-        String snapshot;
+    private long tokenOf(String key, String what) {
+        String raw;
         try {
-            snapshot = redisTemplate.opsForValue().get(ChatRedisKeys.dictSnapshot());
+            raw = redisTemplate.opsForValue().get(key);
         } catch (RuntimeException e) {
             if (RedisWrongType.matches(e)) {
-                // 타입이 오염된 키는 기준에 기여하지 않는다 — 발행이 그대로 덮어 고친다.
+                log.warn("사전 {}의 타입이 우리 것이 아니다 — 조건 비교에 기여하지 않는다(0). "
+                                + "다음 발행이 이 키를 덮어 고친다. key={}", what, key);
                 return 0L;
             }
             throw e;
         }
-        if (snapshot == null) {
+        if (raw == null) {
             return 0L;
         }
-        int newline = snapshot.indexOf('\n');
-        String head = newline < 0 ? snapshot : snapshot.substring(0, newline);
-        try {
-            return Long.parseLong(head.strip());
-        } catch (NumberFormatException e) {
+        OptionalLong token = ProfanityDictionarySnapshotCodec.readVersionToken(raw);
+        if (token.isEmpty()) {
+            log.warn("사전 {}의 머리를 읽을 수 없다 — 조건 비교에 기여하지 않는다(0). 다음 발행이 "
+                            + "이 키를 덮어 고친다. key={} 길이={}", what, key, raw.length());
             return 0L;
         }
+        return token.getAsLong();
     }
 
     @Override

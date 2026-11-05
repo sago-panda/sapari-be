@@ -34,9 +34,12 @@ import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
  * 본문을 읽어 <b>버전만 올려 둔다</b>(그 뒤로 진짜 변경이 와도 같은 번호면 건너뛴다).
  * 본문만 써지고 알림이 안 가면 전파가 주기 간격만큼 늦는다.
  *
- * <p>목으로는 이것을 재지 못한다. Lua 안에서 {@code PUBLISH} 가 실제로 나가는지, {@code INCR} 이
- * 단조인지는 Redis 의 동작이고 스크립트 문자열을 단언하는 것으로는 같은 답이 아니다 —
- * 문자열이 맞아도 그 명령이 그 서버에서 거부될 수 있다(실측으로 Redis 7.4.12 에서 허용된다).
+ * <p>목으로는 이것을 재지 못한다. Lua 안에서 {@code PUBLISH} 가 실제로 나가는지, 그 안의
+ * {@code string.match} 가 자바와 같은 수를 읽는지는 Redis 의 동작이고 스크립트 문자열을
+ * 단언하는 것으로는 같은 답이 아니다 — 문자열이 맞아도 그 명령이 그 서버에서 거부될 수 있고
+ * (실측으로 Redis 7.4.12 에서 허용된다), 실제로 이 스크립트는 자바 텍스트 블록의 이스케이프
+ * 하나 때문에 <b>컴파일 자체가 거부된</b> 적이 있다({@code unfinished string}). 그때 이 클래스의
+ * 11건이 전부 빨개져서 알았다.
  */
 @Testcontainers
 @DisplayName("사전 스냅샷 발행 — 버전·본문·알림이 한 번에 나간다")
@@ -247,6 +250,11 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
         assertThat(publisher.publishIfUnchanged(expectedByA, ordered("시발"), Set.of()))
                 .as("두 키 중 남은 쪽이 토큰을 떨어뜨리지 않아야 한다")
                 .isEmpty();
+        // ⚠️ 이 벡터는 ABA 수정을 되돌려도 <통과한다> — 되돌린 구현은 버전 키만 보고 그 키가
+        // 남아 있으므로 토큰이 안 떨어진다. 즉 이것은 그 수정의 회귀 가드가 아니다. 막는 것은
+        // 장래의 "머리 전용" 구현이다(본문 머리만 기준으로 삼으면 본문이 사라진 이 상태에서
+        // 토큰이 0 으로 떨어져 낡은 발행자가 통과한다). 회귀 가드는 짝인
+        // aStalePublisherIsRefusedWhenTheVersionKeyIsGone 쪽이다.
     }
 
     @Test
@@ -259,16 +267,31 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                 .hasValue(1L);
     }
 
+    /**
+     * ⭐ <b>버전 키가 숫자가 아니어도 발행이 덮어 고친다.</b>
+     *
+     * <p>이 테스트는 전에 <b>반대를 못 박고 있었다</b> — "숫자가 아니면 던진다(조건 비교가
+     * 영원히 어긋나는 것보다 낫다)". 그 근거가 틀렸다: 스크립트는 그 키를 0 으로 읽고
+     * {@code SET} 으로 덮으므로 <b>조건이 어긋나지 않고 발행이 성립한다.</b> 던지면 그
+     * 스크립트가 애초에 돌지 못해, 값 하나로 모든 ADMIN 쓰기와 부팅 발행이 500 이 되고 복구가
+     * 수동 {@code DEL} 뿐이었다. 스냅샷 키 쪽은 같은 상황에서 0 으로 떨어뜨려 치유를 살려
+     * 뒀는데 두 키가 갈려 있었다.
+     *
+     * <p>조용히 넘기지도 않는다 — 못 읽은 키는 WARN 이고, 그 로그에 값은 싣지 않는다(신뢰경계
+     * 밖 문자열이라 개행 삽입으로 로그를 위조할 수 있다).
+     */
     @Test
-    @DisplayName("버전 키가 숫자가 아니면 던진다 — 조건 비교가 영원히 어긋나는 것보다 낫다")
-    void aNonNumericVersionKeyThrows() {
+    @DisplayName("⭐ 버전 키가 숫자가 아니어도 발행이 덮어 고친다 — 던지면 복구가 수동 DEL 뿐이다")
+    void aNonNumericVersionKeyIsHealedByThePublish() {
         redisTemplate.opsForValue().set(VERSION, "오염된값");
 
-        assertThatThrownBy(() -> publisher.currentVersion())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("숫자가 아니다")
-                .as("값을 그대로 실으면 개행 삽입으로 로그를 위조할 수 있다")
-                .hasMessageNotContaining("오염된값");
+        assertThat(publisher.currentVersion())
+                .as("읽을 수 없는 키는 조건 비교에 기여하지 않는다")
+                .isZero();
+        assertThat(publisher.publishIfUnchanged(0L, ordered("시발"), Set.of()))
+                .as("여기서 던지면 값 하나로 전 경로가 500 이 된다")
+                .hasValue(1L);
+        assertThat(redisTemplate.opsForValue().get(VERSION)).isEqualTo("1");
     }
 
     @Test
@@ -291,5 +314,70 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                 redisTemplate.opsForValue().get(SNAPSHOT));
         assertThat(decoded.words()).hasSize(1078).containsExactlyElementsOf(words);
         assertThat(decoded.whitelist()).hasSize(38).containsExactlyElementsOf(whitelist);
+    }
+
+    /**
+     * ⭐ <b>Lua 와 자바가 같은 머리 문법을 읽는다</b> — 갈리면 평시에도 조건이 어긋난다.
+     *
+     * <p>이것을 CAS 로 잰다. 자바가 집은 토큰을 그대로 조건으로 넘기므로, Lua 가 <b>다른</b>
+     * 수를 읽으면 그 자리에서 {@code -1} 이 되어 빈 {@code OptionalLong} 이 온다. 즉 "통과 =
+     * 두 파서가 같은 수를 봤다" 이고, 둘 중 어느 쪽 값인지를 따로 단언할 필요가 없다.
+     *
+     * <p>갈렸던 벡터로 돌린다(실측 열 중 여섯 갈림). 갈리면 어떻게 되는지가 이 테스트가 막는
+     * 것이다 — CAS 가 매 시도 {@code -1} 이라 {@code MAX_ATTEMPTS} 를 소진하고, 그때 던지는
+     * 메시지가 "버전 키를 스크립트 밖에서 쓰는 경로" 를 가리킨다(범인은 스냅샷 본문이다).
+     * 20자리 축은 더 나쁘다: Lua 의 {@code tonumber} 가 {@code 1e+20} 을 돌려주고 그것이
+     * {@code SET} 으로 <b>두 키에 다시 써지면</b> 사람 손 없이 안 풀린다.
+     */
+    @Test
+    @DisplayName("⭐ Lua 와 자바가 같은 머리 문법을 읽는다 — 갈리면 평시에도 CAS 가 깨진다")
+    void luaAndJavaReadTheSameVersionGrammar() {
+        List<String> vectors = List.of(
+                "12abc\nbody",          // 숫자 뒤가 개행이 아니다
+                " 12\nbody",            // 앞에 공백
+                "-5\nbody",             // 부호
+                "+7\nbody",             // 자바 parseLong 이 받는 부호
+                "\t3\nbody",            // 앞에 탭
+                "99999999999999999999\nbody", // 20자리 — Lua 가 1e+20 을 돌려주던 축
+                "1\nbody",              // 정상
+                "007\nbody",            // 앞이 0
+                "1 \nbody",             // 숫자 뒤 공백
+                "\nbody");              // 머리가 없다
+
+        assertThat(vectors).hasSize(10);
+        for (String vector : vectors) {
+            redisTemplate.delete(List.of(SNAPSHOT, VERSION));
+            redisTemplate.opsForValue().set(SNAPSHOT, vector);
+
+            long token = publisher.currentVersion();
+            assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
+                    .as("자바가 %s 를 토큰으로 집었는데 Lua 가 다른 수를 읽으면 CAS 가 깨진다: %s",
+                            token, vector.replace("\n", "\\n"))
+                    .isPresent();
+        }
+    }
+
+    /**
+     * ⭐ <b>버전 키가 다른 타입이어도 발행이 그것을 덮어 고친다.</b>
+     *
+     * <p>한때 자바가 이 경우에 던졌다 — 스크립트의 {@code TYPE} 가드는 그 키를 0 으로 두고
+     * {@code SET} 이 타입 무관하게 덮으므로 <b>스크립트는 고칠 수 있었는데 그 스크립트가 애초에
+     * 돌지 못했다.</b> {@code LPUSH} 한 줄로 모든 ADMIN 쓰기와 부팅 발행이 500 이고 복구가 수동
+     * {@code DEL} 뿐이었다. 스냅샷 키 쪽은 같은 상황에서 0 으로 떨어뜨려 치유를 살려 뒀고,
+     * 두 키가 같은 성질을 가져야 한다.
+     */
+    @Test
+    @DisplayName("⭐ 타입이 오염된 버전 키도 발행이 덮어 고친다 — 두 키가 같은 성질을 갖는다")
+    void aWrongTypedVersionKeyIsHealedByThePublish() {
+        redisTemplate.opsForList().rightPush(VERSION, "1");
+
+        long token = publisher.currentVersion();
+        assertThat(token)
+                .as("읽을 수 없는 키는 기준에 기여하지 않는다")
+                .isZero();
+        assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
+                .as("여기서 던지면 복구가 수동 DEL 뿐이다")
+                .isPresent();
+        assertThat(redisTemplate.opsForValue().get(VERSION)).isEqualTo("1");
     }
 }

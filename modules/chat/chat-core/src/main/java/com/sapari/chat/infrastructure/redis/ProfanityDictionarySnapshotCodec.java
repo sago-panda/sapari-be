@@ -3,6 +3,7 @@ package com.sapari.chat.infrastructure.redis;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.Set;
 
 import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
@@ -11,7 +12,7 @@ import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
  * 스냅샷의 와이어 포맷 — <b>쓰는 쪽과 읽는 쪽의 단일 소스</b>다.
  *
  * <pre>
- *   0행: 버전(long)          ← 발행 스크립트가 INCR 결과로 붙인다(본문에는 없다)
+ *   0행: 버전(long)          ← 발행 스크립트가 붙인다(본문에는 없다)
  *   1행: 욕설 수(int)
  *   2행: 화이트리스트 수(int)
  *   3행~: 욕설 × 욕설 수, 이어서 화이트리스트 × 화이트리스트 수
@@ -36,12 +37,68 @@ final class ProfanityDictionarySnapshotCodec {
 
     private static final String LINE = "\n";
 
+    /**
+     * 머리 버전의 자리 수 상한.
+     *
+     * <p>Lua 의 {@code tonumber} 는 double 을 돌려준다 — 19자리 이상은 정확히 담기지 않고
+     * {@code 1e+20} 같은 값이 된다. 그 값이 {@code SET} 으로 <b>두 키에 다시 써지면</b>
+     * 그때부터 양쪽 파서가 그것을 숫자로 읽지 못해 사람 손 없이는 안 풀린다. 그래서 문법에서
+     * 아예 받지 않는다. 18자리는 발행 10<sup>18</sup>회라 도달하지 않는다.
+     */
+    private static final int MAX_VERSION_DIGITS = 18;
+
     private ProfanityDictionarySnapshotCodec() {
     }
 
     /**
-     * 버전을 <b>뺀</b> 본문. 버전은 발행 스크립트가 {@code INCR} 한 값을 머리에 붙인다 —
-     * 클라이언트가 번호를 정하면 live-app Pod 가 둘일 때 같은 번호를 두 번 쓸 수 있다.
+     * 머리 버전의 <b>문법</b> — 이 자리가 그 문법의 단일 소스다.
+     *
+     * <p>문법: <b>숫자 1~18자로 시작하고, 그 뒤는 문자열의 끝이거나 개행이다.</b> 그 밖은 전부
+     * "읽을 수 없다"({@link OptionalLong#empty()})다. 버전 키는 끝 쪽, 스냅샷 본문은 개행 쪽을
+     * 쓰므로 한 규칙이 둘을 덮는다.
+     *
+     * <p><b>왜 한 곳이어야 하는가.</b> 같은 문자열을 Lua 스크립트와 자바가 각자 읽는데, 둘이
+     * 다르면 조건부 발행이 <b>평시에도</b> 어긋나 재시도만 소진하고 던지는 메시지가 엉뚱한 곳
+     * (버전 키)을 가리킨다. 실측으로 벌어졌던 갈림 — {@code "12abc\nbody"}(Lua 12 · 자바 0) ·
+     * {@code " 12\nbody"}(Lua 0 · 자바 12) · {@code "-5"} · {@code "+7"} · {@code "\t3"} ·
+     * 20자리(Lua {@code 1e+20} · 자바 0). 열 벡터 중 여섯이 갈렸다.
+     *
+     * <p><b>왜 접두만 떼지 않고 엄격한가.</b> 이 수를 쓰는 유일한 자리가 ABA 토큰이다. 손으로
+     * 고친 본문의 앞 숫자를 토큰으로 받으면 그 본문이 토큰을 정하게 되므로, 깨진 값은 수로
+     * 읽지 않고 "모른다" 로 떨어뜨린다 — 떨어지면 토큰이 다른 키로 가고 발행이 그 키를 덮어
+     * 고친다. 쓰는 쪽은 언제나 {@code 숫자 + 개행 + 본문} 이므로 정상 값이 이 문법을 벗어날
+     * 수 없다.
+     *
+     * <p>Lua 거울은 {@code ProfanityDictionarySnapshotRedisPublisher.PUBLISH_SNAPSHOT} 의
+     * {@code token()} 이다. <b>한쪽을 고치면 다른 쪽도 고친다</b> — 둘이 같다는 것을 테스트가
+     * 같은 벡터로 못 박는다.
+     */
+    static OptionalLong readVersionToken(String raw) {
+        if (raw == null) {
+            return OptionalLong.empty();
+        }
+        int end = 0;
+        while (end < raw.length() && raw.charAt(end) >= '0' && raw.charAt(end) <= '9') {
+            end++;
+        }
+        if (end == 0 || end > MAX_VERSION_DIGITS) {
+            return OptionalLong.empty();
+        }
+        if (end < raw.length() && raw.charAt(end) != '\n') {
+            return OptionalLong.empty();
+        }
+        return OptionalLong.of(Long.parseLong(raw.substring(0, end)));
+    }
+
+    /**
+     * 버전을 <b>뺀</b> 본문. 버전은 발행 스크립트가 머리에 붙인다.
+     *
+     * <p>⚠️ 한때 이 자리에 "스크립트가 {@code INCR} 한 값을 붙인다 — 클라이언트가 번호를 정하면
+     * Pod 둘일 때 같은 번호를 두 번 쓴다" 고 적혀 있었다. <b>둘 다 지금은 거짓이다.</b>
+     * {@code INCR} 은 ABA 를 닫으면서 빠졌고(스크립트가 {@code current + 1} 을 쓴다),
+     * 번호를 집는 것은 이제 클라이언트다({@code expectedVersion} 을 넘긴다). 같은 번호를 두 번
+     * 쓰지 못하게 지키는 것은 서버측 {@code INCR} 이 아니라 <b>CAS</b> 다 — 번호가 그대로일
+     * 때만 쓰므로 두 번째 발행자는 {@code -1} 로 떨어지고 다시 읽는다.
      */
     static String encodeBody(Set<String> words, Set<String> whitelist) {
         StringBuilder out = new StringBuilder();

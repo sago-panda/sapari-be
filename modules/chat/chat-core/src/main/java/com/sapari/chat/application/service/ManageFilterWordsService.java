@@ -4,6 +4,8 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
 
+import org.springframework.dao.DataAccessException;
+
 import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.command.AddFilterWordCommand;
 import com.sapari.chat.command.ListFilterWordsCommand;
@@ -87,10 +89,13 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         // 이미 커밋됐고, 성공한 쓰기에 오류를 돌려주면 누른 사람이 재시도한다. 하는 일은 그
         // 상태가 <그 요청의 로그에 붙게> 하는 것이다. 다음 쓰기는 guardSource 가 409 로 막고,
         // 복구는 어긴 둘 중 하나를 제거하는 것이다.
-        warnIfCommittedSourceViolates(command.actorId());
         // 멱등 호출(이미 있던 단어)에도 발행한다 — 건너뛰면 스냅샷이 유실된 상태를 되돌릴
         // 경로가 하나 줄어든다.
         long version = publishOrLogLoss("추가", kind, word.length(), changed, command.actorId());
+        // 진단은 발행 <뒤>다. 앞에 두면 이 읽기의 일시 오류가 전파를 잃게 하고, 그래서 삼킴의
+        // 근거를 "올리면 발행을 잃는다" 로 세울 수밖에 없었다. 뒤로 옮기면 그 근거가 필요 없다 —
+        // 쓰기도 발행도 이미 끝났고 남은 것은 응답과 로그뿐이다.
+        warnIfCommittedSourceViolates(command.actorId());
         log.info("사전에 항목을 더했다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
         return new FilterWordChange(changed, version);
@@ -154,6 +159,12 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
     /**
      * 커밋된 정본이 문을 지나는지 본다 — <b>로그만</b> 남긴다.
      *
+     * <p>⚠️ 삼킴은 <b>카운터를 빚지지 않는다</b> — 못 갖기 때문이다. {@code modules/chat/AGENTS.md}
+     * 는 "삼키면 카운터와 간격 제한 로그를 같이 빚는다" 로 적는데, ArchUnit
+     * {@code domain_and_application_must_not_depend_on_metrics_library} 가 {@code application/} 에
+     * 메트릭 라이브러리를 금지한다. 이 자리의 구조적 대체물은 <b>다음 쓰기의
+     * {@link #guardSource}</b> 다 — 진단되지 않은 위반 상태를 409 로 바꾼다.
+     *
      * <p>선검사를 지나왔는데도 어길 수 있는 이유는 규칙 (1)이 두 kind 를 가로지르기 때문이다
      * (조합은 {@code ChatFilterWordWriteRecorder} javadoc). 그 상태는 복구 가능하지만
      * <b>조용하면</b> 운영자가 "사전을 고쳤는데 안 먹는다" 의 원인을 찾을 길이 이 로그뿐이고,
@@ -162,18 +173,21 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
     private void warnIfCommittedSourceViolates(UUID actorId) {
         Set<String> words;
         Set<String> whitelist;
-        // ⚠️ 이 두 읽기가 try 밖에 있었다. 이것은 <진단>인데 호출 위치가 쓰기 커밋 뒤 ·
-        // 발행 앞이라, 여기서 일시 DB 오류가 나면 <쓰기는 커밋됐고 발행은 안 됐고 응답은
-        // 일반 500> 이 된다 — 진단이 본선을 죽이는 모양이고, 그 상태가 정확히 이 메서드가
-        // 알리려던 그 상태(정본은 바뀌었는데 함대는 모른다)다.
+        // ⚠️ 이 두 읽기가 try 밖에 있었다. 그때는 호출 위치가 발행 <앞>이라, 여기서 일시 DB
+        // 오류가 나면 <쓰기는 커밋됐고 발행은 안 됐고 응답은 일반 500> 이 됐다 — 진단이 자기가
+        // 알리려던 그 상태를 만드는 모양이다. 지금은 호출이 발행 뒤로 갔고 읽기도 try 안이다.
         //
-        // 읽기 실패는 삼키고 넘어간다. 삼키지 않는 쪽이 기본 규칙이지만(AGENTS.md) 여기서
-        // 올리면 잃는 것이 발행이고, 어기는지 모르는 상태는 다음 쓰기의 guardSource 가
-        // 409 로 잡는다 — 지연은 한 회차고 그 대가가 전파 유실이다.
+        // 읽기 실패는 여기서 삼킨다. 쓰기도 발행도 끝났으므로 올려서 지키는 것이 없고, 올리면
+        // 완전히 성공한 조치에 500 이 나간다. 어기는지 모르는 상태는 다음 쓰기의 guardSource 가
+        // 409 로 잡는다.
+        //
+        // 잡는 타입을 DataAccessException 으로 좁힌다 — RuntimeException 이었을 때는 이 경로의
+        // NPE 같은 코드 결함까지 WARN 한 줄로 사라졌다. 삼키는 근거("읽기가 일시적으로 실패할
+        // 수 있다")가 덮는 범위와 잡는 범위를 같게 둔다.
         try {
             words = repository.findWords(FilterWordKind.PROFANITY);
             whitelist = repository.findWords(FilterWordKind.WHITELIST);
-        } catch (RuntimeException e) {
+        } catch (DataAccessException e) {
             log.warn("사전 쓰기 뒤 정본 재검사를 하지 못했다 — 읽기가 실패했다. 이 검사는 "
                             + "진단이므로 쓰기·발행을 막지 않는다. 어기는 상태였다면 다음 쓰기의 "
                             + "선검사가 409 로 잡는다. actorId={}", actorId, e);

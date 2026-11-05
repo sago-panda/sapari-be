@@ -509,8 +509,15 @@ public final class ProfanityDictionary {
         return ProfanityFilter.isHangulFiller(cp);
     }
 
-    /** 보이지 않는 글자는 코드포인트로 보여 줘야 당직자가 지목할 수 있다. */
-    private static String visible(String word) {
+    /**
+     * 보이지 않는 글자는 코드포인트로 보여 줘야 당직자가 지목할 수 있다.
+     *
+     * <p>패키지 공개다 — {@code DictionaryProfanityFilterFactory} 가 이것을
+     * {@code ProfanityFilterFactory.describe} 로 내보낸다. 발행 쪽이 같은 일을 하려고 전체를
+     * 코드 포인트로 펼치는 것을 한 번 만들었고(보이는 글자까지 로그로 나갔다) 그것을 이 하나로
+     * 모았다.
+     */
+    static String visible(String word) {
         StringBuilder out = new StringBuilder();
         for (int i = 0; i < word.length(); i++) {
             char c = word.charAt(i);
