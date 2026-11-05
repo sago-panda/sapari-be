@@ -199,14 +199,29 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
         OptionalLong head = tokenOf(ChatRedisKeys.dictSnapshot(), "스냅샷 본문", reasons);
         OptionalLong counter = tokenOf(ChatRedisKeys.dictVersion(), "버전 키", reasons);
         long base = Math.max(head.orElse(0L), counter.orElse(0L));
-        if (head.isEmpty() && counter.isEmpty() && (snapshotPresent || versionPresent)) {
-            // ⚠️ 키가 <있는데> 기준이 0 이다 = 다음 발행이 v1 에서 다시 시작한다. 이 칸이
-            // 한때 <전 경로 무음>이었다 — 발행은 200 이고 함대가 그 번호를 읽지 못하거나
+        // ⚠️ 게이트는 <base == 0> 이다. 한때 사유를 참으로 만들려고 이것을
+        // `head.isEmpty() && counter.isEmpty()` 로 좁혔는데, 두 조건의 차이가 정확히 "읽히고
+        // 자격도 통과하는 값 0 을 든 키" 한 칸이고 그 칸에서 WARN 이 사라졌다(49벡터 전수에서
+        // 11칸). 그 칸도 다음 발행이 v1 이라 함대가 1 을 들고 있으면 조용히 건너뛴다 — 경계
+        // 칸과 같은 피해다. "사유가 참인가" 와 "같은 칸들을 아직 덮는가" 는 다른 질문이고,
+        // 전자만 고치면 후자가 조용히 줄어든다. 사유는 reasons 가 따로 말한다.
+        if (base == 0L && (snapshotPresent || versionPresent)) {
+            if (reasons.isEmpty()) {
+                // 읽히고 자격도 통과했는데 값이 0 이거나, 키가 확인과 읽기 사이에 사라졌다.
+                // ⚠️ isPresent 두 번 + GET 두 번이 원자적이지 않은 4 왕복이라, hasKey 가 true 를
+                // 준 뒤 축출·DEL 이 끼면 GET 이 null 이고 사유가 안 쌓인다. 그때 WARN 이
+                // "기준이 못 된다([])" 로 나가면 "어느 키가 왜" 를 싣겠다는 목적이 무너진다.
+                reasons.add(head.isPresent() || counter.isPresent()
+                        ? "읽히고 자격도 통과하는데 값이 0 이다"
+                        : "확인 뒤 읽기 사이에 키가 사라졌다(축출·DEL)");
+            }
+            // 이 칸이 한때 <전 경로 무음>이었다 — 발행은 200 이고 함대가 그 번호를 읽지 못하거나
             // 이미 들고 있어서 집행하지 않는데 로그가 한 줄도 없었다.
             //
             // v1 은 <읽히는> 번호다(그게 읽을 수 없는 번호를 쓰는 것보다 낫다). 남는 위험은
-            // 함대가 이미 1 을 들고 있는 경우이고 — 그러면 그 발행을 건너뛴다 — 그것은 휘발
-            // 저장만으로 환원되지 않는 잔차다(PUBLISH_SNAPSHOT javadoc). 그래서 적어도
+            // 함대가 이미 1 을 들고 있는 경우이고 — 그러면 그 발행을 건너뛴다. 그 잔차는
+            // <버전만 비교한다> 는 선택에서 오고(받는 쪽은 본문을 손에 들고 있다) 휘발 저장
+            // 때문이 아니다 — modules/chat/AGENTS.md 가 그 축과 가격을 적는다. 그래서 적어도
             // <보이게> 만든다.
             // ⚠️ 이 한 줄이 사유·확인·복구 셋을 말하는데 <셋 다 틀렸던> 자리다. 각각 고친 근거:
             //
@@ -232,7 +247,7 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                             + "들고 있으면 그 발행을 조용히 건너뛴다. "
                             + "확인: 받는 쪽 Pod 로그에서 \"갈아 끼웠다 … version=<응답의 version>\" "
                             + "줄이 나왔는지 본다(없으면 안 깔린 것이다). "
-                            + "복구: 같은 ADMIN 쓰기를 한 번 더 보낸다 — 이 발행이 두 키를 1 로 "
+                            + "복구: 같은 ADMIN 쓰기를 한 번 더 보낸다 — 이 발행이 성공하면 두 키를 1 로 "
                             + "세웠으므로 다음 발행은 v2 가 되고 함대가 적용한다. 그래도 아니면 "
                             + "수신 Pod 을 재시작한다. snapshot={} version={}",
                     reasons, snapshotPresent, versionPresent);
@@ -287,9 +302,20 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             // `com.sapari.chat: INFO` 가 주석 처리된 한 줄이고 logback 파일이 0개이며, 레벨
             // 런타임 변경 경로가 없어 재시작해야 한다. 그런데 재시작 자체가 이 상태의 복구
             // 수단이라 그 로그가 필요한 순간에는 상태가 이미 사라진다.
-            // (2) 범위: RuntimeException 이었다. 같은 파일의 tokenOf 는 WRONGTYPE 아니면 다시
-            // 던지고, ManageFilterWordsService 는 "RuntimeException 이면 이 경로의 NPE 같은 코드
-            // 결함까지 한 줄로 사라진다" 를 근거로 좁혔다 — 여기만 더 넓게 잡고 더 낮게 적었다.
+            // (2) 범위: RuntimeException 이었다. ManageFilterWordsService 가 "RuntimeException
+            // 이면 이 경로의 NPE 같은 코드 결함까지 한 줄로 사라진다" 를 근거로 좁힌 것과 같은
+            // 이유로 좁혔다.
+            //
+            // ⚠️ 그 좁힘이 <전부를 덮지는 않는다>. javap 실측(spring-data-redis 4.0.5):
+            // PoolException 과 SerializationException 은 NestedRuntimeException 상속이고
+            // DataAccessException 이 <아니다>(파괴된 LettuceConnectionFactory 의
+            // IllegalStateException 도 아니다). 그래서 "실패하면 '없다' 로 본다" 가 무조건
+            // 참이 아니고, 이 isPresent 는 같은 파일 tokenOf(RuntimeException 을 잡고 메시지로
+            // WRONGTYPE 만 삼킨다)보다 <더 좁다> — "같은 범위" 가 아니다.
+            //
+            // 그 교환을 받는 근거: 실질 피해가 거의 0 이다. 같은 커넥션이면 뒤의 tokenOf 가
+            // 그 예외를 다시 던져 발행이 시끄럽게 죽으므로, 여기서 안 잡은 것이 조용히
+            // 사라지지 않는다. 코드 결함을 삼키지 않는 쪽을 그 대가로 산다.
             //
             // 창은 좁다: 같은 커넥션이면 뒤의 GET 이 터져 발행이 시끄럽게 실패한다(tokenOf 가
             // WRONGTYPE 외를 rethrow 한다). 그래도 삼킨 사실은 남겨야 하고, 이 경로의 실패가

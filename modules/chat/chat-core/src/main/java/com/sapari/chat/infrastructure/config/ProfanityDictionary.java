@@ -161,8 +161,9 @@ public final class ProfanityDictionary {
      * 꺼지고({@code displayMessage == originalMessage}) 그걸 알아챌 때쯤 그 기간의 이력이 이미
      * 남는다. 스냅샷이 아직 없는 상태와 "스냅샷이 비었다" 는 호출자가 가르고, 전자는 번들로 뜬다.
      *
-     * @param origin 실패 메시지에 실을 출처 이름(예: {@code "chat:dict"}). 세 입구 중 어디서
-     *               떨어졌는지가 당직자에게 가야 한다
+     * @param origin 실패 메시지에 실을 출처 이름 — {@code ProfanityFilterFactory.ORIGIN_*} 중
+     *               하나를 쓴다(리터럴을 쓰면 꼬리 안내 분기가 조용히 일반 분기로 떨어진다).
+     *               세 입구 중 어디서 떨어졌는지가 당직자에게 가야 한다
      */
     public static ProfanityDictionary of(String origin, Set<String> words, Set<String> whitelist) {
         Set<String> admitted = new LinkedHashSet<>();
@@ -592,9 +593,11 @@ public final class ProfanityDictionary {
      * 절단이 안 걸린다.
      *
      * <p>⚠️ <b>예산은 {@code char} 이고 코드포인트인 것은 경계 정렬뿐이다.</b> 게이트가
-     * {@code message.length() <= MAX_WARNING_LENGTH} 라, 이모지가 섞인 항목의 실효 표시 예산은
-     * 240 이 아니라 <b>120자</b>다. 위의 "최대 60·57·126자" 도 {@code char} 기준이다 — 그 값들이
-     * 240 아래인 것은 그대로 참이고, 바뀌는 것은 "이모지 항목이 더 일찍 잘린다" 는 사실이다.
+     * {@code message.length() <= MAX_WARNING_LENGTH} 라 보조평면 글자가 섞이면 표시되는
+     * 코드포인트가 240 보다 적다 — <b>전량 이모지면 120자까지이고 섞이면 그 사이</b>다(실측:
+     * 전량 이모지 121cp·200cp → 표시 120cp · {@code "A"} + 이모지 240 → 121cp · ASCII 300 →
+     * 240). 위의 "최대 60·57·126자" 도 {@code char} 기준이다 — 그 값들이 240 아래인 것은 그대로
+     * 참이고, 바뀌는 것은 "이모지 항목이 더 일찍 잘린다" 는 사실이다.
      *
      * <p>{@code …(N자)} 의 {@code N} 은 <b>코드포인트 수</b>다(절단 경계와 같은 단위). 한때
      * UTF-16 {@code char} 수였는데 이모지에서 운영자가 세는 수와 두 배까지 벌어졌다. 다만
@@ -635,7 +638,7 @@ public final class ProfanityDictionary {
      * 돼서 <b>{@code reject} 를 안 지난 집합</b>을 받을 수 있는 모양이 됐고, 호출자를 묶는 규칙은
      * 없다. 입구에서 좁히는 것이 그 모양에 대한 값이다 — 상한 하나만 남기는 것보다 싸다.
      */
-    private static String foldControls(String message) {
+    static String foldControls(String message) {
         StringBuilder out = new StringBuilder(message.length());
         message.codePoints().forEach(cp -> {
             int type = Character.getType(cp);

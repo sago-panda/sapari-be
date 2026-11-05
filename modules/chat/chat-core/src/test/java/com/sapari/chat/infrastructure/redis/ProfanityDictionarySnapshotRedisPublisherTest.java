@@ -411,35 +411,46 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
     @Test
     @DisplayName("⭐ 문법 표 — 일치(CAS) · 쓴 값이 다시 읽히는가 · 경계 칸이 보이는가")
     void theGrammarIsConsistentAndEveryWrittenVersionIsReadable() {
-        record Vector(String versionKey, boolean readable, boolean eligibleBase) { }
+        // ⚠️ 열이 셋이다. 한때 `base != 0` 과 `자격 있음` 을 하나로 단언했는데(`isEqualTo`)
+        // 그 둘이 <값 0 인 키> 한 칸에서 갈린다 — 읽히고 자격도 통과하는데 base 가 0 이다.
+        // 그 단언이 그 칸을 표에 넣지 못하게 막고 있었고, 바로 그 칸에서 경계 WARN 커버리지가
+        // 사라졌다. 열을 쪼개야 그 칸이 분모에 든다.
+        record Vector(String versionKey, boolean readable, boolean eligibleBase, long base) { }
         List<Vector> table = List.of(
-                new Vector("1", true, true),
-                new Vector("007", true, true),
-                new Vector("99999999999999", true, true),
-                new Vector("999999999999997", true, true),   // 자격 있는 마지막 토큰
-                new Vector("999999999999998", true, false),   // 읽히지만 +1 을 쌓으면 못 읽는다
-                new Vector("999999999999999", false, false),  // 후계자가 16자리 — 문법 밖
-                new Vector("1000000000000000", false, false),
-                new Vector("9007199254740993", false, false),
-                new Vector(" 12", false, false),
-                new Vector("-5", false, false),
-                new Vector("+7", false, false),
-                new Vector("12abc", false, false));
+                new Vector("0", true, true, 0L),              // ⭐ 읽힘·자격 ○ 인데 base 0
+                new Vector("1", true, true, 1L),
+                new Vector("007", true, true, 7L),
+                new Vector("99999999999999", true, true, 99_999_999_999_999L),
+                new Vector("999999999999997", true, true, 999_999_999_999_997L),
+                new Vector("999999999999998", true, false, 0L),  // 읽히지만 +1 을 못 쌓는다
+                new Vector("999999999999999", false, false, 0L), // 후계자가 16자리 — 문법 밖
+                new Vector("1000000000000000", false, false, 0L),
+                new Vector("9007199254740993", false, false, 0L),
+                new Vector(" 12", false, false, 0L),
+                new Vector("-5", false, false, 0L),
+                new Vector("+7", false, false, 0L),
+                new Vector("12abc", false, false, 0L));
 
-        assertThat(table).hasSize(12);
+        assertThat(table).hasSize(13);
         for (Vector v : table) {
             redisTemplate.delete(List.of(SNAPSHOT, VERSION));
             redisTemplate.opsForValue().set(VERSION, v.versionKey());
 
             long base = publisher.currentVersion();
-            assertThat(base != 0L)
-                    .as("기준 자격 기대와 다르다: %s", v.versionKey())
-                    .isEqualTo(v.eligibleBase());
+            assertThat(base)
+                    .as("기준 기대와 다르다: %s", v.versionKey())
+                    .isEqualTo(v.base());
 
             // ⚠️ readable 열이 한 번도 안 읽히던 것을 고친다 — 선언된 분모가 장식이었다.
-            assertThat(ProfanityDictionarySnapshotCodec.readVersionToken(v.versionKey()).isPresent())
+            OptionalLong token =
+                    ProfanityDictionarySnapshotCodec.readVersionToken(v.versionKey());
+            assertThat(token.isPresent())
                     .as("읽힘 기대와 다르다: %s", v.versionKey())
                     .isEqualTo(v.readable());
+            assertThat(token.isPresent()
+                            && ProfanityDictionarySnapshotCodec.isEligibleBase(token.getAsLong()))
+                    .as("기준 자격 기대와 다르다 — base 와 <다른 축>이다: %s", v.versionKey())
+                    .isEqualTo(v.eligibleBase());
 
             long published = publisher
                     .publishIfUnchanged(base, ordered("시발"), Set.of())
@@ -536,12 +547,65 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
     }
 
     /**
+     * ⭐ <b>기준이 0 인 <i>모든</i> 칸에서 WARN 이 나간다 — 술어가 덮는 집합을 잰다.</b>
+     *
+     * <p>⚠️ 이 테스트가 없을 때 그 술어가 조용히 좁아졌다. 사유 문장을 참으로 만들려고 게이트를
+     * {@code head.isEmpty() && counter.isEmpty()} 로 바꿨는데, {@code base == 0} 과의 차이가
+     * 정확히 <b>"읽히고 자격도 통과하는 값 0 을 든 키"</b> 한 칸이고 그 칸에서 WARN 이 사라졌다.
+     * 역변이로 확인된 대로 <b>좁힘을 요구한 테스트가 0건</b>이었다 — 조건을 되돌려도 전량 초록.
+     *
+     * <p>그래서 "사유가 참인가" 가 아니라 <b>"같은 칸들을 아직 덮는가"</b> 를 잰다. 그 둘은
+     * 다른 질문이고, 전자만 고치면 후자가 조용히 줄어든다.
+     *
+     * <p>⚠️ 값 0 인 키도 덮어야 하는 이유: 그 칸도 다음 발행이 v1 이고, 함대가 1 을 들고 있으면
+     * 조용히 건너뛴다 — 경계 칸과 <b>같은 피해</b>다. "문법 밖이라서" 가 아니라 "기준이 0 이라서"
+     * 가 그 WARN 의 조건이다.
+     */
+    @ParameterizedTest(name = "version=\"{0}\"")
+    @ValueSource(strings = {"0", "0\n1\n0\n시발\n", "999999999999998", "999999999999999",
+            "1000000000000000", " 12", "-5", "12abc"})
+    @DisplayName("⭐ 기준이 0 인 모든 칸에서 WARN 이 나간다 — 술어가 덮는 집합을 잰다")
+    void everyZeroBaseCellWarns(String versionKey) {
+        redisTemplate.opsForValue().set(VERSION, versionKey);
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                ProfanityDictionarySnapshotRedisPublisher.class);
+        logger.addAppender(appender);
+        try {
+            assertThat(publisher.currentVersion())
+                    .as("이 벡터는 기준이 0 이어야 한다 — 아니면 이 테스트가 다른 것을 잰다: %s",
+                            versionKey.replace("\n", "\\n"))
+                    .isZero();
+
+            assertThat(appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("기준이 0 이면 다음 발행이 v1 이고 함대가 1 을 들고 있으면 조용히 "
+                            + "건너뛴다 — 그 칸이 무음이면 아무도 모른다: %s",
+                            versionKey.replace("\n", "\\n"))
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("기준이 0 으로 떨어졌다")
+                            .as("어느 키가 왜 기준이 못 됐는지가 비면 '어느 키가 왜' 를 싣겠다는 "
+                                    + "목적이 무너진다")
+                            .doesNotContain("([])"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    /**
      * ⭐ <b>경계 칸이 조용하지 않다.</b>
      *
      * <p>이 칸의 결함은 번호 선택이 아니라 <b>전 경로 무음</b>이었다 — 발행 200 · 함대 미집행 ·
      * 로그 0줄. 쓰는 번호를 "읽히는 값" 으로 바꿨어도 남는 위험이 하나 있다(함대가 이미 1 을
-     * 들고 있으면 그 v1 을 건너뛴다). 그것은 휘발 저장만으로 환원되지 않으므로 <b>보이게</b>
-     * 만드는 것이 이 자리에서 할 수 있는 전부다.
+     * 들고 있으면 그 v1 을 건너뛴다). 그 위험이 남는 이유는 <b>"버전만 비교한다" 는 선택</b>이고
+     * (받는 쪽은 본문을 손에 들고 있다) 휘발 저장 때문이 아니다 — 그 축과 가격은
+     * {@code modules/chat/AGENTS.md} 에 있다. 이 자리에서 할 수 있는 것은 <b>보이게</b> 만드는
+     * 것이다.
      */
     @Test
     @DisplayName("⭐ 기준이 0 으로 떨어지면 WARN 이 남는다 — 이 칸이 무음이던 것이 결함이었다")

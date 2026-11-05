@@ -73,8 +73,13 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
      * <p>⚠️ <b>호출처를 열거하지 않는다</b>({@link ProfanityFilterFactory} 의 같은 규칙).
      * 열거했더니 바로 다음 라운드에 그 표가 5행인데 실제 호출처는 6곳이고 "참인 것은 둘" 이
      * 실제로는 셋이었다. 세는 방법만 적는다:
-     * {@code grep -rn "filterFactory.from(\|\.from(" --include="*.java"} 에서 {@code build/} 를
-     * 뺀 것이 호출처이고, 각 호출처가 넘기는 {@code origin} 이 아래 분기를 고른다.
+     * {@code grep -rn "filterFactory.from(" --include="*.java"} 에서 {@code build/} 를 뺀 것이
+     * 호출처이고, 각 호출처가 넘기는 {@code origin} 이 아래 분기를 고른다.
+     *
+     * <p>⚠️ 한때 그 명령에 {@code .from(} 대안이 붙어 있었다. 그러면 {@code Date.from(…)} ·
+     * {@code ChatRole.fromPlatformRole} 류가 같이 잡혀 52행이 되고 "그것이 호출처" 가 거짓이
+     * 된다 — <b>틀린 열거를 틀린 계수법으로 바꾼</b> 모양이었다. 세는 방법을 적을 때는 <b>그
+     * 명령을 한 번 돌려 본다.</b>
      *
      * <p>분기 키는 <b>리터럴이 아니라 포트 상수</b>다. 복제했을 때는 값이 바뀌면 조용히 일반
      * 분기로 떨어지고, 그때 틀리는 것이 바로 이 안내였다.
@@ -94,7 +99,12 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
             return "전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받되, 보낸 항목은 아직 커밋 "
                     + "전이라 조회에 없다 — 그 항목이 잘렸는지는 보낸 값으로 확인";
         }
-        return "이 집합은 ADMIN 조회로 못 본다(출처=" + origin + ") — 그 출처를 직접 확인";
+        // ⚠️ 모르는 출처를 로그에 그대로 보간하지 않는다. 지금 호출처 6곳은 전부 포트 상수라
+        // 도달 0 이지만, origin 을 포트 공개 상수로 올리면서 "아무 문자열이나 넘길 수 있는
+        // 계약" 쪽이 넓어졌다 — 사용자 입력이 섞인 origin 을 넘기는 호출처가 생기면 개행 삽입
+        // 로그 위조가 열린다. 제어문자를 접어 그 축을 닫는다(사전 문이 쓰는 것과 같은 접기).
+        return "이 집합은 ADMIN 조회로 못 본다(출처=" + ProfanityDictionary.foldControls(origin)
+                + ") — 그 출처를 직접 확인";
     }
 
     /** {@link ProfanityDictionary#visible} 을 그대로 쓴다 — 거부 메시지와 같은 렌더링이어야 한다. */

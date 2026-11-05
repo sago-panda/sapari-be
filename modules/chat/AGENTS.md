@@ -239,9 +239,14 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
 
   Two things that paragraph used to get wrong. **The residual is not "irreducible with ephemeral
   state"** — the receiver has the decoded body in hand (`apply(snapshot, …)`), so comparing *content*
-  would close it; what keeps it open is the *choice* to compare only versions, and that choice is
-  cheap-but-not-free (a trie rebuild per equal-version poll). Do not read "irreducible" as a reason to
-  stop looking at that axis. And **the recovery is not "delete both keys"** — that reproduces the
+  would close it; what keeps it open is the *choice* to compare only versions. ⚠️ That choice's price
+  is **not** "a trie rebuild per equal-version poll" — an earlier draft said so and it is false in both
+  readings: today the upstream `filter(published != processedVersion)` sits *above* `read()`, so an
+  equal-version poll ends at the version `GET` and builds **nothing**; and a content comparison would
+  still only build when the content differs. The price is the **body transfer plus decode — ~11 KB per
+  pod per poll** (1,078 + 38 bundled entries), which is exactly the cost the version key exists to
+  avoid. Do not read "irreducible" as a reason to stop looking at that axis, and do not price the axis
+  by trie builds. And **the recovery is not "delete both keys"** — that reproduces the
   deadlock (base 0 → v1 again). Measured: boundary + write → v1 (fleet at 1 skips) → `DEL` both →
   v1 again → skip again; whereas *re-sending the same ADMIN write* bases on the 1 this publish just
   wrote → v2 → the fleet applies. Adds are idempotent and publish even when nothing changed, so "send
