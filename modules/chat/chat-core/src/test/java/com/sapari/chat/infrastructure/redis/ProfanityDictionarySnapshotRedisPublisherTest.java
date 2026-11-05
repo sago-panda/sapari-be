@@ -391,62 +391,83 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
      * <ol>
      *   <li><b>일치</b> — 그 벡터를 자바와 Lua 가 같은 판정으로 보는가. CAS 로 잰다(자바가 집은
      *       토큰을 그대로 조건으로 넘기므로 Lua 가 다른 수를 읽으면 그 자리에서 {@code -1} 이다).
-     *   <li><b>닫힘</b> — 그 벡터가 <b>수락되면</b>, 발행이 만드는 후계자({@code token + 1})도
-     *       같은 문법 안인가. 아니면 쓰는 순간 두 키가 못 읽히는 값이 되고 토큰이 0 으로 떨어져
-     *       낡은 발행자가 이긴다(ABA 재개방).
+     *   <li><b>닫힘</b> — 수락된 토큰이 만드는 후계자가 <b>다시 수락되는가</b>. 안 되면 다음
+     *       발행이 기준을 잃고, 그 뒤 어떤 선택도 나쁘다(거부 = 영구 500 · 리셋 = 같은 번호가
+     *       본문 둘을 날라 함대가 건너뛴다).
      * </ol>
      *
-     * <p>2번이 {@code 999999999999999} 하나에서 깨졌고, 그 값은 이 클래스가 이미 <b>거부 벡터로
-     * 들고 있던</b> {@code "1000000000000000"} 의 전신이다 — 16자리가 거부되는 것은 못 박았는데
-     * 발행이 바로 그 값을 만든다는 것은 안 봤다. 두 명제가 한 표에 있으면 그 두 줄이 서로를
-     * 가리킨다.
+     * <p>⚠️ <b>닫힘을 문법에 넣기까지 두 번 틀렸다.</b> 처음엔 거부, 다음엔 리셋이었고 둘 다
+     * 쓰는 쪽만 보고 읽는 쪽을 안 봤다. 리셋은 특히 조용했다 — 받는 쪽이
+     * {@code published != processedVersion} 으로 <b>본문 읽기보다 먼저</b> 거르므로, 1 을 들고
+     * 있는 Pod 에게 리셋된 1 은 읽히지도 않는다. 실측 대조군:
+     * <pre>
+     *   리셋 구현   긴급 쓰기 → 반환 1 · 본문 BODY_B   → 함대(1)가 건너뛴다(미집행)
+     *   지금 구현   긴급 쓰기 → 반환 2 · 본문 BODY_B   → 함대(1)가 집어 간다
+     *   둘 다       그 뒤 낡은 발행자 → -1             → ABA 는 양쪽 다 닫힘
+     * </pre>
+     * 지금은 15자리가 <b>토큰으로 수락되지 않으므로</b> 기준이 스냅샷 머리로 떨어지고 그 +1 이
+     * 나간다. 고갈 분기 자체가 없다.
+     *
+     * <p>⚠️ <b>그래도 공간의 마지막 한 칸은 닫히지 않는다 — 유한 카운터에는 마지막 값이 있고,
+     * 어떤 수락 규칙으로도 그 칸이 남는다</b>(수락을 한 칸 좁히면 경계도 한 칸 내려간다). 이 표가
+     * 그 칸을 분모에 넣는다: 수락되는 마지막 토큰에서 쓴 값은 <b>다시 수락되지 않고</b>, 다음
+     * 발행은 기준 0 에서 v1 을 쓴다. <b>그것이 안전한 이유는 그때 함대가 들고 있는 값이
+     * 그 큰 수이기 때문</b>이다 — 1 과 달라서 건너뛰지 않는다. 리셋이 위험했던 것은 반대 상황
+     * (함대가 1 을 들고 있는데 1 을 쓴 것)이었다.
      */
     @Test
-    @DisplayName("⭐ 문법 표 — 벡터마다 일치(CAS)와 닫힘(후계자)을 같이 잰다")
+    @DisplayName("⭐ 문법 표 — 벡터마다 일치(CAS)와 닫힘(후계자 재수락)을 같이 잰다")
     void theGrammarIsConsistentAndClosedUnderItsOwnSuccessor() {
-        record Vector(String versionKey, boolean accepted, boolean closed) { }
+        record Vector(String versionKey, boolean accepted) { }
         List<Vector> table = List.of(
-                new Vector("1", true, true),
-                new Vector("007", true, true),
-                new Vector("99999999999999", true, true),       // 14자리 → 후계자 15자리
-                new Vector("999999999999999", true, false),      // 15자리 → 후계자 16자리, 안 닫힌다
-                new Vector("1000000000000000", false, true),      // 16자리 — 문법 밖
-                new Vector("9007199254740993", false, true),      // 2^53+1 — double 이 부정확
-                new Vector(" 12", false, true),
-                new Vector("-5", false, true),
-                new Vector("+7", false, true),
-                new Vector("12abc", false, true));
+                new Vector("1", true),
+                new Vector("007", true),
+                new Vector("99999999999999", true),        // 14자리 → 후계자 15자리, 수락
+                new Vector("999999999999998", true),        // 수락되는 마지막 토큰
+                new Vector("999999999999999", false),       // 후계자가 16자리 — 문법 밖
+                new Vector("1000000000000000", false),      // 16자리
+                new Vector("9007199254740993", false),      // 2^53+1
+                new Vector(" 12", false),
+                new Vector("-5", false),
+                new Vector("+7", false),
+                new Vector("12abc", false));
 
-        assertThat(table).hasSize(10);
+        assertThat(table).hasSize(11);
         for (Vector v : table) {
             redisTemplate.delete(List.of(SNAPSHOT, VERSION));
             redisTemplate.opsForValue().set(VERSION, v.versionKey());
 
             long token = publisher.currentVersion();
             assertThat(token != 0L)
-                    .as("수락 기대와 다르다 — 수락되면 토큰이 0 이 아니어야 한다: %s", v.versionKey())
+                    .as("수락 기대와 다르다: %s", v.versionKey())
                     .isEqualTo(v.accepted());
 
-            if (!v.closed()) {
-                // 후계자가 문법 밖이면 번호를 1 로 되돌린다. 그대로 쓰면 두 키가 못 읽히는 값이
-                // 되고 낡은 발행자가 expected=0 으로 이긴다(ABA 재개방).
-                assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
-                        .as("되돌려서라도 발행은 성립해야 한다 — 거부하면 그 상태에서 모든 사전 "
-                                + "쓰기가 영구히 500 이다: %s", v.versionKey())
-                        .hasValue(1L);
-                assertThat(redisTemplate.opsForValue().get(VERSION)).isEqualTo("1");
-                assertThat(publisher.publishIfUnchanged(token, ordered("낡은본문"), Set.of()))
-                        .as("되돌린 뒤 낡은 발행자는 거부돼야 한다 — 그게 리셋이 ABA 를 안 여는 이유다")
-                        .isEmpty();
+            long published = publisher
+                    .publishIfUnchanged(token, ordered("시발"), Set.of())
+                    .orElseThrow(() -> new AssertionError(
+                            "자바가 " + token + " 을 집었는데 Lua 가 다른 수를 읽었다: "
+                                    + v.versionKey()));
+
+            // 닫힘: 방금 쓴 값이 <다시 토큰으로 수락>되어야 다음 발행이 기준을 잃지 않는다.
+            // 예외가 정확히 하나 — 공간의 마지막 값이다(유한 카운터의 끝).
+            long reread = publisher.currentVersion();
+            if (reread == published) {
                 continue;
             }
-            assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
-                    .as("자바가 %s 를 토큰으로 집었는데 Lua 가 다른 수를 읽으면 CAS 가 깨진다: %s",
-                            token, v.versionKey())
-                    .isPresent();
+            assertThat(published)
+                    .as("다시 수락되지 않는 쓴 값은 <공간의 마지막 값> 하나여야 한다: 쓴 값=%s",
+                            published)
+                    .isEqualTo(999_999_999_999_999L);
+            assertThat(reread)
+                    .as("그 자리에서는 기준이 0 으로 떨어진다 — 두 키가 다 수락되지 않는다")
+                    .isZero();
+            assertThat(publisher.publishIfUnchanged(0L, ordered("시발"), Set.of()))
+                    .as("다음 발행은 v1 이고, 함대가 들고 있는 값(%s)과 달라서 건너뛰지 않는다 — "
+                            + "리셋이 위험했던 것은 함대가 1 을 들고 있는데 1 을 쓴 반대 상황이다",
+                            published)
+                    .hasValue(1L);
         }
     }
-
 
     /**
      * ⭐ <b>큰 버전이 키에 지수 표기로 써지지 않는다.</b>

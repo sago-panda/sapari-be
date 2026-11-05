@@ -118,7 +118,11 @@ public class ChatBeansConfig {
             // 단위라 이모지를 서로게이트 두 쪽으로 쪼개 지목이 더 어려워진다.
             log.warn("사전 설정에 확인할 항목이 있다({}건): {}",
                     dictionary.warnings().size(),
-                    ProfanityDictionary.summarize(dictionary.warnings()));
+                    // ⚠️ 이 입구의 집합은 번들 + 설정 CSV 다 — ADMIN 조회로는 못 본다(그쪽은
+                    // 정본 테이블만 돌려준다). 번들 기준선이 0 이므로(테스트가 단언한다) 상한을
+                    // 넘는 경우는 언제나 설정 CSV 때문이다.
+                    ProfanityDictionary.summarize(dictionary.warnings(),
+                            "나머지는 chat.profanity.words · chat.profanity.whitelist 를 직접 확인"));
         }
         return new SwappableProfanityFilter(
                 new ProfanityFilter(dictionary.words(), dictionary.whitelist()));

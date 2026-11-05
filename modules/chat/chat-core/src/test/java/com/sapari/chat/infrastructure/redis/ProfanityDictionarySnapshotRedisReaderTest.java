@@ -256,15 +256,22 @@ class ProfanityDictionarySnapshotRedisReaderTest {
     @Test
     @DisplayName("⭐ 본문이 커도 머리만으로 판정한다 — 상한 자리수와 그 위를 같이 잰다")
     void onlyTheHeadDecidesRegardlessOfBodySize() {
-        StringBuilder big = new StringBuilder("999999999999999\n1\n0\n");
+        StringBuilder big = new StringBuilder("999999999999998\n1\n0\n");
         big.append("시발\n");
         for (int i = 0; i < 2000; i++) {
             big.append("욕설").append(i).append('\n');
         }
         set(SNAPSHOT, big.toString());
         assertThat(reader.readVersion().blockOptional(CEILING))
-                .as("상한 자리수(15)면 그 뒤가 개행이라 문법 안이다")
-                .contains(999_999_999_999_999L);
+                .as("수락되는 마지막 토큰이다 — 자리수가 상한 안이고 그 +1 도 상한 안이다")
+                .contains(999_999_999_999_998L);
+
+        clean();
+        set(SNAPSHOT, "999999999999999\n1\n0\n시발\n");
+        assertThat(reader.readVersion().blockOptional(CEILING))
+                .as("자리수는 상한 안인데 <후계자>가 16자리라 수락되지 않는다 — 문법이 자기 "
+                        + "후계자를 포함해야 다음 발행이 기준을 잃지 않는다")
+                .isEmpty();
 
         clean();
         set(SNAPSHOT, "1000000000000000\n1\n0\n시발\n");

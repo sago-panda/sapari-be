@@ -136,8 +136,10 @@ class ChatBeansConfigWarningLogTest {
                 .contains("외 3건")
                 .as("결정론이 된 뒤로 같은 사전인 동안 같은 상한만 보인다 — 꼬리에 도달하는 "
                         + "길이 메시지에 있어야 한다")
-                .contains("ADMIN 조회");
-        assertThat(message.split(" · "))
+                .contains("직접 확인");
+        // 꼬리 안내문에도 " · " 가 들어가므로 나열 부분만 센다.
+        String listed = message.substring(0, message.indexOf(" … 외 "));
+        assertThat(listed.split(" · "))
                 .as("상한이 없으면 이 줄이 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
                 .hasSize(limit);
     }

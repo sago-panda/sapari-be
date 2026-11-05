@@ -48,7 +48,10 @@ public class DictionaryProfanityFilterFactory implements ProfanityFilterFactory 
             // 값을 빼지는 않는다 — 이 경고가 요구하는 조치가 "그 항목을 찾아 고치기" 다.
             Set<String> warnings = dictionary.warnings();
             log.warn("사전에 확인할 항목이 있다({}건): origin={} {}",
-                    warnings.size(), origin, ProfanityDictionary.summarize(warnings));
+                    warnings.size(), origin,
+                    // 이 입구의 집합은 정본 테이블에서 왔으므로 꼬리를 ADMIN 조회로 다시 셀 수 있다.
+                    ProfanityDictionary.summarize(warnings,
+                            "전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받아 다시 센다"));
         }
         return new ProfanityFilter(dictionary.words(), dictionary.whitelist());
     }

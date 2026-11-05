@@ -543,10 +543,11 @@ public final class ProfanityDictionary {
      * </ul>
      * 즉 접기는 얻는 것이 0 이고 잃는 것이 있었다. 상한만 남긴다.
      */
-    public static String summarize(Set<String> warnings) {
+    public static String summarize(Set<String> warnings, String recovery) {
         List<String> shown = warnings.stream()
                 .limit(ProfanityFilterFactory.LOG_ENTRY_LIMIT)
                 .map(ProfanityDictionary::foldControls)
+                .map(ProfanityDictionary::truncate)
                 .toList();
         String joined = String.join(" · ", shown);
         if (shown.size() >= warnings.size()) {
@@ -554,11 +555,40 @@ public final class ProfanityDictionary {
         }
         // ⚠️ 순서가 결정론이 된 뒤로 <같은 사전인 동안 같은 상한만> 보인다 — 무작위였을 때는
         // 재시작마다 다른 20건이 나와 꼬리에 도달할 (지저분한) 경로가 있었다. 그 경로를 없앤
-        // 대가이므로 꼬리에 도달하는 <깨끗한> 길을 여기서 말한다: ADMIN 조회가 두 집합 전량을
-        // 돌려주므로 경고는 원칙적으로 재계산 가능하다. 긴급 경로는 상한 안에 든다 —
-        // load() 가 설정 CSV 변형 통지를 머리에 먼저 쌓는다.
-        return joined + " … 외 " + (warnings.size() - shown.size())
-                + "건(전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받아 다시 센다)";
+        // 대가이므로 꼬리에 도달하는 <깨끗한> 길을 여기서 말한다.
+        //
+        // 그 길이 호출처마다 달라서 <호출처가 준다>. 한때 여기서 "ADMIN 조회로 받아 다시 센다"
+        // 를 박았는데 호출처 둘 중 하나에서 거짓이었다 — 번들 + 설정 CSV 로 만든 사전의 경고는
+        // ADMIN 엔드포인트에 존재할 수 없다(그쪽은 정본 테이블만 돌려준다).
+        //
+        // ⚠️ 그리고 그 자리에 적었던 완화("긴급 경로는 상한 안에 든다 — load() 가 설정 CSV 변형
+        // 통지를 머리에 먼저 쌓는다")는 <결론을 못 받친다>. 그 문장 자체는 참이지만(sanitized 가
+        // warnings 의 머리다) 긴급 경로에서 중요한 경고는 그 집합이 아니다 — 운영자가 급히 넣은
+        // 항목이 "아무것도 걸리지 않는다" 로 나오는 것은 warningEntries 의 첫 루프이고, 그 루프가
+        // 도는 words 는 번들 → addAll(설정) 순이라 <설정 항목이 꼬리>다. 오늘 그것이 상한 안에
+        // 드는 진짜 이유는 <번들 word 레벨 경고가 0> 이기 때문이고, 번들에 그 경고 20건이 쌓이는
+        // 변경이 들어오면 긴급 차단어의 "안 걸린다" 신호가 영구 불가시가 된다.
+        return joined + " … 외 " + (warnings.size() - shown.size()) + "건(" + recovery + ")";
+    }
+
+    /**
+     * 한 항목의 길이 상한.
+     *
+     * <p>개수 상한만으로는 한 줄이 묶이지 않는다 — {@code reject} 의 {@code MAX_WORD_LENGTH} 는
+     * {@code of()}/{@code load()} <b>안에만</b> 있고 이 메서드의 공개 계약에는 없다. 그 계약이
+     * "{@code reject} 를 안 지난 집합을 받을 수 있다" 를 <b>명시로 인정하므로</b>, 상한 없이는
+     * 한 줄이 {@code 20 × 무한}이다(상한 없을 때 35,966자가 나왔던 그 축). 제어문자 접기는
+     * 쪼개짐만 막고 길이는 안 막는다.
+     *
+     * <p>경고 문장 자체가 설명문을 포함해 길다(정상 100자 안쪽). 240 은 그 문장을 자르지 않고
+     * 비정상 입력만 자르는 자리다.
+     */
+    private static final int MAX_WARNING_LENGTH = 240;
+
+    private static String truncate(String message) {
+        return message.length() <= MAX_WARNING_LENGTH
+                ? message
+                : message.substring(0, MAX_WARNING_LENGTH) + "…(" + message.length() + "자)";
     }
 
     /**

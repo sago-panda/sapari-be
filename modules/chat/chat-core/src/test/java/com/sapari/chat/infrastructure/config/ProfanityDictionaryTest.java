@@ -1303,12 +1303,9 @@ class ProfanityDictionaryTest {
     @DisplayName("⭐ 경고 요약이 상한에서 끊기고 그 선택이 실행마다 같다")
     void theWarningSummaryIsCappedAndDeterministic() {
         int limit = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
-        Set<String> many = new java.util.LinkedHashSet<>();
-        for (int i = 0; i < limit + 5; i++) {
-            many.add("화이트리스트 항목 \"정상어" + i + "\" — 아무것도 보호하지 않는다");
-        }
-
-        // ⚠️ summarize() 에 직접 먹이지 않고 warnings() 를 지난다. 직접 먹이면 순서를 버리는
+        // ⚠️ 한때 여기에 같은 수의 픽스처(many)를 또 만들어 <아무 데도 먹이지 않고>
+        // assertThat(many).hasSize(...) 로 자기 자신을 단언했다 — 죽은 픽스처 + 항진명제다.
+        // summarize() 에 직접 먹이지 않고 warnings() 를 지난다. 직접 먹이면 순서를 버리는
         // 결함(Set.copyOf)이 이 테스트를 비껴간다 — 실측으로 변이가 통과했다.
         Set<String> whitelist = new java.util.LinkedHashSet<>();
         for (int i = 0; i < limit + 5; i++) {
@@ -1329,9 +1326,13 @@ class ProfanityDictionaryTest {
                         + "순서는 JVM 실행마다 다르다", limit)
                 .containsExactlyElementsOf(expected);
 
-        String summary = ProfanityDictionary.summarize(warnings);
+        String summary = ProfanityDictionary.summarize(warnings,
+                "나머지는 chat.profanity.words · chat.profanity.whitelist 를 직접 확인");
 
-        assertThat(summary.split(" · "))
+        // ⚠️ 메시지 전체를 " · " 로 쪼개면 안 된다 — 꼬리 안내문에도 그 구분자가 들어간다.
+        // 나열 부분만 센다.
+        String listed = summary.substring(0, summary.indexOf(" … 외 "));
+        assertThat(listed.split(" · "))
                 .as("상한이 없으면 줄 길이가 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
                 .hasSize(limit);
         // 마지막 원소에 꼬리(… 외 N건)가 붙으므로 split 전수 비교가 아니라 접두로 본다.
@@ -1339,8 +1340,33 @@ class ProfanityDictionaryTest {
         assertThat(summary)
                 .as("보여 주는 %d건이 적재 순서의 앞 %d건이어야 지목이 재현된다", limit, limit)
                 .startsWith(String.join(" · ", expected.subList(0, limit)));
-        assertThat(summary).contains("외 5건").contains("ADMIN 조회");
-        assertThat(many).hasSize(limit + 5);
+        assertThat(summary).contains("외 5건").contains("직접 확인");
+    }
+
+    /**
+     * ⭐ <b>공개 요약이 항목 하나의 길이도 막는다 — 개수 상한만으로는 한 줄이 안 묶인다.</b>
+     *
+     * <p>{@code reject} 의 {@code MAX_WORD_LENGTH} 는 {@code of()}/{@code load()} <b>안에만</b>
+     * 있고 이 메서드의 공개 계약에는 없다. 그 계약이 "{@code reject} 를 안 지난 집합을 받을 수
+     * 있다" 를 <b>명시로 인정하므로</b>, 개수만 막으면 한 줄이 {@code 20 × 무한}이다 — 상한이
+     * 없을 때 35,966자가 나왔던 그 축이고, 제어문자 접기는 쪼개짐만 막고 길이는 안 막는다.
+     */
+    @Test
+    @DisplayName("⭐ 공개 요약이 항목 하나의 길이도 끊는다 — 개수 상한은 한 줄을 안 묶는다")
+    void thePublicSummaryTruncatesALongEntry() {
+        String long1 = "화이트리스트 항목 \"" + "가".repeat(5_000) + "\" — 아무것도 보호하지 않는다";
+
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of(long1)), "직접 확인");
+
+        assertThat(summary.length())
+                .as("개수만 막으면 한 줄이 항목 길이만큼 자란다 — 그 줄이 모든 교체에서 나간다")
+                .isLessThan(400);
+        assertThat(summary)
+                .as("자른 사실과 원래 길이를 적어야 당직자가 무엇을 못 보고 있는지 안다")
+                .contains("…(" + long1.length() + "자)")
+                .as("앞부분은 남아야 어느 항목인지 가늠할 수 있다")
+                .contains("화이트리스트 항목");
     }
 
     /**
@@ -1361,18 +1387,25 @@ class ProfanityDictionaryTest {
      * 서로게이트 두 쪽으로 쪼개 지목을 더 어렵게 하기 때문이다. 여기서 필요한 것은 지목이 아니라
      * <b>줄이 쪼개지지 않는 것</b>뿐이다.
      */
-    @Test
-    @DisplayName("⭐ 공개 요약이 제어문자를 접는다 — 개행 하나가 로그 한 줄을 쪼개면 안 된다")
-    void thePublicSummaryFoldsControlCharacters() {
-        String injected = "화이트리스트 항목 \"정상어\"\n사전에 항목을 더했다 — 위조된 줄";
+    @ParameterizedTest(name = "U+{0}")
+    @ValueSource(strings = {"000A", "000B", "000C", "000D", "0085", "2028", "2029"})
+    @DisplayName("⭐ 공개 요약이 줄종결자 일곱 종을 전부 접는다 — 하나라도 새면 줄 위조가 된다")
+    void thePublicSummaryFoldsEveryLineTerminator(String hex) {
+        // ⚠️ 벡터가 "\n" 하나였다. 그러면 접는 범위를 type == CONTROL 하나로 좁히는 변이가
+        // 전수를 통과한다 — U+2028(Zl)·U+2029(Zp)는 Cc 가 아니다. JSON·멀티라인 appender 에서
+        // 그 둘로 줄 위조가 되돌아온다. 전 코드포인트 측정에서 단일 코드포인트 줄종결자는
+        // 정확히 이 일곱이다(Cc 65종은 그 중 다섯을 포함한다).
+        String injected = "화이트리스트 항목 \"정상어\""
+                + Character.toString(Integer.parseInt(hex, 16))
+                + "사전에 항목을 더했다 — 위조된 줄";
 
         String summary = ProfanityDictionary.summarize(
-                new java.util.LinkedHashSet<>(List.of(injected)));
+                new java.util.LinkedHashSet<>(List.of(injected)), "직접 확인");
 
         assertThat(summary)
-                .as("개행이 그대로 나가면 로그 한 줄이 둘로 쪼개져 위조된 줄이 생긴다")
-                .doesNotContain("\n")
-                .contains("\\u000A")
+                .as("U+%s 가 그대로 나가면 로그 한 줄이 둘로 쪼개져 위조된 줄이 생긴다", hex)
+                .doesNotContain(Character.toString(Integer.parseInt(hex, 16)))
+                .contains("\\u" + hex)
                 .as("보이는 글자는 그대로여야 사람이 읽는 문장이 안 바뀐다")
                 .contains("화이트리스트 항목");
     }
@@ -1395,7 +1428,7 @@ class ProfanityDictionaryTest {
         String warning = "화이트리스트 항목 \"시발abc😀\" — 욕설을 빼면 한글 음절이 남지 않는다";
 
         assertThat(ProfanityDictionary.summarize(
-                        new java.util.LinkedHashSet<>(List.of(warning))))
+                        new java.util.LinkedHashSet<>(List.of(warning)), "직접 확인"))
                 .as("당직자는 CSV·테이블에서 그 항목을 찾아야 한다 — 서로게이트로 쪼개면 못 찾는다")
                 .isEqualTo(warning);
     }
@@ -1414,7 +1447,7 @@ class ProfanityDictionaryTest {
                 ProfanityDictionary.of("probe", Set.of("시발"), Set.of("시발abc")).warnings();
 
         assertThat(warnings).isNotEmpty();
-        assertThat(ProfanityDictionary.summarize(warnings))
+        assertThat(ProfanityDictionary.summarize(warnings, "직접 확인"))
                 .as("of() 가 reject() 를 먼저 돌리므로 이 경로의 경고에는 들어올 수 없다")
                 .doesNotContain("\\u");
     }

@@ -107,7 +107,11 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                 if digits == nil or #digits > %d then return 0 end
                 local tail = string.sub(raw, #digits + 1, #digits + 1)
                 if tail ~= '' and tail ~= '\\n' then return 0 end
-                return tonumber(digits)
+                local value = tonumber(digits)
+                -- 문법은 후계자까지 닫혀 있어야 한다 — 이 값을 받으면 다음 발행이 문법 밖인
+                -- 수를 써야 한다. 받지 않으면 기준이 다른 키로 떨어지고 발행이 덮어 고친다.
+                if #string.format('%%d', value + 1) > %d then return 0 end
+                return value
             end
             local counter = 0
             if redis.call('TYPE', KEYS[2])['ok'] == 'string' then
@@ -124,27 +128,12 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             if current ~= tonumber(ARGV[1]) then
                 return -1
             end
+            -- 문법이 후계자를 포함하므로 이 수는 언제나 문법 안이다 — 고갈 분기가 없다.
             local version = current + 1
             -- ⚠️ 쓰는 포맷도 하나여야 한다. KEYS[2] 는 Redis 의 숫자 인자 변환(정확)을 타는데
             -- KEYS[1] 은 '..' 를 타고 그것은 %%.14g 다 — 값이 15자리가 되면 1e+14 가 키에 써지고
             -- 매 발행이 같은 머리를 다시 쓰니 자기치유가 없다(실측 3회차까지 1e+14 고정).
             local text = string.format('%%d', version)
-            -- ⚠️ 상한은 토큰이 아니라 <후계자>에 걸어야 닫힌다. 토큰 상한 d 는 10^d-1 을 받고
-            -- 그 +1 은 d+1 자리라 어떤 d 에서도 문법 밖이다. 그대로 쓰면 두 키가 다 문법 밖이 되어
-            -- 토큰이 0 으로 떨어지고 낡은 발행자가 expected=0 으로 이긴다(ABA 재개방, 실측).
-            --
-            -- 그래서 쓰기 전에 보고, 넘으면 <되돌린다>. 거부(아무것도 안 쓰고 실패)도 그 쓰기를
-            -- 막지만 대가가 크다 — 15자리는 문법이 받는 토큰이라 아무것도 그 키를 덮지 않고,
-            -- 그 상태에서 모든 사전 쓰기가 영구히 500 이 된다(재시도로 안 낫는다).
-            -- 되돌리는 쪽이 성립하는 이유는 <이 발행자가 같은 시도에서 정본을 막 읽었다>는 것이다:
-            -- 본문이 낡지 않았고, 되돌린 뒤 낡은 발행자는 expected=<큰 수> 로 -1 을 받는다.
-            -- 실측 다섯 축(고갈→발행 / 그 뒤 낡은 발행자 / 리셋 직후 / 14자리 / 머리만 큰 수):
-            --   고갈에서 v1 + 새 본문 · 낡은 발행자 -1 · 다음 발행 v2 · 14자리 무영향.
-            -- 받는 쪽이 뒤로 간 버전을 WARN 후 적용하므로 함대도 이 v1 을 집어 간다.
-            if #text > %d then
-                version = 1
-                text = '1'
-            end
             redis.call('SET', KEYS[2], text)
             redis.call('SET', KEYS[1], text .. '\\n' .. ARGV[2])
             redis.call('PUBLISH', ARGV[3], text)
@@ -154,6 +143,7 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
     /** 위 본문에 상한을 끼워 컴파일한 스크립트. 설계 근거는 {@link #PUBLISH_SCRIPT}. */
     private static final RedisScript<Long> PUBLISH_SNAPSHOT = RedisScript.of(
             PUBLISH_SCRIPT.formatted(
+                    ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS,
                     ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS,
                     ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS,
                     ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS),
@@ -231,25 +221,23 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
         if (version == null) {
             // 스크립트가 항상 수를 돌려주므로 여기 오면 드라이버 쪽이 어긋난 것이다. 성공으로
             // 뭉개면 호출자가 "발행됐다" 로 로그를 남기고 함대에 안 깔린 것을 모른다.
-            throw new IllegalStateException(
-                    "사전 스냅샷 발행이 버전을 돌려주지 않았다 — 발행 여부를 확인할 수 없다.");
-        }
-        if (version != CAS_FAILED && version <= expectedVersion) {
-            // ⚠️ 번호가 전진하지 않았다 = 스크립트가 번호 공간 고갈을 보고 되돌렸다. 평시에는
-            // version == expected + 1 이므로 이 조건은 그 경우에만 참이다(expected=0 이면
-            // version=1 > 0).
             //
-            // 조용히 넘기지 않는다 — 유기적 증가로는 도달하지 않는 상태이므로, 누가 버전 키나
-            // 스냅샷 머리에 큰 수를 넣었다는 뜻이다. 쓰기 자체는 성공했고(본문은 이 시도에서
-            // 읽은 정본이다) 함대도 이 번호를 집어 가지만, 그 사람이 왜 그 값을 넣었는지는
-            // 여기서 알 수 없다.
-            log.warn("사전 버전 번호 공간이 고갈돼 번호를 되돌렸다 — 다음 버전이 {}자리가 되어 "
-                            + "문법 밖이었다. 발행은 정상이고(본문은 이 시도에서 읽은 정본) 받는 "
-                            + "쪽은 뒤로 간 버전도 적용한다. 유기적 증가로는 도달하지 않으므로 "
-                            + "누가 버전 키 또는 스냅샷 머리에 큰 수를 넣었는지 확인할 것. "
-                            + "집었던 번호={} 새 번호={}",
-                    ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS + 1, expectedVersion,
-                    version);
+            // ⚠️ 이 경로는 <재시도로 낫지 않는다> — 호출자의 ERROR 가 "같은 요청을 다시 보내면
+            // 된다" 를 적는데 그 조언이 이 분기에서는 참이 아니다. 사실상 도달 불가라(스크립트가
+            // 항상 수를 돌려준다) 분기를 더 두지 않고 메시지에 적는다.
+            throw new IllegalStateException(
+                    "사전 스냅샷 발행이 버전을 돌려주지 않았다 — 발행 여부를 확인할 수 없다. "
+                            + "드라이버·직렬화 쪽 문제이므로 재시도로 낫지 않는다.");
+        }
+        if (version != CAS_FAILED && version < 1) {
+            // ⚠️ 반환 규약을 <전역>으로 둔다. 전에는 "-1 이 아닌 모든 값 = 발행된 버전" 이었고,
+            // 오늘 스크립트가 -1 또는 current+1(≥1)만 돌려주므로 틀리지 않았다. 그런데 센티넬을
+            // 하나 더 두는 순간 조용히 틀린다 — 실측: 리셋을 -2 로 되돌린 변이에서
+            // publishIfUnchanged 가 OptionalLong[-2] 를 <성공으로> 반환하면서 동시에 "발행은
+            // 정상이다" 로그를 남겼다. 그 모양을 한 줄로 막는다.
+            throw new IllegalStateException(
+                    "사전 스냅샷 발행이 규약 밖의 값을 돌려줬다 — 발행 여부를 확인할 수 없다. "
+                            + "값=" + version);
         }
         return version == CAS_FAILED ? OptionalLong.empty() : OptionalLong.of(version);
     }
