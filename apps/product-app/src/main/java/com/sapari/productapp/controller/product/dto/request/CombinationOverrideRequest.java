@@ -14,14 +14,14 @@ import com.sapari.product.command.CombinationOverrideCommand;
  *
  * <p>완전한 조합(타입마다 1개)·제외 조합 여부·SKU 중복 같은 구조 규칙은 요청 전체를 봐야 하므로 서비스(PRODUCT-004)가 검증한다.
  *
- * @param valueRefs     대상 조합의 옵션값 ref 목록(옵션 타입마다 1개, 최대 30개)
+ * @param valueRefs     대상 조합의 옵션값 ref 목록(옵션 타입마다 1개, 옵션 타입 수 상한과 같은 최대 10개)
  * @param price         판매가(원), null이면 서버 계산값
  * @param originalPrice 정가(원), null이면 미설정
  * @param stock         재고, null이면 기본 재고
  * @param sku           SKU 코드(상품 내 유일, DDL varchar(100)), null이면 미설정
  */
 public record CombinationOverrideRequest(
-        @NotEmpty @Size(max = 30) List<@NotBlank @Size(max = 100) String> valueRefs,
+        @NotEmpty @Size(max = 10) List<@NotBlank @Size(max = 100) String> valueRefs,
         @PositiveOrZero Integer price,
         @PositiveOrZero Integer originalPrice,
         @PositiveOrZero Integer stock,

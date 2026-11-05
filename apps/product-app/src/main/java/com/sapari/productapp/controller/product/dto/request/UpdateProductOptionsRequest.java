@@ -24,7 +24,7 @@ import com.sapari.product.command.UpdateProductOptionsCommand;
  * @param combinations    조합별 오버라이드(선택, 최대 500개)
  */
 public record UpdateProductOptionsRequest(
-        @Size(max = 30) List<@NotNull @Valid OptionTypeRequest> optionTypes,
+        @Size(max = 10) List<@NotNull @Valid OptionTypeRequest> optionTypes,
         @PositiveOrZero int defaultStock,
         @NotNull Long expectedVersion,
         @Size(max = 500) List<@NotNull @Valid SurchargeRuleRequest> surchargeRules,

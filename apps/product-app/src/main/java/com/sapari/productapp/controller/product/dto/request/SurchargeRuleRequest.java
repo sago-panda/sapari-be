@@ -14,11 +14,11 @@ import com.sapari.product.command.SurchargeRuleCommand;
  *
  * <p>ref 존재·타입당 1개 같은 구조 규칙은 요청 전체를 봐야 하므로 서비스(PRODUCT-004)가 검증한다.
  *
- * @param valueRefs 매칭 조건 옵션값 ref 목록(옵션 타입 수 상한과 같은 최대 30개)
+ * @param valueRefs 매칭 조건 옵션값 ref 목록(옵션 타입 수 상한과 같은 최대 10개)
  * @param amount    가산 금액(원)
  */
 public record SurchargeRuleRequest(
-        @NotEmpty @Size(max = 30) List<@NotBlank @Size(max = 100) String> valueRefs,
+        @NotEmpty @Size(max = 10) List<@NotBlank @Size(max = 100) String> valueRefs,
         @PositiveOrZero int amount
 ) {
 

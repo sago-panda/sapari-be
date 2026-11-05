@@ -7,10 +7,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.sapari.product.domain.exception.ProductConcurrentModificationException;
 import com.sapari.product.domain.exception.ProductDomainException;
 import com.sapari.product.domain.exception.ProductErrorCode;
+import com.sapari.product.domain.model.combination.CombinationGenerator;
 import com.sapari.product.domain.model.combination.CombinationKey;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.model.combination.Sku;
 import com.sapari.product.domain.model.combination.Stock;
+import com.sapari.product.domain.model.product.ProductOptionTypeModel;
+import com.sapari.product.domain.model.product.ProductOptionValueModel;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.support.AbstractRepositoryIntegrationTest;
 import jakarta.persistence.EntityManager;
@@ -18,6 +21,7 @@ import jakarta.persistence.PersistenceContext;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -184,6 +188,30 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
                     .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v1));
             assertThat(found).filteredOn(c -> c.combinationKey().value().equals("2"))
                     .singleElement().satisfies(c -> assertThat(c.optionValueIds()).containsExactly(v2));
+        }
+
+        @Test
+        @DisplayName("옵션 타입 상한(10개)으로 생성한 조합의 키(369자)도 combination_key varchar(500)에 저장된다")
+        void saveAll_persists_key_of_max_option_types() {
+            UUID productId = UUID.randomUUID();
+            List<ProductOptionTypeModel> types = IntStream.range(0, CombinationGenerator.MAX_OPTION_TYPES)
+                    .mapToObj(i -> new ProductOptionTypeModel(UUID.randomUUID(), null, "t" + i, (short) i,
+                            List.of(new ProductOptionValueModel(UUID.randomUUID(), null, "v" + i, null, 0, (short) 1))))
+                    .toList();
+            ProductOptionCombination generated = CombinationGenerator.generate(
+                            productId, 1_000, types, List.of(), List.of(), 10, T0)
+                    .get(0);
+
+            UUID id = repository.saveAll(List.of(generated))
+                    .get(0)
+                    .id();
+
+            ProductOptionCombination found = reload(id);
+            assertThat(found.combinationKey()
+                    .value()).hasSize(37 * CombinationGenerator.MAX_OPTION_TYPES - 1)
+                    .isEqualTo(generated.combinationKey()
+                            .value());
+            assertThat(found.optionValueIds()).containsExactlyInAnyOrderElementsOf(generated.optionValueIds());
         }
 
         @Test

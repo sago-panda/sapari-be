@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
@@ -59,6 +60,25 @@ class OptionRuleRequestTest {
                 .map(ConstraintViolation::getPropertyPath)
                 .map(Object::toString)
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * 값 1개짜리 옵션 타입 {@code count}개(타입명·ref는 인덱스로 유일).
+     */
+    private static List<OptionTypeRequest> optionTypes(int count) {
+        return IntStream.range(0, count)
+                .mapToObj(i -> new OptionTypeRequest("타입" + i, null, (short) i, List.of(
+                        new OptionValueRequest("값" + i, null, null, 0, (short) 1, "r" + i))))
+                .toList();
+    }
+
+    /**
+     * ref {@code r0}..{@code r(count-1)}.
+     */
+    private static List<String> refs(int count) {
+        return IntStream.range(0, count)
+                .mapToObj(i -> "r" + i)
+                .toList();
     }
 
     private static OptionTypeRequest colorWithRefs() {
@@ -175,6 +195,27 @@ class OptionRuleRequestTest {
 
             assertThat(violatedPaths(request))
                     .containsExactlyInAnyOrder("surchargeRules", "exclusionRules", "combinations");
+        }
+
+        @Test
+        @DisplayName("옵션 타입·룰 ref·오버라이드 ref는 옵션 타입 상한(10개)까지 허용하고, 11개면 400 대상이다 (등록·옵션 수정 동일)")
+        void optionTypeCountIsCappedAtTen() {
+            List<String> tenRefs = refs(10);
+            List<String> elevenRefs = refs(11);
+
+            assertThat(violatedPaths(new UpdateProductOptionsRequest(optionTypes(10), 100, 3L,
+                    List.of(new SurchargeRuleRequest(tenRefs, 1)),
+                    List.of(new ExclusionRuleRequest(tenRefs, null)),
+                    List.of(new CombinationOverrideRequest(tenRefs, 1, null, null, null))))).isEmpty();
+            assertThat(violatedPaths(new UpdateProductOptionsRequest(optionTypes(11), 100, 3L,
+                    List.of(new SurchargeRuleRequest(elevenRefs, 1)),
+                    List.of(new ExclusionRuleRequest(elevenRefs, null)),
+                    List.of(new CombinationOverrideRequest(elevenRefs, 1, null, null, null)))))
+                    .containsExactlyInAnyOrder("optionTypes", "surchargeRules[0].valueRefs",
+                            "exclusionRules[0].valueRefs", "combinations[0].valueRefs");
+            assertThat(violatedPaths(new CreateProductRequest(1001L, "베이직 티셔츠", null, 19_900, null, null, List.of(),
+                    optionTypes(11), 100, null, null, null)))
+                    .containsExactly("optionTypes");
         }
     }
 

@@ -39,7 +39,7 @@ public record CreateProductRequest(
         UUID shippingPolicyId,
         @PositiveOrZero Integer additionalShippingFee,
         @Size(max = 10) List<@Size(max = 20) String> tags,
-        @Size(max = 30) List<@NotNull @Valid OptionTypeRequest> optionTypes,
+        @Size(max = 10) List<@NotNull @Valid OptionTypeRequest> optionTypes,
         @PositiveOrZero int defaultStock,
         @Size(max = 500) List<@NotNull @Valid SurchargeRuleRequest> surchargeRules,
         @Size(max = 500) List<@NotNull @Valid ExclusionRuleRequest> exclusionRules,

@@ -41,6 +41,15 @@ class CombinationGeneratorTest {
         return new ProductOptionTypeModel(UUID.randomUUID(), null, name, sortOrder, List.of(values));
     }
 
+    /**
+     * 값이 1개씩인 옵션 타입 {@code count}개(조합 수 1). 타입 수 상한만 따로 검증할 때 쓴다.
+     */
+    private static List<ProductOptionTypeModel> singleValueTypes(int count) {
+        return IntStream.range(0, count)
+                .mapToObj(i -> type("t" + i, (short) i, value(UUID.randomUUID(), "v" + i, 0, (short) 1)))
+                .toList();
+    }
+
     private static String key(UUID... ids) {
         return Stream.of(ids)
                 .sorted()
@@ -282,6 +291,33 @@ class CombinationGeneratorTest {
             assertThatThrownBy(() -> CombinationGenerator.generate(
                     PRODUCT_ID, BASE_PRICE, List.of(empty), List.of(), List.of(), 0, NOW))
                     .isInstanceOf(InvalidProductOptionException.class);
+        }
+
+        @Test
+        @DisplayName("옵션 타입이 상한(10개)을 넘으면 — 조합 수가 1이어도 — InvalidProductOptionException (조합 키 varchar(500) 초과 방지)")
+        void rejectsTooManyOptionTypes() {
+            List<ProductOptionTypeModel> types = singleValueTypes(CombinationGenerator.MAX_OPTION_TYPES + 1);
+
+            assertThatThrownBy(() -> CombinationGenerator.generate(
+                    PRODUCT_ID, BASE_PRICE, types, List.of(), List.of(), 0, NOW))
+                    .isInstanceOf(InvalidProductOptionException.class)
+                    .hasMessageContaining(CombinationGenerator.MAX_OPTION_TYPES + "개까지");
+        }
+
+        @Test
+        @DisplayName("경계: 옵션 타입이 정확히 10개면 통과하고, 조합 키는 옵션값 10개를 이어 369자다")
+        void allowsExactlyMaxOptionTypes() {
+            List<ProductOptionTypeModel> types = singleValueTypes(CombinationGenerator.MAX_OPTION_TYPES);
+
+            List<ProductOptionCombination> result = CombinationGenerator.generate(
+                    PRODUCT_ID, BASE_PRICE, types, List.of(), List.of(), 0, NOW);
+
+            assertThat(result).singleElement()
+                    .satisfies(c -> {
+                        assertThat(c.optionValueIds()).hasSize(CombinationGenerator.MAX_OPTION_TYPES);
+                        assertThat(c.combinationKey()
+                                .value()).hasSize(37 * CombinationGenerator.MAX_OPTION_TYPES - 1);
+                    });
         }
 
         @Test

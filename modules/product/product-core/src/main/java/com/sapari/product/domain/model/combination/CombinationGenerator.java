@@ -29,6 +29,12 @@ public final class CombinationGenerator {
      */
     public static final int MAX_COMBINATIONS = 500;
 
+    /**
+     * 상품당 옵션 타입 수 상한. 조합 키는 옵션값 UUID(36자)를 타입마다 하나씩 {@code :}로 이은 문자열이라 길이가 {@code 37k - 1}이고,
+     * {@code combination_key varchar(500)}에 들어가려면 k ≤ 13이어야 한다. 값이 1개인 타입만 쌓으면 조합 수 상한에 걸리지 않으므로 타입 수를 따로 제한한다.
+     */
+    public static final int MAX_OPTION_TYPES = 10;
+
     private CombinationGenerator() {
     }
 
@@ -45,8 +51,8 @@ public final class CombinationGenerator {
      * @param exclusionRules 제외 룰. null이면 없음으로 처리
      * @param defaultStock   생성 조합의 기본 재고
      * @param now            생성 시각 (호출측이 TimeProvider로 구해 전달)
-     * @throws InvalidProductOptionException 값이 하나도 없는 옵션 타입이 있거나, 조합 가격이 0 미만·int 범위 초과이거나,
-     *                                       제외 룰이 모든 조합을 배제한 경우
+     * @throws InvalidProductOptionException 옵션 타입이 {@link #MAX_OPTION_TYPES}개를 넘거나, 값이 하나도 없는 옵션 타입이 있거나,
+     *                                       조합 가격이 0 미만·int 범위 초과이거나, 제외 룰이 모든 조합을 배제한 경우
      * @throws TooManyCombinationsException  조합 수가 {@link #MAX_COMBINATIONS}를 초과하는 경우
      */
     public static List<ProductOptionCombination> generate(
@@ -75,7 +81,7 @@ public final class CombinationGenerator {
                 .sorted(comparing(ProductOptionTypeModel::sortOrder, nullsLast(naturalOrder())))
                 .toList();
 
-        // 값 없는 타입·조합 수 초과를 데카르트 곱을 펼치기 전에 미리 차단
+        // 타입 수 초과·값 없는 타입·조합 수 초과를 데카르트 곱을 펼치기 전에 미리 차단
         guardCardinality(sortedTypes);
 
         // null 룰은 빈 목록으로 정규화 — 이후 스트림에서 null 분기를 없앤다
@@ -131,9 +137,14 @@ public final class CombinationGenerator {
     }
 
     /**
-     * 각 타입에 값이 있는지 검증하고, 데카르트 곱 카디널리티가 한도를 넘으면 미리 예외를 던진다(거대 목록 생성 방지).
+     * 타입 수가 상한 안인지, 각 타입에 값이 있는지 검증하고, 데카르트 곱 카디널리티가 한도를 넘으면 미리 예외를 던진다(거대 목록 생성 방지).
      */
     private static void guardCardinality(List<ProductOptionTypeModel> types) {
+        // 타입 수 상한 — 조합 키 길이(varchar(500))를 넘는 조합은 INSERT에서 DB 오류가 되므로 생성 전에 거절한다
+        if (types.size() > MAX_OPTION_TYPES) {
+            throw new InvalidProductOptionException(
+                    "옵션 타입은 상품당 " + MAX_OPTION_TYPES + "개까지 만들 수 있습니다: " + types.size() + "개");
+        }
         // 조합 수 = 타입별 값 개수의 곱. 곱을 누적하며 한도 초과를 조기에 감지한다 (long으로 오버플로 방지)
         long cardinality = 1L;
         for (ProductOptionTypeModel type : types) {

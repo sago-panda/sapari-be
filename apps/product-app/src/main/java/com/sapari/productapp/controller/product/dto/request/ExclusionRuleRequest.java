@@ -13,11 +13,11 @@ import com.sapari.product.command.ExclusionRuleCommand;
  *
  * <p>ref 존재·타입당 1개 같은 구조 규칙은 요청 전체를 봐야 하므로 서비스(PRODUCT-004)가 검증한다.
  *
- * @param valueRefs 매칭 조건 옵션값 ref 목록(옵션 타입 수 상한과 같은 최대 30개)
+ * @param valueRefs 매칭 조건 옵션값 ref 목록(옵션 타입 수 상한과 같은 최대 10개)
  * @param reason    제외 사유(선택)
  */
 public record ExclusionRuleRequest(
-        @NotEmpty @Size(max = 30) List<@NotBlank @Size(max = 100) String> valueRefs,
+        @NotEmpty @Size(max = 10) List<@NotBlank @Size(max = 100) String> valueRefs,
         @Size(max = 200) String reason
 ) {
 

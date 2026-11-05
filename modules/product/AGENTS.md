@@ -75,7 +75,9 @@ pre-built slices had no caller and were removed. Build each slice together with 
   `version` (including ones the seller had already discontinued — so a stale "reactivate" PATCH gets 409),
   and renames a retired `DEFAULT` key to `DEFAULT#<id>` (the `(product_id, combination_key)` unique index is
   not partial). A retired combination can't be re-enabled (`UpdateCombinationPriceStockService` →
-  PRODUCT-002). Combination keys are `:`-joined value UUIDs (the DDL comment's "3:7:12" is illustrative).
+  PRODUCT-002). Combination keys are `:`-joined value UUIDs (the DDL comment's "3:7:12" is illustrative) —
+  `37k − 1` chars for k option types, so `CombinationGenerator.MAX_OPTION_TYPES = 10` keeps them inside
+  `combination_key varchar(500)` (DTO `@Size` and the bulk template use the same 10).
 - **`min_price` / `has_stock` are written only by `ProductRepository.refreshStockPriceCache`** (entity columns
   are `updatable=false`; a normal product save can't overwrite them). Every path that changes a
   combination's price/stock/availability/reservation — or a winning discount — must call it **at the end of

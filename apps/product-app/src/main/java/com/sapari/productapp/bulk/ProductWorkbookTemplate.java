@@ -37,8 +37,8 @@ final class ProductWorkbookTemplate {
     static final int MAX_TYPE_NAME_CHARS = 50;
     /** 옵션값 길이 상한 — {@code OptionValueRequest.value @Size(max = 100)}와 같다. */
     static final int MAX_VALUE_CHARS = 100;
-    /** 상품당 옵션 타입 상한 — {@code CreateProductRequest.optionTypes @Size(max = 30)}와 같다. */
-    static final int MAX_OPTION_TYPES = 30;
+    /** 상품당 옵션 타입 상한 — {@code CreateProductRequest.optionTypes @Size(max = 10)}·{@code CombinationGenerator.MAX_OPTION_TYPES}와 같다. */
+    static final int MAX_OPTION_TYPES = 10;
     /** 옵션 타입당 옵션값 상한 — {@code OptionTypeRequest.values @Size(max = 100)}와 같다. */
     static final int MAX_VALUES_PER_TYPE = 100;
     /**
