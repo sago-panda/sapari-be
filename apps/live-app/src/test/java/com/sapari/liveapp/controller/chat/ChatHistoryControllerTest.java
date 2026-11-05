@@ -32,6 +32,8 @@ import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.view.ChatMessageView;
 import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
@@ -80,6 +82,16 @@ class ChatHistoryControllerTest {
     private JwtTokenProvider jwtTokenProvider;
 
     /**
+     * {@code LiveSecurityConfig} 의 {@code TokenRevocationFilter} 가 요구하는 둘. 이 테스트의 축은
+     * 인가 규칙이라 기본 스텁(=폐기 아님)으로 둔다 — 목이 없으면 체인이 뜨지 않으므로 빼지 말 것.
+     */
+    @MockitoBean
+    private AccessTokenRevocationChecker accessTokenRevocationChecker;
+
+    @MockitoBean
+    private SessionRevocationChecker sessionRevocationChecker;
+
+    /**
      * 에러 응답의 타임스탬프에 쓰인다.
      *
      * <p>중첩 {@code @TestConfiguration} 으로 고정 시계를 세우지 않는다 — 그 중첩 클래스가
@@ -91,7 +103,7 @@ class ChatHistoryControllerTest {
     private TimeProvider timeProvider;
 
     private static RequestPostProcessor as(String role) {
-        LiveUserPrincipal principal = new LiveUserPrincipal(REQUESTER_ID, role, "닉", "a@b.c");
+        LiveUserPrincipal principal = new LiveUserPrincipal(REQUESTER_ID, UUID.randomUUID(), UUID.randomUUID(), role, "닉", "a@b.c");
         Authentication auth = new UsernamePasswordAuthenticationToken(
                 principal, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
         return authentication(auth);

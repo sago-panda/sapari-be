@@ -83,5 +83,6 @@ Create a missing referenced file only when starting work in that area.
 | LiveKit integration | `.claude/skills/livekit-integration.md` |
 | Infra / deploy / CI-CD | `infra/AGENTS.md` |
 | Running the code reviewers | `/review` skill (`.claude/skills/review/SKILL.md`); reviewer set = `.claude/reviewers.yml` |
+| Commit / MR title | `[SPR-XXX] <type>(<scope>): <한글 요약>` — spelled out in `.gitlab/merge_request_templates/default.md` (line 1) |
 
 _Keep under 100 lines. Push domain/infra detail to the sub-`AGENTS.md` files in the index above._

@@ -39,6 +39,8 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import com.sapari.chat.port.ManageFilterWordsUseCase;
 import com.sapari.chat.view.FilterWordsView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
@@ -78,9 +80,19 @@ class ChatFilterWordAuthorizationTest {
     @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
 
+    /**
+     * {@code LiveSecurityConfig} 의 {@code TokenRevocationFilter} 가 요구하는 둘. 이 테스트의 축은
+     * 인가 규칙이라 기본 스텁(=폐기 아님)으로 둔다 — 목이 없으면 체인이 뜨지 않으므로 빼지 말 것.
+     */
+    @MockitoBean
+    private AccessTokenRevocationChecker accessTokenRevocationChecker;
+
+    @MockitoBean
+    private SessionRevocationChecker sessionRevocationChecker;
+
     /** 실제 인증 필터를 태우지 않고 주체만 심는다 — 재는 것은 토큰 파싱이 아니라 인가 규칙이다. */
     private static RequestPostProcessor as(String role) {
-        LiveUserPrincipal principal = new LiveUserPrincipal(PRINCIPAL_ID, role, "닉", "a@b.c");
+        LiveUserPrincipal principal = new LiveUserPrincipal(PRINCIPAL_ID, UUID.randomUUID(), UUID.randomUUID(), role, "닉", "a@b.c");
         Authentication auth = new UsernamePasswordAuthenticationToken(
                 principal, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
         return authentication(auth);

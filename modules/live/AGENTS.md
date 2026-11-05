@@ -376,6 +376,29 @@ neither the `findById` nor the signature is paid.
 Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp`.
 **email is PII** — never log the raw token. **Not single-use** — replayable within the TTL.
 
+- **A revoked access token cannot get one.** `TokenRevocationFilter` consults both axes —
+  `jti` (that one token) and `sid` (every token of that login session) — so logout, withdrawal and
+  refresh-reuse detection (`JwtTokenLifecycle.revoke`/`revokeAll`) now block re-entry. `jti` is
+  checked first and short-circuits, so a known-revoked token costs one round trip, not two.
+  **Role demotion is not covered**, because no code path changes a role: it is fixed at creation
+  (`UserEntity`'s two static factories, zero update writes). A path that demotes must revoke the
+  token, or the claim is only as fresh as the token.
+- **The window that remains is the token already issued.** Revocation gates *issuance*; it cannot
+  recall a room token in flight, so the exposure is that token's `exp` plus — for an open WS
+  session — whatever `ChatSessionRegistry` bounds. Before this filter the same window was the
+  **access** TTL (3600s default), because entry could simply be re-taken.
+- **It sits after the enter rate limit, before `AuthorizationFilter`** (`LiveSecurityConfig`).
+  After the limit so a rejected entry pays no Redis round trip — the limit is a CPU ceiling and
+  cannot absorb that cost. Before authorization so the SELLER/ADMIN rules (kick, ban release,
+  dictionary) judge an already-cleared context. `LiveFilterOrderTest` pins the order itself and
+  `TokenRevocationFilterTest` pins its consequence; both exist because either alone lets the other
+  flip silently.
+- **A failed lookup clears the authentication** (fail-closed), matching the common
+  `JwtAuthenticationFilter`. So a Redis outage blocks live-app's **authenticated** requests —
+  public viewing and guest entry carry no principal and never reach the lookup, so they stay up.
+- The checkers come from `common/auth`; only its refresh-token repository is kept out of the scan
+  (`LiveAppApplication`), since this app still issues and rotates nothing.
+
 ## Errors & tests
 
 Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`RuntimeException` escapes a service.

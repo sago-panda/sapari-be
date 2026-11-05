@@ -25,12 +25,15 @@ import org.springframework.web.context.support.AnnotationConfigWebApplicationCon
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
 import com.sapari.liveapp.security.EnterRateLimiter;
 import com.sapari.liveapp.security.StatelessJwtAuthenticationFilter;
+import com.sapari.liveapp.security.TokenRevocationFilter;
 
 class LivePublicRoutesTest {
     @Test
@@ -67,9 +70,15 @@ class LivePublicRoutesTest {
                     new EnterRateLimiter(new EnterRateLimitProperties(
                             1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
                             com.sapari.live.application.port.LiveMetrics.NOOP));
+            // 폐기 조회도 이 테스트의 축이 아니다. 이 테스트의 요청은 전부 토큰이 없어
+            // principal 이 null 이므로 체커는 호출되지 않는다 — 목을 두는 것은 체인을
+            // 세우기 위한 것이고, 호출이 생기면 Mockito 기본값(false=폐기 아님)이라
+            // 경로 판정을 가리지 않는다.
+            TokenRevocationFilter tokenRevocationFilter = new TokenRevocationFilter(
+                    mock(AccessTokenRevocationChecker.class), mock(SessionRevocationChecker.class));
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
-                    enterRateLimitFilter, entryPoint,
+                    enterRateLimitFilter, tokenRevocationFilter, entryPoint,
                     mock(JwtAccessDeniedHandler.class));
         }
 

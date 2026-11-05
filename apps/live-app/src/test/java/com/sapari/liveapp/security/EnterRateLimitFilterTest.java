@@ -80,7 +80,7 @@ class EnterRateLimitFilterTest {
     }
 
     private static void authenticate(UUID userId) {
-        LiveUserPrincipal principal = new LiveUserPrincipal(userId, "USER", "닉", "a@b.c");
+        LiveUserPrincipal principal = new LiveUserPrincipal(userId, UUID.randomUUID(), UUID.randomUUID(), "USER", "닉", "a@b.c");
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(principal, null, java.util.List.of()));
     }

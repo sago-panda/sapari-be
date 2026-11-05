@@ -34,6 +34,8 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
+import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
@@ -71,9 +73,26 @@ class ChatBanReleaseAuthorizationTest {
     @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
 
+    /**
+     * {@code LiveSecurityConfig} 의 {@code TokenRevocationFilter} 가 요구하는 둘. 이 테스트의 축은
+     * 인가 규칙이라 기본 스텁(=폐기 아님)으로 둔다 — 목이 없으면 체인이 뜨지 않으므로 빼지 말 것.
+     *
+     * <p>⚠️ <b>여기에 "폐기된 ADMIN 은 막힌다" 칸을 두려 했는데 이 하네스로는 잴 수 없다.</b>
+     * {@code authentication(auth)} 가 심는 인증이 체인의 커스텀 필터에는 보이지 않는다 —
+     * 실측: 그 필터에서 {@code getAuthentication()} 이 7개 요청 전부 {@code null} 인데
+     * {@code AuthorizationFilter} 는 ADMIN 을 보고 200 을 돌려줬다. 즉 이 슬라이스는 인가 규칙만
+     * 재고 필터 순서는 재지 못한다. 순서는 {@code LiveFilterOrderTest} 가 체인에서, 동작은
+     * {@code TokenRevocationFilterTest} 가 필터에서 잰다.
+     */
+    @MockitoBean
+    private AccessTokenRevocationChecker accessTokenRevocationChecker;
+
+    @MockitoBean
+    private SessionRevocationChecker sessionRevocationChecker;
+
     /** 실제 인증 필터를 태우지 않고 주체만 심는다 — 재는 것은 토큰 파싱이 아니라 인가 규칙이다. */
     private static RequestPostProcessor as(String role) {
-        LiveUserPrincipal principal = new LiveUserPrincipal(PRINCIPAL_ID, role, "닉", "a@b.c");
+        LiveUserPrincipal principal = new LiveUserPrincipal(PRINCIPAL_ID, UUID.randomUUID(), UUID.randomUUID(), role, "닉", "a@b.c");
         Authentication auth = new UsernamePasswordAuthenticationToken(
                 principal, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
         return authentication(auth);

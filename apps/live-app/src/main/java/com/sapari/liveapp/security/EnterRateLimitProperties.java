@@ -14,9 +14,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 선점해 <b>로그인 회원의 입장까지</b> 막고(형제 {@code WebhookRateLimitFilter} 가 "방어가
  * 아니라 가용성 공격 도구" 로 경고한 그 모양), 게스트에만 걸면 <b>인증 쪽 CPU 가 열린 채
  * 남는다</b> — 가입이 셀프서비스고({@code ApiSecurityConfig} 의 customer 체인이
- * {@code anyRequest().permitAll()}) 이 경로의 JWT 필터는 폐기 저장소를 안 보므로
- * ({@code StatelessJwtAuthenticationFilter} javadoc) 가입 1회로 TTL(기본 3600s) 동안 무제한
- * 호출이 된다. 버킷을 가르면 두 성질이 같이 성립한다.
+ * {@code anyRequest().permitAll()}) 갓 가입한 계정의 토큰은 <b>폐기되지 않은 유효한 토큰</b>이라
+ * 가입 1회로 TTL(기본 3600s) 동안 무제한 호출이 된다. 버킷을 가르면 두 성질이 같이 성립한다.
+ *
+ * <p>⚠️ 한때 이 근거가 "이 경로의 JWT 필터는 폐기 저장소를 안 보므로" 였다. <b>그건 지금 거짓이고
+ * (폐기 조회는 {@code TokenRevocationFilter} 가 한다) 애초에 근거가 아니었다</b> — 폐기 조회는
+ * 폐기된 토큰을 막는 것이고, 셀프서비스 가입으로 받은 토큰은 폐기 대상이 아니다. 즉 그 필터가
+ * 생겨도 이 버킷이 필요한 이유는 그대로다.
  *
  * <p><b>회원 쪽은 샤드로 한 번 더 가른다.</b> 회원 버킷이 집단 전역 하나면 <b>회원 한 명이
  * 회원 전체를 굶힌다</b> — 가입에 캡차·이메일 인증이 없으므로 계정 하나로 그 버킷을 상시

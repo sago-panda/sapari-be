@@ -1,5 +1,12 @@
 dependencies {
     implementation project(':common:web')
+
+    // 폐기 조회(TokenRevocationFilter)가 쓰는 정본 리더 둘 — AccessTokenBlacklistRedisRepository ·
+    // SessionRevocationRedisRepository. 키 규약(TokenStoreKeys)을 세 번째 자리에 복제하는 대신
+    // 읽는 구현을 그대로 재사용한다. 이 모듈은 파일 3개이고 JPA·UserDetailsService·user DB 를
+    // 갖지 않으므로, LiveAppApplication 이 경계로 삼는 "발급/갱신 쪽 stateful 자산" 은
+    // RefreshTokenRedisRepository 하나다 — 그건 거기서 스캔 제외한다.
+    implementation project(':common:auth')
     implementation(project(":modules:live:live-api"))
     implementation(project(":modules:live:live-core"))
 
