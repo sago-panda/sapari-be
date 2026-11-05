@@ -428,15 +428,16 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                     .isEqualTo(v.accepted());
 
             if (!v.closed()) {
-                assertThatThrownBy(
-                        () -> publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
-                        .as("후계자가 문법 밖인데 썼다 — 두 키가 못 읽히는 값이 되고 낡은 발행자가 "
-                                + "expected=0 으로 이긴다: %s", v.versionKey())
-                        .isInstanceOf(IllegalStateException.class)
-                        .hasMessageContaining("번호 공간이 고갈");
-                assertThat(redisTemplate.opsForValue().get(VERSION))
-                        .as("거부했으면 아무것도 쓰지 않아야 한다")
-                        .isEqualTo(v.versionKey());
+                // 후계자가 문법 밖이면 번호를 1 로 되돌린다. 그대로 쓰면 두 키가 못 읽히는 값이
+                // 되고 낡은 발행자가 expected=0 으로 이긴다(ABA 재개방).
+                assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
+                        .as("되돌려서라도 발행은 성립해야 한다 — 거부하면 그 상태에서 모든 사전 "
+                                + "쓰기가 영구히 500 이다: %s", v.versionKey())
+                        .hasValue(1L);
+                assertThat(redisTemplate.opsForValue().get(VERSION)).isEqualTo("1");
+                assertThat(publisher.publishIfUnchanged(token, ordered("낡은본문"), Set.of()))
+                        .as("되돌린 뒤 낡은 발행자는 거부돼야 한다 — 그게 리셋이 ABA 를 안 여는 이유다")
+                        .isEmpty();
                 continue;
             }
             assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))

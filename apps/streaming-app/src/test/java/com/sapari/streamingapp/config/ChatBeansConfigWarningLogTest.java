@@ -133,7 +133,10 @@ class ChatBeansConfigWarningLogTest {
                 .as("개수는 전부 알려야 한다 — 상한은 나열에만 걸린다")
                 .contains("(" + (limit + 3) + "건)")
                 .as("끊겼다는 사실이 없으면 다 봤다고 읽는다")
-                .endsWith("외 3건");
+                .contains("외 3건")
+                .as("결정론이 된 뒤로 같은 사전인 동안 같은 상한만 보인다 — 꼬리에 도달하는 "
+                        + "길이 메시지에 있어야 한다")
+                .contains("ADMIN 조회");
         assertThat(message.split(" · "))
                 .as("상한이 없으면 이 줄이 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
                 .hasSize(limit);

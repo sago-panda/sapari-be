@@ -21,6 +21,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
+import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.domain.model.FilterWordKind;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
 import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
@@ -223,8 +224,9 @@ class ProfanityDictionaryPublishServiceTest {
     @Test
     @DisplayName("⭐ 보고가 상한에서 끊긴다 — 평면을 바꾸는 변경이 들어오면 전 행이 걸린다")
     void theReportIsCapped() {
+        int limit = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
         Set<String> many = new LinkedHashSet<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < limit + 30; i++) {
             // 선행 BOM = 그림자 축. 후행 BOM 은 접기가 보존해 불일치가 아니다(그 축이 아니다).
             many.add("\uFEFF시발" + i);
         }
@@ -242,12 +244,12 @@ class ProfanityDictionaryPublishServiceTest {
         assertThat(errors.get(0))
                 .contains("그림자 행")
                 .as("전체 수는 그대로 알려야 한다 — 상한은 나열에만 걸린다")
-                .contains("전체 50건 중 20건")
-                .as("상한을 넘겼다는 사실이 없으면 50건을 다 봤다고 읽는다")
-                .contains("상한 20건");
+                .contains("전체 " + (limit + 30) + "건 중 " + limit + "건")
+                .as("상한을 넘겼다는 사실이 없으면 전부 봤다고 읽는다")
+                .contains("상한 " + limit + "건");
         assertThat(errors.get(0).split(" · "))
                 .as("나열이 상한에서 끊기지 않으면 한 줄이 35,966자까지 간다")
-                .hasSize(20);
+                .hasSize(limit);
     }
 
     /**
@@ -260,8 +262,9 @@ class ProfanityDictionaryPublishServiceTest {
     @Test
     @DisplayName("⭐ 정확히 상한만큼이면 '외 N건' 이 없다 — 다 보여 준 것을 더 있다고 읽게 하면 안 된다")
     void exactlyTheLimitSaysNothingMoreRemains() {
+        int limit = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
         Set<String> exactly = new LinkedHashSet<>();
-        for (int i = 0; i < 20; i++) {
+        for (int i = 0; i < limit; i++) {
             exactly.add("\uFEFF시발" + i);
         }
         given(repository.findWords(FilterWordKind.PROFANITY)).willReturn(exactly);
@@ -274,7 +277,7 @@ class ProfanityDictionaryPublishServiceTest {
 
         assertThat(errors).hasSize(1);
         assertThat(errors.get(0))
-                .contains("전체 20건 중 20건")
+                .contains("전체 " + limit + "건 중 " + limit + "건")
                 .as("다 보여 줬는데 더 있다고 말하면 당직자가 SQL 로 다시 센다")
                 .doesNotContain("외 ");
     }

@@ -130,11 +130,20 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             -- 매 발행이 같은 머리를 다시 쓰니 자기치유가 없다(실측 3회차까지 1e+14 고정).
             local text = string.format('%%d', version)
             -- ⚠️ 상한은 토큰이 아니라 <후계자>에 걸어야 닫힌다. 토큰 상한 d 는 10^d-1 을 받고
-            -- 그 +1 은 d+1 자리라 어떤 d 에서도 문법 밖이다. 쓰고 나면 두 키가 다 문법 밖이 되어
+            -- 그 +1 은 d+1 자리라 어떤 d 에서도 문법 밖이다. 그대로 쓰면 두 키가 다 문법 밖이 되어
             -- 토큰이 0 으로 떨어지고 낡은 발행자가 expected=0 으로 이긴다(ABA 재개방, 실측).
-            -- 그래서 쓰기 전에 거부한다 — 번호 공간 고갈은 조용히 되돌아가는 것보다 멈추는 쪽이다.
+            --
+            -- 그래서 쓰기 전에 보고, 넘으면 <되돌린다>. 거부(아무것도 안 쓰고 실패)도 그 쓰기를
+            -- 막지만 대가가 크다 — 15자리는 문법이 받는 토큰이라 아무것도 그 키를 덮지 않고,
+            -- 그 상태에서 모든 사전 쓰기가 영구히 500 이 된다(재시도로 안 낫는다).
+            -- 되돌리는 쪽이 성립하는 이유는 <이 발행자가 같은 시도에서 정본을 막 읽었다>는 것이다:
+            -- 본문이 낡지 않았고, 되돌린 뒤 낡은 발행자는 expected=<큰 수> 로 -1 을 받는다.
+            -- 실측 다섯 축(고갈→발행 / 그 뒤 낡은 발행자 / 리셋 직후 / 14자리 / 머리만 큰 수):
+            --   고갈에서 v1 + 새 본문 · 낡은 발행자 -1 · 다음 발행 v2 · 14자리 무영향.
+            -- 받는 쪽이 뒤로 간 버전을 WARN 후 적용하므로 함대도 이 v1 을 집어 간다.
             if #text > %d then
-                return -2
+                version = 1
+                text = '1'
             end
             redis.call('SET', KEYS[2], text)
             redis.call('SET', KEYS[1], text .. '\\n' .. ARGV[2])
@@ -153,15 +162,7 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
     /** 조건이 깨졌다는 신호. 스크립트가 쓰기 전에 돌려주는 값이다. */
     private static final long CAS_FAILED = -1L;
 
-    /**
-     * 번호 공간이 고갈됐다는 신호 — 스크립트가 <b>쓰기 전에</b> 돌려준다.
-     *
-     * <p>{@code CAS_FAILED} 와 가르는 이유는 복구가 다르기 때문이다. 조건 실패는 재시도로 낫고,
-     * 이쪽은 재시도로 낫지 않는다 — 다음 버전이 문법 밖이라 쓰는 순간 두 키가 못 읽히는 값이
-     * 되고 토큰이 0 으로 떨어져 낡은 발행자가 이긴다(ABA 재개방). 사람이 두 키를 의도적으로
-     * 낮은 값으로 되돌려야 한다.
-     */
-    private static final long VERSION_SPACE_EXHAUSTED = -2L;
+
 
     private final StringRedisTemplate redisTemplate;
 
@@ -233,14 +234,22 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             throw new IllegalStateException(
                     "사전 스냅샷 발행이 버전을 돌려주지 않았다 — 발행 여부를 확인할 수 없다.");
         }
-        if (version == VERSION_SPACE_EXHAUSTED) {
-            throw new IllegalStateException(
-                    "사전 버전 번호 공간이 고갈됐다 — 다음 버전이 " + (
-                            ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS + 1)
-                            + "자리가 되어 문법 밖이다. 쓰지 않았다(쓰면 두 키가 못 읽히는 값이 "
-                            + "되고 토큰이 0 으로 떨어져 낡은 발행자가 이긴다). 유기적 증가로는 "
-                            + "도달하지 않으므로 누가 버전 키 또는 스냅샷 머리에 큰 수를 넣은 "
-                            + "것이다 — 두 키를 의도적으로 낮은 값으로 되돌려야 한다.");
+        if (version != CAS_FAILED && version <= expectedVersion) {
+            // ⚠️ 번호가 전진하지 않았다 = 스크립트가 번호 공간 고갈을 보고 되돌렸다. 평시에는
+            // version == expected + 1 이므로 이 조건은 그 경우에만 참이다(expected=0 이면
+            // version=1 > 0).
+            //
+            // 조용히 넘기지 않는다 — 유기적 증가로는 도달하지 않는 상태이므로, 누가 버전 키나
+            // 스냅샷 머리에 큰 수를 넣었다는 뜻이다. 쓰기 자체는 성공했고(본문은 이 시도에서
+            // 읽은 정본이다) 함대도 이 번호를 집어 가지만, 그 사람이 왜 그 값을 넣었는지는
+            // 여기서 알 수 없다.
+            log.warn("사전 버전 번호 공간이 고갈돼 번호를 되돌렸다 — 다음 버전이 {}자리가 되어 "
+                            + "문법 밖이었다. 발행은 정상이고(본문은 이 시도에서 읽은 정본) 받는 "
+                            + "쪽은 뒤로 간 버전도 적용한다. 유기적 증가로는 도달하지 않으므로 "
+                            + "누가 버전 키 또는 스냅샷 머리에 큰 수를 넣었는지 확인할 것. "
+                            + "집었던 번호={} 새 번호={}",
+                    ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS + 1, expectedVersion,
+                    version);
         }
         return version == CAS_FAILED ? OptionalLong.empty() : OptionalLong.of(version);
     }

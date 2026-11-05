@@ -167,7 +167,7 @@ class ProfanityDictionarySnapshotCodecTest {
      * ⭐ <b>머리 문법이 발행 토큰과 같다 — 여기가 세 번째 문법이었다.</b>
      *
      * <p>{@code decode} 가 {@code Long.parseLong(value.strip())} 였다. 토큰 문법은
-     * {@code 숫자 1~15 + (끝|개행)} 인데 이쪽은 공백·부호를 받는다 — 실측 일곱 벡터 중 넷이
+     * {@code 숫자 1~MAX_VERSION_DIGITS + (끝|개행)} 인데 이쪽은 공백·부호를 받는다 — 실측 일곱 벡터 중 넷이
      * 갈렸다: {@code " 12"}·{@code "-5"}·{@code "+7"}·{@code "\t3"} 를 토큰은 거부하고 이쪽은
      * 받았다. 정책 차이(0 이냐 던지냐)가 아니라 <b>수용 집합 차이</b>다.
      *

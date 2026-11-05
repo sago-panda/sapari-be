@@ -1316,22 +1316,65 @@ class ProfanityDictionaryTest {
         }
         Set<String> warnings = ProfanityDictionary.of("probe", Set.of("시발"), whitelist).warnings();
 
+        // ⚠️ 표본이 <전수>여야 한다. 한때 첫 원소만 봤는데(`get(0)` 비교) 그러면 Set.copyOf 의
+        // SALT 가 우연히 그 원소를 머리에 놓는 1/25 에서 변이가 생존한다 — 테스트가 실행마다
+        // 흔들린다는 뜻이다. 그리고 `startsWith(List.copyOf(warnings).get(0))` 는 양변이 같은
+        // 순회 순서에서 나오므로 <항진명제>였다: 순서를 아무리 망가뜨려도 통과한다.
+        List<String> expected = whitelist.stream()
+                .map(entry -> "화이트리스트 항목 \"" + entry + "\" — 어떤 욕설도 품지 않아 "
+                        + "아무것도 보호하지 않는다")
+                .toList();
         assertThat(warnings)
                 .as("순서를 버리면 같은 사전에서 파드마다 다른 %d건이 찍힌다 — Set.copyOf 의 순회 "
                         + "순서는 JVM 실행마다 다르다", limit)
-                .hasSize(limit + 5)
-                .allSatisfy(message -> assertThat(message).contains("정상어"));
-        assertThat(List.copyOf(warnings).get(0))
-                .as("적재 순서의 첫 항목이 요약의 첫 항목이어야 지목이 재현된다")
-                .contains("\"정상어0\"");
+                .containsExactlyElementsOf(expected);
 
         String summary = ProfanityDictionary.summarize(warnings);
 
         assertThat(summary.split(" · "))
                 .as("상한이 없으면 줄 길이가 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
                 .hasSize(limit);
-        assertThat(summary).endsWith("외 5건").startsWith(List.copyOf(warnings).get(0));
+        // 마지막 원소에 꼬리(… 외 N건)가 붙으므로 split 전수 비교가 아니라 접두로 본다.
+        // 기대 문자열을 whitelist 에서 독립으로 만들었으므로 항진명제가 아니다.
+        assertThat(summary)
+                .as("보여 주는 %d건이 적재 순서의 앞 %d건이어야 지목이 재현된다", limit, limit)
+                .startsWith(String.join(" · ", expected.subList(0, limit)));
+        assertThat(summary).contains("외 5건").contains("ADMIN 조회");
         assertThat(many).hasSize(limit + 5);
+    }
+
+    /**
+     * ⭐ <b>공개된 요약이 제어문자를 접는다 — 호출자를 묶는 규칙이 없기 때문이다.</b>
+     *
+     * <p>이 메서드는 지난 라운드에 {@code public} 이 됐다(소비처가 다른 모듈에 하나 더 있다).
+     * 그 순간 <b>{@code reject} 를 안 지난 집합</b>을 받을 수 있는 모양이 됐고, 호출자를 묶는
+     * 규칙은 없다(ArchUnit 규칙 21은 {@code install} 전용). 개행이 든 문장 하나가 로그 한 줄을
+     * 여러 줄로 쪼개면 그 줄을 읽는 쪽이 어긋난다.
+     *
+     * <p>⚠️ <b>이 벡터는 오늘 프로덕션이 만들 수 없다</b> — 세 입구 전부 {@code reject()} 가 먼저
+     * 돌고 {@code containsInvisible} 이 {@code isWhitespace}·{@code CONTROL} 을 참으로 본다.
+     * 그런데 직전 라운드에 "프로덕션이 만들 수 없는 벡터를 먹였다" 로 지워진 테스트와 <b>축이
+     * 다르다</b>: 그쪽은 "프로덕션이 이 값을 만든다" 를 주장했고, 이쪽은 <b>"공개 메서드가 어떤
+     * 입력에도 이 성질을 지킨다"</b> 는 계약이다. 계약을 재려면 계약의 입력을 직접 넣는 것이 맞다.
+     *
+     * <p>접는 범위가 {@code visible()} 보다 좁은 이유는 그 함수가 {@code char} 단위라 이모지를
+     * 서로게이트 두 쪽으로 쪼개 지목을 더 어렵게 하기 때문이다. 여기서 필요한 것은 지목이 아니라
+     * <b>줄이 쪼개지지 않는 것</b>뿐이다.
+     */
+    @Test
+    @DisplayName("⭐ 공개 요약이 제어문자를 접는다 — 개행 하나가 로그 한 줄을 쪼개면 안 된다")
+    void thePublicSummaryFoldsControlCharacters() {
+        String injected = "화이트리스트 항목 \"정상어\"\n사전에 항목을 더했다 — 위조된 줄";
+
+        String summary = ProfanityDictionary.summarize(
+                new java.util.LinkedHashSet<>(List.of(injected)));
+
+        assertThat(summary)
+                .as("개행이 그대로 나가면 로그 한 줄이 둘로 쪼개져 위조된 줄이 생긴다")
+                .doesNotContain("\n")
+                .contains("\\u000A")
+                .as("보이는 글자는 그대로여야 사람이 읽는 문장이 안 바뀐다")
+                .contains("화이트리스트 항목");
     }
 
     /**

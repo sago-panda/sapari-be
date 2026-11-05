@@ -546,11 +546,47 @@ public final class ProfanityDictionary {
     public static String summarize(Set<String> warnings) {
         List<String> shown = warnings.stream()
                 .limit(ProfanityFilterFactory.LOG_ENTRY_LIMIT)
+                .map(ProfanityDictionary::foldControls)
                 .toList();
         String joined = String.join(" · ", shown);
-        return shown.size() < warnings.size()
-                ? joined + " … 외 " + (warnings.size() - shown.size()) + "건"
-                : joined;
+        if (shown.size() >= warnings.size()) {
+            return joined;
+        }
+        // ⚠️ 순서가 결정론이 된 뒤로 <같은 사전인 동안 같은 상한만> 보인다 — 무작위였을 때는
+        // 재시작마다 다른 20건이 나와 꼬리에 도달할 (지저분한) 경로가 있었다. 그 경로를 없앤
+        // 대가이므로 꼬리에 도달하는 <깨끗한> 길을 여기서 말한다: ADMIN 조회가 두 집합 전량을
+        // 돌려주므로 경고는 원칙적으로 재계산 가능하다. 긴급 경로는 상한 안에 든다 —
+        // load() 가 설정 CSV 변형 통지를 머리에 먼저 쌓는다.
+        return joined + " … 외 " + (warnings.size() - shown.size())
+                + "건(전량은 ADMIN 조회 /api/v1/chat/filter-words 로 받아 다시 센다)";
+    }
+
+    /**
+     * 로그 한 줄을 깨뜨릴 수 있는 <b>제어문자만</b> 접는다 — 개행·줄구분·단락구분·{@code Cc}.
+     *
+     * <p>⚠️ 이것이 {@code visible()} 과 다른 이유. {@code visible()} 은 보이지 않는 글자 전부를
+     * {@code char} 단위로 접어 <b>이모지를 서로게이트 두 쪽으로 쪼갠다</b> — 당직자가 CSV·
+     * 테이블에서 그 항목을 찾기 어려워진다. 여기서 필요한 것은 지목을 돕는 것이 아니라 <b>한 줄이
+     * 여러 줄로 쪼개지지 않게</b> 하는 것뿐이고, 그건 제어문자만 접으면 된다.
+     *
+     * <p>왜 접기가 아예 필요한가: 오늘 이 메서드에 오는 경고 문장에는 제어문자가 <b>들어올 수
+     * 없다</b>(세 입구 전부 {@code reject()} 가 먼저 돌고 {@code containsInvisible} 이
+     * {@code isWhitespace}·{@code CONTROL} 을 참으로 본다). 그런데 이 메서드가 {@code public} 이
+     * 돼서 <b>{@code reject} 를 안 지난 집합</b>을 받을 수 있는 모양이 됐고, 호출자를 묶는 규칙은
+     * 없다. 입구에서 좁히는 것이 그 모양에 대한 값이다 — 상한 하나만 남기는 것보다 싸다.
+     */
+    private static String foldControls(String message) {
+        StringBuilder out = new StringBuilder(message.length());
+        message.codePoints().forEach(cp -> {
+            int type = Character.getType(cp);
+            if (type == Character.CONTROL || type == Character.LINE_SEPARATOR
+                    || type == Character.PARAGRAPH_SEPARATOR) {
+                out.append(String.format("\\u%04X", cp));
+            } else {
+                out.appendCodePoint(cp);
+            }
+        });
+        return out.toString();
     }
 
     /**
