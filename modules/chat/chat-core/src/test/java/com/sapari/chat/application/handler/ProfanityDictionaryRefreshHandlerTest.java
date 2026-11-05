@@ -3,6 +3,8 @@ package com.sapari.chat.application.handler;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
@@ -21,6 +23,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ProfanityDictionaryChangedSource;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotReader;
@@ -34,7 +37,10 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import org.slf4j.LoggerFactory;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
+import reactor.test.scheduler.VirtualTimeScheduler;
 import reactor.test.StepVerifier;
 
 /**
@@ -75,11 +81,96 @@ class ProfanityDictionaryRefreshHandlerTest {
         // 문은 실제 구현을 쓴다 — 목으로 바꾸면 "예산을 넘는 사전을 거부한다" 가 목의 설정을
         // 재는 테스트가 되고, 그 거부가 실제로 그 문에서 나오는지는 안 재진다.
         handler = new ProfanityDictionaryRefreshHandler(
-                changedSource, snapshotReader, new DictionaryProfanityFilterFactory(), cell);
+                changedSource, snapshotReader, new DictionaryProfanityFilterFactory(), cell,
+                ChatMetrics.NOOP);
     }
 
     private static ProfanityDictionarySnapshot snapshot(long version, String... words) {
         return new ProfanityDictionarySnapshot(version, Set.of(words), Set.of());
+    }
+
+    /**
+     * ⭐ <b>알림 스트림이 {@code onError} 로 끝나도 주기 확인이 살아남는다.</b>
+     *
+     * <p>포트 javadoc 이 "이 스트림이 통째로 죽어도 전파는 주기 간격만큼 늦어질 뿐 멈추지
+     * 않는다 — 그것이 설계의 요점이다" 를 <b>계약으로</b> 적는다. 그런데 {@code triggers()} 가
+     * {@code Flux.merge} 라 한 소스의 {@code onError} 가 하류로 전파되고, 유일한
+     * {@code onErrorResume} 은 {@code concatMap} <b>안쪽</b>이라 트리거 스트림 자신의 종료는
+     * 못 잡는다. 그러면 {@code Flux.interval} 까지 같이 죽어 이 Pod 은 재시작 전까지 모든 사전
+     * 변경을 놓치고 — 포트 javadoc 이 경계한 "어떤 Pod 은 막고 어떤 Pod 은 안 막는다" 가 된다.
+     *
+     * <p>이 클래스의 다른 벡터는 {@code refresh(reason)} 을 직접 부르므로
+     * {@code start()}·{@code triggers()}·{@code subscribe()} 를 <b>한 번도 지나지 않는다</b> —
+     * 그래서 이 축의 분모가 0 이었다. 여기서만 실제 구독을 돈다.
+     */
+    @Test
+    @DisplayName("⭐ 알림 스트림이 죽어도 주기 확인은 살아남는다")
+    void anErroredNotificationStreamDoesNotKillThePolling() {
+        VirtualTimeScheduler scheduler = VirtualTimeScheduler.getOrSet();
+        try {
+            Sinks.Many<Long> notifications = Sinks.many().multicast().directBestEffort();
+            given(changedSource.changed()).willReturn(notifications.asFlux());
+            given(snapshotReader.readVersion()).willReturn(Mono.just(1L));
+            given(snapshotReader.read()).willReturn(Mono.just(snapshot(1, "정본욕설")));
+
+            handler.start();
+            notifications.tryEmitError(new RuntimeException("redis 구독이 끊겼다"));
+            scheduler.advanceTimeBy(
+                    ProfanityDictionaryRefreshHandler.VERSION_CHECK_INTERVAL.multipliedBy(3));
+
+            // boot 1회 + 주기 3회. 알림이 죽어 merge 가 종료되면 boot 1회에서 멈춘다.
+            then(snapshotReader).should(atLeast(3)).readVersion();
+        } finally {
+            handler.stop();
+            VirtualTimeScheduler.reset();
+        }
+    }
+
+    /**
+     * ⭐ <b>알림이 연달아 와도 <i>교체가 겹치지 않는다</i> — {@code concatMap} 의 전제.</b>
+     *
+     * <p>그 전제가 네 자리에서 근거로 인용되는데(쓰는 스레드가 하나다 · 단조 비교 폐기 ·
+     * {@code modules/chat/AGENTS.md} · ArchUnit 규칙 javadoc) <b>분모가 0 이었다</b> —
+     * {@code concatMap} 을 {@code flatMap} 으로 바꿔도 전량이 초록이다. ArchUnit 규칙은
+     * {@code install(..)} 의 두 번째 호출자만 막고 연산자 교체는 못 본다.
+     *
+     * <p>{@code flatMap} 이면 v5·v6 연속 알림이 둘 다 {@code published != processedVersion} 을
+     * 통과해 병행으로 빌드되고, v6 이 먼저 끝나면 v5 가 뒤이어 <b>"뒤로 갔다" 분기로 집행하며
+     * {@code processedVersion} 을 되돌린다.</b>
+     *
+     * <p>재는 것은 <b>{@code read()} 호출 수</b>다 — 설치는 {@code boundedElastic} 으로 떼어
+     * 비동기지만, {@code readVersion}·{@code read} 는 알림을 넣은 스레드에서 돈다. 첫
+     * {@code read()} 를 보류 중인 {@code Mono} 로 두면 직렬화되는 동안 호출이 <b>하나</b>고,
+     * 겹치면 <b>둘</b>이다. 시간에 기대지 않는다.
+     */
+    @Test
+    @DisplayName("⭐ 알림이 연달아 와도 교체가 겹치지 않는다")
+    void backToBackNotificationsAreSerialized() {
+        // ⚠️ 버퍼링 싱크다. directBestEffort 는 concatMap 이 한 번에 하나만 요청하는 동안
+        // 두 번째 알림을 <드롭>하므로 "큐에 들어간다" 를 못 재고 다른 것을 재게 된다.
+        Sinks.Many<Long> notifications = Sinks.many().replay().all();
+        Sinks.One<ProfanityDictionarySnapshot> firstRead = Sinks.one();
+        given(changedSource.changed()).willReturn(notifications.asFlux());
+        given(snapshotReader.readVersion())
+                .willReturn(Mono.empty(), Mono.just(5L), Mono.just(6L));
+        given(snapshotReader.read())
+                .willReturn(firstRead.asMono(), Mono.just(snapshot(6, "여섯번욕설")));
+
+        handler.start();
+        try {
+            notifications.tryEmitNext(5L);
+            notifications.tryEmitNext(6L);
+
+            then(snapshotReader).should(times(1)).read();
+
+            // 보류를 풀면 큐에 있던 두 번째가 이어 돈다. 설치가 boundedElastic 으로 떼어져
+            // 있어 그 사이에 비동기 구간이 끼므로 상한을 걸고 기다린다 — 큐가 사라지지 않았다는
+            // 것만 재고 타이밍은 재지 않는다.
+            firstRead.tryEmitValue(snapshot(5, "다섯번욕설"));
+            then(snapshotReader).should(timeout(VERIFY_CEILING.toMillis()).times(2)).read();
+        } finally {
+            handler.stop();
+        }
     }
 
     private void refresh(String reason) {
@@ -213,6 +304,75 @@ class ProfanityDictionaryRefreshHandlerTest {
 
         then(snapshotReader).should(never()).read();
         assertThat(cell.current().filter("번들욕설")).isEqualTo("***");
+    }
+
+    /**
+     * ⭐ <b>머리 0 짜리 본문은 Pod 상태로 갈린다 — 한 문장으로 단정할 수 없는 자리.</b>
+     *
+     * <p>⚠️ 발행 쪽이 이 축을 <b>테스트 없이 단정했다</b>. {@code tokenOf} 의 값 0 WARN 이
+     * "함대가 본문을 당겨도 머리가 0 이라 적용을 조용히 건너뛴다 — 번들 사전으로 돈다" 로
+     * 적혀 있었는데, 그것은 {@code processedVersion == 0} 인 Pod 에서만 참이다. 이미 적용한
+     * Pod 은 {@code 0 < processedVersion} 이라 <b>"뒤로 갔다" WARN 과 함께 그 본문을
+     * 집행한다</b>(위 {@link #aRegressedVersionIsStillApplied} 가 못 박은 의도된 설계).
+     *
+     * <p>아래 두 칸이 그 갈림의 양쪽이다. 발행자는 이 축을 볼 수 없으므로(그쪽은 Redis 두
+     * 키만 본다) 결과절에서 <b>Pod 상태를 열거하지 않고</b> "갈린다 · 복구는 재발행 · 재시작
+     * 전에 본문을 확인" 만 말한다. 상태를 열거하면 목록 밖의 칸이 남고, 재시작을 포괄
+     * 금지하면 밴드 밖 본문이 집행 중인 Pod 에서 유일한 즉시 수단을 막는다.
+     *
+     * <p>이 두 칸을 여기서 재는 이유: 이 클래스의 {@code readVersion()} 벡터에 <b>머리가 0 인
+     * 칸이 없었다.</b> 발행 쪽 테스트는 WARN 문자열만 보므로 수신 동작을 아무도 안 쟀다.
+     */
+    @Test
+    @DisplayName("⭐ 머리 0 본문은 갓 뜬 Pod 은 건너뛰고 기동 중 Pod 은 시끄럽게 집행한다")
+    void aZeroHeadedBodySplitsTheFleetByPodState() {
+        // (1) 갓 뜬 Pod — processedVersion 이 0 이라 머리 0 과 같아 건너뛴다
+        given(snapshotReader.readVersion()).willReturn(Mono.just(5L));
+        given(snapshotReader.read()).willReturn(Mono.just(snapshot(0, "정본욕설")));
+        ListAppender<ILoggingEvent> fresh = attachAppender();
+        try {
+            refresh("boot");
+
+            assertThat(cell.current().filter("정본욕설"))
+                    .as("머리 0 == processedVersion 0 이라 적용 분기가 건너뛴다 — 번들로 돈다")
+                    .isEqualTo("정본욕설");
+            assertThat(cell.current().filter("번들욕설")).isEqualTo("***");
+            assertThat(fresh.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN || e.getLevel() == Level.ERROR)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("이 칸이 수신 쪽에서 무음이다 — 그래서 발행 쪽이 말해야 한다")
+                    .isEmpty();
+        } finally {
+            detachAppender(fresh);
+        }
+
+        // (2) 같은 Pod 이 정상 버전을 한 번 받은 뒤 — 이제 processedVersion 이 0 이 아니다
+        given(snapshotReader.readVersion()).willReturn(Mono.just(3L));
+        given(snapshotReader.read()).willReturn(Mono.just(snapshot(3, "정상욕설")));
+        refresh("poll");
+
+        given(snapshotReader.readVersion()).willReturn(Mono.just(5L));
+        given(snapshotReader.read()).willReturn(Mono.just(snapshot(0, "머리0욕설")));
+        ListAppender<ILoggingEvent> running = attachAppender();
+        try {
+            refresh("poll");
+
+            assertThat(running.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("기동 중 Pod 은 0 < processedVersion 이라 <뒤로 갔다> 분기로 간다 — "
+                            + "조용하지도 번들도 아니다")
+                    .anySatisfy(message -> assertThat(message).contains("뒤로 갔다"));
+        } finally {
+            detachAppender(running);
+        }
+
+        assertThat(cell.current().filter("머리0욕설"))
+                .as("그 본문을 실제로 집행한다 — 발행 쪽 결과절이 '번들로 돈다' 로 단정하면 "
+                        + "이 절반을 거짓으로 말한다")
+                .isEqualTo("***");
     }
 
     /**

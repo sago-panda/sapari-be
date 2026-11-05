@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import org.assertj.core.api.InstanceOfAssertFactories;
+
 import java.util.Set;
 
 import com.sapari.chat.application.port.ProfanityFilterFactory;
@@ -29,6 +31,42 @@ import com.sapari.chat.domain.rule.ProfanityFilter;
 class ProfanityDictionaryTest {
 
     private static final String WHITELIST = "/chat/profanity-whitelist.txt";
+
+    /**
+     * ⭐ <b>거부 메시지의 항목 보간은 길이가 묶이고 <i>지목이 남는다</i>.</b>
+     *
+     * <p>전파된 스냅샷은 요청 검증도 정본 {@code varchar(64)} 도 안 지난다 — 코덱의 상한은
+     * 버전 자리수뿐이고 항목 길이를 보는 자리가 없다. 그 거부 메시지는
+     * {@code ProfanityDictionaryRefreshHandler} 의
+     * {@code log.error("전파된 사전을 거부했다 … 이유={}")} 로 나간다.
+     *
+     * <p>⚠️ <b>자르는 순서가 두 성질을 가른다.</b> {@code visible()} 로 먼저 늘린 뒤 자르면
+     * 짧은 항목에서도 꼬리 글자가 사라지고({@code varchar(64)} 안인데도) 꼬리의 {@code N} 이
+     * 확장 뒤 길이가 돼서 64자 열에서 "30만자 항목" 을 찾게 된다. 그래서 두 칸을 같이 잰다 —
+     * 짧은 쪽은 <b>끝까지 남고</b>, 긴 쪽은 <b>묶이면서 원래 길이를 말한다</b>.
+     */
+    @Test
+    @DisplayName("⭐ 거부 메시지의 항목 보간은 묶이고 지목이 남는다")
+    void aRejectionMessageBoundsTheEntryWithoutLosingItsTail() {
+        String shortEntry = "시" + "\u200B".repeat(40) + "발";
+        assertThatThrownBy(
+                () -> ProfanityDictionary.of("chat:dict", Set.of(shortEntry), Set.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .extracting(Throwable::getMessage, InstanceOfAssertFactories.STRING)
+                .as("varchar(64) 안인 항목의 꼬리가 사라지면 당직자가 그 행을 못 집는다")
+                .contains("시")
+                .contains("발")
+                .doesNotContain("…(");
+
+        String huge = "시" + "\u200B".repeat(50_000);
+        assertThatThrownBy(() -> ProfanityDictionary.of("chat:dict", Set.of(huge), Set.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .extracting(Throwable::getMessage, InstanceOfAssertFactories.STRING)
+                .as("항목 길이가 안 묶이면 전파 거부 한 줄이 수십만 자가 된다")
+                .hasSizeLessThan(3_200)
+                .as("꼬리의 수가 원래 항목의 코드포인트여야 당직자가 그 행을 찾는다")
+                .contains("…(50001자)");
+    }
 
     private static ProfanityFilter filterFromDictionary() {
         ProfanityDictionary dictionary = ProfanityDictionary.load(null, null);
@@ -1377,7 +1415,7 @@ class ProfanityDictionaryTest {
      * 규칙은 없다(ArchUnit 규칙 21은 {@code install} 전용). 개행이 든 문장 하나가 로그 한 줄을
      * 여러 줄로 쪼개면 그 줄을 읽는 쪽이 어긋난다.
      *
-     * <p>⚠️ <b>이 벡터는 오늘 프로덕션이 만들 수 없다</b> — 세 입구 전부 {@code reject()} 가 먼저
+     * <p>⚠️ <b>이 벡터는 오늘 프로덕션이 만들 수 없다</b> — 입구 전부 {@code reject()} 가 먼저
      * 돌고 {@code containsInvisible} 이 {@code isWhitespace}·{@code CONTROL} 을 참으로 본다.
      * 그런데 직전 라운드에 "프로덕션이 만들 수 없는 벡터를 먹였다" 로 지워진 테스트와 <b>축이
      * 다르다</b>: 그쪽은 "프로덕션이 이 값을 만든다" 를 주장했고, 이쪽은 <b>"공개 메서드가 어떤

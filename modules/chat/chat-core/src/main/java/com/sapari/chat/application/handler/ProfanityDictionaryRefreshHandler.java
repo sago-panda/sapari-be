@@ -4,6 +4,7 @@ import java.time.Duration;
 
 import org.springframework.stereotype.Component;
 
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ProfanityDictionaryChangedSource;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotReader;
@@ -68,13 +69,14 @@ public class ProfanityDictionaryRefreshHandler {
      */
     static final Duration VERSION_CHECK_INTERVAL = Duration.ofMinutes(1);
 
-    /** 실패 메시지에 실을 출처 — 사전이 들어오는 세 입구 중 어디서 떨어졌는지가 당직자에게 가야 한다. */
+    /** 실패 메시지에 실을 출처 — 사전이 어느 입구에서 떨어졌는지가 당직자에게 가야 한다. */
     private static final String ORIGIN = ProfanityFilterFactory.ORIGIN_SNAPSHOT;
 
     private final ProfanityDictionaryChangedSource changedSource;
     private final ProfanityDictionarySnapshotReader snapshotReader;
     private final ProfanityFilterFactory filterFactory;
     private final ProfanityFilterInstaller filterInstaller;
+    private final ChatMetrics metrics;
 
     /**
      * 이미 처리한 버전 — 적용했든 거부했든 포함한다.
@@ -122,11 +124,35 @@ public class ProfanityDictionaryRefreshHandler {
     /**
      * 셋을 한 스트림으로 모은다. {@code concatMap} 이 아래에서 직렬화하므로 여기서는 순서를
      * 보장하지 않아도 된다 — 어느 것이 먼저 와도 하는 일이 같다("지금 정본이 뭔지 보고 와라").
+     *
+     * <p>⚠️ <b>알림 소스의 {@code onError} 를 여기서 끊는다.</b> {@link Flux#merge} 는 한
+     * 소스의 에러를 하류로 전파하고 아래 {@code onErrorResume} 은 {@code concatMap} <b>안쪽</b>
+     * 이라 트리거 스트림 자신의 종료를 못 잡는다 — 그러면 {@code Flux.interval} 까지 같이 죽어
+     * 이 Pod 이 재시작 전까지 모든 사전 변경을 놓친다(실측: 알림에 에러를 넣으면 그 뒤 주기
+     * 확인이 0회다).
+     *
+     * <p>{@link ProfanityDictionaryChangedSource} 가 "이 스트림이 통째로 죽어도 전파는 주기
+     * 간격만큼 늦어질 뿐 멈추지 않는다" 를 계약으로 적는다. 그 계약을 <b>합성하는 자리</b>에서
+     * 지킨다 — 어댑터의 재시도에 기대면 구현이 하나 늘 때 조용히 깨진다.
      */
     private Flux<String> triggers() {
         return Flux.merge(
                 Mono.just("boot"),
-                changedSource.changed().map(version -> "notify:v" + version),
+                changedSource.changed()
+                        .map(version -> "notify:v" + version)
+                        .onErrorResume(e -> {
+                            // 빠른 길만 잃는다 — 주기 확인이 남아 전파는 그 간격만큼 늦어진다.
+                            // 삼키고 판정을 유지하므로 카운터도 같이 올린다(modules/chat/AGENTS.md).
+                            // 이 한 줄을 놓치면 이 Pod 이 "늦은 사전으로 집행하는 Pod" 으로 남고
+                            // 지표·헬스 어디에도 안 나타난다.
+                            metrics.dictionaryFastPathLost();
+                            log.warn("사전 알림 스트림이 끝났다 — 빠른 길을 잃고 주기 확인만 "
+                                            + "남는다(전파가 최대 {}초 늦어진다). 이 Pod 은 재시작"
+                                            + "까지 이 상태다. cause={}",
+                                    VERSION_CHECK_INTERVAL.toSeconds(),
+                                    e.getClass().getSimpleName(), e);
+                            return Flux.empty();
+                        }),
                 Flux.interval(VERSION_CHECK_INTERVAL, VERSION_CHECK_INTERVAL).map(tick -> "poll"));
     }
 

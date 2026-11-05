@@ -55,7 +55,7 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class ManageFilterWordsService implements ManageFilterWordsUseCase {
 
-    /** 검사 실패 메시지에 실을 출처 — 세 입구 중 어디서 떨어졌는지가 로그에 가야 한다. */
+    /** 검사 실패 메시지에 실을 출처 — 어느 입구에서 떨어졌는지가 로그에 가야 한다. */
     private static final String ADMIN_ORIGIN = ProfanityFilterFactory.ORIGIN_ADMIN;
     private static final String SOURCE_ORIGIN = ProfanityFilterFactory.ORIGIN_SOURCE;
 

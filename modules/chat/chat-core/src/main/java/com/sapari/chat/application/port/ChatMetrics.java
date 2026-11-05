@@ -38,6 +38,14 @@ public interface ChatMetrics {
     void sessionCut(SessionCutReason reason);
 
     /**
+     * 사전 전파의 빠른 길을 잃었다 — 이 Pod 은 재시작까지 주기 확인만으로 돈다.
+     *
+     * <p>로그 한 줄로는 부족하다. 그 줄을 놓치면 이 Pod 은 "최대 한 주기 늦은 사전으로 집행하는
+     * Pod" 으로 남고, 함대 일부만 그 상태면 증상이 "어떤 Pod 은 막고 어떤 Pod 은 안 막는다" 다.
+     */
+    void dictionaryFastPathLost();
+
+    /**
      * 아무것도 하지 않는 구현. <b>registry 없이도 뜨는 것이 포트 구현의 기본값이어야 하기 때문</b>이고,
      * 실제 용도는 단위 테스트가 registry 를 세우지 않고 돌게 하는 것이다.
      */
@@ -47,5 +55,6 @@ public interface ChatMetrics {
         @Override public void rateLimitDegraded(RateLimitDegradation mode) { }
         @Override public void deliveryDropped(DeliveryStage stage) { }
         @Override public void sessionCut(SessionCutReason reason) { }
+        @Override public void dictionaryFastPathLost() { }
     };
 }

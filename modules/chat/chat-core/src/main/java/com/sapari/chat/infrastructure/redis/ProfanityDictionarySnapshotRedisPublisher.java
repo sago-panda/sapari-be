@@ -196,32 +196,25 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
         boolean snapshotPresent = isPresent(ChatRedisKeys.dictSnapshot());
         boolean versionPresent = isPresent(ChatRedisKeys.dictVersion());
         List<String> reasons = new ArrayList<>();
-        OptionalLong head = tokenOf(ChatRedisKeys.dictSnapshot(), "스냅샷 본문", reasons);
-        OptionalLong counter = tokenOf(ChatRedisKeys.dictVersion(), "버전 키", reasons);
+        OptionalLong head = tokenOf(ChatRedisKeys.dictSnapshot(), "스냅샷 본문",
+                snapshotPresent, reasons);
+        OptionalLong counter = tokenOf(ChatRedisKeys.dictVersion(), "버전 키",
+                versionPresent, reasons);
         long base = Math.max(head.orElse(0L), counter.orElse(0L));
-        // ⚠️ 게이트는 <base == 0> 이다. 한때 사유를 참으로 만들려고 이것을
-        // `head.isEmpty() && counter.isEmpty()` 로 좁혔는데, 두 조건의 차이가 정확히 "읽히고
-        // 자격도 통과하는 값 0 을 든 키" 한 칸이고 그 칸에서 WARN 이 사라졌다(49벡터 전수에서
-        // 11칸). 그 칸도 다음 발행이 v1 이라 함대가 1 을 들고 있으면 조용히 건너뛴다 — 경계
-        // 칸과 같은 피해다. "사유가 참인가" 와 "같은 칸들을 아직 덮는가" 는 다른 질문이고,
-        // 전자만 고치면 후자가 조용히 줄어든다. 사유는 reasons 가 따로 말한다.
+        // 게이트는 base == 0 이다 — `head.isEmpty() && counter.isEmpty()` 가 아니다. 두
+        // 조건의 차이는 "읽히고 자격도 통과하는 값 0 을 든 키" 한 칸인데, 그 칸도 다음 발행이
+        // v1 이라 함대가 1 을 들고 있으면 조용히 건너뛴다 — 경계 칸과 같은 피해다.
+        //
+        // reasons 는 여기서 보충하지 않는다. 각 축은 tokenOf 가 무조건 쌓고, 사유 다섯 종
+        // (타입·사라짐·문법·자격·값 0)이 전부 자기 log.warn 도 갖는다. 그 분업이 필요한
+        // 이유: 이 리스트의 소비자는 아래 log.warn 하나이고 그것이 이 게이트 안에 있어서,
+        // 한 키가 사유를 받았는데 다른 키가 자격 있는 토큰 ≥1 을 들면 base ≥ 1 이라 한 줄도
+        // 안 나간다.
         if (base == 0L && (snapshotPresent || versionPresent)) {
-            if (reasons.isEmpty()) {
-                // 여기 오는 유일한 길은 "키가 확인과 읽기 사이에 사라진" 것이다 — 값 0 은
-                // tokenOf 가 무조건 사유를 쌓는다.
-                // ⚠️ isPresent 두 번 + GET 두 번이 원자적이지 않은 4 왕복이라, hasKey 가 true 를
-                // 준 뒤 축출·DEL 이 끼면 GET 이 null 이고 사유가 안 쌓인다. 그때 WARN 이
-                // "기준이 못 된다([])" 로 나가면 "어느 키가 왜" 를 싣겠다는 목적이 무너진다.
-                reasons.add("확인 뒤 읽기 사이에 키가 사라졌다(축출·DEL)");
-            }
-            // 이 칸이 한때 <전 경로 무음>이었다 — 발행은 200 이고 함대가 그 번호를 읽지 못하거나
-            // 이미 들고 있어서 집행하지 않는데 로그가 한 줄도 없었다.
-            //
-            // v1 은 <읽히는> 번호다(그게 읽을 수 없는 번호를 쓰는 것보다 낫다). 남는 위험은
-            // 함대가 이미 1 을 들고 있는 경우이고 — 그러면 그 발행을 건너뛴다. 그 잔차는
-            // <버전만 비교한다> 는 선택에서 오고(받는 쪽은 본문을 손에 들고 있다) 휘발 저장
-            // 때문이 아니다 — modules/chat/AGENTS.md 가 그 축과 가격을 적는다. 그래서 적어도
-            // <보이게> 만든다.
+            // v1 은 <읽히는> 번호다(읽을 수 없는 번호를 쓰는 것보다 낫다). 남는 위험은 함대가
+            // 이미 1 을 들고 있어 그 발행을 건너뛰는 경우이고, 그 잔차는 <버전만 비교한다> 는
+            // 선택에서 온다(받는 쪽은 본문을 손에 들고 있다) — modules/chat/AGENTS.md 가 그
+            // 축과 가격을 적는다. 그래서 적어도 <보이게> 만든다.
             // ⚠️ 이 한 줄이 사유·확인·복구 셋을 말하는데 <셋 다 틀렸던> 자리다. 각각 고친 근거:
             //
             // 사유 — "기여 없음" 과 "값 0" 을 같은 0L 로 뭉개면 정상 값 "0" 에도 "문법 밖이다" 가
@@ -319,8 +312,8 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             // 그 교환을 받는 근거: 안 잡은 것(PoolException·SerializationException)은 이
             // catch 를 통과해 <여기서 즉시 전파>되므로 발행이 시끄럽게 죽는다 — 조용히 사라질
             // 길이 없다. tokenOf 의 재던짐은 그쪽이 아니라 <잡아서 삼킨> DataAccessException
-            // 쪽의 보상 기전이고, 그것은 바로 위 두 줄이 적는다. 한때 이 단락이 그 두 집합을
-            // 맞바꿔 적었다(결론은 같았다). 코드 결함을 삼키지 않는 쪽을 그 대가로 산다.
+            // 쪽의 보상 기전이고, 그 재던짐은 아래 "창은 좁다" 단락이 적는다. 코드 결함을
+            // 삼키지 않는 쪽을 그 대가로 산다.
             //
             // 창은 좁다: 같은 커넥션이면 뒤의 GET 이 터져 발행이 시끄럽게 실패한다(tokenOf 가
             // WRONGTYPE 외를 rethrow 한다). 그래도 삼킨 사실은 남겨야 하고, 이 경로의 실패가
@@ -332,12 +325,76 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
     }
 
     /**
+     * 키가 사라진 것의 결과 — <b>키마다 다르다.</b>
+     *
+     * <p>본문이 없으면 재시작·신규 Pod 이 그 번호의 사전을 못 받는다. 버전 키가 없으면
+     * <b>실행 중 Pod 의 집행이 안 바뀐다</b> — 리더가 두 키의 큰 쪽을 집으므로 본문 머리가
+     * 읽히는 한 같은 번호가 나오고, 읽히지 않는 칸이면 버전 키가 있었어도 본문 복호가 실패해
+     * 역시 집행이 0 이다. 어느 쪽이든 "이 키가 사라져서 달라지는 것" 은 없다.
+     *
+     * <p>⚠️ 그 두 문장의 <b>대상이 다르다</b>(앞은 재시작·신규 Pod, 뒤는 실행 중 Pod). 같은
+     * 쌍에서 대상이 바뀌는 것을 안 적으면 다음 사람이 한쪽 결론을 다른 집단에 적용한다.
+     * 버전 키가 사라진 칸에서 <b>신규 Pod 이 번들로 도는 것</b>은 이 문장의 반례가 아니라
+     * 수신 쪽 {@code switchIfEmpty} 가 부팅에서만 말하는 별 축이다.
+     *
+     * <p>⚠️ {@code else} 기본값을 두지 않는다. 세 번째 키가 {@code tokenOf} 에 붙으면 그 키가
+     * 조용히 버전 축 결과절을 물려받고, 그때 틀리는 것이 당직자 안내다 —
+     * {@code DictionaryProfanityFilterFactory.recoveryFor} 가 밟았던 그 모양이다.
+     *
+     * <p>패키지 공개다 — {@code private} 이면 그 미지 키 분기의 <b>분모가 0</b> 이고(오늘 키가
+     * 둘뿐이라 도달이 없다) {@code else} 로 되돌리는 변이가 전량 초록으로 살아남는다. 실제로
+     * 살아남는 것을 확인한 뒤 열었다({@code readReturn}·{@code foldControls} 와 같은 이유).
+     */
+    static String vanishedConsequence(String key) {
+        if (ChatRedisKeys.dictSnapshot().equals(key)) {
+            return "재시작·신규 Pod 이 본문을 못 찾아 번들 사전으로 돈다";
+        }
+        if (ChatRedisKeys.dictVersion().equals(key)) {
+            return "실행 중 Pod 의 집행은 안 바뀐다(리더가 두 키의 큰 쪽을 집는다)";
+        }
+        return "이 키의 수신 쪽 영향은 여기 적혀 있지 않다 — 함께 확인한다";
+    }
+
+    /**
+     * 키가 값 0 을 든 것의 결과 — <b>키마다 다르고, 본문 쪽은 Pod 상태로 또 갈린다.</b>
+     *
+     * <p>버전 키가 0 이면 본문 머리로 수렴해 발행·적용이 정상이다.
+     *
+     * <p>본문 머리가 0 이면 수신 쪽 결과가 <b>각 Pod 이 이미 적용한 번호로 갈린다</b>. 그
+     * 축은 <b>발행자가 볼 수 없다</b> — 이쪽은 Redis 두 키만 본다. 그래서 <b>Pod 상태를
+     * 열거하지 않는다</b>: 어떤 상태를 적어도 그 목록 밖의 칸이 남고, 그 거짓이 당직자를
+     * 틀린 조치로 보낸다. 갈린다는 사실과 <b>복구는 재발행</b>이라는 것만 말한다(기준이 다른
+     * 키로 잡히므로 다음 번호가 어느 상태의 Pod 에도 적용된다). 갈리는 칸들은 수신 쪽
+     * {@code aZeroHeadedBodySplitsTheFleetByPodState} 가 잰다.
+     *
+     * <p>재시작을 <b>포괄 금지하지도 않는다</b>. 머리 0 은 발행이 쓰지 않는 값이라 이 본문은
+     * 검수되지 않은 밴드 밖 쓰기일 수 있고, 그 화이트리스트가 욕설을 품으면 재시작이 검증된
+     * 번들로 되돌리는 유일한 즉시 수단이다. 반대로 맞는 사전을 들고 있는 Pod 에는 재시작이
+     * 그것을 잃는 길이다. 그래서 <b>본문을 먼저 확인하라</b>고 말한다.
+     *
+     * <p>패키지 공개인 이유는 {@link #vanishedConsequence} 와 같다 — 미지 키 분기의 벡터를
+     * 만들려면 이 평면이 필요하다.
+     */
+    static String zeroConsequence(String key) {
+        if (ChatRedisKeys.dictSnapshot().equals(key)) {
+            return "수신 결과가 Pod 마다 이미 적용한 번호로 갈린다(이쪽에서는 알 수 없다) — "
+                    + "복구는 재발행이다. 재시작 전에 이 본문이 검수된 것인지 먼저 확인할 것: "
+                    + "머리 0 은 발행이 쓰지 않는 값이다";
+        }
+        if (ChatRedisKeys.dictVersion().equals(key)) {
+            return "본문 머리가 자격을 통과하면 기준이 그쪽으로 수렴해 발행·적용은 정상이다";
+        }
+        return "이 키의 수신 쪽 영향은 여기 적혀 있지 않다 — 함께 확인한다";
+    }
+
+    /**
      * 키 하나의 토큰 기여분. 없거나 타입이 다르거나 문법에 안 맞으면 {@code 0} 이다.
      *
      * <p>세 경우를 가르지 않는 것이 의도다 — 토큰에 대해서는 전부 "이 키는 기준을 못 준다" 로
      * 같고, 셋 다 다음 발행이 {@code SET} 으로 덮어 고친다. 가르는 것은 로그뿐이다.
      */
-    private OptionalLong tokenOf(String key, String what, List<String> reasons) {
+    private OptionalLong tokenOf(String key, String what, boolean present,
+            List<String> reasons) {
         String raw;
         try {
             raw = redisTemplate.opsForValue().get(key);
@@ -351,6 +408,23 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             throw e;
         }
         if (raw == null) {
+            if (present) {
+                // isPresent 두 번 + GET 두 번이 원자적이지 않은 4 왕복이라, hasKey 가 true 를
+                // 준 뒤 축출·DEL 이 끼면 여기로 온다. 그 사실을 <이 축에서> 쌓는다 — 호출처가
+                // "사유가 하나도 없을 때만" 보충하면 다른 키에 사유가 있는 칸에서 사라진다.
+                reasons.add(what + "=확인 뒤 읽기 사이에 사라졌다(축출·DEL)");
+                // 그리고 <여기서 말한다>. reasons 의 소비자는 currentVersion 의 base == 0
+                // 게이트 하나인데, 본문만 사라지고 버전 키가 자격 있는 토큰 ≥1 을 들고 있으면
+                // base ≥ 1 이라 그 게이트가 거짓이다 — 쌓아도 아무도 말하지 않는다.
+                //
+                // 결과절은 vanishedConsequence 가 키마다 가른다. 공용 문장에 한 축의 결과를
+                // 넣으면 다른 축에서 거짓이 되고, 그 거짓이 당직자를 불필요한 재시작으로
+                // 보낸다. 조사도 라벨에 맡기지 않는다("사전 {}이" 는 what="버전 키" 에서
+                // "버전 키이" 가 된다) — 라벨을 자리= 로 뗐다.
+                log.warn("사전 키가 존재 확인 뒤 읽기 사이에 사라졌다(축출·DEL) — {}. 다음 발행이 "
+                                + "이 키를 SET 으로 복구한다. 자리={} key={}",
+                        vanishedConsequence(key), what, key);
+            }
             return OptionalLong.empty();
         }
         OptionalLong token = ProfanityDictionarySnapshotCodec.readVersionToken(raw);
@@ -361,11 +435,23 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             return OptionalLong.empty();
         }
         if (token.getAsLong() == 0L) {
-            // ⚠️ 무조건 쌓는다. 한때 호출처가 reasons.isEmpty() 일 때만 "값이 0 이다" 를 넣어서,
-            // 다른 키에 사유가 있으면(머리=0 · 버전="12abc" 류) base 를 0 으로 붙잡고 있는 또
-            // 한 축이 WARN 에서 사라졌다 — 225칸 중 36칸이 그 모양이었다. 게이트 주석이 "사유는
-            // reasons 가 따로 말한다" 로 분업을 선언했으므로 그 36칸에서 선언이 깨진다.
+            // 무조건 쌓는다 — 호출처가 "사유가 하나도 없을 때만" 채우면, 다른 키에 사유가
+            // 있는 칸에서 base 를 0 으로 붙잡고 있는 이 축이 WARN 에서 빠진다.
             reasons.add(what + "=읽히고 자격도 통과하는데 값이 0 이다");
+            // 이 축도 <여기서 말한다>. 게이트만으로는 부족한 칸이 있다:
+            //
+            //   본문 머리=0 · 버전 키=5  → base = max(0,5) = 5 → 게이트가 거짓(무음)
+            //     수신 결과는 각 Pod 이 이미 적용한 번호로 갈린다. 그 축은 여기서 볼 수 없어
+            //     결과절이 열거하지 않고, 수신 쪽 aZeroHeadedBodySplitsTheFleetByPodState 가
+            //     그 칸들을 잰다.
+            //   본문 머리=5 · 버전 키=0  → 기준이 5 로 수렴하고 발행·적용이 정상 → 피해 0.
+            //
+            // 즉 피해가 <축 단위가 아니라 키 단위>로 갈리므로 두 키 모두 말한다. 발행은 0 을
+            // 쓰지 않으니 이 값 자체가 아웃오브밴드 쓰기이고, 분당 폴링 경로는
+            // currentVersion() 을 부르지 않으므로 줄 수도 묶인다.
+            log.warn("사전 키가 값 0 을 들고 있다 — 발행은 0 을 쓰지 않으므로 아웃오브밴드 "
+                            + "쓰기다. {}. 다음 발행이 이 키를 덮어 고친다. 자리={} key={}",
+                    zeroConsequence(key), what, key);
         }
         if (!ProfanityDictionarySnapshotCodec.isEligibleBase(token.getAsLong())) {
             reasons.add(what + "=읽히지만 +1 을 쌓으면 읽을 수 없는 번호가 된다");

@@ -145,11 +145,16 @@ public final class ProfanityDictionary {
      * 이미 메모리에 있는 두 집합을 <b>리소스와 같은 문으로</b> 들여보낸다 — 정본에서 전파돼 온 사전이
      * 이 입구를 쓴다.
      *
-     * <p><b>왜 같은 문이어야 하는가.</b> 전파가 붙으면 사전이 세 입구로 들어온다 — 번들 리소스 ·
-     * 설정 CSV · 정본 스냅샷. 세 번째에만 검사를 안 걸면 거부의 근거들이 그 입구에서 전부 무효가
-     * 된다: 보이지 않는 글자가 든 항목은 평범한 입력을 영원히 못 잡고(막은 것처럼 보인다),
+     * <p><b>왜 같은 문이어야 하는가.</b> 전파가 붙으면 사전이 <b>부팅 때 호스트 앱이 직접
+     * 들여보내는 입구</b> 말고 <b>런타임에 전파돼 오는 입구</b>로도 들어온다. 전파 쪽에만 검사를
+     * 안 걸면 거부의 근거들이 그 입구에서 전부 무효가 된다: 보이지 않는 글자가 든 항목은 평범한 입력을 영원히 못 잡고(막은 것처럼 보인다),
      * 예산을 넘는 항목 하나는 함대 처리량을 떨어뜨리고, 욕설 그 자체인 화이트리스트 항목 하나는
      * 그 욕설을 사전 전체에서 푼다. 그 셋은 어디서 들어왔는지와 무관하게 같은 결함이다.
+     *
+     * <p>입구를 <b>이름으로 열거하지 않는다</b> — 목록은 입구가 하나 늘면 낡는다. 구분은
+     * "부팅에 직접 들여보내는 쪽 / 런타임에 전파돼 오는 쪽" 둘이다. 같은 규칙이
+     * {@link com.sapari.chat.application.port.ProfanityFilterFactory} 의 머리글에도 있다 —
+     * <b>둘은 쌍이고, 한쪽만 고치면 어긋난다.</b>
      *
      * <p><b>던지는 것이 곧 거부다.</b> 호출자가 이것을 잡아 <b>교체를 포기하고 이전 사전을 계속
      * 쓴다</b> — 리소스 입구가 부팅을 세우는 것과 방향이 다른데, 도는 Pod 를 사전 한 줄의 오타로
@@ -163,7 +168,7 @@ public final class ProfanityDictionary {
      *
      * @param origin 실패 메시지에 실을 출처 이름 — {@code ProfanityFilterFactory.ORIGIN_*} 중
      *               하나를 쓴다(리터럴을 쓰면 꼬리 안내 분기가 조용히 일반 분기로 떨어진다).
-     *               세 입구 중 어디서 떨어졌는지가 당직자에게 가야 한다
+     *               어느 입구에서 떨어졌는지가 당직자에게 가야 한다
      */
     public static ProfanityDictionary of(String origin, Set<String> words, Set<String> whitelist) {
         Set<String> admitted = new LinkedHashSet<>();
@@ -254,9 +259,14 @@ public final class ProfanityDictionary {
      */
     private static void reject(String where, String word) {
         if (containsInvisible(word)) {
+            // ⚠️ 첫 위반 글자와 그 자리를 <따로> 싣는다. 보여 주는 창이 절단되면 그 안에
+            // 마커가 0개일 수 있고(긴 항목의 위반 글자가 절단면 밖), 그때 "보이지 않는 글자가
+            // 있다" 는 자기가 못 보여 주는 것을 단정하는 문장이 된다. 자리를 싣으면 그 단정이
+            // 창의 내용에 기대지 않는다.
             throw new IllegalStateException(
-                    "사전 항목에 공백·보이지 않는 글자가 있다: " + where + " \"" + visible(word)
-                            + "\" — 공백이 든 항목은 ProfanityFilter 가 공백으로 토큰을 가르므로 "
+                    "사전 항목에 공백·보이지 않는 글자가 있다: " + where + " \""
+                            + describeBounded(word) + "\" " + firstInvisible(word)
+                            + " — 공백이 든 항목은 ProfanityFilter 가 공백으로 토큰을 가르므로 "
                             + "어떤 토큰에도 안 맞고, 그 외 보이지 않는 글자가 든 항목은 같은 글자를 "
                             + "품은 입력 하나만 맞는다. 둘 다 평범한 입력은 못 잡으면서 막은 것처럼 보인다.");
         }
@@ -463,6 +473,25 @@ public final class ProfanityDictionary {
     }
 
     /**
+     * 첫 위반 글자와 그 코드포인트 자리 — <b>절단된 창이 못 보여 주는 것을 메시지가 말하게 한다.</b>
+     *
+     * <p>{@code describeBounded} 의 창 안에 마커가 0개인 벡터가 있다(긴 항목의 위반 글자가
+     * 절단면 밖). 그 칸에서 이것이 유일하게 행동 가능한 정보다.
+     */
+    private static String firstInvisible(String word) {
+        int index = 0;
+        for (int i = 0; i < word.length(); ) {
+            int cp = word.codePointAt(i);
+            if (isInvisible(cp)) {
+                return String.format("(첫 위반 U+%04X @ cp#%d)", cp, index);
+            }
+            i += Character.charCount(cp);
+            index++;
+        }
+        return "(첫 위반 없음)";
+    }
+
+    /**
      * 눈에 안 보이는 글자가 섞였는지 본다.
      *
      * <p>{@code isWhitespace} 하나로는 모자란다. NBSP(U+00A0)는 그게 false 이고, ZWSP(U+200B)·
@@ -547,8 +576,7 @@ public final class ProfanityDictionary {
     public static String summarize(Set<String> warnings, String recovery) {
         List<String> shown = warnings.stream()
                 .limit(ProfanityFilterFactory.LOG_ENTRY_LIMIT)
-                .map(ProfanityDictionary::foldControls)
-                .map(ProfanityDictionary::truncate)
+                .map(ProfanityDictionary::sanitizeForLog)
                 .toList();
         String joined = String.join(" · ", shown);
         if (shown.size() >= warnings.size()) {
@@ -581,11 +609,11 @@ public final class ProfanityDictionary {
      * 한 줄이 {@code 20 × 무한}이다(상한 없을 때 35,966자가 나왔던 그 축). 제어문자 접기는
      * 쪼개짐만 막고 길이는 안 막는다.
      *
-     * <p>⚠️ 한때 근거를 "경고 문장 자체가 정상 100자 안쪽" 으로 적었다. <b>4모양 전수 실측에서
-     * 두 모양이 그보다 길다</b>: {@code warningEntries} 의 셋은 각각 최대 60 · 57 · 126자로
-     * 240 에 도달 불가이고, {@code dropZeroWidth} 가 만드는 모양은 <b>무한(평시에도 최소
-     * 153자)</b>이다. 즉 잘릴 수 있는 유일한 모양이 평시에도 153자다 — 결론(240 이 정상 문장을
-     * 안 자른다)은 참이고 근거만 틀렸다.
+     * <p>240 이 정상 경고 문장을 안 자른다 — 4모양 전수 실측: {@code warningEntries} 의 셋은
+     * 각각 최대 60 · 57 · 126자(240 도달 불가), {@code dropZeroWidth} 가 만드는 모양은 길이가
+     * 무한이고 평시에도 최소 155자다({@code load("a" + ZWSP, null)} 의 실제 문장 —
+     * {@code chat.profanity.whitelist} 쪽은 키 이름이 길어 159). 즉 잘릴 수 있는 유일한 모양이
+     * 평시에도 155자다.
      *
      * <p>그 모양이 잘려도 <b>복구가 안 깨진다</b>: 그 문장의 머리가 지목자
      * ({@code 설정 항목 chat.profanity.words 의 N번째 항목})이고 240 안에 전부 남는다. 잃는 쪽은
@@ -599,12 +627,41 @@ public final class ProfanityDictionary {
      * 240). 위의 "최대 60·57·126자" 도 {@code char} 기준이다 — 그 값들이 240 아래인 것은 그대로
      * 참이고, 바뀌는 것은 "이모지 항목이 더 일찍 잘린다" 는 사실이다.
      *
-     * <p>{@code …(N자)} 의 {@code N} 은 <b>코드포인트 수</b>다(절단 경계와 같은 단위). 한때
-     * UTF-16 {@code char} 수였는데 이모지에서 운영자가 세는 수와 두 배까지 벌어졌다. 다만
-     * <b>제어문자 접기 뒤</b> 길이라는 점은 남는다({@link #summarize} 의 순서) — 공개 계약으로
-     * 제어문자가 섞인 입력이 들어오면 원래 항목 길이와 다르다.
+     * <p>{@code …(N자)} 의 {@code N} 은 <b>코드포인트 수</b>다(절단 경계와 같은 단위). 생산자가
+     * 둘이고 세는 평면이 다르다 — {@link #sanitizeForLog} 는 접기 뒤를 세고
+     * {@link #describeBounded} 는 접기를 지나지 않아 원문을 센다.
+     *
+     * <p><b>이 상수는 세 쓰임을 동시에 묶는다</b> — 경고 문장과 {@code origin} 은
+     * {@link #sanitizeForLog}(char 예산), {@code reject} 의 항목 보간은
+     * {@link #describeBounded}(코드포인트 예산)로 쓴다. <b>단위가 다르다</b>: 뒤쪽은 자르고
+     * 나서 {@link #visible} 이 확장하므로 상계가 예산보다 크다. 이 수를 올리거나 내리는 커밋은
+     * 세 쓰임을 전부 보라. 묶는 것은 <b>한 값의 출현 하나하나</b>이고 줄 전체는 아니다
+     * (출현 수는 호출처가 정한다).
      */
     private static final int MAX_WARNING_LENGTH = 240;
+
+    /**
+     * 로그 한 줄에 실을 값을 다듬는다 — <b>제어문자 접기 + 길이 상한</b>.
+     *
+     * <p>두 변환이 한 이름인 이유: 둘 중 하나만 걸면 남는 축이 그대로 로그를 깬다. 접기만 하면
+     * 긴 값이 한 줄을 수천 자로 늘리고(실측: {@code origin} 5,000자 · 거부 벡터 하나에서 예외
+     * 메시지 5,174자), 절단만 하면 개행 하나가 한 줄을 여러 줄로 쪼개 뒤의 인자가 다른 줄로
+     * 떨어진다. 다듬은 뒤 <b>같은 벡터</b>가 422자다 — 두 끝을 한 벡터에서 잰다(빈집합 거부
+     * 경로는 5,068 → 316 으로 다른 쌍이다).
+     *
+     * <p>클래스 밖에 노출하는 이유: 사전 항목만 이 다듬기를 받으면 <b>같은 줄의 다른 인자</b>가
+     * 안 받는다. {@code origin} 이 그 경로다 — 다듬지 않으면 {@link #of} 의 거부 메시지에 생으로
+     * 박혀 예외 메시지를 타고 호출자의 {@code log.error} 로 나간다. 호출처가 문을 지나기
+     * <b>전에</b> 이것을 통과시키면 그 값의 소비자(예외 메시지 · 로그 인자 · 꼬리 안내)가 같은
+     * 값을 받는다.
+     *
+     * <p>패키지 공개다 — 측정된 클래스 밖 호출처가 같은 패키지의
+     * {@code DictionaryProfanityFilterFactory} 하나뿐이다({@link #summarize} 가 {@code public}
+     * 인 것은 패키지 밖 호출처가 실제로 있어서다).
+     */
+    static String sanitizeForLog(String message) {
+        return truncate(foldControls(message));
+    }
 
     private static String truncate(String message) {
         if (message.length() <= MAX_WARNING_LENGTH) {
@@ -632,11 +689,18 @@ public final class ProfanityDictionary {
      * 테이블에서 그 항목을 찾기 어려워진다. 여기서 필요한 것은 지목을 돕는 것이 아니라 <b>한 줄이
      * 여러 줄로 쪼개지지 않게</b> 하는 것뿐이고, 그건 제어문자만 접으면 된다.
      *
-     * <p>왜 접기가 아예 필요한가: 오늘 이 메서드에 오는 경고 문장에는 제어문자가 <b>들어올 수
-     * 없다</b>(세 입구 전부 {@code reject()} 가 먼저 돌고 {@code containsInvisible} 이
-     * {@code isWhitespace}·{@code CONTROL} 을 참으로 본다). 그런데 이 메서드가 {@code public} 이
-     * 돼서 <b>{@code reject} 를 안 지난 집합</b>을 받을 수 있는 모양이 됐고, 호출자를 묶는 규칙은
-     * 없다. 입구에서 좁히는 것이 그 모양에 대한 값이다 — 상한 하나만 남기는 것보다 싸다.
+     * <p>왜 접기가 아예 필요한가: 오늘 <b>경고 문장</b>에는 제어문자가 들어올 수 없다 —
+     * {@code reject()} 가 먼저 돌고 {@code containsInvisible} 이
+     * {@code isWhitespace}·{@code CONTROL} 을 참으로 본다.
+     *
+     * <p>그 {@code reject} 를 안 지나는 사전이 <b>생길 수 없다</b> — 이 클래스의 생성자가
+     * {@code private} 이고 사전을 만드는 자리는 {@link #load}·{@link #of} 둘뿐이며 둘 다
+     * {@code reject} 를 돈다. <b>불변식의 주인이 생성자</b>라서 호출처가 늘어도 이 문장이 낡지
+     * 않는다.
+     *
+     * <p>그런데 {@link #sanitizeForLog} 가 클래스 밖에 열려 있어 <b>{@code reject} 를 안 지난
+     * 값</b>이 이 접기에 들어올 수 있다 — {@code origin} 이 그 경로다. 호출자를 묶는 규칙은
+     * 없으므로 입구에서 좁힌다: 상한 하나만 남기는 것보다 싸다.
      */
     static String foldControls(String message) {
         StringBuilder out = new StringBuilder(message.length());
@@ -650,6 +714,29 @@ public final class ProfanityDictionary {
             }
         });
         return out.toString();
+    }
+
+    /**
+     * 지목용으로 찍되 <b>길이를 묶는다</b> — 코드포인트로 먼저 자르고 {@link #visible} 을 돌린다.
+     *
+     * <p>⚠️ 순서가 중요하다. {@code sanitizeForLog(visible(word))} 는 {@code visible()} 이
+     * 보이지 않는 글자 하나를 6자로 늘린 <b>뒤</b> 예산을 걸어서 두 가지가 깨진다: 짧은 항목
+     * ({@code varchar(64)} 안)에서도 <b>꼬리 글자가 사라져</b> 지목이 어려워지고(실측:
+     * {@code "시" + ZWSP×40 + "발"} 에서 {@code 발} 이 잘렸다), 꼬리의 {@code N} 이 확장 뒤
+     * 길이라 64자 열에서 "30만자 항목" 을 찾게 된다. 그리고 상한이 확장 뒤에 걸리므로 6배
+     * 중간 버퍼도 안 묶인다 — 전파 경로는 항목당 길이 검사가 없어 모든 Pod 의 모든 교체마다
+     * 지난다.
+     *
+     * <p>그래서 자르는 단위가 <b>원래 항목의 코드포인트</b>이고 꼬리의 {@code N} 도 그것이다.
+     * 상계는 예산 × 확장 배수 + 꼬리로, {@link #truncate} 의 상계와 다르다.
+     */
+    static String describeBounded(String word) {
+        int codePoints = word.codePointCount(0, word.length());
+        if (codePoints <= MAX_WARNING_LENGTH) {
+            return visible(word);
+        }
+        int end = word.offsetByCodePoints(0, MAX_WARNING_LENGTH);
+        return visible(word.substring(0, end)) + "…(" + codePoints + "자)";
     }
 
     /**

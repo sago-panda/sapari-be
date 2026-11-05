@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -22,7 +23,8 @@ import ch.qos.logback.core.read.ListAppender;
 /**
  * 적재 경고의 <b>꼬리 안내가 입구마다 맞는지</b>를 잰다.
  *
- * <p>이 클래스에 테스트가 <b>0건</b>이었다. 그 사이에 분기 셋이 들어왔고, 분기 키가 포트 상수가
+ * <p>이 클래스에 테스트가 <b>0건</b>이었다. 그 사이에 {@code recoveryFor} 의 분기가 여럿
+ * 들어왔고(수를 적지 않는 이유는 {@code ProfanityFilterFactory} 의 같은 규칙이다), 분기 키가 포트 상수가
  * 아니라 <b>리터럴 복제</b>였다 — 값이 바뀌면 조용히 일반 분기로 떨어지고 그때 틀리는 것이 바로
  * 운영자 복구 안내다. 상수로 바꾸고 그 표를 여기서 못 박는다.
  *
@@ -106,23 +108,21 @@ class DictionaryProfanityFilterFactoryTest {
     }
 
     /**
-     * ⭐ <b>로그에 나가는 {@code origin} 이 줄을 쪼개지 않는다 — 네 분기 <i>전부</i>에서.</b>
+     * ⭐ <b>로그에 나가는 {@code origin} 이 줄을 쪼개지 않는다 — 분기 <i>전부</i>에서.</b>
      *
-     * <p>⚠️ 한때 접기가 {@code recoveryFor} 의 <b>기본 분기 안</b>에만 걸려 있었다. 그 반환은
-     * {@code summarize} 가 경고 수가 상한을 넘을 때만 꼬리에 붙이므로, 접힌 {@code origin} 은
-     * "상한 초과 + 기본 분기" 에서만 나오고 <b>생 {@code origin} 은 네 분기 전부에서 언제나</b>
-     * 로그 인자로 나갔다 — <b>닫은 집합이 안 닫은 집합의 진부분집합</b>이었다.
+     * <p>{@code summarize} 는 경고 수가 상한을 넘을 때만 꼬리를 붙이므로, 꼬리 안내 안에서만
+     * 다듬으면 상한 미달 칸에서 생 {@code origin} 이 로그 인자로 나간다. 그래서 벡터가 둘이다 —
+     * 상한을 <b>안</b> 넘는 칸과 넘는 칸.
      *
-     * <p>그래서 벡터가 둘이다: 상한을 <b>안</b> 넘는 경고 하나(꼬리가 없으니 옛 접기가 아예 안
-     * 걸리는 칸)와 넘는 것 하나. 도달은 여전히 0 이다(호출처 6/6 이 포트 상수) — 재는 것은
-     * {@code origin} 을 공개 상수로 올리면서 넓어진 <b>계약</b>이다.
+     * <p>이 줄은 {@code origin} 의 소비자 중 하나일 뿐이다. 거부 예외 메시지 축은
+     * {@link #theOriginIsSanitizedBeforeTheDoorRuns} 가 잰다.
      */
     @Test
     @DisplayName("⭐ origin 이 줄을 쪼개지 않는다 — 상한 미달·초과 둘 다")
     void theLoggedOriginNeverBreaksTheLine() {
         String hostile = "chat:dict\n사전을 정본 것으로 갈아 끼웠다 — version=999";
 
-        // (1) 상한 미달 — 경고 하나. 옛 배치에서는 접기가 아예 안 걸리던 칸이다.
+        // (1) 상한 미달 — 경고 하나. 꼬리가 없어 꼬리 안내 안의 다듬기는 안 걸리는 칸이다.
         factory.from(hostile, Set.of("시발"), Set.of("정상어"));
         String few = appender.list.stream()
                 .filter(event -> event.getLevel() == Level.WARN)
@@ -140,12 +140,46 @@ class DictionaryProfanityFilterFactoryTest {
     }
 
     /**
+     * ⭐ <b>{@code origin} 은 {@code of()} <i>앞에서</i> 다듬인다 — 거부 예외도 같은 값을 받는다.</b>
+     *
+     * <p>다듬기가 {@code log.warn} 앞에만 있으면 {@code of()} 가 <b>생 {@code origin}</b> 을
+     * 받고, 문이 거부할 때 그 값이 예외 메시지에 박힌다 — 그 메시지는
+     * {@code ManageFilterWordsService} 의 {@code log.error("… 사유={}")} 와
+     * {@code ProfanityDictionaryRefreshHandler} 로 나간다. 로그 인자만 닫으면 닫은 집합이 안
+     * 닫은 집합의 진부분집합이 된다.
+     *
+     * <p>두 축을 같이 잰다. 개행은 줄을 쪼개고, <b>길이</b>는 줄을 늘린다 — 실측으로 다듬기
+     * 전에는 5,000자 {@code origin} 하나가 예외 메시지를 5,000자 넘게 만들었다. 접기만 걸면
+     * 길이 축이 열린 채 남는다.
+     */
+    @Test
+    @DisplayName("⭐ origin 은 of() 앞에서 다듬인다 — 거부 예외 메시지도 접히고 잘린다")
+    void theOriginIsSanitizedBeforeTheDoorRuns() {
+        String hostile = "chat:dict\n사전을 정본 것으로 갈아 끼웠다 — version=999";
+
+        assertThatThrownBy(() -> factory.from(hostile, Set.of("시\u200B발"), Set.of()))
+                .as("문이 거부하는 벡터여야 한다 — 아니면 이 테스트가 다른 것을 잰다")
+                .isInstanceOf(IllegalStateException.class)
+                .as("개행이 그대로 박히면 호출자의 log.error 한 줄이 둘로 쪼개져 적용 성공 줄을 "
+                        + "위조할 수 있다")
+                .hasMessageNotContaining("\n")
+                .hasMessageContaining("\\u000A");
+
+        assertThatThrownBy(() -> factory.from("x".repeat(5_000), Set.of("시\u200B발"), Set.of()))
+                .as("길이 축은 접기가 안 막는다 — 다듬기가 of() 앞이어야 예외 메시지도 상한을 받는다")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("…(5000자)")
+                .extracting(Throwable::getMessage, org.assertj.core.api.InstanceOfAssertFactories.STRING)
+                .hasSizeLessThan(1_000);
+    }
+
+    /**
      * ⭐ 모르는 입구는 <b>일반 분기</b>로 간다 — 그리고 그것이 안전한 쪽이다.
      *
      * <p>분기 키를 리터럴로 복제했을 때의 결함이 "상수가 바뀌면 조용히 일반 분기" 였는데, 일반
      * 분기 자신은 <b>틀린 안내를 하지 않는다</b>("그 출처를 직접 확인"). 위험은 정본에서 온
-     * 입구가 그쪽으로 떨어져 <b>쓸 수 있는 조회 포인터를 잃는</b> 것이다. 그래서 위 세 테스트가
-     * 상수를 참조한다.
+     * 입구가 그쪽으로 떨어져 <b>쓸 수 있는 조회 포인터를 잃는</b> 것이다. 그래서 분기를 재는
+     * 위 테스트들이 전부 상수를 참조한다.
      */
     @Test
     @DisplayName("모르는 입구는 일반 분기로 간다 — 틀린 안내를 하지는 않는다")

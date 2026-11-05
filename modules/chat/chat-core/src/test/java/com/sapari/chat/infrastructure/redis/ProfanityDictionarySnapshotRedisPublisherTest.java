@@ -19,8 +19,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mockito;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.testcontainers.containers.GenericContainer;
@@ -595,7 +597,253 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                             .contains("기준이 0 으로 떨어졌다")
                             .as("어느 키가 왜 기준이 못 됐는지가 비면 '어느 키가 왜' 를 싣겠다는 "
                                     + "목적이 무너진다")
-                            .doesNotContain("([])"));
+                            .doesNotContain("([])")
+                            // 비었는지만 보면 부족하다 — 사유가 비었을 때 다른 문장으로
+                            // 채우는 보충이 있으면 이 단정이 항진명제가 된다. <이 축의 이름>이
+                            // 사유에 들었는지를 본다.
+                            .as("이 축이 기준을 0 으로 붙잡고 있는데 사유가 그 축을 말하지 "
+                                    + "않으면 당직자가 어느 키를 볼지 모른다: %s=%s",
+                                    axis, raw.replace("\n", "\\n"))
+                            .contains(SNAPSHOT.equals(axis) ? "스냅샷 본문" : "버전 키")
+                            // 보충 문장이 되살아나면 이 단정이 깨진다 — 이 벡터의 키는
+                            // 사라지지 않았다(세팅한 뒤 바로 읽는다).
+                            .doesNotContain("사라졌다"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    /**
+     * ⭐ <b>모르는 키는 두 축 중 하나의 결과절을 물려받지 않는다.</b>
+     *
+     * <p>두 결과절 헬퍼가 {@code key} 로 갈리는데 {@code else} 기본값을 두면
+     * {@code tokenOf} 에 세 번째 키가 붙는 순간 그 키가 <b>조용히 한 축의 문장을
+     * 물려받는다</b> — 그때 틀리는 것이 당직자 안내다.
+     *
+     * <p>오늘 키가 둘뿐이라 <b>이 벡터 없이는 그 분기의 분모가 0</b> 이다({@code else} 로
+     * 되돌리는 변이가 전량 초록으로 살아남는다). 헬퍼를 패키지 공개로 둔 것이 이 벡터를
+     * 가능하게 하고, 재는 것은 <b>미래 호출처가 상속할 계약</b>이다.
+     */
+    @Test
+    @DisplayName("⭐ 모르는 키는 두 축 중 하나의 결과절을 물려받지 않는다")
+    void anUnknownKeyInheritsNeitherAxisConsequence() {
+        String thirdKey = "chat:dict:somewhere-else";
+
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.vanishedConsequence(thirdKey))
+                .as("버전 축 문장을 물려받으면 '집행은 안 바뀐다' 를 모르는 키에 단정한다")
+                .doesNotContain("실행 중 Pod 의 집행은 안 바뀐다")
+                .doesNotContain("번들 사전으로 돈다")
+                .contains("여기 적혀 있지 않다");
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.zeroConsequence(thirdKey))
+                .doesNotContain("기준이 그쪽으로 수렴해")
+                .doesNotContain("Pod 마다 이미 적용한 번호로 갈린다")
+                .contains("여기 적혀 있지 않다");
+
+        // 아는 두 키는 그대로여야 한다 — 아니면 이 단정이 가드가 아니라 전건 무력화를 잰다.
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.vanishedConsequence(SNAPSHOT))
+                .contains("번들 사전으로 돈다");
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.vanishedConsequence(VERSION))
+                .contains("실행 중 Pod 의 집행은 안 바뀐다");
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.zeroConsequence(SNAPSHOT))
+                .contains("Pod 마다 이미 적용한 번호로 갈린다");
+        assertThat(ProfanityDictionarySnapshotRedisPublisher.zeroConsequence(VERSION))
+                .contains("기준이 그쪽으로 수렴해");
+    }
+
+    /**
+     * 두 키 — 아래 두 테스트가 <b>본문에서</b> 이 목록을 돈다.
+     *
+     * <p>두 칸은 중복이 <b>아니다</b>. {@code currentVersion()} 이 스냅샷을 먼저 읽으므로
+     * <b>버전 축이 사라지는 칸에서만</b> 사라짐 사유가 쌓일 때 {@code reasons} 가 이미 차 있고,
+     * 그 칸만 {@code if (present && reasons.isEmpty())} 와
+     * {@code if (present && "스냅샷 본문".equals(what))} 변이를 죽인다. 값 0 쪽도 결과절이
+     * 키마다 달라 두 칸이 필요하다.
+     *
+     * <p><b>파라미터화 대신 본문 루프</b>를 쓰고 각 테스트가 <b>이 목록 자체를 단언</b>한다.
+     * 파라미터 소스였을 때는 칸을 하나로 줄이는 변경이 아무것도 깨뜨리지 않고 통과했고
+     * (그 상태에서 위 두 변이가 되살아난다), 그 집합을 리플렉션으로 검사하는 별 테스트는
+     * {@code @Disabled} 하나에 조용히 비워졌다. 목록 단언을 본문에 두면 <b>줄이는 변경은
+     * 단언을 깨고, 끄는 변경은 눈에 보이는 테스트 하나를 끄는 일</b>이 된다.
+     */
+    private static final List<String> BOTH_KEYS = List.of(SNAPSHOT, VERSION);
+
+    /**
+     * ⭐ <b>값 0 을 든 키는 기준이 0 이 <i>아닌</i> 칸에서도 말한다 — 게이트가 침묵하는 칸.</b>
+     *
+     * <p>이 축에 자기 {@code log.warn} 이 없으면 <b>"다른 키가 자격 있는 토큰을 들고 있으면
+     * 기준이 그쪽이라 피해가 0"</b> 에 기대야 하는데, 그 근거가 <b>키마다 다르다</b>:
+     *
+     * <ul>
+     *   <li><b>본문 머리 0 · 버전 키 5</b> — 기준이 5 라 게이트가 거짓이다(무음). 수신 쪽
+     *       결과는 그 Pod 이 <b>이미 무엇을 적용했는지로 갈리고</b> 발행자는 그 축을 볼 수
+     *       없다 — {@code aZeroHeadedBodySplitsTheFleetByPodState} 가 그쪽을 잰다.</li>
+     *   <li><b>본문 머리 5 · 버전 키 0</b> — 기준이 5 로 수렴하고 발행·적용이 정상이다.
+     *       여기서는 그 근거가 참이다.</li>
+     * </ul>
+     *
+     * <p>즉 비대칭이 <b>축 단위가 아니라 키 단위</b>였다. 그 분류를 없애려고 다섯 사유 전부에
+     * 자기 {@code log.warn} 을 뒀고, 이 벡터가 <b>게이트로는 안 잡히는 칸</b>을 못 박는다 —
+     * 기준이 0 이 아니므로 위 {@code everyZeroBaseCellWarns} 가 이 칸을 아예 안 본다.
+     */
+    @Test
+    @DisplayName("⭐ 값 0 을 든 키는 기준이 0 이 아닌 칸에서도 말한다")
+    void aKeyHoldingZeroWarnsEvenWhenTheBaseIsNotZero() {
+        assertThat(BOTH_KEYS)
+                .as("한 칸으로 줄이면 반대 키의 결과절을 아무도 보지 않는다")
+                .containsExactlyInAnyOrder(SNAPSHOT, VERSION);
+        BOTH_KEYS.forEach(this::assertKeyHoldingZeroWarns);
+    }
+
+    private void assertKeyHoldingZeroWarns(String zeroKey) {
+        redisTemplate.delete(BOTH_KEYS);
+        String other = SNAPSHOT.equals(zeroKey) ? VERSION : SNAPSHOT;
+        redisTemplate.opsForValue().set(zeroKey,
+                SNAPSHOT.equals(zeroKey) ? "0\n1\n0\n시발\n" : "0");
+        redisTemplate.opsForValue().set(other,
+                SNAPSHOT.equals(other) ? "5\n1\n0\n시발\n" : "5");
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                ProfanityDictionarySnapshotRedisPublisher.class);
+        logger.addAppender(appender);
+        try {
+            assertThat(publisher.currentVersion())
+                    .as("다른 키가 기준을 주므로 기준은 0 이 아니다 — 그래서 게이트가 침묵한다")
+                    .isEqualTo(5L);
+
+            List<String> warns = appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+
+            assertThat(warns)
+                    .as("기준이 0 이 아니라 게이트 WARN 이 안 나가므로, 이 축이 자기 줄을 "
+                            + "안 가지면 이 칸이 전 경로 무음이다: 값 0 인 키=%s", zeroKey)
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("값 0 을 들고 있다")
+                            .contains(SNAPSHOT.equals(zeroKey) ? "스냅샷 본문" : "버전 키"));
+
+            assertThat(warns)
+                    .as("결과절은 키마다 다르다 — 본문 머리가 0 인 칸만 Pod 상태로 갈린다")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains(SNAPSHOT.equals(zeroKey)
+                                    ? "Pod 마다 이미 적용한 번호로 갈린다"
+                                    : "기준이 그쪽으로 수렴해 발행·적용은 정상이다"));
+            if (SNAPSHOT.equals(zeroKey)) {
+                // 재시작을 포괄 금지하지도, 권하지도 않는다. 머리 0 은 발행이 쓰지 않는
+                // 값이라 이 본문은 검수되지 않은 쓰기일 수 있고, 그 화이트리스트가 욕설을
+                // 품으면 재시작이 검증된 번들로 되돌리는 유일한 즉시 수단이다. 반대로 맞는
+                // 사전을 들고 있는 Pod 에는 재시작이 그것을 잃는 길이다. 그래서 조건을 싣는다.
+                assertThat(warns)
+                        .as("조건 없는 '재시작하지 말 것' 은 밴드 밖 본문이 집행 중인 Pod 에서 "
+                                + "유일한 즉시 수단을 막는다")
+                        .anySatisfy(message -> assertThat(message)
+                                .contains("이 본문이 검수된 것인지 먼저 확인"));
+            }
+            // 게이트가 침묵하는지는 단언하지 않는다. 그것은 <구성의 귀결>(기준이 5 라서)이고,
+            // 금지로 못 박으면 게이트를 !reasons.isEmpty() 로 넓히는(정보가 늘어나는) 변경이
+            // 이 칸에서 깨진다. 이 벡터가 재는 것은 "게이트가 안 말해도 이 축이 자기 줄로
+            // 말한다" 이고 위 두 단정이 그것을 센다.
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    /**
+     * ⭐ <b>확인과 읽기 사이에 사라진 키는 <i>어느 축이든</i> 그 축의 이름으로 사유에 남는다.</b>
+     *
+     * <p>이 사유를 {@code currentVersion()} 이 {@code reasons.isEmpty()} 일 때만 보충하면,
+     * 다른 키에 사유가 있는 칸에서 사라진 키의 사유가 WARN 에서 빠진다. 더 나쁜 것은 그 보충이
+     * <b>다른 사유가 지워져도 WARN 을 비지 않게 만들어</b> 두 축 벡터의
+     * {@code doesNotContain("([])")} 를 항진명제로 바꾸는 것이다.
+     *
+     * <p><b>그 보충을 지우는 것만으로는 이 벡터가 그 모양을 못 본다.</b> 모든 {@code GET} 을
+     * {@code null} 로 고정한 한 칸에서는 {@code reasons} 가 <b>비어 있어서</b> 보충도 똑같이
+     * 돌고, {@code if (present && reasons.isEmpty())} 와
+     * {@code if (present && "스냅샷 본문".equals(what))} 변이가 전량 초록으로 살아남는다.
+     *
+     * <p>그래서 칸을 <b>두 축으로</b> 벌리고, 사라지지 <i>않는</i> 축에 문법 밖 값을 둬서
+     * {@code reasons} 가 <b>이미 차 있는</b> 상태를 만든다. {@code currentVersion()} 이 스냅샷을
+     * 먼저 읽으므로 두 변이를 죽이는 것은 <b>버전 축이 사라지는 칸</b>이다 — 그 칸에서만
+     * {@code reasons.isEmpty()} 가 거짓이다.
+     *
+     * <p>이 칸은 실제 Redis 로 못 만든다. {@code hasKey} 두 번 + {@code GET} 두 번이 원자적이지
+     * 않은 4 왕복이고, 그 사이에 축출·DEL 이 끼는 순간을 테스트가 잡을 수 없다. 그래서 <b>그
+     * 틈만</b> 목으로 벌린다 — 이 클래스의 유일한 목이고 나머지 벡터는 전부 실제 Redis 다.
+     */
+    @Test
+    @DisplayName("⭐ 확인 뒤 사라진 키는 어느 축이든 그 축의 이름으로 사유에 남는다")
+    void aKeyThatVanishesBetweenCheckAndReadStillNamesItsAxis() {
+        assertThat(BOTH_KEYS)
+                .as("버전 축이 사라지는 칸만 reasons.isEmpty() 변이를 죽인다 — 줄이면 되살아난다")
+                .containsExactlyInAnyOrder(SNAPSHOT, VERSION);
+        BOTH_KEYS.forEach(this::assertVanishedKeyNamesItsAxis);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertVanishedKeyNamesItsAxis(String vanishing) {
+        String surviving = SNAPSHOT.equals(vanishing) ? VERSION : SNAPSHOT;
+        String vanishedLabel = SNAPSHOT.equals(vanishing) ? "스냅샷 본문" : "버전 키";
+        String survivingLabel = SNAPSHOT.equals(vanishing) ? "버전 키" : "스냅샷 본문";
+
+        StringRedisTemplate racing = Mockito.spy(redisTemplate);
+        ValueOperations<String, String> racingOps = Mockito.mock(ValueOperations.class);
+        Mockito.when(racingOps.get(vanishing)).thenReturn(null);
+        // 살아남는 축은 문법 밖 값을 든다 — 그래야 사라지는 축이 처리될 때 reasons 가 차 있다.
+        Mockito.when(racingOps.get(surviving)).thenReturn("12abc");
+        Mockito.doReturn(racingOps).when(racing).opsForValue();
+        Mockito.doReturn(true).when(racing).hasKey(SNAPSHOT);
+        Mockito.doReturn(true).when(racing).hasKey(VERSION);
+        ProfanityDictionarySnapshotRedisPublisher racingPublisher =
+                new ProfanityDictionarySnapshotRedisPublisher(racing);
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(
+                ProfanityDictionarySnapshotRedisPublisher.class);
+        logger.addAppender(appender);
+        try {
+            assertThat(racingPublisher.currentVersion())
+                    .as("두 키 다 기여하지 않으므로 기준은 0 이다")
+                    .isZero();
+
+            List<String> warns = appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+
+            assertThat(warns)
+                    .as("게이트 WARN 이 두 축의 사유를 다 실어야 한다 — 사라지는 축이 나중에 "
+                            + "처리되는 칸에서 바로 그것이 빠졌다")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("기준이 0 으로 떨어졌다")
+                            .doesNotContain("([])")
+                            .contains(vanishedLabel + "=확인 뒤 읽기 사이에 사라졌다")
+                            .contains(survivingLabel + "=문법 밖이다")
+                            // ⚠️ 여기서 금지하는 것은 <사라졌다 사유>뿐이다. present 가
+                            // 게이팅하는 것은 raw == null 분기 하나이고, 확인에서 거짓이던 축에
+                            // 키가 <생기면> raw != null 이라 정상 경로로 내려가 "문법 밖" ·
+                            // "값이 0" 이 정당하게 붙는다. 그래서 금지를 "=확인 뒤" 까지로
+                            // 좁힌다 — doesNotContain("버전 키") 는 그 올바른 동작까지 막는다.
+                            .doesNotContain(survivingLabel + "=확인 뒤"));
+
+            assertThat(warns)
+                    .as("사라짐은 base 가 0 이 아닌 칸에서도 말해야 하므로 자기 WARN 을 갖는다")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("존재 확인 뒤 읽기 사이에 사라졌다")
+                            .contains(vanishedLabel)
+                            // 결과절까지 본다. 두 축에 같은 문장을 쓰면 한쪽에서 거짓이 되고
+                            // (버전 키 유실만으로는 리더가 본문 머리로 떨어져 집행이 그대로다)
+                            // 그 거짓이 당직자를 불필요한 전 Pod 재시작으로 보낸다. 라벨만
+                            // 보는 단정은 그것을 안 잡는다.
+                            .contains(SNAPSHOT.equals(vanishing)
+                                    ? "본문을 못 찾아 번들 사전으로 돈다"
+                                    : "실행 중 Pod 의 집행은 안 바뀐다")
+                            // 조사가 라벨에 붙으면 "버전 키이" 가 된다 — 라벨을 자리= 로 뗐다.
+                            .doesNotContain(vanishedLabel + "이 존재"));
         } finally {
             logger.detachAppender(appender);
             appender.stop();

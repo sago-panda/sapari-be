@@ -52,6 +52,11 @@ public class MicrometerChatMetrics implements ChatMetrics {
                 ChatMeterNames.TAG_REASON, tag(reason)).increment());
     }
 
+    @Override
+    public void dictionaryFastPathLost() {
+        safe(() -> registry.counter(ChatMeterNames.DICTIONARY_FAST_PATH_LOST).increment());
+    }
+
     /**
      * 열거 이름을 태그 값으로. null 도 받는다 — 호출부가 fail-open 람다 안이라 거기서 NPE 가
      * 나면 통과시키기로 한 요청이 거부된다. 값을 잃는 것이 그보다 훨씬 싸다.
