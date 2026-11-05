@@ -321,15 +321,16 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
         }
 
         @Test
-        @DisplayName("discontinueAllByProductId는 해당 상품의 판매가능 조합만 단종(옵션값 보존·updatedAt 갱신)하고 행 수를 반환한다")
-        void discontinueAllByProductId_retiresOnlyAvailableOfProduct() {
+        @DisplayName("discontinueAllByProductId는 해당 상품의 조합을 판매여부와 무관하게 모두 은퇴(옵션값 보존·updatedAt 갱신·version 증가)시키고 행 수를 반환한다")
+        void discontinueAllByProductId_retiresAllCombinationsOfProduct() {
             UUID productId = UUID.randomUUID();
             UUID v1 = UUID.randomUUID();
             ProductOptionCombination available = repository.save(ProductOptionCombination.create(
                     productId, CombinationKey.of("1"), Sku.of("S1"), null, 1_000, Stock.of(10, 0),
                     List.of(v1), T0));
-            // 이미 단종된 조합 — WHERE is_available=true에 안 걸려 카운트·갱신 대상 아님
-            repository.save(newCombo(productId, "2", "S2", 2_000).discontinue(T0));
+            // 이미 판매자가 단종한 조합 — 은퇴 대상에 포함돼 잠기고 version이 오른다(판매 재개 PATCH를 막기 위해)
+            ProductOptionCombination sellerDiscontinued =
+                    repository.save(newCombo(productId, "2", "S2", 2_000).discontinue(T0));
             // 타 상품 조합 — product_id로 제외
             ProductOptionCombination otherProduct =
                     repository.save(newCombo(UUID.randomUUID(), "1", "S3", 3_000));
@@ -340,19 +341,22 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
             int affected = repository.discontinueAllByProductId(productId, retiredAt);
             em.clear(); // 벌크 UPDATE는 영속성 컨텍스트를 우회하므로 비우고 재조회
 
-            assertThat(affected).isEqualTo(1); // 판매가능 1건만
+            assertThat(affected).isEqualTo(2); // 판매가능 + 이미 단종 모두
             ProductOptionCombination reloaded = repository.findById(available.id()).orElseThrow();
             assertThat(reloaded.isAvailable()).isFalse();
             assertThat(reloaded.updatedAt()).isEqualTo(retiredAt);
             // 벌크 UPDATE는 조합 행만 건드린다 — 옵션값 매핑(자식)은 보존(주문 이력 참조)
             assertThat(reloaded.optionValueIds()).containsExactly(v1);
+            ProductOptionCombination discontinuedReloaded = repository.findById(sellerDiscontinued.id()).orElseThrow();
+            assertThat(discontinuedReloaded.isAvailable()).isFalse();
+            assertThat(discontinuedReloaded.version()).isGreaterThan(sellerDiscontinued.version());
             // 타 상품 조합은 영향 없음
             assertThat(repository.findById(otherProduct.id()).orElseThrow().isAvailable()).isTrue();
         }
 
         @Test
-        @DisplayName("이미 모두 단종된 상품에 다시 호출하면 0건을 반환한다(멱등)")
-        void discontinueAllByProductId_idempotentReturnsZero() {
+        @DisplayName("다시 호출해도 상품의 조합만 대상이며 판매 상태는 그대로 은퇴다(반복 호출 안전)")
+        void discontinueAllByProductId_repeatedCallKeepsRetired() {
             UUID productId = UUID.randomUUID();
             repository.save(newCombo(productId, "1", "S1", 1_000));
             repository.save(newCombo(productId, "2", "S2", 2_000));
@@ -361,7 +365,9 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
 
             assertThat(repository.discontinueAllByProductId(productId, T0)).isEqualTo(2);
             em.clear();
-            assertThat(repository.discontinueAllByProductId(productId, T0)).isZero();
+            assertThat(repository.discontinueAllByProductId(productId, T0)).isEqualTo(2);
+            em.clear();
+            assertThat(repository.findByProductId(productId)).allSatisfy(c -> assertThat(c.isAvailable()).isFalse());
         }
 
         @Test
@@ -402,6 +408,67 @@ class ProductOptionCombinationRepositoryImplTest extends AbstractRepositoryInteg
             // 단종(is_available=false) 보존 — DB 상태로 재확인
             em.clear();
             assertThat(repository.findById(combo.id()).orElseThrow().isAvailable()).isFalse();
+        }
+    }
+
+    @Nested
+    @DisplayName("단일 상품 기본 조합 키 (DEFAULT)")
+    class DefaultCombinationKey {
+
+        @Test
+        @DisplayName("벌크 단종은 기본 조합 키를 'DEFAULT#조합id'로 비워, 옵션 교체 뒤 새 기본 조합을 unique 충돌 없이 저장할 수 있게 한다")
+        void retireReleasesDefaultKeyForNewDefault() {
+            UUID productId = UUID.randomUUID();
+            ProductOptionCombination oldDefault = repository.save(newCombo(productId, CombinationKey.DEFAULT, null, 1_000));
+            em.flush();
+            em.clear();
+
+            repository.discontinueAllByProductId(productId, Instant.parse("2026-02-02T00:00:00Z"));
+            assertThatNoException().isThrownBy(() -> {
+                repository.saveAll(List.of(newCombo(productId, CombinationKey.DEFAULT, null, 2_000)));
+                em.flush();
+            });
+            em.clear();
+
+            List<ProductOptionCombination> all = repository.findByProductId(productId);
+            assertThat(all).hasSize(2);
+            assertThat(all).filteredOn(c -> c.id().equals(oldDefault.id())).singleElement().satisfies(c -> {
+                assertThat(c.combinationKey().value()).isEqualTo(CombinationKey.DEFAULT + "#" + oldDefault.id());
+                assertThat(c.isAvailable()).isFalse();
+                assertThat(c.version()).isGreaterThan(oldDefault.version());
+            });
+            assertThat(all).filteredOn(c -> !c.id().equals(oldDefault.id())).singleElement().satisfies(c -> {
+                assertThat(c.combinationKey().value()).isEqualTo(CombinationKey.DEFAULT);
+                assertThat(c.isAvailable()).isTrue();
+            });
+        }
+
+        @Test
+        @DisplayName("이미 개별 단종된 기본 조합도 키를 비운다 (판매여부와 무관하게 DEFAULT 점유 해제)")
+        void retireReleasesKeyOfAlreadyDiscontinuedDefault() {
+            UUID productId = UUID.randomUUID();
+            ProductOptionCombination discontinued = repository.save(
+                    newCombo(productId, CombinationKey.DEFAULT, null, 1_000).discontinue(T0));
+            em.flush();
+            em.clear();
+
+            repository.discontinueAllByProductId(productId, Instant.parse("2026-02-02T00:00:00Z"));
+
+            assertThat(reload(discontinued.id()).combinationKey().value())
+                    .isEqualTo(CombinationKey.DEFAULT + "#" + discontinued.id());
+        }
+
+        @Test
+        @DisplayName("옵션 조합 키(옵션값 id 조합)는 벌크 단종에서 바뀌지 않는다")
+        void retireKeepsOptionCombinationKeys() {
+            UUID productId = UUID.randomUUID();
+            ProductOptionCombination option = repository.save(newCombo(productId, "3:7", null, 1_000));
+            em.flush();
+            em.clear();
+
+            repository.discontinueAllByProductId(productId, Instant.parse("2026-02-02T00:00:00Z"));
+
+            assertThat(reload(option.id()).combinationKey().value()).isEqualTo("3:7");
         }
     }
 }

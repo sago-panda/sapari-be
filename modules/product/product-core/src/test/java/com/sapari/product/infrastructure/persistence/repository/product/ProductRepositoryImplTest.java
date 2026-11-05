@@ -6,6 +6,9 @@ import static com.sapari.product.support.ProductFixtures.SELLER_A;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sapari.product.domain.model.combination.CombinationKey;
+import com.sapari.product.domain.model.combination.ProductOptionCombination;
+import com.sapari.product.domain.model.combination.Stock;
 import com.sapari.product.domain.model.product.ImageRole;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductImageRef;
@@ -14,6 +17,7 @@ import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductOptionValueModel;
 import com.sapari.product.domain.model.product.ProductStatus;
 import com.sapari.product.domain.model.product.ProductSummary;
+import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import com.sapari.product.support.AbstractRepositoryIntegrationTest;
 import com.sapari.product.support.ProductFixtures;
@@ -46,6 +50,8 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
     ProductOptionTypeJpaRepository optionTypeJpaRepository;
     @Autowired
     ProductOptionValueJpaRepository optionValueJpaRepository;
+    @Autowired
+    ProductOptionCombinationRepository combinationRepository;
 
     @PersistenceContext
     EntityManager em;
@@ -249,6 +255,53 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
                             .map(ProductImageRef::imageKey)
                             .toList());
         }
+
+        @Test
+        @DisplayName("집계 카운터는 루트 save로 덮어쓰지 않는다 — 읽어 둔 스냅샷 이후의 원자적 증가분이 보존된다(lost update 방지)")
+        void save_does_not_overwrite_aggregate_counters() {
+            Product saved = productRepository.save(ProductFixtures.aProduct(SELLER_A, CATEGORY_1)
+                    .set("purchaseCount", 10)
+                    .set("reviewCount", 3)
+                    .set("viewCount", 100)
+                    .set("wishlistCount", 7)
+                    .set("avgRating", new BigDecimal("4.0"))
+                    .sample());
+            em.flush();
+            em.clear();
+            // 판매자 수정 폼이 읽어 둔 스냅샷
+            Product snapshot = productRepository.findById(saved.id())
+                    .orElseThrow();
+            // 그 사이 다른 흐름(주문 완료·리뷰·조회·찜)이 원자적으로 올린다
+            em.createNativeQuery("""
+                            UPDATE product_schema.products
+                               SET purchase_count = purchase_count + 1, review_count = review_count + 1,
+                                   view_count = view_count + 1, wishlist_count = wishlist_count + 1, avg_rating = 4.5
+                             WHERE id = :id
+                            """)
+                    .setParameter("id", saved.id())
+                    .executeUpdate();
+
+            // 스냅샷 기반 수정 저장 — 도메인 값으로 카운터를 바꿔 넣어도 반영되지 않아야 한다
+            productRepository.save(snapshot.toBuilder()
+                    .name("수정된 이름")
+                    .purchaseCount(0)
+                    .reviewCount(0)
+                    .viewCount(0)
+                    .wishlistCount(0)
+                    .avgRating(null)
+                    .build());
+            em.flush();
+            em.clear();
+
+            Product after = productRepository.findById(saved.id())
+                    .orElseThrow();
+            assertThat(after.name()).isEqualTo("수정된 이름");
+            assertThat(after.purchaseCount()).isEqualTo(11);
+            assertThat(after.reviewCount()).isEqualTo(4);
+            assertThat(after.viewCount()).isEqualTo(101);
+            assertThat(after.wishlistCount()).isEqualTo(8);
+            assertThat(after.avgRating()).isEqualByComparingTo("4.5");
+        }
     }
 
     @Nested
@@ -365,6 +418,175 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         }
     }
 
+
+    @Nested
+    @DisplayName("조합 파생 캐시 재계산(refreshStockPriceCache)")
+    class RefreshStockPriceCache {
+
+        private static final Instant T = Instant.parse("2026-09-15T00:00:00Z");
+
+        private Product persistProduct() {
+            Product saved = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+            em.flush();
+            return saved;
+        }
+
+        private ProductOptionCombination combo(UUID productId, String key, int price, int stock, int reserved) {
+            return ProductOptionCombination.create(
+                    productId, CombinationKey.of(key), null, null, price, Stock.of(stock, reserved), List.of(), T);
+        }
+
+        private Product refreshAndReload(UUID productId) {
+            productRepository.refreshStockPriceCache(productId, T);
+            em.flush();
+            em.clear();
+            return productRepository.findById(productId)
+                    .orElseThrow();
+        }
+
+        @Test
+        @DisplayName("min_price는 판매가능·가용재고 있는 조합의 최저가, has_stock=true — 단종·가용재고 0(예약으로 소진) 조합은 제외")
+        void usesOnlySellableCombinations() {
+            UUID productId = persistProduct().id();
+            List<ProductOptionCombination> saved = combinationRepository.saveAll(List.of(
+                    combo(productId, "k-sellable-high", 15_000, 5, 0),
+                    combo(productId, "k-sellable-low", 12_000, 5, 4),
+                    combo(productId, "k-reserved-out", 1_000, 3, 3),
+                    combo(productId, "k-discontinued", 500, 10, 0)));
+            combinationRepository.save(saved.get(3).discontinue(T));
+
+            Product after = refreshAndReload(productId);
+
+            assertThat(after.minPrice()).isEqualTo(12_000);
+            assertThat(after.hasStock()).isTrue();
+        }
+
+        @Test
+        @DisplayName("승자 할인이 있으면 할인 후 최종가로 최저가를 계산한다 (DDL: MIN(COALESCE(final_price, price)))")
+        void usesWinningDiscountFinalPrice() {
+            UUID productId = persistProduct().id();
+            List<ProductOptionCombination> saved = combinationRepository.saveAll(List.of(
+                    combo(productId, "k-a", 10_000, 5, 0),
+                    combo(productId, "k-b", 9_000, 5, 0)));
+            em.flush();
+            em.createNativeQuery("""
+                            INSERT INTO product_schema.combination_winning_discounts
+                                (combination_id, policy_id, discount_amount, final_price, resolved_at)
+                            VALUES (:combinationId, :policyId, 3000, 7000, :now)
+                            """)
+                    .setParameter("combinationId", saved.get(0).id())
+                    .setParameter("policyId", UUID.randomUUID())
+                    .setParameter("now", T)
+                    .executeUpdate();
+
+            assertThat(refreshAndReload(productId).minPrice()).isEqualTo(7_000);
+        }
+
+        @Test
+        @DisplayName("판매 가능한 재고 조합이 없으면 min_price=null, has_stock=false")
+        void noSellableCombinationMeansNullAndFalse() {
+            UUID productId = persistProduct().id();
+            combinationRepository.saveAll(List.of(combo(productId, "k-empty", 10_000, 0, 0)));
+
+            Product after = refreshAndReload(productId);
+
+            assertThat(after.minPrice()).isNull();
+            assertThat(after.hasStock()).isFalse();
+        }
+
+        @Test
+        @DisplayName("파생 캐시 갱신은 상품 version을 올리지 않고(수정 폼 version 유지) updated_at은 갱신한다(검색 재색인 대상)")
+        void keepsVersionButTouchesUpdatedAt() {
+            Product before = persistProduct();
+            em.clear();
+            Product loaded = productRepository.findById(before.id())
+                    .orElseThrow();
+            combinationRepository.saveAll(List.of(combo(before.id(), "k-v", 10_000, 1, 0)));
+
+            Product after = refreshAndReload(before.id());
+
+            assertThat(after.version()).isEqualTo(loaded.version());
+            assertThat(after.updatedAt()).isEqualTo(T);
+        }
+
+        @Test
+        @DisplayName("다른 상품의 조합은 계산에 섞이지 않고, 다른 상품의 캐시도 바뀌지 않는다")
+        void isolatesOtherProducts() {
+            UUID target = persistProduct().id();
+            Product other = productRepository.save(ProductFixtures.aProduct(SELLER_A, CATEGORY_1)
+                    .set("minPrice", 777)
+                    .set("hasStock", false)
+                    .sample());
+            combinationRepository.saveAll(List.of(
+                    combo(target, "k-t", 10_000, 5, 0),
+                    combo(other.id(), "k-cheap", 100, 5, 0)));
+
+            Product targetAfter = refreshAndReload(target);
+            Product otherAfter = productRepository.findById(other.id())
+                    .orElseThrow();
+
+            assertThat(targetAfter.minPrice()).isEqualTo(10_000);
+            assertThat(otherAfter.minPrice()).isEqualTo(777);
+            assertThat(otherAfter.hasStock()).isFalse();
+        }
+
+        @Test
+        @DisplayName("판매 불가 조합에 붙은 승자 할인은 최저가에 반영하지 않는다")
+        void ignoresDiscountOnUnsellableCombination() {
+            UUID productId = persistProduct().id();
+            List<ProductOptionCombination> saved = combinationRepository.saveAll(List.of(
+                    combo(productId, "k-sellable", 10_000, 5, 0),
+                    combo(productId, "k-soldout", 9_000, 0, 0)));
+            em.flush();
+            em.createNativeQuery("""
+                            INSERT INTO product_schema.combination_winning_discounts
+                                (combination_id, policy_id, discount_amount, final_price, resolved_at)
+                            VALUES (:combinationId, :policyId, 8000, 1000, :now)
+                            """)
+                    .setParameter("combinationId", saved.get(1).id())
+                    .setParameter("policyId", UUID.randomUUID())
+                    .setParameter("now", T)
+                    .executeUpdate();
+
+            assertThat(refreshAndReload(productId).minPrice()).isEqualTo(10_000);
+        }
+
+        @Test
+        @DisplayName("존재하지 않는 상품 id면 아무 행도 바꾸지 않고 예외 없이 끝난다")
+        void unknownProductIsNoop() {
+            UUID unknown = UUID.randomUUID();
+
+            productRepository.refreshStockPriceCache(unknown, T);
+            em.flush();
+
+            assertThat(productRepository.findById(unknown)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("재계산 뒤 같은 트랜잭션에서 상품을 저장해도 영속성 컨텍스트의 옛 캐시로 덮어쓰지 않는다")
+        void laterProductSaveDoesNotOverwriteCache() {
+            UUID productId = persistProduct().id();
+            em.clear();
+            Product stale = productRepository.findById(productId)
+                    .orElseThrow();
+            combinationRepository.saveAll(List.of(combo(productId, "k-o", 4_321, 1, 0)));
+            productRepository.refreshStockPriceCache(productId, T);
+
+            // 재계산 전에 읽은 스냅샷(옛 minPrice·hasStock)으로 다른 필드를 바꿔 저장
+            productRepository.save(stale.toBuilder()
+                    .name("이름만 수정")
+                    .build());
+            em.flush();
+            em.clear();
+
+            Product after = productRepository.findById(productId)
+                    .orElseThrow();
+            assertThat(after.name()).isEqualTo("이름만 수정");
+            assertThat(after.minPrice()).isEqualTo(4_321);
+            assertThat(after.hasStock()).isTrue();
+        }
+    }
+
     @Nested
     @DisplayName("조회(파생 finder)")
     class Finders {
@@ -372,13 +594,15 @@ class ProductRepositoryImplTest extends AbstractRepositoryIntegrationTest {
         @Test
         @DisplayName("findActiveSellerProductSummaries는 삭제 상품을 제외하고 스칼라·대표이미지(GALLERY 최소 sortOrder)를 채운다")
         void findActiveSellerProductSummaries_maps_and_excludes_deleted() {
-            Product live = productRepository.save(ProductFixtures.minimal(SELLER_A, CATEGORY_1));
+            // 최저가·재고유무·집계 카운터는 갱신 save로 덮어쓸 수 없는 캐시라 INSERT 시점 값으로 둔다
+            Product live = productRepository.save(ProductFixtures.aProduct(SELLER_A, CATEGORY_1)
+                    .set("minPrice", 9_000)
+                    .set("hasStock", true)
+                    .set("reviewCount", 5)
+                    .set("avgRating", new BigDecimal("4.5"))
+                    .sample());
             productRepository.save(live.toBuilder()
                     .status(ProductStatus.ON_SALE)
-                    .minPrice(9_000)
-                    .hasStock(true)
-                    .reviewCount(5)
-                    .avgRating(new BigDecimal("4.5"))
                     .images(List.of(
                             new ProductImageRef(null, live.id(), null, ImageRole.GALLERY, "g1.jpg", (short) 1),
                             new ProductImageRef(null, live.id(), null, ImageRole.GALLERY, "g0.jpg", (short) 0),

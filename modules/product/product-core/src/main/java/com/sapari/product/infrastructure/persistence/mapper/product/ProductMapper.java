@@ -112,8 +112,7 @@ public interface ProductMapper {
                 d.shippingPolicyId(), d.additionalShippingFee(), d.optionModel());
         entity.updateStatus(d.status(), d.rejectionReason());
         entity.updateDeletedAt(d.deletedAt());
-        entity.updateCacheColumns(d.minPrice(), d.hasStock(), d.purchaseCount(), d.avgRating(),
-                d.reviewCount(), d.viewCount(), d.wishlistCount());
+        // 최저가·재고유무(refreshStockPriceCache 전담)와 집계 카운터(각 흐름의 원자적 UPDATE)는 도메인 스냅샷으로 덮어쓰지 않는다
         entity.updateSearchIndexedAt(d.searchIndexedAt());
     }
 

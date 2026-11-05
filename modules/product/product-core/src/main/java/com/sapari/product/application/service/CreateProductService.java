@@ -98,10 +98,10 @@ public class CreateProductService implements CreateProductUseCase {
                 now);
         List<ProductOptionCombination> combinations =
                 ProductOptionRuleAssembler.applyOverrides(generated, command.combinations(), refToId);
-        // 조합은 한꺼번에 생성되므로 일괄 저장 — 건당 INSERT 왕복(N+1) 방지
-        if (!combinations.isEmpty()) {
-            combinationRepository.saveAll(combinations);
-        }
+        // 조합은 한꺼번에 생성되므로 일괄 저장 — 건당 INSERT 왕복(N+1) 방지 (단일 상품도 기본 조합 1개가 있다)
+        combinationRepository.saveAll(combinations);
+        // 목록·검색이 쓰는 최저가·재고유무 캐시를 방금 저장한 조합으로 계산 (생성 시점 캐시 불일치 제거)
+        productRepository.refreshStockPriceCache(saved.id(), now);
 
         // 룰이 있으면 config 행만 기록 — save 재호출은 옵션값 id를 재발급해 방금 만든 조합의 참조를 깨뜨린다
         ProductOptionConfigModel config = ProductOptionRuleAssembler.toConfig(surchargeRules, exclusionRules);

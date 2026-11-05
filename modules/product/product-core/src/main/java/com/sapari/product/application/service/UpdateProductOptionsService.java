@@ -33,8 +33,8 @@ import org.springframework.transaction.annotation.Transactional;
  * 새 옵션값은 새 id를 받으므로 조합 키가 달라 기존 조합과 충돌하지 않는다. 추가금/제외 룰과 조합별 오버라이드도 새 옵션값 기준으로 통째로
  * 교체되며, 룰이 없으면 기존 config를 지운다(옛 옵션값 id를 가리키는 룰이 남지 않도록).
  *
- * <p>옵션 교체는 재검수 대상이 아니다(가격·재고·구조 변경은 즉시 반영, PRD §18.3). 상품 캐시 컬럼(min_price·has_stock)
- * 재계산은 후속 증분에서 추가한다.
+ * <p>옵션 교체는 재검수 대상이 아니다(가격·재고·구조 변경은 즉시 반영, PRD §18.3). 조합이 바뀌므로 상품 캐시 컬럼(min_price·has_stock)을
+ * 트랜잭션 끝에서 다시 계산한다.
  */
 @Service
 @RequiredArgsConstructor
@@ -101,9 +101,9 @@ public class UpdateProductOptionsService implements UpdateProductOptionsUseCase 
                 now);
         List<ProductOptionCombination> combinations =
                 ProductOptionRuleAssembler.applyOverrides(generated, command.combinations(), refToId);
-        if (!combinations.isEmpty()) {
-            combinationRepository.saveAll(combinations);
-        }
+        combinationRepository.saveAll(combinations);
+        // 옛 조합 단종·새 조합 생성 결과로 최저가·재고유무 캐시를 다시 계산
+        productRepository.refreshStockPriceCache(saved.id(), now);
 
         // config는 룰이 없어도 항상 교체(null이면 삭제) — 기존 룰은 방금 교체된 옛 옵션값 id를 가리키므로 남기면 안 된다
         productRepository.replaceOptionConfig(

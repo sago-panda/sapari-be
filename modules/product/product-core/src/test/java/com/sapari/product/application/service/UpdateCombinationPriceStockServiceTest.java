@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
@@ -12,6 +13,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.product.command.CombinationUpdateCommand;
 import com.sapari.product.command.UpdateCombinationPriceStockCommand;
 import com.sapari.product.domain.exception.CombinationNotFoundException;
+import com.sapari.product.domain.exception.InvalidProductStateException;
 import com.sapari.product.domain.exception.ProductAccessDeniedException;
 import com.sapari.product.domain.exception.ProductNotFoundException;
 import com.sapari.product.domain.model.combination.CombinationKey;
@@ -20,6 +22,8 @@ import com.sapari.product.domain.model.combination.Sku;
 import com.sapari.product.domain.model.combination.Stock;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductOptionModel;
+import com.sapari.product.domain.model.product.ProductOptionTypeModel;
+import com.sapari.product.domain.model.product.ProductOptionValueModel;
 import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
 import com.sapari.product.domain.repository.product.ProductRepository;
 import java.time.Clock;
@@ -34,6 +38,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -187,6 +192,138 @@ class UpdateCombinationPriceStockServiceTest {
                     .extracting(ProductOptionCombination::id)
                     .containsExactly(COMBO_ID, COMBO_2);
         }
+
+        @Test
+        @DisplayName("모든 조합을 저장한 뒤 상품 캐시(min_price·has_stock)를 한 번 재계산한다 (품절·재입고 반영)")
+        void refreshesCacheOnceAfterSavingCombinations() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(combinationRepository.findAllById(any())).willReturn(List.of(combo(PRODUCT_ID)));
+            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+
+            service.update(command(new CombinationUpdateCommand(COMBO_ID, null, null, 30, null, EXPECTED_VERSION)));
+
+            InOrder inOrder = inOrder(combinationRepository, productRepository);
+            inOrder.verify(combinationRepository).save(any());
+            inOrder.verify(productRepository, times(1)).refreshStockPriceCache(PRODUCT_ID, LATER);
+        }
+    }
+
+    @Nested
+    @DisplayName("판매 재개(isAvailable=true) — 현재 옵션 구성의 조합만")
+    class Reactivation {
+
+        private final UUID currentValue = UUID.randomUUID();
+
+        /** 옵션 타입 1개(값 currentValue)를 가진 판매자 상품. */
+        private Product optionProduct() {
+            ProductOptionTypeModel size = new ProductOptionTypeModel(UUID.randomUUID(), null, "사이즈", (short) 1,
+                    List.of(new ProductOptionValueModel(currentValue, null, "M", null, 0, (short) 1)));
+            return product(SELLER_ID).toBuilder().optionTypes(List.of(size)).build();
+        }
+
+        private ProductOptionCombination discontinuedCombo(String key, List<UUID> valueIds) {
+            return combo(PRODUCT_ID).toBuilder()
+                    .combinationKey(CombinationKey.of(key))
+                    .optionValueIds(valueIds)
+                    .isAvailable(false)
+                    .build();
+        }
+
+        private CombinationUpdateCommand reactivate() {
+            return new CombinationUpdateCommand(COMBO_ID, null, null, null, true, EXPECTED_VERSION);
+        }
+
+        @Test
+        @DisplayName("판매자가 단종한 현재 옵션 조합은 다시 판매할 수 있다")
+        void reactivatesSellerDiscontinuedCurrentCombination() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(optionProduct()));
+            given(combinationRepository.findAllById(any()))
+                    .willReturn(List.of(discontinuedCombo("k", List.of(currentValue))));
+            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+
+            service.update(command(reactivate()));
+
+            ArgumentCaptor<ProductOptionCombination> captor = ArgumentCaptor.forClass(ProductOptionCombination.class);
+            then(combinationRepository).should().save(captor.capture());
+            assertThat(captor.getValue().isAvailable()).isTrue();
+        }
+
+        @Test
+        @DisplayName("옵션 교체로 은퇴한 조합(옛 옵션값 참조)은 판매를 재개할 수 없다 — PRODUCT-002, 저장·캐시 재계산 없음")
+        void rejectsRetiredOptionCombination() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(optionProduct()));
+            given(combinationRepository.findAllById(any()))
+                    .willReturn(List.of(discontinuedCombo("k-old", List.of(UUID.randomUUID()))));
+
+            assertThatThrownBy(() -> service.update(command(reactivate())))
+                    .isInstanceOf(InvalidProductStateException.class);
+
+            then(combinationRepository).should(never()).save(any());
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
+        }
+
+        @Test
+        @DisplayName("옵션 상품으로 바뀐 뒤 남은 옛 기본 조합(옵션값 없음)은 판매를 재개할 수 없다")
+        void rejectsRetiredDefaultOnOptionProduct() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(optionProduct()));
+            given(combinationRepository.findAllById(any()))
+                    .willReturn(List.of(discontinuedCombo(CombinationKey.DEFAULT + "#" + COMBO_ID, List.of())));
+
+            assertThatThrownBy(() -> service.update(command(reactivate())))
+                    .isInstanceOf(InvalidProductStateException.class);
+        }
+
+        @Test
+        @DisplayName("단일 상품은 현재 기본 조합(DEFAULT)만 재개할 수 있고, 은퇴한 DEFAULT#id는 거절한다")
+        void singleProductOnlyCurrentDefault() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+            given(combinationRepository.findAllById(any()))
+                    .willReturn(List.of(discontinuedCombo(CombinationKey.DEFAULT, List.of())))
+                    .willReturn(List.of(discontinuedCombo(CombinationKey.DEFAULT + "#" + COMBO_ID, List.of())));
+
+            service.update(command(reactivate()));
+            assertThatThrownBy(() -> service.update(command(reactivate())))
+                    .isInstanceOf(InvalidProductStateException.class);
+
+            then(combinationRepository).should(times(1)).save(any());
+        }
+
+        @Test
+        @DisplayName("판매여부를 바꾸지 않거나 단종하는 요청은 은퇴 조합에도 허용한다 (재개만 막는다)")
+        void allowsNonReactivatingChangesOnRetiredCombination() {
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(optionProduct()));
+            given(combinationRepository.findAllById(any()))
+                    .willReturn(List.of(discontinuedCombo("k-old", List.of(UUID.randomUUID()))));
+            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+
+            service.update(command(new CombinationUpdateCommand(COMBO_ID, 5_000, null, null, false, EXPECTED_VERSION)));
+
+            then(combinationRepository).should().save(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("잠금 순서")
+    class LockOrder {
+
+        @Test
+        @DisplayName("요청 순서와 무관하게 조합 id 오름차순으로 저장한다 ([c2,c1]·[c1,c2] 동시 요청의 교착 방지)")
+        void savesInCombinationIdOrder() {
+            ProductOptionCombination combo2 = combo(PRODUCT_ID).toBuilder().id(COMBO_2).build();
+            given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(product(SELLER_ID)));
+            given(combinationRepository.findAllById(any())).willReturn(List.of(combo2, combo(PRODUCT_ID)));
+            given(combinationRepository.save(any())).willAnswer(invocation -> invocation.getArgument(0));
+
+            service.update(command(
+                    new CombinationUpdateCommand(COMBO_2, null, null, 20, null, EXPECTED_VERSION),
+                    new CombinationUpdateCommand(COMBO_ID, null, null, 30, null, EXPECTED_VERSION)));
+
+            ArgumentCaptor<ProductOptionCombination> captor = ArgumentCaptor.forClass(ProductOptionCombination.class);
+            then(combinationRepository).should(times(2)).save(captor.capture());
+            assertThat(captor.getAllValues()).extracting(ProductOptionCombination::id)
+                    .containsExactly(COMBO_ID, COMBO_2);
+        }
     }
 
     @Nested
@@ -202,6 +339,7 @@ class UpdateCombinationPriceStockServiceTest {
                     .isInstanceOf(ProductNotFoundException.class);
 
             then(combinationRepository).shouldHaveNoInteractions();
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
         }
 
         @Test
@@ -213,6 +351,7 @@ class UpdateCombinationPriceStockServiceTest {
                     .isInstanceOf(ProductAccessDeniedException.class);
 
             then(combinationRepository).shouldHaveNoInteractions();
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
         }
 
         @Test
@@ -226,6 +365,7 @@ class UpdateCombinationPriceStockServiceTest {
                     .isInstanceOf(CombinationNotFoundException.class);
 
             then(combinationRepository).should(never()).save(any());
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
         }
 
         @Test
@@ -238,6 +378,7 @@ class UpdateCombinationPriceStockServiceTest {
                     .isInstanceOf(CombinationNotFoundException.class);
 
             then(combinationRepository).should(never()).save(any());
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
         }
     }
 }

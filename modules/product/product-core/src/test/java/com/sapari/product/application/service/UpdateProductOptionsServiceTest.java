@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 
 import com.sapari.global.time.TimeProvider;
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -168,6 +170,19 @@ class UpdateProductOptionsServiceTest {
         }
 
         @Test
+        @DisplayName("기존 조합 단종 → 새 조합 저장 뒤 상품 캐시를 재계산한다")
+        void refreshesCacheAfterRegeneratingCombinations() {
+            stubHappyPath();
+
+            service.update(command());
+
+            InOrder inOrder = inOrder(combinationRepository, productRepository);
+            inOrder.verify(combinationRepository).discontinueAllByProductId(PRODUCT_ID, LATER);
+            inOrder.verify(combinationRepository).saveAll(any());
+            inOrder.verify(productRepository).refreshStockPriceCache(PRODUCT_ID, LATER);
+        }
+
+        @Test
         @DisplayName("룰이 없어도 config를 null로 교체해 기존 룰(옛 옵션값 id 참조)을 지운다")
         void clearsStaleConfigWithoutRules() {
             stubHappyPath();
@@ -188,15 +203,20 @@ class UpdateProductOptionsServiceTest {
         }
 
         @Test
-        @DisplayName("옵션을 비우면 기존 조합은 벌크 단종하고 새 조합 saveAll은 호출하지 않는다 (옵션 없는 단일 상품)")
-        void emptyOptionsRetiresAllAndCreatesNone() {
+        @DisplayName("옵션을 비우면 기존 조합은 벌크 단종하고 기본 조합 1개(재고=defaultStock)를 새로 저장한다 (단일 상품 전환)")
+        void emptyOptionsRetiresAllAndCreatesDefaultCombination() {
             given(productRepository.findActiveById(PRODUCT_ID)).willReturn(Optional.of(onSaleProduct(SELLER_ID)));
             given(productRepository.save(any())).willReturn(onSaleProduct(SELLER_ID)); // 옵션 없는 저장본
 
             service.update(new UpdateProductOptionsCommand(PRODUCT_ID, SELLER_ID, List.of(), 50, EXPECTED_VERSION, null, null, null));
 
             then(combinationRepository).should().discontinueAllByProductId(PRODUCT_ID, LATER);
-            then(combinationRepository).should(never()).saveAll(any());
+            assertThat(captureSavedAll()).singleElement().satisfies(c -> {
+                assertThat(c.combinationKey().value()).isEqualTo(CombinationKey.DEFAULT);
+                assertThat(c.optionValueIds()).isEmpty();
+                assertThat(c.price()).isEqualTo(10_000);
+                assertThat(c.stock().stock()).isEqualTo(50);
+            });
         }
     }
 
@@ -350,6 +370,7 @@ class UpdateProductOptionsServiceTest {
                     .isInstanceOf(ProductNotFoundException.class);
 
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
             then(combinationRepository).shouldHaveNoInteractions();
         }
 
@@ -362,6 +383,7 @@ class UpdateProductOptionsServiceTest {
                     .isInstanceOf(ProductAccessDeniedException.class);
 
             then(productRepository).should(never()).save(any());
+            then(productRepository).should(never()).refreshStockPriceCache(any(), any());
             then(combinationRepository).shouldHaveNoInteractions();
         }
     }
