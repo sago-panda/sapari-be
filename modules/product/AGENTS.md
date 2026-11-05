@@ -87,6 +87,10 @@ pre-built slices had no caller and were removed. Build each slice together with 
   `updatable=false` too** — a root save carries a stale snapshot and would erase increments made meanwhile.
   Whoever owns a counter updates it with an atomic statement (`SET x = x + 1`), never through `save`, and
   without bumping `version` (so seller edits don't 409 on every view/like).
+- ⚠️ **`reserved_stock` is still written by a combination `save`** (the mapper copies the snapshot). Nothing reserves
+  yet; before wiring order reservations, either make the reservation UPDATE bump `version` (a stale seller PATCH then
+  409s) or drop `reserved_stock` from the save and enforce `stock >= reserved_stock` in the atomic UPDATE — otherwise a
+  seller PATCH silently erases reservations made after it read the row.
 
 ## Conventions (when you build services)
 
