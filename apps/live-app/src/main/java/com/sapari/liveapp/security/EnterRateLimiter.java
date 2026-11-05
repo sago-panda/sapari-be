@@ -100,10 +100,8 @@ public class EnterRateLimiter {
      * 마지막으로 로그를 남긴 시각 — <b>집단마다 따로다.</b> 벽시계가 아니라 단조 시계다
      * ({@link TokenBucket} 과 같은 이유).
      *
-     * <p>⚠️ 한때 게이트가 하나였다. 그러면 게스트 폭주가 지속되는 상황(= 이 상한이 존재하는
-     * 이유인 바로 그 상황)에서 창을 게스트 거부가 선점해 <b>"로그인한 실사용자가 거부되고
-     * 있다" 가 안 뜬다</b> — 실측: 6창 × (게스트 100 + 회원 100) 거부에서 회원 줄 <b>0/600</b>
-     * 이고 회원 누적값도 끝까지 안 나갔다.
+     * <p>하나로 합치면 게스트 폭주가 창을 선점해 "로그인한 실사용자가 거부되고 있다" 가 안
+     * 뜬다. {@code EnterRateLimitFilterTest} 가 그 회귀를 잡는다.
      */
     private final AtomicLong guestLastLogNanos;
     private final AtomicLong memberLastLogNanos;
