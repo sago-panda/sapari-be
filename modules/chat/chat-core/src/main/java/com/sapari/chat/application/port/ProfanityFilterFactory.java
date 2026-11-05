@@ -28,9 +28,11 @@ public interface ProfanityFilterFactory {
      * 평시에는 0건이라 안 드러나는데, 접기 평면을 바꾸는 변경이나 화이트리스트 경고 하나가
      * 들어오면 그 줄이 발행·교체마다 나간다.
      *
-     * <p>두 자리가 서로 다른 레이어라({@code application/service} 의 그림자 보고 ·
-     * {@code infrastructure/config} 의 적재 경고) 상수를 공유할 자리가 이 포트뿐이다. 각자
-     * 20 을 적어 두면 한쪽만 바뀌는 드리프트가 되고, 이 브랜치가 그 모양을 네 번 밟았다.
+     * <p>쓰는 자리가 레이어를 가로지르므로 상수를 공유할 자리가 이 포트뿐이다 — 전수 다섯
+     * (2026-11-05): {@code application/service} 의 그림자 보고 · {@code infrastructure/config} 의
+     * 요약 · streaming-app 의 설정 WARN 테스트 · 그리고 사전 테스트 둘. 각자 20 을 적어 두면
+     * 한쪽만 바뀌는 드리프트가 되고, 이 브랜치가 그 모양을 네 번 밟았다. 테스트 면도 참조해야
+     * 한다 — 참조가 main 에만 있던 동안 상한을 내리면 프로덕션은 따라가고 테스트만 갈렸다.
      */
     int LOG_ENTRY_LIMIT = 20;
 

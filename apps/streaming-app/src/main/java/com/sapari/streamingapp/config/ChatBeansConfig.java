@@ -112,9 +112,10 @@ public class ChatBeansConfig {
             // (DictionaryProfanityFilterFactory)에서 닫힌 그 둘과 같다.
             //
             // 그래서 같은 창구를 쓴다 — summarize() 가 상한에서 끊고, 그 상한은 포트의
-            // LOG_ENTRY_LIMIT 하나다. 접기(visible)는 거기서 뺐다: 이 경로가 만들 수 있는 경고에
-            // 보이지 않는 글자가 들어올 수 없고(dropZeroWidth 는 자기가 이미 접는다) 접으면
-            // 이모지가 서로게이트 두 쪽으로 쪼개져 지목이 더 어려워진다.
+            // LOG_ENTRY_LIMIT 하나다. 접기(visible)는 거기서 뺐다: 이 경로에서 보이지 않는
+            // 글자가 들어오는 유일한 길이 dropZeroWidth 이고 <그것이 자기가 이미 접어서> 경고
+            // 문장에 넣는다(:676). 창구에서 한 번 더 접으면 얻는 것이 없고, visible 이 char
+            // 단위라 이모지를 서로게이트 두 쪽으로 쪼개 지목이 더 어려워진다.
             log.warn("사전 설정에 확인할 항목이 있다({}건): {}",
                     dictionary.warnings().size(),
                     ProfanityDictionary.summarize(dictionary.warnings()));
