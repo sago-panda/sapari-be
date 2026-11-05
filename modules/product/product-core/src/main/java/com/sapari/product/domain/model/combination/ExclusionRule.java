@@ -7,8 +7,11 @@ import java.util.UUID;
 /**
  * 불가 조합 룰. {@code valueIds}를 <b>모두</b> 포함하는 조합은 생성하지 않는다(행 미생성). 옵션 저작 룰의 도메인 표현으로, 조합
  * 생성({@link CombinationGenerator})의 제외 판정에 쓰인다.
+ *
+ * @param valueIds 매칭 조건 옵션값 id 목록
+ * @param reason   제외 사유(판정에 쓰이지 않는 저작 메모, DDL jsonb {@code reason}), 없으면 null
  */
-public record ExclusionRule(List<UUID> valueIds) {
+public record ExclusionRule(List<UUID> valueIds, String reason) {
 
     public ExclusionRule {
         if (valueIds == null || valueIds.isEmpty()) {

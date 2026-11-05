@@ -29,12 +29,20 @@ public final class CombinationGenerator {
      */
     public static final int MAX_COMBINATIONS = 500;
 
+    /**
+     * 상품당 옵션 타입 수 상한. 조합 키는 옵션값 UUID(36자)를 타입마다 하나씩 {@code :}로 이은 문자열이라 길이가 {@code 37k - 1}이고,
+     * {@code combination_key varchar(500)}에 들어가려면 k ≤ 13이어야 한다. 값이 1개인 타입만 쌓으면 조합 수 상한에 걸리지 않으므로 타입 수를 따로 제한한다.
+     */
+    public static final int MAX_OPTION_TYPES = 10;
+
     private CombinationGenerator() {
     }
 
     /**
-     * 옵션 타입들의 데카르트 곱으로 조합을 생성한다. 옵션 타입이 없으면 빈 목록(옵션 없는 단일 상품)을 반환한다. 생성된 조합은 {@code id=null}, {@code isAvailable=true},
-     * 재고는 {@code defaultStock}(예약 0)으로 시작한다.
+     * 옵션 타입들의 데카르트 곱으로 조합을 생성한다. 생성된 조합은 {@code id=null}, {@code isAvailable=true}, 재고는 {@code defaultStock}(예약 0)으로 시작한다.
+     *
+     * <p>옵션 타입이 없으면(단일 상품) 옵션값 없는 <b>기본 조합 1개</b>(키 {@link CombinationKey#DEFAULT}, 가격 {@code basePrice})를 만든다 — 재고·가격·
+     * 예약과 상품 캐시(min_price·has_stock)를 옵션 상품과 같은 조합 경로로 관리하기 위해서다.
      *
      * @param productId      소속 상품 id (영속화되어 부여된 값)
      * @param basePrice      상품 기본 가격
@@ -43,7 +51,8 @@ public final class CombinationGenerator {
      * @param exclusionRules 제외 룰. null이면 없음으로 처리
      * @param defaultStock   생성 조합의 기본 재고
      * @param now            생성 시각 (호출측이 TimeProvider로 구해 전달)
-     * @throws InvalidProductOptionException 값이 하나도 없는 옵션 타입이 있는 경우
+     * @throws InvalidProductOptionException 옵션 타입이 {@link #MAX_OPTION_TYPES}개를 넘거나, 값이 하나도 없는 옵션 타입이 있거나,
+     *                                       조합 가격이 0 미만·int 범위 초과이거나, 제외 룰이 모든 조합을 배제한 경우
      * @throws TooManyCombinationsException  조합 수가 {@link #MAX_COMBINATIONS}를 초과하는 경우
      */
     public static List<ProductOptionCombination> generate(
@@ -54,9 +63,17 @@ public final class CombinationGenerator {
             List<ExclusionRule> exclusionRules,
             int defaultStock,
             Instant now) {
-        // 옵션 타입이 없으면 조합도 없다 (옵션 없는 단일 가격·재고 상품)
+        // 옵션 타입이 없으면 단일 상품 — 옵션값 없는 기본 조합 하나가 재고·가격 단위가 된다
         if (optionTypes == null || optionTypes.isEmpty()) {
-            return List.of();
+            return List.of(ProductOptionCombination.create(
+                    productId,
+                    CombinationKey.of(CombinationKey.DEFAULT),
+                    null,
+                    null,
+                    basePrice,
+                    Stock.of(defaultStock, 0),
+                    List.of(),
+                    now));
         }
 
         // 타입을 sortOrder 순으로 고정 — 데카르트 곱의 결합 순서를 결정적으로 만든다
@@ -64,7 +81,7 @@ public final class CombinationGenerator {
                 .sorted(comparing(ProductOptionTypeModel::sortOrder, nullsLast(naturalOrder())))
                 .toList();
 
-        // 값 없는 타입·조합 수 초과를 데카르트 곱을 펼치기 전에 미리 차단
+        // 타입 수 초과·값 없는 타입·조합 수 초과를 데카르트 곱을 펼치기 전에 미리 차단
         guardCardinality(sortedTypes);
 
         // null 룰은 빈 목록으로 정규화 — 이후 스트림에서 null 분기를 없앤다
@@ -86,14 +103,19 @@ public final class CombinationGenerator {
             }
 
             // 가격 = 기본가 + Σ(옵션값 추가금) + Σ(이 조합에 매칭되는 추가금 룰 amount)
-            int price = basePrice
+            // long으로 합산 — int 합산은 큰 금액 조합에서 조용히 넘쳐 음수 가격이 된다
+            long price = (long) basePrice
                     + tuple.stream()
-                    .mapToInt(ProductOptionValueModel::priceDelta)
+                    .mapToLong(ProductOptionValueModel::priceDelta)
                     .sum()
                     + surcharges.stream()
                     .filter(rule -> rule.matches(idSet))
-                    .mapToInt(SurchargeRule::amount)
+                    .mapToLong(SurchargeRule::amount)
                     .sum();
+            // 음수(할인 가산액 과다)·int 범위 초과는 조합 생성자의 IllegalArgumentException(서버 오류)이 되기 전에 입력 오류로 돌린다
+            if (price < 0 || price > Integer.MAX_VALUE) {
+                throw new InvalidProductOptionException("조합 가격이 허용 범위(0 ~ " + Integer.MAX_VALUE + ")를 벗어납니다: " + price);
+            }
 
             // 신규 조합 — sku·originalPrice 미지정, 재고는 defaultStock(예약 0)으로 시작
             result.add(ProductOptionCombination.create(
@@ -101,18 +123,28 @@ public final class CombinationGenerator {
                     CombinationKey.of(combinationKey(valueIds)),
                     null,
                     null,
-                    price,
+                    (int) price,
                     Stock.of(defaultStock, 0),
                     valueIds,
                     now));
+        }
+
+        // 옵션이 있는데 제외 룰이 모든 조합을 배제하면 구매할 수 있는 단위가 없는 상품이 된다 → 옵션 구성 오류
+        if (result.isEmpty()) {
+            throw new InvalidProductOptionException("제외 룰이 모든 옵션 조합을 배제했습니다.");
         }
         return result;
     }
 
     /**
-     * 각 타입에 값이 있는지 검증하고, 데카르트 곱 카디널리티가 한도를 넘으면 미리 예외를 던진다(거대 목록 생성 방지).
+     * 타입 수가 상한 안인지, 각 타입에 값이 있는지 검증하고, 데카르트 곱 카디널리티가 한도를 넘으면 미리 예외를 던진다(거대 목록 생성 방지).
      */
     private static void guardCardinality(List<ProductOptionTypeModel> types) {
+        // 타입 수 상한 — 조합 키 길이(varchar(500))를 넘는 조합은 INSERT에서 DB 오류가 되므로 생성 전에 거절한다
+        if (types.size() > MAX_OPTION_TYPES) {
+            throw new InvalidProductOptionException(
+                    "옵션 타입은 상품당 " + MAX_OPTION_TYPES + "개까지 만들 수 있습니다: " + types.size() + "개");
+        }
         // 조합 수 = 타입별 값 개수의 곱. 곱을 누적하며 한도 초과를 조기에 감지한다 (long으로 오버플로 방지)
         long cardinality = 1L;
         for (ProductOptionTypeModel type : types) {

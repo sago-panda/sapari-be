@@ -14,6 +14,9 @@ dependencies {
     // 사용자 작성 HTML(상품 상세 설명) 저장형 XSS 차단 — 허용 목록 정제
     implementation 'com.googlecode.owasp-java-html-sanitizer:owasp-java-html-sanitizer:20240325.1'
 
+    // 옵션 추가금·제외 룰을 product_option_configs jsonb 문자열로 직렬화 (버전은 Spring Boot BOM 관리)
+    implementation 'tools.jackson.core:jackson-databind'
+
     testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
 
     // test container

@@ -11,8 +11,21 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
   204 = `void`); the seller list is a `CursorPage` (`?cursor=&size=`, newest first). The ON_SALE-only rule for
   the public detail lives in `GetProductDetailService`, not the controller. Request DTOs under
   `controller/product/dto/request` (`@Valid`, `toCommand(sellerId[, productId])`). Swagger UI at
-  `/swagger-ui.html`, API docs at `/v3/api-docs`. Pending: optimistic-lock `version`/`expectedVersion`
-  threading (§13.2), image (④) / rule-override (⑤) fields.
+  `/swagger-ui.html`, API docs at `/v3/api-docs`. Create/option-update accept option-value `ref` +
+  `surchargeRules`/`exclusionRules`/`combinations` (⑤); structural rule checks are service-side (PRODUCT-004),
+  DTOs only enforce scalar limits. Pending: image (④) fields.
+- ✅ **Bulk upload (SPR-150)** `POST /api/v1/seller/products/bulk` (multipart `file`, xlsx ≤ 5MB, ≤ 100 products).
+  Excel is an input format, so parsing lives here in `bulk/` (not core): streaming POI reader (temp file +
+  SAX + row cap + zip entry cap 24MB + heap-resident shared-strings cap 16MB + workbook total cell-chars cap 24M
+  — one shared string referenced by many cells makes a tiny file expand per cell — all from measured maxima) → `ProductWorkbookParser` builds the **same `CreateProductRequest`** so
+  Bean Validation rules are reused, violations mapped back to sheet/row/column → core `BulkCreateProductsUseCase`
+  (validates every product first; any error ⇒ nothing saved). Validation failures are a **200** envelope with
+  `status=REJECTED` + cell errors (`ErrorResponse` has no room for a list); only an unreadable file is 400 PRODUCT-012.
+  Template contract (sheet names/headers) = `bulk/ProductWorkbookTemplate`, fixture `src/test/resources/bulk/`.
+  Multipart limits are set in code (`config/MultipartConfig`) because the yaml isn't committed. Exceeding them
+  is mapped to the same **400 PRODUCT-012** (`exception/BulkUploadExceptionHandler`), not the common 413. Bodies far
+  over the limit (> Tomcat `max-swallow-size`, default 2MB past the limit) get the connection closed instead of a
+  response — intended; don't raise it to make huge uploads see the JSON error.
 - `@ComponentScan("com.sapari")` picks up `common/web`. JPA is split: `product-core`'s
   `JpaConfiguration` enables product persistence; this app's `config/UserPersistenceConfig` adds
   `com.sapari.user.infrastructure.persistence` (the JWT `UserDetailsService` needs it) — Spring Boot

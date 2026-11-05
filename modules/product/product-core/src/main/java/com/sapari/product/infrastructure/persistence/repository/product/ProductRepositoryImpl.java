@@ -1,11 +1,13 @@
 package com.sapari.product.infrastructure.persistence.repository.product;
 
 import com.sapari.product.infrastructure.persistence.entity.product.ProductEntity;
+import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionConfigEntity;
 import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionTypeEntity;
 import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionValueEntity;
 
 import com.sapari.product.domain.exception.ProductConcurrentModificationException;
 import com.sapari.product.domain.model.product.Product;
+import com.sapari.product.domain.model.product.ProductOptionConfigModel;
 import com.sapari.product.domain.model.product.ProductOptionTypeModel;
 import com.sapari.product.domain.model.product.ProductSummary;
 import com.sapari.product.domain.repository.product.ProductRepository;
@@ -73,6 +75,36 @@ public class ProductRepositoryImpl implements ProductRepository {
         deleteOptionTypes(productId);
         insertOptionTypes(productId, optionTypes);
         return loadAggregate(entity);
+    }
+
+    @Override
+    public void refreshStockPriceCache(UUID productId, Instant now) {
+        // 1) 대기 중인 조합 변경(INSERT/UPDATE)을 먼저 내보내 조합 행 잠금을 상품 잠금보다 앞서 잡는다 — 잠금 순서를 조합 → 상품으로 고정
+        productJpaRepository.flush();
+        // 2) 상품 행 잠금 — 같은 상품의 조합을 바꾸는 동시 트랜잭션을 여기서 직렬화한다
+        productJpaRepository.lockById(productId);
+        // 3) 잠금을 얻은 뒤 새 문장으로 계산 — READ COMMITTED에서 문장 스냅샷이 잠금 이후라, 먼저 커밋된 다른 트랜잭션의 조합 변경까지 반영된다
+        productJpaRepository.refreshStockPriceCache(productId, now);
+    }
+
+    @Override
+    public void replaceOptionConfig(UUID productId, ProductOptionConfigModel config) {
+        if (config == null) {
+            if (optionConfigJpaRepository.existsById(productId)) {
+                optionConfigJpaRepository.deleteById(productId);
+            }
+            return;
+        }
+        // 기존 행이 있으면 관리 엔티티를 그대로 갱신한다(dirty checking). PK가 앱 주입값이라 새 엔티티로 save하면
+        // merge 경로를 타는데, 같은 트랜잭션에서 앞선 save가 이미 이 행을 관리 중일 수 있어 관리 엔티티 갱신이 안전하다.
+        optionConfigJpaRepository.findById(productId)
+                .ifPresentOrElse(
+                        entity -> {
+                            // 직렬화는 매퍼가 맡는다 — 같은 포맷으로 만든 엔티티의 컬럼 값으로 관리 엔티티를 갱신
+                            ProductOptionConfigEntity serialized = mapper.toConfigEntity(productId, config);
+                            entity.updateRules(serialized.getSurchargeRules(), serialized.getExclusionRules());
+                        },
+                        () -> optionConfigJpaRepository.save(mapper.toConfigEntity(productId, config)));
     }
 
     @Override

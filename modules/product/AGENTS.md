@@ -5,11 +5,10 @@ ranking/search-log, outbox. Internal layout + dependency rules: `modules/AGENTS.
 
 ## Status
 
-- 🚧 **Skeleton — pre-service.** Only JPA entities (catalog + option subset) and
-  `CategoryJpaRepository` exist. **No domain model / service / port / `-api` yet** (`product-api` is
-  empty). `Runner.java` is dev scratch (delete before real work).
-- Build the layers (`application/service`, `domain/model`, `application/port`, `domain/exception`)
-  following **`live`** (reference) and the auth modules (`customer`/`seller`) for the error/exception shape.
+- 🚧 **Seller product CRUD works** (epic SPR-56): create / detail / seller list / info update / option
+  replace (+ surcharge·exclusion rules, per-combination overrides, SPR-108) / combination price·stock /
+  sale status / soft delete, bulk create from xlsx (SPR-150, parsing lives in `apps/product-app/bulk`).
+  Not yet: images (SPR-107), admin review, search indexing. Wired by `apps/product-app`.
 
 ## Schema is the real asset
 
@@ -31,6 +30,8 @@ Non-obvious facts that bite when you map entities:
   discount).
 - **`product_option_configs`** (1:1 with products) holds option authoring rules as `jsonb`
   (`surcharge_rules` / `exclusion_rules`) — materialized into combinations at write time, not read at runtime.
+  The domain holds typed `SurchargeRule`/`ExclusionRule` lists; the JSON shape lives only in the persistence
+  mapper (`OptionRuleJsonCodec`).
 - `products` sort/filter columns (`min_price`, `has_stock`, `purchase_count`, `avg_rating`,
   `*_count`) are **app-maintained denormalized caches**, not DB-computed.
 
@@ -62,7 +63,38 @@ pre-built slices had no caller and were removed. Build each slice together with 
   `aggregate_type`/`event_type` stay `String` (values like lowercase `product` don't match enum names).
 - **jsonb** (`metadata`, `surcharge/exclusion_rules`, `detail`, `payload`) → `String` +
   `@JdbcTypeCode(SqlTypes.JSON)`.
-- No repositories/mappers/services yet — add per aggregate as you build.
+- Repositories/mappers exist for every aggregate; services exist for the product/combination write paths above.
+
+## Combination invariants (non-obvious — read before touching combinations)
+
+- **Every product has ≥ 1 combination.** No option types ⇒ one hidden *default combination*
+  (`combination_key = "DEFAULT"`, no option values, price = base_price). Stock/price/reservation of a
+  single product live on it. ⚠️ This supersedes the order DDL comment "`option_combination_id` NULL =
+  single product" — order/cart must reference the default combination's id (V1 migrations are applied, so
+  the comment itself can't be edited).
+- **Option replace retires, never deletes, combinations** (orders reference them by id):
+  `discontinueAllByProductId` flips **all** of the product's combinations to `is_available=false` and bumps
+  `version` (including ones the seller had already discontinued — so a stale "reactivate" PATCH gets 409),
+  and renames a retired `DEFAULT` key to `DEFAULT#<id>` (the `(product_id, combination_key)` unique index is
+  not partial). A retired combination can't be re-enabled (`UpdateCombinationPriceStockService` →
+  PRODUCT-002). Combination keys are `:`-joined value UUIDs (the DDL comment's "3:7:12" is illustrative) —
+  `37k − 1` chars for k option types, so `CombinationGenerator.MAX_OPTION_TYPES = 10` keeps them inside
+  `combination_key varchar(500)` (DTO `@Size` and the bulk template use the same 10).
+- **`min_price` / `has_stock` are written only by `ProductRepository.refreshStockPriceCache`** (entity columns
+  are `updatable=false`; a normal product save can't overwrite them). Every path that changes a
+  combination's price/stock/availability/reservation — or a winning discount — must call it **at the end of
+  its transaction**. It flushes, `SELECT … FOR UPDATE`s the product row, then recomputes in a new statement
+  (READ COMMITTED): lock order is **combination rows → product row**; it bumps `updated_at` (re-index
+  trigger) but not `version`. Hot paths (order reservations) will serialize on that product row — revisit
+  before wiring them.
+- **Aggregate counters (`purchase_count`, `review_count`, `avg_rating`, `view_count`, `wishlist_count`) are
+  `updatable=false` too** — a root save carries a stale snapshot and would erase increments made meanwhile.
+  Whoever owns a counter updates it with an atomic statement (`SET x = x + 1`), never through `save`, and
+  without bumping `version` (so seller edits don't 409 on every view/like).
+- ⚠️ **`reserved_stock` is still written by a combination `save`** (the mapper copies the snapshot). Nothing reserves
+  yet; before wiring order reservations, either make the reservation UPDATE bump `version` (a stale seller PATCH then
+  409s) or drop `reserved_stock` from the save and enforce `stock >= reserved_stock` in the atomic UPDATE — otherwise a
+  seller PATCH silently erases reservations made after it read the row.
 
 ## Conventions (when you build services)
 
@@ -72,5 +104,6 @@ pre-built slices had no caller and were removed. Build each slice together with 
 
 ## Tests
 
-None yet. Run: `./gradlew :modules:product:product-core:test` (service tests with Mockito on ports,
-FixtureMonkey fixtures, fixed `Clock` via `TimeProvider` — match `customer`/`seller`).
+Run: `./gradlew :modules:product:product-core:test` — service tests (Mockito on ports, fixed `Clock`),
+repository tests on real Postgres via Testcontainers (`support/AbstractRepositoryIntegrationTest`, needs
+Docker), and barrier-based concurrency tests (`concurrency/`, `support/ConcurrentTransactionTestSupport`).

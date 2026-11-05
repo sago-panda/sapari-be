@@ -4,6 +4,8 @@
 ### [1/9] 상품 등록 (POST) → 201, productId 캡처
 # sellerId는 본문이 아니라 토큰(@CurrentUserId)에서. metadata는 jsonb '문자열'(JSON object를 escape).
 # description의 <script>는 서버 정제로 제거된다(저장형 XSS 차단).
+# ref는 요청 내 임의 키 — 룰·조합 오버라이드가 옵션값을 가리킨다. 기대 조합 3개(파랑+S 제외):
+#   빨강+S 19900 · 빨강+M 19900+1000+500=21400 · 파랑+M 오버라이드(18900, 정가 22000, 재고 30, SKU TS-BLUE-M)
 POST {{productBaseUrl}}/api/v1/seller/products
 Authorization: Bearer {{sellerToken}}
 Content-Type: application/json
@@ -22,8 +24,8 @@ Content-Type: application/json
       "attributeGroupId": null,
       "sortOrder": 1,
       "values": [
-        { "value": "빨강", "attributePresetId": null, "metadata": "{\"hex\":\"#FF0000\"}", "priceDelta": 0, "sortOrder": 1 },
-        { "value": "파랑", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 2 }
+        { "value": "빨강", "attributePresetId": null, "metadata": "{\"hex\":\"#FF0000\"}", "priceDelta": 0, "sortOrder": 1, "ref": "c-red" },
+        { "value": "파랑", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 2, "ref": "c-blue" }
       ]
     },
     {
@@ -31,12 +33,21 @@ Content-Type: application/json
       "attributeGroupId": null,
       "sortOrder": 2,
       "values": [
-        { "value": "S", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 1 },
-        { "value": "M", "attributePresetId": null, "metadata": null, "priceDelta": 1000, "sortOrder": 2 }
+        { "value": "S", "attributePresetId": null, "metadata": null, "priceDelta": 0, "sortOrder": 1, "ref": "s-s" },
+        { "value": "M", "attributePresetId": null, "metadata": null, "priceDelta": 1000, "sortOrder": 2, "ref": "s-m" }
       ]
     }
   ],
-  "defaultStock": 100
+  "defaultStock": 100,
+  "surchargeRules": [
+    { "valueRefs": ["c-red", "s-m"], "amount": 500 }
+  ],
+  "exclusionRules": [
+    { "valueRefs": ["c-blue", "s-s"], "reason": "미생산" }
+  ],
+  "combinations": [
+    { "valueRefs": ["c-blue", "s-m"], "price": 18900, "originalPrice": 22000, "stock": 30, "sku": "TS-BLUE-M" }
+  ]
 }
 
 > {%

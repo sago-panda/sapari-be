@@ -10,12 +10,15 @@ import java.util.UUID;
  * @param metadata          확장 메타데이터 jsonb 문자열(예: {@code {"hex":"#FF0000"}}), 없으면 null
  * @param priceDelta        옵션값별 가격 가산액(원), 없으면 0
  * @param sortOrder         노출 순서
+ * @param ref               요청 내 유일한 참조 키. 추가금/제외 룰·조합 오버라이드가 이 값으로 옵션값을 가리킨다.
+ *                          참조되지 않는 옵션값이면 null
  */
 public record ProductOptionValueCommand(
         String value,
         UUID attributePresetId,
         String metadata,
         int priceDelta,
-        short sortOrder
+        short sortOrder,
+        String ref
 ) {
 }

@@ -16,7 +16,7 @@ import com.sapari.product.command.ProductOptionTypeCommand;
  * 상품 등록 요청 DTO. 판매자 인증 주체(sellerId)는 본문이 아니라 {@code @CurrentUserId}로 주입되므로
  * 이 DTO에는 두지 않는다(매스 어사인먼트 방지).
  *
- * <p>이미지·추가금/제외 룰·조합별 오버라이드는 후속 증분(④·⑤)에서 추가된다 — 현재 커맨드 범위에 없다.
+ * <p>이미지는 후속 증분(④)에서 추가된다 — 현재 커맨드 범위에 없다.
  *
  * @param categoryId            카테고리 id
  * @param name                  상품명
@@ -27,6 +27,9 @@ import com.sapari.product.command.ProductOptionTypeCommand;
  * @param tags                  상품 태그(최대 10개, 각 20자). 특수문자 규칙은 도메인 ProductTagPolicy가 강제
  * @param optionTypes           옵션 타입/값. 비어 있으면 옵션 없는 단일 상품
  * @param defaultStock          생성되는 모든 조합의 기본 재고
+ * @param surchargeRules        조합 추가금 룰(선택, 조합 수 상한과 같은 최대 500개)
+ * @param exclusionRules        불가 조합 룰(선택, 최대 500개)
+ * @param combinations          조합별 오버라이드(선택, 최대 500개)
  */
 public record CreateProductRequest(
         @NotNull Long categoryId,
@@ -36,8 +39,11 @@ public record CreateProductRequest(
         UUID shippingPolicyId,
         @PositiveOrZero Integer additionalShippingFee,
         @Size(max = 10) List<@Size(max = 20) String> tags,
-        @Size(max = 30) @Valid List<OptionTypeRequest> optionTypes,
-        @PositiveOrZero int defaultStock
+        @Size(max = 10) List<@NotNull @Valid OptionTypeRequest> optionTypes,
+        @PositiveOrZero int defaultStock,
+        @Size(max = 500) List<@NotNull @Valid SurchargeRuleRequest> surchargeRules,
+        @Size(max = 500) List<@NotNull @Valid ExclusionRuleRequest> exclusionRules,
+        @Size(max = 500) List<@NotNull @Valid CombinationOverrideRequest> combinations
 ) {
 
     /**
@@ -57,7 +63,10 @@ public record CreateProductRequest(
                 additionalShippingFee,
                 tags,
                 toOptionTypeCommands(),
-                defaultStock
+                defaultStock,
+                SurchargeRuleRequest.toCommands(surchargeRules),
+                ExclusionRuleRequest.toCommands(exclusionRules),
+                CombinationOverrideRequest.toCommands(combinations)
         );
     }
 

@@ -18,13 +18,16 @@ import com.sapari.productapp.validation.JsonObjectString;
  *                          JSON 객체 파싱 가능성·크기를 검증한다. 키 화이트리스트·깊은 구조 검증(m-2)은 후속.
  * @param priceDelta        옵션값별 가격 가산액(원). 음수 허용(할인 옵션)
  * @param sortOrder         노출 순서
+ * @param ref               요청 내 유일한 참조 키(선택). 추가금/제외 룰·조합 오버라이드가 이 값으로 옵션값을 가리킨다.
+ *                          유일성은 서비스가 검증한다
  */
 public record OptionValueRequest(
         @NotBlank @Size(max = 100) String value,
         UUID attributePresetId,
         @JsonObjectString @Size(max = 2048) String metadata,
         int priceDelta,
-        @NotNull Short sortOrder
+        @NotNull Short sortOrder,
+        @Size(max = 100) String ref
 ) {
 
     /**
@@ -33,6 +36,6 @@ public record OptionValueRequest(
      * @return 옵션 값 커맨드
      */
     public ProductOptionValueCommand toCommand() {
-        return new ProductOptionValueCommand(value, attributePresetId, metadata, priceDelta, sortOrder);
+        return new ProductOptionValueCommand(value, attributePresetId, metadata, priceDelta, sortOrder, ref);
     }
 }

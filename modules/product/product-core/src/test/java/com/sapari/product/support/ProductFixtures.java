@@ -3,6 +3,8 @@ package com.sapari.product.support;
 import com.navercorp.fixturemonkey.ArbitraryBuilder;
 import com.navercorp.fixturemonkey.FixtureMonkey;
 import com.navercorp.fixturemonkey.api.introspector.ConstructorPropertiesArbitraryIntrospector;
+import com.sapari.product.domain.model.combination.ExclusionRule;
+import com.sapari.product.domain.model.combination.SurchargeRule;
 import com.sapari.product.domain.model.product.ImageRole;
 import com.sapari.product.domain.model.product.Product;
 import com.sapari.product.domain.model.product.ProductImageRef;
@@ -45,6 +47,13 @@ public final class ProductFixtures {
     public static final FixtureMonkey FM = FixtureMonkey.builder()
             .objectIntrospector(ConstructorPropertiesArbitraryIntrospector.INSTANCE)
             .defaultNotNull(true)
+            // 옵션 룰은 compact 생성자가 valueIds 1개 이상·amount 0 이상을 강제한다 — 그 불변식 안에서만 생성
+            .register(SurchargeRule.class, fm -> fm.giveMeBuilder(SurchargeRule.class)
+                    .size("valueIds", 1, 3)
+                    .set("amount", Arbitraries.integers()
+                            .between(0, 100_000)))
+            .register(ExclusionRule.class, fm -> fm.giveMeBuilder(ExclusionRule.class)
+                    .size("valueIds", 1, 3))
             .build();
 
     /**
@@ -111,7 +120,7 @@ public final class ProductFixtures {
                         .ofMaxLength(20))
                 .set("optionTypes", optionTypes(2))
                 .set("optionConfig", ProductOptionConfigModel.of(
-                        "[{\"amount\":1000,\"valueIds\":[\"v1\",\"v2\"]}]", null))
+                        List.of(new SurchargeRule(List.of(UUID.randomUUID(), UUID.randomUUID()), 1000)), List.of()))
                 .sample();
     }
 

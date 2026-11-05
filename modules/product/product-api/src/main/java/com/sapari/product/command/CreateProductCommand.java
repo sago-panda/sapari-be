@@ -4,9 +4,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * 상품 등록 입력. 상품 기본 정보 + 태그 + 옵션 타입/값 + 조합 기본 재고를 담는다.
+ * 상품 등록 입력. 상품 기본 정보 + 태그 + 옵션 타입/값 + 조합 기본 재고 + 추가금/제외 룰 + 조합별 오버라이드를 담는다.
  *
- * <p>도메인에 의존하지 않는 표현 DTO다. 이미지·추가금/제외 룰·조합별 오버라이드는 후속 증분에서 추가한다.
+ * <p>도메인에 의존하지 않는 표현 DTO다. 이미지는 후속 증분에서 추가한다.
  *
  * @param sellerId              판매자 id(컨트롤러의 인증 주체)
  * @param categoryId            카테고리 id
@@ -18,6 +18,9 @@ import java.util.UUID;
  * @param tags                  상품 태그(최대 10개, 각 20자, 특수문자 불가)
  * @param optionTypes           옵션 타입/값. 비어 있으면 옵션 없는 단일 상품
  * @param defaultStock          생성되는 모든 조합의 기본 재고
+ * @param surchargeRules        조합 추가금 룰, 없으면 null 또는 빈 목록
+ * @param exclusionRules        불가 조합 룰, 없으면 null 또는 빈 목록
+ * @param combinations          조합별 오버라이드(가격·정가·재고·SKU), 없으면 null 또는 빈 목록
  */
 public record CreateProductCommand(
         UUID sellerId,
@@ -29,6 +32,9 @@ public record CreateProductCommand(
         Integer additionalShippingFee,
         List<String> tags,
         List<ProductOptionTypeCommand> optionTypes,
-        int defaultStock
+        int defaultStock,
+        List<SurchargeRuleCommand> surchargeRules,
+        List<ExclusionRuleCommand> exclusionRules,
+        List<CombinationOverrideCommand> combinations
 ) {
 }
