@@ -538,6 +538,52 @@ class ManageFilterWordsServiceTest {
         order.verify(repository, times(2)).findWords(any());
     }
 
+    /**
+     * ⭐ <b>감사 로그가 진단보다 앞이라는 것을 로그 축에서 잰다.</b>
+     *
+     * <p>{@code InOrder} 는 발행↔진단 축만 못 박는다 — Mockito 가 {@code log.info} 를 못 보므로
+     * <b>감사 로그 축은 0</b>이었다. 실측: {@code log.info} 를 진단 뒤로 되돌려도 25건 0실패다.
+     * 그래서 그 자리의 {@code @DisplayName}("로그 앞이면 감사를 잃는다")이 재지 않는 것을
+     * 재는 것처럼 적혀 있었다.
+     *
+     * <p>잃는 것은 이것이다 — 진단이 {@code DataAccessException} <b>밖</b>을 던지면(바로 위
+     * 테스트가 못 박은 {@code IllegalStateException}) 쓰기와 발행이 둘 다 성공한 권한 있는
+     * 조정 변경이 <b>누가 무엇을 바꿨는지 한 줄도 없이</b> 일반 500 으로 나간다. 발행이
+     * 성공했으니 {@code publishOrLogLoss} 의 ERROR 도 안 찍힌다.
+     */
+    @Test
+    @DisplayName("⭐ 진단이 던져도 감사 로그는 이미 남아 있다 — 성공한 제재 변경이 흔적 없이 사라지면 안 된다")
+    void theAuditLineSurvivesAThrowingDiagnostic() {
+        given(repository.findWords(FilterWordKind.PROFANITY))
+                .willReturn(Set.of("시발"))
+                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
+        given(repository.findWords(FilterWordKind.WHITELIST))
+                .willReturn(Set.of())
+                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(ManageFilterWordsService.class);
+        logger.addAppender(appender);
+        try {
+            assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
+                    .isInstanceOf(IllegalStateException.class);
+
+            assertThat(appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.INFO)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList())
+                    .as("쓰기·발행이 둘 다 성공했는데 누가 무엇을 바꿨는지가 아무 데도 없으면 "
+                            + "제재 변경의 흔적이 사라진다")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("사전에 항목을 더했다")
+                            .contains("version=42"));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
     @Test
     @DisplayName("목록은 두 집합을 그대로 돌려준다 — 조회가 있어야 삭제가 쓸 수 있다")
     void listReturnsBothSets() {

@@ -88,14 +88,23 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      * 고친다 — 둘이 같다는 것을 테스트가 같은 벡터로 못 박는다.
      *
      * <p>{@code PUBLISH} 를 Lua 안에서 부르는 것은 실측으로 확인했다(Redis 7.4.12, 반환 정상).
+     *
+     * 스크립트 본문 — <b>자리수 상한을 상수에서 끼워 넣는다.</b>
+     *
+     * <p>한때 Lua 쪽 15 가 리터럴이었고 자바 쪽은 상수였다. 바로 위 javadoc 이 "한쪽을 고치면
+     * 다른 쪽도 고친다" 를 적어 두고 그 하중을 <b>주석에</b> 걸고 있었던 자리다 — 실제로 상한을
+     * 18 → 15 로 내리는 변경에서 설명문 세 자리가 18 에 남았다. 끼워 넣으면 그 축이 구조로 닫힌다.
+     *
+     * <p>{@code %%d} 는 Lua 의 {@code string.format} 으로 가야 하는 리터럴이라 두 번 쓴다 —
+     * {@link String#formatted} 가 먼저 한 겹 벗긴다.
      */
-    private static final RedisScript<Long> PUBLISH_SNAPSHOT = RedisScript.of("""
+    private static final String PUBLISH_SCRIPT = """
             -- 머리 문법의 거울 — ProfanityDictionarySnapshotCodec.readVersionToken 과 같아야 한다.
-            -- 숫자 1~18자로 시작하고 그 뒤는 끝이거나 개행. 그 밖은 0("모른다").
+            -- 숫자 1~%d자로 시작하고 그 뒤는 끝이거나 개행. 그 밖은 0("모른다").
             local function token(raw)
                 if type(raw) ~= 'string' then return 0 end
-                local digits = string.match(raw, '^(%d+)')
-                if digits == nil or #digits > 15 then return 0 end
+                local digits = string.match(raw, '^(%%d+)')
+                if digits == nil or #digits > %d then return 0 end
                 local tail = string.sub(raw, #digits + 1, #digits + 1)
                 if tail ~= '' and tail ~= '\\n' then return 0 end
                 return tonumber(digits)
@@ -117,18 +126,42 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             end
             local version = current + 1
             -- ⚠️ 쓰는 포맷도 하나여야 한다. KEYS[2] 는 Redis 의 숫자 인자 변환(정확)을 타는데
-            -- KEYS[1] 은 '..' 를 타고 그것은 %.14g 다 — 값이 15자리가 되면 1e+14 가 키에 써지고
+            -- KEYS[1] 은 '..' 를 타고 그것은 %%.14g 다 — 값이 15자리가 되면 1e+14 가 키에 써지고
             -- 매 발행이 같은 머리를 다시 쓰니 자기치유가 없다(실측 3회차까지 1e+14 고정).
-            -- string.format('%d', ...) 로 양쪽을 같은 표기로 맞춘다.
-            local text = string.format('%d', version)
+            local text = string.format('%%d', version)
+            -- ⚠️ 상한은 토큰이 아니라 <후계자>에 걸어야 닫힌다. 토큰 상한 d 는 10^d-1 을 받고
+            -- 그 +1 은 d+1 자리라 어떤 d 에서도 문법 밖이다. 쓰고 나면 두 키가 다 문법 밖이 되어
+            -- 토큰이 0 으로 떨어지고 낡은 발행자가 expected=0 으로 이긴다(ABA 재개방, 실측).
+            -- 그래서 쓰기 전에 거부한다 — 번호 공간 고갈은 조용히 되돌아가는 것보다 멈추는 쪽이다.
+            if #text > %d then
+                return -2
+            end
             redis.call('SET', KEYS[2], text)
             redis.call('SET', KEYS[1], text .. '\\n' .. ARGV[2])
             redis.call('PUBLISH', ARGV[3], text)
             return version
-            """, Long.class);
+            """;
+
+    /** 위 본문에 상한을 끼워 컴파일한 스크립트. 설계 근거는 {@link #PUBLISH_SCRIPT}. */
+    private static final RedisScript<Long> PUBLISH_SNAPSHOT = RedisScript.of(
+            PUBLISH_SCRIPT.formatted(
+                    ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS,
+                    ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS,
+                    ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS),
+            Long.class);
 
     /** 조건이 깨졌다는 신호. 스크립트가 쓰기 전에 돌려주는 값이다. */
     private static final long CAS_FAILED = -1L;
+
+    /**
+     * 번호 공간이 고갈됐다는 신호 — 스크립트가 <b>쓰기 전에</b> 돌려준다.
+     *
+     * <p>{@code CAS_FAILED} 와 가르는 이유는 복구가 다르기 때문이다. 조건 실패는 재시도로 낫고,
+     * 이쪽은 재시도로 낫지 않는다 — 다음 버전이 문법 밖이라 쓰는 순간 두 키가 못 읽히는 값이
+     * 되고 토큰이 0 으로 떨어져 낡은 발행자가 이긴다(ABA 재개방). 사람이 두 키를 의도적으로
+     * 낮은 값으로 되돌려야 한다.
+     */
+    private static final long VERSION_SPACE_EXHAUSTED = -2L;
 
     private final StringRedisTemplate redisTemplate;
 
@@ -199,6 +232,15 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             // 뭉개면 호출자가 "발행됐다" 로 로그를 남기고 함대에 안 깔린 것을 모른다.
             throw new IllegalStateException(
                     "사전 스냅샷 발행이 버전을 돌려주지 않았다 — 발행 여부를 확인할 수 없다.");
+        }
+        if (version == VERSION_SPACE_EXHAUSTED) {
+            throw new IllegalStateException(
+                    "사전 버전 번호 공간이 고갈됐다 — 다음 버전이 " + (
+                            ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS + 1)
+                            + "자리가 되어 문법 밖이다. 쓰지 않았다(쓰면 두 키가 못 읽히는 값이 "
+                            + "되고 토큰이 0 으로 떨어져 낡은 발행자가 이긴다). 유기적 증가로는 "
+                            + "도달하지 않으므로 누가 버전 키 또는 스냅샷 머리에 큰 수를 넣은 "
+                            + "것이다 — 두 키를 의도적으로 낮은 값으로 되돌려야 한다.");
         }
         return version == CAS_FAILED ? OptionalLong.empty() : OptionalLong.of(version);
     }

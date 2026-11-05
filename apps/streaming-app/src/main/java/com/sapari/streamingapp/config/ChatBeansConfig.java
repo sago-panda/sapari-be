@@ -105,12 +105,19 @@ public class ChatBeansConfig {
             // 이 줄은 <적재는 됐지만 아무 일도 하지 않는> 항목만 나가는 비정상 경로이고, 운영자가
             // 해야 하는 일이 "그 항목을 CSV 에서 찾아 고치기" 라 어느 항목인지가 필요하다.
             //
-            // 그 문장의 렌더링은 사전 문이 만든다(ProfanityDictionary.visible) — 보이지 않는
-            // 글자만 U+XXXX 표기로 바꾸고 보이는 글자는 그대로 둔다. 가리기가 아니라 지목이다.
-            // (주석에 역슬래시-u 를 그대로 쓰면 자바가 그것을 유니코드 이스케이프로 먼저
-            //  읽어 'illegal unicode escape' 로 컴파일이 깨진다 — 주석도 예외가 아니다.)
+            // ⚠️ 한때 이 자리에 "그 문장의 렌더링은 사전 문이 만든다(ProfanityDictionary.visible)"
+            // 고 적혀 있었다. 거짓이었다 — warningEntries 는 항목을 원문으로 박고, visible() 이
+            // 걸리는 것은 dropZeroWidth 가 만드는 문장뿐이다. 그리고 이 줄은 상한도 없어서,
+            // 경고가 늘면 줄 길이가 그만큼 자랐다. 두 결함이 바로 아래 형제 줄
+            // (DictionaryProfanityFilterFactory)에서 닫힌 그 둘과 같다.
+            //
+            // 그래서 같은 창구를 쓴다 — summarize() 가 상한에서 끊고, 그 상한은 포트의
+            // LOG_ENTRY_LIMIT 하나다. 접기(visible)는 거기서 뺐다: 이 경로가 만들 수 있는 경고에
+            // 보이지 않는 글자가 들어올 수 없고(dropZeroWidth 는 자기가 이미 접는다) 접으면
+            // 이모지가 서로게이트 두 쪽으로 쪼개져 지목이 더 어려워진다.
             log.warn("사전 설정에 확인할 항목이 있다({}건): {}",
-                    dictionary.warnings().size(), dictionary.warnings());
+                    dictionary.warnings().size(),
+                    ProfanityDictionary.summarize(dictionary.warnings()));
         }
         return new SwappableProfanityFilter(
                 new ProfanityFilter(dictionary.words(), dictionary.whitelist()));

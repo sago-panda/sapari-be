@@ -134,7 +134,8 @@ class ProfanityDictionarySnapshotRedisReaderTest {
      * 갈림의 대가는 발행 쪽에서 더 컸지만(조건이 평시에도 어긋나 재시도만 소진) 받는 쪽에서도
      * 버전 비교가 틀어진다.
      *
-     * <p>문법: 숫자 1~18자로 시작하고 그 뒤는 끝이거나 개행. 그 밖은 "모른다" 다.
+     * <p>문법: 숫자 1~{@code MAX_VERSION_DIGITS}자로 시작하고 그 뒤는 끝이거나 개행. 그 밖은
+     * "모른다" 다. 자리수는 상수가 갖는다 — 한때 이 설명문이 18 을 가리키는데 상수는 15 였다.
      */
     @Test
     @DisplayName("⭐ 머리 문법이 발행 쪽과 같다 — 갈리면 같은 값에서 두 수가 나온다")
@@ -173,5 +174,102 @@ class ProfanityDictionarySnapshotRedisReaderTest {
         assertThatThrownBy(() -> reader.read().block(CEILING))
                 .as("깨진 스냅샷으로 교체하는 것보다 옛 사전으로 집행하는 것이 낫다")
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    /**
+     * ⭐ <b>타입이 오염된 스냅샷 키는 기여하지 않는다 — 분당 WARN 을 만들면 안 된다.</b>
+     *
+     * <p>{@code max} 로 맞추면서 <b>반쪽만 가져왔다.</b> 발행 쪽은 {@code max} 와 "못 읽은 키는
+     * 0 으로 기여" 를 함께 갖는데 리더는 {@code max} 만 가져왔다. 그러면 스냅샷 키가 오염된
+     * 동안 {@code readVersion()} 이 <b>매번</b> 에러로 올라가고 {@code RefreshHandler} 의
+     * "사전 스냅샷을 읽지 못했다" WARN 이 Pod 당 분당 한 줄씩 나간다 — 전에는 무음이던 상태다.
+     * 발행자 javadoc 이 같은 모양을 "읽기 한 줄이 복구 성질을 없앴다" 로 기록해 둔 축이다.
+     */
+    @Test
+    @DisplayName("⭐ 오염된 스냅샷 키가 버전 판정을 죽이지 않는다 — 버전 키가 그대로 쓰인다")
+    void aWrongTypedSnapshotKeyDoesNotKillTheVersionRead() {
+        set(VERSION, "5");
+        redisTemplate.opsForList().rightPush(SNAPSHOT, "오염").block(CEILING);
+
+        assertThat(reader.readVersion().blockOptional(CEILING))
+                .as("여기서 에러로 올리면 오염된 키 하나가 Pod 당 분당 WARN 한 줄을 만든다")
+                .contains(5L);
+    }
+
+    @Test
+    @DisplayName("두 키가 다 오염·부재면 비었다 — 번들로 뜨는 것이 두 경우 모두에 안전하다")
+    void bothKeysUnreadableMeansEmpty() {
+        redisTemplate.opsForList().rightPush(SNAPSHOT, "오염").block(CEILING);
+
+        assertThat(reader.readVersion().blockOptional(CEILING)).isEmpty();
+    }
+
+    /**
+     * ⭐ <b>스냅샷 키에 나가는 명령이 {@code GETRANGE} 다 — 이것은 판정이 아니라 비용이다.</b>
+     *
+     * <p>⚠️ 판정 단언으로는 이 축이 <b>안 잡힌다.</b> {@code GET} 으로 되돌려도 머리만 파싱하니
+     * 결과가 같다 — 실측으로 되돌림 변이가 9건 0실패로 통과했다. 그래서 명령 자체를 센다.
+     *
+     * <p>왜 비용이 성질인가: 그 키가 나르는 것은 <b>본문 전체</b>(번들 기준 11,345 B + ADMIN
+     * 델타)이고 이 읽기는 Pod 당 분당 1회 돈다. {@code ProfanityDictionaryRefreshHandler} 가
+     * 버전 키를 따로 둔 이유를 "비용은 {@code GET} 하나(몇 바이트)다 — 스냅샷 전체(수십 KB)가
+     * 아닌 것이 버전 키를 따로 둔 이유다" 로 적는데, 무조건 경로에서 전체를 당기면 그 이유가
+     * 지워진다.
+     *
+     * ⭐ <b>스냅샷은 머리만 당긴다 — 버전 키를 따로 둔 이유를 무조건 경로에서 지우지 않는다.</b>
+     *
+     * <p>처음에 {@code GET} 으로 두 키를 읽었다. 그 키가 나르는 것은 <b>본문 전체</b>(번들 기준
+     * 11,345 B + ADMIN 델타)인데, {@code ProfanityDictionaryRefreshHandler} 가 버전 키를 따로
+     * 둔 이유를 "비용은 {@code GET} 하나(몇 바이트)다 — 스냅샷 전체(수십 KB)가 아닌 것이 버전
+     * 키를 따로 둔 이유다" 로 적는다. {@code GETRANGE} 로 바꿔 같은 {@code max} 성질을 몇
+     * 바이트로 얻는다.
+     *
+     * <p>이 테스트는 그 전환이 <b>판정을 안 바꿨다</b>는 쪽을 잰다 — 머리가 상한 자리수면 개행이
+     * 같이 들어와 문법 안이고, 상한보다 길면 개행 없이 숫자만 들어와 거부다. 본문이 아무리 커도
+     * 같다.
+     */
+    @Test
+    @DisplayName("⭐ 스냅샷 키는 GETRANGE 로 읽는다 — 전체를 당기면 버전 키의 존재 이유가 지워진다")
+    void theSnapshotKeyIsReadWithGetrange() {
+        set(VERSION, "3");
+        set(SNAPSHOT, body(3));
+        resetCommandStats();
+
+        reader.readVersion().blockOptional(CEILING);
+
+        String stats = commandStats();
+        assertThat(stats)
+                .as("머리만 당겨야 한다 — 이 읽기는 Pod 당 분당 1회 돌고 본문은 11 KB 다")
+                .contains("cmdstat_getrange");
+    }
+
+    private static void resetCommandStats() {
+        redisTemplate.getConnectionFactory().getReactiveConnection()
+                .serverCommands().resetConfigStats().block(CEILING);
+    }
+
+    private static String commandStats() {
+        return String.valueOf(redisTemplate.getConnectionFactory().getReactiveConnection()
+                .serverCommands().info("commandstats").block(CEILING));
+    }
+
+    @Test
+    @DisplayName("⭐ 본문이 커도 머리만으로 판정한다 — 상한 자리수와 그 위를 같이 잰다")
+    void onlyTheHeadDecidesRegardlessOfBodySize() {
+        StringBuilder big = new StringBuilder("999999999999999\n1\n0\n");
+        big.append("시발\n");
+        for (int i = 0; i < 2000; i++) {
+            big.append("욕설").append(i).append('\n');
+        }
+        set(SNAPSHOT, big.toString());
+        assertThat(reader.readVersion().blockOptional(CEILING))
+                .as("상한 자리수(15)면 그 뒤가 개행이라 문법 안이다")
+                .contains(999_999_999_999_999L);
+
+        clean();
+        set(SNAPSHOT, "1000000000000000\n1\n0\n시발\n");
+        assertThat(reader.readVersion().blockOptional(CEILING))
+                .as("상한보다 길면 머리 범위에 개행이 없어 거부다 — 본문을 안 당겨도 같은 판정이다")
+                .isEmpty();
     }
 }

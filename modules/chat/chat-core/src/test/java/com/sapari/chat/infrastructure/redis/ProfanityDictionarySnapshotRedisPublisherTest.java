@@ -382,6 +382,72 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
     }
 
     /**
+     * ⭐ <b>벡터 하나마다 두 명제를 같이 잰다 — 일치와 닫힘.</b>
+     *
+     * <p>이 표가 생긴 이유: <b>일치만 재면 영원히 안 걸리는 결함이 있다.</b> 읽는 넷(Lua
+     * {@code token()} · {@code readVersionToken} · {@code decode} · 리더)은 이미 일치했고 쓰는
+     * 포맷도 하나였는데, 결함은 그 사이가 아니라 <b>문법이 자기가 만드는 값에 대해 닫혀 있지
+     * 않다</b>는 데서 나왔다. 그래서 명제를 둘로 적는다:
+     * <ol>
+     *   <li><b>일치</b> — 그 벡터를 자바와 Lua 가 같은 판정으로 보는가. CAS 로 잰다(자바가 집은
+     *       토큰을 그대로 조건으로 넘기므로 Lua 가 다른 수를 읽으면 그 자리에서 {@code -1} 이다).
+     *   <li><b>닫힘</b> — 그 벡터가 <b>수락되면</b>, 발행이 만드는 후계자({@code token + 1})도
+     *       같은 문법 안인가. 아니면 쓰는 순간 두 키가 못 읽히는 값이 되고 토큰이 0 으로 떨어져
+     *       낡은 발행자가 이긴다(ABA 재개방).
+     * </ol>
+     *
+     * <p>2번이 {@code 999999999999999} 하나에서 깨졌고, 그 값은 이 클래스가 이미 <b>거부 벡터로
+     * 들고 있던</b> {@code "1000000000000000"} 의 전신이다 — 16자리가 거부되는 것은 못 박았는데
+     * 발행이 바로 그 값을 만든다는 것은 안 봤다. 두 명제가 한 표에 있으면 그 두 줄이 서로를
+     * 가리킨다.
+     */
+    @Test
+    @DisplayName("⭐ 문법 표 — 벡터마다 일치(CAS)와 닫힘(후계자)을 같이 잰다")
+    void theGrammarIsConsistentAndClosedUnderItsOwnSuccessor() {
+        record Vector(String versionKey, boolean accepted, boolean closed) { }
+        List<Vector> table = List.of(
+                new Vector("1", true, true),
+                new Vector("007", true, true),
+                new Vector("99999999999999", true, true),       // 14자리 → 후계자 15자리
+                new Vector("999999999999999", true, false),      // 15자리 → 후계자 16자리, 안 닫힌다
+                new Vector("1000000000000000", false, true),      // 16자리 — 문법 밖
+                new Vector("9007199254740993", false, true),      // 2^53+1 — double 이 부정확
+                new Vector(" 12", false, true),
+                new Vector("-5", false, true),
+                new Vector("+7", false, true),
+                new Vector("12abc", false, true));
+
+        assertThat(table).hasSize(10);
+        for (Vector v : table) {
+            redisTemplate.delete(List.of(SNAPSHOT, VERSION));
+            redisTemplate.opsForValue().set(VERSION, v.versionKey());
+
+            long token = publisher.currentVersion();
+            assertThat(token != 0L)
+                    .as("수락 기대와 다르다 — 수락되면 토큰이 0 이 아니어야 한다: %s", v.versionKey())
+                    .isEqualTo(v.accepted());
+
+            if (!v.closed()) {
+                assertThatThrownBy(
+                        () -> publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
+                        .as("후계자가 문법 밖인데 썼다 — 두 키가 못 읽히는 값이 되고 낡은 발행자가 "
+                                + "expected=0 으로 이긴다: %s", v.versionKey())
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("번호 공간이 고갈");
+                assertThat(redisTemplate.opsForValue().get(VERSION))
+                        .as("거부했으면 아무것도 쓰지 않아야 한다")
+                        .isEqualTo(v.versionKey());
+                continue;
+            }
+            assertThat(publisher.publishIfUnchanged(token, ordered("시발"), Set.of()))
+                    .as("자바가 %s 를 토큰으로 집었는데 Lua 가 다른 수를 읽으면 CAS 가 깨진다: %s",
+                            token, v.versionKey())
+                    .isPresent();
+        }
+    }
+
+
+    /**
      * ⭐ <b>큰 버전이 키에 지수 표기로 써지지 않는다.</b>
      *
      * <p>Lua 가 두 키에 같은 수를 쓰는데 <b>포맷터가 둘</b>이었다. {@code SET KEYS[2], version} 은

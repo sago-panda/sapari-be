@@ -12,6 +12,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Set;
+
+import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.domain.rule.ProfanityFilter;
 
 /**
@@ -1281,52 +1284,95 @@ class ProfanityDictionaryTest {
     }
 
     /**
-     * ⭐ <b>적재 경고가 로그로 나가기 전에 보이지 않는 글자를 드러내고 상한에서 끊긴다.</b>
+     * ⭐ <b>경고 요약이 상한에서 끊기고, 그 20건이 실행마다 같다.</b>
      *
-     * <p>이 두 성질이 둘 다 빠져 있던 자리가 {@code DictionaryProfanityFilterFactory} 의 WARN 이고,
-     * 그것이 이 저장소에서 사전 항목을 <b>가장 자주</b> 내보내는 줄이다 — {@code from()} 은 ADMIN
-     * 추가·제거마다 2회 · 발행마다 1회 · <b>파드마다 스냅샷 교체마다 1회</b> 불린다.
+     * <p>상한이 필요한 이유는 그 줄이 ADMIN 쓰기마다 2회 · 발행마다 1회 · <b>파드마다 스냅샷
+     * 교체마다 1회</b> 나가고, 상한 없이 전량이 걸리면 한 줄이 35,966자였기 때문이다.
      *
-     * <p>{@code warningEntries} 는 항목을 원문으로 박는다(그 자리에서 접으면 거부 메시지와 문장
-     * 구조가 갈린다). 그래서 나가기 직전인 {@code summarize} 에서 한 번 접는다 — 보이는 글자는
-     * 그대로이므로 사람이 읽는 문장은 안 바뀌고, 보이지 않는 글자만 드러난다.
+     * <p>⚠️ <b>결정론이 상한과 같이 필요하다.</b> {@code warnings()} 가 {@code Set.copyOf} 를
+     * 돌려줄 때 그 집합의 순회 순서가 JVM 실행마다 달라져 상한이 <b>무작위 20건</b>을 골랐다 —
+     * 경고가 21건 이상이면 파드 둘이 같은 사전에 대해 다른 20건을 찍고, 운영자가 "외 N건" 을
+     * 보려고 재시작하면 또 다른 20건을 받는다. 값을 싣는 근거가 "그 행을 지목하기" 인데 21번째
+     * 이후에서는 지목이 성립하지 않았다.
+     *
+     * <p>상한 수는 {@link ProfanityFilterFactory#LOG_ENTRY_LIMIT} 를 참조한다 — 리터럴 20 을
+     * 적으면 상수를 내리는 변경에서 이 테스트만 갈린다(그 상수의 근거가 "두 자리가 같은 수를
+     * 쓰게 하는 단일 소스" 인데 테스트 면 참조가 0건이었다).
      */
     @Test
-    @DisplayName("⭐ 경고 요약이 보이지 않는 글자를 드러낸다 — 평문이면 로그에서도 안 보인다")
-    void theWarningSummaryRevealsInvisibleCharacters() {
-        String summary = ProfanityDictionary.summarize(
-                new java.util.LinkedHashSet<>(List.of("화이트리스트 항목 \"시발\uFEFF\" — 확인")));
-
-        assertThat(summary)
-                .as("보이지 않는 글자가 로그에서도 안 보이면 당직자가 그 항목을 지목할 수 없다")
-                .contains("\\uFEFF")
-                .as("보이는 글자는 그대로여야 사람이 읽는 문장이 안 바뀐다")
-                .contains("화이트리스트 항목")
-                .contains("시발");
-    }
-
-    @Test
-    @DisplayName("⭐ 경고 요약이 상한에서 끊긴다 — 매 교체마다 나가는 줄이라 길이가 비용이다")
-    void theWarningSummaryIsCapped() {
-        java.util.Set<String> many = new java.util.LinkedHashSet<>();
-        for (int i = 0; i < 25; i++) {
+    @DisplayName("⭐ 경고 요약이 상한에서 끊기고 그 선택이 실행마다 같다")
+    void theWarningSummaryIsCappedAndDeterministic() {
+        int limit = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
+        Set<String> many = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < limit + 5; i++) {
             many.add("화이트리스트 항목 \"정상어" + i + "\" — 아무것도 보호하지 않는다");
         }
 
-        String summary = ProfanityDictionary.summarize(many);
+        // ⚠️ summarize() 에 직접 먹이지 않고 warnings() 를 지난다. 직접 먹이면 순서를 버리는
+        // 결함(Set.copyOf)이 이 테스트를 비껴간다 — 실측으로 변이가 통과했다.
+        Set<String> whitelist = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < limit + 5; i++) {
+            whitelist.add("정상어" + i);
+        }
+        Set<String> warnings = ProfanityDictionary.of("probe", Set.of("시발"), whitelist).warnings();
+
+        assertThat(warnings)
+                .as("순서를 버리면 같은 사전에서 파드마다 다른 %d건이 찍힌다 — Set.copyOf 의 순회 "
+                        + "순서는 JVM 실행마다 다르다", limit)
+                .hasSize(limit + 5)
+                .allSatisfy(message -> assertThat(message).contains("정상어"));
+        assertThat(List.copyOf(warnings).get(0))
+                .as("적재 순서의 첫 항목이 요약의 첫 항목이어야 지목이 재현된다")
+                .contains("\"정상어0\"");
+
+        String summary = ProfanityDictionary.summarize(warnings);
 
         assertThat(summary.split(" · "))
                 .as("상한이 없으면 줄 길이가 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
-                .hasSize(20);
-        assertThat(summary).endsWith("외 5건");
+                .hasSize(limit);
+        assertThat(summary).endsWith("외 5건").startsWith(List.copyOf(warnings).get(0));
+        assertThat(many).hasSize(limit + 5);
     }
 
+    /**
+     * ⭐ <b>요약이 보조평면 글자를 쪼개지 않는다.</b>
+     *
+     * <p>한때 요약이 {@code visible()} 을 걸었고 근거가 "보이지 않는 글자를 드러낸다 · 보이는
+     * 글자는 그대로" 였다. <b>둘 다 거짓이었다.</b> 드러낼 것이 없다 — {@code of()} 는 모든
+     * 항목에 {@code reject()} 를 <b>먼저</b> 돌리므로 그 경로의 경고에 보이지 않는 코드포인트가
+     * 들어올 수 없고, 실을 수 있는 유일한 경고({@code dropZeroWidth})는 자기가 이미 접는다.
+     * 그리고 {@code visible()} 은 {@code char} 단위라 이모지를 서로게이트 두 쪽으로 쪼개
+     * <b>지목을 더 어렵게</b> 했다.
+     *
+     * <p>그래서 접기를 뺐고, 이 테스트가 그 방향을 못 박는다 — 다시 접으면 이모지가 깨진다.
+     */
     @Test
-    @DisplayName("상한 이하면 '외 N건' 이 없다 — 다 보여 준 것을 더 있다고 읽게 하면 안 된다")
-    void theWarningSummarySaysNothingMoreWhenItFits() {
-        String summary = ProfanityDictionary.summarize(
-                new java.util.LinkedHashSet<>(List.of("경고1", "경고2")));
+    @DisplayName("⭐ 요약이 이모지를 쪼개지 않는다 — 접으면 지목이 더 어려워진다")
+    void theWarningSummaryDoesNotSplitSupplementaryCharacters() {
+        String warning = "화이트리스트 항목 \"시발abc😀\" — 욕설을 빼면 한글 음절이 남지 않는다";
 
-        assertThat(summary).isEqualTo("경고1 · 경고2").doesNotContain("외 ");
+        assertThat(ProfanityDictionary.summarize(
+                        new java.util.LinkedHashSet<>(List.of(warning))))
+                .as("당직자는 CSV·테이블에서 그 항목을 찾아야 한다 — 서로게이트로 쪼개면 못 찾는다")
+                .isEqualTo(warning);
+    }
+
+    /**
+     * 도달 가능한 경고가 실제로 어떤 모양인지 못 박는다 — <b>프로덕션이 만들 수 있는 값</b>으로.
+     *
+     * <p>지운 테스트는 {@code summarize} 에 손으로 만든 {@code "… \"시발<BOM>\" …"} 을 먹였다.
+     * 프로덕션이 만들 수 없는 모양이고, 값을 단언하는 테스트가 프로덕션이 그 값을 만든다는
+     * 증거는 아니다.
+     */
+    @Test
+    @DisplayName("도달 가능한 경고에는 보이지 않는 글자가 없다 — 문이 먼저 거부한다")
+    void aReachableWarningCarriesNoInvisibleCodePoint() {
+        Set<String> warnings =
+                ProfanityDictionary.of("probe", Set.of("시발"), Set.of("시발abc")).warnings();
+
+        assertThat(warnings).isNotEmpty();
+        assertThat(ProfanityDictionary.summarize(warnings))
+                .as("of() 가 reject() 를 먼저 돌리므로 이 경로의 경고에는 들어올 수 없다")
+                .doesNotContain("\\u");
     }
 }

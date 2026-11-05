@@ -54,12 +54,24 @@ public class ProfanityDictionarySnapshotRedisReader implements ProfanityDictiona
      * 교체하지 않으며 로그도 0줄이 된다.
      *
      * <p>인밴드 도달 경로는 못 찾았다 — 두 키를 한 스크립트가 같은 수로 쓴다. 그래도 맞추는
-     * 이유는 그 불변식이 <b>스크립트 밖 쓰기</b>에 대해 보장되지 않고(이 클래스에 {@code TYPE}
-     * 가드가 있는 이유가 바로 그것이다), 두 쪽이 같은 규칙이면 그 축을 생각할 필요가 없어지기
-     * 때문이다. 비용은 폴링 1회당 {@code GET} 한 번 더다(Pod 당 분당 1회).
+     * 이유는 그 불변식이 <b>스크립트 밖 쓰기</b>에 대해 보장되지 않기 때문이다. (한때 이 자리가
+     * 그 근거로 "이 클래스에 {@code TYPE} 가드가 있는 이유가 바로 그것이다" 를 들었는데
+     * <b>거짓이다</b> — 바로 위 클래스 javadoc 이 "WRONGTYPE 을 따로 다루지 않는다" 를 적고
+     * {@code RedisWrongType} 전수에서 이 파일은 0건이다. 그 가드는 발행자의 {@code tokenOf} 와
+     * Lua 의 {@code TYPE} 호출에 있다.)
      *
-     * <p>빈 {@code Mono} 는 <b>두 키가 다 읽히지 않을 때</b>만 나온다 — 그것이 "한 번도 발행되지
-     * 않았다" 다.
+     * <p>⚠️ <b>그래서 두 번째 키를 머리만 읽는다.</b> 처음에 {@code GET} 으로 바꿨는데 그 키가
+     * 나르는 것은 <b>스냅샷 본문 전체</b>다 — 번들 기준 11,345 B 에 ADMIN 델타가 더 붙는다.
+     * 그런데 {@code ProfanityDictionaryRefreshHandler} 가 버전 키를 따로 둔 이유를 "비용은 Pod
+     * 당 이 간격마다 {@code GET} 하나(몇 바이트)다 — 스냅샷 전체(수십 KB)가 아닌 것이 버전 키를
+     * 따로 둔 이유다" 로 적는다. 무조건 경로에서 그 이유를 지우는 것이라
+     * {@code GETRANGE 0..MAX} 로 머리만 당긴다 — 같은 {@code max} 성질을 몇 바이트로 얻는다.
+     *
+     * <p>빈 {@code Mono} 는 <b>두 키가 다 읽히지 않을 때</b> 나온다. 그것을 호출자가 "아직
+     * 발행되지 않았다" 로 쓰는데, 엄밀히는 <b>"한 번도 없었다" 와 "있었는데 사라졌다" 를 구분한
+     * 것이 아니다</b> — 휘발 저장만으로는 그 둘이 구별되지 않는다({@code
+     * ProfanityDictionarySnapshotRedisPublisher} javadoc 의 환원 불가 축). 빈 값에서 번들로 뜨는
+     * 것이 두 경우 모두에 안전한 선택이라 가르지 않는다.
      */
     @Override
     public Mono<Long> readVersion() {
@@ -81,10 +93,31 @@ public class ProfanityDictionarySnapshotRedisReader implements ProfanityDictiona
      * 로그를 남긴다.
      */
     private Mono<Long> token(String key) {
-        return redisTemplate.opsForValue().get(key)
+        return read(key)
                 .flatMap(raw -> ProfanityDictionarySnapshotCodec.readVersionToken(raw)
                         .stream().boxed().findFirst()
                         .map(Mono::just)
-                        .orElseGet(Mono::empty));
+                        .orElseGet(Mono::empty))
+                // ⚠️ 타입이 오염된 키는 <기여하지 않는다>(빈 값). 발행 쪽이 같은 상황에서 0 으로
+                // 떨어뜨려 치유를 살리는데 여기만 에러로 올리면, 스냅샷 키 하나가 오염된 동안
+                // readVersion() 이 매번 실패해 RefreshHandler 의 "읽지 못했다" WARN 이 Pod 당
+                // 분당 한 줄씩 나간다 — max 로 맞추면서 이 반쪽을 안 가져왔었다.
+                .onErrorResume(RedisWrongType::matches, e -> Mono.empty());
+    }
+
+    /**
+     * 키를 읽는다 — 스냅샷은 <b>머리만</b> 당긴다.
+     *
+     * <p>{@code GETRANGE 0..MAX} 는 최대 {@code MAX+1} 바이트다. 머리가 상한 자리수면 그 뒤
+     * 개행까지 들어오고, 상한보다 길면 개행 없이 숫자만 들어와 문법이 거부한다 — 어느 쪽이든
+     * 전체를 당기지 않고 같은 판정이 나온다. 없는 키는 빈 문자열이라 빈 {@code Mono} 로 접는다.
+     */
+    private Mono<String> read(String key) {
+        if (!key.equals(ChatRedisKeys.dictSnapshot())) {
+            return redisTemplate.opsForValue().get(key);
+        }
+        return redisTemplate.opsForValue()
+                .get(key, 0, ProfanityDictionarySnapshotCodec.MAX_VERSION_DIGITS)
+                .filter(raw -> !raw.isEmpty());
     }
 }

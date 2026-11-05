@@ -7,6 +7,7 @@ import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.ArrayList;
@@ -340,9 +341,17 @@ public final class ProfanityDictionary {
      *
      * <p>창구를 하나로 둔 이유: 전에 둘로 나눴다가 한쪽에만 테스트를 붙였고, 나머지 분기는
      * 지워도 아무것도 안 깨졌다. 같은 실수를 두 라운드 연속 했다.
+     *
+     * 적재 경고 — <b>순서를 보존한다.</b>
+     *
+     * <p>⚠️ {@code Set.copyOf} 였다. 그 집합의 순회 순서는 JVM 실행마다 달라지므로
+     * {@link #summarize} 의 상한이 <b>무작위 20건</b>을 골랐다 — 경고가 21건 이상이면 파드 둘이
+     * 같은 사전에 대해 다른 20건을 찍고, 운영자가 "외 N건" 을 보려고 재시작하면 또 다른 20건을
+     * 받는다. 값을 로그에 싣는 근거가 "그 행을 지목하기" 인데 21번째 이후에서는 지목이 아예
+     * 성립하지 않았다. {@code load()}·{@code of()} 가 쌓은 순서를 여기서 버리고 있었다.
      */
     public Set<String> warnings() {
-        return Set.copyOf(warnings);
+        return Collections.unmodifiableSet(new LinkedHashSet<>(warnings));
     }
 
     private static Set<String> warningEntries(Set<String> words, Set<String> whitelist) {
@@ -511,18 +520,32 @@ public final class ProfanityDictionary {
     }
 
     /**
-     * 경고 집합을 로그 한 줄에 실을 모양으로 줄인다 — <b>보이지 않는 글자를 보이게</b> 하고
-     * {@link ProfanityFilterFactory#LOG_ENTRY_LIMIT} 에서 끊는다.
+     * 경고 집합을 로그 한 줄에 실을 모양으로 줄인다 — {@link ProfanityFilterFactory#LOG_ENTRY_LIMIT}
+     * 에서 끊는다. <b>경고 소비처 둘이 쓰는 하나의 창구다</b>({@code DictionaryProfanityFilterFactory}
+     * 와 streaming-app 의 {@code ChatBeansConfig}).
      *
-     * <p>{@code warningEntries} 가 만드는 문장은 항목을 <b>원문으로</b> 박는다(그 자리에서
-     * {@code visible()} 을 쓰면 거부 메시지와 문장 구조가 갈린다). 그래서 로그로 나가기 직전인
-     * 이 자리에서 한 번 접는다 — 보이는 글자는 그대로이므로 사람이 읽는 문장은 안 바뀌고,
-     * 보이지 않는 글자만 {@code 역슬래시 uXXXX} 로 드러난다.
+     * <p>상한이 필요한 이유: 상한이 없을 때 전량이 걸리면 한 줄이 35,966자였다(측정: 욕설 1,078 ·
+     * 화이트리스트 38). 그리고 그 줄이 ADMIN 쓰기마다 2회 · 발행마다 1회 · <b>파드마다 스냅샷
+     * 교체마다 1회</b> 나간다.
+     *
+     * <p>⚠️ <b>한때 여기서 {@code visible()} 을 걸었고 그 근거가 거짓이었다.</b> 두 가지가
+     * 틀렸다:
+     * <ul>
+     *   <li><b>도달 불가다.</b> {@code of()} 는 모든 항목에 {@code reject()} 를
+     *       ({@code containsInvisible} 이면 던진다) <b>먼저</b> 돌린 뒤 {@code warningEntries} 를
+     *       만든다. 그래서 그 경로의 경고 문장에는 보이지 않는 코드포인트가 들어올 수 없다.
+     *       실을 수 있는 유일한 경고는 {@code dropZeroWidth} 가 만드는 것인데 <b>그것은 자기가
+     *       이미 {@code visible(word)} 를 쓴다.</b>
+     *   <li><b>"보이는 글자는 그대로" 가 거짓이다.</b> {@code visible()} 은 {@code char} 단위라
+     *       보조평면 글자(이모지)를 서로게이트 두 쪽으로 쪼갠다 — {@code 시발abc😀} 가
+     *       {@code 시발abc\\uD83D\\uDE00} 이 되어, 당직자가 CSV·테이블에서 그 항목을 찾기가
+     *       <b>더</b> 어려워진다.
+     * </ul>
+     * 즉 접기는 얻는 것이 0 이고 잃는 것이 있었다. 상한만 남긴다.
      */
-    static String summarize(Set<String> warnings) {
+    public static String summarize(Set<String> warnings) {
         List<String> shown = warnings.stream()
                 .limit(ProfanityFilterFactory.LOG_ENTRY_LIMIT)
-                .map(ProfanityDictionary::visible)
                 .toList();
         String joined = String.join(" · ", shown);
         return shown.size() < warnings.size()

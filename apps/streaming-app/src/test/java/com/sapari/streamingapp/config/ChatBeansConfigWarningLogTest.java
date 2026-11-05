@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
 
+import com.sapari.chat.application.port.ProfanityFilterFactory;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -102,6 +104,39 @@ class ChatBeansConfigWarningLogTest {
 
         assertThat(dictionaryWarnings()).hasSize(1);
         assertThat(dictionaryWarnings().get(0).getFormattedMessage()).contains("감사합니다");
+    }
+
+    /**
+     * ⭐ <b>이 WARN 이 사전의 요약 창구를 지난다 — 상한이 여기에도 걸린다.</b>
+     *
+     * <p>⚠️ 이 클래스의 단언들이 <b>원문 포함만</b> 재서 양방향으로 눈이 멀어 있었다 —
+     * {@code .contains("감사합니다")} 는 요약을 거쳐도 통과하고 안 거쳐도 통과한다. 그래서 이
+     * 줄에 상한이 없던 상태(경고가 늘면 줄 길이가 그만큼 자라고, 그것이 ADMIN 쓰기마다 ·
+     * 발행마다 · <b>파드마다 교체마다</b> 나간다)를 아무것도 잡지 못했다.
+     *
+     * <p>형제 줄({@code DictionaryProfanityFilterFactory})이 같은 결함을 먼저 닫았는데 이쪽은
+     * 남아 있었다. 같은 창구를 쓰게 하고, 그 사실을 <b>개수와 끊김</b>으로 잰다.
+     */
+    @Test
+    @DisplayName("⭐ 경고가 상한을 넘으면 WARN 이 끊기고 '외 N건' 을 적는다")
+    void theWarningLineIsCappedByTheSharedWindow() {
+        int limit = ProfanityFilterFactory.LOG_ENTRY_LIMIT;
+        StringBuilder whitelist = new StringBuilder();
+        for (int i = 0; i < limit + 3; i++) {
+            whitelist.append(i == 0 ? "" : ",").append("정상어").append(i);
+        }
+
+        new ChatBeansConfig().profanityFilterSource("", whitelist.toString());
+
+        String message = dictionaryWarnings().get(0).getFormattedMessage();
+        assertThat(message)
+                .as("개수는 전부 알려야 한다 — 상한은 나열에만 걸린다")
+                .contains("(" + (limit + 3) + "건)")
+                .as("끊겼다는 사실이 없으면 다 봤다고 읽는다")
+                .endsWith("외 3건");
+        assertThat(message.split(" · "))
+                .as("상한이 없으면 이 줄이 경고 수만큼 자라고 그것이 모든 교체에서 나간다")
+                .hasSize(limit);
     }
 
     /**
