@@ -20,6 +20,7 @@ import com.sapari.product.domain.exception.InvalidProductOptionException;
 import com.sapari.product.domain.exception.ProductAccessDeniedException;
 import com.sapari.product.domain.exception.ProductNotFoundException;
 import com.sapari.product.domain.model.combination.CombinationKey;
+import com.sapari.product.domain.model.combination.ExclusionRule;
 import com.sapari.product.domain.model.combination.ProductOptionCombination;
 import com.sapari.product.domain.model.combination.Sku;
 import com.sapari.product.domain.model.combination.Stock;
@@ -321,10 +322,9 @@ class UpdateProductOptionsServiceTest {
 
             ArgumentCaptor<ProductOptionConfigModel> captor = ArgumentCaptor.forClass(ProductOptionConfigModel.class);
             then(productRepository).should().replaceOptionConfig(eq(PRODUCT_ID), captor.capture());
-            assertThat(captor.getValue().surchargeRules()).isNull();
+            assertThat(captor.getValue().surchargeRules()).isEmpty();
             assertThat(captor.getValue().exclusionRules())
-                    .contains(NEW_S.toString())
-                    .contains("단종");
+                    .containsExactly(new ExclusionRule(List.of(NEW_S), "단종"));
         }
 
         @Test

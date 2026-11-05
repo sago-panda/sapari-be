@@ -1,6 +1,7 @@
 package com.sapari.product.infrastructure.persistence.repository.product;
 
 import com.sapari.product.infrastructure.persistence.entity.product.ProductEntity;
+import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionConfigEntity;
 import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionTypeEntity;
 import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionValueEntity;
 
@@ -98,7 +99,11 @@ public class ProductRepositoryImpl implements ProductRepository {
         // merge 경로를 타는데, 같은 트랜잭션에서 앞선 save가 이미 이 행을 관리 중일 수 있어 관리 엔티티 갱신이 안전하다.
         optionConfigJpaRepository.findById(productId)
                 .ifPresentOrElse(
-                        entity -> entity.updateRules(config.surchargeRules(), config.exclusionRules()),
+                        entity -> {
+                            // 직렬화는 매퍼가 맡는다 — 같은 포맷으로 만든 엔티티의 컬럼 값으로 관리 엔티티를 갱신
+                            ProductOptionConfigEntity serialized = mapper.toConfigEntity(productId, config);
+                            entity.updateRules(serialized.getSurchargeRules(), serialized.getExclusionRules());
+                        },
                         () -> optionConfigJpaRepository.save(mapper.toConfigEntity(productId, config)));
     }
 

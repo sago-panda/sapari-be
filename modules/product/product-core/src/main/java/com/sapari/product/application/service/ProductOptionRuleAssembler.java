@@ -22,7 +22,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * 옵션 추가금·제외 룰과 조합 오버라이드(-api 커맨드)를 도메인 입력으로 조립하는 공통 헬퍼. 등록·옵션수정 유스케이스가 공유한다.
@@ -32,16 +31,13 @@ import tools.jackson.databind.json.JsonMapper;
  *   <li>{@link #validate} — 저장 전 순수 검증(잘못된 입력이면 I/O 없이 거절)
  *   <li>상품 저장 → {@link #resolveRefs}로 ref를 저장된 옵션값 id로 확정
  *   <li>{@link #toSurchargeRules}·{@link #toExclusionRules} → 조합 생성 → {@link #applyOverrides}
- *   <li>{@link #toConfig}로 룰을 jsonb 문자열로 직렬화해 config에 기록
+ *   <li>{@link #toConfig}로 룰을 옵션 config로 묶어 기록(jsonb 직렬화는 영속 매퍼)
  * </ol>
  *
  * <p>ref는 (옵션 타입명, 옵션값) 자연키로 저장본과 매칭한다. 저장본은 DB 재조회라 순서가 보장되지 않지만, 두 키는 DB 부분 유니크이고
  * {@link #validate}가 요청 내 중복을 먼저 거절하므로 안전하다.
  */
 final class ProductOptionRuleAssembler {
-
-    // 불변·스레드 안전 — 단순 record 직렬화만 하므로 공유 인스턴스로 충분하다
-    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private ProductOptionRuleAssembler() {
     }
@@ -191,8 +187,7 @@ final class ProductOptionRuleAssembler {
     }
 
     /**
-     * 룰을 config jsonb 문자열로 직렬화한다({@code [{"valueIds":[...],"amount":..}]} / {@code [{"valueIds":[...],"reason":..}]}).
-     * 둘 다 비어 있으면 null(config 행 없음), 한쪽만 비면 그쪽 컬럼은 null이다.
+     * 룰을 옵션 config로 묶는다. 둘 다 비어 있으면 null(config 행 없음). 저장 포맷(jsonb)은 영속 매퍼가 정한다.
      *
      * @param surchargeRules 도메인 추가금 룰
      * @param exclusionRules 도메인 제외 룰
@@ -202,7 +197,7 @@ final class ProductOptionRuleAssembler {
         if (surchargeRules.isEmpty() && exclusionRules.isEmpty()) {
             return null;
         }
-        return ProductOptionConfigModel.of(toJsonOrNull(surchargeRules), toJsonOrNull(exclusionRules));
+        return ProductOptionConfigModel.of(surchargeRules, exclusionRules);
     }
 
     /**
@@ -295,13 +290,6 @@ final class ProductOptionRuleAssembler {
         return valueRefs.stream()
                 .map(refToId::get)
                 .toList();
-    }
-
-    /**
-     * 비어 있으면 null, 아니면 JSON 배열 문자열.
-     */
-    private static String toJsonOrNull(List<?> rules) {
-        return rules.isEmpty() ? null : JSON.writeValueAsString(rules);
     }
 
     /**
