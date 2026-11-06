@@ -6,7 +6,10 @@ import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -27,10 +30,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.mock.web.MockMultipartFile;
 
 import com.sapari.product.command.BulkCreateProductsCommand;
 import com.sapari.product.command.CreateProductCommand;
+import com.sapari.product.domain.exception.BulkUploadRateLimitedException;
+import com.sapari.product.domain.exception.BulkUploadUnavailableException;
 import com.sapari.product.domain.exception.InvalidBulkUploadException;
 import com.sapari.product.port.BulkCreateProductsUseCase;
 import com.sapari.product.view.BulkCreateProductsView;
@@ -49,7 +55,10 @@ class BulkProductUploadProcessorTest {
     private static ValidatorFactory validatorFactory;
     private static Validator validator;
 
+    private static final String PERMIT = "permit-token";
+
     private BulkCreateProductsUseCase useCase;
+    private BulkUploadRateLimiter rateLimiter;
     private BulkProductUploadProcessor processor;
 
     @BeforeAll
@@ -66,7 +75,9 @@ class BulkProductUploadProcessorTest {
     @BeforeEach
     void setUp() {
         useCase = mock(BulkCreateProductsUseCase.class);
-        processor = new BulkProductUploadProcessor(new XlsxWorkbookReader(), validator, useCase);
+        rateLimiter = mock(BulkUploadRateLimiter.class);
+        given(rateLimiter.acquire(SELLER_ID)).willReturn(PERMIT);
+        processor = new BulkProductUploadProcessor(new XlsxWorkbookReader(), validator, useCase, rateLimiter);
     }
 
     /**
@@ -118,6 +129,8 @@ class BulkProductUploadProcessorTest {
             assertThatThrownBy(() -> processor.process(SELLER_ID, empty))
                     .isInstanceOf(InvalidBulkUploadException.class);
             then(useCase).shouldHaveNoInteractions();
+            // 바로 거절되는 요청은 판매자 한도를 쓰지 않는다
+            then(rateLimiter).shouldHaveNoInteractions();
         }
 
         @Test
@@ -131,6 +144,7 @@ class BulkProductUploadProcessorTest {
             assertThatThrownBy(() -> processor.process(SELLER_ID, over))
                     .isInstanceOf(InvalidBulkUploadException.class)
                     .hasMessageContaining("크기");
+            then(rateLimiter).shouldHaveNoInteractions();
             // 정확히 5MB는 크기 검사를 지나 xlsx 해석 단계에서 거절된다(0으로 채운 바이트는 xlsx가 아님)
             assertThatThrownBy(() -> processor.process(SELLER_ID, exact))
                     .isInstanceOf(InvalidBulkUploadException.class)
@@ -283,6 +297,85 @@ class BulkProductUploadProcessorTest {
             assertThat(response.status()).isEqualTo(BulkCreateProductsView.STOPPED);
             assertThat(response.created()).containsExactly(new Created("P-1", id1));
             assertThat(response.errors()).extracting(UploadError::row, UploadError::productCode).containsExactly(tuple(4, "P-2"));
+        }
+    }
+
+    @Nested
+    @DisplayName("판매자별 한도 (BulkUploadRateLimiter)")
+    class RateLimit {
+
+        @Test
+        @DisplayName("파싱 전에 인증 판매자로 한도를 잡고, 저장 뒤 같은 토큰으로 한 번 내려놓는다")
+        void acquiresBeforeParsingAndReleasesAfterSaving() throws IOException {
+            given(useCase.create(any())).willReturn(new BulkCreateProductsView(BulkCreateProductsView.COMPLETED,
+                    List.of(new BulkCreatedProductView("P-1", UUID.randomUUID())), List.of()));
+
+            processor.process(SELLER_ID, upload(rows(product("P-1", "티셔츠")), rows(), rows()));
+
+            InOrder order = inOrder(rateLimiter, useCase);
+            order.verify(rateLimiter).acquire(SELLER_ID);
+            order.verify(useCase).create(any());
+            order.verify(rateLimiter).release(SELLER_ID, PERMIT);
+            order.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("검증 오류로 REJECTED여도(유스케이스 미호출) 한도를 내려놓는다")
+        void releasesWhenRejectedByValidation() throws IOException {
+            BulkProductUploadResponse response = processor.process(SELLER_ID, upload(
+                    rows(new String[] {"P-1", "1001", "", "19900", "100", "여름"}), rows(), rows()));
+
+            assertThat(response.status()).isEqualTo(BulkCreateProductsView.REJECTED);
+            then(useCase).shouldHaveNoInteractions();
+            then(rateLimiter).should().acquire(SELLER_ID);
+            then(rateLimiter).should().release(SELLER_ID, PERMIT);
+        }
+
+        @Test
+        @DisplayName("파일을 해석하지 못해 예외로 끝나도 한도를 내려놓는다")
+        void releasesWhenFileIsUnreadable() {
+            MockMultipartFile notXlsx = new MockMultipartFile("file", "p.xlsx", XLSX, new byte[] {1, 2, 3});
+
+            assertThatThrownBy(() -> processor.process(SELLER_ID, notXlsx))
+                    .isInstanceOf(InvalidBulkUploadException.class);
+            then(rateLimiter).should().acquire(SELLER_ID);
+            then(rateLimiter).should().release(SELLER_ID, PERMIT);
+        }
+
+        @Test
+        @DisplayName("저장 중 예외가 나도 한도를 내려놓고, 예외는 그대로 전파한다")
+        void releasesWhenUseCaseThrows() throws IOException {
+            IllegalStateException failure = new IllegalStateException("DB 장애");
+            given(useCase.create(any())).willThrow(failure);
+            MockMultipartFile file = upload(rows(product("P-1", "티셔츠")), rows(), rows());
+
+            assertThatThrownBy(() -> processor.process(SELLER_ID, file)).isSameAs(failure);
+            then(rateLimiter).should().release(SELLER_ID, PERMIT);
+        }
+
+        @Test
+        @DisplayName("한도를 넘으면 파일을 읽지도 저장하지도 않고, 잡지 못한 한도는 내려놓지 않는다")
+        void rateLimitedSkipsParsingAndRelease() throws IOException {
+            BulkUploadRateLimitedException limited = new BulkUploadRateLimitedException(10, "처리 중");
+            willThrow(limited).given(rateLimiter).acquire(SELLER_ID);
+            MockMultipartFile file = upload(rows(product("P-1", "티셔츠")), rows(), rows());
+
+            assertThatThrownBy(() -> processor.process(SELLER_ID, file)).isSameAs(limited);
+            then(useCase).shouldHaveNoInteractions();
+            then(rateLimiter).should(never()).release(any(), any());
+        }
+
+        @Test
+        @DisplayName("한도를 판정할 수 없으면(Redis 장애) 처리하지 않고 503 예외를 그대로 전파한다")
+        void unavailableSkipsProcessing() throws IOException {
+            BulkUploadUnavailableException unavailable =
+                    new BulkUploadUnavailableException("Redis 장애", new IllegalStateException("down"));
+            willThrow(unavailable).given(rateLimiter).acquire(SELLER_ID);
+            MockMultipartFile file = upload(rows(product("P-1", "티셔츠")), rows(), rows());
+
+            assertThatThrownBy(() -> processor.process(SELLER_ID, file)).isSameAs(unavailable);
+            then(useCase).shouldHaveNoInteractions();
+            then(rateLimiter).should(never()).release(any(), any());
         }
     }
 }

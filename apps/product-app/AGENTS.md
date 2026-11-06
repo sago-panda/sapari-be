@@ -26,6 +26,13 @@ schema live in `modules/product` — see `modules/product/AGENTS.md`.
   is mapped to the same **400 PRODUCT-012** (`exception/BulkUploadExceptionHandler`), not the common 413. Bodies far
   over the limit (> Tomcat `max-swallow-size`, default 2MB past the limit) get the connection closed instead of a
   response — intended; don't raise it to make huge uploads see the JSON error.
+  **Per-seller rate limit (SPR-163)** — `bulk/BulkUploadRateLimiter` (Redis, one Lua script): 1 upload in flight + 10 per
+  fixed 10-min window, taken after the cheap empty/size checks and before parsing, released in `finally` (token-checked;
+  TTL 5 min if release is lost). Over → **429 PRODUCT-013 + `Retry-After`** (`BulkUploadExceptionHandler`); Redis
+  unreachable → **503 PRODUCT-014** (fail-closed on purpose — single create still works); on that failure it still tries a
+  token-checked release, since the script may have run with only the reply lost. No `spring.data.redis.timeout` is set
+  (neither the local yaml nor `.example`), so Lettuce's **60 s default** applies: a hung (not refused) Redis stalls the
+  request up to 60 s on acquire and again on release.
 - `@ComponentScan("com.sapari")` picks up `common/web`. JPA is split: `product-core`'s
   `JpaConfiguration` enables product persistence; this app's `config/UserPersistenceConfig` adds
   `com.sapari.user.infrastructure.persistence` (the JWT `UserDetailsService` needs it) — Spring Boot

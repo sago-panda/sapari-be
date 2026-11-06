@@ -20,6 +20,8 @@ dependencies {
     testImplementation 'com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19'
     testImplementation 'org.springframework.boot:spring-boot-webmvc-test'
     testImplementation 'org.springframework.security:spring-security-test'
+    // 대량 등록 rate limit(Lua 스크립트·TTL)을 실제 Redis로 검증
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

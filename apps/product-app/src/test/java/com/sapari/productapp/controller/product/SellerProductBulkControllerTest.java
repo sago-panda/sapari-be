@@ -6,6 +6,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -34,11 +35,15 @@ import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.config.CommonWebMvcConfig;
 import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.product.domain.exception.BulkUploadRateLimitedException;
+import com.sapari.product.domain.exception.BulkUploadUnavailableException;
 import com.sapari.product.domain.exception.InvalidBulkUploadException;
+import com.sapari.product.domain.exception.ProductErrorCode;
 import com.sapari.productapp.bulk.BulkProductUploadProcessor;
 import com.sapari.productapp.config.SecurityConfig;
 import com.sapari.productapp.controller.product.dto.response.BulkProductUploadResponse;
 import com.sapari.productapp.controller.product.dto.response.BulkProductUploadResponse.UploadError;
+import com.sapari.productapp.exception.BulkUploadExceptionHandler;
 
 /**
  * 대량 등록 업로드 컨트롤러 슬라이스 테스트. 판매자 체인 인가(401/403), multipart 바인딩·인증 판매자 전달, 응답 봉투 형태,
@@ -50,6 +55,7 @@ import com.sapari.productapp.controller.product.dto.response.BulkProductUploadRe
         SecurityConfig.class,
         CommonWebMvcConfig.class,
         GlobalExceptionHandler.class,
+        BulkUploadExceptionHandler.class,
         TimeProvider.class,
         SellerProductBulkControllerTest.FixedClockConfig.class
 })
@@ -154,6 +160,50 @@ class SellerProductBulkControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.error.code").value("PRODUCT-012"));
+    }
+
+    /**
+     * 판매자별 한도 초과는 429 PRODUCT-013 실패 봉투이고, 다시 시도할 시간을 Retry-After(초)로 알린다.
+     *
+     * @throws Exception MockMvc 수행 실패 시
+     */
+    @Test
+    @DisplayName("한도 초과는 429 PRODUCT-013 실패 봉투 + Retry-After 헤더로 돌려준다")
+    void rateLimitedReturnsTooManyRequestsWithRetryAfter() throws Exception {
+        given(bulkProductUploadProcessor.process(eq(SELLER_ID), any()))
+                .willThrow(new BulkUploadRateLimitedException(37, "대량 등록 건수 한도 초과: seller=" + SELLER_ID));
+
+        mockMvc.perform(multipart(BULK_PATH).file(xlsx())
+                        .with(user(SELLER_ID.toString()).roles("SELLER")))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "37"))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.data").doesNotExist())
+                .andExpect(jsonPath("$.error.status").value(429))
+                .andExpect(jsonPath("$.error.code").value("PRODUCT-013"))
+                .andExpect(jsonPath("$.error.message").value(ProductErrorCode.BULK_UPLOAD_RATE_LIMITED.getMessage()));
+    }
+
+    /**
+     * 한도를 판정할 수 없으면(Redis 장애) 503 PRODUCT-014 실패 봉투이며, 내부 사유(판매자 id 등)는 응답에 싣지 않는다.
+     *
+     * @throws Exception MockMvc 수행 실패 시
+     */
+    @Test
+    @DisplayName("한도 판정 불가(Redis 장애)는 503 PRODUCT-014 실패 봉투로 돌려주고 Retry-After는 붙이지 않는다")
+    void limiterUnavailableReturnsServiceUnavailable() throws Exception {
+        given(bulkProductUploadProcessor.process(eq(SELLER_ID), any()))
+                .willThrow(new BulkUploadUnavailableException("대량 등록 한도 판정 실패(Redis): seller=" + SELLER_ID,
+                        new IllegalStateException("connection refused")));
+
+        mockMvc.perform(multipart(BULK_PATH).file(xlsx())
+                        .with(user(SELLER_ID.toString()).roles("SELLER")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().doesNotExist("Retry-After"))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(503))
+                .andExpect(jsonPath("$.error.code").value("PRODUCT-014"))
+                .andExpect(jsonPath("$.error.message").value(ProductErrorCode.BULK_UPLOAD_UNAVAILABLE.getMessage()));
     }
 
     /**
