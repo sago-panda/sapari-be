@@ -22,22 +22,26 @@
 #
 # 리포지토리 이름 규칙: sapari-<ENVIRONMENT>-<앱> (21-registry 스택의 이름 규칙과 같다)
 #
-# 아키텍처: 러너(amd64) 네이티브로 빌드한다. EKS 노드를 Graviton(arm64)으로 정하면
-#   buildx 멀티 아키텍처 빌드로 바꿔야 한다 — 기반 이미지는 두 아키텍처를 모두 낸다.
+# 아키텍처: EKS 노드가 Graviton(arm64)이라 linux/arm64 로 만든다. 러너는 amd64 다.
+#   Dockerfile 의 빌드 단계는 --platform=$BUILDPLATFORM 이라 gradle 은 러너에서 네이티브로 돌고,
+#   실행 단계에는 RUN 이 없어 에뮬레이션(QEMU)이 필요 없다. 기반 이미지 digest 는 두 아키텍처를
+#   모두 담은 manifest list 다. 실행 단계에 RUN 을 추가하면 이 잡에 binfmt 설치가 필요해진다.
+#
+# 언제 도는가: 그 앱 이미지에 들어가는 코드가 바뀐 dev push 에서만 돈다.
+#   경로 목록은 gradle 의존성(apps/<앱>/build.gradle 의 project(...)와 그 하위)을 따라 만들었다.
+#   앱이 새 모듈에 의존하게 되면 아래 목록을 같이 고친다 — 빠뜨리면 그 모듈만 바뀐 push 에서
+#   이미지가 올라가지 않는다. common/ · storage/ 는 통째로 넣어 덜 빠뜨리는 쪽을 택했다.
+#   dev 에서 손으로 띄운 파이프라인(Run pipeline)은 변경과 상관없이 두 앱을 모두 올린다.
+#   홈랩 앱(api-app 등)은 ECR 이 아니라 GitLab Container Registry 경로(sapari-cicd-template)로 간다.
 
 # stages 선언은 .gitlab-ci.yml 이 소유한다 (include 간 덮어쓰기 방지).
 
-image-publish:
+.image-publish:
   stage: publish
   image: docker:28
   services:
     - name: docker:28-dind
       alias: docker
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
-  parallel:
-    matrix:
-      - APP: [live-app, streaming-app]
   id_tokens:
     AWS_ID_TOKEN:
       aud: sts.amazonaws.com
@@ -63,6 +67,52 @@ image-publish:
     # 태그는 커밋 SHA 하나. latest 를 쓰지 않는다 — 어느 커밋이 떠 있는지 이미지 이름으로 갈려야
     # 롤백이 "이전 SHA 로 되돌리기" 한 줄이 된다.
     - IMAGE="$ECR_REGISTRY/sapari-$ENVIRONMENT-$APP:$CI_COMMIT_SHORT_SHA"
-    - docker build -f "apps/$APP/Dockerfile" -t "$IMAGE" .
-    - docker push "$IMAGE"
+    # provenance 는 끈다. 켜면 단일 플랫폼이어도 인덱스+attestation 매니페스트가 붙어
+    # ECR 에 태그 없는 항목이 하나씩 더 생긴다.
+    - docker buildx build --platform linux/arm64 --provenance=false -f "apps/$APP/Dockerfile" -t "$IMAGE" --push .
     - echo "푸시 완료 $IMAGE"
+
+# 공통 경로(common · storage · chat · user-api · 빌드 설정)는 두 잡에 똑같이 적는다. 하나를 고치면 둘 다 고친다.
+# (YAML 앵커로 합치면 rules:changes 에 중첩 목록이 들어가 GitLab 이 펼쳐 주지 않는다)
+
+image-publish:live-app:
+  extends: .image-publish
+  variables:
+    APP: live-app
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+      changes:
+        - apps/live-app/**/*
+        - modules/live/**/*
+        - common/**/*
+        - storage/**/*
+        - modules/chat/**/*
+        - modules/user/user-api/**/*
+        - build.gradle
+        - settings.gradle
+        - gradle/**/*
+        - gradlew
+        - .dockerignore
+        - .gitlab/ci/image.yml
+
+image-publish:streaming-app:
+  extends: .image-publish
+  variables:
+    APP: streaming-app
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+      changes:
+        - apps/streaming-app/**/*
+        - modules/live/live-api/**/*
+        - common/**/*
+        - storage/**/*
+        - modules/chat/**/*
+        - modules/user/user-api/**/*
+        - build.gradle
+        - settings.gradle
+        - gradle/**/*
+        - gradlew
+        - .dockerignore
+        - .gitlab/ci/image.yml
