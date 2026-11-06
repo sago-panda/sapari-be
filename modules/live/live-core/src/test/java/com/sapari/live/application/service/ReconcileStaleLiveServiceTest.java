@@ -31,6 +31,7 @@ import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.StaleLiveReconcilePolicy;
 import com.sapari.live.command.EndStaleLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.EndStaleLiveUseCase;
@@ -307,7 +308,7 @@ class ReconcileStaleLiveServiceTest {
         UUID other = UUID.randomUUID();
         givenCandidates(roomId, other);
         given(liveMediaManager.listAllEgress()).willReturn(List.of(new EgressSummary("eg-DECOY", UUID.randomUUID().toString(), true, STARTED)));
-        willThrow(new InvalidLiveStateException(roomId.toString()))
+        willThrow(new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, roomId.toString()))
                 .given(endStaleLiveUseCase).endStale(new EndStaleLiveCommand(roomId));
 
         service.reconcile();

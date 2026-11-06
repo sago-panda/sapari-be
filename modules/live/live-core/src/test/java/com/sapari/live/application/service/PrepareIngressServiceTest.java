@@ -27,6 +27,8 @@ import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveDomainException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -127,7 +129,9 @@ class PrepareIngressServiceTest {
         given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-LOSER", now)).willReturn(false);
 
         assertThatThrownBy(() -> prepareIngressService.prepare(command))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
 
         // 단건 삭제여야 한다 — 방 단위로 지우면 이긴 쪽 ingress 까지 날아간다
         then(liveMediaManager).should().deleteIngress(roomId, "ingress-LOSER");
@@ -160,7 +164,9 @@ class PrepareIngressServiceTest {
                 .willReturn(Optional.of(liveRoom));
 
         assertThatThrownBy(() -> prepareIngressService.prepare(command))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
 
         then(liveMediaManager).should(never()).createIngress(any(), any());
     }
@@ -179,7 +185,9 @@ class PrepareIngressServiceTest {
                 .willReturn(Optional.of(rtmpRoom));
 
         assertThatThrownBy(() -> prepareIngressService.prepare(command))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
 
         then(liveMediaManager).should(never()).createIngress(any(), any());
     }

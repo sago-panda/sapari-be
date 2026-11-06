@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.StartLiveView;
@@ -75,7 +76,7 @@ public record LiveRoom(
 
     public LiveRoom startLive(StreamInfo newStreamInfo, Instant now){
         if(!canStartLive()){
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
 
         var nextStatus = new LiveStatus.Live(
@@ -98,7 +99,7 @@ public record LiveRoom(
      */
     public LiveRoom arm(Instant now){
         if (!(this.status instanceof LiveStatus.Scheduled scheduled)) {
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
         return toBuilder()
                 .status(new LiveStatus.Ready(scheduled.scheduledAt()))
@@ -112,7 +113,7 @@ public record LiveRoom(
      */
     public LiveRoom goLiveFromReady(StreamInfo newStreamInfo, Instant now){
         if (!canGoLiveByRtmp()) {
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
         var nextStatus = new LiveStatus.Live(
                 now,
@@ -129,7 +130,7 @@ public record LiveRoom(
 
     public LiveRoom endLive(Instant now){
         if (!canEndLive()) {
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
 
         Instant startedAt = switch (this.status) {
@@ -157,7 +158,7 @@ public record LiveRoom(
      */
     public LiveRoom expire(Instant now){
         if(!canExpire()){
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
         LiveStatus status = new LiveStatus.Ended(null, now, null);
         return toBuilder()

@@ -7,13 +7,13 @@ import java.util.UUID;
 import jakarta.validation.Valid;
 
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.liveapp.controller.live.dto.StartBroadcastRequest;
@@ -55,14 +55,14 @@ public class LiveController {
     private final PrepareIngressUseCase prepareIngressUseCase;
 
     @PostMapping("/rooms")
-    public ResponseEntity<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @CurrentUserId UUID sellerId) {
+    @ResponseStatus(HttpStatus.CREATED)
+    public ResponseEnvelope<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @CurrentUserId UUID sellerId) {
         CreateLiveCommand command = request.toCommand(sellerId);
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(createLiveUseCase.create(command));
+        return ResponseEnvelope.success(createLiveUseCase.create(command));
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/start")
-    public ResponseEntity<StartLiveView> startBroadcast(
+    public ResponseEnvelope<StartLiveView> startBroadcast(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID roomId,
             @RequestBody @Valid StartBroadcastRequest request
@@ -70,7 +70,7 @@ public class LiveController {
         StartLiveView result = startLiveUseCase.start(
                 new StartLiveCommand(roomId, sellerId, request.toProductEntries())
         );
-        return ResponseEntity.ok(result);
+        return ResponseEnvelope.success(result);
     }
 
     /**
@@ -78,18 +78,19 @@ public class LiveController {
      * streamKey 는 자격증명이라 이 응답으로 1회만 전달된다(저장/재조회 없음).
      */
     @PostMapping("/rooms/{roomId}/ingress")
-    public ResponseEntity<IngressCredentialView> prepareIngress(
+    @ResponseStatus(HttpStatus.CREATED)
+    public ResponseEnvelope<IngressCredentialView> prepareIngress(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID roomId
     ) {
         IngressCredentialView view = prepareIngressUseCase.prepare(
                 new PrepareIngressCommand(roomId, sellerId)
         );
-        return ResponseEntity.status(HttpStatus.CREATED).body(view);
+        return ResponseEnvelope.success(view);
     }
 
     @GetMapping("/rooms/{roomId}")
-    public ResponseEntity<EnterLiveView> enterRoom(
+    public ResponseEnvelope<EnterLiveView> enterRoom(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal LiveUserPrincipal principal
     ) {
@@ -102,12 +103,12 @@ public class LiveController {
                 ? new EnterLiveCommand(roomId, null, null, null, null)
                 : new EnterLiveCommand(roomId, principal.userId(), principal.role(),
                         principal.nickname(), principal.email());
-        return ResponseEntity.ok(enterLiveUseCase.enter(command));
+        return ResponseEnvelope.success(enterLiveUseCase.enter(command));
     }
 
     @GetMapping("/rooms")
-    public ResponseEntity<GetLiveView> getRooms() {
-        return ResponseEntity.ok(getLiveUseCase.getRooms(GetLiveCommand.defaultMain()));
+    public ResponseEnvelope<GetLiveView> getRooms() {
+        return ResponseEnvelope.success(getLiveUseCase.getRooms(GetLiveCommand.defaultMain()));
     }
 
     @GetMapping("/rooms/{roomId}/replay")
@@ -116,11 +117,11 @@ public class LiveController {
     }
 
     @PostMapping("/rooms/{roomId}/broadcast/end")
-    public ResponseEntity<Void> endBroadcast(
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void endBroadcast(
             @CurrentUserId UUID sellerId,
             @PathVariable UUID roomId
     ) {
         endLiveUseCase.end(new EndLiveCommand(roomId, sellerId));
-        return ResponseEntity.noContent().build();
     }
 }

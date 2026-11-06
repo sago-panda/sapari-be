@@ -10,6 +10,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveDomainException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 
 class LiveRoomTest {
 
@@ -73,7 +75,9 @@ class LiveRoomTest {
                 Instant.parse("2026-06-10T10:00:00Z"));
 
         assertThatThrownBy(() -> live.arm(Instant.parse("2026-06-10T10:01:00Z")))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INVALID_LIVE_STATE);
     }
 
     @Test
@@ -98,7 +102,9 @@ class LiveRoomTest {
 
         assertThatThrownBy(() -> scheduledRtmp.goLiveFromReady(
                 StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null), Instant.parse("2026-06-10T10:00:00Z")))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INVALID_LIVE_STATE);
     }
 
     @Test
@@ -152,14 +158,18 @@ class LiveRoomTest {
     @DisplayName("expire — Scheduled 는 InvalidLiveStateException (아직 시작조차 누르지 않은 방)")
     void expire_rejectsScheduled() {
         assertThatThrownBy(() -> scheduledRoom().expire(Instant.parse("2026-06-10T11:00:00Z")))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
     }
 
     @Test
     @DisplayName("expire — Live 는 InvalidLiveStateException (조회~처리 사이 go-live 된 방을 끊지 않는다)")
     void expire_rejectsLive() {
         assertThatThrownBy(() -> liveRoom().expire(Instant.parse("2026-06-10T11:00:00Z")))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
     }
 
     @Test
@@ -168,7 +178,9 @@ class LiveRoomTest {
         LiveRoom ended = liveRoom().endLive(Instant.parse("2026-06-10T11:00:00Z"));
 
         assertThatThrownBy(() -> ended.expire(Instant.parse("2026-06-10T12:00:00Z")))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
     }
 
     @Test
@@ -178,5 +190,24 @@ class LiveRoomTest {
         assertThat(scheduledRoom().canExpire()).isFalse();
         assertThat(liveRoom().canExpire()).isFalse();
         assertThat(liveRoom().endLive(Instant.parse("2026-06-10T11:00:00Z")).canExpire()).isFalse();
+    }
+
+    @Test
+    @DisplayName("startLive — Scheduled 가 아니면 시작 불가(LIVE-003)")
+    void startLive_rejectsNonScheduled() {
+        assertThatThrownBy(() -> liveRoom().startLive(
+                StreamInfo.of("sfu-2", "eg-2", "https://hls/2", null), Instant.parse("2026-06-10T10:05:00Z")))
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INVALID_LIVE_STATE);
+    }
+
+    @Test
+    @DisplayName("endLive — 방송 중/정지가 아니면 종료 불가(LIVE-009)")
+    void endLive_rejectsScheduled() {
+        assertThatThrownBy(() -> scheduledRoom().endLive(Instant.parse("2026-06-10T11:00:00Z")))
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
     }
 }

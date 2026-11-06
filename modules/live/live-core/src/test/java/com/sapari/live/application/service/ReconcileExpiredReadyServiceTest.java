@@ -33,6 +33,7 @@ import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
@@ -179,7 +180,7 @@ class ReconcileExpiredReadyServiceTest {
         UUID conflicted = UUID.randomUUID();
         UUID other = UUID.randomUUID();
         givenCandidates(conflicted, other);
-        willThrow(new InvalidLiveStateException(conflicted.toString()))
+        willThrow(new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, conflicted.toString()))
                 .given(expireOrphanLiveUseCase).expire(new ExpireOrphanLiveCommand(conflicted));
 
         service.reconcile();

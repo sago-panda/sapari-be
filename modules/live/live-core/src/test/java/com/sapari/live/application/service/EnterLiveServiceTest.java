@@ -23,6 +23,8 @@ import com.sapari.live.application.port.RoomTokenClaims;
 import com.sapari.live.application.port.RoomTokenIssuer;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveDomainException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.UnsupportedRoleException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.StreamInfo;
@@ -199,7 +201,9 @@ class EnterLiveServiceTest {
         EnterLiveCommand command = new EnterLiveCommand(scheduledId, sellerId, "SELLER", "n", "e@e.com");
 
         assertThatThrownBy(() -> enterLiveService.enter(command))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_ENTER_NOT_ALLOWED);
         verify(roomTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any());
     }
 
