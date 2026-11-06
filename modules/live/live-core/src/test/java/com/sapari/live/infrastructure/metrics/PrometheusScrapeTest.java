@@ -7,6 +7,8 @@ import java.time.Duration;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+
+import com.sapari.live.application.port.RoomTokenSignatureSource;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -144,5 +146,26 @@ class PrometheusScrapeTest {
         assertThat(scrape)
                 .as("실패 쪽에는 축이 없다 — 묻지 못한 것에 어느 축이 적중했는지가 없다")
                 .doesNotContain("live_token_revocation_failed_total{axis");
+    }
+
+    @Test
+    @DisplayName("⭐ 룸 토큰 발급 출처 지표의 이름·태그 값이 스크레이프 출력에 있다")
+    void roomTokenSignature_appearsInScrape() {
+        metrics.roomTokenIssued(RoomTokenSignatureSource.SIGNED);
+        metrics.roomTokenIssued(RoomTokenSignatureSource.CACHED);
+
+        String scrape = registry.scrape();
+
+        assertThat(scrape)
+                .as("두 출처는 같은 이름의 태그다 — 합이 회원 발급 전수라 비율을 구할 수 있어야 한다")
+                .contains("live_token_signature_total");
+        assertThat(scrape)
+                .as("태그 값은 소문자다 — 문서가 대문자로 적으면 쿼리가 시계열을 못 찾는다")
+                .contains("source=\"signed\"")
+                .contains("source=\"cached\"");
+        assertThat(scrape)
+                .as("대문자 값은 나오지 않는다 — 문서 쪽 드리프트를 잡는 면이다")
+                .doesNotContain("source=\"SIGNED\"")
+                .doesNotContain("source=\"CACHED\"");
     }
 }

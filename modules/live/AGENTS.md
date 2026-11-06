@@ -292,10 +292,31 @@ through a bounded stream, not `@RequestBody byte[]`.
 
 ## Enter rate limit — the signing ceiling
 
-`enter` issues an RS256 token per call, so **every request costs a private-key signature**:
-measured 685µs (RSA-2048) = ~1,458/s per core. (The webhook path is *not* a comparison — it does no
+`enter` issues an RS256 token per call, so **a request that signs costs a private-key signature**:
+measured 685µs (RSA-2048) = ~1,458/s per core; re-measured 688µs / 1,453/s per core (n=20,000,
+p99 735.8µs, aarch64). (The webhook path is *not* a comparison — it does no
 RSA verification; the LiveKit API secret is symmetric, which is why that path's own measurements
-scale with body size.) Two population buckets cap it (`live.enter.rate-limit.guest-*` and
+scale with body size.)
+
+**That per-core number is not a fleet ceiling, and the denominator is not in this repo.** Signing
+throughput is near-linear in cores (measured, same run: 1 thread 1,436/s · 2 → 2,777 · 4 → 5,450),
+so the same 1,000/s demand is 69.6% of one core, 36.0% of two, 18.3% of four (all three read off that one table; the
+latency measurement gives a slightly cheaper per-core figure, 1,453/s → 68.8%, because the
+single-thread throughput loop carries harness overhead — do not mix the two in one progression) — and no task/pod
+definition anywhere here records the allocation. Never compare a per-core supply number straight to
+a fleet demand number; say which core count you assumed.
+
+**Members no longer sign on every call** (`live.room-token.cache`, `CachingRoomTokenIssuer`): a
+bounded fixed-size array keyed by the whole `RoomTokenClaims` returns the previous token inside a
+TTL capped at half the issued TTL, so a hit's remaining life is never under half. **Guests always
+sign** — `issueGuestToken` mints a fresh random `sub` per call so their keys never repeat, and they
+are kept out of the cache entirely (reading is pointless, writing would evict members). So the cache
+removes at most the member half of the 1,000/s. HMAC was **rejected**: measured 108× cheaper
+(6.4µs) but chat must verify without being able to issue, and a shared secret would let chat forge
+the `owner` claim its own kick and unmasked-original gates rest on. Hit rate is observable —
+`live.token.signature{source="signed"|"cached"}`, denominator = member issuance only.
+
+Two population buckets cap it (`live.enter.rate-limit.guest-*` and
 `.member-*`, defaults 500/s · burst 1000 each), with `member-shards` per-account buckets under the
 member one sized to let the global stay binding, in `EnterRateLimitFilter`, inside the security chain
 **after** the
@@ -375,6 +396,13 @@ neither the `findById` nor the signature is paid.
 `enter` issues an RS256 token; distinct key/alg/`aud` from the api-app HMAC token, never interchangeable.
 Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp`.
 **email is PII** — never log the raw token. **Not single-use** — replayable within the TTL.
+
+Repeat enters by the same member inside the cache TTL now receive the **identical** token, not a
+fresh one with a later `exp` (`CachingRoomTokenIssuer`). Nothing keys off token uniqueness — there
+is no `jti`, the token was already replayable, and `MAX_SESSIONS_PER_USER_PER_ROOM` is keyed by
+user — so the exposure window is unchanged except that it stops being extended by re-entering. That
+is also why the cache TTL is capped at half the issued TTL: a hit must not hand out a token that is
+about to expire.
 
 - **A revoked access token cannot get one.** `TokenRevocationFilter` consults both axes —
   `jti` (that one token) and `sid` (every token of that login session) — so logout, withdrawal and

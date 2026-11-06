@@ -16,6 +16,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
+import com.sapari.live.application.port.RoomTokenSignatureSource;
 import com.sapari.live.application.port.TokenRevocationAxis;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
@@ -167,6 +168,14 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     @Override
     public void tokenRevocationLookupFailed() {
         safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOCATION_FAILED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void roomTokenIssued(RoomTokenSignatureSource source) {
+        safe(() -> Counter.builder(LiveMeterNames.TOKEN_SIGNATURE)
+                .tag(LiveMeterNames.TAG_SOURCE, tag(source))
                 .register(registry)
                 .increment());
     }

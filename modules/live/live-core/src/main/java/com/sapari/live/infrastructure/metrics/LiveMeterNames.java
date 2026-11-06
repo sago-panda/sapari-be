@@ -27,6 +27,13 @@ final class LiveMeterNames {
     /** 폐기 여부를 묻지 못한 건수(저장소 장애). 적중과 <b>다른 이름</b>이다 — 대응이 반대다. */
     static final String TOKEN_REVOCATION_FAILED = "live.token.revocation.failed";
 
+    /**
+     * 룸 토큰 발급 건수. 서명을 쳤는지 캐시에서 나왔는지를 {@code source} 태그로 가른다(값은 소문자).
+     *
+     * <p>분모가 <b>회원 입장뿐</b>이다 — 게스트는 캐시를 타지 않는다({@code RoomTokenSignatureSource}).
+     */
+    static final String TOKEN_SIGNATURE = "live.token.signature";
+
     static final String TAG_JOB = "job";
     static final String TAG_OUTCOME = "outcome";
     static final String TAG_REASON = "reason";
@@ -36,6 +43,7 @@ final class LiveMeterNames {
     static final String TAG_POPULATION = "population";
     static final String TAG_GATE = "gate";
     static final String TAG_AXIS = "axis";
+    static final String TAG_SOURCE = "source";
     static final String TAG_FROM = "from";
     static final String TAG_TO = "to";
     static final String TAG_TRIGGER = "trigger";

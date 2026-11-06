@@ -47,6 +47,7 @@ import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.application.port.RoomTokenSignatureSource;
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
@@ -501,6 +502,11 @@ class ReconcileSchedulerLockTest {
 
         @Override
         public void tokenRevocationLookupFailed() {
+        }
+
+        @Override
+        public void roomTokenIssued(RoomTokenSignatureSource source) {
+            // 이 더블은 정리 잡 회차를 센다 — 입장 경로 축은 무관하다.
         }
 
         @Override
