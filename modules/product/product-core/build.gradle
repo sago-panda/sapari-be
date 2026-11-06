@@ -1,8 +1,57 @@
-dependencies {
-    compileOnly(project(':storage:db-core'))
-
-    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
-    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+plugins {
+    id 'java-library'
 }
 
-tasks.register("prepareKotlinBuildScriptModel"){}
+dependencies {
+    api(project(':storage:db-core'))
+    implementation(project(':storage:redis-core'))
+    implementation(project(':common:core'))
+    implementation(project(':common:global'))
+    implementation(project(':modules:product:product-api'))
+
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+
+    // 사용자 작성 HTML(상품 상세 설명) 저장형 XSS 차단 — 허용 목록 정제
+    implementation 'com.googlecode.owasp-java-html-sanitizer:owasp-java-html-sanitizer:20240325.1'
+
+    // 옵션 추가금·제외 룰을 product_option_configs jsonb 문자열로 직렬화 (버전은 Spring Boot BOM 관리)
+    implementation 'tools.jackson.core:jackson-databind'
+
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
+
+    // test container
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:testcontainers-postgresql'
+
+    // 통합 테스트 스키마는 실제 Flyway 마이그레이션(db/migration/product)으로 구성.
+    // Spring Boot 4는 자동구성이 기술별 모듈로 분리됨 — FlywayAutoConfiguration은 spring-boot-flyway에 있다
+    // (flyway-core만으론 자동구성이 안 켜짐). flyway-database-postgresql은 PG 11+ 지원 모듈.
+    testImplementation 'org.springframework.boot:spring-boot-flyway'
+    testImplementation 'org.flywaydb:flyway-database-postgresql'
+
+    runtimeOnly 'org.postgresql:postgresql'
+
+    // MapStruct
+    implementation 'org.mapstruct:mapstruct:1.5.5.Final'
+    annotationProcessor 'org.mapstruct:mapstruct-processor:1.5.5.Final'
+    annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
+
+    // QueryDSL — querydsl-jpa는 db-core가 api로 전이 제공. Q클래스 생성용 apt만 모듈별로 필요
+    annotationProcessor 'com.querydsl:querydsl-apt:5.1.0:jakarta'
+    annotationProcessor 'jakarta.persistence:jakarta.persistence-api'
+    annotationProcessor 'jakarta.annotation:jakarta.annotation-api'
+
+    // FixtureMonkey
+    testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
+
+}
+
+tasks.register("prepareKotlinBuildScriptModel") {}
+
+bootJar {
+    enabled = false
+}
+
+jar{
+    enabled = true
+}
