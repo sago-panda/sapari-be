@@ -11,6 +11,7 @@ import com.sapari.live.application.port.RoomTokenClaims;
 import com.sapari.live.application.port.RoomTokenIssuer;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.exception.UnsupportedRoleException;
 import com.sapari.live.domain.model.LiveRoom;
@@ -53,7 +54,7 @@ public class EnterLiveService implements EnterLiveUseCase {
 
         // 라이브 진행 중일 때만 입장(=룸 토큰 발급) 가능 — 권위 평가는 live DB 기준.
         if (!room.canEnterLive()) {
-            throw new InvalidLiveStateException(command.roomId().toString());
+            throw new InvalidLiveStateException(LiveErrorCode.LIVE_ENTER_NOT_ALLOWED, command.roomId().toString());
         }
 
         // 회원은 신원 기반 토큰, 게스트(미인증)는 에페메랄 GUEST 토큰 — 둘 다 채팅 입장은 가능(GUEST는 수신 전용).

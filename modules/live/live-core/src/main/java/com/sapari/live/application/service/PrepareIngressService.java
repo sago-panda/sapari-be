@@ -10,6 +10,7 @@ import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
@@ -38,12 +39,12 @@ public class PrepareIngressService implements PrepareIngressUseCase {
 
         // 외부 호출 전 가드 — 방송 전(Scheduled)만 준비 허용
         if (!room.canPrepareIngress()) {
-            throw new InvalidLiveStateException(room.id().toString());
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, room.id().toString());
         }
         // 멱등: 이미 ingress 가 발급된 방이면 재발급하지 않고 거부(중복 ingress 방지).
         // streamKey 분실 복구(재발급)는 별도 티켓의 몫.
         if (room.isRtmp()) {
-            throw new InvalidLiveStateException("이미 RTMP ingress 가 발급된 방입니다: " + room.id());
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, "이미 RTMP ingress 가 발급된 방입니다: " + room.id());
         }
 
         IngressResult result = liveMediaManager.createIngress(command.roomId(), command.sellerId());
@@ -60,7 +61,7 @@ public class PrepareIngressService implements PrepareIngressUseCase {
             // 빈도가 다르므로(전자는 판매자 더블클릭, 후자는 드묾) 로그에 남겨 구분 가능하게 둔다.
             log.info("RTMP ingress 배정 실패(경합 패배 또는 상태 변경) — 생성한 ingress 회수. roomId={}, ingressId={}",
                     command.roomId(), result.ingressId());
-            throw new InvalidLiveStateException("이미 RTMP ingress 가 발급된 방입니다: " + command.roomId());
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, "이미 RTMP ingress 가 발급된 방입니다: " + command.roomId());
         }
         log.info("RTMP ingress 발급 완료. roomId={}, ingressId={}", room.id(), result.ingressId());
 

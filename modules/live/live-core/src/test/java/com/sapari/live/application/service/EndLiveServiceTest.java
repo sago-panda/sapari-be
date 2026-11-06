@@ -36,6 +36,8 @@ import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveDomainException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStreamType;
@@ -236,7 +238,9 @@ public class EndLiveServiceTest {
         // when & then
         assertThatThrownBy(() -> endLiveService.end(command))
                 .isInstanceOf(InvalidLiveStateException.class)
-                .hasMessageContaining(command.roomId().toString());
+                .hasMessageContaining(command.roomId().toString())
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
 
         // 검증
         then(liveMediaManager).shouldHaveNoInteractions();

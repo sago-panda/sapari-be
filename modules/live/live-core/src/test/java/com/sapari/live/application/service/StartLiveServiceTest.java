@@ -38,7 +38,10 @@ import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.domain.exception.BroadcastStartException;
+import com.sapari.live.domain.exception.InvalidLiveProductException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
+import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveProduct;
 import com.sapari.live.domain.model.LiveRoom;
@@ -209,7 +212,9 @@ public class StartLiveServiceTest {
         // when & then
         assertThatThrownBy(() -> startLiveService.start(command))
                 .isInstanceOf(InvalidLiveStateException.class)
-                .hasMessageContaining(roomId.toString());
+                .hasMessageContaining(roomId.toString())
+                .satisfies(e -> assertThat(((LiveDomainException) e).getErrorCode())
+                        .isEqualTo(LiveErrorCode.INVALID_LIVE_STATE));
     }
 
     @Test
@@ -383,6 +388,86 @@ public class StartLiveServiceTest {
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
         verify(liveRoomRepository).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ready.class);
+    }
+
+    @Test
+    @DisplayName("가격 위반은 미디어 호출 전에 거부한다(LIVE-008) — egress 를 켰다가 보상으로 끄지 않는다.")
+    void price_violation_rejected_before_media_calls_webrtc(){
+        // given: 할인가 > 정가
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(scheduledRoom()));
+        StartLiveCommand bad = commandWith(new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 12000, 7000, true));
+
+        // when & then
+        assertThatThrownBy(() -> startLiveService.start(bad))
+                .isInstanceOf(InvalidLiveProductException.class)
+                .satisfies(e -> assertThat(((LiveDomainException) e).getErrorCode())
+                        .isEqualTo(LiveErrorCode.INVALID_LIVE_PRODUCT_PRICE));
+        verify(liveMediaManager, never()).issueSellerToken(any(UUID.class), any(UUID.class));
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+        verify(liveProductRepository, never()).saveAll(any());
+    }
+
+    @Test
+    @DisplayName("RTMP 방도 가격 위반이면 송출 확인·Ready 전이 전에 거부한다(LIVE-008).")
+    void price_violation_rejected_before_media_calls_rtmp(){
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(rtmpScheduledRoom()));
+        StartLiveCommand bad = commandWith(new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 8000, 9000, true));
+
+        assertThatThrownBy(() -> startLiveService.start(bad))
+                .isInstanceOf(InvalidLiveProductException.class);
+        verify(liveMediaManager, never()).publishingIngressIdsOrEmpty(any(UUID.class));
+        verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+    }
+
+    @Test
+    @DisplayName("상태 위반과 가격 위반이 같이 있으면 상태(LIVE-003)가 먼저다.")
+    void state_violation_wins_over_price_violation(){
+        StreamInfo streamInfo = new StreamInfo("sfu-roomId-001", "egress-123", "http://hls.url/index.m3u8", "http://archive/playlist.m3u8");
+        LiveRoom liveRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId)
+                .set("sellerId", sellerId)
+                .set("streamInfo", streamInfo)
+                .set("streamType", new LiveStreamType.WebRtc())
+                .set("status", new Live(Instant.now(), streamInfo.sfuRoomId(), streamInfo.egressId(), streamInfo.hlsUrl()))
+                .sample();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(liveRoom));
+        StartLiveCommand bad = commandWith(new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 12000, 7000, true));
+
+        assertThatThrownBy(() -> startLiveService.start(bad))
+                .isInstanceOf(InvalidLiveStateException.class)
+                .satisfies(e -> assertThat(((LiveDomainException) e).getErrorCode())
+                        .isEqualTo(LiveErrorCode.INVALID_LIVE_STATE));
+    }
+
+    @Test
+    @DisplayName("핀 상품이 0개면 상품 입력 오류(LIVE-012)다 — 상태 위반(LIVE-003)이 아니다.")
+    void no_pinned_product_is_live_012(){
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(scheduledRoom()));
+        StartLiveCommand noPin = commandWith(new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 8000, 7000, false));
+
+        assertThatThrownBy(() -> startLiveService.start(noPin))
+                .isInstanceOf(InvalidLiveProductException.class)
+                .satisfies(e -> assertThat(((LiveDomainException) e).getErrorCode())
+                        .isEqualTo(LiveErrorCode.INVALID_PINNED_PRODUCT));
+        verify(liveMediaManager, never()).issueSellerToken(any(UUID.class), any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("핀 상품이 2개여도 LIVE-012 다.")
+    void two_pinned_products_is_live_012(){
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(scheduledRoom()));
+        StartLiveCommand twoPins = commandWith(
+                new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 8000, 7000, true),
+                new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 8000, 7000, true));
+
+        assertThatThrownBy(() -> startLiveService.start(twoPins))
+                .isInstanceOf(InvalidLiveProductException.class)
+                .satisfies(e -> assertThat(((LiveDomainException) e).getErrorCode())
+                        .isEqualTo(LiveErrorCode.INVALID_PINNED_PRODUCT));
+    }
+
+    private StartLiveCommand commandWith(StartLiveCommand.ProductEntry... products){
+        return new StartLiveCommand(roomId, sellerId, List.of(products));
     }
 
     private LiveRoom rtmpScheduledRoom(){

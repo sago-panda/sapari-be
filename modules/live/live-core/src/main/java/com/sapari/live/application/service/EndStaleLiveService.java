@@ -17,6 +17,7 @@ import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.command.EndStaleLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
@@ -49,7 +50,7 @@ public class EndStaleLiveService implements EndStaleLiveUseCase {
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 
         if (!room.canEndLive()) {
-            throw new InvalidLiveStateException(command.roomId().toString());
+            throw new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, command.roomId().toString());
         }
 
         Instant endedAt = timeProvider.now();

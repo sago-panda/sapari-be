@@ -9,6 +9,11 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+import com.sapari.live.domain.exception.InvalidLiveProductException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 
 class LiveProductTest {
 
@@ -39,5 +44,28 @@ class LiveProductTest {
 
         assertThat(product.isPinned()).isFalse();
         assertThat(product.pinnedAt()).isEqualTo(MARKER);
+    }
+
+    @ParameterizedTest(name = "정가={0}, 할인가={1}, 라이브 할인가={2}")
+    @CsvSource({
+            "10000, 12000, 7000",   // 할인가 > 정가
+            "10000, 8000, 9000",    // 라이브 할인가 > 할인가
+            "0, 0, 0",              // 정가 0
+            "10000, -1, 0",         // 음수 할인가
+            "10000, 8000, -1"       // 음수 라이브 할인가
+    })
+    @DisplayName("가격 규칙 위반은 판매자 입력 오류(LIVE-008)다 — 500 으로 새는 IAE 가 아니다.")
+    void create_rejects_price_violation_as_client_error(int original, int discount, int liveDiscount) {
+        assertThatThrownBy(() -> LiveProduct.create(
+                UUID.randomUUID(), UUID.randomUUID(), original, discount, liveDiscount, false, 0, null))
+                .isInstanceOf(InvalidLiveProductException.class)
+                .extracting(e -> ((InvalidLiveProductException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INVALID_LIVE_PRODUCT_PRICE);
+    }
+
+    @Test
+    @DisplayName("가격이 같아도 된다 — 정가 = 할인가 = 라이브 할인가.")
+    void validatePrices_allows_equal_prices() {
+        assertThatCode(() -> LiveProduct.validatePrices(10000, 10000, 10000)).doesNotThrowAnyException();
     }
 }

@@ -423,6 +423,10 @@ Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII
 ## Errors & tests
 
 Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`RuntimeException` escapes a service.
+A state violation gets **one code per request kind** (start LIVE-003, end/expire 009, enter 010, ingress 011) via
+`InvalidLiveStateException(code, msg)` — keep the single class, reconcile jobs catch it as "lost the race, skip".
+Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`, never IAE —
+IAE reaches the global net as 500. A new request kind (cancel, edit, …) adds its own code; don't reuse 003.
 Tests in `live-core/src/test` (Mockito on ports); scheduler wiring in `live-app` via `ApplicationContextRunner`.
 FixtureMonkey for fixtures, plain builders when asserting specific values (random strings trip VO validation).
 Run `./gradlew :modules:live:live-core:test`.
