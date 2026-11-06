@@ -22,6 +22,8 @@ import org.springframework.web.multipart.MultipartFile;
 import com.sapari.common.core.exception.CommonErrorCode;
 import com.sapari.product.command.BulkCreateProductsCommand;
 import com.sapari.product.command.BulkProductItemCommand;
+import com.sapari.product.domain.exception.BulkUploadRateLimitedException;
+import com.sapari.product.domain.exception.BulkUploadUnavailableException;
 import com.sapari.product.domain.exception.InvalidBulkUploadException;
 import com.sapari.product.port.BulkCreateProductsUseCase;
 import com.sapari.product.view.BulkCreateProductsView;
@@ -56,14 +58,20 @@ public class BulkProductUploadProcessor {
     private final XlsxWorkbookReader workbookReader;
     private final Validator validator;
     private final BulkCreateProductsUseCase bulkCreateProductsUseCase;
+    private final BulkUploadRateLimiter rateLimiter;
 
     /**
      * 엑셀 파일을 검증하고 상품을 일괄 등록한다.
      *
+     * <p>빈 파일·크기 초과처럼 바로 거절되는 요청은 한도를 쓰지 않는다. 그 뒤 파싱 전에 판매자별 한도({@link BulkUploadRateLimiter})를 잡고,
+     * 처리가 끝나면 결과와 상관없이 내려놓는다 — 비용이 큰 파싱·저장 전체가 한도 안에서 돈다.
+     *
      * @param sellerId 인증된 판매자 id
      * @param file     업로드된 xlsx 파일
      * @return 처리 결과(거절·완료·중단)와 셀 위치가 붙은 오류
-     * @throws InvalidBulkUploadException 파일이 비었거나 크기 한도를 넘거나 xlsx가 아니거나 템플릿 구조가 다른 경우
+     * @throws InvalidBulkUploadException     파일이 비었거나 크기 한도를 넘거나 xlsx가 아니거나 템플릿 구조가 다른 경우
+     * @throws BulkUploadRateLimitedException 같은 판매자의 업로드를 처리 중이거나 기간당 건수를 넘은 경우
+     * @throws BulkUploadUnavailableException 한도를 판정할 수 없는 경우(Redis 장애)
      */
     public BulkProductUploadResponse process(UUID sellerId, MultipartFile file) {
         if (file == null || file.isEmpty()) {
@@ -73,6 +81,18 @@ public class BulkProductUploadProcessor {
             throw new InvalidBulkUploadException("파일 크기가 한도(" + MAX_FILE_BYTES + " bytes)를 넘습니다: " + file.getSize());
         }
 
+        String permit = rateLimiter.acquire(sellerId);
+        try {
+            return parseValidateAndCreate(sellerId, file);
+        } finally {
+            rateLimiter.release(sellerId, permit);
+        }
+    }
+
+    /**
+     * 엑셀을 읽어 형식·입력 제약을 검증하고, 오류가 없으면 도메인 유스케이스로 일괄 등록한다.
+     */
+    private BulkProductUploadResponse parseValidateAndCreate(UUID sellerId, MultipartFile file) {
         ProductWorkbookParser.Result parsed = ProductWorkbookParser.parse(readSheets(file));
         UploadErrors errors = parsed.errors();
         validateConstraints(parsed.drafts(), errors);
