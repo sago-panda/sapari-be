@@ -167,7 +167,46 @@ public class TokenRevocationFilter extends OncePerRequestFilter {
         return null;
     }
 
-    /** 적중한 축, 아니면 {@code null}. 토큰 축이 참이면 세션 축을 묻지 않는다 — 왕복 하나를 아낀다. */
+    /**
+     * 적중한 축, 아니면 {@code null}. 토큰 축이 참이면 세션 축을 묻지 않는다 — 왕복 하나를 아낀다.
+     *
+     * <p><b>정상 경로는 왕복 2회다</b>(둘 다 거짓이어야 통과이므로 조기 반환이 아끼는 것은 이미
+     * 폐기된 토큰의 경우뿐이다). 그 둘을 하나로 묶을 수 있는지 재 봤고, <b>묶지 않기로 했다.</b>
+     *
+     * <p>실측(Testcontainers {@code redis:7.4}, 로컬 Docker 루프백, n=20,000):
+     * <pre>
+     *   EXISTS 1키        p50 125.6µs  p99 164.2µs  p999 253.1µs
+     *   EXISTS 2키 순차   p50 244.6µs  p99 305.2µs  p999 555.2µs   ← 현행
+     *   EXISTS 다중키 1회 p50 124.6µs  p99 160.7µs  p999 255.8µs
+     * </pre>
+     * 묶으면 요청당 약 120µs(p50)·145µs(p99)를 아낀다. 왕복 수에 정확히 비례하고 키 두 개를
+     * 한 명령에 실어도 한 개와 같다.
+     *
+     * <p><b>그런데 이 경로의 용량 벽이 여기가 아니다.</b> {@code EnterRateLimitProperties} 가
+     * 같은 요청의 RS256 룸 토큰 서명을 685µs(코어당 1,458건/s)로 실측해 두었고, 두 버킷 합
+     * 1,000/s 가 그 천장의 69% 라고 적는다. 그리고 이 필터는 <b>컨트롤러 앞</b>이라 DB 커넥션을
+     * 쥐지 않으므로, 같은 javadoc 이 세는 또 하나의 분모(Hikari 풀 10 · 커넥션당 10ms 예산)에
+     * 들어가지 않는다. MVC 스레드 점유로 환산하면 1,000/s 에서 왕복 하나는 0.125 스레드
+     * (Tomcat 기본 200)다. 즉 1,000/s 에서 이 왕복은 어느 분모에도 닿지 않는다.
+     *
+     * <p><b>묶는 값은 작고 대가는 설계에 남는다.</b> {@code EXISTS k1 k2} 는 <i>개수</i>를
+     * 돌려주므로 어느 축인지를 잃고({@code live.token.revoked{axis}} 가 그 태그를 쓴다) 적중 시
+     * 축을 다시 묻는 분기가 생긴다. 그리고 두 조회는 {@code common/auth} 의 서로 다른 저장소
+     * 둘이고 api-app 이 각각 따로 쓰므로, 묶으려면 그 공용 모듈에 합친 포트를 새로 내야 한다.
+     * 685µs 벽 앞에서 120µs 를 줄이려고 공용 모듈의 포트를 늘리지 않는다.
+     *
+     * <p>⚠️ <b>판단이 뒤집히는 조건</b>: 위 수는 로컬 Docker 루프백이라 운영 왕복이 아니다.
+     * 전달되는 것은 <b>비율</b>(왕복 2회 = 2배, 다중키 = 1배)이다. 그래서 문턱은 왕복 <b>하나</b>가
+     * 아니라 <b>둘의 합</b>으로 센다 — 정상 경로가 2회이므로 이 단계가 서명과 같아지는 지점은
+     * {@code 2x = 685µs}, 즉 <b>왕복당 ~0.34ms</b> 다. 거기서부터 묶는 값이 서명 한 번 값만큼
+     * 커지므로 그때 다시 본다. (처음에 이 자리를 "왕복 하나가 ~0.7ms" 로 적었는데 그건 서명 한 번
+     * 값을 왕복 <i>하나</i>에 견준 것이라 2배 늦은 알람이었다 — 0.7ms 에 닿는 시점에는 이 단계가
+     * 이미 1.4ms, 서명의 2배다.)
+     *
+     * <p>⚠️ 파이프라인({@code executePipelined})은 이 모양에 쓸 수 없다 — <b>호출마다 전용
+     * 연결을 연다</b>(실측: 20,000회에서 {@code BindException: Can't assign requested address}
+     * 로 임시 포트가 고갈됐다). 묶는다면 다중키 {@code EXISTS} 쪽이다.
+     */
     private TokenRevocationAxis revokedAxis(LiveUserPrincipal principal) {
         if (accessTokenRevocationChecker.isRevoked(principal.tokenId())) {
             return TokenRevocationAxis.JTI;

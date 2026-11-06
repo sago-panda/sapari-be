@@ -19,6 +19,7 @@ import com.sapari.chat.domain.repository.ChatFilterWordRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.port.ManageFilterWordsUseCase;
 import com.sapari.chat.view.FilterWordsView;
+import com.sapari.global.time.TimeProvider;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -64,10 +65,11 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
     private final ChatFilterWordWriteRecorder writeRecorder;
     private final ProfanityDictionaryPublishService publishService;
     private final ProfanityFilterFactory filterFactory;
+    private final TimeProvider timeProvider;
 
     @Override
     public FilterWordChange add(AddFilterWordCommand command) {
-        requireAdmin(command.actorRole());
+        ChatRole actorRole = requireAdmin(command.actorRole());
         FilterWordKind kind = parseKind(command.kind());
         String word = fold(command.word());
 
@@ -82,7 +84,8 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         // 변경 전이 멀쩡했으므로 여기서 떨어지면 차이는 보낸 항목 하나뿐이다.
         guardRequested(nextWords, nextWhitelist, word);
 
-        boolean changed = writeRecorder.add(kind, word, command.actorId());
+        boolean changed = writeRecorder.add(
+                kind, word, command.actorId(), actorRole, timeProvider.now());
         // ⚠️ 커밋된 집합을 다시 본다. 선검사는 <자기 요청의 결과>만 보는데 규칙 (1)은 두 kind 를
         // 가로지르므로, 같은 문자열을 서로 다른 kind 에 동시에 넣는 두 요청이 각자 통과하고
         // 커밋된 합집합만 어길 수 있다(ChatFilterWordWriteRecorder javadoc). 롤백하지 않는다 —
@@ -107,7 +110,7 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
 
     @Override
     public FilterWordChange remove(RemoveFilterWordCommand command) {
-        requireAdmin(command.actorRole());
+        ChatRole actorRole = requireAdmin(command.actorRole());
         FilterWordKind kind = parseKind(command.kind());
         String word = fold(command.word());
 
@@ -118,7 +121,8 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
                 minus(whitelist, kind == FilterWordKind.WHITELIST ? word : null);
         guardRemoval(nextWords, nextWhitelist);
 
-        boolean changed = writeRecorder.remove(kind, word);
+        boolean changed = writeRecorder.remove(
+                kind, word, command.actorId(), actorRole, timeProvider.now());
         long version = publishOrLogLoss("제거", kind, word.length(), changed, command.actorId());
         log.info("사전에서 항목을 뺐다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
@@ -243,7 +247,13 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         return folded;
     }
 
-    private void requireAdmin(String actorRole) {
+    /**
+     * 권한을 보고 <b>파싱된 역할을 돌려준다</b>. 감사 행이 그 값을 싣는데, 커맨드의 문자열을 그대로
+     * 넘기면 길이 상한이 없는 값이 {@code actor_type varchar(10)} 으로 들어간다
+     * ({@link com.sapari.chat.domain.model.ChatAuditEntry} 가 그 축을 적는다). 권한 검사가 이미
+     * 파싱하므로 돌려주는 것으로 끝이고 변환이 새로 생기지 않는다.
+     */
+    private ChatRole requireAdmin(String actorRole) {
         ChatRole role = ChatRole.fromPlatformRole(actorRole)
                 .orElseThrow(() -> new ChatPermissionDeniedException(
                         "알 수 없는 역할: 사전 변경 거부 actorRole=" + actorRole));
@@ -251,6 +261,7 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
             throw new ChatPermissionDeniedException(
                     "사전 변경 권한 없음 role=" + role);
         }
+        return role;
     }
 
     /**

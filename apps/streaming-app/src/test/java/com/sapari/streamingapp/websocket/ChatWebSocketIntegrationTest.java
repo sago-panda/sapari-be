@@ -307,6 +307,124 @@ class ChatWebSocketIntegrationTest {
         assertThat(observed.get().getCode()).isEqualTo(CloseStatus.POLICY_VIOLATION.getCode());
     }
 
+    /**
+     * ⭐ <b>방 종료 한 건이 끌고 가는 것 전부</b>를 와이어와 Redis 에서 함께 본다.
+     *
+     * <p>이 경로는 {@code LiveRoomEndedHandlerTest} 가 단위로 덮고 있었다. 거기서 재는 것은
+     * <b>호출 순서와 실패 내성</b>이고(포트가 전부 목이다), 이 테스트가 덮는 것은 그 다음 축이다 —
+     * {@code live:room:ended} 에 실제로 구독이 붙어 있는가 · 사유가 close 보다 먼저 와이어에
+     * 실리는가 · 닫는 코드가 강퇴와 다른가 · 뒤따르는 키 정리가 실제 Redis 에서 끝나는가.
+     * 형제 {@code server_initiated_close_...} 는 같은 종료 <b>기구</b>를 강퇴로 덮는데, 그걸
+     * 방 종료로 켜는 방아쇠는 어느 통합 테스트도 당기지 않았다.
+     *
+     * <p><b>기준선을 먼저 잰다.</b> 정리 단언("명부가 지워졌다" · "명단에 만료가 붙었다")은 대상이
+     * 애초에 없으면 아무것도 재지 않는다 — 그래서 접속이 성립한 뒤 명부가 있는 것을 확인하고,
+     * 회수될 강퇴 명단도 손으로 심어 둔다(빈 SET 에 {@code EXPIRE} 는 거짓을 돌려준다).
+     */
+    @Test
+    @DisplayName("⭐ 방 종료 — 한 건이 SYSTEM(ROOM_ENDED) → 1000 종료 → 키 정리까지 끌고 간다")
+    void room_ended_closes_the_session_and_clears_its_keys() throws InterruptedException {
+        // given
+        UUID roomId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
+        String sessionsKey = "chat:room:" + roomId + ":sessions";
+        String markerKey = "chat:room:" + roomId + ":ended";
+        String kickedKey = "chat:kicked:" + roomId;
+
+        // 회수될 명단을 심는다 — 만료가 붙는지는 키가 있어야만 재어진다
+        redisTemplate.opsForSet().add(kickedKey, UUID.randomUUID().toString()).block(VERIFY_CEILING);
+        assertThat(redisTemplate.getExpire(kickedKey).block(VERIFY_CEILING))
+                .as("기준선: 심은 명단에 만료가 이미 있으면 아래 단언이 그걸 보고 통과한다")
+                .isEqualTo(Duration.ZERO);
+
+        CountDownLatch admitted = new CountDownLatch(1);
+        CountDownLatch closed = new CountDownLatch(1);
+        List<String> frames = new CopyOnWriteArrayList<>();
+        AtomicReference<CloseStatus> observed = new AtomicReference<>();
+
+        Disposable held = new ReactorNettyWebSocketClient()
+                .execute(wsUri(roomId), tokenHeaders(token), session -> {
+                    session.closeStatus().doOnNext(status -> {
+                        observed.set(status);
+                        closed.countDown();
+                    }).subscribe();
+                    return session.receive().map(WebSocketMessage::getPayloadAsText)
+                            .doOnNext(frame -> {
+                                frames.add(frame);
+                                if (frame.contains("ROOM_INFO")) {
+                                    admitted.countDown();
+                                }
+                            })
+                            .then();
+                })
+                .subscribe();
+        try {
+            assertThat(admitted.await(20, TimeUnit.SECONDS))
+                    .as("세션이 먼저 성립해야 그 정리를 잴 수 있다").isTrue();
+            assertThat(redisTemplate.hasKey(sessionsKey).block(VERIFY_CEILING))
+                    .as("기준선: 접속 중인데 방 세션 명부가 없다 — 아래 '지워졌다' 가 항진명제가 된다")
+                    .isTrue();
+
+            // ⚠️ <b>잔재를 하나 심는다.</b> 이것 없이는 "명부가 지워졌다" 가 clearRoom 을 재지
+            // 못한다 — 세션이 하나뿐이면 그 세션의 HDEL 이 해시의 마지막 필드를 지우고, Redis 는
+            // 빈 해시의 키 자체를 없앤다. 실측: clearRoom 단계를 지워도 이 단언이 통과했다.
+            // 심은 항목은 HDEL 이 닿지 않는 자리(다른 Pod 가 남긴 잔재)이고, 그걸 걷는 경로는
+            // clearRoom 뿐이다. 값 모양은 운영과 같게 둔다(userId:epochMillis) — 심은 잔재가
+            // <운영에서 실제로 가능한 모양>이어야 이 테스트가 재는 상태가 실재하는 상태다.
+            //
+            // ⚠️ 여기에 "모양이 깨지면 낡음 판정이 그걸 건너뛰어 다른 이유로 통과할 수 있다" 고
+            // 적었는데 거짓이었다 — 낡음 판정을 쓰는 자리는 생존 사용자 수 집계 <읽기> 하나뿐이고
+            // (ChatSessionRedisRepository), 낡은 필드를 HDEL 하는 수거자는 없다(그 저장소가 직접
+            // "치우지는 않는다 — 제거는 TTL 과 clearRoom 이 맡는다" 고 적는다). clearRoom 은 조건
+            // 없는 키 삭제라, 모양이 깨져도 심은 필드는 남고 이 단언은 여전히 clearRoom 만 통과시킨다.
+            redisTemplate.opsForHash()
+                    .put(sessionsKey, "stale-session-" + UUID.randomUUID(),
+                            UUID.randomUUID() + ":" + System.currentTimeMillis())
+                    .block(VERIFY_CEILING);
+
+            // when: 다른 Pod 의 live 가 방 종료를 발행한 것처럼 밀어넣는다
+            redisTemplate.convertAndSend("live:room:ended", "{\"roomId\":\"" + roomId + "\"}")
+                    .block(VERIFY_CEILING);
+
+            // then: 사유가 먼저 오고 그 다음 닫힌다. close 가 먼저면 이 프레임은 도착하지 못한다
+            assertThat(closed.await(20, TimeUnit.SECONDS))
+                    .as("방이 끝났는데 세션이 닫히지 않았다").isTrue();
+            assertThat(frames)
+                    .as("사유 없이 끊겼다 — SYSTEM(ROOM_ENDED) 이 close 앞에 와야 한다")
+                    .anyMatch(f -> f.contains("\"type\":\"SYSTEM\"") && f.contains("ROOM_ENDED"));
+            assertThat(observed.get()).isNotNull();
+            assertThat(observed.get().getCode())
+                    .as("강퇴와 같은 1008 로 닫으면 클라가 제재로 읽고 재접속을 포기한다")
+                    .isEqualTo(CloseStatus.NORMAL.getCode());
+
+            // 뒤따르는 정리는 close 다음 단계라 폴링으로 기다린다(이벤트루프에서 돈다)
+            awaitTrue(() -> Boolean.TRUE.equals(redisTemplate.hasKey(markerKey).block(VERIFY_CEILING)),
+                    "종료 마커가 안 찍혔다 — 이 방의 종료 판정이 전 세션에서 무력화된다");
+            awaitTrue(() -> !Boolean.TRUE.equals(redisTemplate.hasKey(sessionsKey).block(VERIFY_CEILING)),
+                    "방 세션 명부가 남았다 — 회수는 24시간 TTL 이 받는다");
+            awaitTrue(() -> {
+                Duration ttl = redisTemplate.getExpire(kickedKey).block(VERIFY_CEILING);
+                return ttl != null && !ttl.isZero() && !ttl.isNegative();
+            }, "강퇴 명단에 회수 만료가 안 붙었다 — 그 SET 이 영구히 남는다");
+        } finally {
+            held.dispose();
+        }
+    }
+
+    /**
+     * 조건이 참이 될 때까지 기다린다. busy-spin 하지 않는 이유는 형제
+     * {@code connections_are_tracked_and_released} 와 같다 — CI 병렬 실행에서 코어 하나를 태운다.
+     */
+    private static void awaitTrue(java.util.function.BooleanSupplier condition, String whatIsWrong)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(condition.getAsBoolean()).as(whatIsWrong).isTrue();
+    }
+
     @Test
     @DisplayName("⭐ 서버발 종료는 유예를 기다리지 않는다 — 데이터 채널이 닫히면 그 자리에서 끊긴다")
     void server_initiated_close_does_not_wait_for_the_forced_grace() {

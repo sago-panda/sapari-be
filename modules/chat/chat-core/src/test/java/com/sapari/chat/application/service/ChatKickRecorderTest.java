@@ -33,9 +33,12 @@ import com.sapari.chat.support.LiveSchema;
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogJpaRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanStateRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogJpaRepository;
@@ -78,8 +81,14 @@ class ChatKickRecorderTest {
         }
 
         @Bean
-        ChatKickRecorder chatKickRecorder(ChatKickLogRepository logs, ChatBanStateRepository bans) {
-            return new ChatKickRecorder(logs, bans);
+        ChatKickRecorder chatKickRecorder(ChatKickLogRepository logs, ChatBanStateRepository bans,
+                                         ChatAuditLogRepository audits) {
+            return new ChatKickRecorder(logs, bans, audits);
+        }
+
+        @Bean
+        ChatAuditLogRepository chatAuditLogRepository(ChatAuditLogJpaRepository jpa) {
+            return new ChatAuditLogRepositoryImpl(jpa);
         }
     }
 
@@ -103,6 +112,10 @@ class ChatKickRecorderTest {
     private ChatKickLogRepository kickLogs;
     @Autowired
     private ChatBanStateRepository bans;
+    @Autowired
+    private ChatAuditLogRepository auditLogs;
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
     @Autowired
     private TransactionTemplate transactionTemplate;
     @Autowired
@@ -133,6 +146,95 @@ class ChatKickRecorderTest {
     private ChatKickLog kick(UUID roomId, UUID kickedById, Instant kickedAt) {
         return new ChatKickLog(targetUserId, roomId, kickedById,
                 ChatRole.SELLER, "문제된 원문", kickedAt);
+    }
+
+    /**
+     * 이 대상의 감사 행을 시각 순으로 읽는다. 엔티티로 읽지 않는 이유는 {@code detail} 이 매핑돼
+     * 있지 않아서다 — jsonb 를 Hibernate 타입 없이 다루는 쪽을 골랐으므로, 그 칸이 <b>정말 jsonb
+     * 인지</b>는 SQL 로 {@code ->>} 를 걸어서만 확인된다(text 였다면 이 연산자가 깨진다).
+     *
+     * <p>대상으로 거르는 것은 이 스위트가 {@code NOT_SUPPORTED} 라 롤백이 없고 같은 DB 를 다른
+     * 테스트와 공유하기 때문이다. {@code targetUserId} 는 테스트 메서드마다 새 UUID 다.
+     */
+    private java.util.List<java.util.Map<String, Object>> auditRows() {
+        return jdbcTemplate.queryForList("""
+                SELECT action, actor_id, actor_type, target_id, target_type, created_at,
+                       detail->>'roomId' AS room_id, detail->>'kickLogWritten' AS kick_log_written
+                  FROM live_schema.audit_logs
+                 WHERE target_id = ?
+                 ORDER BY created_at, detail->>'kickLogWritten' DESC
+                """, targetUserId);
+    }
+
+    private int auditRowCount() {
+        return auditRows().size();
+    }
+
+    /**
+     * ⭐ 강퇴 한 건이 감사 한 줄을 남긴다 — <b>실제 테이블에, 실제 jsonb 로</b>.
+     *
+     * <p>이 스위트가 {@code NOT_SUPPORTED} 라 호출자에게 트랜잭션이 없다. 감사 쓰기도
+     * {@code @Modifying} 네이티브 INSERT 라 경계 없이 돌면
+     * {@code InvalidDataAccessApiUsageException} 으로 터지므로, 이 테스트가 초록인 것은 그 쓰기가
+     * recorder 의 경계 <b>안</b>에 들어갔다는 뜻이다(밖에 두면 여기서 바로 드러난다).
+     *
+     * <p>{@code room_id} 를 {@code detail->>} 로 읽는 것이 <b>칸이 jsonb 임을 재는 자리</b>다 —
+     * 어댑터가 {@code CAST(:detail AS jsonb)} 로 넘기는데, 그 캐스트가 빠지면 Postgres 가
+     * {@code column "detail" is of type jsonb but expression is of type character varying} 로 거부한다.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 강퇴가 감사 한 줄을 남긴다 — 방은 detail 에만 있고 그 칸은 jsonb 다")
+    void theKickLeavesOneAuditRow() {
+        // given
+        UUID roomId = UUID.randomUUID();
+        UUID kickerId = UUID.randomUUID();
+
+        // when
+        recorder.record(kick(roomId, kickerId, NOW));
+
+        // then
+        java.util.List<java.util.Map<String, Object>> rows = auditRows();
+        assertThat(rows).hasSize(1);
+        java.util.Map<String, Object> row = rows.get(0);
+        assertThat(row.get("action")).isEqualTo("CHAT_KICK_USER");
+        assertThat(row.get("actor_id")).isEqualTo(kickerId);
+        assertThat(row.get("actor_type")).isEqualTo("SELLER");
+        assertThat(row.get("target_type")).isEqualTo("USER");
+        assertThat(row.get("room_id"))
+                .as("방이 감사 행의 어느 칸에도 없다 — target_id 는 강퇴당한 사람이다")
+                .isEqualTo(roomId.toString());
+        assertThat(row.get("kick_log_written")).isEqualTo("true");
+        assertThat(((java.sql.Timestamp) row.get("created_at")).toInstant())
+                .as("시각이 주입된 시계가 아니라 DB 시계에서 왔다")
+                .isEqualTo(NOW);
+    }
+
+    /**
+     * ⭐ 같은 방 두 번째 강퇴는 <b>정본에 아무 흔적을 남기지 않는다</b>
+     * ({@code UNIQUE(user_id, live_room_id)} + {@code ON CONFLICT DO NOTHING}). 그래서 "다시 눌렀다"
+     * 는 사실이 남는 자리가 감사 행뿐이고, 그 행이 {@code kickLogWritten=false} 로 자기가 정본을
+     * 늘리지 않았음을 말한다 — 그 칸이 없으면 감사 2줄과 정본 1줄의 차이가 기록 누락처럼 읽힌다.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("⭐ 같은 방 중복 강퇴도 감사에 남는다 — 정본은 그대로이고 그 사실이 행에 적힌다")
+    void theDuplicateKickIsStillAudited() {
+        // given
+        UUID roomId = UUID.randomUUID();
+
+        // when: 같은 방, 같은 대상을 두 번
+        recorder.record(kick(roomId, NOW));
+        recorder.record(kick(roomId, NOW));
+
+        // then: 정본은 한 줄, 감사는 두 줄
+        assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
+                .isEqualTo(1);
+        java.util.List<java.util.Map<String, Object>> rows = auditRows();
+        assertThat(rows).hasSize(2);
+        assertThat(rows).extracting(r -> r.get("kick_log_written"))
+                .as("두 번째 강퇴가 정본을 늘렸다고 적혀 있다 — 그 행은 하나뿐이다")
+                .containsExactly("true", "false");
     }
 
     /**
@@ -312,7 +414,7 @@ class ChatKickRecorderTest {
                 // 불리면 그건 이 테스트가 모르는 경로가 생긴 것이므로 조용히 통과시키지 않는다.
                 throw new UnsupportedOperationException("이 테스트는 해제를 쓰지 않는다");
             }
-        });
+        }, auditLogs);
         // 경계는 템플릿으로 만든다 — 여기서 재는 것은 "두 쓰기가 한 트랜잭션인가"이고,
         // 애너테이션이 프록시로 실제로 걸리는지는 ChatModerationWiringTest가 따로 지킨다.
         TransactionTemplate newTx = new TransactionTemplate(transactionManager);
@@ -326,6 +428,13 @@ class ChatKickRecorderTest {
         assertThat(kickLogs.countConfirmingKickersSince(targetUserId, NOW.minus(Duration.ofDays(730))))
                 .as("밴이 실패했는데 강퇴 로그가 커밋됐다 — 재시도가 승격을 건너뛴다")
                 .isEqualTo(before);
+
+        // ⭐ 그리고 감사 행도 함께 사라진다. 이 단언이 "감사는 조치와 같은 트랜잭션" 을 재는 자리다 —
+        // 저장소를 자기 경계(REQUIRES_NEW)에 넣으면 조치가 롤백돼도 이 행만 커밋되어, 일어나지 않은
+        // 강퇴가 기록에 남는다. 앞선 두 번은 성공했으므로 기대값은 2다.
+        assertThat(auditRowCount())
+                .as("롤백된 강퇴의 감사 행이 남았다 — 일어나지 않은 조치가 기록에 있다")
+                .isEqualTo(2);
     }
 
     /**

@@ -10,6 +10,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Set;
 import java.util.UUID;
 
@@ -30,10 +33,12 @@ import com.sapari.chat.command.RemoveFilterWordCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.FilterWordRejectedException;
 import com.sapari.chat.domain.exception.FilterWordSourceInvalidException;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.FilterWordKind;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
+import com.sapari.global.time.TimeProvider;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -59,6 +64,9 @@ import org.slf4j.LoggerFactory;
 @DisplayName("사전 관리 — 거부의 원인을 입력과 정본으로 가른다")
 class ManageFilterWordsServiceTest {
 
+    /** 감사 행에 찍히는 시각 — 주입된 시계가 유일한 출처다. */
+    private static final Instant NOW = Instant.parse("2026-11-06T04:00:00Z");
+
     /** K 예산(16) 밖이라 사전 문이 거부하는 항목. */
     private static final String OVER_BUDGET = "가".repeat(17);
 
@@ -77,10 +85,11 @@ class ManageFilterWordsServiceTest {
     void setUp() {
         service = new ManageFilterWordsService(
                 new ChatPermissionPolicy(), repository, writeRecorder, publishService,
-                new DictionaryProfanityFilterFactory());
+                new DictionaryProfanityFilterFactory(),
+                new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
         given(publishService.publishFromSource()).willReturn(42L);
-        given(writeRecorder.add(any(), anyString(), any())).willReturn(true);
-        given(writeRecorder.remove(any(), anyString())).willReturn(true);
+        given(writeRecorder.add(any(), anyString(), any(), any(), any())).willReturn(true);
+        given(writeRecorder.remove(any(), anyString(), any(), any(), any())).willReturn(true);
     }
 
     private void sourceIs(Set<String> words, Set<String> whitelist) {
@@ -106,7 +115,7 @@ class ManageFilterWordsServiceTest {
         var change = service.add(add("PROFANITY", "지랄", "ADMIN"));
 
         // then
-        verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin);
+        verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin, ChatRole.ADMIN, NOW);
         verify(publishService).publishFromSource();
         assertThat(change.changed()).isTrue();
         assertThat(change.version())
@@ -136,7 +145,7 @@ class ManageFilterWordsServiceTest {
         }
 
         // then: 네 번 모두 같은 값이 테이블로 간다 — 문이 본 값과 같은 값이다
-        verify(writeRecorder, times(4)).add(FilterWordKind.PROFANITY, "시발", admin);
+        verify(writeRecorder, times(4)).add(FilterWordKind.PROFANITY, "시발", admin, ChatRole.ADMIN, NOW);
     }
 
     /**
@@ -154,7 +163,7 @@ class ManageFilterWordsServiceTest {
 
         service.remove(remove("PROFANITY", " 개새끼 ", "ADMIN"));
 
-        verify(writeRecorder).remove(FilterWordKind.PROFANITY, "개새끼");
+        verify(writeRecorder).remove(FilterWordKind.PROFANITY, "개새끼", admin, ChatRole.ADMIN, NOW);
     }
 
     /**
@@ -170,7 +179,7 @@ class ManageFilterWordsServiceTest {
 
         service.add(add("PROFANITY", nfd, "ADMIN"));
 
-        verify(writeRecorder).add(FilterWordKind.PROFANITY, "시발", admin);
+        verify(writeRecorder).add(FilterWordKind.PROFANITY, "시발", admin, ChatRole.ADMIN, NOW);
     }
 
     @Test
@@ -182,7 +191,7 @@ class ManageFilterWordsServiceTest {
         assertThatThrownBy(() -> service.add(add("PROFANITY", "\uFEFF", "ADMIN")))
                 .isInstanceOf(FilterWordRejectedException.class);
 
-        verify(writeRecorder, never()).add(any(), anyString(), any());
+        verify(writeRecorder, never()).add(any(), anyString(), any(), any(), any());
     }
 
     /**
@@ -209,7 +218,7 @@ class ManageFilterWordsServiceTest {
         assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
                 .isInstanceOf(FilterWordSourceInvalidException.class);
 
-        verify(writeRecorder, never()).add(any(), anyString(), any());
+        verify(writeRecorder, never()).add(any(), anyString(), any(), any(), any());
         verify(publishService, never()).publishFromSource();
     }
 
@@ -243,7 +252,7 @@ class ManageFilterWordsServiceTest {
         assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
                 .isInstanceOf(FilterWordSourceInvalidException.class);
 
-        verify(writeRecorder, never()).add(any(), anyString(), any());
+        verify(writeRecorder, never()).add(any(), anyString(), any(), any(), any());
         verify(publishService, never()).publishFromSource();
     }
 
@@ -262,7 +271,7 @@ class ManageFilterWordsServiceTest {
         assertThatThrownBy(() -> service.add(add("PROFANITY", OVER_BUDGET, "ADMIN")))
                 .isInstanceOf(FilterWordRejectedException.class);
 
-        verify(writeRecorder, never()).add(any(), anyString(), any());
+        verify(writeRecorder, never()).add(any(), anyString(), any(), any(), any());
         verify(publishService, never()).publishFromSource();
     }
 
@@ -285,7 +294,7 @@ class ManageFilterWordsServiceTest {
         var change = service.remove(remove("PROFANITY", OVER_BUDGET, "ADMIN"));
 
         // then
-        verify(writeRecorder).remove(FilterWordKind.PROFANITY, OVER_BUDGET);
+        verify(writeRecorder).remove(FilterWordKind.PROFANITY, OVER_BUDGET, admin, ChatRole.ADMIN, NOW);
         verify(publishService).publishFromSource();
         assertThat(change.changed()).isTrue();
     }
@@ -315,7 +324,7 @@ class ManageFilterWordsServiceTest {
 
         // then: 진행한다. 남은 위반은 거부가 아니라 경고로 간다 — 거부하면 복구가 막히고
         // 조용히 넘기면 운영자가 복구가 끝났다고 믿는다.
-        verify(writeRecorder).remove(FilterWordKind.PROFANITY, OVER_BUDGET);
+        verify(writeRecorder).remove(FilterWordKind.PROFANITY, OVER_BUDGET, admin, ChatRole.ADMIN, NOW);
         verify(publishService).publishFromSource();
         assertThat(change.changed()).isTrue();
     }
@@ -336,7 +345,7 @@ class ManageFilterWordsServiceTest {
         assertThatThrownBy(() -> service.remove(remove("PROFANITY", "시발", "ADMIN")))
                 .isInstanceOf(FilterWordRejectedException.class);
 
-        verify(writeRecorder, never()).remove(any(), anyString());
+        verify(writeRecorder, never()).remove(any(), anyString(), any(), any(), any());
         verify(publishService, never()).publishFromSource();
     }
 
@@ -348,7 +357,7 @@ class ManageFilterWordsServiceTest {
 
         var change = service.remove(remove("WHITELIST", "시발점", "ADMIN"));
 
-        verify(writeRecorder).remove(FilterWordKind.WHITELIST, "시발점");
+        verify(writeRecorder).remove(FilterWordKind.WHITELIST, "시발점", admin, ChatRole.ADMIN, NOW);
         assertThat(change.changed()).isTrue();
     }
 
@@ -360,7 +369,7 @@ class ManageFilterWordsServiceTest {
     @DisplayName("이미 있는 단어를 다시 더해도 발행한다 — changed=false 로 알려 준다")
     void anIdempotentAddStillPublishes() {
         sourceIs(Set.of("시발"), Set.of());
-        given(writeRecorder.add(any(), anyString(), any())).willReturn(false);
+        given(writeRecorder.add(any(), anyString(), any(), any(), any())).willReturn(false);
 
         var change = service.add(add("PROFANITY", "시발", "ADMIN"));
 
@@ -384,8 +393,8 @@ class ManageFilterWordsServiceTest {
         // "거부는 함대에 깔리지 않는다" 를 네 갈래 전부에 적는다 — 나머지 셋(add 409 · add 400 ·
         // 마지막 욕설)이 발행까지 단언하는데 여기만 쓰기만 봤다. 권한이 먼저 걸려 오늘은 도달
         // 불가지만, 같은 불변식을 한 갈래에만 안 적으면 그 갈래가 먼저 느슨해진다.
-        verify(writeRecorder, never()).add(any(), anyString(), any());
-        verify(writeRecorder, never()).remove(any(), anyString());
+        verify(writeRecorder, never()).add(any(), anyString(), any(), any(), any());
+        verify(writeRecorder, never()).remove(any(), anyString(), any(), any(), any());
         verify(publishService, never()).publishFromSource();
     }
 
@@ -415,7 +424,7 @@ class ManageFilterWordsServiceTest {
 
         service.add(add("profanity", "지랄", "ADMIN"));
 
-        verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin);
+        verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin, ChatRole.ADMIN, NOW);
     }
 
     /**
@@ -533,7 +542,7 @@ class ManageFilterWordsServiceTest {
         var order = inOrder(repository, writeRecorder, publishService);
         order.verify(repository).findWords(FilterWordKind.PROFANITY);
         order.verify(repository).findWords(FilterWordKind.WHITELIST);
-        order.verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin);
+        order.verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin, ChatRole.ADMIN, NOW);
         order.verify(publishService).publishFromSource();
         order.verify(repository, times(2)).findWords(any());
     }

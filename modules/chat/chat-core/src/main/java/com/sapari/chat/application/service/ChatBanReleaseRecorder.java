@@ -1,11 +1,17 @@
 package com.sapari.chat.application.service;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
+import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.Released;
 
@@ -50,6 +56,7 @@ public class ChatBanReleaseRecorder {
     static final int TRANSACTION_TIMEOUT_SECONDS = ChatKickRecorder.TRANSACTION_TIMEOUT_SECONDS;
 
     private final ChatBanStateRepository banStateRepository;
+    private final ChatAuditLogRepository auditLogRepository;
 
     /**
      * 정본에서 밴을 지우고 사면 기준선을 남긴다.
@@ -85,11 +92,46 @@ public class ChatBanReleaseRecorder {
      * <p>미러 축의 어긋남은 그대로 남는다 — 복구 수단이 <b>해제의 멱등성</b>이다. 지운 행이 없어도
      * 기준선은 남고 미러 삭제는 조건 없이 돌아가므로 같은 명령을 다시 눌러 수렴한다.
      *
+     * <p><b>감사 한 줄이 같은 트랜잭션에 들어간다.</b> 지운 밴의 내용(영구였는지·누가 걸었는지)은
+     * 정본 행이 사라지므로 그 행 말고는 어디에도 남지 않는다 —
+     * {@code ChatBanStateRepository.release} javadoc 이 이미 "감사 행과 반환값 말고는 어디에도"
+     * 라고 적고 있다. 반환값은 응답으로 나가고 사라지므로 남는 쪽은 감사 행뿐이다.
+     *
+     * <p><b>자원이 하나 늘었다</b>({@code audit_logs}). 순서는 어드바이저리 → {@code chat_ban} →
+     * {@code chat_ban_release} → {@code audit_logs} 인데, 사이클이 없는 근거는 순서가 아니라
+     * 그 테이블에 겨룰 행이 없다는 것이다({@link ChatKickRecorder#record} javadoc 에 전개해 뒀다).
+     *
      * @return 무엇을 지웠는가. 지울 밴이 없었어도 기준선은 남았다 — 실패가 아니다
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = TRANSACTION_TIMEOUT_SECONDS)
-    public Released release(UUID targetUserId, UUID actorId, Instant now) {
+    public Released release(UUID targetUserId, UUID actorId, ChatRole actorRole, Instant now) {
         banStateRepository.lockForBanDecision(targetUserId);
-        return banStateRepository.release(targetUserId, actorId, now);
+        Released released = banStateRepository.release(targetUserId, actorId, now);
+        auditLogRepository.append(auditEntry(targetUserId, actorId, actorRole, released, now));
+        return released;
+    }
+
+    /**
+     * 감사 한 줄. {@code detail} 이 <b>지워진 행의 내용</b>을 싣는다 — 이 셋은 호출 뒤 어디서도
+     * 읽을 수 없다.
+     *
+     * <p>{@code banExisted} 가 거짓이면 "밴 없는 사람에게 버튼을 눌렀다" 이고 그것이 활성 밴을 푼
+     * 것과 구분돼야 한다 — 그 호출만으로도 730일 누적이 접히므로 조치가 없었던 것이 아니다.
+     * 거짓일 때 나머지 둘은 넣지 않는다(실을 값이 애초에 {@code null} 이다).
+     */
+    private static ChatAuditEntry auditEntry(UUID targetUserId, UUID actorId, ChatRole actorRole,
+                                             Released released, Instant now) {
+        Map<String, String> detail = new LinkedHashMap<>();
+        detail.put("banExisted", Boolean.toString(released.banExisted()));
+        if (released.banExisted()) {
+            // 영구 밴은 만료가 없다. 빈칸으로 두면 "기한부인데 값이 빠진" 것과 같아 보이므로 적는다.
+            detail.put("expiresAt",
+                    released.expiresAt() == null ? "permanent" : released.expiresAt().toString());
+            if (released.bannedById() != null) {
+                detail.put("bannedById", released.bannedById().toString());
+            }
+        }
+        return new ChatAuditEntry(actorId, actorRole, ChatAuditAction.CHAT_RELEASE_BAN,
+                targetUserId, detail, now);
     }
 }

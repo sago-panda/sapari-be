@@ -3,9 +3,12 @@ package com.sapari.chat.application.service;
 import com.sapari.chat.command.ClearRoomEndedMarkerCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 
@@ -64,6 +67,8 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
 
     private final GetLiveRoomUseCase liveRoomReader;
     private final ChatRoomEndedWriteRepository roomEndedWriteRepository;
+    private final ChatAuditRecorder auditRecorder;
+    private final TimeProvider timeProvider;
 
     @Override
     public void clear(ClearRoomEndedMarkerCommand command) {
@@ -123,5 +128,18 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
         log.info("방 종료 마커 해제 — 앱 밖에서 들어온 발행이었다. roomId={} actor={} "
                         + "(세션은 되살지 않는다, 재입장 필요)",
                 command.roomId(), command.actorId());
+
+        // 감사는 <되돌림 분기 뒤>에 적는다. 위에서 마커를 되세우고 거부한 요청은 해제가
+        // 아니었으므로 감사 행도 없어야 한다 — 삭제 직후에 적으면 되돌려진 조치가 "수행됨" 으로 남는다.
+        //
+        // ⚠️ <로그보다도 뒤>다. 감사 쓰기는 예외를 삼키지 않으므로 그것이 실패하면 요청이 500 이
+        // 되는데, 위에 두면 그 분기에서 로그까지 함께 사라져 "조치는 됐고 아무 흔적도 없다" 가 된다.
+        // 뒤에 두면 같은 실패에서 로그는 남는다 — 감사 행의 폴백이 그 로그다.
+        //
+        // detail 이 비어 있다. 이 조치는 한 방의 마커 하나를 지우는 것이고 그 방은 targetId 가
+        // 가리키므로, 더 실을 것이 없다(행위마다 detail 이 필요한지는 ChatAuditAction 이 들고 있다).
+        auditRecorder.record(new ChatAuditEntry(
+                command.actorId(), actorRole, ChatAuditAction.CHAT_CLEAR_ROOM_ENDED_MARKER,
+                command.roomId(), null, timeProvider.now()));
     }
 }

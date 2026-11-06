@@ -81,7 +81,8 @@ public class ReleaseBanService implements ReleaseBanUseCase {
         Released released;
         try {
             // DB 쓰기는 여기서 끝난다. 반환됐다는 것은 커밋이 확정됐다는 뜻이고, 그 다음에야 미러로 간다.
-            released = releaseRecorder.release(command.targetUserId(), command.actorId(), now);
+            released = releaseRecorder.release(
+                    command.targetUserId(), command.actorId(), actorRole, now);
         } catch (PessimisticLockingFailureException | QueryTimeoutException
                  | TransactionTimedOutException e) {
             // 경합을 5xx 로 흘리지 않는다. 이 경로의 복구 수단이 <멱등 재시도>인데, 500 은
