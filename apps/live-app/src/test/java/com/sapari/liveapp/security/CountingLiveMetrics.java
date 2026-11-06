@@ -12,6 +12,7 @@ import com.sapari.live.application.port.ReconcileAbortReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.ReconcileLockResult;
+import com.sapari.live.application.port.RoomTokenSignatureSource;
 import com.sapari.live.application.port.TokenRevocationAxis;
 import com.sapari.live.domain.model.LiveStatus;
 
@@ -30,6 +31,7 @@ class CountingLiveMetrics implements LiveMetrics {
     final List<EnterRejectionGate> gates = new ArrayList<>();
     final List<TokenRevocationAxis> revocationHits = new ArrayList<>();
     int revocationLookupFailures;
+    final List<RoomTokenSignatureSource> roomTokensIssued = new ArrayList<>();
 
     @Override
     public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
@@ -45,6 +47,11 @@ class CountingLiveMetrics implements LiveMetrics {
     @Override
     public void tokenRevocationLookupFailed() {
         revocationLookupFailures++;
+    }
+
+    @Override
+    public void roomTokenIssued(RoomTokenSignatureSource source) {
+        roomTokensIssued.add(source);
     }
 
     @Override

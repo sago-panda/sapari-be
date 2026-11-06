@@ -26,6 +26,7 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public final List<EnterRejectionGate> enterRejectionGates = new ArrayList<>();
     public final List<TokenRevocationAxis> tokenRevocationHits = new ArrayList<>();
     public int tokenRevocationLookupFailures;
+    public final List<RoomTokenSignatureSource> roomTokensIssued = new ArrayList<>();
 
     @Override
     public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
@@ -41,6 +42,11 @@ public class RecordingLiveMetrics implements LiveMetrics {
     @Override
     public void tokenRevocationLookupFailed() {
         tokenRevocationLookupFailures++;
+    }
+
+    @Override
+    public void roomTokenIssued(RoomTokenSignatureSource source) {
+        roomTokensIssued.add(source);
     }
 
     @Override
