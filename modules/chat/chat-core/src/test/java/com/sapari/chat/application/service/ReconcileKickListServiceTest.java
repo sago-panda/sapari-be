@@ -27,6 +27,11 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+
 import com.sapari.chat.command.ReconcileKickListCommand;
 import com.sapari.chat.domain.model.ChatAuditAction;
 import com.sapari.chat.domain.model.ChatAuditEntry;
@@ -238,12 +243,80 @@ class ReconcileKickListServiceTest {
         verify(kickWriteRepository, never()).reconcile(any(), any());
     }
 
+    /**
+     * 공란이 이 목록에 있었는데 걷어냈다 — {@code ReconcileKickListCommand} 에 컴팩트 생성자가
+     * 생기면서 <b>더 앞에서</b> 끊기게 됐다. 아래 경계 칸이 그 자리를 받는다.
+     */
     @ParameterizedTest(name = "role={0}")
-    @ValueSource(strings = {"OPERATOR", "admin", ""})
+    @ValueSource(strings = {"OPERATOR", "admin"})
     @DisplayName("모르는 역할 이름은 거부한다")
     void unknownRoleIsRejected(String role) {
         assertThatThrownBy(() -> service.reconcile(command(role)))
                 .isInstanceOf(ChatPermissionDeniedException.class)
                 .hasMessageContaining("알 수 없는 역할");
+    }
+
+    /**
+     * 빈 값·{@code null} 은 <b>커맨드 경계</b>에서 끊긴다 — 서비스까지 오지 않는다. 형제
+     * {@code ReleaseBanServiceTest} 와 같은 모양이고, 여기서는 <b>어디서 끊기는지</b>를 그대로
+     * 적는다("거부된다" 만 재면 다음 사람이 그 생성자를 지워도 서비스가 받아 주는 바람에 초록으로
+     * 남는다).
+     *
+     * <p>이 경로에서 그 경계가 한 칸 더 무겁다 — 감사 기록이 {@code actorRole} 을 싣는데 이 경로는
+     * DB 트랜잭션이 없어 그 기록을 <b>조치 뒤에</b> 만든다. 커맨드가 비어 있으면 거기서야 터지고,
+     * 그때는 조치가 이미 수행된 뒤다.
+     */
+    @ParameterizedTest(name = "role=[{0}]")
+    @ValueSource(strings = {"", "   "})
+    @DisplayName("빈 역할은 커맨드 생성에서 거부된다 — 서비스까지 오지 않는다")
+    void blankRoleIsRejectedAtTheCommandBoundary(String role) {
+        assertThatThrownBy(() -> command(role))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("actorRole");
+    }
+
+    @Test
+    @DisplayName("역할이 null 이어도 커맨드 생성에서 거부된다")
+    void nullRoleIsRejectedAtTheCommandBoundary() {
+        assertThatThrownBy(() -> command(null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * ⭐ <b>감사 쓰기가 실패해도 조치 로그는 남는다.</b>
+     *
+     * <p>이 칸이 생긴 이유가 리뷰 지적이다. {@code ChatAuditEntry} javadoc 이 감사 행이 비는 것을
+     * 받아 주는 근거로 "두 조치가 멱등이고 자기 로그를 남기므로" 를 들었는데, 처음 배선에서 감사
+     * 호출이 <b>그 로그보다 앞</b>이었다 — 감사 쓰기는 예외를 삼키지 않으므로 그 실패 분기의 실제
+     * 결과는 "조치는 수행됐고 · 요청은 500 이고 · 감사도 로그도 없다" 였다. 근거로 든 폴백이 바로
+     * 그 분기에서 안 돌았다.
+     *
+     * <p>그래서 호출을 로그 뒤로 옮겼고, 그 순서를 여기서 잰다. 로거를 가로채는 이유는 순서가
+     * <b>목 호출 순서로는 안 보이기</b> 때문이다 — 로그는 목이 아니라 실제 로거로 나간다.
+     */
+    @Test
+    @DisplayName("⭐ 감사 쓰기가 실패해도 재적재 로그는 남는다 — 폴백이 그 로그다")
+    void theActionIsStillLoggedWhenTheAuditWriteFails() {
+        // given: 조치는 성공했고 감사 INSERT 만 실패하는 창(앞에서 이미 Postgres 를 읽으므로 좁다)
+        given(kickLogRepository.findKickedUserIds(roomId)).willReturn(List.of(UUID.randomUUID()));
+        org.mockito.BDDMockito.willThrow(new IllegalStateException("감사 INSERT 실패"))
+                .given(auditRecorder).record(any());
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(ReconcileKickListService.class);
+        logger.addAppender(appender);
+        try {
+            // when: 삼키지 않는다 — 요청은 실패한다
+            assertThatThrownBy(() -> service.reconcile(command("ADMIN")))
+                    .isInstanceOf(IllegalStateException.class);
+
+            // then: 그래도 조치의 흔적은 로그에 남는다
+            assertThat(appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList())
+                    .as("감사도 로그도 없다 — 수행된 조치의 흔적이 어디에도 남지 않았다")
+                    .anySatisfy(message -> assertThat(message).contains("강퇴 명단 재적재"));
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 }

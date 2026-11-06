@@ -24,6 +24,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+
 import com.sapari.chat.command.ClearRoomEndedMarkerCommand;
 import com.sapari.chat.domain.model.ChatAuditAction;
 import com.sapari.chat.domain.model.ChatAuditEntry;
@@ -239,11 +244,12 @@ class ClearRoomEndedMarkerServiceTest {
      * {@code ""} 는 <b>한 번도 실행되지 않았다</b> — 조용히 초록이었다. 바로 아래
      * {@code ReconcileKickListServiceTest} 에서 복사하다 인자가 떨어진 것이다.
      *
-     * <p>{@code ""} 가 특히 중요하다 — {@code ClearRoomEndedMarkerCommand} 에 컴팩트 생성자가 없어
-     * 서비스까지 도달하는 <b>유일한 공란 벡터</b>다(해제 쪽은 커맨드에서 끊긴다).
+     * <p>⚠️ 전에 여기에 {@code ""} 가 있었고 "커맨드에 컴팩트 생성자가 없어 서비스까지 도달하는
+     * 유일한 공란 벡터" 라고 적혀 있었다. <b>그 문장이 거짓이 됐다</b> — 그 생성자를 채웠으므로
+     * 공란은 이제 커맨드 경계에서 끊긴다. 아래 경계 칸이 그 자리를 받는다.
      */
     @ParameterizedTest(name = "role={0}")
-    @ValueSource(strings = {"OPERATOR", "seller", ""})
+    @ValueSource(strings = {"OPERATOR", "seller"})
     @DisplayName("모르는 역할 이름은 방을 읽기도 전에 거부한다")
     void unknownRoleIsRejectedBeforeReadingTheRoom(String role) {
         // when & then
@@ -252,5 +258,62 @@ class ClearRoomEndedMarkerServiceTest {
                 .hasMessageContaining("알 수 없는 역할");
 
         verify(liveRoomReader, never()).findRoom(any());
+    }
+
+    /**
+     * 빈 값·{@code null} 은 <b>커맨드 경계</b>에서 끊긴다 — 서비스까지 오지 않는다. 형제
+     * {@code ReleaseBanServiceTest} 와 같은 모양이고, 여기서는 <b>어디서 끊기는지</b>를 그대로
+     * 적는다("거부된다" 만 재면 다음 사람이 그 생성자를 지워도 서비스가 받아 주는 바람에 초록으로
+     * 남는다).
+     *
+     * <p>이 경로에서 그 경계가 한 칸 더 무겁다 — 감사 기록이 {@code actorRole} 을 싣는데 이 경로는
+     * DB 트랜잭션이 없어 그 기록을 <b>조치 뒤에</b> 만든다. 커맨드가 비어 있으면 거기서야 터지고,
+     * 그때는 조치가 이미 수행된 뒤다.
+     */
+    @ParameterizedTest(name = "role=[{0}]")
+    @ValueSource(strings = {"", "   "})
+    @DisplayName("빈 역할은 커맨드 생성에서 거부된다 — 서비스까지 오지 않는다")
+    void blankRoleIsRejectedAtTheCommandBoundary(String role) {
+        assertThatThrownBy(() -> command(sellerId, role))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("actorRole");
+    }
+
+    @Test
+    @DisplayName("역할이 null 이어도 커맨드 생성에서 거부된다")
+    void nullRoleIsRejectedAtTheCommandBoundary() {
+        assertThatThrownBy(() -> command(sellerId, null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * ⭐ <b>감사 쓰기가 실패해도 해제 로그는 남는다</b> — 형제
+     * {@code ReconcileKickListServiceTest} 의 같은 칸과 같은 이유다(리뷰 지적 ㄱ-2). 감사 호출이
+     * 로그보다 앞이면 그 실패 분기에서 "조치는 수행됐고 감사도 로그도 없다" 가 된다.
+     */
+    @Test
+    @DisplayName("⭐ 감사 쓰기가 실패해도 해제 로그는 남는다 — 폴백이 그 로그다")
+    void theActionIsStillLoggedWhenTheAuditWriteFails() {
+        // given
+        roomIs(true);
+        org.mockito.BDDMockito.willThrow(new IllegalStateException("감사 INSERT 실패"))
+                .given(auditRecorder).record(any());
+
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(ClearRoomEndedMarkerService.class);
+        logger.addAppender(appender);
+        try {
+            // when
+            assertThatThrownBy(() -> service.clear(command(sellerId, "SELLER")))
+                    .isInstanceOf(IllegalStateException.class);
+
+            // then
+            assertThat(appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList())
+                    .as("감사도 로그도 없다 — 수행된 조치의 흔적이 어디에도 남지 않았다")
+                    .anySatisfy(message -> assertThat(message).contains("방 종료 마커 해제"));
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 }

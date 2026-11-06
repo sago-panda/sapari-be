@@ -4,14 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * 감사 한 줄의 불변식. <b>조회가 틀린 행을 조용히 빼 간다</b>는 것이 이 단언들의 이유다 —
@@ -31,15 +33,63 @@ class ChatAuditEntryTest {
     }
 
     /**
+     * 대상을 UUID 로 가리키는 행위 / 그렇지 않은 행위. <b>손으로 적은 목록이다</b> — 그래서 아래
+     * {@code theTwoListsCoverEveryAction} 이 이 둘의 합집합을 {@code values()} 와 대조한다.
+     *
+     * <p>왜 {@code requiresTargetId()} 로 분기하지 않는가: 그러면 테스트가 재려는 그 짝을 피검사
+     * 코드에서 읽어 오게 되어, 어느 행위의 짝이 뒤집혀도 테스트가 따라 뒤집힌다. 짝은 손으로
+     * 박고, <b>목록이 전수인지</b>만 구조로 닫는다.
+     */
+    private static final EnumSet<ChatAuditAction> NEEDS_TARGET = EnumSet.of(
+            ChatAuditAction.CHAT_KICK_USER,
+            ChatAuditAction.CHAT_RELEASE_BAN,
+            ChatAuditAction.CHAT_RECONCILE_KICK_LIST,
+            ChatAuditAction.CHAT_CLEAR_ROOM_ENDED_MARKER);
+
+    private static final EnumSet<ChatAuditAction> SPEAKS_THROUGH_DETAIL = EnumSet.of(
+            ChatAuditAction.CHAT_ADD_FILTER_WORD,
+            ChatAuditAction.CHAT_REMOVE_FILTER_WORD);
+
+    static Stream<ChatAuditAction> needsTarget() {
+        return NEEDS_TARGET.stream();
+    }
+
+    static Stream<ChatAuditAction> speaksThroughDetail() {
+        return SPEAKS_THROUGH_DETAIL.stream();
+    }
+
+    /**
+     * ⭐ <b>이 가드의 분모가 대상의 전수와 같은지</b>를 박는다.
+     *
+     * <p>위 두 목록은 손열거이고 오늘 4 + 2 = 6 이 전량이다. 일곱 번째 행위를 더하면 어느 목록에도
+     * 안 들어가 <b>조용히 미검증</b>이 되는데, 그 사실을 말해 주는 것이 아무것도 없었다. 지키는
+     * 대상이 {@code values()} 이므로 분모도 거기에 맞춘다 — 새 행위는 이 칸에서 먼저 걸린다.
+     */
+    @Test
+    @DisplayName("⭐ 두 목록이 행위 전수를 덮는다 — 일곱 번째가 조용히 빠지지 않는다")
+    void theTwoListsCoverEveryAction() {
+        EnumSet<ChatAuditAction> union = EnumSet.copyOf(NEEDS_TARGET);
+        union.addAll(SPEAKS_THROUGH_DETAIL);
+
+        assertThat(union)
+                .as("새 행위가 두 목록 어디에도 없다 — 그 행위의 대상 칸 계약이 재어지지 않는다")
+                .isEqualTo(EnumSet.allOf(ChatAuditAction.class));
+        assertThat(NEEDS_TARGET)
+                .as("한 행위가 두 목록에 다 있다 — 짝이 모순이다")
+                .doesNotContainAnyElementsOf(SPEAKS_THROUGH_DETAIL);
+    }
+
+    /**
      * ⭐ 대상을 요구하는 행위에 {@code targetId} 가 없으면 그 행은 "누가 무언가를 했다" 까지만
      * 말한다. 강퇴·밴 해제·방 조치가 전부 이쪽이다.
      */
     @ParameterizedTest(name = "{0}")
-    @EnumSource(value = ChatAuditAction.class,
-            names = {"CHAT_KICK_USER", "CHAT_RELEASE_BAN", "CHAT_RECONCILE_KICK_LIST",
-                    "CHAT_CLEAR_ROOM_ENDED_MARKER"})
+    @MethodSource("needsTarget")
     @DisplayName("⭐ 대상을 요구하는 행위는 targetId 없이 만들어지지 않는다")
     void anActionThatNeedsATargetRejectsNull(ChatAuditAction action) {
+        assertThat(action.requiresTargetId())
+                .as("이 목록에 있는데 행위는 대상을 요구하지 않는다 — 짝이 갈렸다")
+                .isTrue();
         assertThatThrownBy(() -> entry(action, null, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("targetId");
@@ -50,10 +100,12 @@ class ChatAuditEntryTest {
      * UUID 를 실어도 <b>가리킬 대상이 없다</b> — 그런데 조회는 그것을 대상으로 읽는다.
      */
     @ParameterizedTest(name = "{0}")
-    @EnumSource(value = ChatAuditAction.class,
-            names = {"CHAT_ADD_FILTER_WORD", "CHAT_REMOVE_FILTER_WORD"})
+    @MethodSource("speaksThroughDetail")
     @DisplayName("⭐ 대상을 요구하지 않는 행위에 UUID 를 실으면 거부한다")
     void anActionWithoutATargetRejectsOne(ChatAuditAction action) {
+        assertThat(action.requiresTargetId())
+                .as("이 목록에 있는데 행위가 대상을 요구한다 — 짝이 갈렸다")
+                .isFalse();
         assertThatThrownBy(() -> entry(action, targetId, Map.of("word", "시발")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("targetId");

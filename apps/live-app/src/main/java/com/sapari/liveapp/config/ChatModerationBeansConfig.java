@@ -119,7 +119,6 @@ public class ChatModerationBeansConfig {
      * 감사 기록 쓰기. 들어가는 테이블은 {@code live_schema.audit_logs} 로 <b>도메인 공용</b>이고
      * (정본 DDL 이 "공통 (도메인 전용 outbox / audit)" 아래 두었다) 지금 그 테이블에 쓰는 코드는
      * chat 뿐이다 — 그래서 {@code action} 값에 {@code CHAT_} 접두가 붙는다.
-     *
      */
     @Bean
     public ChatAuditLogRepository chatAuditLogRepository(ChatAuditLogJpaRepository jpaRepository) {

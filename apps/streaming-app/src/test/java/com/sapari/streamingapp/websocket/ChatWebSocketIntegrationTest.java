@@ -370,8 +370,14 @@ class ChatWebSocketIntegrationTest {
             // 못한다 — 세션이 하나뿐이면 그 세션의 HDEL 이 해시의 마지막 필드를 지우고, Redis 는
             // 빈 해시의 키 자체를 없앤다. 실측: clearRoom 단계를 지워도 이 단언이 통과했다.
             // 심은 항목은 HDEL 이 닿지 않는 자리(다른 Pod 가 남긴 잔재)이고, 그걸 걷는 경로는
-            // clearRoom 뿐이다. 값 모양은 운영과 같게 둔다(userId:epochMillis) — 모양이 깨지면
-            // 낡음 판정이 그걸 건너뛰어 이 테스트가 다른 이유로 통과할 수 있다.
+            // clearRoom 뿐이다. 값 모양은 운영과 같게 둔다(userId:epochMillis) — 심은 잔재가
+            // <운영에서 실제로 가능한 모양>이어야 이 테스트가 재는 상태가 실재하는 상태다.
+            //
+            // ⚠️ 여기에 "모양이 깨지면 낡음 판정이 그걸 건너뛰어 다른 이유로 통과할 수 있다" 고
+            // 적었는데 거짓이었다 — 낡음 판정을 쓰는 자리는 생존 사용자 수 집계 <읽기> 하나뿐이고
+            // (ChatSessionRedisRepository), 낡은 필드를 HDEL 하는 수거자는 없다(그 저장소가 직접
+            // "치우지는 않는다 — 제거는 TTL 과 clearRoom 이 맡는다" 고 적는다). clearRoom 은 조건
+            // 없는 키 삭제라, 모양이 깨져도 심은 필드는 남고 이 단언은 여전히 clearRoom 만 통과시킨다.
             redisTemplate.opsForHash()
                     .put(sessionsKey, "stale-session-" + UUID.randomUUID(),
                             UUID.randomUUID() + ":" + System.currentTimeMillis())

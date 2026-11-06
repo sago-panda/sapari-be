@@ -4,8 +4,9 @@ package com.sapari.chat.domain.model;
  * 감사 기록에 남는 관리자·판매자 조치. {@code live_schema.audit_logs.action}(varchar(100)) 에 들어간다.
  *
  * <p><b>이름에 {@code CHAT_} 를 붙이는 이유.</b> 그 테이블은 한 도메인 것이 아니다 — 정본 DDL 이
- * {@code -- 공통 (도메인 전용 outbox / audit)} 아래에 두었고, 같은 모양의 테이블이 <b>도메인 스키마 열 곳
- * 전부</b>에 있다(실측: {@code CREATE TABLE <schema>.audit_logs} 가 10개 마이그레이션 파일).
+ * {@code -- 공통 (도메인 전용 outbox / audit)} 아래에 두었고, 같은 모양의 테이블이 <b>11 스키마 중
+ * 10</b> 에 있다(실측: {@code CREATE TABLE <schema>.audit_logs} 10건 · {@code db/migration}
+ * 디렉터리 11개 · 없는 것은 batch).
  * 지금 이 테이블에 쓰는 것은 chat 뿐이지만(실측: 이 변경 전 저장소 전체 writer 0건) live 가
  * 나중에 자기 조치를 같은 테이블에 적으면 {@code action} 값이 섞인다. 접두가 그 이름 공간을 가른다 — 컬럼을 늘리는
  * 것보다 싸고, 당직자가 {@code action LIKE 'CHAT_%'} 로 한 도메인을 떼어 볼 수 있다.

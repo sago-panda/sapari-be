@@ -14,8 +14,10 @@ import jakarta.persistence.Table;
  * {@code live_schema.audit_logs} 매핑.
  *
  * <p><b>이 테이블은 chat 것이 아니다.</b> 정본 DDL 이 {@code -- 공통 (도메인 전용 outbox / audit)}
- * 아래에 두었고 같은 모양이 네 스키마에 있다. 그런데 live 는 이 테이블을 <b>한 번도 주장하지
- * 않았다</b>(실측: {@code live-core} 에 audit·outbox 엔티티 0건, 저장소 전체 writer 0건). 그래서
+ * 아래에 두었고 같은 모양이 <b>11 스키마 중 10</b> 에 있다(실측:
+ * {@code CREATE TABLE <schema>.audit_logs} 10건 · {@code db/migration} 디렉터리 11개 · 없는 것은
+ * batch). 그런데 live 는 이 테이블을 <b>한 번도 주장하지 않았다</b>(실측: {@code live-core} 에
+ * audit·outbox 엔티티 0건, 저장소 전체 writer 0건). 그래서
  * 지금 쓰는 쪽인 chat 이 매핑을 갖는다 — {@code chat_ban}·{@code chat_kick_log}·
  * {@code chat_filter_word} 도 같은 모양으로 {@code live_schema} 를 명시한다.
  *

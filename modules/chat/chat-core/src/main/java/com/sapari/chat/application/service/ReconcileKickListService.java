@@ -89,18 +89,6 @@ public class ReconcileKickListService implements ReconcileKickListUseCase {
         List<UUID> kicked = kickLogRepository.findKickedUserIds(command.roomId());
         boolean wasCorrupted = kickWriteRepository.reconcile(command.roomId(), kicked);
 
-        // 조치가 성공한 뒤에 적는다 — 이 경로는 Redis 만 쓰므로 감사 쓰기가 합류할 트랜잭션이
-        // 없고(그래서 자기 경계를 가진 빈을 쓴다), 먼저 적으면 일어나지 않은 재적재가 기록에 남는다.
-        //
-        // detail 의 두 수가 이 조치의 전부다. 미러는 과거를 들고 있지 않으므로 "몇 명을 되깔았나"와
-        // "키가 우리 타입이 아니었나(= 집행이 꺼져 있었다)"는 이 행 말고 어디서도 읽을 수 없다.
-        auditRecorder.record(new ChatAuditEntry(
-                command.actorId(), actorRole, ChatAuditAction.CHAT_RECONCILE_KICK_LIST,
-                command.roomId(),
-                Map.of("restored", Integer.toString(kicked.size()),
-                        "wasCorrupted", Boolean.toString(wasCorrupted)),
-                timeProvider.now()));
-
         // 재적재는 운영자가 "집행이 꺼져 있다" 를 보고 누르는 것이라, 눌렀다는 사실과 그 결과가
         // 남아야 한다. 0 건도 결과다 — 그 방에 강퇴 기록이 없었다는 뜻이고, 그걸 안 남기면
         // 운영자는 "복구에 실패한 것" 과 "복구할 것이 없던 것" 을 구분할 수 없다.
@@ -116,6 +104,22 @@ public class ReconcileKickListService implements ReconcileKickListUseCase {
             log.info("강퇴 명단 재적재 — roomId={} 복원={}명 actor={}",
                     command.roomId(), kicked.size(), command.actorId());
         }
+        // 조치가 성공한 뒤에 적는다 — 이 경로는 Redis 만 쓰므로 감사 쓰기가 합류할 트랜잭션이
+        // 없고(그래서 자기 경계를 가진 빈을 쓴다), 먼저 적으면 일어나지 않은 재적재가 기록에 남는다.
+        //
+        // ⚠️ <로그보다 뒤>다. 감사 쓰기는 예외를 삼키지 않으므로 그것이 실패하면 요청이 500 이
+        // 되는데, 위에 두면 그 분기에서 로그까지 함께 사라져 "조치는 됐고 아무 흔적도 없다" 가 된다.
+        // 뒤에 두면 같은 실패에서 로그는 남는다 — 감사 행의 폴백이 그 로그다.
+        //
+        // detail 의 두 수가 이 조치의 전부다. 미러는 과거를 들고 있지 않으므로 "몇 명을 되깔았나"와
+        // "키가 우리 타입이 아니었나(= 집행이 꺼져 있었다)"는 이 행 말고 어디서도 읽을 수 없다.
+        auditRecorder.record(new ChatAuditEntry(
+                command.actorId(), actorRole, ChatAuditAction.CHAT_RECONCILE_KICK_LIST,
+                command.roomId(),
+                Map.of("restored", Integer.toString(kicked.size()),
+                        "wasCorrupted", Boolean.toString(wasCorrupted)),
+                timeProvider.now()));
+
         return new ReconcileOutcome(kicked.size(), wasCorrupted);
     }
 }
