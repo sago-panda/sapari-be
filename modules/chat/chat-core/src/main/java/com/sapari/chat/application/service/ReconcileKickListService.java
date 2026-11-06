@@ -1,16 +1,20 @@
 package com.sapari.chat.application.service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import com.sapari.chat.command.ReconcileKickListCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.port.ReconcileKickListUseCase;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 import com.sapari.chat.port.ReconcileKickListUseCase.ReconcileOutcome;
@@ -46,6 +50,8 @@ public class ReconcileKickListService implements ReconcileKickListUseCase {
     private final GetLiveRoomUseCase liveRoomReader;
     private final ChatKickLogRepository kickLogRepository;
     private final ChatKickWriteRepository kickWriteRepository;
+    private final ChatAuditRecorder auditRecorder;
+    private final TimeProvider timeProvider;
 
     @Override
     public ReconcileOutcome reconcile(ReconcileKickListCommand command) {
@@ -82,6 +88,18 @@ public class ReconcileKickListService implements ReconcileKickListUseCase {
 
         List<UUID> kicked = kickLogRepository.findKickedUserIds(command.roomId());
         boolean wasCorrupted = kickWriteRepository.reconcile(command.roomId(), kicked);
+
+        // 조치가 성공한 뒤에 적는다 — 이 경로는 Redis 만 쓰므로 감사 쓰기가 합류할 트랜잭션이
+        // 없고(그래서 자기 경계를 가진 빈을 쓴다), 먼저 적으면 일어나지 않은 재적재가 기록에 남는다.
+        //
+        // detail 의 두 수가 이 조치의 전부다. 미러는 과거를 들고 있지 않으므로 "몇 명을 되깔았나"와
+        // "키가 우리 타입이 아니었나(= 집행이 꺼져 있었다)"는 이 행 말고 어디서도 읽을 수 없다.
+        auditRecorder.record(new ChatAuditEntry(
+                command.actorId(), actorRole, ChatAuditAction.CHAT_RECONCILE_KICK_LIST,
+                command.roomId(),
+                Map.of("restored", Integer.toString(kicked.size()),
+                        "wasCorrupted", Boolean.toString(wasCorrupted)),
+                timeProvider.now()));
 
         // 재적재는 운영자가 "집행이 꺼져 있다" 를 보고 누르는 것이라, 눌렀다는 사실과 그 결과가
         // 남아야 한다. 0 건도 결과다 — 그 방에 강퇴 기록이 없었다는 뜻이고, 그걸 안 남기면

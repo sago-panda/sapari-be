@@ -26,6 +26,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.command.ReleaseBanCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.Released;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
@@ -71,7 +72,7 @@ class ReleaseBanServiceTest {
     @DisplayName("⭐ 정본을 먼저 지우고 그 다음 미러를 지운다 — 반대 순서는 밴을 되살린다")
     void deletesTheSourceOfTruthBeforeTheMirror() {
         // given
-        given(releaseRecorder.release(targetUserId, actorId, NOW))
+        given(releaseRecorder.release(targetUserId, actorId, ChatRole.ADMIN, NOW))
                 .willReturn(new Released(true, null, UUID.randomUUID()));
 
         // when
@@ -79,7 +80,7 @@ class ReleaseBanServiceTest {
 
         // then: 미러가 먼저 지워지면 남은 정본 행이 다음 강퇴의 조기 반환에서 미러에 다시 써진다
         InOrder order = inOrder(releaseRecorder, banWriteRepository);
-        order.verify(releaseRecorder).release(targetUserId, actorId, NOW);
+        order.verify(releaseRecorder).release(targetUserId, actorId, ChatRole.ADMIN, NOW);
         order.verify(banWriteRepository).releaseMirror(targetUserId);
     }
 
@@ -87,7 +88,7 @@ class ReleaseBanServiceTest {
     @DisplayName("⭐ 풀 밴이 없어도 미러를 지운다 — 게이팅하면 재시도가 미러에 닿지 못한다")
     void deletesTheMirrorEvenWhenNoRowWasRemoved() {
         // given: 정본은 이미 지워졌고 미러 삭제만 실패한 뒤의 재시도가 이 모양이다
-        given(releaseRecorder.release(targetUserId, actorId, NOW))
+        given(releaseRecorder.release(targetUserId, actorId, ChatRole.ADMIN, NOW))
                 .willReturn(new Released(false, null, null));
 
         // when
@@ -104,7 +105,7 @@ class ReleaseBanServiceTest {
     @DisplayName("미러 삭제가 실패하면 명령도 실패한다 — 미러가 남은 해제는 아무도 풀지 못한 해제다")
     void propagatesMirrorFailure() {
         // given
-        given(releaseRecorder.release(targetUserId, actorId, NOW))
+        given(releaseRecorder.release(targetUserId, actorId, ChatRole.ADMIN, NOW))
                 .willReturn(new Released(true, null, UUID.randomUUID()));
         willThrow(new IllegalStateException("Redis 장애"))
                 .given(banWriteRepository).releaseMirror(targetUserId);
@@ -142,7 +143,7 @@ class ReleaseBanServiceTest {
     void contentionIsTranslatedToARetryableFailure(RuntimeException contention) {
         // given
         org.mockito.BDDMockito.willThrow(contention)
-                .given(releaseRecorder).release(targetUserId, actorId, NOW);
+                .given(releaseRecorder).release(targetUserId, actorId, ChatRole.ADMIN, NOW);
 
         // when & then
         assertThatThrownBy(() -> service.release(command("ADMIN")))
@@ -169,7 +170,7 @@ class ReleaseBanServiceTest {
     @Test
     @DisplayName("⭐ 미러 삭제의 경합도 409 다 — 정본 축과 같은 등급으로 나간다")
     void mirrorContentionIsTranslatedToARetryableFailure() {
-        given(releaseRecorder.release(targetUserId, actorId, NOW))
+        given(releaseRecorder.release(targetUserId, actorId, ChatRole.ADMIN, NOW))
                 .willReturn(new Released(true, null, UUID.randomUUID()));
         willThrow(new org.springframework.dao.QueryTimeoutException("Redis 명령 상한 초과"))
                 .given(banWriteRepository).releaseMirror(targetUserId);
@@ -195,7 +196,7 @@ class ReleaseBanServiceTest {
         assertThatThrownBy(() -> service.release(command(role)))
                 .isInstanceOf(ChatPermissionDeniedException.class);
 
-        verify(releaseRecorder, never()).release(any(), any(), any());
+        verify(releaseRecorder, never()).release(any(), any(), any(), any());
         verify(banWriteRepository, never()).releaseMirror(any());
     }
 
@@ -208,7 +209,7 @@ class ReleaseBanServiceTest {
                 .isInstanceOf(ChatPermissionDeniedException.class)
                 .hasMessageContaining("알 수 없는 역할");
 
-        verify(releaseRecorder, never()).release(any(), any(), any());
+        verify(releaseRecorder, never()).release(any(), any(), any(), any());
     }
 
     /**

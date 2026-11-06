@@ -2,14 +2,18 @@ package com.sapari.chat.application.service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatBanTier;
 import com.sapari.chat.domain.model.ChatKickLog;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
@@ -64,6 +68,7 @@ public class ChatKickRecorder {
 
     private final ChatKickLogRepository kickLogRepository;
     private final ChatBanStateRepository banStateRepository;
+    private final ChatAuditLogRepository auditLogRepository;
 
     /**
      * 강퇴를 기록하고, 필요하면 밴으로 올린다. <b>Redis는 건드리지 않는다.</b>
@@ -102,6 +107,13 @@ public class ChatKickRecorder {
      * <p>자원이 하나 더 늘면 그 순서를 지키거나 사이클이 없음을 따로 보여야 한다 — 어긴 것을 알아채는
      * 시점은 운영에서 {@code 40P01}이 뜰 때다.
      *
+     * <p><b>감사 테이블이 네 번째 자원으로 들어왔다</b>({@code live_schema.audit_logs}). 그 요구를
+     * 여기서 치른다 — 순서를 지키는 쪽이 아니라 <b>사이클에 들어갈 수 없음</b>을 보이는 쪽이다.
+     * 그 테이블은 정본 DDL 에 유니크 제약도 외래키도 없고 PK 가 {@code gen_random_uuid()} 기본값이라,
+     * 동시 INSERT 두 개가 겨룰 행이 애초에 없다 — 다른 트랜잭션이 이 쓰기를 <b>기다리는 자리</b>가
+     * 없으므로 사이클의 변이 생기지 않는다. 그 테이블에 유니크 제약이나 외래키가 붙는 날 이 근거가
+     * 사라지고, 그때는 순서를 지키는 쪽으로 돌아와야 한다.
+     *
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = TRANSACTION_TIMEOUT_SECONDS)
@@ -135,6 +147,13 @@ public class ChatKickRecorder {
         // 너무 늦다. 이 트랜잭션의 상한은 그와 별개로 "전체가 무한히 돌지 않게"를 맡는다. 둘 다
         // 있어야 실패가 '대기'가 아니라 '재시도할 수 있는 예외'가 된다.
         boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
+
+        // 감사 한 줄을 같은 트랜잭션에 적는다 — 커밋된 조치에 흔적이 없으면 안 된다.
+        //
+        // 아래 조기 반환보다 앞에 둔다. 그 둘은 "쓸 행이 없다"로 빠지는 길이지만 조치는 수행됐고,
+        // 특히 같은 방 중복 강퇴는 (user, room) 유니크에 막혀 정본에 아무 흔적을 남기지 않는다 —
+        // 두 번째로 누른 사실이 남는 자리가 이 행뿐이다.
+        auditLogRepository.append(auditEntry(kickLog, firstKickInThisRoom));
 
         Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);
         if (active.isPresent()) {
@@ -174,5 +193,27 @@ public class ChatKickRecorder {
                     }
                     return write.effective();
                 });
+    }
+
+    /**
+     * 감사 한 줄을 <b>강퇴 로그에서만</b> 만든다 — 행위자·역할·대상·방·시각이 모두 거기 있으므로
+     * 인자를 따로 받지 않는다. 같은 값을 두 번 받으면 갈릴 수 있다는 판단은 이 클래스가
+     * {@code kickedAt} 에 대해 이미 적어 둔 것과 같다.
+     *
+     * <p>{@code detail} 에 두 가지가 들어간다. <b>방</b>은 감사 행의 다른 칸이 말하지 않는다 —
+     * {@code target_id} 는 강퇴당한 사람이고, 어느 방에서 벌어졌는지는 이 칸이 유일하다.
+     * <b>{@code kickLogWritten}</b> 은 정본에 행이 생겼는지다 — {@code false} 면 같은 방에서 이미
+     * 강퇴당한 사람을 다시 누른 것이라 {@code chat_kick_log} 에 아무것도 늘지 않았고, 그 행과
+     * 이 감사 행의 개수가 어긋나는 이유가 여기 적혀 있어야 "기록이 빠졌다"로 읽히지 않는다.
+     */
+    private static ChatAuditEntry auditEntry(ChatKickLog kickLog, boolean kickLogWritten) {
+        return new ChatAuditEntry(
+                kickLog.kickedById(),
+                kickLog.kickedByRole(),
+                ChatAuditAction.CHAT_KICK_USER,
+                kickLog.targetUserId(),
+                Map.of("roomId", kickLog.roomId().toString(),
+                        "kickLogWritten", Boolean.toString(kickLogWritten)),
+                kickLog.kickedAt());
     }
 }

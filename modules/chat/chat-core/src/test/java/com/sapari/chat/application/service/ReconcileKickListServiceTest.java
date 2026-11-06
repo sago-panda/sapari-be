@@ -5,10 +5,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import java.util.List;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -17,14 +22,21 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.command.ReconcileKickListCommand;
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
+import com.sapari.chat.application.service.ChatAuditRecorder;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 
@@ -44,12 +56,16 @@ import com.sapari.live.view.LiveRoomView;
 @DisplayName("ReconcileKickListService — 정본이 입력이고 ADMIN 만 부른다")
 class ReconcileKickListServiceTest {
 
+    private static final Instant NOW = Instant.parse("2026-11-06T03:00:00Z");
+
     @Mock
     private GetLiveRoomUseCase liveRoomReader;
     @Mock
     private ChatKickLogRepository kickLogRepository;
     @Mock
     private ChatKickWriteRepository kickWriteRepository;
+    @Mock
+    private ChatAuditRecorder auditRecorder;
 
     private ReconcileKickListService service;
 
@@ -59,7 +75,8 @@ class ReconcileKickListServiceTest {
     @BeforeEach
     void setUp() {
         service = new ReconcileKickListService(
-                new ChatPermissionPolicy(), liveRoomReader, kickLogRepository, kickWriteRepository);
+                new ChatPermissionPolicy(), liveRoomReader, kickLogRepository, kickWriteRepository,
+                auditRecorder, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
         // 기본은 "진행 중인 방". 상류 게이트에 닿는 모든 테스트가 이걸 쓰지만 권한에서 끝나는
         // 테스트는 안 쓰므로 lenient 다.
         org.mockito.Mockito.lenient().when(liveRoomReader.findRoom(roomId))
@@ -84,6 +101,63 @@ class ReconcileKickListServiceTest {
         // then
         assertThat(outcome.restored()).isEqualTo(2);
         verify(kickWriteRepository).reconcile(eq(roomId), eq(fromSourceOfTruth));
+    }
+
+    /**
+     * ⭐ 재적재가 감사 한 줄을 남긴다. {@code detail} 의 두 수가 이 조치의 전부다 — 미러는 과거를
+     * 들고 있지 않아서 "몇 명을 되깔았나" 와 "키가 우리 타입이 아니었나(= 집행이 꺼져 있었다)" 를
+     * 이 행 말고 어디서도 읽을 수 없다.
+     *
+     * <p>이 경로는 DB 트랜잭션이 없어 감사가 자기 경계를 가진다 — 그래서 <b>조치가 성공한 뒤</b>에
+     * 적고, 순서가 뒤집히면 일어나지 않은 재적재가 기록에 남는다.
+     */
+    @Test
+    @DisplayName("⭐ 재적재가 감사 한 줄을 남긴다 — 되깐 수와 오염 여부가 그 행에만 있다")
+    void aSuccessfulReconcileIsAudited() {
+        // given: 오염된 키를 고쳤다
+        given(kickLogRepository.findKickedUserIds(roomId))
+                .willReturn(List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()));
+        given(kickWriteRepository.reconcile(eq(roomId), any())).willReturn(true);
+
+        // when
+        service.reconcile(command("ADMIN"));
+
+        // then
+        ArgumentCaptor<ChatAuditEntry> captor = ArgumentCaptor.forClass(ChatAuditEntry.class);
+        InOrder order = inOrder(kickWriteRepository, auditRecorder);
+        order.verify(kickWriteRepository).reconcile(eq(roomId), any());
+        order.verify(auditRecorder).record(captor.capture());
+        // 횟수를 박는다. ⚠️ 위 순서 단언만으로는 <쓰기 앞에 한 줄 더 적는> 변경을 못 잡는다 —
+        // 실측: 재적재 전에 append 를 하나 더 넣으면 뒤의 호출이 그 순서를 만족시켜 11건 전부
+        // 초록이었다. 순서는 자료 의존으로도 강제된다(wasCorrupted 는 쓰기 뒤에만 있다).
+        verify(auditRecorder, times(1)).record(any());
+
+        ChatAuditEntry entry = captor.getValue();
+        assertThat(entry.action()).isEqualTo(ChatAuditAction.CHAT_RECONCILE_KICK_LIST);
+        assertThat(entry.actorId()).isEqualTo(actorId);
+        assertThat(entry.actorRole()).isEqualTo(ChatRole.ADMIN);
+        assertThat(entry.targetId()).isEqualTo(roomId);
+        assertThat(entry.occurredAt()).isEqualTo(NOW);
+        assertThat(entry.detail())
+                .containsEntry("restored", "3")
+                .containsEntry("wasCorrupted", "true");
+    }
+
+    /** 거부된 요청은 감사에 남지 않는다 — 조치가 수행되지 않았다. */
+    @Test
+    @DisplayName("거부는 감사에 남지 않는다 — 끝난 방·권한 없음 모두")
+    void aRefusalIsNotAudited() {
+        // given: 끝난 방
+        given(liveRoomReader.findRoom(roomId)).willReturn(java.util.Optional.of(
+                new LiveRoomView(roomId, UUID.randomUUID(), false, java.time.Instant.EPOCH)));
+
+        // when & then
+        assertThatThrownBy(() -> service.reconcile(command("ADMIN")))
+                .isInstanceOf(com.sapari.chat.domain.exception.LiveNotActiveException.class);
+        assertThatThrownBy(() -> service.reconcile(command("SELLER")))
+                .isInstanceOf(ChatPermissionDeniedException.class);
+
+        verify(auditRecorder, never()).record(any());
     }
 
     @Test

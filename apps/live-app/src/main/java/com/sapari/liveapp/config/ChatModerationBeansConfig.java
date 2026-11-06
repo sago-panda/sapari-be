@@ -10,13 +10,17 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
 import com.sapari.chat.application.port.ProfanityFilterFactory;
+import com.sapari.chat.application.service.ChatAuditRecorder;
 import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
 import com.sapari.chat.application.service.ManageFilterWordsService;
 import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
 import com.sapari.chat.port.ManageFilterWordsUseCase;
 import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
 import com.sapari.chat.application.service.ProfanityDictionaryPublishService;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogJpaRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordRepositoryImpl;
 import com.sapari.chat.infrastructure.redis.ProfanityDictionarySnapshotRedisPublisher;
@@ -109,6 +113,26 @@ public class ChatModerationBeansConfig {
     @Bean
     public ChatBanStateRepository chatBanStateRepository(ChatBanJpaRepository jpaRepository) {
         return new ChatBanStateRepositoryImpl(jpaRepository);
+    }
+
+    /**
+     * 감사 기록 쓰기. 들어가는 테이블은 {@code live_schema.audit_logs} 로 <b>도메인 공용</b>이고
+     * (정본 DDL 이 "공통 (도메인 전용 outbox / audit)" 아래 두었다) 지금 그 테이블에 쓰는 코드는
+     * chat 뿐이다 — 그래서 {@code action} 값에 {@code CHAT_} 접두가 붙는다.
+     *
+     */
+    @Bean
+    public ChatAuditLogRepository chatAuditLogRepository(ChatAuditLogJpaRepository jpaRepository) {
+        return new ChatAuditLogRepositoryImpl(jpaRepository);
+    }
+
+    /**
+     * 감사 한 줄에 트랜잭션 경계만 주는 빈 — <b>DB 트랜잭션이 없는 조치 둘</b>(강퇴 명단 재적재·
+     * 종료 마커 해제)이 쓴다. 나머지 셋은 자기 recorder 의 트랜잭션 안에서 저장소를 직접 부른다.
+     */
+    @Bean
+    public ChatAuditRecorder chatAuditRecorder(ChatAuditLogRepository auditLogRepository) {
+        return new ChatAuditRecorder(auditLogRepository);
     }
 
     /**
@@ -212,8 +236,9 @@ public class ChatModerationBeansConfig {
      * ({@code @Modifying} 쿼리가 트랜잭션을 요구하고, 자기 호출은 프록시를 타지 않는다).
      */
     @Bean
-    public ChatFilterWordWriteRecorder chatFilterWordWriteRecorder(ChatFilterWordRepository repository) {
-        return new ChatFilterWordWriteRecorder(repository);
+    public ChatFilterWordWriteRecorder chatFilterWordWriteRecorder(
+            ChatFilterWordRepository repository, ChatAuditLogRepository auditLogRepository) {
+        return new ChatFilterWordWriteRecorder(repository, auditLogRepository);
     }
 
     /**
@@ -226,9 +251,10 @@ public class ChatModerationBeansConfig {
             ChatFilterWordRepository repository,
             ChatFilterWordWriteRecorder writeRecorder,
             ProfanityDictionaryPublishService publishService,
-            ProfanityFilterFactory filterFactory) {
-        return new ManageFilterWordsService(
-                permissionPolicy, repository, writeRecorder, publishService, filterFactory);
+            ProfanityFilterFactory filterFactory,
+            TimeProvider timeProvider) {
+        return new ManageFilterWordsService(permissionPolicy, repository, writeRecorder,
+                publishService, filterFactory, timeProvider);
     }
 
     @Bean
@@ -265,8 +291,9 @@ public class ChatModerationBeansConfig {
      */
     @Bean
     public ChatKickRecorder chatKickRecorder(ChatKickLogRepository kickLogRepository,
-                                             ChatBanStateRepository banStateRepository) {
-        return new ChatKickRecorder(kickLogRepository, banStateRepository);
+                                             ChatBanStateRepository banStateRepository,
+                                             ChatAuditLogRepository auditLogRepository) {
+        return new ChatKickRecorder(kickLogRepository, banStateRepository, auditLogRepository);
     }
 
     @Bean
@@ -288,8 +315,9 @@ public class ChatModerationBeansConfig {
      * 밴 해제의 DB 쓰기를 감싸는 트랜잭션 빈 — 위 {@code chatKickRecorder}와 같은 이유로 별도 빈이다.
      */
     @Bean
-    public ChatBanReleaseRecorder chatBanReleaseRecorder(ChatBanStateRepository banStateRepository) {
-        return new ChatBanReleaseRecorder(banStateRepository);
+    public ChatBanReleaseRecorder chatBanReleaseRecorder(ChatBanStateRepository banStateRepository,
+                                                         ChatAuditLogRepository auditLogRepository) {
+        return new ChatBanReleaseRecorder(banStateRepository, auditLogRepository);
     }
 
     /**
@@ -320,9 +348,11 @@ public class ChatModerationBeansConfig {
     public ReconcileKickListUseCase reconcileKickListUseCase(ChatPermissionPolicy permissionPolicy,
                                                              GetLiveRoomUseCase liveRoomReader,
                                                              ChatKickLogRepository kickLogRepository,
-                                                             ChatKickWriteRepository kickWriteRepository) {
-        return new ReconcileKickListService(
-                permissionPolicy, liveRoomReader, kickLogRepository, kickWriteRepository);
+                                                             ChatKickWriteRepository kickWriteRepository,
+                                                             ChatAuditRecorder auditRecorder,
+                                                             TimeProvider timeProvider) {
+        return new ReconcileKickListService(permissionPolicy, liveRoomReader, kickLogRepository,
+                kickWriteRepository, auditRecorder, timeProvider);
     }
 
     /**
@@ -338,7 +368,10 @@ public class ChatModerationBeansConfig {
     @Bean
     public ClearRoomEndedMarkerUseCase clearRoomEndedMarkerUseCase(
             GetLiveRoomUseCase liveRoomReader,
-            ChatRoomEndedWriteRepository roomEndedWriteRepository) {
-        return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository);
+            ChatRoomEndedWriteRepository roomEndedWriteRepository,
+            ChatAuditRecorder auditRecorder,
+            TimeProvider timeProvider) {
+        return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository,
+                auditRecorder, timeProvider);
     }
 }

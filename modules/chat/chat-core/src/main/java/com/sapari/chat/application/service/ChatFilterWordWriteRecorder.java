@@ -1,10 +1,16 @@
 package com.sapari.chat.application.service;
 
+import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.FilterWordKind;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -56,16 +62,47 @@ import lombok.RequiredArgsConstructor;
 public class ChatFilterWordWriteRecorder {
 
     private final ChatFilterWordRepository repository;
+    private final ChatAuditLogRepository auditLogRepository;
 
     /** @return 실제로 새로 들어갔는가. {@code false} 는 이미 있었다는 뜻이고 오류가 아니다 */
     @Transactional
-    public boolean add(FilterWordKind kind, String word, UUID actorId) {
-        return repository.add(kind, word, actorId);
+    public boolean add(FilterWordKind kind, String word, UUID actorId, ChatRole actorRole,
+                       Instant now) {
+        boolean changed = repository.add(kind, word, actorId);
+        auditLogRepository.append(auditEntry(
+                ChatAuditAction.CHAT_ADD_FILTER_WORD, kind, word, changed, actorId, actorRole, now));
+        return changed;
     }
 
     /** @return 실제로 지워졌는가. {@code false} 는 없었다는 뜻이고 오류가 아니다 */
     @Transactional
-    public boolean remove(FilterWordKind kind, String word) {
-        return repository.remove(kind, word);
+    public boolean remove(FilterWordKind kind, String word, UUID actorId, ChatRole actorRole,
+                          Instant now) {
+        boolean changed = repository.remove(kind, word);
+        auditLogRepository.append(auditEntry(
+                ChatAuditAction.CHAT_REMOVE_FILTER_WORD, kind, word, changed, actorId, actorRole, now));
+        return changed;
+    }
+
+    /**
+     * 감사 한 줄. 이 두 조치는 <b>대상을 UUID 로 가리킬 수 없다</b> — 사전의 식별자는 단어
+     * 문자열이고, 제거는 정본 행을 지우므로 그 행 UUID 를 남겨도 가리킬 대상이 없다. 그래서
+     * {@code target_id} 를 비우고 {@code detail} 이 무엇이었는지를 싣는다
+     * ({@link com.sapari.chat.domain.model.ChatAuditAction} 이 그 짝을 들고 있다).
+     *
+     * <p><b>항목을 평문으로 적는다.</b> 로그 쪽은 길이만 찍는데 그 근거는 민감도가 아니라 한 줄의
+     * 분량이다(상한 없이 전량이 걸렸을 때 35,966자 — {@code ProfanityFilterFactory} 의 상수가 그
+     * 측정을 적어 둔다). 감사 행은 한 조치가 한 줄이고, 평문이 없으면 제거 조치의 감사가 답해야
+     * 하는 유일한 질문에 답을 못 한다.
+     *
+     * <p>{@code changed} 를 싣는 이유: 거짓이면 정본이 그대로다(추가는 이미 있었고 제거는 없었다).
+     * 그 칸이 없으면 "감사에는 제거가 있는데 단어가 그대로" 가 기록 누락처럼 읽힌다.
+     */
+    private static ChatAuditEntry auditEntry(ChatAuditAction action, FilterWordKind kind,
+                                             String word, boolean changed, UUID actorId,
+                                             ChatRole actorRole, Instant now) {
+        return new ChatAuditEntry(actorId, actorRole, action, null,
+                Map.of("kind", kind.name(), "word", word, "changed", Boolean.toString(changed)),
+                now);
     }
 }

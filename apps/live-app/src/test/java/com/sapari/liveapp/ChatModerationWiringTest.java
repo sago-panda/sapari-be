@@ -261,7 +261,12 @@ class ChatModerationWiringTest {
                 // 사전 관리(ADMIN). 쓰기 선검사가 사전의 <문>을 쓰므로 그 구현도 이 앱에 있다 —
                 // 번들·설정·전파가 지나는 문과 같아야 하기 때문이다.
                 "DictionaryProfanityFilterFactory", "ChatFilterWordWriteRecorder",
-                "ManageFilterWordsService");
+                "ManageFilterWordsService",
+                // 감사 기록. 들어가는 테이블(live_schema.audit_logs)은 도메인 공용인데 쓰는 코드는
+                // chat 뿐이다 — 그래서 action 값에 CHAT_ 접두가 붙는다. 경계 빈이 따로 있는 것은
+                // DB 트랜잭션이 없는 조치 둘(명단 재적재·종료 마커 해제) 때문이고, 나머지 셋은
+                // 자기 recorder 의 트랜잭션 안에서 저장소를 직접 부른다.
+                "ChatAuditLogRepositoryImpl", "ChatAuditRecorder");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())

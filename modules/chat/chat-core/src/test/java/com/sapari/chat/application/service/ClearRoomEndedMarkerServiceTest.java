@@ -1,5 +1,6 @@
 package com.sapari.chat.application.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -7,7 +8,9 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -17,13 +20,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.command.ClearRoomEndedMarkerCommand;
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
+import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 
@@ -49,6 +57,8 @@ class ClearRoomEndedMarkerServiceTest {
     private GetLiveRoomUseCase liveRoomReader;
     @Mock
     private ChatRoomEndedWriteRepository roomEndedWriteRepository;
+    @Mock
+    private ChatAuditRecorder auditRecorder;
 
     private ClearRoomEndedMarkerService service;
 
@@ -57,7 +67,8 @@ class ClearRoomEndedMarkerServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository);
+        service = new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository,
+                auditRecorder, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
     private ClearRoomEndedMarkerCommand command(UUID actorId, String role) {
@@ -94,6 +105,75 @@ class ClearRoomEndedMarkerServiceTest {
 
         // then
         verify(roomEndedWriteRepository).clearEnded(roomId);
+    }
+
+    /**
+     * ⭐ 해제가 성공하면 감사 한 줄이 남는다.
+     *
+     * <p>{@code detail} 이 비어 있는 것이 이 행위의 모양이다 — 방은 {@code targetId} 가 가리키므로
+     * 더 실을 것이 없다. 비는 경로가 실제로 있다는 사실이 어댑터에서 따로 측정된다
+     * ({@code ChatAuditLogRepositoryImplTest}: {@code CAST(NULL AS jsonb)} 가 통하는가).
+     */
+    @Test
+    @DisplayName("⭐ 해제가 성공하면 감사 한 줄이 남는다 — detail 은 비어 있다")
+    void aSuccessfulClearIsAudited() {
+        // given
+        roomIs(true);
+
+        // when
+        service.clear(command(sellerId, "SELLER"));
+
+        // then
+        ArgumentCaptor<ChatAuditEntry> captor = ArgumentCaptor.forClass(ChatAuditEntry.class);
+        verify(auditRecorder).record(captor.capture());
+        ChatAuditEntry entry = captor.getValue();
+        assertThat(entry.action()).isEqualTo(ChatAuditAction.CHAT_CLEAR_ROOM_ENDED_MARKER);
+        assertThat(entry.actorId()).isEqualTo(sellerId);
+        assertThat(entry.actorRole()).isEqualTo(ChatRole.SELLER);
+        assertThat(entry.targetId()).isEqualTo(roomId);
+        assertThat(entry.detail()).isNull();
+        assertThat(entry.occurredAt()).isEqualTo(NOW);
+    }
+
+    /**
+     * ⭐ <b>되돌려진 조치는 감사에 남지 않는다.</b>
+     *
+     * <p>지운 뒤 다시 물어 방이 끝나 있으면 마커를 되세우고 거부한다 — 그 요청은 해제가 아니었다.
+     * 감사 쓰기를 삭제 직후에 두면 이 경로에서 "수행됨" 이 남고, 일어나지 않은 조치가 기록에 남는
+     * 쪽이 비는 쪽보다 나쁜 거짓이다({@code ChatAuditEntry} javadoc).
+     *
+     * <p>이 경로 자체도 여기서 처음 측정된다 — {@code markEndedAgain} 을 거는 테스트가 없었다.
+     */
+    @Test
+    @DisplayName("⭐ 지우는 사이에 방이 끝나면 마커를 되세우고 감사도 남기지 않는다")
+    void aRevertedClearIsNotAudited() {
+        // given: 첫 읽기는 진행 중, 지운 뒤 다시 읽을 때는 끝나 있다
+        given(liveRoomReader.findRoom(roomId))
+                .willReturn(Optional.of(new LiveRoomView(roomId, sellerId, true, NOW)))
+                .willReturn(Optional.of(new LiveRoomView(roomId, sellerId, false, NOW)));
+
+        // when & then
+        assertThatThrownBy(() -> service.clear(command(sellerId, "SELLER")))
+                .isInstanceOf(LiveNotActiveException.class)
+                .hasMessageContaining("되돌렸다");
+
+        verify(roomEndedWriteRepository).clearEnded(roomId);
+        verify(roomEndedWriteRepository).markEndedAgain(roomId);
+        verify(auditRecorder, never()).record(any());
+    }
+
+    /** 거부된 요청은 감사에 남지 않는다 — 조치가 수행되지 않았다. */
+    @Test
+    @DisplayName("끝난 방 거부는 감사에 남지 않는다")
+    void aRefusalIsNotAudited() {
+        // given
+        roomIs(false);
+
+        // when & then
+        assertThatThrownBy(() -> service.clear(command(sellerId, "SELLER")))
+                .isInstanceOf(LiveNotActiveException.class);
+
+        verify(auditRecorder, never()).record(any());
     }
 
     /**
