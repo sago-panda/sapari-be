@@ -35,6 +35,11 @@ import reactor.test.StepVerifier;
  * {@code SendChatServiceTest} 가 그대로 통과했다). 번역이 끊기면 서비스는 분류를 못 하고
  * {@code chat.persist.timeout} 이 영원히 0 이 되는데, 그 상태가 "상한이 안 걸린다" 와 구분되지 않는다.
  *
+ * <p><b>재조회 갈래는 여기서 재지 않는다.</b> {@code recoverDuplicate} 의 되읽기도 같은 전역
+ * 상한에 걸리지만 번역하지 않는다 — 그 경로의 전제가 DuplicateKey 라 문서가 <b>이미 있고</b>,
+ * 그걸 "아무것도 남지 않았다" 로 세면 이력에 있는 메시지를 유실로 보고한다. 이유와 잃는 것은
+ * {@code ChatMessageRepositoryImpl.findByRoomIdAndSenderIdAndClientMsgId} 에 적어 두었다.
+ *
  * <p>체인을 그대로 조립해 넣는 이유도 같다. CSOT 가 자를 때 오는 것은 전용 타입 하나가 아니라
  * 네 겹이고(실측, 드라이버 5.6.5), 판정 지점이 <b>깊이 1</b> 이다 —
  * {@code NestedExceptionUtils.getMostSpecificCause} 는 깊이 3 의
@@ -67,22 +72,6 @@ class ChatMessagePersistTimeoutTranslationTest {
                     // 에러코드가 들고 있고 진단은 사슬에 있다.
                     assertThat(error.getCause()).isSameAs(driverChain);
                 })
-                .verify(VERIFY_CEILING);
-    }
-
-    @Test
-    @DisplayName("⭐ DuplicateKey 뒤 재조회도 번역된다 — 같은 상한에 걸리는 같은 축이다")
-    void aTimeoutOnTheDuplicateRecoveryReadIsAlsoTranslated() {
-        // 재조회는 **같은 concatMap 안**이고 **같은 전역 상한**에 걸린다. 번역이 없으면 발신자는
-        // UncategorizedMongoDbException(500)을 받고 chat.persist.timeout 은 평평하다 — "상한이 저장
-        // 경로를 끊은 횟수" 를 세는 지표가 그 경로의 한 갈래를 못 보는 것이라, 쓰기와 다른 축이
-        // 아니라 같은 축의 미계수다.
-        willReturn(Mono.error(timeoutChain())).given(mongoRepository)
-                .findByRoomIdAndSenderIdAndClientMsgId(any(), any(), any());
-
-        StepVerifier.create(repository.findByRoomIdAndSenderIdAndClientMsgId(
-                        UUID.randomUUID(), UUID.randomUUID(), "c1"))
-                .expectError(ChatPersistTimeoutException.class)
                 .verify(VERIFY_CEILING);
     }
 

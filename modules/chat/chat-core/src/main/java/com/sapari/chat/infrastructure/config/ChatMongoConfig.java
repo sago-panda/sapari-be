@@ -132,6 +132,7 @@ public class ChatMongoConfig {
                 indexTimeoutFactory(template.getMongoDatabaseFactory(), INDEX_CREATE_CEILING),
                 template.getConverter());
     }
+
     /**
      * 연산 상한을 <b>클라이언트</b>에 건다(CSOT — 드라이버 5.6.5의 {@code MongoClientSettings.timeout}).
      *
