@@ -896,8 +896,13 @@ one half. Both were investigated; the reasons differ.
 
 **Connection cap** — **split into two axes in SPR-152; one is now enforced, the other is not.**
 
-- **Abuse cap — enforced.** `ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM` (5) bounds concurrent
-  sessions per `(userId, roomId)`; over it, `register` denies with `EntryDeniedException.TOO_MANY_SESSIONS`
+- **Abuse cap — enforced, and tunable since SPR-176.** `ChatSessionRegistry.maxSessionsPerUserPerRoom()`
+  bounds concurrent sessions per `(userId, roomId)`; the value comes from **`chat.session.max-per-room`**
+  (default `DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM` = 5) and **a value below 1 fails boot** rather than
+  quietly running an uncapped pod — the same choice as `managementPortMustDiffer`. There is no upper
+  bound: a very large value means "no cap", which is a state an operator may choose (it is what this
+  pod did before SPR-152), and nothing else here depends on the number's magnitude.
+  Over the cap, `register` denies with `EntryDeniedException.TOO_MANY_SESSIONS`
   → `SystemMessageCode.TOO_MANY_SESSIONS` + close 1008, counted by `chat.sessions.admission_capped`. The
   unit is `(user, room)` because a room token is scoped to one room and is **replayable within its ~90s
   TTL** (`modules/live/AGENTS.md`), so that pair is the narrowest thing that closes the replay window.
@@ -931,11 +936,16 @@ one half. Both were investigated; the reasons differ.
       it would kill a session that the loop's 30 s grid would have spared — then hand the freed slot to
       the caller. That would make "only dead slots" false in the window the buffer exists for.
     - Consequence, with the derivation because the number hangs on a ratio: live sessions per
-      `(user, room)` can reach **2× the cap (10) for ≤8 s** — `FORCED_CLOSE_GRACE 3s +
-      CLOSE_FLUSH_TIMEOUT 5s` — and a reap cannot fire more than once per 90 s per key (the five new
-      sessions are not unresponsive before `livenessDeadline`). **8 s ≪ 90 s**, so it settles at 10 and
-      does not stack. Drop `liveness-deadline` below 8 s, or raise the close ceilings, and it grows
-      linearly instead (measured without cleanup: 5 · 10 · 15 · 20 over four cycles).
+      `(user, room)` can reach **2× the cap for ≤8 s** — `FORCED_CLOSE_GRACE 3s +
+      CLOSE_FLUSH_TIMEOUT 5s` — and a reap cannot fire more than once per `liveness-deadline` per key
+      (the newly admitted sessions are not unresponsive before it). At the default 90 s,
+      **8 s ≪ 90 s**, so it settles at 2× and does not stack. Raise the close ceilings and it grows
+      linearly instead (measured without cleanup, at cap 5: 5 · 10 · 15 · 20 over four cycles).
+      - ⚠️ **`liveness-deadline` below 8 s also breaks it, and nothing stops you setting that.**
+        `SessionTimeouts` validates only `>= 2 × ping-interval`, so `ping-interval: 1s` +
+        `liveness-deadline: 2s` passes and this derivation stops holding. That gap predates SPR-176
+        (which made the *cap* tunable, not the deadline) and no guard was added for it — recorded here
+        rather than implied, because the sentence above would otherwise read as unconditional.
     - It reclaims **nothing** against an attacker who answers pings, and its count is exposed separately
       (`chat.sessions.reaped`) because `chat.session.cut{liveness}` cannot tell "the cap freed a dead
       slot" from "the liveness loop collected one" — exactly the axis that separates an attack from a
@@ -960,17 +970,29 @@ guess. Shipping a number from nowhere is what this repo spends its time undoing.
 per-session leak. It was **Mockito recording 40,000 invocations** on the stubbed repository. With a
 hand-written stub the residual is 0. If you re-run this, do not use a mock for the collaborator.
 
-**Per-room serialization + batching (and dropping `clientMsgId` from broadcasts)** — today `serialize` runs
-inside each session's pipeline, so one message costs N serializations in a room of N. The premise for the
-contract half is **verified**: `ACK` already carries both `id` and `clientMsgId`, and the front-end guide
-already tells clients to dedup broadcasts by `id`, so the mapping can be built from ACK alone and the
-broadcast copy needs no `clientMsgId` — which collapses the four per-recipient variants to two.
+**Per-room serialization — done, not pending.** An earlier version of this section described it in the
+present tense as future work ("today `serialize` runs inside each session's pipeline, so one message costs
+N serializations in a room of N"). `OutboundFrame` closed it: the sink carries a frame that computes the
+wire **bytes** lazily and shares them across every session in one fan-out, so the cost is O(variants), not
+O(sessions). Measured and recorded at that class: one serialization 0.77 µs, 12,000 sessions 9.23 ms →
+4 variants 0.0031 ms (~3,000×), and the UTF-8 encoding half was collected in the same change. The reason
+the old paragraph gave for deferring it ("the sink would have to carry wire text instead of
+`OutboundMessage`") is also spent — the sink carries `OutboundFrame` today.
 
-It stays a separate ticket because it moves the transport boundary: the sink would have to carry wire text
-instead of `OutboundMessage`, so every producer (`SendChatService` echo fallback, `SystemMessageService`,
-`LiveRoomEndedHandler`, `ChatBroadcastSubscriber`) serializes and the mapper configuration moves into
-chat-core. That is a defensible change — `OutboundMessage` already owns the wire contract — but it is a
-different review from this one.
+**Dropping `clientMsgId` from broadcasts — do not open this as written.** The old paragraph claimed the
+contract premise was **verified**, on the grounds that `ACK` carries both `id` and `clientMsgId` so the
+mapping can be built from ACK alone. **That premise is false**, and the front-end guide says so itself:
+its 2026-08-08 correction states that ACK arriving first is *not* guaranteed and that the broadcast is in
+fact the likelier one to win (Redis writes subscriber output buffers before replying to the publisher).
+With no `clientMsgId` on the broadcast, a sender whose broadcast arrives first sees a message with an `id`
+it does not know yet and renders it as new; the ACK then stamps that same `id` onto the optimistic bubble,
+leaving **two renders of one message**. The four per-recipient variants therefore stay four: the sender
+axis is what carries `clientMsgId`, and its cost after `OutboundFrame` is ~1.5 µs per message, not the
+O(sessions) term that made collapsing them worth a ticket in the first place.
+
+**Batching** is still unimplemented and still unmeasured. With serialization already shared, what is left
+to save is sink emissions and WebSocket frames per fan-out — nobody has put a number on either, so there
+is nothing here to size a ticket from.
 
 ## Viewer count updates — the same frame again, only when it changed
 
