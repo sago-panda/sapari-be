@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -14,12 +13,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.convert.DurationStyle;
 
+import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 import com.sapari.streamingapp.websocket.SessionTimeouts;
 
 /**
@@ -32,15 +33,38 @@ import com.sapari.streamingapp.websocket.SessionTimeouts;
 @DisplayName("application.yml.example — 그대로 복사해도 부팅을 막지 않는다")
 class ConfigTemplateTest {
 
-    /**
-     * {@code Duration} 으로 바인딩되는 키들.
-     *
-     * <p>수기 목록이고 오늘은 완전하다 — {@code Duration} 타깃 {@code @Value} 는 아래
-     * {@code codeDefaults()} 가 읽는 셋뿐이다. 네 번째가 생기면 그 메서드가 넷을 돌려주므로
-     * {@code documented_defaults_match_the_code_defaults} 가 크기 불일치로 실패해 여기를 가리킨다.
-     */
+    /** {@code Duration} 으로 바인딩되는 {@code chat.session.*} 키들. */
     private static final List<String> DURATION_KEYS =
             List.of("max-lifetime", "ping-interval", "liveness-deadline");
+
+    /** {@code int} 로 바인딩되는 {@code chat.session.*} 키들. */
+    private static final List<String> INT_KEYS = List.of("max-per-room");
+
+    /**
+     * 템플릿과 대조하는 {@code chat.session.*} 키 전부.
+     *
+     * <p>⚠️ <b>수기 목록이고, 한때 이 자리에 "오늘은 완전하다 … 네 번째가 생기면 크기 불일치로
+     * 실패해 여기를 가리킨다" 가 적혀 있었는데 거짓이었다.</b> 실측: 템플릿에
+     * {@code max-per-room} 을 넣고 값을 코드와 <b>다르게</b>(7 vs 5) 둬도 이 파일 전체가 초록이었다.
+     * {@code documentedDefaults()} 가 이 목록으로 <b>걸러 내고</b> 있어서, 목록에 없는 키는
+     * 크기에도 안 세어지기 때문이다. 즉 이 기계는 스스로를 가리키지 못한다 — 새 키를 여기에
+     * <b>손으로</b> 더해야 비로소 묶인다.
+     *
+     * <p>그래서 완전성을 주장하지 않고 <b>범위</b>를 적는다: 아래 {@link #SESSION_VALUE_SOURCES} 의
+     * 클래스들에 선언된 {@code chat.session.*} {@code @Value} 만 본다. 제3의 클래스에 같은 접두의
+     * 키가 생기면 이 검사는 그것을 보지 못한다.
+     */
+    private static final List<String> SESSION_KEYS =
+            Stream.concat(DURATION_KEYS.stream(), INT_KEYS.stream()).toList();
+
+    /**
+     * {@code chat.session.*} {@code @Value} 가 선언된 클래스들.
+     *
+     * <p>{@code WebSocketConfig} 는 수명 셋을 {@code @Bean} 파라미터로, {@code ChatSessionRegistry} 는
+     * 상한을 <b>생성자</b> 파라미터로 받는다. 그래서 메서드만 훑으면 상한이 안 보인다.
+     */
+    private static final List<Class<?>> SESSION_VALUE_SOURCES =
+            List.of(WebSocketConfig.class, ChatSessionRegistry.class);
 
     /**
      * 빈 기본값을 가진 플레이스홀더.
@@ -96,8 +120,8 @@ class ConfigTemplateTest {
 
         // when & then: 둘이 갈리면 약속이 거짓이 된다. 크기를 먼저 본다 — 한쪽을 못 읽으면
         // 비교가 공허하게 통과한다(양쪽 다 비면 isEqualTo 가 성립한다).
-        assertThat(documented).as("템플릿에서 코드 기본값 주석을 못 읽었다").hasSize(DURATION_KEYS.size());
-        assertThat(fromCode).as("WebSocketConfig 에서 @Value 기본값을 못 읽었다").hasSize(DURATION_KEYS.size());
+        assertThat(documented).as("템플릿에서 코드 기본값 주석을 못 읽었다").hasSize(SESSION_KEYS.size());
+        assertThat(fromCode).as("소스 클래스들에서 @Value 기본값을 못 읽었다").hasSize(SESSION_KEYS.size());
         assertThat(documented).as("템플릿 주석과 코드 기본값이 갈렸다").isEqualTo(fromCode);
     }
 
@@ -199,7 +223,7 @@ class ConfigTemplateTest {
         template().lines().map(String::strip).filter(line -> line.startsWith("#")).forEach(line -> {
             Matcher matcher = DOCUMENTED_DEFAULT.matcher(line.substring(1).strip().startsWith("#")
                     ? line.substring(1).strip() : line);
-            if (matcher.find() && DURATION_KEYS.contains(matcher.group(1))) {
+            if (matcher.find() && SESSION_KEYS.contains(matcher.group(1))) {
                 defaults.put(matcher.group(1), matcher.group(2));
             }
         });
@@ -217,18 +241,22 @@ class ConfigTemplateTest {
         // 반환형으로 거르지 않는다 — 한때 ChatWebSocketHandler 를 돌려주는 메서드만 봤는데, 그러면
         // 같은 클래스의 다른 메서드에 Duration @Value 를 더했을 때 이 검사에 안 보이고
         // DURATION_KEYS 가 조용히 낡는다(실측으로 그 뮤턴트가 생존했다).
-        for (Method method : WebSocketConfig.class.getDeclaredMethods()) {
-            for (Parameter parameter : method.getParameters()) {
-                Value value = parameter.getAnnotation(Value.class);
-                if (value == null) {
-                    continue;
-                }
-                Matcher matcher = Pattern.compile("\\$\\{chat\\.session\\.([a-z-]+):([^}]+)}")
-                        .matcher(value.value());
-                if (matcher.matches()) {
-                    defaults.put(matcher.group(1), matcher.group(2));
-                }
-            }
+        for (Class<?> source : SESSION_VALUE_SOURCES) {
+            // 메서드와 생성자를 둘 다 본다 — 상한은 생성자 파라미터에 붙어 있어서,
+            // 메서드만 훑던 때는 코드 쪽에서 그 키가 아예 나오지 않았다(실측: 분모 0).
+            Stream.concat(Stream.of(source.getDeclaredMethods()), Stream.of(source.getDeclaredConstructors()))
+                    .flatMap(executable -> Stream.of(executable.getParameters()))
+                    .forEach(parameter -> {
+                        Value value = parameter.getAnnotation(Value.class);
+                        if (value == null) {
+                            return;
+                        }
+                        Matcher matcher = Pattern.compile("\\$\\{chat\\.session\\.([a-z-]+):([^}]+)}")
+                                .matcher(value.value());
+                        if (matcher.matches()) {
+                            defaults.put(matcher.group(1), matcher.group(2));
+                        }
+                    });
         }
         return defaults;
     }

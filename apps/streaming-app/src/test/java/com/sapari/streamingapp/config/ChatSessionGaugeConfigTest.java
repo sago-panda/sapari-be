@@ -41,6 +41,16 @@ class ChatSessionGaugeConfigTest {
 
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
 
+    /**
+     * 이 파일 전체가 집행시키는 (유저, 방) 상한.
+     *
+     * <p>작은 수인 이유는 {@code theReapedCounterFollowsTheRegistry} 가 상한에 <b>닿아야</b> 거둘
+     * 자리가 생기기 때문이다({@code reapUnresponsiveIfFull} 은 찼을 때만 거둔다). 나머지 칸들은
+     * 상한에 무관하지만 {@code @BeforeEach} 가 하나를 공유하므로 이름을 그 한 칸이 아니라
+     * 파일 기준으로 둔다.
+     */
+    private static final int CAP = 4;
+
     private final ChatSessionGaugeConfig config = new ChatSessionGaugeConfig();
     private MeterRegistry meters;
     private ChatSessionRegistry registry;
@@ -55,7 +65,13 @@ class ChatSessionGaugeConfigTest {
         lenient().when(sessionRepository.add(any(), any(), any())).thenReturn(Mono.empty());
         lenient().when(sessionRepository.remove(any(), any())).thenReturn(Mono.empty());
         lenient().when(sessionRepository.heartbeatInterval()).thenReturn(Duration.ofMinutes(10));
-        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        // ⚠️ 상한을 넉넉히 주면 안 된다 — theReapedCounterFollowsTheRegistry 는 상한에 **닿아야**
+        // 거둘 자리가 생긴다(reapUnresponsiveIfFull 은 자리가 찼을 때만 거둔다). 실측: 1,000 으로
+        // 두면 50회 등록이 전부 통과해 거둔 수가 0 이 되고 그 칸이 깨진다.
+        // 그래서 "닿을 수 있는 작은 수" 를 이 파일이 직접 정한다. 기본값을 베껴 적지는 않는다 —
+        // 여기서 필요한 것은 기본값이 아니라 도달 가능한 상한이고, 베끼면 기본이 바뀔 때 조용히 갈린다.
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP,
+                CAP);
         config.chatSessionGauges(registry, providing(meters));
     }
 
@@ -269,7 +285,25 @@ class ChatSessionGaugeConfigTest {
                         ChatSessionGaugeConfig.SESSIONS_GAUGE,
                         ChatSessionGaugeConfig.ROOMS_GAUGE,
                         ChatSessionGaugeConfig.ADMISSION_CAPPED_COUNTER,
-                        ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER);
+                        ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER,
+                        ChatSessionGaugeConfig.MAX_PER_ROOM_GAUGE);
+    }
+
+    @Test
+    @DisplayName("⭐ 상한 게이지가 설정된 값을 낸다 — 기본값을 보고하면 분모가 통째로 틀린다")
+    void theCapGaugeReportsTheConfiguredValue() {
+        // 이 파일의 레지스트리는 기본값이 아니라 CAP 로 세워진다. 그래서 게이지가 상수를 읽고
+        // 있으면 여기서 갈린다 — 이 게이지의 존재 이유가 "파드마다 다를 수 있는 분모를 보이게"
+        // 하는 것이라, 기본값을 보고하는 게이지는 없는 것보다 나쁘다(틀린 분모로 합쳐진다).
+        assertThat(meters.get(ChatSessionGaugeConfig.MAX_PER_ROOM_GAUGE).gauge().value())
+                .as("설정값이 아니라 다른 수를 낸다")
+                .isEqualTo(CAP);
+        // ⚠️ 리터럴 5 를 보면 안 된다 — 기본값이 CAP 로 바뀌는 변이에서 이 가드가 선언한 바로 그
+        // 상태(CAP == 기본값)를 통과시킨다(실측으로 그랬다). 상수를 본다. 그 상수가 다른 패키지에서
+        // 보이는 이유는 접근자와 같다 — 게이지 설정이 상한과 그 기본값을 둘 다 알아야 한다.
+        assertThat(CAP)
+                .as("CAP 이 기본값과 같으면 위 단언이 상수를 읽는 구현도 통과시킨다")
+                .isNotEqualTo(ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM);
     }
 
     @Test

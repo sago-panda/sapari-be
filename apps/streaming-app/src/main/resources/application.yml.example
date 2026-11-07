@@ -255,6 +255,10 @@ chat:
   #   max-lifetime: 60m          # 코드 기본값 (env: CHAT_SESSION_MAX_LIFETIME)
   #   ping-interval: 30s         # 코드 기본값 (env: CHAT_SESSION_PING_INTERVAL)
   #   liveness-deadline: 90s     # 코드 기본값, 3 × ping (env: CHAT_SESSION_LIVENESS_DEADLINE)
+  #   max-per-room: 5            # 코드 기본값 (env: CHAT_SESSION_MAX_PER_ROOM)
+  #                              # (유저, 방) 동시 세션 상한. 1 미만이면 기동 실패.
+  #                              # 올릴 판단: chat.sessions.admission_capped 는 오르는데
+  #                              # chat.sessions.reaped 가 평평하면 어뷰즈가 아니라 상한이 낮은 쪽이다.
 
 # ── 관측 ──────────────────────────────────────────────────────────────────────
 #

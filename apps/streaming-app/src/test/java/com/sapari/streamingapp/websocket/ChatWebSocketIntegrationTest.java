@@ -570,7 +570,7 @@ class ChatWebSocketIntegrationTest {
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
 
-        int cap = ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM;
+        int cap = ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM;
         CountDownLatch admitted = new CountDownLatch(cap);
         List<Disposable> held = new ArrayList<>();
         try {

@@ -17,6 +17,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.CloseStatus;
 
@@ -143,11 +144,38 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 종료 신호 재시도 상한. 운영은 {@link #DEFAULT_COMPLETE_SPIN_NANOS}. 위와 같은 이유로 필드다. */
     private final long completeSpinNanos;
 
+    /**
+     * 운영 생성자. 상한만 외부에서 받는다 — 나머지 예산은 운영값이 하나뿐이라 상수로 둔다.
+     *
+     * <p>⚠️ <b>Spring 이 고르는 생성자는 이것이다.</b> 아래 좁은 생성자들은 기본 상한으로 위임하는
+     * 테스트 진입점이고, 그래서 "운영이 무엇을 받는가" 를 묻는 칸은 반드시 <b>이</b> 생성자를 불러야
+     * 한다({@code ChatSessionRegistryTest.production_constructor_uses_the_production_budgets}).
+     *
+     * <p><b>{@code @Value} 를 여기 직접 두는 이유.</b> 형제 {@code WebSocketConfig} 는 수명 셋을
+     * 빈으로 모아 두고 그 이유를 "각자 {@code @Value} 로 받으면 기본값이 두 벌이 된다" 로 적었다 —
+     * 그 값은 <b>소비자가 둘</b>(핸들러와 {@code RoomTokenVerifier})이기 때문이다. 상한은 소비자가
+     * 이 클래스 하나뿐이라 그 중복이 생기지 않는다.
+     *
+     * <p><b>기본값은 한 벌이다.</b> 플레이스홀더의 기본값을
+     * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM} 연결로 적는다 — 문자열 리터럴과
+     * {@code static final int} 의 연결은 자바 <b>상수식</b>이라 어노테이션 값으로 적법하다(실측).
+     * 그래서 숫자를 두 자리에 적고 기계로 묶을 필요가 없다. 템플릿 주석과의 일치는 별개 면이라
+     * {@code ConfigTemplateTest} 가 따로 잰다.
+     */
     @Autowired
     public ChatSessionRegistry(ChatSessionRepository sessionRepository,
                                ChatPermissionPolicy permissionPolicy,
-                               ChatMetrics metrics) {
-        this(sessionRepository, permissionPolicy, metrics,
+                               ChatMetrics metrics,
+                               @Value("${chat.session.max-per-room:" + DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM + "}") int maxSessionsPerUserPerRoom) {
+        this(sessionRepository, permissionPolicy, metrics, maxSessionsPerUserPerRoom,
+                DEFAULT_CONTENTION_SPIN_NANOS, DEFAULT_COMPLETE_SPIN_NANOS);
+    }
+
+    /** 기본 상한으로 위임하는 테스트 진입점 — 상한이 축이 아닌 칸들이 쓴다. */
+    ChatSessionRegistry(ChatSessionRepository sessionRepository,
+                        ChatPermissionPolicy permissionPolicy,
+                        ChatMetrics metrics) {
+        this(sessionRepository, permissionPolicy, metrics, DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM,
                 DEFAULT_CONTENTION_SPIN_NANOS, DEFAULT_COMPLETE_SPIN_NANOS);
     }
 
@@ -164,11 +192,57 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 예산을 넓혀 받는다 (테스트 진입점 — 위 {@link #contentionSpinNanos} 참고). */
     ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
                         ChatMetrics metrics, long contentionSpinNanos, long completeSpinNanos) {
+        this(sessionRepository, permissionPolicy, metrics, DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM,
+                contentionSpinNanos, completeSpinNanos);
+    }
+
+    /**
+     * 정규 생성자 — 위 셋이 모두 여기로 모인다.
+     *
+     * <p>상한이 1 미만이면 <b>기동을 실패시킨다.</b> 조용히 기본값으로 떠서는 안 되는 이유는 0 과
+     * "상한 없음" 이 운영에서 같은 모양이기 때문이다 — 오타 하나로 상한 없이 도는 파드가 생기고,
+     * 그 파드만 토큰 재사용을 못 막는다. 저장소가 같은 자리에서 고른 쪽이기도 하다
+     * ({@code LiveSecurityConfig.managementPortMustDiffer}, {@code ShedLockTableGuard}).
+     *
+     * <p><b>상한은 두지 않는다.</b> 아주 큰 값은 "상한 없음" 이고 그건 운영이 고를 수 있는 상태다
+     * (SPR-152 전의 상태가 그것이다). 문서의 "2× 상한" 유도는 상한에 비례하므로 값이 커져도 참이다.
+     *
+     * <p>크기에 매달린 경로가 하나 있는데 <b>방향이 직관과 반대다</b>(한때 이 자리에 "큰 값이 조용히
+     * 깨뜨리는 불변식도 없다" 고 안 재고 적었고, 그 다음엔 "상한만큼 훑는다" 로 반대로 적었다).
+     * {@link #reapUnresponsiveIfFull} 은 <b>점유가 상한에 닿았을 때만</b> 돈다 —
+     * {@code size() < 상한} 에서 즉시 돌아오기 때문이다. 닿으면 {@code computeIfPresent} 안에서
+     * 점유 집합을 전부 훑고, 그 스캔은 <b>상한이 아니라 점유 크기</b>에 비례한다. 그래서
+     * <b>상한을 올리면 이 경로는 덜 돈다</b>(닿기가 어려워진다). 상한만큼의 스캔은 한 (유저, 방)이
+     * 실제로 그만큼의 <b>산</b> 세션을 들고 있을 때만 생기고, 그 상태를 떠받치는 비용(싱크·버퍼·팬아웃)이
+     * 스캔보다 크다. 절대 비용은 이쪽에서 재지 않았다.
+     */
+    private ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
+                                ChatMetrics metrics, int maxSessionsPerUserPerRoom,
+                                long contentionSpinNanos, long completeSpinNanos) {
+        if (maxSessionsPerUserPerRoom < 1) {
+            // 프로퍼티 이름을 메시지에 싣는다 — 기동 로그만 보고 어느 키를 고칠지 알 수 있어야 한다.
+            throw new IllegalArgumentException(
+                    "chat.session.max-per-room 은 1 이상이어야 합니다: " + maxSessionsPerUserPerRoom);
+        }
         this.sessionRepository = sessionRepository;
         this.permissionPolicy = permissionPolicy;
         this.metrics = metrics;
+        this.maxSessionsPerUserPerRoom = maxSessionsPerUserPerRoom;
         this.contentionSpinNanos = contentionSpinNanos;
         this.completeSpinNanos = completeSpinNanos;
+    }
+
+    /**
+     * 이 파드가 집행하는 (유저, 방) 상한. 운영 설정으로 바뀐다 — 기본은
+     * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}.
+     *
+     * <p>{@code public} 인 이유는 다른 패키지의 게이지 설정이 읽기 때문이다
+     * ({@code ChatSessionGaugeConfig} → {@code chat.sessions.max_per_room}). 같은 자리의
+     * {@code localSessionCount}·{@code localRoomCount}·{@code admissionCapped}·{@code slotsReaped}
+     * 넷이 모두 같은 이유로 {@code public} 이다.
+     */
+    public int maxSessionsPerUserPerRoom() {
+        return maxSessionsPerUserPerRoom;
     }
 
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
@@ -416,12 +490,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 읽히면 안 되는 이유다.
      *
      * <p>⚠️ <b>파드 로컬이다 — 전역 상한이 아니다.</b> {@link #userRoomSessions} 는 이 싱글톤의
-     * 인스턴스 필드라 실효 상한은 <b>5 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
+     * 인스턴스 필드라 실효 상한은 <b>상한 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
      * 핸드셰이크가 흩어지면 각 파드의 {@code compute} 가 서로 다른 맵을 봐서 전부 통과한다. 이 파일은
      * 다중 파드를 설계 전제로 못 박고 있고(아래 계정 팬아웃 비용이 "파드 6개" 기준이다), 크로스 파드
      * 데이터도 이미 있다({@code ChatSessionRepository.add} 가 Redis HASH 에 userId 를 적는다).
      * 즉 파드 로컬은 <b>제약이 아니라 선택</b>이다 — 전역으로 올리면 입장마다 Redis 왕복이 하나 붙고,
-     * 남용 한도를 5 에서 5×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
+     * 남용 한도를 상한에서 상한×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
      *
      * <p>⚠️ <b>이 상한이 "피해자 입장 차단" 이라는 능력을 새로 만들었다.</b> 상한 키가 토큰에서만
      * 오고({@code RoomTokenVerifier} 의 {@code claims.getSubject()} 하나), 토큰이 TTL 안에서 재사용
@@ -439,7 +513,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 지속             51~60분 (세션 수명, 지터 −15%)      ≤90초 (재점유마다 유효 토큰이 필요)
      * 피해자 수단      없음* — 자리가 빌 때까지 전부 1008   항상 — 재접속하면 최신 자리를 되찾음
      * </pre>
-     * (*"없음" 은 <b>공격자가 5 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
+     * (*"없음" 은 <b>공격자가 상한 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
      * 완주 전에는 피해자의 재접속도 흩어져 남은 파드에 붙는다. 핸드셰이크에 레이트리밋이 없어 토큰
      * TTL 안에 완주가 가능하므로 표에는 완주 후 값을 적는다. LB 어피니티가 그걸 막는지는 <b>이
      * 저장소에서 확인할 수 없다</b> — 매니페스트가 여기 없다. 표의 "≤90초" 는 <b>불변식이 아니라
@@ -473,7 +547,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 넓힌 변형의 것이고, {@code SessionAdmissionCapTest} 가 그 숫자를 철회했다). 아끼는 것은 왕복 셋이고
      * 잃는 것은 상한 자체다.
      */
-    static final int MAX_SESSIONS_PER_USER_PER_ROOM = 5;
+    public static final int DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM = 5;
+
+    /** 이 파드가 실제로 집행하는 값. 상수가 아니라 필드인 이유는 운영이 바꿀 수 있어야 해서다. */
+    private final int maxSessionsPerUserPerRoom;
 
     /** 상한을 세는 키. (유저, 방) 쌍이다 — 상한의 단위가 그것이라는 사실을 타입으로 남긴다. */
     private record UserInRoom(UUID userId, UUID roomId) {
@@ -647,7 +724,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         boolean[] admitted = {false};
         userRoomSessions.compute(new UserInRoom(session.userId(), session.roomId()), (key, sessionIds) -> {
             Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
-            if (ids.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+            if (ids.size() < maxSessionsPerUserPerRoom) {
                 ids.add(sessionId);
                 admitted[0] = true;
             }
@@ -688,7 +765,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                     // 표본 하나와 Pod 누적을 함께 적는다 — 드롭 로그와 같은 표기다. 이 줄이 늘어나면
                     // 공격이 아니라 상한이 낮은 것일 수 있으니, 사람이 그 둘을 가를 수 있게 둘 다 남긴다.
                     log.warn("동시 세션 상한 초과로 입장 거부 — 표본 userId={} 표본 roomId={} 상한={} 누적거부={}",
-                            session.userId(), session.roomId(), MAX_SESSIONS_PER_USER_PER_ROOM, capped);
+                            session.userId(), session.roomId(), maxSessionsPerUserPerRoom, capped);
                 }
                 // 던지지 않고 Mono.error 로 돌려준다 — 핸들러의 onErrorResume(EntryDeniedException) 이
                 // SYSTEM code 를 실어 1008 로 닫는 경로를 이미 갖고 있고, 거부는 그 모양이 맞다.
@@ -1373,7 +1450,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>{@code public} 인 이유는 게이지 배선이 쓰기 때문이다({@code ChatSessionGaugeConfig}).
      * 이 수가 보이지 않으면 "파드 하나가 몇 세션까지 버티는가" 를 물을 수 없고, 그러면 <b>파드 용량
      * 상한</b>을 고를 근거가 없다 — 그래서 그 상한보다 이 게이지가 먼저다. 남용 상한
-     * ({@link #MAX_SESSIONS_PER_USER_PER_ROOM})은 이 수를 기다리지 않았다: 그쪽 값은 용량이 아니라
+     * ({@link #maxSessionsPerUserPerRoom()})은 이 수를 기다리지 않았다: 그쪽 값은 용량이 아니라
      * "정상 사용자가 동시에 몇 개를 여는가" 에서 나온다. 한때 이 문장이 "연결 수 상한" 으로 적혀
      * 그 둘을 한 덩이로 묶었다.
      */
@@ -1585,7 +1662,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public int reapUnresponsiveIfFull(UUID userId, UUID roomId, Duration livenessDeadline) {
         UserInRoom key = new UserInRoom(userId, roomId);
         Set<String> occupied = userRoomSessions.get(key);
-        if (occupied == null || occupied.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+        if (occupied == null || occupied.size() < maxSessionsPerUserPerRoom) {
             return 0;
         }
         List<String> dead = new ArrayList<>();

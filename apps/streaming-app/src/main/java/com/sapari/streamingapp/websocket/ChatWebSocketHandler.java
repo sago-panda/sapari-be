@@ -362,7 +362,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             // 기한만 넘기면 생존 루프의 격자에서는 살아남는 구간(기한~기한+간격)에 있던 세션을 죽인다 —
             // 그리고 비워진 자리를 이 호출이 즉시 가져간다. 그러면 "죽은 자리만 거둔다" 가 그 구간에서
             // 거짓이 되고, evict-oldest 를 기각한 근거("남의 살아 있는 세션을 끊지 않는다")도 같이
-            // 무너진다. 상한이 5라 창이 간격 하나만큼 길어지는 비용은 사실상 없다.
+            // 무너진다. 창이 간격 하나만큼 길어지는 비용은 **상한 하나당** 세션 하나를 더 오래
+            // 들고 있는 것이고, 상한은 `chat.session.max-per-room` 으로 운영이 정한다(SPR-176).
+            // 한때 여기 "상한이 5라 비용은 사실상 없다" 고 적혀 있었는데, 그 문장은 상한이 코드
+            // 상수일 때만 성립한다 — 크기에 매달린 주장이라 값을 여는 커밋이 같이 고쳐야 했다.
             registry.reapUnresponsiveIfFull(chatSession.userId(), roomId,
                     timeouts.livenessDeadline().plus(timeouts.pingInterval()));
             return registry.register(sid, chatSession)
