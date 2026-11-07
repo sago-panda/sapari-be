@@ -186,6 +186,34 @@ class ChatPermissionPolicyTest {
                 .isEqualTo(role == ChatRole.ADMIN);
     }
 
+    /**
+     * 종료 마커 해제 — <b>자기 방 SELLER 또는 ADMIN</b>.
+     *
+     * <p>이 판정만 정책 밖에 있었다({@code ClearRoomEndedMarkerService} 가
+     * {@code !room.sellerId().equals(actorId) && role != ADMIN} 을 인라인으로 적고 있었다).
+     * chat 서비스 일곱 중 여섯이 정책을 쓰는데 이것만 자기 것을 굴린 자리다 — <b>동작은 맞았고</b>
+     * 그래서 여기로 옮기는 것이 전부다. 벡터가 한 자리에 모이면 특권 역할이 하나 늘 때 정책 테스트가
+     * 전수를 돌려 준다.
+     *
+     * <p>두 축이 필요한 이유: 소유는 방 단위이고(남의 방에 온 판매자는 시청자다) ADMIN 은 계정
+     * 단위라 소유를 묻지 않는다. {@code null}·{@code GUEST} 까지 전수로 돈다.
+     */
+    @org.junit.jupiter.params.ParameterizedTest(name = "role={0} owner={1}")
+    @org.junit.jupiter.params.provider.MethodSource("rolesAndOwnership")
+    @DisplayName("⭐ 종료 마커 해제는 자기 방 SELLER 와 ADMIN 뿐이다")
+    void onlyTheRoomOwnerOrAnAdminMayClearTheEndedMarker(ChatRole role, boolean isRoomOwner) {
+        assertThat(new ChatPermissionPolicy().canClearRoomEndedMarker(role, isRoomOwner))
+                .as("role=%s owner=%s 의 판정이 기대와 다르다", role, isRoomOwner)
+                .isEqualTo(role == ChatRole.ADMIN || (role == ChatRole.SELLER && isRoomOwner));
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> rolesAndOwnership() {
+        java.util.List<ChatRole> roles = new java.util.ArrayList<>(java.util.Arrays.asList(ChatRole.values()));
+        roles.add(null);
+        return roles.stream().flatMap(role -> java.util.stream.Stream.of(true, false)
+                .map(owner -> org.junit.jupiter.params.provider.Arguments.of(role, owner)));
+    }
+
     private static boolean isRepresentableAsASession(ChatRole role, boolean isRoomOwner) {
         try {
             new ChatSession(java.util.UUID.randomUUID(), java.util.UUID.randomUUID(),

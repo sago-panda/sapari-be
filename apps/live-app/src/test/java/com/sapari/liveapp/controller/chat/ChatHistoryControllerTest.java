@@ -184,6 +184,24 @@ class ChatHistoryControllerTest {
     }
 
     @Test
+    @DisplayName("⭐ 모르는 플랫폼 역할은 chat 에러코드의 4xx 다 — 500 으로 새면 고칠 쪽이 서버라는 사실이 묻힌다")
+    void anUnknownPlatformRoleIsRejectedWithAChatErrorCode() throws Exception {
+        // given: 오늘 UserRole = {USER, SELLER, ADMIN} 이라 **빠진 멤버는 0** 이다. 이 칸이 재는 것은
+        // 지금 깨진 것이 아니라 **네 번째 역할이 생겼을 때 어디로 나가는가** 다. 그쪽에 가드가 없으면
+        // 그 역할 사용자만 500 을 받고, 드리프트 가드(PlatformRoleNamesTest)는 컨트롤러를 못 본다.
+        stubEmpty();
+
+        // when & then: 실측(SPR-178 전)으로 이 요청은 500 · COMMON-004 였다 —
+        // 컨트롤러의 catch 가 IllegalArgumentException 만 잡아 IllegalStateException 을 지나쳤다.
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID).with(as("PARTNER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("CHAT-001"));
+
+        // 그리고 그 요청은 서비스까지 가지 않는다 — 해석 못 하는 역할을 실어 보내면 소비자가 터진다.
+        then(getChatHistoryUseCase).shouldHaveNoInteractions();
+    }
+
+    @Test
     @DisplayName("⭐ 응답이 공통 봉투에 담겨 나간다 — messages 가 한 단 깊어진 것이 프론트 계약이다")
     void theResponseIsWrappedInTheCommonEnvelope() throws Exception {
         // given: 비어 있지 않은 뷰 — 빈 목록은 봉투를 벗겨도 모양 차이가 눈에 띄지 않는다

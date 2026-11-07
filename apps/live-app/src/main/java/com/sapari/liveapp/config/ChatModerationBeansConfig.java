@@ -369,8 +369,9 @@ public class ChatModerationBeansConfig {
             GetLiveRoomUseCase liveRoomReader,
             ChatRoomEndedWriteRepository roomEndedWriteRepository,
             ChatAuditRecorder auditRecorder,
-            TimeProvider timeProvider) {
+            TimeProvider timeProvider,
+            ChatPermissionPolicy permissionPolicy) {
         return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository,
-                auditRecorder, timeProvider);
+                auditRecorder, permissionPolicy, timeProvider);
     }
 }

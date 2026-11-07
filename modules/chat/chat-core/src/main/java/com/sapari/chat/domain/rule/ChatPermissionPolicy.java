@@ -159,4 +159,24 @@ public final class ChatPermissionPolicy {
     public boolean canManageFilterWords(ChatRole actorRole) {
         return actorRole == ChatRole.ADMIN;
     }
+
+    /**
+     * 방의 종료 마커를 해제할 수 있는가 — <b>자기 방 SELLER 또는 ADMIN</b>.
+     *
+     * <p>위 셋과 달리 ADMIN 전용이 <b>아니다</b>. 근거는 <b>누가 손해를 보는가</b>다 — 마커가
+     * 잘못 걸리면 그 방의 방송이 통째로 막히고, 그 손해를 보는 사람이 방 주인이다. 그리고 이
+     * 조치는 {@code canReleaseBan} 처럼 남의 판단을 되돌리지 않는다: 해제가 통하는 것은 방이
+     * <b>아직 진행 중</b>일 때뿐이고(호출 서비스가 그걸 따로 검증한다) 그 조건에서 마커는 애초에
+     * 틀린 마커다.
+     *
+     * <p>두 축이 필요한 이유는 {@link #canSend} 의 NOTICE 와 같다 — SELLER 계정도 남의 방에
+     * 시청자로 들어오므로 role 만으로 열면 남의 방 마커를 지울 수 있다.
+     *
+     * <p>이 판정은 {@code ClearRoomEndedMarkerService} 안에 인라인으로 있었다. 값은 같고
+     * 자리만 옮긴 것이다 — chat 의 인가 판정을 한 클래스가 들고 있어야 특권 역할이 하나 늘 때
+     * 정책 테스트의 전수가 그걸 잡는다.
+     */
+    public boolean canClearRoomEndedMarker(ChatRole actorRole, boolean isRoomOwner) {
+        return actorRole == ChatRole.ADMIN || (actorRole == ChatRole.SELLER && isRoomOwner);
+    }
 }

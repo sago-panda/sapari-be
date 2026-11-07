@@ -33,6 +33,7 @@ import com.sapari.chat.command.ClearRoomEndedMarkerCommand;
 import com.sapari.chat.domain.model.ChatAuditAction;
 import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
@@ -73,7 +74,8 @@ class ClearRoomEndedMarkerServiceTest {
     @BeforeEach
     void setUp() {
         service = new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository,
-                auditRecorder, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+                auditRecorder, new ChatPermissionPolicy(),
+                new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
     private ClearRoomEndedMarkerCommand command(UUID actorId, String role) {
