@@ -14,6 +14,8 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Bean;
+import java.util.concurrent.TimeUnit;
+import org.springframework.data.mongodb.ReactiveMongoDatabaseFactory;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import org.springframework.data.mongodb.core.index.IndexInfo;
 import org.testcontainers.containers.GenericContainer;
@@ -97,6 +99,38 @@ class ChatMongoIndexBootstrapTest {
     @Autowired
     private ReactiveMongoTemplate mongoTemplate;
 
+    @Autowired
+    private ReactiveMongoDatabaseFactory databaseFactory;
+
+    @Test
+    @DisplayName("⭐ 전송 경로와 인덱스 경로가 서로 다른 상한을 받는다 — 둘이 같으면 하나가 안 걸린 것이다")
+    void theSendPathAndTheIndexPathCarryDifferentTimeouts() {
+        Long sendPath = databaseFactory.getMongoDatabase().block(VERIFY_CEILING)
+                .getTimeout(TimeUnit.MILLISECONDS);
+        Long indexPath = ChatMongoConfig.indexTimeoutFactory(databaseFactory, Duration.ofMinutes(10))
+                .getMongoDatabase().block(VERIFY_CEILING).getTimeout(TimeUnit.MILLISECONDS);
+
+        // 전송 경로: 커스터마이저가 건 기본값. null 이면 상한이 아예 안 걸렸다는 뜻이고 그게 SPR-177
+        // 전의 상태다(드라이버 기본 timeoutMs=null, 실측).
+        assertThat(sendPath)
+                .as("전송 경로에 상한이 없다 — 느린 Mongo 가 세션을 수명까지 멈춘다")
+                .isEqualTo(Duration.ofSeconds(2).toMillis());
+        // 인덱스 경로: 되올린 값. 전역과 **달라야** 한다 — 같으면 디코레이터가 전역을 못 덮은 것이고
+        // 큰 컬렉션의 첫 인덱스 빌드가 2초에 죽어 부팅이 실패한다(실측: 전역 500ms 에서 3,000ms
+        // 차단된 createIndexes 가 563ms 에 끊겼다).
+        assertThat(indexPath)
+                .as("인덱스 경로가 전역 상한을 그대로 받았다 — 부팅이 2초에 죽는다")
+                .isEqualTo(Duration.ofMinutes(10).toMillis());
+    }
+
+    /**
+     * ⚠️ <b>위 칸이 덮지 못하는 것</b>: {@code chatMessagesIndexes} 빈이 <b>실제로</b> 그 되올린
+     * 팩토리를 쓰는지. 이 칸은 디코레이터를 직접 불러 그 효과를 보고, 빈 쪽 배선은
+     * {@code ChatMongoConfig:227} 을 읽어야 안다. 빈이 돌려주는 {@code ChatMessagesIndexes} 는
+     * 이름 목록뿐이라 어느 상한에서 만들었는지가 거기 안 남는다 — 그걸 남기려면 부팅에 왕복을
+     * 하나 더 넣어야 해서, 테스트를 위해 운영 경로를 늘리지 않았다. 분모가 비어 있다는 사실을
+     * 적어 두는 쪽을 골랐다.
+     */
     @Test
     @DisplayName("⭐ 포트가 열리기 전에 인덱스 3종이 이미 서 있다")
     void indexesExistBeforeTheProcessCanServeTraffic() {

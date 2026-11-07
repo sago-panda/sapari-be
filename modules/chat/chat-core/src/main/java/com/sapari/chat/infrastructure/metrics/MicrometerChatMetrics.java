@@ -59,7 +59,7 @@ public class MicrometerChatMetrics implements ChatMetrics {
 
     @Override
     public void persistTimedOut() {
-        registry.counter(ChatMeterNames.PERSIST_TIMEOUT).increment();
+        safe(() -> registry.counter(ChatMeterNames.PERSIST_TIMEOUT).increment());
     }
 
     /**

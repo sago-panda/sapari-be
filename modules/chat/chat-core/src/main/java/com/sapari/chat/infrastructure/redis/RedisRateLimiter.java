@@ -99,7 +99,6 @@ public class RedisRateLimiter implements RateLimiter {
      *       묶인다(늦게 온 호출자는 남은 시간만 기다리니 평균은 유리하지만, 그 커넥션만 멈춘
      *       경우에는 새 호출이면 즉시 성공했을 것을 전원이 함께 기다린다).
      * </ul>
-     * </ul>
      * 그리고 이 열거에 <b>Redis 가 아닌 자리 하나가 빠져 있었다</b>(SPR-177 에서 더했다):
      * <ul>
      *   <li>메시지 저장({@code SendChatService} → Mongo): 느리면 <b>세션의 전송이 통째로 멈춘다</b> —

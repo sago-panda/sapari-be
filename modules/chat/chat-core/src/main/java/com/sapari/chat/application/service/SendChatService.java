@@ -11,7 +11,6 @@ import org.springframework.stereotype.Service;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatCheckpoint;
-import com.mongodb.MongoOperationTimeoutException;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
 import com.sapari.chat.application.port.DeliveryStage;
@@ -25,6 +24,7 @@ import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatConstants;
+import com.sapari.chat.domain.exception.ChatPersistTimeoutException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
@@ -331,35 +331,10 @@ public class SendChatService implements SendChatUseCase {
                 // 상한이 끊었으면 그 축을 센다. 발신자에게는 에러가 그대로 간다(저장이 안 됐으므로
                 // ack 를 주면 "유실이 성공" 이 된다) — 여기서 더하는 것은 규모를 아는 창구뿐이다.
                 .doOnError(err -> {
-                    if (isOperationTimeout(err)) {
+                    if (err instanceof ChatPersistTimeoutException) {
                         metrics.persistTimedOut();
                     }
                 });
-    }
-
-    /**
-     * 연산 상한이 끊은 것인가.
-     *
-     * <p>체인을 <b>걸어서</b> 본다. 실측한 체인이 이렇다(드라이버 5.6.5, CSOT 가 자를 때):
-     * <pre>
-     * [0] UncategorizedMongoDbException          ← Spring 이 감싼 것(전용 번역이 없다)
-     * [1] com.mongodb.MongoOperationTimeoutException   ← 분류 지점
-     * [2] MongoSocketReadTimeoutException
-     * [3] InterruptedByTimeoutException
-     * </pre>
-     * 그래서 {@code NestedExceptionUtils.getMostSpecificCause} 로는 <b>깊이 3 의 소켓 예외</b>가
-     * 나와 상한을 "소켓 오류" 로 분류하게 된다. 최상위만 봐도 안 된다 — 거긴 전용 타입이 아니다.
-     */
-    private boolean isOperationTimeout(Throwable error) {
-        for (Throwable t = error; t != null; t = t.getCause()) {
-            if (t instanceof MongoOperationTimeoutException) {
-                return true;
-            }
-            if (t.getCause() == t) {
-                return false;
-            }
-        }
-        return false;
     }
 
     private Mono<ChatMessageView> recoverDuplicate(SendChatCommand command) {

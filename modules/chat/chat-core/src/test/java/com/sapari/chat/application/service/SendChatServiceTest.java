@@ -35,15 +35,11 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
-import java.nio.channels.InterruptedByTimeoutException;
-import com.mongodb.MongoOperationTimeoutException;
-import com.mongodb.MongoSocketReadTimeoutException;
-import com.mongodb.ServerAddress;
-import org.springframework.data.mongodb.UncategorizedMongoDbException;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
+import com.sapari.chat.domain.exception.ChatPersistTimeoutException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
@@ -556,14 +552,11 @@ class SendChatServiceTest {
     @Test
     @DisplayName("⭐ 저장 상한이 끊으면 그 축의 카운터가 오른다 — delivery.dropped 는 오르지 않는다")
     void aPersistTimeoutIsCountedOnItsOwnAxis() {
-        // given: CSOT 가 자를 때 실제로 오는 체인이다(실측, 드라이버 5.6.5):
-        //   UncategorizedMongoDbException → MongoOperationTimeoutException
-        //     → MongoSocketReadTimeoutException → InterruptedByTimeoutException
-        // 분류 지점이 **깊이 1** 이라 getMostSpecificCause 로는 소켓 예외가 나와 엉뚱해진다.
-        RuntimeException wrapped = new UncategorizedMongoDbException("Operation exceeded the timeout limit",
-                new MongoOperationTimeoutException("Operation exceeded the timeout limit",
-                        new MongoSocketReadTimeoutException("Timeout while receiving message",
-                                new ServerAddress(), new InterruptedByTimeoutException())));
+        // given: 어댑터가 드라이버 예외를 이 도메인 타입으로 **번역해서** 올린다 — 서비스는 드라이버
+        // 타입을 보지 않는다(루트 AGENTS.md: 서비스에서 SDK 직접 호출 금지 / ArchUnit:
+        // application → infrastructure 금지). 드라이버 체인에서 이 타입이 나오는지는
+        // ChatMessageRepositoryImplTest 가 실제 Mongo 로 본다.
+        RuntimeException wrapped = new ChatPersistTimeoutException(new RuntimeException("timeout"));
         // 선행 단계만 통과시킨다(강퇴·레이트리밋 — 밴은 setUp 이 lenient 로 세운다). 안 세우면
         // 그 앞에서 끝나 이 칸이 "목 상호작용 0" 으로 실패한다(실측). stubAllowedAndSaved 를
         // 쓰지 않는 이유는 그게 save·publish 도 세워서 엄격 스텁이 "안 쓰인 스텁" 으로 잡기

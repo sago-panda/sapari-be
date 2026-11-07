@@ -1159,7 +1159,12 @@ them produces a number that says "it is in the history" about messages that are 
 
 ⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
 `ChatMeterNames` declared it when it was added. The rule in this section is "a scrape test walks every enum
-value; add a line when adding a meter" — the test did its half, the line was never added.
+value; add a line when adding a meter" — and **neither half was done**: an earlier version of this sentence
+said "the test did its half", which was false. `ChatMetricsPrometheusScrapeTest` and
+`MicrometerChatMetricsTest.neverThrows` both hand-enumerate, and both were short by that meter — so the
+`safe()` invariant was unguarded for it too. SPR-177 added both meters to both enumerations; the lesson is
+that a hand-enumerated guard is only as complete as the last person who remembered it, and saying "the test
+covers it" is a claim that needs the enumeration read, not assumed.
 
 - **The adapter must never throw.** Most call sites are inside `onErrorResume` lambdas — a throw there
   propagates downstream and *denies* the request the policy decided to allow. Instrumentation would invert

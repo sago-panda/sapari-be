@@ -65,7 +65,12 @@ public enum ChatErrorCode implements ErrorCode {
     // 그 상태를 쓰기 시점에 드러내는 것이 이 코드의 존재 이유다.
     FILTER_WORD_SOURCE_INVALID(409, "CHAT-011",
             "사전 정본에 규칙을 어기는 항목이 있어 변경을 발행할 수 없습니다. "
-                    + "그 항목을 먼저 제거해야 합니다 — 어느 항목인지는 서버 로그(requestId)에 있습니다.");
+                    + "그 항목을 먼저 제거해야 합니다 — 어느 항목인지는 서버 로그(requestId)에 있습니다."),
+
+    // 느린 Mongo 가 저장을 끊었다. 사용자 잘못이 아니라 서버 상황이라 5xx 다. 문구에 "잠시 후" 를
+    // 넣는 이유는 이 경우가 영구 실패가 아니기 때문이고, 어느 상한이 걸렸는지는 로그로만 간다
+    // (응답에 내부 설정 키를 싣지 않는다 — 이 enum 의 다른 항목들과 같은 이유다).
+    PERSIST_TIMEOUT(503, "CHAT-012", "메시지를 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.");
 
     private final int status;
     private final String code;

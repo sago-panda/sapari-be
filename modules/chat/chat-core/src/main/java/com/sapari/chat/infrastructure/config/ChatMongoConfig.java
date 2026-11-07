@@ -99,7 +99,18 @@ public class ChatMongoConfig {
 
             @Override
             public ReactiveMongoDatabaseFactory withSession(ClientSession session) {
-                return delegate.withSession(session);
+                // ⚠️ delegate 를 그대로 돌려주면 그 팩토리에서 나온 핸들이 상한을 **잃는다**.
+                // 오늘 인덱스 경로는 세션을 쓰지 않아 분모가 0 이지만, 그 사실이 이 메서드를
+                // "위임만 하면 되는 것" 으로 보이게 만든다 — 다시 감싼다.
+                return indexTimeoutFactory(delegate.withSession(session), ceiling);
+            }
+
+            @Override
+            public boolean isTransactionActive() {
+                // 인터페이스의 default 를 그대로 물려받으면 위임 대상의 상태가 아니라 "항상 false" 가
+                // 된다. 오늘 두 값이 같아서 보이지 않을 뿐이다 — 디코레이터가 default 를 빠뜨리는
+                // 모양은 인터페이스에 default 가 하나 더 생기는 날 조용히 틀린다.
+                return delegate.isTransactionActive();
             }
         };
     }
@@ -120,10 +131,17 @@ public class ChatMongoConfig {
      * 남은 차단 시간을 그대로 기다린다. 풀을 기본값으로 두면 두 번째가 14ms 로 나와 그 문제가 숨는다.
      *
      * <p><b>이 상한이 미치는 범위는 이 설정이 뜨는 앱뿐이다.</b> streaming-app 은
-     * {@code scanBasePackages} 에 {@code com.sapari.chat} 을 두어 이 클래스를 등록하지만, live-app 의
-     * {@code @ComponentScan} 은 {@code com.sapari.chat.infrastructure.persistence.*} 만 들여서 이
-     * 설정을 등록하지 않는다(그래서 자기 UUID 커스터마이저를 따로 둔다). 즉 live-app 의 블로킹
-     * 이력·증거 조회("느려도 되는 경로")는 이 상한에 묶이지 않는다 — 그 분리가 스캔 범위에 있다.
+     * {@code scanBasePackages} 에 {@code com.sapari.chat} 을 두어 이 클래스를 등록한다. live-app 은
+     * {@code basePackages = "com.sapari"} 로 넓게 스캔하면서 <b>정규식 제외</b>
+     * ({@code com\.sapari\.chat\..*})로 이 패키지를 떨어낸다 — 그래서 이 설정이 거기 등록되지
+     * 않고, 자기 UUID 커스터마이저를 따로 둔다. 결과적으로 live-app 의 블로킹 이력·증거 조회
+     * ("느려도 되는 경로")는 이 상한에 묶이지 않는다.
+     *
+     * <p>⚠️ 다만 그 경계는 <b>포함 목록이 아니라 제외 규칙</b>이다 — 한때 이 javadoc 이 "persistence
+     * 패키지만 들인다" 로 적었는데 그건 {@code @EnableJpaRepositories}·{@code @EntityScan} 의 문자열을
+     * 스캔 범위로 잘못 읽은 것이었다. 제외 규칙은 포함 목록보다 약한 보장이다: 그 한 줄이 지워지면
+     * live-app 이 이 상한을 조용히 물려받는다. 그 사실을 아는 것이 이 문단의 값이고, 가드를 코드로
+     * 올리는 것은 이 티켓 밖이다.
      *
      * <p>⚠️ 전역이라 <b>부팅 인덱스 생성도</b> 이 상한에 걸린다. 그쪽은 {@link #INDEX_CREATE_CEILING}
      * 이 10분을 쓰므로 연산 단위로 되올려야 한다 — {@code MongoDatabase.withTimeout} 이 전역을
@@ -133,6 +151,10 @@ public class ChatMongoConfig {
     @Bean
     public MongoClientSettingsBuilderCustomizer chatOperationTimeoutCustomizer(
             @Value("${chat.mongo.operation-timeout:2s}") Duration operationTimeout) {
+        // 2s 는 <b>정책값이고 측정값이 아니다</b>. 재서 나온 것은 "상한이 있어야 한다" 와 "클라이언트
+        // 쪽이어야 한다" 둘이고, 2초라는 수는 거기서 나오지 않는다 — Redis 가 1초인 것과 같을 이유도
+        // 없다(이쪽은 쓰기이고 인덱스가 걸린 삽입이다). 그래서 설정으로 열어 두고, 적정값은 운영에서
+        // chat.persist.timeout 이 오르는 빈도를 보고 정할 몫으로 남긴다.
         long millis = operationTimeout.toMillis();
         if (millis < 1) {
             // ⚠️ 0 은 CSOT 에서 "상한 없음" 이다 — 조용히 이 티켓 전 상태로 돌아가면서 설정은
