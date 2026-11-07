@@ -58,7 +58,10 @@ expect '모드 없이 부르면 사용법을 내고 비정상 종료한다' 64 '
 # ⚠️ 모드 **이름만** grep 하면 안 된다 — 실측: 비용 절의 `target 9.9ms` 가 그 자리를 메워
 # 사용법에서 target 줄을 지워도 칸이 통과했다(분모 0). 그래서 인자 자리까지 묶어 단언한다.
 usage_out="$(sh "$TARGET" 2>&1 || true)"   # 64 로 끝나므로 set -e 에 걸리지 않게 받는다
-for pat in 'actor  <actor_id> <actor_type>' 'action <action>' 'target <target_id>' '--explain'; do
+# '148배' 도 같이 태운다 — usage 가 적는 그 수치가 조용히 드리프트하는 것을 같은 기계가 잡는다.
+# 자유 드리프트 면이 4 → 3 이 된다(남는 셋은 주석 둘 + AGENTS.md, 기준 변경 시 전수 grep 규약이
+# 받는 면이다). 통합하지 않는 이유는 수치가 전부 heredoc 산문 안이라 산문이 깨지기 때문이다.
+for pat in 'actor  <actor_id> <actor_type>' 'action <action>' 'target <target_id>' '--explain' '148배'; do
     if printf '%s' "$usage_out" | grep -qF -- "$pat"; then
         printf 'ok   사용법이 "%s" 를 적는다\n' "$pat"; PASS=$((PASS + 1))
     else
@@ -97,6 +100,20 @@ expect '선행 0 이 붙은 limit 을 거부한다 (Postgres 10진 vs 산술 8�
 # 끝났고, 1 은 종료 코드 표에 없는 값이다.
 expect '8진에 없는 선행 0 숫자(08)도 거부한다' 64 'limit' \
     sh "$TARGET" action CHAT_KICK_USER 08
+
+# 상한. 실측(분모 5행): limit=9e18 은 exit 0 에 건수도 맞지만 행 질의가 **더 이상 LIMIT 으로
+# 묶이지 않고**, bigint 최대값은 `$((max + 1))` 이 음수로 랩어라운드해 탐침이 죽는다
+# (LIMIT must not be negative) — 행이 이미 나간 뒤다. 경계 양쪽을 같이 본다: 상한 자체는
+# 통과해야 하므로(아래 칸은 DB 가 없어 psql 의 2 로 떨어진다) "항상 거부" 가 통과하지 못한다.
+expect '상한을 넘는 limit 을 거부한다' 64 '상한' sh "$TARGET" action CHAT_KICK_USER 10001
+expect 'bigint 띠의 limit 도 상한에서 걸린다' 64 '상한' \
+    sh "$TARGET" action CHAT_KICK_USER 9223372036854775807
+out="$(sh "$TARGET" action CHAT_KICK_USER 10000 2>&1)" && code=0 || code=$?
+if [ "$code" != 64 ]; then
+    printf 'ok   상한 자체(10000)는 가드를 통과한다 — 항상 거부가 아니다\n'; PASS=$((PASS + 1))
+else
+    printf 'FAIL 상한 10000 이 거부됐다(exit 64) — 경계가 하나 안쪽이다\n'; FAIL=$((FAIL + 1))
+fi
 
 # --- 실제 PostgreSQL 층 -----------------------------------------------------
 

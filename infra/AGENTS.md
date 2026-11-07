@@ -141,17 +141,30 @@ ever runs `SELECT`; there is no write mode, so it cannot be the tool that corrup
   - **`$((10#$limit + 1))` is not the fix here.** `10#` is a bash/ksh extension, not POSIX
     arithmetic (measured: `dash` → `arithmetic expression: expecting EOF`), and the shebang is
     `#!/bin/sh`. The guard rejects leading zeros instead, so all three readers see one value.
-  - It is now **one guard**, not two. Once leading zeros are rejected the surviving values are
-    `[1-9][0-9]*`, so the old `-gt 0` check had denominator 0 and was removed. No upper bound:
-    an oversized `limit` dies first in the row query's `LIMIT` with psql's own bigint error, so it
-    cannot be silently wrong. Two earlier versions of this bullet were wrong about these guards —
-    first claiming a mutation had to remove both, then describing them as a message/gate pair.
+  - It is now **one shape guard plus a ceiling**, not the original two-check pair. Once leading
+    zeros are rejected the surviving values are `[1-9][0-9]*`, so the old `-gt 0` check had
+    denominator 0 and was removed. Three earlier versions of this bullet were wrong about these
+    guards — first claiming a mutation had to remove both, then calling them a message/gate pair,
+    then justifying the absence of a ceiling with an error that does not fire.
+  - **`limit` is capped at 10000**, and the reason the earlier "no ceiling" line gave was false in
+    two places. Measured against 5 rows: `limit=9000000000000000000` → **exit 0, 5 rows, correct
+    count** — nothing dies, so "psql's bigint error kills it first" never fires in that band, while
+    the row query stops being bounded by `LIMIT` at all; `limit=9223372036854775807` → exit 3, but
+    the death is in the **probe**, not the row query, because `$((max + 1))` wraps negative
+    (`LIMIT must not be negative`) *after* the rows have already printed — the last face of the
+    base/overflow root above; `9223372036854775808` and up → exit 3, `bigint out of range`.
+    Nothing is silently wrong in any band, so this is a false justification, not a defect. The cap
+    makes all three unreachable and turns "LIMIT bounds the plan" — which every cost figure here
+    rests on — from an explanation into an entry condition. **10000 is a policy ceiling, not a
+    measured threshold**: this is a window a person reads in a terminal, and an answer bigger than
+    that is the wrong question. What the measurements decide is only *that* there must be a cap.
 - **Two test layers**, same split the sibling learned: `--self-test` covers the pure argv/validation
   logic with no database and reports how many checks it ran (a self-test that is one `exit 0` is a
-  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 22 cells —
+  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 26 cells —
   table/column names, query syntax, real exit codes and their separation, newest-first ordering,
-  truncation in both directions, rows-printed matching the cap, both leading-zero vectors, the
-  usage text listing every mode, and the index plans. It applies
+  truncation in both directions, rows-printed matching the cap, both leading-zero vectors, both
+  sides of the `limit` ceiling, the usage text listing every mode (and the 148× figure it states,
+  so that number cannot drift unnoticed), and the index plans. It applies
   **the whole real `db/migration/live/V1__init_live.sql`**.
   - It also checks `current_database()` and that `live_schema` is empty before running DDL, copied
     from the sibling. ⚠️ **On this script's own path that guard cannot fire** — like the sibling, the
