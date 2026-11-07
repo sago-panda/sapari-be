@@ -78,7 +78,7 @@ public class ChatHistoryController {
             return new GetChatHistoryCommand(
                     roomId,
                     principal == null ? null : principal.userId(),
-                    principal == null ? null : chatRoleOf(principal.role()),
+                    principal == null ? null : chatRoleNameOf(principal.role()),
                     beforeId, playbackPositionMs, size);
         } catch (IllegalArgumentException e) {
             throw new ChatHistoryQueryInvalidException(e.getMessage(), e);
@@ -108,7 +108,7 @@ public class ChatHistoryController {
      * ({@code ChatPermissionDeniedException}). 조용히 {@code BUYER} 로 떨어뜨리면 새 플랫폼 역할이
      * 생겼을 때 그 사용자가 자기 권한보다 좁은 뷰를 받고도 그 사실을 알 수 없다.
      */
-    private static String chatRoleOf(String platformRole) {
+    private static String chatRoleNameOf(String platformRole) {
         return ChatRole.fromPlatformRole(platformRole)
                 .orElseThrow(() -> new ChatPermissionDeniedException(
                         "알 수 없는 역할이다 — role=" + platformRole))

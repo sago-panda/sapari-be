@@ -68,14 +68,10 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 @WebMvcTest(controllers = ChatFilterWordController.class,
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
-// GlobalExceptionHandler 를 올린다 — 이 슬라이스에는 컴포넌트 스캔이 없어 @RestControllerAdvice 가
-// 자동으로 잡히지 않는다. 없으면 ChatException 이 매핑된 상태가 아니라 ServletException 으로 나와,
-// 에러코드가 선언한 상태코드로 HTTP 를 떠나는지 **아무 테스트도 단언하지 못한다**.
-// SPR-178 전에는 chat 컨트롤러 테스트 넷 중 하나만 이것을 올렸고(실측), 그래서 CHAT-001/004/006/
-// 008/010/011 이 선언한 상태로 HTTP 를 떠나는지가 이 모듈에서 단언되지 않았다 — 역변이로 확인했다:
-// CHAT-011 을 409 → 400 으로 뒤집어도 live-app 에서 아무것도 깨지지 않았다.
-@Import({GlobalExceptionHandler.class, ChatFilterWordController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
-        ChatFilterWordAuthorizationTest.FixedClockConfig.class})
+// GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
+// (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
+@Import({ChatFilterWordController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
+        ChatFilterWordAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("사전 관리 엔드포인트 — 세 메서드 전부 관리자만 지난다")
 class ChatFilterWordAuthorizationTest {
 

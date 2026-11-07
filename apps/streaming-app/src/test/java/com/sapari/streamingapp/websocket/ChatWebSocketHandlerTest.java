@@ -14,6 +14,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -24,7 +25,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.web.reactive.socket.CloseStatus;
+import org.springframework.web.reactive.socket.HandshakeInfo;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSession;
@@ -829,6 +832,33 @@ class ChatWebSocketHandlerTest {
                     assertThat(m.senderEmail()).isNull();
                     assertThat(m.originalMessage()).isNull();
                 });
+    }
+
+    @Test
+    @DisplayName("⭐ 토큰 없는 핸드셰이크도 flush 상한을 받는다 — 이 셋이 상한 없이 남으면 위조 토큰이 fd 를 묶는다")
+    void close_without_a_token_is_also_bounded() {
+        // given: 서브프로토콜에 토큰이 없는 핸드셰이크. 운영 경로(handle)로 들어가 등록 전에 닫히는
+        // 세 자리 중 하나다 — 깨진 핸드셰이크 · 토큰 부재 · 검증 실패. 이 셋은 세션이 등록되기
+        // 전이라 사유 조회에 쓸 sid 가 없어 상수 1008 로 닫는다.
+        //
+        // ⚠️ 이 칸이 없으면 closeBounded 의 상한을 지워도 전 스위트가 초록이다(실측: 테스트 트리
+        // 전수 grep 에서 그 이름이 0건이었다).
+        ReactorNettyWebSocketSession session = mock(ReactorNettyWebSocketSession.class);
+        ChannelId channelId = DefaultChannelId.newInstance();
+        given(session.getHandshakeInfo()).willReturn(new HandshakeInfo(
+                URI.create("wss://x/ws/chat?roomId=" + UUID.randomUUID()),
+                new HttpHeaders(), Mono.empty(), null));
+        given(session.close(any())).willReturn(Mono.never());
+        given(session.getChannelId()).willReturn(channelId);
+
+        // when
+        StepVerifier.withVirtualTime(() -> handler.handle(session))
+                .thenAwait(Duration.ofSeconds(10))
+                .expectComplete()
+                .verify(Duration.ofSeconds(5));
+
+        // then
+        then(connections).should(times(1)).dispose(channelId);
     }
 
     @Test

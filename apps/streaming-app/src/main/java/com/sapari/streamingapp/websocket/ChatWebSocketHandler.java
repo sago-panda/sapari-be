@@ -463,23 +463,30 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * 뒤따르는 정리(doFinally)를 진행시킨다. (테스트 진입점)
      */
     Mono<Void> closeWithReason(WebSocketSession session, String sid) {
-        return Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
-                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
+        return closeBounded(session, () -> registry.closeStatusOf(sid));
     }
 
     /**
-     * 사유 없이 1008 로 닫는다 — 핸드셰이크가 깨졌거나 토큰이 없거나 검증이 실패한 길.
+     * 상한을 받는 close. <b>상한 배선이 이 한 자리에만 있어야 한다</b> — 사본이 늘면 한 군데만
+     * 빠진 상태가 전 스위트 초록으로 통과한다(그게 이 티켓 전의 상태였다).
      *
-     * <p>{@link #closeWithReason} 와 같은 상한을 받는다. 이 셋도 <b>적대적이거나 깨진 클라가 모는
-     * 길</b>이라 close 가 flush 되지 않을 수 있고, 그러면 채널이 남는다 — 그리고 "이미 close 보냄"
-     * 표시 때문에 다시 닫으려 해도 무동작이다. {@link #CLOSE_FLUSH_TIMEOUT} 의 근거가 그 구조다.
+     * <p>왜 상한이 필요한가: close 는 write future 에 채널 닫기를 걸어두는 구조라 그 write 가
+     * flush 되지 않으면 채널이 남고, "이미 close 보냄" 표시 때문에 다시 닫으려 해도 무동작이다.
+     * {@link #CLOSE_FLUSH_TIMEOUT} 에 그 근거가 적혀 있다.
      *
-     * <p>{@code closeWithReason} 와 합치지 않는 이유: 그쪽은 {@code registry.closeStatusOf(sid)} 로
-     * 사유를 읽는데, 이 세 자리는 <b>세션이 등록되기 전</b>이라 그 조회에 쓸 sid 가 없다.
+     * <p>사유를 <b>값이 아니라 공급자로</b> 받는 이유: 등록된 세션은
+     * {@code registry.closeStatusOf(sid)} 를 읽어야 하고 그 조회를 구독 시점으로 미뤄야 한다
+     * (종전 {@code Mono.defer} 가 하던 일이다). 등록 전 경로는 그 조회에 쓸 sid 가 없어 상수를 넘긴다.
      */
-    private Mono<Void> closeBounded(WebSocketSession session) {
-        return Mono.defer(() -> session.close(CloseStatus.POLICY_VIOLATION))
+    private Mono<Void> closeBounded(WebSocketSession session,
+            java.util.function.Supplier<CloseStatus> status) {
+        return Mono.defer(() -> session.close(status.get()))
                 .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
+    }
+
+    /** 사유 없이 1008 로 닫는다 — 핸드셰이크가 깨졌거나 토큰이 없거나 검증이 실패한 길. */
+    private Mono<Void> closeBounded(WebSocketSession session) {
+        return closeBounded(session, () -> CloseStatus.POLICY_VIOLATION);
     }
 
     /**
@@ -799,6 +806,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 그 묶음을 쪼개면 거부 전체의 분기가 바뀌기 때문이다. 대신 <b>정책을 SYSTEM code 가
         // 싣는다</b> — 영구(KICKED·BANNED·ROOM_ENDED)는 재접속하지 않고, TOO_MANY_SESSIONS 는
         // 백오프 후 재시도해도 된다. 그 구분은 modules/chat/AGENTS.md 의 close-code 계약에 적혀 있다.
+        // 상한을 조립된 Mono 에 건다 — closeBounded 를 쓰면 상한이 close 구간만 덮고 그 앞의
+        // send 가 영원히 멈출 수 있다(수신 윈도를 0 으로 광고하는 클라는 그 프레임을 빼 가지 않는다).
         return session.send(Mono.just(session.textMessage(serialize(system))))
                 .then(session.close(CloseStatus.POLICY_VIOLATION))
                 .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));

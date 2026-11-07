@@ -65,6 +65,11 @@ import org.mockito.ArgumentCaptor;
 // GlobalExceptionHandler 를 명시로 올린다 — 이 슬라이스에는 컴포넌트 스캔이 없어서
 // @RestControllerAdvice 가 자동으로 잡히지 않는다. 없으면 도메인 예외가 매핑되지 않고
 // ServletException 으로 터져 "400 이 아니다" 가 아니라 "테스트가 못 돈다" 가 된다.
+//
+// SPR-178 전에는 chat 컨트롤러 테스트 넷 중 **이 파일만** 이것을 올렸고(실측), 그래서
+// CHAT-001/004/006/008/010/011 이 선언한 상태로 HTTP 를 떠나는지가 live-app 에서 단언되지
+// 않았다 — 역변이로 확인했다: CHAT-011 을 409 → 400 으로 뒤집어도 아무것도 깨지지 않았다.
+// 형제 셋이 이 주석을 가리키므로, 지우려면 그 셋을 먼저 볼 것.
 @Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, GlobalExceptionHandler.class})
 @DisplayName("이력 엔드포인트 — 비회원도 지나고, 신원은 인증 주체에서만 온다")
 class ChatHistoryControllerTest {

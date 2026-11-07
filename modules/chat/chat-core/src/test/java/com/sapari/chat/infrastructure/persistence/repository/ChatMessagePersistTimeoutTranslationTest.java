@@ -71,7 +71,10 @@ class ChatMessagePersistTimeoutTranslationTest {
         StepVerifier.create(repository.save(message()))
                 .expectErrorSatisfies(error -> {
                     assertThat(error)
-                            .as("번역이 끊기면 서비스가 분류를 못 하고 chat.persist.timeout 이 영원히 0 이다")
+                            // 수는 번역과 **다른 배선**에 실려 있다(doOnError). 그래서 번역이
+                            // 끊겼을 때 잃는 것은 지표가 아니라 **발신자에게 가는 에러코드**다 —
+                            // CHAT-012(503) 대신 번역되지 않은 500 이 나간다.
+                            .as("번역이 끊기면 발신자가 CHAT-012 대신 번역되지 않은 500 을 받는다")
                             .isInstanceOf(ChatPersistTimeoutException.class);
                     // 원인을 버리면 로그에서 "어느 상한이 걸렸나" 가 사라진다 — 응답 문구는
                     // 에러코드가 들고 있고 진단은 사슬에 있다.

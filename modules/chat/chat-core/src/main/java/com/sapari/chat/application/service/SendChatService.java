@@ -327,9 +327,6 @@ public class SendChatService implements SendChatUseCase {
                         })
                         .thenReturn(saved.toView()))
                 .onErrorResume(DuplicateKeyException.class, e -> recoverDuplicate(command));
-                // 상한이 끊은 수는 **영속 어댑터가** 센다 — 쓰기와 중복복구 재조회를 가르는 수가
-                // 드라이버 예외이고 그것은 이 계층에서 보이지 않는다. 발신자에게는 양쪽 다 에러가
-                // 그대로 간다(저장이 안 된 쪽에 ack 를 주면 "유실이 성공" 이 된다).
     }
 
     private Mono<ChatMessageView> recoverDuplicate(SendChatCommand command) {
