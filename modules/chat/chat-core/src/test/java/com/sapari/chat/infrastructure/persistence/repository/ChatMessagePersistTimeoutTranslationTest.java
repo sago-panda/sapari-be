@@ -55,11 +55,7 @@ class ChatMessagePersistTimeoutTranslationTest {
     @Test
     @DisplayName("⭐ CSOT 체인이 ChatPersistTimeoutException 으로 번역된다 — 원인 사슬은 보존한다")
     void aDriverTimeoutChainBecomesTheDomainException() {
-        RuntimeException driverChain = new UncategorizedMongoDbException(
-                "Operation exceeded the timeout limit",
-                new MongoOperationTimeoutException("Operation exceeded the timeout limit",
-                        new MongoSocketReadTimeoutException("Timeout while receiving message",
-                                new ServerAddress(), new InterruptedByTimeoutException())));
+        RuntimeException driverChain = timeoutChain();
         willReturn(Mono.error(driverChain)).given(mongoRepository).save(any());
 
         StepVerifier.create(repository.save(message()))
@@ -75,6 +71,22 @@ class ChatMessagePersistTimeoutTranslationTest {
     }
 
     @Test
+    @DisplayName("⭐ DuplicateKey 뒤 재조회도 번역된다 — 같은 상한에 걸리는 같은 축이다")
+    void aTimeoutOnTheDuplicateRecoveryReadIsAlsoTranslated() {
+        // 재조회는 **같은 concatMap 안**이고 **같은 전역 상한**에 걸린다. 번역이 없으면 발신자는
+        // UncategorizedMongoDbException(500)을 받고 chat.persist.timeout 은 평평하다 — "상한이 저장
+        // 경로를 끊은 횟수" 를 세는 지표가 그 경로의 한 갈래를 못 보는 것이라, 쓰기와 다른 축이
+        // 아니라 같은 축의 미계수다.
+        willReturn(Mono.error(timeoutChain())).given(mongoRepository)
+                .findByRoomIdAndSenderIdAndClientMsgId(any(), any(), any());
+
+        StepVerifier.create(repository.findByRoomIdAndSenderIdAndClientMsgId(
+                        UUID.randomUUID(), UUID.randomUUID(), "c1"))
+                .expectError(ChatPersistTimeoutException.class)
+                .verify(VERIFY_CEILING);
+    }
+
+    @Test
     @DisplayName("⭐ 상한이 아닌 저장 실패는 번역하지 않는다 — 전부 상한으로 보고하면 그 지표가 거짓이 된다")
     void anUnrelatedFailureIsNotTranslated() {
         RuntimeException unrelated = new IllegalStateException("무관한 실패");
@@ -85,6 +97,14 @@ class ChatMessagePersistTimeoutTranslationTest {
                         .as("상한이 아닌 것까지 번역하면 chat.persist.timeout 이 저장 실패 전체를 센다")
                         .isSameAs(unrelated))
                 .verify(VERIFY_CEILING);
+    }
+
+    /** CSOT 가 자를 때 실제로 오는 네 겹(실측, 드라이버 5.6.5). 판정 지점은 깊이 1 이다. */
+    private RuntimeException timeoutChain() {
+        return new UncategorizedMongoDbException("Operation exceeded the timeout limit",
+                new MongoOperationTimeoutException("Operation exceeded the timeout limit",
+                        new MongoSocketReadTimeoutException("Timeout while receiving message",
+                                new ServerAddress(), new InterruptedByTimeoutException())));
     }
 
     private ChatMessage message() {

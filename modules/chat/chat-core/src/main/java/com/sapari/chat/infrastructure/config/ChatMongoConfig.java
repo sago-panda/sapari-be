@@ -116,6 +116,23 @@ public class ChatMongoConfig {
     }
 
     /**
+     * 인덱스 경로가 쓸 템플릿 — 전역 상한을 {@link #INDEX_CREATE_CEILING} 까지 되올려 받는다.
+     *
+     * <p><b>한 줄이지만 함수로 뺀 이유는 분모다.</b> 분모 0 이던 것이 둘이었다 — ① 팩토리를
+     * 되올려 감싼다 ② <b>그 감싼 것을 템플릿에 넣는다</b>. ①은 {@link #indexTimeoutFactory} 를
+     * 직접 부르는 칸이 묶고 있었지만 ②는 비어 있었다(실측: 빈이 되올린 것 대신 원본 템플릿을 쓰게
+     * 바꿔도 전 칸이 초록이었다). 조립을 이 함수로 빼면 테스트가 그 결과의 상한을 한 겹 위에서
+     * 그대로 들여다볼 수 있고, 부팅에 왕복이 늘지 않는다.
+     *
+     * <p>그러면 읽어야만 아는 범위가 {@code createChatMessagesIndexes(indexBoundedTemplate(...))}
+     * 한 식으로 줄어든다.
+     */
+    static ReactiveMongoTemplate indexBoundedTemplate(ReactiveMongoTemplate template) {
+        return new ReactiveMongoTemplate(
+                indexTimeoutFactory(template.getMongoDatabaseFactory(), INDEX_CREATE_CEILING),
+                template.getConverter());
+    }
+    /**
      * 연산 상한을 <b>클라이언트</b>에 건다(CSOT — 드라이버 5.6.5의 {@code MongoClientSettings.timeout}).
      *
      * <p>왜 호출부가 아니라 여기인가. 멈춘 insert 를 두 방식으로 끊어 보고 <b>끊은 뒤 커넥션이
@@ -151,10 +168,16 @@ public class ChatMongoConfig {
     @Bean
     public MongoClientSettingsBuilderCustomizer chatOperationTimeoutCustomizer(
             @Value("${chat.mongo.operation-timeout:2s}") Duration operationTimeout) {
-        // 2s 는 <b>정책값이고 측정값이 아니다</b>. 재서 나온 것은 "상한이 있어야 한다" 와 "클라이언트
-        // 쪽이어야 한다" 둘이고, 2초라는 수는 거기서 나오지 않는다 — Redis 가 1초인 것과 같을 이유도
-        // 없다(이쪽은 쓰기이고 인덱스가 걸린 삽입이다). 그래서 설정으로 열어 두고, 적정값은 운영에서
-        // chat.persist.timeout 이 오르는 빈도를 보고 정할 몫으로 남긴다.
+        // 2s 는 이 티켓이 <b>재지 않은</b> 값이다 — 잴 수 없는 값이 아니라 안 쟀다. 재서 나온 것은
+        // "상한이 있어야 한다" 와 "클라이언트 쪽이어야 한다" 둘이고 그 수는 거기서 나오지 않는다.
+        //
+        // 값을 정하는 식은 "정상의 몇 배" 가 아니다. 전송이 concatMap 으로 직렬화돼 있어서, 멈춘
+        // Mongo 아래에서는 이 상한이 **메시지마다** 걸린다 — 그 세션이 막히는 시간은 상한이 아니라
+        // (대기 프레임 수 × 상한)이다. 그러니 축은 <b>"그 세션이 몇 초까지 막혀도 되는가 ÷ 대기
+        // 프레임 수"</b> 이고, 정상 save 의 지연 분포는 하한만 준다(그보다 작으면 멀쩡한 쓰기를 자른다).
+        //
+        // ⚠️ 운영에서 chat.persist.timeout 빈도만 보면 **위쪽 경계**는 보이지만 "세션이 얼마나
+        // 막혔나" 는 안 보인다 — 그 축을 재려면 대기 프레임 수를 같이 들고 있어야 한다.
         long millis = operationTimeout.toMillis();
         if (millis < 1) {
             // ⚠️ 0 은 CSOT 에서 "상한 없음" 이다 — 조용히 이 티켓 전 상태로 돌아가면서 설정은
@@ -219,12 +242,7 @@ public class ChatMongoConfig {
         if (template == null) {
             return new ChatMessagesIndexes(List.of());
         }
-        // 전역 상한을 이 경로만 되올려 받는다 — 그러지 않으면 큰 컬렉션의 첫 인덱스 빌드가
-        // chat.mongo.operation-timeout(기본 2s)에 잘려 부팅이 실패한다. 아래 상한이 그 경계다.
-        ReactiveMongoTemplate bounded = new ReactiveMongoTemplate(
-                indexTimeoutFactory(template.getMongoDatabaseFactory(), INDEX_CREATE_CEILING),
-                template.getConverter());
-        return new ChatMessagesIndexes(createChatMessagesIndexes(bounded));
+        return new ChatMessagesIndexes(createChatMessagesIndexes(indexBoundedTemplate(template)));
     }
 
     /** 선 인덱스 이름. 이 빈이 존재한다는 것 자체가 "인덱스가 포트보다 먼저 섰다"는 사실이다. */
@@ -240,9 +258,18 @@ public class ChatMongoConfig {
      * 않는다 — 시끄럽게 죽는다")가 <b>조용한 멈춤</b>으로 뒤집힌다: 파드는 Ready 가 되지 않고,
      * 로그에는 아무 사유도 남지 않으며, "느린 시작" 과 구분되지 않는다.
      *
-     * <p><b>왜 전역 {@code timeoutMs} 를 쓰지 않는가.</b> 그건 런타임 질의까지 전부 묶는다 — VOD
-     * 윈도우 조회처럼 느려도 되는 경로가 같은 상한에 걸리고, 그 값을 잘못 고르면 부팅이 아니라
-     * 서비스가 깨진다. 여기서 막으려는 것은 <b>부팅 경로</b> 하나라 상한도 그 자리에만 둔다.
+     * <p><b>전역 {@code timeoutMs} 는 이제 있다 — 그래서 이 상한이 그걸 되올려 받는다.</b>
+     * SPR-177 이 {@code chat.session} 과 같은 층의 설정으로 전역 CSOT 를 넣었고
+     * ({@link #chatOperationTimeoutCustomizer}), 그 전역은 <b>{@code createIndexes} 까지 자른다</b>
+     * (실측: 전역 500ms 에서 3,000ms 차단된 createIndexes 가 563ms 에 끊겼다). 그래서 이 경로는
+     * {@link #indexTimeoutFactory} 로 아래 상한까지 되올린 팩토리를 쓴다.
+     *
+     * <p>⚠️ 한때 이 자리에 <b>"전역을 쓰지 않는다 … 상한도 그 자리에만 둔다"</b> 가 적혀 있었다.
+     * 그 문장이 든 근거(VOD 윈도우 조회처럼 느려도 되는 경로가 같이 묶인다)는 <b>이 앱에는 맞지
+     * 않는다</b> — 그 조회는 블로킹 구현이고 그 빈은 live-app 이 자기 설정에서 등록하는데, live-app 은
+     * {@code com.sapari.chat} 을 스캔에서 정규식으로 빼므로 이 설정과 그 커스터마이저가 거기 뜨지
+     * 않는다. 문장을 지우지 않고 남겨 두는 이유는, 전역을 넣는 변경이 <b>같은 파일의 다른 문단</b>을
+     * 거짓으로 만든 자리라는 사실 자체가 다음 사람에게 쓸모 있기 때문이다.
      *
      * <p><b>값을 10분으로 둔 근거</b>(Testcontainers mongo:7.0 실측):
      * <pre>

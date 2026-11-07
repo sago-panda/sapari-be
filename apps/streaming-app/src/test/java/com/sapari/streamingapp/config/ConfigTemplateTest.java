@@ -214,7 +214,7 @@ class ConfigTemplateTest {
     }
 
     @Test
-    @DisplayName("템플릿이 실제로 읽히고 그 세 키를 여전히 다룬다 — 파일이 사라져도 위 검사가 통과하지 않게")
+    @DisplayName("템플릿이 실제로 읽히고 Duration 키 전부를 여전히 다룬다 — 파일이 사라져도 위 검사가 통과하지 않게")
     void template_is_actually_read() throws IOException {
         // given
         String template = template();

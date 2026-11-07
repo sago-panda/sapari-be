@@ -107,20 +107,26 @@ class ChatMongoIndexBootstrapTest {
     void theSendPathAndTheIndexPathCarryDifferentTimeouts() {
         Long sendPath = databaseFactory.getMongoDatabase().block(VERIFY_CEILING)
                 .getTimeout(TimeUnit.MILLISECONDS);
-        Long indexPath = ChatMongoConfig.indexTimeoutFactory(databaseFactory, Duration.ofMinutes(10))
-                .getMongoDatabase().block(VERIFY_CEILING).getTimeout(TimeUnit.MILLISECONDS);
+        // ⚠️ 팩토리를 직접 부르지 않는다 — 그러면 "되올려 감싼다" 만 보고 "그 감싼 것을 템플릿에
+        // 넣는다" 는 안 본다(실측: 빈이 원본 템플릿을 쓰게 바꿔도 전 칸이 초록이었다). 운영 빈이
+        // 쓰는 것과 **같은 조립 함수**를 들여다본다.
+        Long indexPath = ChatMongoConfig.indexBoundedTemplate(mongoTemplate)
+                .getMongoDatabaseFactory().getMongoDatabase().block(VERIFY_CEILING)
+                .getTimeout(TimeUnit.MILLISECONDS);
 
-        // 전송 경로: 커스터마이저가 건 기본값. null 이면 상한이 아예 안 걸렸다는 뜻이고 그게 SPR-177
-        // 전의 상태다(드라이버 기본 timeoutMs=null, 실측).
+        // 전송 경로에 상한이 있어야 한다. null 이면 아예 안 걸린 것이고 그게 SPR-177 전의 상태다
+        // (드라이버 기본 timeoutMs=null, 실측). **값은 적지 않는다** — 그 수가 코드 기본값과 같은지는
+        // ConfigTemplateTest 가 템플릿까지 묶어 따로 재고, 설정이 클라이언트에 실리는지는
+        // ChatMongoTimeoutConfigTest 가 750ms 로 본다. 여기서 재는 것은 두 경로가 **갈린다** 는 것이다.
         assertThat(sendPath)
                 .as("전송 경로에 상한이 없다 — 느린 Mongo 가 세션을 수명까지 멈춘다")
-                .isEqualTo(Duration.ofSeconds(2).toMillis());
-        // 인덱스 경로: 되올린 값. 전역과 **달라야** 한다 — 같으면 디코레이터가 전역을 못 덮은 것이고
-        // 큰 컬렉션의 첫 인덱스 빌드가 2초에 죽어 부팅이 실패한다(실측: 전역 500ms 에서 3,000ms
-        // 차단된 createIndexes 가 563ms 에 끊겼다).
+                .isNotNull();
         assertThat(indexPath)
-                .as("인덱스 경로가 전역 상한을 그대로 받았다 — 부팅이 2초에 죽는다")
+                .as("인덱스 경로가 되올린 상한을 받지 못했다 — 부팅이 전송 상한에 잘린다")
                 .isEqualTo(Duration.ofMinutes(10).toMillis());
+        assertThat(indexPath)
+                .as("두 경로가 같은 상한이다 — 하나가 안 걸렸거나 디코레이터가 전역을 못 덮었다")
+                .isNotEqualTo(sendPath);
     }
 
     /**
@@ -132,7 +138,7 @@ class ChatMongoIndexBootstrapTest {
      * 적어 두는 쪽을 골랐다.
      */
     @Test
-    @DisplayName("⭐ 포트가 열리기 전에 인덱스 3종이 이미 서 있다")
+    @DisplayName("⭐ 포트가 열리기 전에 인덱스 4종이 이미 서 있다")
     void indexesExistBeforeTheProcessCanServeTraffic() {
         // given: 이름을 하드코딩하지 않는다 — 생성이 멱등이라 같은 호출이 같은 이름을 돌려준다
         List<String> expected = ChatMongoConfig.createChatMessagesIndexes(mongoTemplate);

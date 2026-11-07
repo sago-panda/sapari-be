@@ -76,7 +76,7 @@ class MicrometerChatMetricsTest {
             }
         });
 
-        // when & then: 네 메서드 전부
+        // when & then: 여섯 메서드 전부
         assertThatCode(() -> {
             broken.policyNotEnforced(ChatPolicy.KICK, ChatCheckpoint.SEND, PolicyReadFailure.UNAVAILABLE);
             broken.rateLimitDegraded(RateLimitDegradation.TTL_FALLBACK);

@@ -41,6 +41,12 @@ public class ChatMessageRepositoryImpl implements ChatMessageRepository {
     @Override
     public Mono<ChatMessage> findByRoomIdAndSenderIdAndClientMsgId(UUID roomId, UUID senderId, String clientMsgId) {
         return mongoRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, clientMsgId)
-                .map(mapper::toDomain);
+                .map(mapper::toDomain)
+                // 이 재조회도 **같은 concatMap 안**이고 **같은 전역 상한**에 걸린다. 번역이 없으면
+                // DuplicateKey 뒤 재조회가 끊길 때 발신자는 UncategorizedMongoDbException(500)을
+                // 받고 chat.persist.timeout 은 평평하다 — "상한이 저장 경로를 끊은 횟수" 를 세는
+                // 지표가 그 경로의 한 갈래를 못 보는 것이라, 쓰기와 다른 축이 아니라 같은 축의
+                // 미계수다.
+                .onErrorMap(MongoOperationTimeout::matches, ChatPersistTimeoutException::new);
     }
 }
