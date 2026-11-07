@@ -47,7 +47,22 @@ import reactor.core.publisher.Mono;
  * 비용 0(메모리·입력)을 앞에 두고 Redis는 뒤로 미뤄 불필요한 I/O를 차단한다.
  *
  * <p>{@code @Transactional}을 두지 않는다 — 단일 Mongo 문서 저장 + Redis 발행이라 다중 엔티티 트랜잭션이 없고,
- * 재전송 멱등은 (roomId,senderId,clientMsgId) unique 인덱스가 보장한다(DuplicateKey → 기존 메시지 재조회).
+ * 같은 키의 재삽입은 (roomId,senderId,clientMsgId) unique 인덱스가 막는다(DuplicateKey → 기존 메시지 재조회).
+ *
+ * <p>⚠️ <b>그것을 "재전송 멱등" 이라 부르지 않는다 — 본문 축에서 참이 아니다.</b> 인덱스 키에
+ * <b>본문이 없고</b> {@code recoverDuplicate} 도 본문을 비교하지 않는다. 그래서 같은
+ * {@code clientMsgId} 로 <b>다른 본문</b>을 보내면 서버는 <b>첫 번째 메시지의 view 를 ACK 로</b>
+ * 돌려주고, 이번 본문은 저장되지도 발행되지도 않는다. 같은 본문의 재전송에서는 멱등이 맞지만
+ * 다른 본문에서는 <b>유실이 성공으로 보고</b>된다.
+ *
+ * <p>그 동작은 실수가 아니라 <b>고정돼 있다</b> —
+ * {@code ChatMessageRepositoryImplTest} 가 본문을 "원본"/"중복" 으로 달리 넣고 복구 결과가
+ * <b>첫 본문</b>임을 단정한다. 바꾸려면 계약이 먼저다: 프론트 가이드에 같은 {@code clientMsgId} 의
+ * 재사용을 금지하는 문장이 <b>없다</b> — 가이드는 그 값을 "클라 생성 UUID · dedup 유니크 키 ·
+ * 낙관적 렌더 reconcile 키 · 64자 이하" 로 적지만, <b>같은 id 로 다른 본문을 보내는 경우</b>는
+ * 한 줄도 다루지 않는다. 비교축도
+ * {@code displayMessage} 가 아니라 {@code originalMessage} 여야 한다 — 사전이 런타임에 교체되면
+ * 같은 원문이 다른 표시문이 되기 때문이다.
  */
 @Slf4j
 @Service
@@ -248,7 +263,13 @@ public class SendChatService implements SendChatUseCase {
                                 "메시지를 너무 빠르게 보내고 있습니다.", result.retryAfterSeconds())));
     }
 
-    /** 6) 욕설필터 → 도메인 생성 → 저장(먼저) → 발행. DuplicateKey(재전송)는 기존 메시지 재조회로 멱등 처리(재발행 생략). */
+    /**
+     * 6) 욕설필터 → 도메인 생성 → 저장(먼저) → 발행.
+     *
+     * <p>DuplicateKey 는 <b>같은 키의 재삽입</b>이고 원인을 재전송으로 단정하지 않는다 — 본문이
+     * 달라도 같은 키면 여기로 온다. 기존 메시지를 재조회해 돌려주고 재발행은 생략한다. 그 선택의
+     * 범위와 대가는 클래스 javadoc 에 적어 뒀다.
+     */
     private Mono<ChatMessageView> persistAndPublish(SendChatCommand command, ChatRole role,
                                                     ChatMessageType type, String content) {
         // 매 메시지마다 "지금 것" 을 묻는다 — 사전이 런타임에 바뀔 수 있어서다. 필터를 생성자로
