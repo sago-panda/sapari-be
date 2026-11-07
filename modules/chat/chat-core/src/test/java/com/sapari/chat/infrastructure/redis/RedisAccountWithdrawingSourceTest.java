@@ -1,0 +1,87 @@
+package com.sapari.chat.infrastructure.redis;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+
+import java.time.Duration;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.connection.ReactiveSubscription.Message;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
+import reactor.test.StepVerifier;
+
+/** 형제 {@code RedisLiveRoomEndedSourceTest} 와 같은 네 축을 잰다. */
+class RedisAccountWithdrawingSourceTest {
+
+    /** 반응형 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
+    private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
+
+    private static final String CHANNEL = "user:account:withdrawing";
+
+    private RedisAccountWithdrawingSource source;
+
+    @BeforeEach
+    void setUp() {
+        ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
+        // 생성자가 채널 구독을 즉시 연결(autoConnect 0)하므로 stub 을 먼저 건다.
+        doReturn(Flux.empty()).when(redis).listenToChannel(CHANNEL);
+        source = new RedisAccountWithdrawingSource(redis);
+    }
+
+    @Test
+    @DisplayName("parse — payload 에서 userId 추출(requestedAt 은 무시한다)")
+    void parse_extractsUserId() {
+        UUID userId = UUID.fromString("11111111-1111-1111-1111-111111111111");
+
+        StepVerifier.create(source.parse("{\"userId\":\"" + userId + "\",\"requestedAt\":1762300000000}"))
+                .expectNext(userId)
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("parse — 깨진 payload 는 skip(빈 Mono) — 스트림이 죽으면 그 Pod 가 모든 탈퇴를 놓친다")
+    void parse_skipsBrokenPayload() {
+        StepVerifier.create(source.parse("{not json")).verifyComplete();
+        StepVerifier.create(source.parse("{\"userId\":\"uuid 가 아님\"}")).verifyComplete();
+    }
+
+    @Test
+    @DisplayName("parse — userId 필드가 없으면 skip — \"없음\" 과 \"이상함\" 은 원인이 다르다")
+    void parse_skipsWhenFieldMissing() {
+        StepVerifier.create(source.parse("{\"requestedAt\":1762300000000}")).verifyComplete();
+    }
+
+    @Test
+    @DisplayName("채널 구독이 끊겨도 재구독으로 되살아나 이후 탈퇴 신호가 다시 들어온다")
+    void withdrawing_recoversAfterUpstreamFailure() {
+        // 이 스트림이 죽은 채로 남으면 탈퇴자 세션이 방송 끝까지 남는다 — 자가복구가 유일한 방어다.
+        UUID userId = UUID.fromString("22222222-2222-2222-2222-222222222222");
+        Sinks.Many<Message<String, String>> afterReconnect = Sinks.many().replay().all();
+        AtomicInteger subscribeCount = new AtomicInteger();
+        ReactiveStringRedisTemplate flaky = mock(ReactiveStringRedisTemplate.class);
+        doReturn(Flux.defer(() -> subscribeCount.getAndIncrement() == 0
+                ? Flux.<Message<String, String>>error(new RuntimeException("연결 끊김"))
+                : afterReconnect.asFlux()))
+                .when(flaky).listenToChannel(CHANNEL);
+
+        RedisAccountWithdrawingSource recovering = new RedisAccountWithdrawingSource(flaky);
+        Message<String, String> withdrawn = mock(Message.class);
+        doReturn("{\"userId\":\"" + userId + "\"}").when(withdrawn).getMessage();
+        afterReconnect.tryEmitNext(withdrawn);
+
+        StepVerifier.create(recovering.withdrawing())
+                .expectNext(userId)
+                .thenCancel()
+                .verify(VERIFY_CEILING);
+
+        assertThat(subscribeCount.get()).isGreaterThan(1);   // 실제로 다시 붙었다
+    }
+}

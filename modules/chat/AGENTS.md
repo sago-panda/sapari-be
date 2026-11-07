@@ -781,9 +781,39 @@ way for a person to query it. `chat_kick_log` shows the difference — it is rea
 lets a human ask it anything, which is what "a store is not an audit" looks like.
 
 **The envelope is chat's own, not a cross-domain contract.** `ChatAccountEvent` lives in chat-core, so no
-other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). When withdrawal
-(T-11) needs the same effect, follow `live:room:ended`: the publisher owns the wire shape and chat adapts it
-in an adapter. That costs one more channel and subscription and buys keeping the type inside this module.
+other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). Withdrawal needed
+the same effect and took that route: `user:account:withdrawing` is **user's** channel, published by
+`UserAccountService` from an `afterCommit` hook, and chat absorbs it in `RedisAccountWithdrawingSource`
+(`{"userId","requestedAt"}` → `Flux<UUID>`) for `AccountWithdrawingHandler` to close the sessions. It cost
+one more channel, subscription and handler, and kept the type inside this module — same trade `live:room:ended`
+makes.
+
+Why a **separate** handler rather than a branch in `ChatAccountEventHandler`: that one's source is chat's own
+channel, this one's is user's. Two streams, two subscriptions — merged, one source's disconnect would stall
+the other's actions too.
+
+Why the signal is the **request**, not the hard delete: withdrawal is two-phase (status → `WITHDRAWING`
+immediately; hard delete later in batch). The account stops being active at the request, so waiting for the
+delete would leave the whole grace period open. And the request path already calls `revokeAllSessions`, which
+only blocks re-entry — **an established WS session never looks at the token again**, so that revocation and
+this event are different axes.
+
+⚠️ **There is no backstop for a missed publish**, and there are two ways to miss one: the publish itself
+failing, and **a publish that arrives while the subscription is down** (Pub/Sub keeps nothing, so that window's
+messages are gone).
+
+**The bound then differs by axis.** On the **send** side it holds and does not depend on the signal:
+`EntryGate.isRoomAlive` re-reads the persisted ended-marker on the send path, so a stale session is closed on
+its next send (`terminateRoomEnded`) even with a dead subscription — bound = window + next send. On the
+**read-only** side it does not: that re-check exists only on the send path ("a receive-only session on the same
+pod is not closed until it sends"), and the remaining mechanism is room-ended cleanup, which rides **the same
+subscription** (`ClearRoomEndedMarkerService`: "the only caller of markEnded is `LiveRoomEndedHandler` — woken
+only by the `live:room:ended` subscription"). For a pod whose subscription was down, that never arrives either,
+so the real bound is a **pod restart**.
+
+(This paragraph first claimed the bound was simply "until the broadcast ends, because room-ended clears
+sessions". The conclusion held for the send axis but the mechanism cited was the very subscription whose loss
+it was bounding.)
 
 The record can only be shortened by deleting the row, and **the mirror must be deleted in the same change**:
 enforcement reads `chat:banned:`, never the table. Order it record → mirror — a break in the middle leaves
