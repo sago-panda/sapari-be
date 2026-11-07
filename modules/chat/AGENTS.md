@@ -906,9 +906,10 @@ one half. Both were investigated; the reasons differ.
   cannot leave a replica unprotected: `500`, or a misspelled key falling back to the default, both boot
   happily — the first uncapped in practice, the second not what the operator set. And the number is
   **not magnitude-free**, which an earlier version of this bullet asserted without measuring:
-  `reapUnresponsiveIfFull` scans the **whole** occupied set inside `computeIfPresent`, so a cap-sized
-  scan runs under a `ConcurrentHashMap` bin lock on the handshake path — where that begins to matter is
-  **unmeasured** here; what is settled is the direction.
+  `reapUnresponsiveIfFull` only runs **once occupancy has reached the cap** — it returns at
+  `size() < cap` — and the scan it then does inside `computeIfPresent` is sized by **occupancy, not by
+  the cap**. So the direction is the opposite of the obvious one: **raising the cap makes this path run
+  less often**, because reaching it gets harder. The absolute cost is unmeasured on this side.
   The configured value is exposed as **`chat.sessions.max_per_room`** (`ChatSessionGaugeConfig`), because
   the `admission_capped` / `reaped` pair that `infra/AGENTS.md` tells the on-call to read **stops being
   readable at a large cap** — both flatten to 0, which is also what healthy looks like — and because

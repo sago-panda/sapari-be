@@ -292,15 +292,18 @@ class ChatSessionGaugeConfigTest {
     @Test
     @DisplayName("⭐ 상한 게이지가 설정된 값을 낸다 — 기본값을 보고하면 분모가 통째로 틀린다")
     void theCapGaugeReportsTheConfiguredValue() {
-        // 이 파일의 레지스트리는 기본 5 가 아니라 CAP 로 세워진다. 그래서 게이지가 상수를 읽고
+        // 이 파일의 레지스트리는 기본값이 아니라 CAP 로 세워진다. 그래서 게이지가 상수를 읽고
         // 있으면 여기서 갈린다 — 이 게이지의 존재 이유가 "파드마다 다를 수 있는 분모를 보이게"
         // 하는 것이라, 기본값을 보고하는 게이지는 없는 것보다 나쁘다(틀린 분모로 합쳐진다).
         assertThat(meters.get(ChatSessionGaugeConfig.MAX_PER_ROOM_GAUGE).gauge().value())
                 .as("설정값이 아니라 다른 수를 낸다")
                 .isEqualTo(CAP);
+        // ⚠️ 리터럴 5 를 보면 안 된다 — 기본값이 CAP 로 바뀌는 변이에서 이 가드가 선언한 바로 그
+        // 상태(CAP == 기본값)를 통과시킨다(실측으로 그랬다). 상수를 본다. 그 상수가 다른 패키지에서
+        // 보이는 이유는 접근자와 같다 — 게이지 설정이 상한과 그 기본값을 둘 다 알아야 한다.
         assertThat(CAP)
                 .as("CAP 이 기본값과 같으면 위 단언이 상수를 읽는 구현도 통과시킨다")
-                .isNotEqualTo(5);
+                .isNotEqualTo(ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM);
     }
 
     @Test

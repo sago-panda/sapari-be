@@ -490,12 +490,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 읽히면 안 되는 이유다.
      *
      * <p>⚠️ <b>파드 로컬이다 — 전역 상한이 아니다.</b> {@link #userRoomSessions} 는 이 싱글톤의
-     * 인스턴스 필드라 실효 상한은 <b>5 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
+     * 인스턴스 필드라 실효 상한은 <b>상한 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
      * 핸드셰이크가 흩어지면 각 파드의 {@code compute} 가 서로 다른 맵을 봐서 전부 통과한다. 이 파일은
      * 다중 파드를 설계 전제로 못 박고 있고(아래 계정 팬아웃 비용이 "파드 6개" 기준이다), 크로스 파드
      * 데이터도 이미 있다({@code ChatSessionRepository.add} 가 Redis HASH 에 userId 를 적는다).
      * 즉 파드 로컬은 <b>제약이 아니라 선택</b>이다 — 전역으로 올리면 입장마다 Redis 왕복이 하나 붙고,
-     * 남용 한도를 5 에서 5×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
+     * 남용 한도를 상한에서 상한×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
      *
      * <p>⚠️ <b>이 상한이 "피해자 입장 차단" 이라는 능력을 새로 만들었다.</b> 상한 키가 토큰에서만
      * 오고({@code RoomTokenVerifier} 의 {@code claims.getSubject()} 하나), 토큰이 TTL 안에서 재사용
@@ -513,7 +513,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 지속             51~60분 (세션 수명, 지터 −15%)      ≤90초 (재점유마다 유효 토큰이 필요)
      * 피해자 수단      없음* — 자리가 빌 때까지 전부 1008   항상 — 재접속하면 최신 자리를 되찾음
      * </pre>
-     * (*"없음" 은 <b>공격자가 5 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
+     * (*"없음" 은 <b>공격자가 상한 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
      * 완주 전에는 피해자의 재접속도 흩어져 남은 파드에 붙는다. 핸드셰이크에 레이트리밋이 없어 토큰
      * TTL 안에 완주가 가능하므로 표에는 완주 후 값을 적는다. LB 어피니티가 그걸 막는지는 <b>이
      * 저장소에서 확인할 수 없다</b> — 매니페스트가 여기 없다. 표의 "≤90초" 는 <b>불변식이 아니라
@@ -547,7 +547,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 넓힌 변형의 것이고, {@code SessionAdmissionCapTest} 가 그 숫자를 철회했다). 아끼는 것은 왕복 셋이고
      * 잃는 것은 상한 자체다.
      */
-    static final int DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM = 5;
+    public static final int DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM = 5;
 
     /** 이 파드가 실제로 집행하는 값. 상수가 아니라 필드인 이유는 운영이 바꿀 수 있어야 해서다. */
     private final int maxSessionsPerUserPerRoom;
