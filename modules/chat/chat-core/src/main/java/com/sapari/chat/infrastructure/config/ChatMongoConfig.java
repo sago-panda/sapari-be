@@ -1,17 +1,27 @@
 package com.sapari.chat.infrastructure.config;
 
 import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 
 import org.bson.UuidRepresentation;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import org.springframework.data.mongodb.core.index.Index;
 import org.springframework.data.mongodb.core.index.PartialIndexFilter;
+import org.springframework.data.mongodb.ReactiveMongoDatabaseFactory;
+
+import reactor.core.publisher.Mono;
+import org.springframework.dao.support.PersistenceExceptionTranslator;
+import org.bson.codecs.configuration.CodecRegistry;
+import com.mongodb.ClientSessionOptions;
+import com.mongodb.reactivestreams.client.ClientSession;
+import com.mongodb.reactivestreams.client.MongoDatabase;
 import org.springframework.data.mongodb.core.index.ReactiveIndexOperations;
 
 import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
@@ -38,6 +48,101 @@ public class ChatMongoConfig {
     @Bean
     public MongoClientSettingsBuilderCustomizer chatUuidRepresentationCustomizer() {
         return builder -> builder.uuidRepresentation(UuidRepresentation.STANDARD);
+    }
+
+    /**
+     * 인덱스 경로용으로 상한을 <b>되올린</b> 팩토리.
+     *
+     * <p>왜 이게 필요한가. 전역 CSOT 는 {@code createIndexes} 까지 자른다 — 실측: 전역 500ms 에서
+     * 3,000ms 차단된 {@code createIndexes} 가 <b>563ms 에 InterruptedByTimeoutException</b>,
+     * 전역이 없으면 3,104ms 에 완료. 그런데 {@link #INDEX_CREATE_CEILING} 은 10분이고,
+     * {@code ReactiveIndexOperations}·{@code ReactiveMongoTemplate}·{@code Query} 어디에도 연산 단위
+     * 상한을 받는 API 가 <b>없다</b>(Spring Data 5.0.5 전수 확인 — {@code Query.noCursorTimeout} 은
+     * 커서 얘기로 무관하다). 드라이버 쪽에만 {@code MongoDatabase.withTimeout} 이 있다.
+     *
+     * <p>그래서 팩토리를 감싼다 — 이 팩토리로 만든 템플릿의 <b>모든 연산</b>이 되올린 상한을 받고,
+     * 인덱스 생성 코드는 한 줄도 바뀌지 않는다. 컨버터와 예외 번역기도 위임으로 유지되므로
+     * {@code DuplicateKeyException} 번역처럼 서비스가 기대는 것이 깨지지 않는다.
+     *
+     * <p>package-private 이 아니라 {@code static} 인 이유는 테스트가 위임 대상을 손으로 넣어
+     * "얼마로 되올렸는지" 를 보기 때문이다 — 호출 여부만 보면 0 으로 되올리는 구현도 통과한다.
+     */
+    static ReactiveMongoDatabaseFactory indexTimeoutFactory(ReactiveMongoDatabaseFactory delegate,
+                                                            Duration ceiling) {
+        long millis = ceiling.toMillis();
+        return new ReactiveMongoDatabaseFactory() {
+            @Override
+            public Mono<MongoDatabase> getMongoDatabase() {
+                return delegate.getMongoDatabase().map(db -> db.withTimeout(millis, TimeUnit.MILLISECONDS));
+            }
+
+            @Override
+            public Mono<MongoDatabase> getMongoDatabase(String dbName) {
+                return delegate.getMongoDatabase(dbName)
+                        .map(db -> db.withTimeout(millis, TimeUnit.MILLISECONDS));
+            }
+
+            @Override
+            public PersistenceExceptionTranslator getExceptionTranslator() {
+                return delegate.getExceptionTranslator();
+            }
+
+            @Override
+            public CodecRegistry getCodecRegistry() {
+                return delegate.getCodecRegistry();
+            }
+
+            @Override
+            public Mono<ClientSession> getSession(ClientSessionOptions options) {
+                return delegate.getSession(options);
+            }
+
+            @Override
+            public ReactiveMongoDatabaseFactory withSession(ClientSession session) {
+                return delegate.withSession(session);
+            }
+        };
+    }
+
+    /**
+     * 연산 상한을 <b>클라이언트</b>에 건다(CSOT — 드라이버 5.6.5의 {@code MongoClientSettings.timeout}).
+     *
+     * <p>왜 호출부가 아니라 여기인가. 멈춘 insert 를 두 방식으로 끊어 보고 <b>끊은 뒤 커넥션이
+     * 돌아오는지</b>를 같이 쟀다(failpoint 로 insert 를 3,000ms 막고 풀을 1 로 묶어 두 번째 연산의
+     * 지연을 본다):
+     * <pre>
+     *                              첫 연산            두 번째 연산
+     * 상한 없음                    3,090ms 완료       5ms      ← 대조군
+     * 전역 CSOT 500ms              547ms 끊김         22ms     ← 커넥션 반납됨
+     * 호출부 .timeout(500ms)       553ms 끊김         2,521ms  ← 반납 안 됨
+     * </pre>
+     * 호출부 상한은 {@code Mono} 는 끊지만 커넥션이 서버 응답까지 묶여, 그 세션의 <b>다음</b> 메시지가
+     * 남은 차단 시간을 그대로 기다린다. 풀을 기본값으로 두면 두 번째가 14ms 로 나와 그 문제가 숨는다.
+     *
+     * <p><b>이 상한이 미치는 범위는 이 설정이 뜨는 앱뿐이다.</b> streaming-app 은
+     * {@code scanBasePackages} 에 {@code com.sapari.chat} 을 두어 이 클래스를 등록하지만, live-app 의
+     * {@code @ComponentScan} 은 {@code com.sapari.chat.infrastructure.persistence.*} 만 들여서 이
+     * 설정을 등록하지 않는다(그래서 자기 UUID 커스터마이저를 따로 둔다). 즉 live-app 의 블로킹
+     * 이력·증거 조회("느려도 되는 경로")는 이 상한에 묶이지 않는다 — 그 분리가 스캔 범위에 있다.
+     *
+     * <p>⚠️ 전역이라 <b>부팅 인덱스 생성도</b> 이 상한에 걸린다. 그쪽은 {@link #INDEX_CREATE_CEILING}
+     * 이 10분을 쓰므로 연산 단위로 되올려야 한다 — {@code MongoDatabase.withTimeout} 이 전역을
+     * 덮어쓰는 것을 실측했다(전역 500ms 아래에서 3,000ms 차단 연산이 {@code withTimeout(8,000ms)} 로
+     * 완료됐다).
+     */
+    @Bean
+    public MongoClientSettingsBuilderCustomizer chatOperationTimeoutCustomizer(
+            @Value("${chat.mongo.operation-timeout:2s}") Duration operationTimeout) {
+        long millis = operationTimeout.toMillis();
+        if (millis < 1) {
+            // ⚠️ 0 은 CSOT 에서 "상한 없음" 이다 — 조용히 이 티켓 전 상태로 돌아가면서 설정은
+            // 들어간 것처럼 보인다. 그래서 기동을 실패시킨다(형제 가드와 같은 선택:
+            // managementPortMustDiffer · ShedLockTableGuard · chat.session.max-per-room).
+            // 프로퍼티 이름을 메시지에 싣는다 — 기동 로그만 보고 어느 키를 고칠지 알아야 한다.
+            throw new IllegalArgumentException(
+                    "chat.mongo.operation-timeout 은 1ms 이상이어야 합니다: " + operationTimeout);
+        }
+        return builder -> builder.timeout(millis, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -92,7 +197,12 @@ public class ChatMongoConfig {
         if (template == null) {
             return new ChatMessagesIndexes(List.of());
         }
-        return new ChatMessagesIndexes(createChatMessagesIndexes(template));
+        // 전역 상한을 이 경로만 되올려 받는다 — 그러지 않으면 큰 컬렉션의 첫 인덱스 빌드가
+        // chat.mongo.operation-timeout(기본 2s)에 잘려 부팅이 실패한다. 아래 상한이 그 경계다.
+        ReactiveMongoTemplate bounded = new ReactiveMongoTemplate(
+                indexTimeoutFactory(template.getMongoDatabaseFactory(), INDEX_CREATE_CEILING),
+                template.getConverter());
+        return new ChatMessagesIndexes(createChatMessagesIndexes(bounded));
     }
 
     /** 선 인덱스 이름. 이 빈이 존재한다는 것 자체가 "인덱스가 포트보다 먼저 섰다"는 사실이다. */

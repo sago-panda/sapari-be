@@ -99,7 +99,16 @@ public class RedisRateLimiter implements RateLimiter {
      *       묶인다(늦게 온 호출자는 남은 시간만 기다리니 평균은 유리하지만, 그 커넥션만 멈춘
      *       경우에는 새 호출이면 즉시 성공했을 것을 전원이 함께 기다린다).
      * </ul>
-     * 네 자리의 적정 값과 정책은 각각 따로 근거를 가져야 한다. 유추로 확장할 성질이 아니다.
+     * </ul>
+     * 그리고 이 열거에 <b>Redis 가 아닌 자리 하나가 빠져 있었다</b>(SPR-177 에서 더했다):
+     * <ul>
+     *   <li>메시지 저장({@code SendChatService} → Mongo): 느리면 <b>세션의 전송이 통째로 멈춘다</b> —
+     *       fail-open 도 fail-closed 도 아니고 <b>무응답</b>이다. 다른 자리들은 "느리면 어느 쪽으로
+     *       기우는가" 가 물음인데 이쪽은 "끊을 것이 있는가" 가 물음이었다(드라이버 기본 상한이 무한).
+     *       지금은 {@code chat.mongo.operation-timeout}(기본 2s)이 끊고 {@code chat.persist.timeout} 이
+     *       규모를 든다.
+     * </ul>
+     * 다섯 자리의 적정 값과 정책은 각각 따로 근거를 가져야 한다. 유추로 확장할 성질이 아니다.
      */
     private static final Duration REDIS_CALL_LIMIT = Duration.ofMillis(200);
 

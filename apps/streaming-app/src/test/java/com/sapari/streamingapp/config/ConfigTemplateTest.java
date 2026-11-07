@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.convert.DurationStyle;
 
+import com.sapari.chat.infrastructure.config.ChatMongoConfig;
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 import com.sapari.streamingapp.websocket.SessionTimeouts;
 
@@ -41,6 +42,15 @@ class ConfigTemplateTest {
     private static final List<String> INT_KEYS = List.of("max-per-room");
 
     /**
+     * {@code chat.session.*} 밖의 chat 키들 — 접두가 다르지만 템플릿·코드 일치는 같은 면이다.
+     *
+     * <p>SPR-177 의 {@code chat.mongo.operation-timeout} 이 첫 식구다. 접두를 하나로 못 박지 않는
+     * 이유는, 그랬다가 그 접두 밖의 키가 생기면 이 검사가 <b>조용히</b> 그 키를 빼먹기 때문이다 —
+     * SPR-176 에서 {@code max-per-room} 이 정확히 그렇게 빠졌다(목록으로 걸러 내서 크기에도 안 세어졌다).
+     */
+    private static final List<String> OTHER_CHAT_KEYS = List.of("operation-timeout");
+
+    /**
      * 템플릿과 대조하는 {@code chat.session.*} 키 전부.
      *
      * <p>⚠️ <b>수기 목록이고, 한때 이 자리에 "오늘은 완전하다 … 네 번째가 생기면 크기 불일치로
@@ -55,7 +65,7 @@ class ConfigTemplateTest {
      * 키가 생기면 이 검사는 그것을 보지 못한다.
      */
     private static final List<String> SESSION_KEYS =
-            Stream.concat(DURATION_KEYS.stream(), INT_KEYS.stream()).toList();
+            Stream.of(DURATION_KEYS, INT_KEYS, OTHER_CHAT_KEYS).flatMap(List::stream).toList();
 
     /**
      * {@code chat.session.*} {@code @Value} 가 선언된 클래스들.
@@ -64,7 +74,7 @@ class ConfigTemplateTest {
      * 상한을 <b>생성자</b> 파라미터로 받는다. 그래서 메서드만 훑으면 상한이 안 보인다.
      */
     private static final List<Class<?>> SESSION_VALUE_SOURCES =
-            List.of(WebSocketConfig.class, ChatSessionRegistry.class);
+            List.of(WebSocketConfig.class, ChatSessionRegistry.class, ChatMongoConfig.class);
 
     /**
      * 빈 기본값을 가진 플레이스홀더.
@@ -251,7 +261,9 @@ class ConfigTemplateTest {
                         if (value == null) {
                             return;
                         }
-                        Matcher matcher = Pattern.compile("\\$\\{chat\\.session\\.([a-z-]+):([^}]+)}")
+                        // 접두를 session 하나로 못 박지 않는다 — 그랬으면 chat.mongo.* 키가 코드 쪽에서
+                        // 아예 나오지 않아 크기 비교가 공허하게 통과한다(SPR-176 의 그 모양).
+                        Matcher matcher = Pattern.compile("\\$\\{chat\\.(?:session|mongo)\\.([a-z-]+):([^}]+)}")
                                 .matcher(value.value());
                         if (matcher.matches()) {
                             defaults.put(matcher.group(1), matcher.group(2));

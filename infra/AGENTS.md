@@ -487,8 +487,18 @@ that on.
   the `management` block from `application.yml.example`.
 - **What the metrics carry** — two kinds, and they want different alerts.
   - **Counters that are 0 when healthy**: `chat.policy.open`, `chat.ratelimit.degraded`,
-    `chat.delivery.dropped`, `chat.session.cut`. Every one of them is a *policy not being enforced* right
+    `chat.delivery.dropped`, `chat.session.cut`, `chat.dictionary.fastpath.lost`,
+    `chat.persist.timeout`. Every one of them is a *policy not being enforced* right
     now, so any non-zero rate is worth watching. Details in `modules/chat/AGENTS.md`.
+    - ⚠️ **`chat.dictionary.fastpath.lost` was missing from this list** until SPR-177, while
+      `ChatMeterNames` had declared it since it was added — the discipline is "add a line when adding
+      a meter" and that line was never added. Whoever reads this list as the set of chat counters was
+      reading one short.
+    - ⚠️ **`chat.persist.timeout` is not the same axis as `chat.delivery.dropped`** and must not be
+      summed with it. `delivery.dropped` means *the message is persisted and only live delivery was
+      lost*; `persist.timeout` means **nothing was stored** — the operation bound cut the write, and
+      the sender got an error rather than an ACK. Reading them as one number says "it is in the
+      history" about messages that are not.
   - **Counters that are 0 when nobody is abusing** (added SPR-152): `chat.sessions.admission_capped` ·
     `chat.sessions.reaped` — the per-`(user, room)` session cap denying a connect, and the same cap
     reclaiming a slot whose socket had already gone silent. These are a different kind from the four

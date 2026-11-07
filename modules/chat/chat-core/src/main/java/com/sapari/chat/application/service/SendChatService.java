@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatCheckpoint;
+import com.mongodb.MongoOperationTimeoutException;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
 import com.sapari.chat.application.port.DeliveryStage;
@@ -45,6 +46,13 @@ import reactor.core.publisher.Mono;
  *
  * <p><b>전송 체크 순서는 계약이다</b>: isRoomAlive → 입력검증 → 권한 → kicked → rate limit → 욕설필터 → 저장 → 발행.
  * 비용 0(메모리·입력)을 앞에 두고 Redis는 뒤로 미뤄 불필요한 I/O를 차단한다.
+ *
+ * <p><b>저장에는 상한이 있다</b>({@code chat.mongo.operation-timeout}, 기본 2s — 드라이버 CSOT).
+ * 전에는 없었고, 드라이버 기본값이 무한이라({@code socketReadTimeoutMs=0} · {@code timeoutMs=null}, 실측)
+ * 느린 Mongo 가 이 세션의 전송을 <b>수명 상한(기본 60분)까지</b> 멈출 수 있었다 — 아래 전송이
+ * {@code concatMap} 으로 직렬화돼 있고, PONG 이 생존 시계를 계속 갱신해 생존 판정도 그걸 못 끊는다.
+ * 상한이 끊으면 {@code chat.persist.timeout} 이 오르고 발신자에게는 <b>에러</b>가 간다(ack 가 아니다 —
+ * 저장이 안 됐으므로).
  *
  * <p>{@code @Transactional}을 두지 않는다 — 단일 Mongo 문서 저장 + Redis 발행이라 다중 엔티티 트랜잭션이 없고,
  * 같은 키의 재삽입은 (roomId,senderId,clientMsgId) unique 인덱스가 막는다(DuplicateKey → 기존 메시지 재조회).
@@ -319,7 +327,39 @@ public class SendChatService implements SendChatUseCase {
                             return Mono.empty();
                         })
                         .thenReturn(saved.toView()))
-                .onErrorResume(DuplicateKeyException.class, e -> recoverDuplicate(command));
+                .onErrorResume(DuplicateKeyException.class, e -> recoverDuplicate(command))
+                // 상한이 끊었으면 그 축을 센다. 발신자에게는 에러가 그대로 간다(저장이 안 됐으므로
+                // ack 를 주면 "유실이 성공" 이 된다) — 여기서 더하는 것은 규모를 아는 창구뿐이다.
+                .doOnError(err -> {
+                    if (isOperationTimeout(err)) {
+                        metrics.persistTimedOut();
+                    }
+                });
+    }
+
+    /**
+     * 연산 상한이 끊은 것인가.
+     *
+     * <p>체인을 <b>걸어서</b> 본다. 실측한 체인이 이렇다(드라이버 5.6.5, CSOT 가 자를 때):
+     * <pre>
+     * [0] UncategorizedMongoDbException          ← Spring 이 감싼 것(전용 번역이 없다)
+     * [1] com.mongodb.MongoOperationTimeoutException   ← 분류 지점
+     * [2] MongoSocketReadTimeoutException
+     * [3] InterruptedByTimeoutException
+     * </pre>
+     * 그래서 {@code NestedExceptionUtils.getMostSpecificCause} 로는 <b>깊이 3 의 소켓 예외</b>가
+     * 나와 상한을 "소켓 오류" 로 분류하게 된다. 최상위만 봐도 안 된다 — 거긴 전용 타입이 아니다.
+     */
+    private boolean isOperationTimeout(Throwable error) {
+        for (Throwable t = error; t != null; t = t.getCause()) {
+            if (t instanceof MongoOperationTimeoutException) {
+                return true;
+            }
+            if (t.getCause() == t) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private Mono<ChatMessageView> recoverDuplicate(SendChatCommand command) {

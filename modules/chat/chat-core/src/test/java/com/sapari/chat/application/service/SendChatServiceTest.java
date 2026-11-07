@@ -1,6 +1,8 @@
 package com.sapari.chat.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.BDDMockito.willReturn;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -33,6 +35,11 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
+import java.nio.channels.InterruptedByTimeoutException;
+import com.mongodb.MongoOperationTimeoutException;
+import com.mongodb.MongoSocketReadTimeoutException;
+import com.mongodb.ServerAddress;
+import org.springframework.data.mongodb.UncategorizedMongoDbException;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 import com.sapari.chat.application.port.RateLimiter;
@@ -78,6 +85,10 @@ class SendChatServiceTest {
     @Mock
     private ChatBroadcaster broadcaster;
 
+    /** 상한 발동을 관측하려면 포트가 목이어야 한다 — NOOP 은 호출을 기록하지 않는다. */
+    @Mock
+    private ChatMetrics metrics;
+
     // @InjectMocks를 쓰지 않는다 — 정책·필터는 가짜로 바꾸면 검증 대상이 사라지는 순수 로직이라
     // 실제 인스턴스로 조립한다. 포트만 @Mock이다.
     private SendChatService service;
@@ -96,7 +107,7 @@ class SendChatServiceTest {
                 filterCell,
                 kickRepository, banRepository, rateLimiter, chatMessageRepository, broadcaster,
                 new TimeProvider(Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC)),
-                ChatMetrics.NOOP);
+                metrics);
         // 기본은 "밴 아님". 강퇴와 밴 조회는 zip으로 함께 뜨므로 강퇴 검사에 닿는 모든 테스트가 이걸
         // 부르지만, 그 앞(권한·검증)에서 끝나는 테스트는 부르지 않는다 — 그래서 lenient다.
         lenient().when(banRepository.isBanned(any())).thenReturn(Mono.just(false));
@@ -540,6 +551,38 @@ class SendChatServiceTest {
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(IllegalStateException.class)
                 .verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("⭐ 저장 상한이 끊으면 그 축의 카운터가 오른다 — delivery.dropped 는 오르지 않는다")
+    void aPersistTimeoutIsCountedOnItsOwnAxis() {
+        // given: CSOT 가 자를 때 실제로 오는 체인이다(실측, 드라이버 5.6.5):
+        //   UncategorizedMongoDbException → MongoOperationTimeoutException
+        //     → MongoSocketReadTimeoutException → InterruptedByTimeoutException
+        // 분류 지점이 **깊이 1** 이라 getMostSpecificCause 로는 소켓 예외가 나와 엉뚱해진다.
+        RuntimeException wrapped = new UncategorizedMongoDbException("Operation exceeded the timeout limit",
+                new MongoOperationTimeoutException("Operation exceeded the timeout limit",
+                        new MongoSocketReadTimeoutException("Timeout while receiving message",
+                                new ServerAddress(), new InterruptedByTimeoutException())));
+        // 선행 단계만 통과시킨다(강퇴·레이트리밋 — 밴은 setUp 이 lenient 로 세운다). 안 세우면
+        // 그 앞에서 끝나 이 칸이 "목 상호작용 0" 으로 실패한다(실측). stubAllowedAndSaved 를
+        // 쓰지 않는 이유는 그게 save·publish 도 세워서 엄격 스텁이 "안 쓰인 스텁" 으로 잡기
+        // 때문이다 — publish 는 이 칸에서 도달하지 않는다(저장이 먼저 끊긴다).
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        // ⚠️ given(mock.save(any())) 형태를 쓰면 안 된다 — 그 호출이 목을 **실제로 돌려**
+        // 앞서 stubAllowedAndSaved 가 걸어 둔 answer 가 null 인자로 실행돼 NPE 가 난다(실측).
+        willReturn(Mono.error(wrapped)).given(chatMessageRepository).save(any());
+
+        // when & then: 발신자에게는 에러가 간다 — 저장이 안 됐으므로 ack 를 주면 "유실이 성공" 이 된다.
+        assertThatThrownBy(() -> service.send(command("BUYER", false, true, "NORMAL", "안녕", "t1"))
+                .block(VERIFY_CEILING)).isNotNull();
+
+        // 그 축이 올라야 규모를 알 수 있다.
+        then(metrics).should().persistTimedOut();
+        // ⚠️ 그리고 delivery.dropped 는 **오르지 않아야** 한다. 그 미터의 문서상 의미가
+        // "메시지는 영속됐고 실시간 전달만 잃었다" 라, 저장 실패를 거기 태우면 그 정의가 거짓이 된다.
+        then(metrics).should(never()).deliveryDropped(any());
     }
 
     @Test
