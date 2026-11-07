@@ -9,8 +9,6 @@ import java.time.Duration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.autoconfigure.AutoConfigurations;
-import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import com.sapari.chat.application.port.ChatMetrics;
@@ -43,9 +41,10 @@ class SessionCapWiringTest {
         lenient().when(repository.add(any(), any(), any())).thenReturn(Mono.empty());
         lenient().when(repository.remove(any(), any())).thenReturn(Mono.empty());
 
+        // ⚠️ placeholder 해석용 자동구성을 넣지 않는다. 한때 여기 그걸 넣고 "없으면 ${...} 가
+        // 날것으로 남는다" 고 적었는데 **안 재고 쓴 문장이었다** — 실측: 그 줄을 지워도 이 파일
+        // 다섯 칸이 전부 초록이다(형제 ChatSessionGaugeConfigTest:140 도 같은 빈을 그것 없이 띄운다).
         return new ApplicationContextRunner()
-                // @Value 의 ${...} 를 풀어 주는 빈이 필요하다 — 자동구성 없이는 placeholder 가 날것으로 남는다.
-                .withConfiguration(AutoConfigurations.of(PropertyPlaceholderAutoConfiguration.class))
                 .withBean(ChatSessionRepository.class, () -> repository)
                 .withBean(ChatPermissionPolicy.class, ChatPermissionPolicy::new)
                 .withBean(ChatMetrics.class, () -> ChatMetrics.NOOP)

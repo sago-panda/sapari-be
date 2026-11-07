@@ -41,8 +41,15 @@ class ChatSessionGaugeConfigTest {
 
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
 
-    /** 이 파일이 집행시키는 (유저, 방) 상한 — 아래 50회 루프가 반드시 닿을 수 있는 작은 수. */
-    private static final int CAP_REACHABLE_WITHIN_THE_LOOP = 4;
+    /**
+     * 이 파일 전체가 집행시키는 (유저, 방) 상한.
+     *
+     * <p>작은 수인 이유는 {@code theReapedCounterFollowsTheRegistry} 가 상한에 <b>닿아야</b> 거둘
+     * 자리가 생기기 때문이다({@code reapUnresponsiveIfFull} 은 찼을 때만 거둔다). 나머지 칸들은
+     * 상한에 무관하지만 {@code @BeforeEach} 가 하나를 공유하므로 이름을 그 한 칸이 아니라
+     * 파일 기준으로 둔다.
+     */
+    private static final int CAP = 4;
 
     private final ChatSessionGaugeConfig config = new ChatSessionGaugeConfig();
     private MeterRegistry meters;
@@ -64,7 +71,7 @@ class ChatSessionGaugeConfigTest {
         // 그래서 "닿을 수 있는 작은 수" 를 이 파일이 직접 정한다. 기본값을 베껴 적지는 않는다 —
         // 여기서 필요한 것은 기본값이 아니라 도달 가능한 상한이고, 베끼면 기본이 바뀔 때 조용히 갈린다.
         registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP,
-                CAP_REACHABLE_WITHIN_THE_LOOP);
+                CAP);
         config.chatSessionGauges(registry, providing(meters));
     }
 

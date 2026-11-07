@@ -500,8 +500,9 @@ that on.
     - **"A cap set too low" is now actionable from config** (SPR-176): the cap is
       `chat.session.max-per-room`, default 5, and it takes effect on restart — it is a constructor
       argument, not `@RefreshScope`. **A value below 1 fails boot by design** rather than quietly
-      running an uncapped pod, so a typo shows up as a failed rollout, not as a silently unprotected
-      replica. There is no upper bound; a very large value is how you ask for "no cap".
+      running an uncapped pod. ⚠️ That guard covers `< 1` **only** — `500`, or a misspelled key
+      falling back to the default, both roll out fine, so it does not make every typo visible. There is
+      no upper bound; a very large value is how you ask for "no cap".
       Before raising it, note the derivation in `modules/chat/AGENTS.md`: live sessions per
       `(user, room)` can briefly reach **2× whatever you set**, so a cap of 20 is a transient 40.
   - **Gauges that are *not* 0 when healthy** (added 2026-11-01): `chat.sessions.local` ·

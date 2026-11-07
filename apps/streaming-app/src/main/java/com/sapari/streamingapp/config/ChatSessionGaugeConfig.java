@@ -16,7 +16,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <p><b>왜 지금 필요한가.</b> 이 앱에는 <b>용량</b> 상한이 없다 — 프레임 크기
  * ({@code maxFramePayloadLength}), 아웃바운드 버퍼(256), 느린 클라(1013 종료)는 모두 막혀 있는데
  * "이 파드가 몇 세션까지" 는 무제한이다. 남용 쪽은 그 뒤에
- * {@code ChatSessionRegistry.maxSessionsPerUserPerRoom()}(기본 {@code DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}) 이 (유저, 방) 단위로 막았다 — 이 문단이
+ * {@code chat.session.max-per-room}(기본 5) 상한이 (유저, 방) 단위로 막았다 — 이 문단이
  * 한때 "연결 개수만 무제한이다" 라고만 적었고, 상한이 들어온 커밋에서 그 단정을 안 고쳐 아래
  * 문단이 뒤늦게 철회하는 모양이 됐다. 그 상한을 정하려면 "파드 하나가 몇 세션을 들고 있는가" 를 알아야
  * 하는데, 지금 그 수를 <b>어디에서도 볼 수 없었다</b>(기존 chat 지표는 전부 카운터다 — 끊긴 건수,
@@ -53,7 +53,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * 토큰 한 장으로 한 파드에 세션을 계속 열 수 있고, 그걸 막는 값은 "정상 사용자가 동시에 몇 개를
  * 여는가"(탭·기기 수)에서 나와 부하 측정이 필요 없다. 이 게이지가 그 숫자를 대신 주지도 않는다 —
  * 파드 합계라서 유저당 분포가 보이지 않는다. 즉 남용 상한은 이 순서를 기다릴 이유가 없고, 실제로
- * 기다리지 않았다 — {@code ChatSessionRegistry.maxSessionsPerUserPerRoom()}(기본 {@code DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}) 이 (유저, 방) 단위로
+ * 기다리지 않았다 — {@code chat.session.max-per-room} 상한이 (유저, 방) 단위로
  * 집행하고, 아래 {@code chat.sessions.admission_capped} 가 그 집행을 센다.
  *
  * <p>⚠️ 다만 <b>"남은 것은 용량뿐" 이 아니다.</b> 남용 축에도 닫히지 않은 갈래가 있다 — 게스트는

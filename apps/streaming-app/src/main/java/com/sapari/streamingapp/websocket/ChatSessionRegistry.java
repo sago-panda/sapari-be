@@ -158,7 +158,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p>⚠️ 다만 기본값은 <b>여전히 두 벌</b>이다 — 이 자리의 리터럴과
      * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}. 한 벌로 줄이려면 아래 좁은 생성자들이 상한을
-     * 명시해야 하고 그러면 상한이 축이 아닌 칸 아홉이 같이 바뀐다. 그래서 줄이지 않고 <b>묶었다</b>:
+     * 명시해야 하고, 그러면 상한을 안 넘기는 <b>호출 자리 9개</b>(전체 13자리 중, 실측)가 같이
+     * 바뀐다. 그래서 줄이지 않고 <b>묶었다</b>:
      * {@code SessionCapWiringTest} 가 "미설정이면 상수와 같다" 를 행동으로, {@code ConfigTemplateTest}
      * 가 템플릿 주석까지 포함한 리터럴 일치를 각각 잰다.
      */
@@ -205,8 +206,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * ({@code LiveSecurityConfig.managementPortMustDiffer}, {@code ShedLockTableGuard}).
      *
      * <p><b>상한은 두지 않는다.</b> 아주 큰 값은 "상한 없음" 이고 그건 운영이 고를 수 있는 상태다
-     * (SPR-152 전의 상태가 그것이다). 큰 값이 조용히 깨뜨리는 다른 불변식도 없다 — 문서의
-     * "2× 상한" 유도는 상한에 비례하므로 값이 커져도 참이다.
+     * (SPR-152 전의 상태가 그것이다). 문서의 "2× 상한" 유도는 상한에 비례하므로 값이 커져도 참이다.
+     *
+     * <p>⚠️ <b>그렇다고 크기와 무관하지는 않다</b> — 한때 이 자리에 "큰 값이 조용히 깨뜨리는 다른
+     * 불변식도 없다" 고 적었는데 안 잰 단정이었다. {@link #reapUnresponsiveIfFull} 은 자리가 찼을 때
+     * {@code computeIfPresent} 안에서 점유 집합을 <b>전부</b> 훑는다. 즉 상한만큼의 스캔이
+     * ConcurrentHashMap 의 빈 잠금 아래에서, 그것도 핸드셰이크 경로에서 돈다
+     * ({@code ChatWebSocketHandler} 의 등록 직전). <b>어느 상한에서 그게 문제가 되는지는 재지 않았다</b> —
+     * 기본 5 에서는 다섯 칸 스캔이라 묻지 않았고, 상한을 크게 올리는 운영자가 먼저 부딪힐 자리다.
      */
     private ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
                                 ChatMetrics metrics, int maxSessionsPerUserPerRoom,
