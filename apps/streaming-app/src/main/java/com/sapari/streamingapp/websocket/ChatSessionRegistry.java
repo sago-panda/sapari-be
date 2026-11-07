@@ -1079,12 +1079,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     @Override
-    public Mono<Void> closeUserEverywhere(UUID userId) {
-        // 밴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
+    public Mono<Void> closeUserEverywhere(UUID userId, SessionCutReason reason) {
+        // 밴도 탈퇴도 1008 이다 — 프론트가 "재접속하지 말 것"으로 읽는다. 와이어가 같으니 둘을
+        // 가르는 것은 사유 태그뿐이고, 그래서 호출자가 그것을 넘긴다(제재율과 탈퇴율은 다른 수다).
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
             forEachSessionOf(userId, ls -> {
-                metrics.sessionCut(SessionCutReason.MODERATION);
+                metrics.sessionCut(reason);
                 terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
             });
         });

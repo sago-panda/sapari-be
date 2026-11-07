@@ -25,6 +25,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.web.reactive.socket.CloseStatus;
+import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.adapter.ReactorNettyWebSocketSession;
 
@@ -828,6 +829,33 @@ class ChatWebSocketHandlerTest {
                     assertThat(m.senderEmail()).isNull();
                     assertThat(m.originalMessage()).isNull();
                 });
+    }
+
+    @Test
+    @DisplayName("⭐ 거부 통보도 flush 상한을 받는다 — 상한이 없으면 적대적 클라가 fd 를 묶는다")
+    void deny_and_close_timeout_disposes_connection() {
+        // given: WS 업그레이드는 끝났고 수신 윈도를 0 으로 광고하는 클라. send 도 close 도 완료되지 않는다.
+        // 이 경로가 TOO_MANY_SESSIONS · KICKED · BANNED · 입장 시 ROOM_ENDED · 위조 토큰이 가는 길,
+        // 즉 적대적이거나 깨진 클라가 실제로 모는 길이다. 형제(closeWithReason)는 이 상한을 이미 갖는다.
+        ReactorNettyWebSocketSession session = mock(ReactorNettyWebSocketSession.class);
+        ChannelId channelId = DefaultChannelId.newInstance();
+        given(session.textMessage(anyString())).willReturn(mock(WebSocketMessage.class));
+        given(session.send(any())).willReturn(Mono.never());
+        // close 도 세운다 — 안 세우면 목이 null 을 돌려주고 `.then(null)` 이 NPE 로 터져,
+        // "상한이 없다" 와 "하네스가 모자라다" 가 같은 빨강이 된다(실측으로 그 빨강을 한 번 받았다).
+        given(session.close(any())).willReturn(Mono.never());
+        given(session.getChannelId()).willReturn(channelId);
+
+        // when
+        StepVerifier.withVirtualTime(() ->
+                        handler.denyAndClose(session, EntryDeniedException.Reason.TOO_MANY_SESSIONS))
+                .thenAwait(Duration.ofSeconds(10))
+                .expectComplete()
+                .verify(Duration.ofSeconds(5));
+
+        // then: close 는 write future 에 채널 닫기를 걸어두는 구조라, 그 write 가 flush 되지 않으면
+        // 채널이 남는다 — 그리고 "이미 close 보냄" 표시 때문에 다시 닫으려 해도 무동작이다.
+        then(connections).should(times(1)).dispose(channelId);
     }
 
     @Test

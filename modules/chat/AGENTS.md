@@ -1186,9 +1186,17 @@ covers it" is a claim that needs the enumeration read, not assumed.
 - **`checkpoint` separates entry from send.** Open at entry only means a sanctioned user is watching; open at
   the send re-check means posts land in an ended room. A mutation test caught that this distinction was
   initially unguarded.
-- **`chat.session.cut` exists because close 1000 means three things** (room end, lifetime, liveness) and only
-  room end is preceded by an explaining frame. `MODERATION` (1008) and `BUFFER_OVERFLOW` (1013) are in the
-  same meter so the reasons sum to all server-initiated closes.
+- **`chat.session.cut` exists because the close code does not identify the cause.** Close 1000 means three
+  things (room end, lifetime, liveness) and only room end is preceded by an explaining frame; close 1008
+  means two (`MODERATION` and `WITHDRAWN` — a ban is a sanction, a withdrawal is the user's own click, and
+  merging them inflates the sanction rate). `BUFFER_OVERFLOW` (1013) is in the same meter.
+  - ⚠️ **The reasons do not sum to all server-initiated closes** — an earlier version of this line claimed
+    they did, and that was false. At least four closes never reach this meter: the three entry denials
+    (`KICKED`, `BANNED`, `ROOM_ENDED`) happen in `EntryGate` before a session exists and carry no metric at
+    all (of the denials only the session cap is counted, under `chat.sessions.admission_capped`), and a
+    frame over the 4 KiB limit closes with 1009 from the transport layer, which chat code never sees. Read
+    this meter as **sessions that were established and then cut by a server decision**, not as the whole of
+    server-initiated closes.
 - Every meter is **0 in the healthy case**, which is what makes alerting possible — tests assert the counters
   are not even created on a healthy path.
 - The Prometheus registry rejects same-name-different-tag-key meters, so a call that omits a tag makes that

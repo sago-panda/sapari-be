@@ -20,6 +20,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.application.port.ChatAccountEventSource;
 import com.sapari.chat.application.port.ChatSessionManager;
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.ChatAccountEvent;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
@@ -61,7 +62,7 @@ class ChatAccountEventHandlerTest {
         List<String> ran = new CopyOnWriteArrayList<>();
         given(sessionManager.sendToUserEverywhere(eq(userId), any()))
                 .willReturn(Mono.fromRunnable(() -> ran.add("reason")));
-        given(sessionManager.closeUserEverywhere(userId))
+        given(sessionManager.closeUserEverywhere(userId, SessionCutReason.MODERATION))
                 .willReturn(Mono.fromRunnable(() -> ran.add("close")));
 
         // when
@@ -71,7 +72,7 @@ class ChatAccountEventHandlerTest {
         assertThat(ran).as("실행 순서 — 호출 순서가 아니다").containsExactly("reason", "close");
         then(sessionManager).should().sendToUserEverywhere(eq(userId),
                 eq(OutboundMessage.system(SystemMessageCode.BANNED)));
-        then(sessionManager).should().closeUserEverywhere(userId);
+        then(sessionManager).should().closeUserEverywhere(userId, SessionCutReason.MODERATION);
     }
 
     @Test
@@ -80,11 +81,11 @@ class ChatAccountEventHandlerTest {
         // given
         given(sessionManager.sendToUserEverywhere(eq(userId), any()))
                 .willReturn(Mono.error(new IllegalStateException("전송 실패")));
-        given(sessionManager.closeUserEverywhere(userId)).willReturn(Mono.empty());
+        given(sessionManager.closeUserEverywhere(userId, SessionCutReason.MODERATION)).willReturn(Mono.empty());
 
         // when & then: 실패가 종료를 막지 않는다
         StepVerifier.create(handler().onEvent(new ChatAccountEvent.Banned(userId))).expectComplete().verify(VERIFY_CEILING);
-        then(sessionManager).should().closeUserEverywhere(userId);
+        then(sessionManager).should().closeUserEverywhere(userId, SessionCutReason.MODERATION);
     }
 
     @Test
@@ -97,13 +98,13 @@ class ChatAccountEventHandlerTest {
         given(sessionManager.sendToUserEverywhere(eq(userId), any()))
                 .willThrow(new IllegalStateException("조립 시점 throw"));
         given(sessionManager.sendToUserEverywhere(eq(second), any())).willReturn(Mono.empty());
-        given(sessionManager.closeUserEverywhere(second)).willReturn(Mono.empty());
+        given(sessionManager.closeUserEverywhere(second, SessionCutReason.MODERATION)).willReturn(Mono.empty());
 
         // when
         handler().start();
 
         // then: 두 번째가 처리됐다 = 첫 번째의 실패가 스트림을 죽이지 않았다
-        then(sessionManager).should().closeUserEverywhere(second);
-        then(sessionManager).should(never()).closeUserEverywhere(userId);
+        then(sessionManager).should().closeUserEverywhere(second, SessionCutReason.MODERATION);
+        then(sessionManager).should(never()).closeUserEverywhere(userId, SessionCutReason.MODERATION);
     }
 }

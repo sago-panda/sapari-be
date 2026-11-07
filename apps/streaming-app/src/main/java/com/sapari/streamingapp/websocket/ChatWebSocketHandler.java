@@ -156,10 +156,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             // 토큰(email PII 포함)은 쿼리 아닌 Sec-WebSocket-Protocol 헤더로 — access log·Referer·브라우저 히스토리 잔류 방지
             token = extractToken(session);
         } catch (Exception e) {
-            return session.close(CloseStatus.POLICY_VIOLATION);   // 잘못된 핸드셰이크 — 상세 미노출
+            return closeBounded(session);   // 잘못된 핸드셰이크 — 상세 미노출
         }
         if (token == null) {
-            return session.close(CloseStatus.POLICY_VIOLATION);
+            return closeBounded(session);
         }
 
         // 상관 식별자를 Reactor Context 에 싣는다. MDC 로는 안 된다 — ThreadLocal 이라 Reactor 의
@@ -179,7 +179,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         .contextWrite(context -> context.put(LogFields.USER_ID,
                                 chatSession.userId().toString())))
                 .onErrorResume(EntryDeniedException.class, e -> denyAndClose(session, e.reason()))
-                .onErrorResume(WebSocketAuthException.class, e -> session.close(CloseStatus.POLICY_VIOLATION))
+                .onErrorResume(WebSocketAuthException.class, e -> closeBounded(session))
                 .contextWrite(context -> context
                         .put(LogFields.SESSION_ID, session.getId())
                         .put(LogFields.ROOM_ID, roomId.toString()));
@@ -464,6 +464,21 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      */
     Mono<Void> closeWithReason(WebSocketSession session, String sid) {
         return Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
+                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
+    }
+
+    /**
+     * 사유 없이 1008 로 닫는다 — 핸드셰이크가 깨졌거나 토큰이 없거나 검증이 실패한 길.
+     *
+     * <p>{@link #closeWithReason} 와 같은 상한을 받는다. 이 셋도 <b>적대적이거나 깨진 클라가 모는
+     * 길</b>이라 close 가 flush 되지 않을 수 있고, 그러면 채널이 남는다 — 그리고 "이미 close 보냄"
+     * 표시 때문에 다시 닫으려 해도 무동작이다. {@link #CLOSE_FLUSH_TIMEOUT} 의 근거가 그 구조다.
+     *
+     * <p>{@code closeWithReason} 와 합치지 않는 이유: 그쪽은 {@code registry.closeStatusOf(sid)} 로
+     * 사유를 읽는데, 이 세 자리는 <b>세션이 등록되기 전</b>이라 그 조회에 쓸 sid 가 없다.
+     */
+    private Mono<Void> closeBounded(WebSocketSession session) {
+        return Mono.defer(() -> session.close(CloseStatus.POLICY_VIOLATION))
                 .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
     }
 
@@ -759,7 +774,15 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         }
     }
 
-    private Mono<Void> denyAndClose(WebSocketSession session, EntryDeniedException.Reason reason) {
+    /**
+     * 거부를 통보하고 닫는다. <b>flush 가 막혀도 상한 뒤 완료하고 소켓을 직접 내린다</b>
+     * ({@link #closeWithReason} 와 같은 이유 — 그 javadoc 과
+     * {@link #CLOSE_FLUSH_TIMEOUT} 를 볼 것). 이쪽은 close <b>앞에 send 가 하나 더</b> 있어
+     * 멈출 길이 더 많고, 이 경로가 적대적이거나 깨진 클라가 실제로 모는 길이다 —
+     * {@code TOO_MANY_SESSIONS} · {@code KICKED} · {@code BANNED} · 입장 시 {@code ROOM_ENDED}.
+     * (테스트 진입점)
+     */
+    Mono<Void> denyAndClose(WebSocketSession session, EntryDeniedException.Reason reason) {
         OutboundMessage system = OutboundMessage.system(systemCode(reason));
         // 사유가 무엇이든 1008이다. 접속 중 방이 끝난 경우(terminateRoomEnded)는 1000인데 여기만 1008인 게
         // 비대칭으로 보이지만, 그쪽은 "성립해 있던 세션의 정상 종료"고 이쪽은 "세션이 성립하지 못한 거부"다.
@@ -777,7 +800,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 싣는다</b> — 영구(KICKED·BANNED·ROOM_ENDED)는 재접속하지 않고, TOO_MANY_SESSIONS 는
         // 백오프 후 재시도해도 된다. 그 구분은 modules/chat/AGENTS.md 의 close-code 계약에 적혀 있다.
         return session.send(Mono.just(session.textMessage(serialize(system))))
-                .then(session.close(CloseStatus.POLICY_VIOLATION));
+                .then(session.close(CloseStatus.POLICY_VIOLATION))
+                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
     }
 
     /** 거부 사유를 클라가 렌더할 code로. switch 식이라 Reason이 늘면 컴파일이 막는다(조용한 오매핑 방지). */
