@@ -498,13 +498,17 @@ that on.
     behaviour. Neither question can be answered from `chat.session.cut{liveness}`, whose only tag is the
     reason.
     - **"A cap set too low" is now actionable from config** (SPR-176): the cap is
-      `chat.session.max-per-room`, default 5, and it takes effect on restart — it is a constructor
-      argument, not `@RefreshScope`. **A value below 1 fails boot by design** rather than quietly
-      running an uncapped pod. ⚠️ That guard covers `< 1` **only** — `500`, or a misspelled key
-      falling back to the default, both roll out fine, so it does not make every typo visible. There is
-      no upper bound; a very large value is how you ask for "no cap".
+      `chat.session.max-per-room`, and it takes effect on restart — it is a constructor argument, not
+      `@RefreshScope`. **A value below 1 fails boot by design** rather than quietly running an uncapped
+      pod. ⚠️ That guard covers `< 1` **only** — `500`, or a misspelled key falling back to the default,
+      both roll out fine, so it does not make every typo visible. There is no upper bound; a very large
+      value is how you ask for "no cap".
       Before raising it, note the derivation in `modules/chat/AGENTS.md`: live sessions per
       `(user, room)` can briefly reach **2× whatever you set**, so a cap of 20 is a transient 40.
+      - **Read the cap off `chat.sessions.max_per_room`, not off this file.** That gauge exists because
+        the pair above *stops being readable* at a large cap: both counters flatten to 0, and that is the
+        same picture as healthy. It is also the only way to see a rolling deploy where replicas disagree —
+        without it, two different denominators get summed into one graph.
   - **Gauges that are *not* 0 when healthy** (added 2026-11-01): `chat.sessions.local` ·
     `chat.rooms.local` — this pod's live WebSocket sessions and the rooms it relays. These are capacity
     signals, not failure signals, so "non-zero = problem" does not apply; they want a **threshold**.

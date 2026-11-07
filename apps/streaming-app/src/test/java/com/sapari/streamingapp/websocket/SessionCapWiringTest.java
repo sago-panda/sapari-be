@@ -25,11 +25,11 @@ import reactor.core.publisher.Mono;
  * 집행 칸이 생성자를 직접 부르기 때문이다: 생성자에 {@code @Value} 가 안 붙어 있어도 그 칸은
  * 전부 초록이고, 운영에서는 프로퍼티가 무시된다.
  *
- * <p>⚠️ <b>미설정 칸이 같이 있어야 한다.</b> {@code @Value} 의 기본값 리터럴과
- * {@code DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM} 은 <b>같은 수의 두 벌</b>이다(형제
- * {@code WebSocketConfig} 가 그 갈림을 반복해 잡았다고 적어 둔 그 모양이다). 설정 칸만 두면
- * 두 벌이 갈려도 초록이므로, "미설정이면 코드 상수와 같다" 를 행동으로 고정한다. 리터럴끼리의
- * 일치는 {@code ConfigTemplateTest} 가 템플릿까지 묶어 따로 잰다.
+ * <p>⚠️ <b>"미설정이면 코드 상수와 같다" 칸은 두지 않는다 — 항진명제다.</b> 플레이스홀더의
+ * 기본값이 그 상수 자체로 적혀 있어서({@code "…:" + DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM})
+ * 둘이 갈릴 수가 없다. 실측으로 확인했다: 상수를 5→6 으로 바꾸면 그 칸은 <b>통과</b>하고
+ * {@code ConfigTemplateTest} 만 실패한다(템플릿 주석이 별개 면이라서다). 한때 그 칸을 두고
+ * "두 벌이 갈리는 것을 행동으로 막는다" 고 적었는데, 두 벌이 아니라 한 벌이다.
  */
 @DisplayName("세션 상한 배선 — 설정값이 레지스트리까지 간다")
 class SessionCapWiringTest {
@@ -95,13 +95,4 @@ class SessionCapWiringTest {
         });
     }
 
-    @Test
-    @DisplayName("⭐ 미설정이면 코드 기본값이다 — @Value 기본값과 상수가 갈리는 것을 행동으로 막는다")
-    void theCodeDefaultAppliesWhenUnset() {
-        runner().run(context -> {
-            assertThat(context).hasNotFailed();
-            assertThat(context.getBean(ChatSessionRegistry.class).maxSessionsPerUserPerRoom())
-                    .isEqualTo(ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM);
-        });
-    }
 }

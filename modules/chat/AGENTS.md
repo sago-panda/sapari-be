@@ -898,7 +898,8 @@ one half. Both were investigated; the reasons differ.
 
 - **Abuse cap — enforced, and tunable since SPR-176.** `ChatSessionRegistry.maxSessionsPerUserPerRoom()`
   bounds concurrent sessions per `(userId, roomId)`; the value comes from **`chat.session.max-per-room`**
-  (default `DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM` = 5) and **a value below 1 fails boot** rather than
+  (default: `DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM`, which the placeholder's own default is written from,
+  so the number lives in one place) and **a value below 1 fails boot** rather than
   quietly running an uncapped pod — the same choice as `managementPortMustDiffer`. There is no upper
   bound: a very large value means "no cap", which is a state an operator may choose (it is what this
   pod did before SPR-152). ⚠️ **That guard covers `< 1` and nothing else**, so it does not mean a typo
@@ -907,7 +908,11 @@ one half. Both were investigated; the reasons differ.
   **not magnitude-free**, which an earlier version of this bullet asserted without measuring:
   `reapUnresponsiveIfFull` scans the **whole** occupied set inside `computeIfPresent`, so a cap-sized
   scan runs under a `ConcurrentHashMap` bin lock on the handshake path — where that begins to matter is
-  **unmeasured**, and at the default 5 it is a five-element scan.
+  **unmeasured** here; what is settled is the direction.
+  The configured value is exposed as **`chat.sessions.max_per_room`** (`ChatSessionGaugeConfig`), because
+  the `admission_capped` / `reaped` pair that `infra/AGENTS.md` tells the on-call to read **stops being
+  readable at a large cap** — both flatten to 0, which is also what healthy looks like — and because
+  replicas can disagree mid-rollout.
   Over the cap, `register` denies with `EntryDeniedException.TOO_MANY_SESSIONS`
   → `SystemMessageCode.TOO_MANY_SESSIONS` + close 1008, counted by `chat.sessions.admission_capped`. The
   unit is `(user, room)` because a room token is scoped to one room and is **replayable within its ~90s
@@ -923,8 +928,8 @@ one half. Both were investigated; the reasons differ.
   - **It does not cover guests.** Unauthenticated entry mints a **fresh random `userId` per entry**
     (`EnterLiveService`), so guest connections never collide on the key. That branch is an issuing-side
     rate limit in live, outside this repo.
-  - **It is pod-local**, so the effective bound is `cap × replicas` (`5 × replicas` at the default —
-    the number moved out of the code in SPR-176). Going global would add a Redis round
+  - **It is pod-local**, so the effective bound is `cap × replicas` (the cap moved out of the code in
+    SPR-176). Going global would add a Redis round
     trip to every connect; the data is already there (`ChatSessionRepository.add` writes userId), so this
     is a choice, not a constraint.
   - **It created a new capability: locking the rightful owner out.** A replayed token can fill the slots,
@@ -954,7 +959,7 @@ one half. Both were investigated; the reasons differ.
       CLOSE_FLUSH_TIMEOUT 5s` — and a reap cannot fire more than once per `liveness-deadline` per key
       (the newly admitted sessions are not unresponsive before it). At the default 90 s,
       **8 s ≪ 90 s**, so it settles at 2× and does not stack. Raise the close ceilings and it grows
-      linearly instead (measured without cleanup, at cap 5: 5 · 10 · 15 · 20 over four cycles).
+      linearly instead (measured without cleanup at the default cap: 5 · 10 · 15 · 20 over four cycles).
       - ⚠️ **`liveness-deadline` below 8 s also breaks it, and nothing stops you setting that.**
         `SessionTimeouts` validates only `>= 2 × ping-interval`, so `ping-interval: 1s` +
         `liveness-deadline: 2s` passes and this derivation stops holding. That gap predates SPR-176
@@ -998,13 +1003,18 @@ the old paragraph gave for deferring it ("the sink would have to carry wire text
 **Dropping `clientMsgId` from broadcasts — do not open this as written.** The old paragraph claimed the
 contract premise was **verified**, on the grounds that `ACK` carries both `id` and `clientMsgId` so the
 mapping can be built from ACK alone. **That premise is false**, and the front-end guide says so itself:
-its 2026-08-08 correction (`chat-frontend-guide.v1.2.md:140`, in the separate `sapari-be-docs` repo —
-not in this one) states that ACK arriving first is *not* guaranteed and that the broadcast is in
-fact the likelier one to win (Redis writes subscriber output buffers before replying to the publisher).
+**`chat-frontend-guide.v1.2.md:142`** (in the separate `sapari-be-docs` repo, not in this one) states it
+as a **contract**, not a symptom: *"그래서 서버가 보낸 사람의 프레임에는 `clientMsgId`를 실어 보낸다
+(브로드캐스트 포함). 순서와 무관하게 짝지을 수 있다."* Removing it from the broadcast is therefore a
+published-contract violation on its own, before any reasoning about order. The reasoning is there too:
+its 2026-08-08 correction (`:140`) states that ACK arriving first is *not* guaranteed and that the
+broadcast is in fact the likelier one to win (Redis writes subscriber output buffers before replying to the publisher).
 With no `clientMsgId` on the broadcast, a sender whose broadcast arrives first sees a message with an `id`
 it does not know yet and renders it as new; the ACK then stamps that same `id` onto the optimistic bubble,
 leaving **two renders of one message**. The four per-recipient variants therefore stay four: the sender
-axis is what carries `clientMsgId`, and after `OutboundFrame` its cost is **at most one extra
+axis is what carries `clientMsgId` — and note that the guide scopes that value to the **account**, not
+the session (`:144`: other tabs of the same account receive it, and the rule is "match only what is in my
+pending list"), so "sender" here is a user, not a socket. After `OutboundFrame` its cost is **at most one extra
 serialization per fan-out** — 0.77 µs by that class's measurement, and **zero when no session consumes
 that variant**, because the bytes are computed lazily. An earlier version of this paragraph put it at
 "~1.5 µs per message" with no derivation; the honest statement is a bound, not a figure. Either way it is

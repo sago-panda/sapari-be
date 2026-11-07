@@ -20,7 +20,9 @@ public class EntryDeniedException extends RuntimeException {
 
         /**
          * 같은 (유저, 방)의 동시 세션 상한 초과. 모더레이션이 아니라 남용 상한이다 —
-         * {@code ChatSessionRegistry.maxSessionsPerUserPerRoom()}(기본 {@code DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}) 에 근거가 적혀 있다.
+         * {@code ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM} 필드에 근거가 적혀 있다
+         * (왜 (유저, 방) 단위인가 · evict-oldest 를 기각한 이유). 집행하는 값은 설정이고
+         * 접근자는 {@code maxSessionsPerUserPerRoom()} 이지만, 근거는 그 필드에 있다.
          */
         TOO_MANY_SESSIONS
     }

@@ -16,7 +16,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <p><b>왜 지금 필요한가.</b> 이 앱에는 <b>용량</b> 상한이 없다 — 프레임 크기
  * ({@code maxFramePayloadLength}), 아웃바운드 버퍼(256), 느린 클라(1013 종료)는 모두 막혀 있는데
  * "이 파드가 몇 세션까지" 는 무제한이다. 남용 쪽은 그 뒤에
- * {@code chat.session.max-per-room}(기본 5) 상한이 (유저, 방) 단위로 막았다 — 이 문단이
+ * {@code chat.session.max-per-room} 상한이 (유저, 방) 단위로 막았다 — 이 문단이
  * 한때 "연결 개수만 무제한이다" 라고만 적었고, 상한이 들어온 커밋에서 그 단정을 안 고쳐 아래
  * 문단이 뒤늦게 철회하는 모양이 됐다. 그 상한을 정하려면 "파드 하나가 몇 세션을 들고 있는가" 를 알아야
  * 하는데, 지금 그 수를 <b>어디에서도 볼 수 없었다</b>(기존 chat 지표는 전부 카운터다 — 끊긴 건수,
@@ -103,6 +103,20 @@ public class ChatSessionGaugeConfig {
     static final String SLOTS_REAPED_COUNTER = "chat.sessions.reaped";
 
     /**
+     * 이 파드가 집행하는 (유저, 방) 상한 — <b>설정값 자체</b>를 낸다.
+     *
+     * <p>왜 설정값에 게이지가 필요한가. 위 두 카운터의 판정 규칙이
+     * ("{@code admission_capped} 는 오르는데 {@code reaped} 가 평평하면 어뷰즈 <b>또는 상한이 낮다</b>")
+     * <b>상한이 커지면 판정 불가가 된다</b> — 아주 큰 상한에서는 둘 다 0으로 평평해지고, 그 그림이
+     * "건강하다" 와 구분되지 않는다. 상한이 코드 상수일 때는 분모를 사람이 알고 있었지만
+     * SPR-176 이 그걸 설정으로 옮겼으니 분모도 같이 나와야 한다.
+     *
+     * <p>롤링 중에는 파드마다 값이 다를 수 있다 — 그게 이 게이지로 보이는 것이고, 보이지 않으면
+     * 서로 다른 분모의 지표가 한 그래프에 합쳐진다.
+     */
+    static final String MAX_PER_ROOM_GAUGE = "chat.sessions.max_per_room";
+
+    /**
      * 게이지를 등록하고 그 사실을 빈으로 남긴다.
      *
      * <p>표식 빈을 돌려주는 이유는 등록이 <b>부수효과</b>라서다 — 반환값이 없으면 이 메서드가
@@ -138,6 +152,10 @@ public class ChatSessionGaugeConfig {
         // 쓸 수 없고 "지금 몇 개" 로 오독된다. 이 수는 증가율로 봐야 의미가 있다(상한이 방금 발화했나).
         FunctionCounter.builder(ADMISSION_CAPPED_COUNTER, registry, ChatSessionRegistry::admissionCapped)
                 .description("동시 세션 상한으로 입장을 거부한 누적 수")
+                .register(meters);
+        // 설정값이라 단조 증가가 아니고 재기동으로만 바뀐다 — 그래서 FunctionCounter 가 아니라 Gauge 다.
+        Gauge.builder(MAX_PER_ROOM_GAUGE, registry, ChatSessionRegistry::maxSessionsPerUserPerRoom)
+                .description("이 파드가 집행하는 (유저, 방) 동시 세션 상한 (chat.session.max-per-room)")
                 .register(meters);
         FunctionCounter.builder(SLOTS_REAPED_COUNTER, registry, ChatSessionRegistry::slotsReaped)
                 .description("죽은 소켓이 들고 있던 동시 세션 자리를 거둔 누적 수")

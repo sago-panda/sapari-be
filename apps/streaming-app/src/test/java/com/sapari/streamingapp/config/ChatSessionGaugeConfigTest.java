@@ -285,7 +285,22 @@ class ChatSessionGaugeConfigTest {
                         ChatSessionGaugeConfig.SESSIONS_GAUGE,
                         ChatSessionGaugeConfig.ROOMS_GAUGE,
                         ChatSessionGaugeConfig.ADMISSION_CAPPED_COUNTER,
-                        ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER);
+                        ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER,
+                        ChatSessionGaugeConfig.MAX_PER_ROOM_GAUGE);
+    }
+
+    @Test
+    @DisplayName("⭐ 상한 게이지가 설정된 값을 낸다 — 기본값을 보고하면 분모가 통째로 틀린다")
+    void theCapGaugeReportsTheConfiguredValue() {
+        // 이 파일의 레지스트리는 기본 5 가 아니라 CAP 로 세워진다. 그래서 게이지가 상수를 읽고
+        // 있으면 여기서 갈린다 — 이 게이지의 존재 이유가 "파드마다 다를 수 있는 분모를 보이게"
+        // 하는 것이라, 기본값을 보고하는 게이지는 없는 것보다 나쁘다(틀린 분모로 합쳐진다).
+        assertThat(meters.get(ChatSessionGaugeConfig.MAX_PER_ROOM_GAUGE).gauge().value())
+                .as("설정값이 아니라 다른 수를 낸다")
+                .isEqualTo(CAP);
+        assertThat(CAP)
+                .as("CAP 이 기본값과 같으면 위 단언이 상수를 읽는 구현도 통과시킨다")
+                .isNotEqualTo(5);
     }
 
     @Test

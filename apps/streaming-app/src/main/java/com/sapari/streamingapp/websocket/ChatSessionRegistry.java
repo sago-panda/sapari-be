@@ -156,18 +156,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 그 값은 <b>소비자가 둘</b>(핸들러와 {@code RoomTokenVerifier})이기 때문이다. 상한은 소비자가
      * 이 클래스 하나뿐이라 그 중복이 생기지 않는다.
      *
-     * <p>⚠️ 다만 기본값은 <b>여전히 두 벌</b>이다 — 이 자리의 리터럴과
-     * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}. 한 벌로 줄이려면 아래 좁은 생성자들이 상한을
-     * 명시해야 하고, 그러면 상한을 안 넘기는 <b>호출 자리 9개</b>(전체 13자리 중, 실측)가 같이
-     * 바뀐다. 그래서 줄이지 않고 <b>묶었다</b>:
-     * {@code SessionCapWiringTest} 가 "미설정이면 상수와 같다" 를 행동으로, {@code ConfigTemplateTest}
-     * 가 템플릿 주석까지 포함한 리터럴 일치를 각각 잰다.
+     * <p><b>기본값은 한 벌이다.</b> 플레이스홀더의 기본값을
+     * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM} 연결로 적는다 — 문자열 리터럴과
+     * {@code static final int} 의 연결은 자바 <b>상수식</b>이라 어노테이션 값으로 적법하다(실측).
+     * 그래서 숫자를 두 자리에 적고 기계로 묶을 필요가 없다. 템플릿 주석과의 일치는 별개 면이라
+     * {@code ConfigTemplateTest} 가 따로 잰다.
      */
     @Autowired
     public ChatSessionRegistry(ChatSessionRepository sessionRepository,
                                ChatPermissionPolicy permissionPolicy,
                                ChatMetrics metrics,
-                               @Value("${chat.session.max-per-room:5}") int maxSessionsPerUserPerRoom) {
+                               @Value("${chat.session.max-per-room:" + DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM + "}") int maxSessionsPerUserPerRoom) {
         this(sessionRepository, permissionPolicy, metrics, maxSessionsPerUserPerRoom,
                 DEFAULT_CONTENTION_SPIN_NANOS, DEFAULT_COMPLETE_SPIN_NANOS);
     }
@@ -208,12 +207,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p><b>상한은 두지 않는다.</b> 아주 큰 값은 "상한 없음" 이고 그건 운영이 고를 수 있는 상태다
      * (SPR-152 전의 상태가 그것이다). 문서의 "2× 상한" 유도는 상한에 비례하므로 값이 커져도 참이다.
      *
-     * <p>⚠️ <b>그렇다고 크기와 무관하지는 않다</b> — 한때 이 자리에 "큰 값이 조용히 깨뜨리는 다른
-     * 불변식도 없다" 고 적었는데 안 잰 단정이었다. {@link #reapUnresponsiveIfFull} 은 자리가 찼을 때
-     * {@code computeIfPresent} 안에서 점유 집합을 <b>전부</b> 훑는다. 즉 상한만큼의 스캔이
-     * ConcurrentHashMap 의 빈 잠금 아래에서, 그것도 핸드셰이크 경로에서 돈다
-     * ({@code ChatWebSocketHandler} 의 등록 직전). <b>어느 상한에서 그게 문제가 되는지는 재지 않았다</b> —
-     * 기본 5 에서는 다섯 칸 스캔이라 묻지 않았고, 상한을 크게 올리는 운영자가 먼저 부딪힐 자리다.
+     * <p>크기에 매달린 경로가 하나 있는데 <b>방향이 직관과 반대다</b>(한때 이 자리에 "큰 값이 조용히
+     * 깨뜨리는 불변식도 없다" 고 안 재고 적었고, 그 다음엔 "상한만큼 훑는다" 로 반대로 적었다).
+     * {@link #reapUnresponsiveIfFull} 은 <b>점유가 상한에 닿았을 때만</b> 돈다 —
+     * {@code size() < 상한} 에서 즉시 돌아오기 때문이다. 닿으면 {@code computeIfPresent} 안에서
+     * 점유 집합을 전부 훑고, 그 스캔은 <b>상한이 아니라 점유 크기</b>에 비례한다. 그래서
+     * <b>상한을 올리면 이 경로는 덜 돈다</b>(닿기가 어려워진다). 상한만큼의 스캔은 한 (유저, 방)이
+     * 실제로 그만큼의 <b>산</b> 세션을 들고 있을 때만 생기고, 그 상태를 떠받치는 비용(싱크·버퍼·팬아웃)이
+     * 스캔보다 크다. 절대 비용은 이쪽에서 재지 않았다.
      */
     private ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
                                 ChatMetrics metrics, int maxSessionsPerUserPerRoom,
@@ -231,8 +232,16 @@ public class ChatSessionRegistry implements ChatSessionManager {
         this.completeSpinNanos = completeSpinNanos;
     }
 
-    /** 이 파드가 집행하는 (유저, 방) 상한. 운영 설정으로 바뀐다 — 기본은 {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}. */
-    int maxSessionsPerUserPerRoom() {
+    /**
+     * 이 파드가 집행하는 (유저, 방) 상한. 운영 설정으로 바뀐다 — 기본은
+     * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}.
+     *
+     * <p>{@code public} 인 이유는 다른 패키지의 게이지 설정이 읽기 때문이다
+     * ({@code ChatSessionGaugeConfig} → {@code chat.sessions.max_per_room}). 같은 자리의
+     * {@code localSessionCount}·{@code localRoomCount}·{@code admissionCapped}·{@code slotsReaped}
+     * 넷이 모두 같은 이유로 {@code public} 이다.
+     */
+    public int maxSessionsPerUserPerRoom() {
         return maxSessionsPerUserPerRoom;
     }
 
