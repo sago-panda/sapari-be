@@ -38,21 +38,46 @@ expect() {
 
 # self-test 가 "exit 0" 한 줄이어도 통과하는 칸을 만들지 않는다 — 몇 건을 실제로 검사했는지를
 # 출력에서 본다. 그 수가 0 이면 분모 0 인 가드다.
-expect '--self-test 가 검사 건수를 내고 통과한다' 0 'self-test 통과 4건' sh "$TARGET" --self-test
+expect '--self-test 가 검사 건수를 내고 통과한다' 0 'self-test 통과 7건' sh "$TARGET" --self-test
 
-expect '모드 없이 부르면 사용법을 내고 비정상 종료한다' 2 'Usage' sh "$TARGET"
+# 검증 실패는 **64**(EX_USAGE)다. 2 를 쓰지 않는 이유가 이 칸들의 분모 자체다 — psql 은 접속
+# 실패에 2 를 내므로, 2 로 단언하면 이 칸들은 DB 가 없는 상태에서 "가드가 걸려서" 가 아니라
+# "접속이 안 돼서" 통과한다(실측으로 그 상태였다). 64 는 psql 이 내지 않는 값이다.
+expect '모드 없이 부르면 사용법을 내고 비정상 종료한다' 64 'Usage' sh "$TARGET"
+
+# 사용법이 무엇을 물을 수 있는지 자기가 말해야 한다 — 운영자 창구의 기능이다. 모드 한 줄이
+# 조용히 빠지는 것을 잡는다.
+# ⚠️ 모드 **이름만** grep 하면 안 된다 — 실측: 비용 절의 `target 9.9ms` 가 그 자리를 메워
+# 사용법에서 target 줄을 지워도 칸이 통과했다(분모 0). 그래서 인자 자리까지 묶어 단언한다.
+usage_out="$(sh "$TARGET" 2>&1 || true)"   # 64 로 끝나므로 set -e 에 걸리지 않게 받는다
+for pat in 'actor  <actor_id> <actor_type>' 'action <action>' 'target <target_id>' '--explain'; do
+    if printf '%s' "$usage_out" | grep -qF -- "$pat"; then
+        printf 'ok   사용법이 "%s" 를 적는다\n' "$pat"; PASS=$((PASS + 1))
+    else
+        printf 'FAIL 사용법에 "%s" 가 없다\n' "$pat"; FAIL=$((FAIL + 1))
+    fi
+done
+
+# 접속 실패와 인자 오류가 **구분되는가**. 운영자가 "오타" 와 "DB 가 안 뜬다" 를 가르는 축이고,
+# 위 칸들의 분모를 지키는 축이기도 하다.
+out="$(PGHOST=127.0.0.1 PGPORT=1 PGDATABASE=x PGUSER=x sh "$TARGET" action CHAT_KICK_USER 2>&1)" && code=0 || code=$?
+if [ "$code" != 64 ] && [ "$code" != 0 ]; then
+    printf 'ok   접속 실패는 64 가 아니다(실제 %s) — 인자 오류와 구분된다\n' "$code"; PASS=$((PASS + 1))
+else
+    printf 'FAIL 접속 실패 종료 코드 %s — 인자 오류(64)와 구분되지 않는다\n' "$code"; FAIL=$((FAIL + 1))
+fi
 
 # actor 질의는 actor_type 을 함께 고정해야 인덱스 (actor_id, actor_type, created_at) 를 정렬까지
 # 쓴다. 실측(40만 행, postgres:16): 둘 다 고정 0.088ms(Index Scan Backward) vs actor_type 누락
 # 13.0ms(Sort) = 148배. 그래서 "선택 인자" 가 아니라 거부 사유다.
-expect 'actor 질의에 actor_type 이 없으면 거부하고 이유를 적는다' 2 '148' \
+expect 'actor 질의에 actor_type 이 없으면 거부하고 이유를 적는다' 64 '148' \
     sh "$TARGET" actor 11111111-1111-1111-1111-111111111111
 
 # limit 은 **셸 문자열로 SQL 에 끼워지는 유일한 값**이다(나머지는 psql 변수 :'v1'). 그래서 이
 # 검증은 사용성이 아니라 인젝션 가드다 — 숫자가 아닌 것이 통과하면 LIMIT 자리에 임의 SQL 이 간다.
-expect '숫자가 아닌 limit 을 거부한다 (SQL 에 직접 끼워지는 유일한 값)' 2 'limit' \
+expect '숫자가 아닌 limit 을 거부한다 (SQL 에 직접 끼워지는 유일한 값)' 64 'limit' \
     sh "$TARGET" action CHAT_KICK_USER '1; DROP TABLE live_schema.audit_logs'
-expect '0 이하 limit 을 거부한다' 2 'limit' sh "$TARGET" action CHAT_KICK_USER 0
+expect '0 이하 limit 을 거부한다' 64 'limit' sh "$TARGET" action CHAT_KICK_USER 0
 
 # --- 실제 PostgreSQL 층 -----------------------------------------------------
 #
@@ -144,6 +169,21 @@ expect '--explain actor 가 Index Scan Backward 를 탄다' 0 'Index Scan Backwa
     sh "$TARGET" --explain actor "$A1" ADMIN
 expect '--explain action 이 Index Scan Backward 를 탄다' 0 'Index Scan Backward' \
     sh "$TARGET" --explain action CHAT_KICK_USER
+
+# 9) 상한에서 잘렸는지를 숨기지 않는다. A1/ADMIN 은 2건이므로 limit 1 이면 잘린 것이고,
+#    limit 50 이면 안 잘린 것이다. 둘을 같이 봐야 "항상 잘렸다고 말하는" 구현이 통과하지 못한다.
+out="$(sh "$TARGET" actor "$A1" ADMIN 1 2>&1)"
+if printf '%s' "$out" | grep -q '잘렸다'; then
+    printf 'ok   상한에서 잘렸음을 적는다\n'; PASS=$((PASS + 1))
+else
+    printf 'FAIL 상한 1 인데 잘림을 안 적는다\n     출력: %s\n' "$(printf '%s' "$out" | tr '\n' '|')"; FAIL=$((FAIL + 1))
+fi
+out="$(sh "$TARGET" actor "$A1" ADMIN 50 2>&1)"
+if printf '%s' "$out" | grep -q '^2건$' && ! printf '%s' "$out" | grep -q '잘렸다'; then
+    printf 'ok   상한 아래에서는 정확한 건수만 적는다\n'; PASS=$((PASS + 1))
+else
+    printf 'FAIL 상한 50 에서 2건이 아니거나 잘림을 적었다\n     출력: %s\n' "$(printf '%s' "$out" | tr '\n' '|')"; FAIL=$((FAIL + 1))
+fi
 
 printf '\n통과 %s · 실패 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

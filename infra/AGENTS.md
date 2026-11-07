@@ -87,31 +87,55 @@ How it runs:
 chat's audit rows land in, because chat has no schema of its own (see Migrations above). It only
 ever runs `SELECT`; there is no write mode, so it cannot be the tool that corrupts the evidence.
 
-- **Three modes, and `actor` requires `actor_type`.** That is a rejection (`exit 2`), not a missing
+- **Three query modes** (`actor` / `action` / `target`), plus `--explain` for the plan and
+  `--self-test` for the pure logic. **`actor` requires `actor_type`** — a rejection, not a missing
   optional argument. Measured at 400k rows on `postgres:16`: `actor_id` + `actor_type` pinned →
   **0.088ms, Index Scan Backward**; `actor_id` alone → **13.0ms** — **148×**, because the index is
   `(actor_id, actor_type, created_at)` and dropping the middle column costs the ordering too.
-  `action` → 0.072ms. `target` has **no index** (9.9ms) and `detail->>'…'` none either (15.8ms);
-  both still run, and the integration test deliberately does **not** assert their plans, so adding
-  an index later is not a test failure.
+  `action` → 0.072ms, exact equality only (no `LIKE`, so `ChatAuditAction`'s `action LIKE 'CHAT_%'`
+  remark describes psql by hand, not this script). `target` has **no index** → 9.9ms; it still runs,
+  and the integration test deliberately does **not** assert its plan, so adding an index later is
+  not a test failure. **There is no `detail` (jsonb) mode at all** — 15.8ms measured and no plan
+  shape to pin, which is why it was left out; an earlier version of this section wrongly listed it
+  as a supported path.
 - **Exit codes**: `0` success — **including 0 rows**, which is an answer ("that action is not in the
-  log"), not a failure; the script prints the count explicitly so an empty screen is never
-  ambiguous. `2` usage or argument validation. `12` `--self-test` failure.
+  log"), not a failure. `64` (`EX_USAGE`) usage or argument validation. `12` `--self-test` failure.
+  Anything else is **psql's own code passing through** (2 connection failure, 3 `ON_ERROR_STOP`).
+  - ⚠️ **`2` is deliberately not used for validation, and this is load-bearing for the tests.**
+    Measured: with validation on `2`, a connect failure and a typo were *the same code*, and the
+    argv-layer test cells — which run before the container exists — passed because psql could not
+    connect, not because a guard fired. Denominator 0 on every one of them. `64` is a code psql
+    does not emit, so those cells now measure the guard. One cell asserts the separation directly.
+  - The sibling has a `preflight()` → `exit 1`; this script has none, deliberately. The sibling
+    generates `UPDATE`s across repeated rounds, so not starting on bad input matters; a read-only
+    one-shot gets the same information from psql's own error text.
+- **The row count never hides truncation.** It counts to `limit + 1` and says
+  `N건 이상 — 상한 N 에서 잘렸다` rather than printing a capped number: at the cap, "exactly 50" and
+  "the first 50 of many" are different answers to an audit question. Counting the whole predicate
+  instead would unbind the LIMIT the plan above depends on. The probe has no `ORDER BY`, so the
+  plan `--explain` pins is the row query's, not the probe's; LIMIT is what bounds the probe.
 - **Credentials never in `argv`** (ps-readable) — libpq env vars / `~/.pgpass` / `PGSERVICE`, same
   position as `replay-backfill`. ⚠️ **libpq prefers the service file over env vars**, so a shell set
   up for production reaches production; `integration-test.sh` `unset`s
-  `PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD` before anything else.
+  `PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD` before anything else. Every
+  psql call passes `-X`, so a developer's `~/.psqlrc` cannot reshape operator output or the count.
 - **`limit` is the only value interpolated into SQL as a shell string.** Everything else goes
   through psql `-v` variables with the SQL on **stdin** — `psql -c` does not interpolate `:'var'`
-  at all. So `limit`'s two guards (numeric shape, then `> 0`) are an injection gate, not usability;
-  a mutation has to remove **both** to fail the test.
+  at all. Its two guards are **not equivalent**, measured in both directions: remove the shape
+  `case` and the range check's own `[: integer expression expected` still rejects, so the shape
+  guard supplies the *message*, not the gate; remove the range check and `limit=0` reaches SQL.
+  An earlier version of this section claimed a mutation had to remove both — it does not.
 - **Two test layers**, same split the sibling learned: `--self-test` covers the pure argv/validation
   logic with no database and reports how many checks it ran (a self-test that is one `exit 0` is a
-  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 12 cells —
-  table/column names, query syntax, real exit codes, newest-first ordering and the index plans. It
-  applies **the whole real `db/migration/live/V1__init_live.sql`** and refuses to run unless the
-  target is its own throwaway database (`audit_test`, with no `live_schema` yet) — measured: both
-  guards fire, and a clean database passes both.
+  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 19 cells —
+  table/column names, query syntax, real exit codes and their separation, newest-first ordering,
+  truncation in both directions, the usage text listing every mode, and the index plans. It applies
+  **the whole real `db/migration/live/V1__init_live.sql`**.
+  - It also checks `current_database()` and that `live_schema` is empty before running DDL, copied
+    from the sibling. ⚠️ **On this script's own path that guard cannot fire** — like the sibling, the
+    test starts its own container and exports `PGHOST`/`PGPORT` itself, so the target is always its
+    own database. Denominator 0 today; it earns its place only if someone later points the test at
+    a database it did not create. Fed a reachable wrong target by hand, both halves do reject.
 
 ## Observability ports (live-app)
 
