@@ -546,13 +546,20 @@ class ChatSessionRegistryTest {
         // given: 이 파일의 다른 테스트들이 쓰는 생성자는 예산을 넓혀 받는다. 그 진입점이 생긴 순간
         // "운영은 무엇을 받는가"를 아무도 묻지 않는 자리가 생겼다 — 위임에서 값을 뒤바꾸거나 넓힌
         // 값을 그대로 넘겨도 다른 테스트는 전부 초록이다(자기 예산을 직접 주므로).
-        ChatSessionRegistry production = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        // ⚠️ **Spring 이 고르는 생성자**를 불러야 한다. 상한이 설정으로 열린 뒤로 이 클래스에는
+        // 좁은 생성자(기본 상한으로 위임하는 테스트 진입점)가 따로 있고, 그걸 부르면 "운영이
+        // 무엇을 받는가" 를 묻는 이 칸이 운영 경로를 안 지나간다. 상한 인자가 있는 쪽이 @Autowired 다.
+        ChatSessionRegistry production = new ChatSessionRegistry(
+                sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP, 3);
 
-        // when & then: 둘을 따로 본다. 뒤바꿔 넘기면 한 값만 보는 단언으로는 드러나지 않는다.
+        // when & then: 셋을 따로 본다. 뒤바꿔 넘기면 한 값만 보는 단언으로는 드러나지 않는다.
         assertThat(Duration.ofNanos(production.contentionSpinNanos()))
                 .as("emit 경합 예산").isEqualTo(Duration.ofMillis(5));
         assertThat(Duration.ofNanos(production.completeSpinNanos()))
                 .as("종료 신호 예산").isEqualTo(Duration.ofMillis(50));
+        // 상한은 위임에서 자리를 잃거나 기본값으로 덮이기 쉬운 인자다 — 기본(5)과 다른 수로 본다.
+        assertThat(production.maxSessionsPerUserPerRoom())
+                .as("(유저, 방) 상한").isEqualTo(3);
     }
 
     @Test
@@ -747,14 +754,14 @@ class ChatSessionRegistryTest {
         // given: 한 유저의 세션 여럿. 전원 같은 userId 라 계정 단위 팬아웃도 이 세션들을 훑는다.
         //
         // 한때 <b>한 방에</b> 40 세션을 같은 userId 로 넣었는데, 동시 세션 상한
-        // (MAX_SESSIONS_PER_USER_PER_ROOM)이 생긴 뒤로 그 모양은 운영에서 성립하지 않는다. 그래서
+        // (maxSessionsPerUserPerRoom)이 생긴 뒤로 그 모양은 운영에서 성립하지 않는다. 그래서
         // 같은 유저를 여러 방에 퍼뜨린다 — 계정 단위 팬아웃(sendToUserEverywhere·closeUserEverywhere)은
         // 방을 가리지 않아 여전히 40 을 전부 훑고, 방 단위 팬아웃은 그 방의 상한만큼을 훑는다.
         // 세는 것이 예산 <b>개수</b>라 두 축 다 세션이 복수이면 회귀가 잡힌다(호출당 1 vs 세션 수).
         int rooms = 8;
         // 상한을 1 로 내리면 방 축 순회가 1 이 되어 "호출당 예산 1개" 되돌림이 1==1 로
         // 조용히 통과한다 — 이빨이 사라지는 것을 상수 변경이 결정하지 않게 바닥을 둔다.
-        int perRoom = Math.max(2, ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM);
+        int perRoom = Math.max(2, ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM);
         for (int r = 0; r < rooms; r++) {
             UUID room = r == 0 ? roomId : UUID.randomUUID();
             for (int i = 0; i < perRoom; i++) {

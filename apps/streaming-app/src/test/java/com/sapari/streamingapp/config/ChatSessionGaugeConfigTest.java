@@ -41,6 +41,9 @@ class ChatSessionGaugeConfigTest {
 
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
 
+    /** 이 파일이 집행시키는 (유저, 방) 상한 — 아래 50회 루프가 반드시 닿을 수 있는 작은 수. */
+    private static final int CAP_REACHABLE_WITHIN_THE_LOOP = 4;
+
     private final ChatSessionGaugeConfig config = new ChatSessionGaugeConfig();
     private MeterRegistry meters;
     private ChatSessionRegistry registry;
@@ -55,7 +58,13 @@ class ChatSessionGaugeConfigTest {
         lenient().when(sessionRepository.add(any(), any(), any())).thenReturn(Mono.empty());
         lenient().when(sessionRepository.remove(any(), any())).thenReturn(Mono.empty());
         lenient().when(sessionRepository.heartbeatInterval()).thenReturn(Duration.ofMinutes(10));
-        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        // ⚠️ 상한을 넉넉히 주면 안 된다 — theReapedCounterFollowsTheRegistry 는 상한에 **닿아야**
+        // 거둘 자리가 생긴다(reapUnresponsiveIfFull 은 자리가 찼을 때만 거둔다). 실측: 1,000 으로
+        // 두면 50회 등록이 전부 통과해 거둔 수가 0 이 되고 그 칸이 깨진다.
+        // 그래서 "닿을 수 있는 작은 수" 를 이 파일이 직접 정한다. 기본값을 베껴 적지는 않는다 —
+        // 여기서 필요한 것은 기본값이 아니라 도달 가능한 상한이고, 베끼면 기본이 바뀔 때 조용히 갈린다.
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP,
+                CAP_REACHABLE_WITHIN_THE_LOOP);
         config.chatSessionGauges(registry, providing(meters));
     }
 
