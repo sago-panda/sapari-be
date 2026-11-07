@@ -81,6 +81,38 @@ How it runs:
 - **docker:** image built from `infra/migration/Dockerfile`.
 - **prod:** same image run by a Helm pre-upgrade Job (wired when prod is promoted).
 
+## Audit-log queries (operator script, measured SPR-175)
+
+`infra/audit-query/query-audit-log.sh` is the read path into `live_schema.audit_logs` — the table
+chat's audit rows land in, because chat has no schema of its own (see Migrations above). It only
+ever runs `SELECT`; there is no write mode, so it cannot be the tool that corrupts the evidence.
+
+- **Three modes, and `actor` requires `actor_type`.** That is a rejection (`exit 2`), not a missing
+  optional argument. Measured at 400k rows on `postgres:16`: `actor_id` + `actor_type` pinned →
+  **0.088ms, Index Scan Backward**; `actor_id` alone → **13.0ms** — **148×**, because the index is
+  `(actor_id, actor_type, created_at)` and dropping the middle column costs the ordering too.
+  `action` → 0.072ms. `target` has **no index** (9.9ms) and `detail->>'…'` none either (15.8ms);
+  both still run, and the integration test deliberately does **not** assert their plans, so adding
+  an index later is not a test failure.
+- **Exit codes**: `0` success — **including 0 rows**, which is an answer ("that action is not in the
+  log"), not a failure; the script prints the count explicitly so an empty screen is never
+  ambiguous. `2` usage or argument validation. `12` `--self-test` failure.
+- **Credentials never in `argv`** (ps-readable) — libpq env vars / `~/.pgpass` / `PGSERVICE`, same
+  position as `replay-backfill`. ⚠️ **libpq prefers the service file over env vars**, so a shell set
+  up for production reaches production; `integration-test.sh` `unset`s
+  `PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD` before anything else.
+- **`limit` is the only value interpolated into SQL as a shell string.** Everything else goes
+  through psql `-v` variables with the SQL on **stdin** — `psql -c` does not interpolate `:'var'`
+  at all. So `limit`'s two guards (numeric shape, then `> 0`) are an injection gate, not usability;
+  a mutation has to remove **both** to fail the test.
+- **Two test layers**, same split the sibling learned: `--self-test` covers the pure argv/validation
+  logic with no database and reports how many checks it ran (a self-test that is one `exit 0` is a
+  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 12 cells —
+  table/column names, query syntax, real exit codes, newest-first ordering and the index plans. It
+  applies **the whole real `db/migration/live/V1__init_live.sql`** and refuses to run unless the
+  target is its own throwaway database (`audit_test`, with no `live_schema` yet) — measured: both
+  guards fire, and a clean database passes both.
+
 ## Observability ports (live-app)
 
 Two apps now expose metrics on a split management port. The rules below were written for live-app; the
