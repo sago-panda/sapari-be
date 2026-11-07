@@ -433,7 +433,8 @@ public class ChatMongoConfig {
      * 한 번이다. 배포 창 안에 <b>옛 파드가 재시작하면</b> 2키를 다시 만들고 다음 새 파드가 또 지운다.
      *
      * <p>실측(일회용 {@code mongo:7.0}, 400,000 문서): 옛 2키 단독 빌드 <b>374ms</b>(건당
-     * 0.0009ms) · 없는 이름 드롭은 <b>code 27 {@code IndexNotFound}</b>(아래 상수가 그 값이다) ·
+     * 0.0009ms — ⚠️ 독립 2회에서 374ms·604ms 로 갈린다. <b>사이징에는 쓰지 않는다</b>; 그 수는
+     * 아래 {@code awaitIndex} javadoc 의 보수적인 0.0057ms/건이다) · 없는 이름 드롭은 <b>code 27 {@code IndexNotFound}</b>(아래 상수가 그 값이다) ·
      * 빌드와 같은 이름 드롭이 겹치면 <b>드롭이 이기고</b> 컬렉션에 {@code _id_} 만 남는다. 즉 새
      * 파드는 이 경쟁으로 죽지 않는다. ⚠️ <b>빌드 쪽이 받는 에러는 내 프로브가 분리 실행이라
      * 못 잡았다</b> — 그쪽이 깨지면 그 파드의 부팅이 실패하고, 다음 재시작에는 지우는 쪽이 없어
@@ -460,9 +461,17 @@ public class ChatMongoConfig {
             // 가를 수 없고, 조치가 정반대다. 상한을 30초로 고른 이유 자체가 "응답하지 않는다를
             // 부팅 내내 숨기지 않겠다" 인데, 그 말이 메시지에 없으면 증상만 드러내고 진단을 버린다.
             //
-            // ⚠️ 타임아웃만 가린다. awaitIndex 와 달리 cause 로 가르지 않는 이유는 여기 catch 가
-            // 하나뿐이고 드라이버가 만드는 비-타임아웃 ISE 에 라벨을 갈아붙일 자리가 없기
-            // 때문이다 — 그래서 원인을 그대로 사슬에 싣는다.
+            // ⚠️ **cause 로 가른다.** 한때 이 자리에 "catch 가 하나뿐이라 라벨을 갈아붙일 자리가
+            // 없다" 고 적혀 있었는데 거꾸로다 — 형제도 catch 가 하나이고, **그 하나가** 라벨이
+            // 갈리는 자리다. 실측: Mono.never().block(200ms) 는 cause = TimeoutException 이고 273ms
+            // 걸리지만, Mono.error(new IllegalStateException("state should be: ...")).block(5s) 는
+            // 그 ISE 를 **그대로 재던지고**(cause = null) **6ms** 에 죽는다. 드라이버
+            // mongodb-driver-core 의 Assertions 가 정확히 그 모양을 만든다. 조건 없이 잡으면 0ms 에
+            // 죽은 것이 "30초 기다렸다 + Mongo 를 보라" 로 나가고, 이 메시지는 조치까지 지시하므로
+            // 오라벨의 대가가 형제보다 크다.
+            if (!(e.getCause() instanceof java.util.concurrent.TimeoutException)) {
+                throw e;
+            }
             throw new IllegalStateException(
                     "옛 윈도우 인덱스 " + SUPERSEDED_WINDOW_INDEX + " 드롭이 "
                             + INDEX_DROP_CEILING.toSeconds() + "초 안에 끝나지 않았다 — Mongo 가 응답하는지"
