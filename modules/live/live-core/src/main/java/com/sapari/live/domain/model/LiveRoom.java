@@ -25,6 +25,11 @@ public record LiveRoom(
         // 방별 다시보기 공개 스위치(live_rooms.is_vod_public, DB 기본 true). 읽기 전용이다 —
         // 엔티티 빌더에 이 필드가 없고 update 경로도 건드리지 않으므로 앱이 값을 덮어쓸 수 없다.
         boolean vodPublic,
+        // 다시보기 처리 상태(live_rooms.vod_status). vodPublic 과 같이 읽기 전용 — 쓰는 경로가 없다.
+        VodStatus vodStatus,
+        // RTMP 송출 주소(live_rooms.rtmp_url). 발급의 조건부 UPDATE 만 쓴다(RtmpIngressAssigner) — 읽기 전용.
+        // 자격증명이 아니다: 키(streamKey) 없이는 송출할 수 없고, 키는 저장하지 않는다.
+        String rtmpUrl,
         Instant scheduledAt,
         Instant createdAt,
         Instant updatedAt
@@ -41,14 +46,9 @@ public record LiveRoom(
         if (sellerId == null) {
             throw new IllegalArgumentException("sellerId는 필수입니다.");
         }
-        if (title == null || title.isBlank()) {
-            throw new IllegalArgumentException("title은 필수입니다.");
-        }
+        requireEditableFields(title, scheduledAt);
         if (sellerNickname == null || sellerNickname.isBlank()) {
             throw new IllegalArgumentException("sellerNickname은 필수입니다.");
-        }
-        if (scheduledAt == null) {
-            throw new IllegalArgumentException("scheduledAt은 필수입니다.");
         }
         return builder()
                 .sellerId(sellerId)
@@ -59,10 +59,21 @@ public record LiveRoom(
                 .status(new Scheduled(scheduledAt))
                 .streamType(new LiveStreamType.WebRtc())
                 .vodPublic(true)
+                .vodStatus(VodStatus.NONE)
                 .scheduledAt(scheduledAt)
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
+    }
+
+    /** 생성과 수정이 함께 지키는 필드 규칙. 둘이 갈리지 않게 한곳에 둔다. */
+    private static void requireEditableFields(String title, Instant scheduledAt) {
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("title은 필수입니다.");
+        }
+        if (scheduledAt == null) {
+            throw new IllegalArgumentException("scheduledAt은 필수입니다.");
+        }
     }
 
     public LiveRoom withSfuRoomId(String sfuRoomId) {
@@ -167,6 +178,36 @@ public record LiveRoom(
                 .build();
     }
 
+    /**
+     * 판매자가 예약을 취소한다. Scheduled 에서만 허용한다 — Ready 는 OBS 연결 webhook 과 경합하므로
+     * 만료 배치에 맡긴다. 방송된 적이 없으므로 RoomEnded 를 발행하지 않는다(호출자 책임).
+     */
+    public LiveRoom cancel(Instant now){
+        if (!canCancel()) {
+            throw new InvalidLiveStateException(LiveErrorCode.CANCEL_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        return toBuilder()
+                .status(new LiveStatus.Cancelled(((LiveStatus.Scheduled) this.status).scheduledAt(), now))
+                .updatedAt(now)
+                .build();
+    }
+
+    /** 예약 내용을 통째로 바꾼다. Scheduled 에서만 허용한다. 예정 시각은 상태에 담겨야 영속에 반영된다. */
+    public LiveRoom update(String title, String description, String thumbnailUrl, Instant scheduledAt, Instant now){
+        if (!canUpdate()) {
+            throw new InvalidLiveStateException(LiveErrorCode.UPDATE_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        requireEditableFields(title, scheduledAt);
+        return toBuilder()
+                .title(title)
+                .description(description)
+                .thumbnailUrl(thumbnailUrl)
+                .status(new LiveStatus.Scheduled(scheduledAt))
+                .scheduledAt(scheduledAt)
+                .updatedAt(now)
+                .build();
+    }
+
     public String sfuRoomId(){
         return streamInfo.sfuRoomId();
     }
@@ -197,6 +238,14 @@ public record LiveRoom(
     }
 
     public boolean canPrepareIngress(){
+        return status instanceof LiveStatus.Scheduled;
+    }
+
+    public boolean canCancel(){
+        return status instanceof LiveStatus.Scheduled;
+    }
+
+    public boolean canUpdate(){
         return status instanceof LiveStatus.Scheduled;
     }
 

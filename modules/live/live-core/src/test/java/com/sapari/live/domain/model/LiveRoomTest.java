@@ -5,9 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveDomainException;
@@ -209,5 +213,106 @@ class LiveRoomTest {
                 .isInstanceOf(InvalidLiveStateException.class)
                 .extracting(e -> ((LiveDomainException) e).getErrorCode())
                 .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
+    }
+
+    // ---- SPR-158: 취소 · 수정 상태 전이 (6개 상태 전부) ----
+
+    private static final Instant SCHEDULED_AT = Instant.parse("2026-06-10T10:00:00Z");
+    private static final Instant NOW = Instant.parse("2026-06-09T05:00:00Z");
+
+    /** 상태마다 방 하나. 빌더로 상태를 직접 심는다 — 전이 경로가 아니라 "그 상태에서의 가드"를 재는 것이다. */
+    static Stream<Arguments> everyStatus() {
+        return Stream.of(
+                Arguments.of("Scheduled", new LiveStatus.Scheduled(SCHEDULED_AT)),
+                Arguments.of("Ready", new LiveStatus.Ready(SCHEDULED_AT)),
+                Arguments.of("Live", new LiveStatus.Live(SCHEDULED_AT, "sfu-1", "eg-1", "https://hls/1")),
+                Arguments.of("Suspended", new LiveStatus.Suspended(SCHEDULED_AT, NOW, "사유")),
+                Arguments.of("Ended", new LiveStatus.Ended(SCHEDULED_AT, SCHEDULED_AT.plusSeconds(60), null)),
+                Arguments.of("Cancelled", new LiveStatus.Cancelled(SCHEDULED_AT, NOW)));
+    }
+
+    private LiveRoom roomIn(LiveStatus status) {
+        return scheduledRoom().toBuilder().id(UUID.randomUUID()).status(status).build();
+    }
+
+    @Test
+    @DisplayName("everyStatus 는 sealed permits 전부를 덮는다 — 상태가 늘면 아래 표가 낡았다는 신호")
+    void everyStatusCoversAllPermits() {
+        assertThat(everyStatus().map(a -> a.get()[1].getClass()).toArray())
+                .containsExactlyInAnyOrder((Object[]) LiveStatus.class.getPermittedSubclasses());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("everyStatus")
+    @DisplayName("cancel — Scheduled 만 Cancelled 로, 나머지는 LIVE-013")
+    void cancel_onlyScheduled(String name, LiveStatus status) {
+        LiveRoom room = roomIn(status);
+        if (status instanceof LiveStatus.Scheduled) {
+            LiveRoom cancelled = room.cancel(NOW);
+            assertThat(cancelled.status()).isEqualTo(new LiveStatus.Cancelled(SCHEDULED_AT, NOW));
+            assertThat(cancelled.updatedAt()).isEqualTo(NOW);
+            assertThat(room.canCancel()).isTrue();
+        } else {
+            assertThat(room.canCancel()).isFalse();
+            assertThatThrownBy(() -> room.cancel(NOW))
+                    .isInstanceOf(InvalidLiveStateException.class)
+                    .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                    .isEqualTo(LiveErrorCode.CANCEL_NOT_ALLOWED);
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("everyStatus")
+    @DisplayName("update — Scheduled 만 값을 바꾸고, 나머지는 LIVE-014")
+    void update_onlyScheduled(String name, LiveStatus status) {
+        LiveRoom room = roomIn(status);
+        Instant newAt = SCHEDULED_AT.plusSeconds(3600);
+        if (status instanceof LiveStatus.Scheduled) {
+            LiveRoom updated = room.update("새 제목", "새 설명", "https://thumb/2", newAt, NOW);
+            assertThat(updated.title()).isEqualTo("새 제목");
+            assertThat(updated.description()).isEqualTo("새 설명");
+            assertThat(updated.thumbnailUrl()).isEqualTo("https://thumb/2");
+            // 예정 시각은 상태에 담겨야 영속에 반영된다(매퍼 applyScheduledAt)
+            assertThat(updated.status()).isEqualTo(new LiveStatus.Scheduled(newAt));
+            assertThat(updated.scheduledAt()).isEqualTo(newAt);
+            assertThat(room.canUpdate()).isTrue();
+        } else {
+            assertThat(room.canUpdate()).isFalse();
+            assertThatThrownBy(() -> room.update("새 제목", "새 설명", "https://thumb/2", newAt, NOW))
+                    .isInstanceOf(InvalidLiveStateException.class)
+                    .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                    .isEqualTo(LiveErrorCode.UPDATE_NOT_ALLOWED);
+        }
+    }
+
+    @Test
+    @DisplayName("update — 생성과 같은 필수 검사(제목·예정 시각)")
+    void update_requiresSameFieldsAsCreate() {
+        assertThatThrownBy(() -> scheduledRoom().update(" ", "설명", "https://t", SCHEDULED_AT, NOW))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> scheduledRoom().update("제목", "설명", "https://t", null, NOW))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("Cancelled 방은 어떤 전이 가드도 통과하지 못한다")
+    void cancelledRoomPassesNoGuard() {
+        LiveRoom room = scheduledRtmpRoom("ing-1").cancel(NOW);
+
+        assertThat(room.canStartLive()).isFalse();
+        assertThat(room.canEnterLive()).isFalse();
+        assertThat(room.canEndLive()).isFalse();
+        assertThat(room.canGoLiveByRtmp()).isFalse();
+        assertThat(room.canPrepareIngress()).isFalse();
+        assertThat(room.canExpire()).isFalse();
+        assertThat(room.status().isTerminal()).isTrue();
+    }
+
+    @Test
+    @DisplayName("isTerminal — Ended·Cancelled 만")
+    void isTerminal_onlyEndedAndCancelled() {
+        assertThat(everyStatus().map(a -> (LiveStatus) a.get()[1]).filter(LiveStatus::isTerminal)
+                .map(Object::getClass))
+                .containsExactlyInAnyOrder(LiveStatus.Ended.class, LiveStatus.Cancelled.class);
     }
 }

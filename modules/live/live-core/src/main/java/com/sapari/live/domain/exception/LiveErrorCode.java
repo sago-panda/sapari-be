@@ -20,7 +20,9 @@ public enum LiveErrorCode implements ErrorCode {
     LIVE_END_NOT_ALLOWED(400, "LIVE-009", "방송을 종료할 수 없는 상태입니다."),
     LIVE_ENTER_NOT_ALLOWED(400, "LIVE-010", "방송 중인 방이 아닙니다."),
     INGRESS_NOT_ALLOWED(400, "LIVE-011", "송출 키를 발급할 수 없는 방입니다."),
-    INVALID_PINNED_PRODUCT(400, "LIVE-012", "핀 상품은 정확히 1개여야 합니다.");
+    INVALID_PINNED_PRODUCT(400, "LIVE-012", "핀 상품은 정확히 1개여야 합니다."),
+    CANCEL_NOT_ALLOWED(400, "LIVE-013", "취소할 수 없는 방송 상태입니다."),
+    UPDATE_NOT_ALLOWED(400, "LIVE-014", "수정할 수 없는 방송 상태입니다.");
 
     private final int status;
     private final String code;

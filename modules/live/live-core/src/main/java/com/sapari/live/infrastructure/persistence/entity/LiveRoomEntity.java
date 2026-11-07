@@ -51,6 +51,11 @@ public class LiveRoomEntity extends UuidTimeEntity {
     // RTMP Ingress 참조. streamKey(자격증명)는 저장하지 않음 — 발급 시 1회 전달, 재조회는 LiveKit(listIngress).
     private String ingressId;
 
+    // RTMP 송출 주소. ingressId 와 같은 조건부 UPDATE 로만 쓴다(assignRtmpIngressIfAbsent) — 빌더에 없다.
+    // streamKey 와 달리 자격증명이 아니라 저장한다(키 없이는 송출할 수 없다).
+    @Column(length = 500)
+    private String rtmpUrl;
+
     // --- 시청 (HLS Egress, 공통) ---
     private String egressId;
 
@@ -152,6 +157,11 @@ public class LiveRoomEntity extends UuidTimeEntity {
         this.liveStatus = LiveRoomStatus.ENDED;
         this.endedAt = endedAt;
         this.hlsArchiveUrl = hlsArchiveUrl;
+    }
+    /** 취소 시각은 종단 시각 컬럼(ended_at)에 둔다 — 집계·다시보기는 status=ENDED 로 거르므로 섞이지 않는다. */
+    public void applyCancelled(Instant cancelledAt){
+        this.liveStatus = LiveRoomStatus.CANCELLED;
+        this.endedAt = cancelledAt;
     }
     public void applySuspended(Instant suspendedAt, String reason){
         this.liveStatus = LiveRoomStatus.SUSPENDED;
