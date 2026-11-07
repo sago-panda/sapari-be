@@ -10,6 +10,14 @@
 # =============================================================================
 set -eu
 
+# ⚠️ **아무것도 하기 전에** 지운다. libpq 는 **서비스 파일이 환경변수보다 우선**하므로, 운영
+# 절차가 권하는 PGSERVICE 가 셸에 있으면 컨테이너가 아니라 그 파일이 가리키는 DB 로 간다.
+# 전에는 이 줄이 DB 층 머리에 있었고 psql 에 닿는 칸(접속 실패 구분)이 그보다 **위**에 있었다 —
+# 그 칸은 PGHOST/PGPORT 를 직접 주지만 서비스 파일이 그걸 이기므로, 서비스 파일이 도달 가능한
+# DB 를 가리키면 종료 코드가 0 이 되어 칸이 FAIL 로 보고되고 **그 SELECT 가 그 DB 로 나갔다**.
+# 형제(replay-backfill/integration-test.sh:24)도 같은 줄을 맨 위에 둔다.
+unset PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TARGET="$HERE/query-audit-log.sh"
 
@@ -73,17 +81,24 @@ fi
 expect 'actor 질의에 actor_type 이 없으면 거부하고 이유를 적는다' 64 '148' \
     sh "$TARGET" actor 11111111-1111-1111-1111-111111111111
 
-# limit 은 **셸 문자열로 SQL 에 끼워지는 유일한 값**이다(나머지는 psql 변수 :'v1'). 그래서 이
-# 검증은 사용성이 아니라 인젝션 가드다 — 숫자가 아닌 것이 통과하면 LIMIT 자리에 임의 SQL 이 간다.
+# limit 은 **셸 문자열로 SQL 에 끼워지는 유일한 값**이다(나머지는 psql 변수 :'v1'). 축이 둘이다:
+#   ① 인젝션 — 숫자가 아닌 것이 통과하면 LIMIT 자리에 임의 SQL 이 간다.
+#   ② 밑수 — 같은 문자열을 Postgres·`[`·`$(( ))` 가 다르게 읽는다. 전에는 이 주석이 ①만
+#      못 박아 두었고, 그래서 **두 가드가 다 통과시키는 ②를 아무도 재지 않았다**(칸 0개).
 expect '숫자가 아닌 limit 을 거부한다 (SQL 에 직접 끼워지는 유일한 값)' 64 'limit' \
     sh "$TARGET" action CHAT_KICK_USER '1; DROP TABLE live_schema.audit_logs'
 expect '0 이하 limit 을 거부한다' 64 'limit' sh "$TARGET" action CHAT_KICK_USER 0
 
+# ② 밑수 칸. `050` 은 두 가드를 다 통과하던 값이고, 통과시키면 행은 50개 나가는데 탐침이
+# `$((050 + 1))` = 8진 41 을 세어 **건수가 거짓이 되고 잘림 경고까지 사라진다**(실측).
+expect '선행 0 이 붙은 limit 을 거부한다 (Postgres 10진 vs 산술 8진)' 64 'limit' \
+    sh "$TARGET" action CHAT_KICK_USER 050
+# `08`/`09` 는 8진에 없는 숫자라 산술 자체가 죽는다 — 전에는 행을 내보낸 뒤 셸이 exit 1 로
+# 끝났고, 1 은 종료 코드 표에 없는 값이다.
+expect '8진에 없는 선행 0 숫자(08)도 거부한다' 64 'limit' \
+    sh "$TARGET" action CHAT_KICK_USER 08
+
 # --- 실제 PostgreSQL 층 -----------------------------------------------------
-#
-# 선례가 테스트에서 배운 안전장치: libpq 는 **서비스 파일이 환경변수보다 우선**한다. 운영 절차가
-# PGSERVICE 를 권하므로 그 셸에서 이걸 돌리면 컨테이너가 아니라 운영 DB 에 붙는다. 먼저 지운다.
-unset PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD
 
 command -v docker >/dev/null 2>&1 || { printf '\nSKIP DB 층 — docker 없음\n'; printf '통과 %s · 실패 %s\n' "$PASS" "$FAIL"; [ "$FAIL" -eq 0 ]; exit $?; }
 
@@ -173,6 +188,13 @@ expect '--explain action 이 Index Scan Backward 를 탄다' 0 'Index Scan Backw
 # 9) 상한에서 잘렸는지를 숨기지 않는다. A1/ADMIN 은 2건이므로 limit 1 이면 잘린 것이고,
 #    limit 50 이면 안 잘린 것이다. 둘을 같이 봐야 "항상 잘렸다고 말하는" 구현이 통과하지 못한다.
 out="$(sh "$TARGET" actor "$A1" ADMIN 1 2>&1)"
+# 건수 줄이 출력 행 수와 어긋나지 않는지도 같이 본다 — ㄱ-1(밑수)이 깨뜨린 불변식이
+# "행 50 · 건수 41" 이었고, 그건 '잘렸다' 유무만 보는 칸으로는 안 잡힌다.
+if [ "$(printf '%s' "$out" | grep -c 'CHAT_')" = "1" ]; then
+    printf 'ok   상한 1 에서 출력 행이 정확히 1건이다\n'; PASS=$((PASS + 1))
+else
+    printf 'FAIL 상한 1 인데 출력 행이 1건이 아니다\n     출력: %s\n' "$(printf '%s' "$out" | tr '\n' '|')"; FAIL=$((FAIL + 1))
+fi
 if printf '%s' "$out" | grep -q '잘렸다'; then
     printf 'ok   상한에서 잘렸음을 적는다\n'; PASS=$((PASS + 1))
 else

@@ -109,27 +109,49 @@ ever runs `SELECT`; there is no write mode, so it cannot be the tool that corrup
   - The sibling has a `preflight()` → `exit 1`; this script has none, deliberately. The sibling
     generates `UPDATE`s across repeated rounds, so not starting on bad input matters; a read-only
     one-shot gets the same information from psql's own error text.
-- **The row count never hides truncation.** It counts to `limit + 1` and says
+- **The row count never hides truncation — on the snapshot axis.** It counts to `limit + 1` and says
   `N건 이상 — 상한 N 에서 잘렸다` rather than printing a capped number: at the cap, "exactly 50" and
   "the first 50 of many" are different answers to an audit question. Counting the whole predicate
   instead would unbind the LIMIT the plan above depends on. The probe has no `ORDER BY`, so the
   plan `--explain` pins is the row query's, not the probe's; LIMIT is what bounds the probe.
+  - ⚠️ **That sentence held on the snapshot axis and failed on another one.** With a leading zero
+    in `limit`, the probe read the value in a different base from the row query, so the count was
+    wrong *and* the truncation warning disappeared — the exact property this bullet claims. The
+    guard below closes it; the lesson is that "never hides X" wants the axis named.
 - **Credentials never in `argv`** (ps-readable) — libpq env vars / `~/.pgpass` / `PGSERVICE`, same
   position as `replay-backfill`. ⚠️ **libpq prefers the service file over env vars**, so a shell set
   up for production reaches production; `integration-test.sh` `unset`s
-  `PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD` before anything else. Every
+  `PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD` **as its first statement**,
+  before any cell runs — measured: while that line sat lower in the file, the connect-failure cell
+  above it set `PGHOST`/`PGPORT` by hand, the service file won anyway, and with a reachable service
+  file the cell both reported FAIL and sent its `SELECT` to that database. Every
   psql call passes `-X`, so a developer's `~/.psqlrc` cannot reshape operator output or the count.
 - **`limit` is the only value interpolated into SQL as a shell string.** Everything else goes
   through psql `-v` variables with the SQL on **stdin** — `psql -c` does not interpolate `:'var'`
-  at all. Its two guards are **not equivalent**, measured in both directions: remove the shape
-  `case` and the range check's own `[: integer expression expected` still rejects, so the shape
-  guard supplies the *message*, not the gate; remove the range check and `limit=0` reaches SQL.
-  An earlier version of this section claimed a mutation had to remove both — it does not.
+  at all. What that claim rests on: `mode` is a three-item whitelist and `v1`/`v2` go through `-v`.
+  `$where` is interpolated too, so **a fourth mode that embeds any operator value in its WHERE
+  makes the sentence silently false** — a new mode must pass values as `:'vN'`.
+  - ⚠️ **This value's real defect was not injection but the numeric base**, and the test comment
+    nailing the axis to injection alone is why nothing measured it. Measured: one string is read
+    three ways — Postgres `LIMIT 050` → decimal 50, `[ 050 -gt 49 ]` → decimal 50,
+    `$((050 + 1))` → **octal 41**. A leading zero therefore printed 50 rows, counted 41, and
+    `[ 41 -gt 050 ]` being false **also suppressed the truncation warning**. `08`/`09` are worse:
+    `$((08 + 1))` dies with *value too great for base*, and `set -e` exits **1** — a code this
+    file's table does not list, and the sibling's `die()` value.
+  - **`$((10#$limit + 1))` is not the fix here.** `10#` is a bash/ksh extension, not POSIX
+    arithmetic (measured: `dash` → `arithmetic expression: expecting EOF`), and the shebang is
+    `#!/bin/sh`. The guard rejects leading zeros instead, so all three readers see one value.
+  - It is now **one guard**, not two. Once leading zeros are rejected the surviving values are
+    `[1-9][0-9]*`, so the old `-gt 0` check had denominator 0 and was removed. No upper bound:
+    an oversized `limit` dies first in the row query's `LIMIT` with psql's own bigint error, so it
+    cannot be silently wrong. Two earlier versions of this bullet were wrong about these guards —
+    first claiming a mutation had to remove both, then describing them as a message/gate pair.
 - **Two test layers**, same split the sibling learned: `--self-test` covers the pure argv/validation
   logic with no database and reports how many checks it ran (a self-test that is one `exit 0` is a
-  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 19 cells —
+  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 22 cells —
   table/column names, query syntax, real exit codes and their separation, newest-first ordering,
-  truncation in both directions, the usage text listing every mode, and the index plans. It applies
+  truncation in both directions, rows-printed matching the cap, both leading-zero vectors, the
+  usage text listing every mode, and the index plans. It applies
   **the whole real `db/migration/live/V1__init_live.sql`**.
   - It also checks `current_database()` and that `live_schema` is empty before running DDL, copied
     from the sibling. ⚠️ **On this script's own path that guard cannot fire** — like the sibling, the

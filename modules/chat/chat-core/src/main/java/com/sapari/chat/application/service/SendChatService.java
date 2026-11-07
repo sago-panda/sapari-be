@@ -55,14 +55,20 @@ import reactor.core.publisher.Mono;
  * 돌려주고, 이번 본문은 저장되지도 발행되지도 않는다. 같은 본문의 재전송에서는 멱등이 맞지만
  * 다른 본문에서는 <b>유실이 성공으로 보고</b>된다.
  *
- * <p>그 동작은 실수가 아니라 <b>고정돼 있다</b> —
- * {@code ChatMessageRepositoryImplTest} 가 본문을 "원본"/"중복" 으로 달리 넣고 복구 결과가
- * <b>첫 본문</b>임을 단정한다. 바꾸려면 계약이 먼저다: 프론트 가이드에 같은 {@code clientMsgId} 의
- * 재사용을 금지하는 문장이 <b>없다</b> — 가이드는 그 값을 "클라 생성 UUID · dedup 유니크 키 ·
- * 낙관적 렌더 reconcile 키 · 64자 이하" 로 적지만, <b>같은 id 로 다른 본문을 보내는 경우</b>는
- * 한 줄도 다루지 않는다. 비교축도
- * {@code displayMessage} 가 아니라 {@code originalMessage} 여야 한다 — 사전이 런타임에 교체되면
- * 같은 원문이 다른 표시문이 되기 때문이다.
+ * <p>발신자 화면에서 그것이 어떻게 보이는지까지 적어 둔다. ACK 가 싣고 가는 {@code id} 는
+ * <b>첫 본문의 것</b>이고(재조회 → {@code toView}), 프론트는 낙관적 렌더 모델이라 그 {@code id} 를
+ * 이번 본문의 버블에 박은 뒤 같은 {@code id} 의 브로드캐스트를 dedup 한다. 그래서
+ * <b>화면에는 이번 본문이 "전송 완료" 로 남고 이력에는 첫 본문만 있다</b> — 새로고침하면 바뀐다.
+ *
+ * <p>그 동작은 실수가 아니라 <b>고정돼 있다</b> — 다른 경로의
+ * {@code infrastructure/persistence/repository/ChatMessageRepositoryImplTest} 가 본문을
+ * "원본"/"중복" 으로 달리 넣고 복구 결과가 <b>첫 본문</b>임을 단정한다. 그리고 이 동작을 가드로
+ * 바꾸는 데는 <b>두 선행조건</b>이 있다. 하나, 프론트 가이드에 같은 {@code clientMsgId} 의
+ * 재사용을 금지하는 문장이 <b>없다</b>(가이드가 그 값에 대해 규정하는 것은 여럿이지만, <b>같은
+ * id 로 다른 본문을 보내는 경우</b>는 한 줄도 없다). 둘, 본문을 비교한다면 그 축은
+ * {@code displayMessage} 가 아니라 {@code originalMessage} 다 — 사전이 런타임에 교체되면 같은
+ * 원문이 다른 표시문이 되기 때문이다({@code persistAndPublish} 가 매 메시지마다 "지금 것" 을
+ * 묻는 이유와 같은 축이다).
  */
 @Slf4j
 @Service
