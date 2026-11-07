@@ -496,9 +496,13 @@ that on.
       reading one short.
     - ⚠️ **`chat.persist.timeout` is not the same axis as `chat.delivery.dropped`** and must not be
       summed with it. `delivery.dropped` means *the message is persisted and only live delivery was
-      lost*; `persist.timeout` means **nothing was stored** — the operation bound cut the write, and
-      the sender got an error rather than an ACK. Reading them as one number says "it is in the
-      history" about messages that are not.
+      lost*. Reading them as one number says "it is in the history" about messages that are not.
+    - ⚠️ **`chat.persist.timeout` has a `stage` tag whose two values must not be summed either**
+      (SPR-178). `stage=write` means **nothing was stored**; `stage=duplicate_recovery_read` is the
+      duplicate-recovery read, whose premise is that the document **already exists** — the message is
+      in the history and only reading it back was cut. Alert on `write` for data loss and on
+      `duplicate_recovery_read` for "the sender cannot see a message that is already stored"; they
+      need different responses. Details in `modules/chat/AGENTS.md`.
   - **Counters that are 0 when nobody is abusing** (added SPR-152): `chat.sessions.admission_capped` ·
     `chat.sessions.reaped` — the per-`(user, room)` session cap denying a connect, and the same cap
     reclaiming a slot whose socket had already gone silent. These are a different kind from the four

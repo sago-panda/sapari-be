@@ -70,6 +70,11 @@ public enum ChatErrorCode implements ErrorCode {
     // 느린 Mongo 가 저장을 끊었다. 사용자 잘못이 아니라 서버 상황이라 5xx 다. 문구에 "잠시 후" 를
     // 넣는 이유는 이 경우가 영구 실패가 아니기 때문이고, 어느 상한이 걸렸는지는 로그로만 간다
     // (응답에 내부 설정 키를 싣지 않는다 — 이 enum 의 다른 항목들과 같은 이유다).
+    //
+    // ⚠️ 이 코드는 **쓰기 갈래 전용**이다. 중복복구 재조회가 같은 상한에 끊겨도 이 코드로 올리지
+    // 않는다 — 그 갈래의 전제가 DuplicateKey 라 문서가 이미 있고, 위 문구가 그 경우에 거짓이 된다.
+    // 그 갈래는 번역 없이 5xx 로 가고 수만 chat.persist.timeout{stage=duplicate_recovery_read} 가
+    // 센다(SPR-178). 갈래별 문구를 주려면 코드가 하나 더 필요하고 그건 와이어 계약 변경이다.
     PERSIST_TIMEOUT(503, "CHAT-012", "메시지를 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.");
 
     private final int status;

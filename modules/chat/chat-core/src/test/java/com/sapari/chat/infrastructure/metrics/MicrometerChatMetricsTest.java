@@ -12,6 +12,7 @@ import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
 import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.port.PolicyReadFailure;
+import com.sapari.chat.application.port.PersistStage;
 import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
@@ -54,7 +55,7 @@ class MicrometerChatMetricsTest {
         // 태그가 없는 둘도 같이 센다 — 손열거라 미터를 더할 때 여기가 같이 늘지 않으면 그 미터의
         // safe() 누락이 아무 칸에도 안 걸린다(실측: persistTimedOut 이 그 상태로 들어왔다).
         metrics.dictionaryFastPathLost();
-        metrics.persistTimedOut();
+        metrics.persistTimedOut(PersistStage.WRITE);
 
         // then
         assertThat(registry.get("chat.ratelimit.degraded").tags("mode", "local_window")
@@ -83,7 +84,7 @@ class MicrometerChatMetricsTest {
             broken.deliveryDropped(DeliveryStage.REDIS_PUBLISH);
             broken.sessionCut(SessionCutReason.BUFFER_OVERFLOW);
             broken.dictionaryFastPathLost();
-            broken.persistTimedOut();
+            broken.persistTimedOut(PersistStage.WRITE);
         }).doesNotThrowAnyException();
     }
 

@@ -1150,12 +1150,24 @@ conditional variant really does fall back to NOOP.
 | `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
 | `chat.session.cut` | `reason` | the server closed a session |
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
-| `chat.persist.timeout` | — | the Mongo operation bound cut a `save` — **nothing was stored** |
+| `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
 
 ⚠️ **`chat.persist.timeout` is a different axis from `chat.delivery.dropped` and the two must never be
 summed.** `delivery.dropped` means *persisted, live delivery lost* — every `DeliveryStage` value rests on
-that. `persist.timeout` means the write never landed and the sender got an error instead of an ACK. Adding
-them produces a number that says "it is in the history" about messages that are not.
+that. Adding them produces a number that says "it is in the history" about messages that are not.
+
+⚠️ **`chat.persist.timeout` carries a `stage` tag, and its two values mean opposite things — do not sum
+them either** (`PersistStage`, SPR-178). `stage=write` means the write never landed and **nothing was
+stored**. `stage=duplicate_recovery_read` is the `DuplicateKey` recovery read: its premise is that the
+document **already exists**, so the message is in the history and what was cut is reading it back. Summing
+the two reports a stored message as lost — exactly the inversion the `delivery.dropped` warning above
+forbids in the other direction.
+
+The two also differ in what the sender sees. `stage=write` is translated to
+`ChatErrorCode.PERSIST_TIMEOUT` (503, `CHAT-012`); the recovery read is **not translated**, so the sender
+gets an untranslated 500. That gap is deliberate — translating it would make `CHAT-012`'s "저장하지
+못했습니다" false on a branch where the message was stored — and closing it needs one more error code,
+i.e. a wire-contract change. The count exists now; the per-branch wording does not.
 
 ⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
 `ChatMeterNames` declared it when it was added. The rule in this section is "a scrape test walks every enum
