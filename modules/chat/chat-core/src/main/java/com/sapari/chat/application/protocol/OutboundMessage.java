@@ -32,7 +32,7 @@ import com.sapari.chat.domain.model.ChatRole;
 @Builder(access = AccessLevel.PACKAGE)
 public record OutboundMessage(
         String type,             // NORMAL | NOTICE | SYSTEM | KICK | ROOM_INFO | RATE_LIMIT | ERROR | ACK
-        String code,             // SYSTEM: KICKED|ROOM_ENDED|BANNED / ERROR: VALIDATION|PERMISSION|KICKED|NOT_ACTIVE|INTERNAL (그 외 null)
+        String code,             // SYSTEM: SystemMessageCode 전수 / ERROR: ChatWebSocketHandler.errorCode 전수 (그 외 null)
         String id,               // NORMAL/NOTICE: MongoDB ObjectId / ACK: 저장된 serverId (그 외 null)
         UUID senderId,           // NORMAL/NOTICE: 실제 발신자 / SYSTEM: 고정 시스템 UUID / 그 외 null
         String senderNickname,   // NORMAL/NOTICE; SYSTEM은 "SYSTEM" 고정

@@ -130,10 +130,20 @@ public class CachingRoomTokenIssuer implements RoomTokenIssuer {
      * 파생 비트수가 함께 거짓이 됐다. 상한에 기대면 상한을 건드릴 때마다 이 자리가 다시 거짓이
      * 된다 — 양수성만으로 참이므로 그렇게 적는다.
      *
-     * <p><b>상위 비트를 아래로 섞는다</b>({@code h ^ (h >>> 16)}). 마스크는 <b>하위 비트만</b>
-     * 보는데 {@link RoomTokenClaims} 의 record {@code hashCode} 는 필드 해시를 31 배수로 누적한
-     * 값이라 하위 비트에 편향이 남을 수 있다. 섞지 않으면 슬롯 일부만 쓰이고, 그 상태는 적중률
-     * 저하로만 보여 "슬롯이 작다" 와 구분되지 않는다({@code HashMap.spread} 와 같은 처방).
+     * <p><b>상위 비트를 아래로 섞는다</b>({@code h ^ (h >>> 16)}) — 다만 <b>이 키에서는 효과가
+     * 측정되지 않는다.</b> 한때 이 자리에 "record {@code hashCode} 는 필드 해시를 31 배수로 누적한
+     * 값이라 하위 비트에 편향이 남을 수 있다" 고 적었는데 <b>재 보니 거짓이었다</b>(실측: 실제
+     * {@link RoomTokenClaims} 로 slots=16,384 · 키 16,384 · salt 5종 —
+     * 섞음 점유 10,330~10,402 / chi² 16,258~16,504, 안 섞음 점유 10,380~10,409 / chi² 16,066~16,348.
+     * 균등분포 기대가 점유 10,357 · chi² ≈ df 16,383 이라 양쪽 다 거기 있다. slots=4,096 도 같다).
+     *
+     * <p>이유는 키 구성이다 — 지배 필드가 {@code UUID} 둘이고 {@code UUID.hashCode} 가 이미 상·하위
+     * 32비트를 xor-fold 하므로 31 누적이 하위 비트에 실어 줄 편향이 애초에 없다. {@code HashMap.spread}
+     * 가 상정하는 입력(작은 정수·공통 접두 문자열)과 이 키는 다르다.
+     *
+     * <p><b>그래도 남겨 둔다.</b> 비용이 한 줄이고, 키 구성이 바뀌면(문자열 필드가 지배하게 되거나
+     * {@code UUID} 가 빠지면) 전제가 바뀌는데 그때 이 자리를 다시 보게 만드는 장치가 없다. 보수적
+     * 처방이라고 적는 쪽이 "편향이 있다" 고 단정하는 것보다 정확하다.
      */
     private int indexOf(RoomTokenClaims claims) {
         int h = claims.hashCode() * 31 + salt;

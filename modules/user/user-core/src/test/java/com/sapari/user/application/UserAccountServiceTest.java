@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,8 +21,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.user.application.port.UserEventPublisher;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.model.WithdrawnUserRetention;
 import com.sapari.user.domain.repository.UserRepository;
@@ -46,6 +50,9 @@ class UserAccountServiceTest {
     @Mock
     private WithdrawnUserRetentionRepository withdrawnUserRetentionRepository;
 
+    @Mock
+    private UserEventPublisher userEventPublisher;
+
     private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker = new WithdrawnUserRetentionMasker();
 
     private UserAccountService userAccountService;
@@ -56,8 +63,55 @@ class UserAccountServiceTest {
                 userRepository,
                 withdrawnUserRetentionRepository,
                 withdrawnUserRetentionMasker,
+                userEventPublisher,
                 timeProvider
         );
+    }
+
+    // ------------------------------------------------------------------------
+    // 탈퇴 신청 발행 — 시점이 계약이다. 트랜잭션 안에서 발행하면 롤백된 신청이 나가고
+    // 구독자가 멀쩡한 계정의 세션을 끊는다(형제 EndLiveService 가 같은 이유로 afterCommit).
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("트랜잭션 동기화가 꺼져 있으면 발행하지 않는다 — 커밋 보장이 없는 호출(회귀 방지)")
+    void theWithdrawalIsNotPublishedWithoutAnActiveTransaction() {
+        UUID userId = UUID.randomUUID();
+        when(timeProvider.now()).thenReturn(Instant.parse("2026-06-15T09:40:00Z"));
+        when(userRepository.findById(userId)).thenReturn(Optional.of(activeCustomer(userId)));
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // 단위 테스트는 동기화가 꺼진 상태다 — 그 상태가 이 칸의 전제다.
+        assertThat(TransactionSynchronizationManager.isSynchronizationActive()).isFalse();
+        userAccountService.requestWithdrawal(userId);
+
+        verify(userEventPublisher, never()).publishWithdrawalRequested(any(), any());
+    }
+
+    @Test
+    @DisplayName("동기화가 켜져 있으면 커밋 전에는 발행하지 않고, afterCommit 에서 발행한다")
+    void theWithdrawalIsPublishedOnlyAfterCommit() {
+        UUID userId = UUID.randomUUID();
+        Instant now = Instant.parse("2026-06-15T09:40:00Z");
+        when(timeProvider.now()).thenReturn(now);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(activeCustomer(userId)));
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            userAccountService.requestWithdrawal(userId);
+
+            // 반환됐는데 아직 발행되지 않았다 — 이것이 "커밋 뒤" 의 관측 가능한 형태다.
+            verify(userEventPublisher, never()).publishWithdrawalRequested(any(), any());
+            List<TransactionSynchronization> registered =
+                    TransactionSynchronizationManager.getSynchronizations();
+            assertThat(registered).hasSize(1);
+
+            registered.forEach(TransactionSynchronization::afterCommit);
+            verify(userEventPublisher).publishWithdrawalRequested(userId, now);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test

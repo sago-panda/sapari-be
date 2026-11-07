@@ -27,7 +27,9 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
  * 있으나 그러면 DTO·인터페이스만 두는 모듈이 와이어 포맷 책임을 갖게 되고, JSON을 손으로 짓는 길은
  * 이 저장소가 이미 배제했다.
  *
- * <p>{@code kind}는 그래서 <b>chat이 발행하는 것들</b>을 가른다. 지금은 밴 하나뿐이다.
+ * <p>{@code kind}는 그래서 <b>chat이 발행하는 것들</b>을 가른다. 지금은 밴 하나뿐이다 — 탈퇴는
+ * 예고한 대로 그 길로 갔다({@code user:account:withdrawing} / {@link
+ * com.sapari.chat.application.port.AccountWithdrawingSource}), 즉 이 봉투가 아니라 별도 채널·구독이다.
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")
 @JsonSubTypes({
