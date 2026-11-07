@@ -50,8 +50,13 @@ import reactor.core.publisher.Mono;
  * 전에는 없었고, 드라이버 기본값이 무한이라({@code socketReadTimeoutMs=0} · {@code timeoutMs=null}, 실측)
  * 느린 Mongo 가 이 세션의 전송을 <b>수명 상한(기본 60분)까지</b> 멈출 수 있었다 — 아래 전송이
  * {@code concatMap} 으로 직렬화돼 있고, PONG 이 생존 시계를 계속 갱신해 생존 판정도 그걸 못 끊는다.
- * 상한이 끊으면 {@code chat.persist.timeout} 이 오르고 발신자에게는 <b>에러</b>가 간다(ack 가 아니다 —
- * 저장이 안 됐으므로).
+ * 상한이 끊으면 {@code chat.persist.timeout} 이 오르고 발신자에게는 <b>에러</b>가 간다(ack 가 아니다).
+ *
+ * <p>⚠️ 그 미터는 <b>갈래가 둘</b>이다({@code PersistStage}). {@code stage=write} 는 "아무것도 남지
+ * 않았다" 이고, 이 클래스의 {@code recoverDuplicate} 가 타는 {@code stage=duplicate_recovery_read} 는
+ * 전제가 {@code DuplicateKey} 라 문서가 <b>이미 있다</b> — 끊긴 것은 되읽는 쪽이다. 그래서 "저장이
+ * 안 됐으므로" 를 이 클래스 수준에서 단정하지 않는다. 두 갈래의 처분이 다른 이유는
+ * {@code ChatMessageRepositoryImpl.findByRoomIdAndSenderIdAndClientMsgId} 에 적혀 있다.
  *
  * <p>{@code @Transactional}을 두지 않는다 — 단일 Mongo 문서 저장 + Redis 발행이라 다중 엔티티 트랜잭션이 없고,
  * 같은 키의 재삽입은 (roomId,senderId,clientMsgId) unique 인덱스가 막는다(DuplicateKey → 기존 메시지 재조회).

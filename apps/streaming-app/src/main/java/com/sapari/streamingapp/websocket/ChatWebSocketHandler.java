@@ -467,8 +467,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     }
 
     /**
-     * 상한을 받는 close. <b>상한 배선이 이 한 자리에만 있어야 한다</b> — 사본이 늘면 한 군데만
-     * 빠진 상태가 전 스위트 초록으로 통과한다(그게 이 티켓 전의 상태였다).
+     * 상한을 받는 close. <b>배선은 이 파일에 둘이고, 덮는 구간이 달라서 둘이다</b> —
+     * 여기(close 만 덮는다)와 {@link #denyAndClose}(send + close 조립 전체를 덮는다). 셋 이상으로
+     * 늘면 한 군데만 빠진 상태가 전 스위트 초록으로 통과한다 — 그게 이 티켓 전의 상태였고, 그때는
+     * 닫는 길 다섯 중 <b>하나만</b> 상한이 있었다.
      *
      * <p>왜 상한이 필요한가: close 는 write future 에 채널 닫기를 걸어두는 구조라 그 write 가
      * flush 되지 않으면 채널이 남고, "이미 close 보냄" 표시 때문에 다시 닫으려 해도 무동작이다.
@@ -784,7 +786,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     /**
      * 거부를 통보하고 닫는다. <b>flush 가 막혀도 상한 뒤 완료하고 소켓을 직접 내린다</b>
      * ({@link #closeWithReason} 와 같은 이유 — 그 javadoc 과
-     * {@link #CLOSE_FLUSH_TIMEOUT} 를 볼 것). 이쪽은 close <b>앞에 send 가 하나 더</b> 있어
+     * {@link #CLOSE_FLUSH_TIMEOUT} 를 볼 것). {@link #closeBounded} 를 쓰지 않는 이유는 아래 주석에
+     * 있다 — 상한이 덮어야 하는 구간이 다르다. 이쪽은 close <b>앞에 send 가 하나 더</b> 있어
      * 멈출 길이 더 많고, 이 경로가 적대적이거나 깨진 클라가 실제로 모는 길이다 —
      * {@code TOO_MANY_SESSIONS} · {@code KICKED} · {@code BANNED} · 입장 시 {@code ROOM_ENDED}.
      * (테스트 진입점)

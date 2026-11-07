@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
@@ -69,6 +70,27 @@ class ChatSessionRegistryMetricsTest {
     private double cut(String reason) {
         Counter counter = registry.find("chat.session.cut").tags("reason", reason).counter();
         return counter == null ? 0 : counter.count();
+    }
+
+    @Test
+    @DisplayName("⭐ 구현이 호출자의 사유를 그대로 싣는다 — 안 싣고 MODERATION 으로 고정해도 전 모듈이 초록이었다")
+    void theReasonTheCallerPassesIsTheReasonReported() {
+        // given: 사유를 가르는 축은 호출자에게 있다 — 핸들러 테스트는 **호출자가 넘기는 것**을 재고
+        // (ChatSessionManager 가 목이다) 구현이 그것을 **쓰는지**는 아무도 재지 않았다.
+        // 실측: closeUserEverywhere 가 사유를 무시하고 MODERATION 으로 고정해도 streaming-app
+        // 29클래스 295칸이 전부 초록이고, WITHDRAWN 이 이 앱(main+test) 전체에 0건이었다.
+        UUID userId = UUID.randomUUID();
+        subject.register("s-withdrawn", new ChatSession(roomId, userId, ChatRole.BUYER,
+                "닉", "e@example.com", false)).block(VERIFY_CEILING);
+
+        // when
+        subject.closeUserEverywhere(userId, SessionCutReason.WITHDRAWN).block(VERIFY_CEILING);
+
+        // then: 탈퇴는 제재가 아니다 — 합치면 사용자가 스스로 누른 것이 제재율을 올린다
+        assertThat(cut("withdrawn")).isEqualTo(1);
+        assertThat(cut("moderation"))
+                .as("탈퇴가 제재로 세어졌다 — close 코드가 양쪽 1008 이라 와이어로는 가려낼 수 없다")
+                .isZero();
     }
 
     @Test

@@ -560,14 +560,18 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   close. Contention means another thread held the lock → drop that message, keep the session. Merging them
   makes load shed healthy viewers, whose reconnects raise load further.
 - Close codes: **1000** room ended, session-lifetime expiry, and liveness-check failure (all three on purpose
-  — see below), **1008** entry denial / kick / account-level ban, **1009** inbound frame over the 4 KB limit
+  — see below), **1008** entry denial / kick / account-level ban / **account withdrawal**, **1009** inbound frame over the 4 KB limit
   (Netty's decoder closes; the reason string leaks the configured limit), **1013** buffer overflow.
   1013 rather than 1000 exists to stop instant reconnect.
 - **1008 no longer implies "do not reconnect" — the SYSTEM code decides.** `KICKED`, `BANNED` and
   `ROOM_ENDED` are states a person cannot clear by retrying. `TOO_MANY_SESSIONS` (SPR-152) is the
   opposite: it clears as soon as one of that user's sessions in that room goes away, and a dead slot is
   reclaimed on the next attempt. So the client **may** retry it after a backoff, and must not fold it into
-  the "denied, give up" branch. Splitting the close code instead (1013-style) was rejected: 1008 is
+  the "denied, give up" branch. `WITHDRAWING` is a fifth, and it belongs to neither group: like the first
+  three it cannot be cleared by retrying, but unlike them **the account itself is going away**, so the
+  right client behaviour is to end the session rather than to show a denial. SPR-178 split it off
+  `MODERATION` in `chat.session.cut` for the same reason — a withdrawal is not a sanction — and this
+  line is the contract side of that split. Splitting the close code instead (1013-style) was rejected: 1008 is
   already the front end's "entry denial" bucket and splitting it changes how every denial is handled.
 - ⚠️ **1000 now means three different things, and only one of them carries an explanation.** Room end is
   preceded by `SYSTEM(ROOM_ENDED)`; lifetime expiry and liveness failure send no frame at all, because the
@@ -1289,15 +1293,19 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     dies instead of serving". `ChatMongoConfig`'s startup index creation blocks, and against a closed
     address it throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is a stall bounded by **`ChatMongoConfig.INDEX_CREATE_CEILING`** (SPR-152; 10 min, and it is a
-    deadline over **all four** index creations, not per call). Measured driver defaults
+    cost is a stall bounded by **10 min 30 s** — `ChatMongoConfig.INDEX_CREATE_CEILING` (SPR-152;
+    10 min, a deadline over **all four** index creations, not per call) plus `INDEX_DROP_CEILING`
+    (SPR-178; 30 s, **outside** that deadline, for the superseded-index drop). Measured driver defaults
     (`MongoClientSettings.builder().build()`): `serverSelectionTimeoutMs=30000`,
     **`socketReadTimeoutMs=0` (infinite)**, `socketConnectTimeoutMs=10000`, global `timeoutMs=null` — and
     the repo sets no Mongo *client* timeout anywhere, so those defaults apply. So 30s bounds only the
     "never picks a server" mode; once a server *is* picked and `createIndex` does not answer, the driver
     has nothing that would cut it — which is why the bound lives at the call site instead.
-    - **This line has been wrong four times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
-      "worst wait is that one value" while the ceiling was still **per call**. The first three fixed the
+    - **This line has been wrong five times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
+      "worst wait is that one value" while the ceiling was still **per call** → "bounded by
+      `INDEX_CREATE_CEILING`" after SPR-178 added a drop with its **own** 30 s bound outside the shared
+      deadline. The fifth is the second judgment's shape exactly: a step was added and the number that
+      sizes the `startupProbe` was not re-derived. The first three fixed the
       *number* without measuring **what bounds it**; the fourth measured what bounds it but not the
       **unit** — per call or per method. Measured: ceiling 400ms × 4 calls at 300ms each → total
       **1,279 ms**, **0 throws** — a per-call ceiling does not bound the method, it scales with the count.

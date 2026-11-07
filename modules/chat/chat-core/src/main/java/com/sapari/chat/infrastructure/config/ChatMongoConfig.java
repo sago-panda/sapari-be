@@ -333,6 +333,10 @@ public class ChatMongoConfig {
      *
      * <p>이름을 적어 두는 것이 요점이다. 키로 찾아 지우려면 인덱스 목록을 왕복해 비교해야 하고,
      * 그 비교가 "2키인데 다른 인덱스" 까지 집어낼 여지를 만든다.
+     *
+     * <p>⚠️ <b>이 이름은 현 윈도우 인덱스의 파생 이름과 달라야 한다.</b> 윈도우 인덱스를 2키로
+     * 되돌리면 그 파생 이름이 이 값과 같아져 <b>드롭이 방금 만든 인덱스를 지운다</b>. 코드에 그걸
+     * 막는 가드는 없고 테스트가 막는다({@code ChatMessageRepositoryImplTest} 의 인덱스 칸 둘).
      */
     private static final String SUPERSEDED_WINDOW_INDEX = "roomId_1_createdAt_1";
 
@@ -424,21 +428,47 @@ public class ChatMongoConfig {
      *
      * <p>순서가 계약이다. 드롭을 생성보다 앞에 두면 그 사이에 윈도우 조회가 인덱스 없이 돈다.
      *
-     * <p>⚠️ <b>롤링 배포 중의 비용은 재지 않았다.</b> 이 경로는 부팅에만 돈다 — 새 파드가 뜨면
-     * 3키를 만들고 2키를 지우고, 이미 떠 있는 옛 파드는 다시 만들지 않는다. 그래서 정상 롤링에서는
-     * 왕복이 한 번이다. 다만 배포 창 안에 <b>옛 파드가 재시작하면</b> 2키를 다시 만들고 다음 새
-     * 파드가 또 지운다 — 그 빈도와 실제 빌드 시간은 실파드가 없어 재지 못했다. 그 비용의 상한은
-     * {@link #INDEX_CREATE_CEILING} 이 이미 받아들인 값과 같다(부팅 인덱스 빌드).
+     * <p><b>롤링 배포에서 무엇이 일어나는가.</b> 이 경로는 부팅에만 돈다 — 새 파드가 뜨면 3키를
+     * 만들고 2키를 지우고, 이미 떠 있는 옛 파드는 다시 만들지 않는다. 그래서 정상 롤링에서는 왕복이
+     * 한 번이다. 배포 창 안에 <b>옛 파드가 재시작하면</b> 2키를 다시 만들고 다음 새 파드가 또 지운다.
+     *
+     * <p>실측(일회용 {@code mongo:7.0}, 400,000 문서): 옛 2키 단독 빌드 <b>374ms</b>(건당
+     * 0.0009ms) · 없는 이름 드롭은 <b>code 27 {@code IndexNotFound}</b>(아래 상수가 그 값이다) ·
+     * 빌드와 같은 이름 드롭이 겹치면 <b>드롭이 이기고</b> 컬렉션에 {@code _id_} 만 남는다. 즉 새
+     * 파드는 이 경쟁으로 죽지 않는다. ⚠️ <b>빌드 쪽이 받는 에러는 내 프로브가 분리 실행이라
+     * 못 잡았다</b> — 그쪽이 깨지면 그 파드의 부팅이 실패하고, 다음 재시작에는 지우는 쪽이 없어
+     * 성공한다. 그 재시작 빈도는 실파드가 없어 재지 못했다.
+     *
+     * <p>⚠️ <b>이 상한은 생성의 공유 데드라인 밖이다</b> — 부팅 창 전체가 10분이 아니라
+     * <b>10분 + 30초</b>다. 그 수를 쓰는 자리(startupProbe 사이징)가 {@code infra/AGENTS.md} 와
+     * {@code modules/chat/AGENTS.md} 에 있고 둘 다 고쳤다. 공유 데드라인 안으로 넣지 않은 이유는
+     * 아래 {@link #INDEX_DROP_CEILING} 에 적어 두었다.
      *
      * <p>이미 걷어낸 환경에서는 드라이버가 {@code IndexNotFound} 를 던진다(실측) — 그것만 삼킨다.
      * 넓게 잡으면 권한 부족·연결 끊김까지 "이미 없다" 로 라벨을 갈아 붙이고, 그러면 쓰기 증폭이
      * 남은 상태가 조용히 통과한다.
      */
     private static void dropSupersededWindowIndex(ReactiveMongoTemplate mongoTemplate) {
-        mongoTemplate.indexOps(ChatMessageDocument.class)
-                .dropIndex(SUPERSEDED_WINDOW_INDEX)
-                .onErrorResume(ChatMongoConfig::isIndexNotFound, error -> Mono.empty())
-                .block(INDEX_DROP_CEILING);
+        try {
+            mongoTemplate.indexOps(ChatMessageDocument.class)
+                    .dropIndex(SUPERSEDED_WINDOW_INDEX)
+                    .onErrorResume(ChatMongoConfig::isIndexNotFound, error -> Mono.empty())
+                    .block(INDEX_DROP_CEILING);
+        } catch (IllegalStateException e) {
+            // 형제 awaitIndex 와 같은 이유로 번역한다 — .block(Duration) 이 던지는
+            // "Timeout on blocking read" 만으로는 당직자가 "Mongo 가 죽었나" 와 "뭘 하다 멈췄나" 를
+            // 가를 수 없고, 조치가 정반대다. 상한을 30초로 고른 이유 자체가 "응답하지 않는다를
+            // 부팅 내내 숨기지 않겠다" 인데, 그 말이 메시지에 없으면 증상만 드러내고 진단을 버린다.
+            //
+            // ⚠️ 타임아웃만 가린다. awaitIndex 와 달리 cause 로 가르지 않는 이유는 여기 catch 가
+            // 하나뿐이고 드라이버가 만드는 비-타임아웃 ISE 에 라벨을 갈아붙일 자리가 없기
+            // 때문이다 — 그래서 원인을 그대로 사슬에 싣는다.
+            throw new IllegalStateException(
+                    "옛 윈도우 인덱스 " + SUPERSEDED_WINDOW_INDEX + " 드롭이 "
+                            + INDEX_DROP_CEILING.toSeconds() + "초 안에 끝나지 않았다 — Mongo 가 응답하는지"
+                            + " 먼저 보라. 드롭은 메타데이터 연산이라 컬렉션 크기에 비례하지 않는다"
+                            + "(실측: 400,000 문서에서 즉시).", e);
+        }
     }
 
     /**
@@ -448,8 +478,13 @@ public class ChatMongoConfig {
      * 감싸기 때문이다. 사슬을 걸어 내려가며 {@code MongoCommandException} 을 찾는다 —
      * {@code getMostSpecificCause} 로는 못 가른다(같은 함정을 SPR-177 의
      * {@code MongoOperationTimeout} 에서 실측했다).
+     *
+     * <p>코드 27 이 맞다는 것은 실측이다(일회용 {@code mongo:7.0}: 없는 이름 드롭 →
+     * {@code code=27 IndexNotFound}). 가시성이 패키지인 이유는 {@code MongoOperationTimeout.matches}
+     * 와 같다 — 이 판정을 좁게 잡은 근거(넓히면 권한 부족까지 "이미 없다" 로 라벨이 갈린다)를 재는
+     * 칸이 필요하고, 그 칸은 컨테이너 없이 손으로 지은 예외로 돈다.
      */
-    private static boolean isIndexNotFound(Throwable error) {
+    static boolean isIndexNotFound(Throwable error) {
         for (Throwable node = error; node != null; node = node.getCause()) {
             if (node instanceof MongoCommandException command
                     && command.getErrorCode() == INDEX_NOT_FOUND_ERROR_CODE) {

@@ -107,6 +107,14 @@ public class ChatHistoryController {
      * <p>모르는 값은 <b>거부한다</b> — 같은 파서를 쓰는 chat 서비스 다섯이 쓰는 번역과 같은 방식이다
      * ({@code ChatPermissionDeniedException}). 조용히 {@code BUYER} 로 떨어뜨리면 새 플랫폼 역할이
      * 생겼을 때 그 사용자가 자기 권한보다 좁은 뷰를 받고도 그 사실을 알 수 없다.
+     *
+     * <p>⚠️ <b>이 선택이 잃는 것.</b> 종전의 500 은 {@code log.error} + 스택으로 나갔고, 지금 403 은
+     * 전역 핸들러에서 <b>정당한 권한 거부와 같은 코드({@code CHAT-001})·같은 레벨
+     * ({@code log.warn})</b> 로 나간다(실측). 사용자에게 403 이 맞는 응답이고 파서를 한 자리로 모으는
+     * 것도 맞지만, 그 대가로 <b>서버의 열거 누락이 알림 없는 수</b>가 됐다 — 네 번째 플랫폼 역할이
+     * 생기는 날 그걸 아는 사람이 없다. 가르려면 에러코드나 지표 축이 하나 필요하고, 그건 와이어·표
+     * 비용이 붙어 이 티켓 밖이다. 그 사이의 안전장치는 {@code fromPlatformRole} 이 enum 을 switch
+     * 하므로 <b>역할이 늘면 컴파일이 깨진다</b>는 것 하나다.
      */
     private static String chatRoleNameOf(String platformRole) {
         return ChatRole.fromPlatformRole(platformRole)
