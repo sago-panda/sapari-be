@@ -1149,6 +1149,22 @@ conditional variant really does fall back to NOOP.
 | `chat.ratelimit.degraded` | `mode` | pod-local window, or a denial whose TTL read failed |
 | `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
 | `chat.session.cut` | `reason` | the server closed a session |
+| `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
+| `chat.persist.timeout` | — | the Mongo operation bound cut a `save` — **nothing was stored** |
+
+⚠️ **`chat.persist.timeout` is a different axis from `chat.delivery.dropped` and the two must never be
+summed.** `delivery.dropped` means *persisted, live delivery lost* — every `DeliveryStage` value rests on
+that. `persist.timeout` means the write never landed and the sender got an error instead of an ACK. Adding
+them produces a number that says "it is in the history" about messages that are not.
+
+⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
+`ChatMeterNames` declared it when it was added. The rule in this section is "a scrape test walks every enum
+value; add a line when adding a meter" — and **neither half was done**: an earlier version of this sentence
+said "the test did its half", which was false. `ChatMetricsPrometheusScrapeTest` and
+`MicrometerChatMetricsTest.neverThrows` both hand-enumerate, and both were short by that meter — so the
+`safe()` invariant was unguarded for it too. SPR-177 added both meters to both enumerations; the lesson is
+that a hand-enumerated guard is only as complete as the last person who remembered it, and saying "the test
+covers it" is a claim that needs the enumeration read, not assumed.
 
 - **The adapter must never throw.** Most call sites are inside `onErrorResume` lambdas — a throw there
   propagates downstream and *denies* the request the policy decided to allow. Instrumentation would invert

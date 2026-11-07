@@ -61,7 +61,7 @@ class ChatMetricsPrometheusScrapeTest {
     }
 
     @Test
-    @DisplayName("나머지 세 지표의 모든 열거 값이 스크레이프에 나온다")
+    @DisplayName("나머지 다섯 지표의 모든 열거 값이 스크레이프에 나온다")
     void everyEnumValueSurvivesScrape() {
         // when
         for (RateLimitDegradation mode : RateLimitDegradation.values()) {
@@ -73,6 +73,10 @@ class ChatMetricsPrometheusScrapeTest {
         for (SessionCutReason reason : SessionCutReason.values()) {
             metrics.sessionCut(reason);
         }
+        // 태그 없는 둘 — 조합은 없지만 **등록 자체**가 스크레이프에 나오는지는 같은 축이다.
+        // 이 열거가 미터와 함께 늘지 않으면 "지표를 늘릴 때 여기에 한 줄" 규율이 깨진 채 초록이다.
+        metrics.dictionaryFastPathLost();
+        metrics.persistTimedOut();
 
         // then
         assertThat(registry.find("chat.ratelimit.degraded").counters())
@@ -86,5 +90,7 @@ class ChatMetricsPrometheusScrapeTest {
         assertThat(scrape).contains("chat_ratelimit_degraded_total");
         assertThat(scrape).contains("chat_delivery_dropped_total");
         assertThat(scrape).contains("chat_session_cut_total");
+        assertThat(scrape).contains("chat_dictionary_fastpath_lost_total");
+        assertThat(scrape).contains("chat_persist_timeout_total");
     }
 }

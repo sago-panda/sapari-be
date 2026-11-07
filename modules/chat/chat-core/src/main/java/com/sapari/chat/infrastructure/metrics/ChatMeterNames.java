@@ -23,6 +23,15 @@ final class ChatMeterNames {
     /** 사전 전파의 빠른 길을 잃은 건수. */
     static final String DICTIONARY_FAST_PATH_LOST = "chat.dictionary.fastpath.lost";
 
+    /**
+     * 연산 상한이 <b>저장</b>을 끊었다 — 그 메시지는 영속되지 않았다.
+     *
+     * <p>⚠️ {@link #DELIVERY_DROPPED} 에 태우지 않는다. 그 미터의 정의가 "메시지는 영속됐고 실시간
+     * 전달만 잃었다" 이고 {@code DeliveryStage} 네 값이 모두 그 전제다 — 저장 실패를 거기 더하면
+     * 그 정의가 거짓이 되고, 당직자가 "영속은 됐으니 이력에 있다" 로 읽는다.
+     */
+    static final String PERSIST_TIMEOUT = "chat.persist.timeout";
+
     static final String TAG_POLICY = "policy";
     static final String TAG_CHECKPOINT = "checkpoint";
     static final String TAG_FAILURE = "failure";

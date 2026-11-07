@@ -14,6 +14,8 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Bean;
+import java.util.concurrent.TimeUnit;
+import org.springframework.data.mongodb.ReactiveMongoDatabaseFactory;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import org.springframework.data.mongodb.core.index.IndexInfo;
 import org.testcontainers.containers.GenericContainer;
@@ -97,8 +99,46 @@ class ChatMongoIndexBootstrapTest {
     @Autowired
     private ReactiveMongoTemplate mongoTemplate;
 
+    @Autowired
+    private ReactiveMongoDatabaseFactory databaseFactory;
+
     @Test
-    @DisplayName("⭐ 포트가 열리기 전에 인덱스 3종이 이미 서 있다")
+    @DisplayName("⭐ 전송 경로와 인덱스 경로가 서로 다른 상한을 받는다 — 둘이 같으면 하나가 안 걸린 것이다")
+    void theSendPathAndTheIndexPathCarryDifferentTimeouts() {
+        Long sendPath = databaseFactory.getMongoDatabase().block(VERIFY_CEILING)
+                .getTimeout(TimeUnit.MILLISECONDS);
+        // ⚠️ 팩토리를 직접 부르지 않는다 — 그러면 "되올려 감싼다" 만 보고 "그 감싼 것을 템플릿에
+        // 넣는다" 는 안 본다(실측: 빈이 원본 템플릿을 쓰게 바꿔도 전 칸이 초록이었다). 운영 빈이
+        // 쓰는 것과 **같은 조립 함수**를 들여다본다.
+        Long indexPath = ChatMongoConfig.indexBoundedTemplate(mongoTemplate)
+                .getMongoDatabaseFactory().getMongoDatabase().block(VERIFY_CEILING)
+                .getTimeout(TimeUnit.MILLISECONDS);
+
+        // 전송 경로에 상한이 있어야 한다. null 이면 아예 안 걸린 것이고 그게 SPR-177 전의 상태다
+        // (드라이버 기본 timeoutMs=null, 실측). **값은 적지 않는다** — 그 수가 코드 기본값과 같은지는
+        // ConfigTemplateTest 가 템플릿까지 묶어 따로 재고, 설정이 클라이언트에 실리는지는
+        // ChatMongoTimeoutConfigTest 가 750ms 로 본다. 여기서 재는 것은 두 경로가 **갈린다** 는 것이다.
+        assertThat(sendPath)
+                .as("전송 경로에 상한이 없다 — 느린 Mongo 가 세션을 수명까지 멈춘다")
+                .isNotNull();
+        assertThat(indexPath)
+                .as("인덱스 경로가 되올린 상한을 받지 못했다 — 부팅이 전송 상한에 잘린다")
+                .isEqualTo(Duration.ofMinutes(10).toMillis());
+        assertThat(indexPath)
+                .as("두 경로가 같은 상한이다 — 하나가 안 걸렸거나 디코레이터가 전역을 못 덮었다")
+                .isNotEqualTo(sendPath);
+    }
+
+    /**
+     * ⚠️ <b>위 칸이 덮지 못하는 것</b>: {@code chatMessagesIndexes} 빈이 <b>실제로</b> 그 되올린
+     * 팩토리를 쓰는지. 이 칸은 디코레이터를 직접 불러 그 효과를 보고, 빈 쪽 배선은
+     * {@code ChatMongoConfig:227} 을 읽어야 안다. 빈이 돌려주는 {@code ChatMessagesIndexes} 는
+     * 이름 목록뿐이라 어느 상한에서 만들었는지가 거기 안 남는다 — 그걸 남기려면 부팅에 왕복을
+     * 하나 더 넣어야 해서, 테스트를 위해 운영 경로를 늘리지 않았다. 분모가 비어 있다는 사실을
+     * 적어 두는 쪽을 골랐다.
+     */
+    @Test
+    @DisplayName("⭐ 포트가 열리기 전에 인덱스 4종이 이미 서 있다")
     void indexesExistBeforeTheProcessCanServeTraffic() {
         // given: 이름을 하드코딩하지 않는다 — 생성이 멱등이라 같은 호출이 같은 이름을 돌려준다
         List<String> expected = ChatMongoConfig.createChatMessagesIndexes(mongoTemplate);

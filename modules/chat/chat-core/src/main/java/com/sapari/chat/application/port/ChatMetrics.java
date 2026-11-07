@@ -46,6 +46,15 @@ public interface ChatMetrics {
     void dictionaryFastPathLost();
 
     /**
+     * 연산 상한이 저장을 끊었다 — 그 메시지는 <b>영속되지 않았다</b>.
+     *
+     * <p>{@link #deliveryDropped} 와 다른 축이다. 그쪽은 "영속됐고 전달만 잃었다" 이고 이쪽은
+     * "아무것도 남지 않았다" 다. 발신자에게는 에러가 가므로(ack 아님) 사용자는 알지만, 규모는
+     * 이 축으로만 보인다.
+     */
+    void persistTimedOut();
+
+    /**
      * 아무것도 하지 않는 구현. <b>registry 없이도 뜨는 것이 포트 구현의 기본값이어야 하기 때문</b>이고,
      * 실제 용도는 단위 테스트가 registry 를 세우지 않고 돌게 하는 것이다.
      */
@@ -56,5 +65,6 @@ public interface ChatMetrics {
         @Override public void deliveryDropped(DeliveryStage stage) { }
         @Override public void sessionCut(SessionCutReason reason) { }
         @Override public void dictionaryFastPathLost() { }
+        @Override public void persistTimedOut() { }
     };
 }
