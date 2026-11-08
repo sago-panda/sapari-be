@@ -292,7 +292,8 @@ class ChatSessionGaugeConfigTest {
                         "chat.rooms.local",
                         "chat.sessions.admission_capped",
                         "chat.sessions.reaped",
-                        "chat.sessions.max_per_room");
+                        "chat.sessions.max_per_room",
+                        "chat.sessions.heartbeat_failures");
     }
 
     @Test

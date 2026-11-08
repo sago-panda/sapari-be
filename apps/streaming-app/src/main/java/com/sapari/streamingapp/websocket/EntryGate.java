@@ -156,7 +156,7 @@ public class EntryGate {
                     return Mono.just(false);
                 })
                 .flatMap(ended -> ended
-                        ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.ROOM_ENDED))
+                        ? Mono.<Void>error(deniedAndLogged(EntryDeniedException.Reason.ROOM_ENDED, "방 종료", session))
                         : Mono.empty());
     }
 
@@ -170,7 +170,7 @@ public class EntryGate {
                     return Mono.just(false);
                 })
                 .flatMap(kicked -> kicked
-                        ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.KICKED))
+                        ? Mono.<Void>error(deniedAndLogged(EntryDeniedException.Reason.KICKED, "강퇴", session))
                         : Mono.empty());
     }
 
@@ -206,7 +206,7 @@ public class EntryGate {
                     return Mono.just(false);
                 })
                 .flatMap(banned -> banned
-                        ? Mono.<Void>error(new EntryDeniedException(EntryDeniedException.Reason.BANNED))
+                        ? Mono.<Void>error(deniedAndLogged(EntryDeniedException.Reason.BANNED, "밴", session))
                         : Mono.empty());
     }
 
@@ -247,6 +247,42 @@ public class EntryGate {
             log.error("{} 조회 불가(키 타입 어긋남) — 입장 허용(게이트 열림). 재시도로 낫지 않으니 사람이 그 키를 "
                             + "치워야 한다. key={} roomId={} 누적통과={}",
                     what, cause.getKey(), session.roomId(), total);
+        }
+    }
+
+    /**
+     * 거부를 남기고 그 예외를 만든다. 삼항의 거부 가지 안에서만 평가되므로 허용 경로는 안 거친다.
+     *
+     * <p>로그와 예외를 한 자리에 묶는 이유는 셋이 전부 같은 모양이라 한쪽만 빠뜨리기 쉬웠기
+     * 때문이다 — 지금 빠뜨리면 그 사유의 분모만 조용히 비고, 그건 "집행이 0" 과 출력이 같다.
+     */
+    private EntryDeniedException deniedAndLogged(EntryDeniedException.Reason reason, String what,
+            ChatSession session) {
+        logDenial(what, session);
+        return new EntryDeniedException(reason);
+    }
+
+    /**
+     * 입장 거부를 간격을 두고 남긴다. 첫 발생은 반드시 남는다.
+     *
+     * <p>강등 분기는 전부 신호를 갖는데 거부 분기 셋은 로그도 지표도 없었다 — 그래서
+     * {@code chat.policy.open{policy=...}} 의 <b>분모</b>가 비어 있었다. 당직자가 "집행되고 있고
+     * 걸린 사람이 없다" 와 "조회가 전원에게 조용히 false 를 돌려준다" 를 가를 수 없는 상태다.
+     *
+     * <p>새 미터를 만들지 않고 {@link #counterFor}/{@link #dueToLog} 를 재사용한다 — 새 포트 표면이
+     * 0 이다. 스로틀 키는 사유별로 갈린다({@code what} 이 맵 키다), 그래서 한 사유가 다른 사유의
+     * 첫 발생을 덮지 않는다 — 이 클래스가 적어 둔 그 결론({@code "사유별로 따로 센다"})과 같다.
+     *
+     * <p>⚠️ 이 로그는 <b>게이트 거부 셋</b>만 덮는다. {@code TOO_MANY_SESSIONS} 는 여기가 아니라
+     * 레지스트리가 세고({@code chat.sessions.admission_capped}), 그래서 거부 사유 전체의 합은
+     * 여전히 한 자리에서 안 보인다. 그걸 닫으려면 {@code ChatMetrics} 메서드가 하나 늘어야 한다.
+     */
+    private void logDenial(String what, ChatSession session) {
+        GateOpenLog entry = counterFor("거부/" + what);
+        long total = entry.passedThrough().incrementAndGet();
+        if (dueToLog(entry)) {
+            log.warn("입장 거부 — {} roomId={} userId={} 누적거부={}",
+                    what, session.roomId(), session.userId(), total);
         }
     }
 

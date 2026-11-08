@@ -885,6 +885,15 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
 - **A single session's failure is absorbed.** If it ended the stream, the pod would stop re-registering
   *everything* and the whole audience would disappear after the staleness window — worse than the bug being
   fixed. `concatMap` also keeps a slow Redis from overlapping rounds and doubling the writes.
+- **The absorbed failures are counted** (SPR-179): `chat.sessions.heartbeat_failures`
+  (`ChatSessionGaugeConfig`, a `FunctionCounter` over `ChatSessionRegistry.heartbeatFailures()`). The
+  `AtomicLong` had existed all along with no meter and its only reader was a test, so in production the
+  single signal for the failure above was a WARN thinned to one line per 10s — and that latch is shared
+  with two other failure modes, so whichever fires first hides the others' first occurrence.
+  - ⚠️ **0 does not mean the heartbeat is healthy.** A round that *fails* increments it; a round that never
+    *finishes* does not, and that is the worse branch — re-registration stops permanently while this stays
+    0. No signal measures round duration yet. Treat it as evidence that re-registration **is failing**,
+    never as evidence that it is working.
 - Staleness is judged against the **reader's** wall clock, so cross-pod clock skew applies; the 3-beat margin
   swallows second-scale skew. Moving the comparison into Lua would use Redis's single clock but would also
   move a full scan onto its single thread, and that cost is measured to be fine where it is.
