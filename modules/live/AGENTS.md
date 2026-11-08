@@ -16,11 +16,16 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 | `Ready` | `expire()` (batch) | `Ended` | `canExpire()` |
 | `Live` | `enter` (read) | — | `canEnterLive()` |
 | `Live`/`Suspended` | `endLive()` | `Ended` | `canEndLive()` |
+| `Scheduled` | `cancel()` (seller) | `Cancelled` | `canCancel()` — else LIVE-013 |
+| `Scheduled` | `update()` (seller) | `Scheduled` | `canUpdate()` — else LIVE-014 |
 
-- `Ended` is terminal. `expire()` publishes no `RoomEnded` — the room was never `Live`, so chat has no session.
+- `Ended` and `Cancelled` are terminal (`LiveStatus.isTerminal()`). `expire()` and `cancel()` publish no `RoomEnded` — the room was never `Live`, so chat has no session.
+- `cancel()` is `Scheduled`-only: `Ready` races the OBS-connect webhook, so it is left to the expire batch. LiveKit cleanup runs after commit (`PostCommitMediaCleanup`); leftovers are reclaimed by orphan reconciliation, which treats every terminal state alike — check `isTerminal()`, not `Ended`, there. Replay stays `Ended`-only.
 - No transition INTO `Suspended` exists yet (record + exit only).
 - `Suspended` counts as **not live** for external readers (`GetLiveRoomUseCase.live=false`) — 송출이 멈춘 방이므로 진행 중 통제(강퇴 등)의 판정 근거를 그렇게 제공한다. 거부 여부는 소비 도메인이 정한다. `startedAt` 은 다시보기 싱크용으로 보존한다. 뷰에서 `Ended` 와 구분되지 않으므로, `Suspended` 로 들어가는 전이를 만들 때 구분이 필요하면 그때 필드를 추가할 것.
-- Adding a state = `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum, together.
+- Adding a state = `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum + `LiveRoomRepositoryImpl.STATUS_COLUMN` + `LiveRoomTabs`, together.
+- **A new `status` value is a rollout constraint.** No DDL is needed (no CHECK), but an old replica's `LiveRoomStatus` cannot read the new value — `findAllByIds` in the orphan job fails the whole round and room reads 500. Expose the transition that writes it (e.g. `cancel`, SPR-158) only after every replica runs the new code.
+- Seller tabs (`LiveRoomTabs`) put `Suspended` under LIVE (the room has started — the seller's view), while external readers get `live=false`. Revisit when a transition INTO `Suspended` is added.
 
 ## Media ports — pick the failure direction
 
@@ -175,7 +180,7 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   made "this room's ingress deferred, this room closed" expressible, and every window-starvation bug came
   from layering a window over the candidate ordering. The only stopping rule is `roundBudget` — which **does** cap
   the round, so tail starvation is still possible while the backlog exceeds what one round's budget gets
-  through, and the candidate order is deterministic (`Ended` → `updated_at` → roomId). Rotation was dropped
+  through, and the candidate order is deterministic (terminal → `updated_at` → roomId). Rotation was dropped
   anyway because it cannot fix that: it reorders who waits, it does not raise throughput, and layering a
   window over the ordering is where every window-starvation bug came from. The signal to act on is
   `ORPHAN_ROOM_CANDIDATE` not falling across rounds — a persistently failing cleanup, or a budget too small
@@ -204,11 +209,11 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   against the session zone, which pgjdbc takes from each JVM's default — measured, the same instant lands
   32400s apart from a UTC vs. a KST session, so replicas in different zones stop excluding each other.
   `timestamp` has no such path. Don't "fix" it to match the rest of the schema.
-- **The room sweep applies no grace.** Only `Ended` rooms reach that point, and an `Ended` room can never
-  have a legitimate SFU room (starting requires `Scheduled`). Grace would protect nothing while opening a
+- **The room sweep applies no grace.** Only terminal (`Ended`/`Cancelled`) rooms reach that point, and a terminal room can never
+  have a legitimate SFU room (starting requires `Scheduled`; nothing leaves a terminal state). Grace would protect nothing while opening a
   hole: a seller re-joining recreates the room with a **fresh creation time**, so anyone reconnecting more
   often than the grace window would never be swept — which is the exact scenario this sweep exists for.
-- **`Ended` rooms skip the ingress grace too.** The end transaction refreshes `updated_at`, so applying it
+- **Terminal rooms skip the ingress grace too.** The end/cancel transaction refreshes `updated_at`, so applying it
   would blind the job for a full grace window right after a crash between commit and cleanup — precisely
   when a surviving ingress lets the seller keep pushing.
 
@@ -437,7 +442,7 @@ Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII
 ## Errors & tests
 
 Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`RuntimeException` escapes a service.
-A state violation gets **one code per request kind** (start LIVE-003, end/expire 009, enter 010, ingress 011) via
+A state violation gets **one code per request kind** (start LIVE-003, end/expire 009, enter 010, ingress 011, cancel 013, update 014) via
 `InvalidLiveStateException(code, msg)` — keep the single class, reconcile jobs catch it as "lost the race, skip".
 Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`; room input
 (schedule not future 015, thumbnail URL 016) is `InvalidLiveRoomException` — never IAE —

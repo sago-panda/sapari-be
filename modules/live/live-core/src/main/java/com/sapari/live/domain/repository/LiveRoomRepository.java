@@ -2,11 +2,13 @@ package com.sapari.live.domain.repository;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStatus;
 
 public interface LiveRoomRepository {
     LiveRoom save(LiveRoom liveRoom);
@@ -39,7 +41,7 @@ public interface LiveRoomRepository {
      *
      * @return 획득했으면 true. false 면 이미 다른 요청이 배정했거나 방이 Scheduled 가 아니다.
      */
-    boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now);
+    boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now);
 
     /**
      * {@code threshold} 이전에 시작된 Live 방 id 를 오래된 순으로 최대 {@code limit} 건.
@@ -62,4 +64,16 @@ public interface LiveRoomRepository {
      * 결정은 방마다 잠금 재조회로 판정해야 한다.
      */
     long countLiveRooms();
+
+    /**
+     * 판매자 내 방 목록의 한 페이지. {@code scheduled_at DESC, id DESC} 키셋이다 — 커서 둘이 모두 null 이면
+     * 첫 페이지, 아니면 그 행 다음부터. 호출자는 다음 페이지 판정을 위해 {@code size + 1} 을 {@code limit} 로 넘긴다.
+     *
+     * @param statuses 포함할 상태 종류(비어 있으면 안 된다). 탭 묶음은 호출자가 정한다.
+     */
+    List<LiveRoom> findSellerRooms(UUID sellerId, Set<Class<? extends LiveStatus>> statuses,
+                                   Instant cursorScheduledAt, UUID cursorId, int limit);
+
+    /** 판매자 방을 상태 종류별로 센다. 방이 없는 상태는 키가 없다. */
+    Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId);
 }

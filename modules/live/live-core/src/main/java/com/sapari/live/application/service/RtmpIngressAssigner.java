@@ -30,7 +30,7 @@ public class RtmpIngressAssigner {
 
     /** @return 획득했으면 true. false 면 경합에서 졌거나 방이 더 이상 Scheduled 가 아니다. */
     @Transactional
-    public boolean assignIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now) {
-        return liveRoomRepository.assignRtmpIngressIfAbsent(roomId, sellerId, ingressId, now);
+    public boolean assignIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now) {
+        return liveRoomRepository.assignRtmpIngressIfAbsent(roomId, sellerId, ingressId, rtmpUrl, now);
     }
 }

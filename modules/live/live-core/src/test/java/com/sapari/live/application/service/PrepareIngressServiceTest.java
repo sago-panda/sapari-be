@@ -82,7 +82,7 @@ class PrepareIngressServiceTest {
     }
 
     @Test
-    @DisplayName("발급 성공: ingress 발급 → RTMP 전환 저장 → rtmpUrl·streamKey 반환")
+    @DisplayName("발급 성공: ingress 발급 → RTMP 전환·rtmpUrl 저장 → rtmpUrl·streamKey 반환")
     void prepare_success() {
         Instant now = Instant.parse("2026-06-09T02:00:00Z");
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
@@ -90,7 +90,7 @@ class PrepareIngressServiceTest {
         given(liveMediaManager.createIngress(roomId, sellerId))
                 .willReturn(new IngressResult("ingress-1", "rtmp://livekit/live", "secret-key"));
         given(timeProvider.now()).willReturn(now);
-        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-1", now)).willReturn(true);
+        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-1", "rtmp://livekit/live", now)).willReturn(true);
 
         IngressCredentialView view = prepareIngressService.prepare(command);
 
@@ -100,7 +100,7 @@ class PrepareIngressServiceTest {
         assertThat(view.streamKey()).isEqualTo("secret-key");
 
         // 배정은 조건부 UPDATE 로 한다 — save() 는 무조건 덮어써서 경합을 못 막는다.
-        then(rtmpIngressAssigner).should().assignIfAbsent(roomId, sellerId, "ingress-1", now);
+        then(rtmpIngressAssigner).should().assignIfAbsent(roomId, sellerId, "ingress-1", "rtmp://livekit/live", now);
         then(liveRoomRepository).should(never()).save(any(LiveRoom.class));
         then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), any(String.class));
     }
@@ -126,7 +126,7 @@ class PrepareIngressServiceTest {
                 .willReturn(new IngressResult("ingress-LOSER", "rtmp://livekit/live", "secret-key"));
         given(timeProvider.now()).willReturn(now);
         // 다른 요청이 먼저 배정 → 조건부 UPDATE 0건
-        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-LOSER", now)).willReturn(false);
+        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-LOSER", "rtmp://livekit/live", now)).willReturn(false);
 
         assertThatThrownBy(() -> prepareIngressService.prepare(command))
                 .isInstanceOf(InvalidLiveStateException.class)
