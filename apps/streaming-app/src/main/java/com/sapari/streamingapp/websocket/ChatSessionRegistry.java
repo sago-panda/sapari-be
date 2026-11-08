@@ -671,8 +671,22 @@ public class ChatSessionRegistry implements ChatSessionManager {
         if (ls == null) {
             return;
         }
-        // 상한을 둔다 — 값 출처가 바뀌어 큰 수가 들어오면 Duration 환산이 ArithmeticException을 던져
-        // 인바운드 스트림을 죽인다. 레이트리밋 창은 분 단위를 넘길 이유가 없다.
+        // 가드가 둘인데 한 문장으로 묶어 적혀 있었고, 아래쪽 절반이 거짓이었다. 둘을 따로 적는다.
+        //
+        // Math.min — 이것이 실제로 막는 가드다. 큰 수가 들어오면 Duration 환산이
+        //   ArithmeticException 을 던지고, 이 메서드는 onInbound 의 onErrorResume 람다에서 불리므로
+        //   그 던짐이 인바운드 Flux 의 onError 가 되어 연결을 끊는다. 실측:
+        //   ofSeconds(Long.MAX_VALUE).toNanos() 가 던진다(경계는 9_223_372_036 초 — 그 값은 안 던진다).
+        //   역변이로 확인됨: 지우면 rate_limit_window_is_clamped_above 가 빨강이다.
+        //
+        // Math.max — 음수는 **던지지 않는다**(실측: ofSeconds(-5).toNanos() = -5_000_000_000).
+        //   그리고 이 필드의 독자는 rateLimitRetryAfterSeconds 하나뿐이고(전수: 쓰는 곳 1 · 읽는 곳 1)
+        //   그쪽이 이미 remaining <= 0 을 0 으로 접는다. 그래서 이 Math.max 는 **오늘 관측 불가**다 —
+        //   두 가드는 서로 중복이고 **각각만으로 충분**하다 — 역변이로 셋 다 확인했다: 이것만 지워도
+        //   초록, 읽는 쪽 가드만 지워도 초록, **둘을 함께** 지우면 빨강(남은 초가 -4 로 샌다).
+        //   그래서 "이것이 음수를 막는다" 는 어느 한쪽에 대해서도 참이 아니다. 두 겹이 싸서 남겨 둔다.
+        //   계약을 묶는 칸은 rate_limit_window_folds_negatives 이고, 그 칸이 깨지는 조건도 이중 변이다.
+        // 레이트리밋 창은 분 단위를 넘길 이유가 없다.
         long clamped = Math.max(0, Math.min(retryAfterSeconds, MAX_RATE_LIMIT_WINDOW_SECONDS));
         ls.rateLimitedUntilNanos().set(System.nanoTime() + Duration.ofSeconds(clamped).toNanos());
     }

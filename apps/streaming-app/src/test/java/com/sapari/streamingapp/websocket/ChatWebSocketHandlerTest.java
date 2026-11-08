@@ -18,6 +18,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -62,7 +63,6 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 class ChatWebSocketHandlerTest {
-
 
     /** 반응형 종결자(.block() / StepVerifier) 상한 — 없으면 회귀가 테스트를 실패시키는 대신 <b>멈추게</b> 한다(근거: modules/chat/AGENTS.md). */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
@@ -279,6 +279,64 @@ class ChatWebSocketHandlerTest {
 
         assertThat(handler.isSubscribed(roomId))
                 .as("뒷정리가 던지자 방 구독이 남았다 — 해제가 finally 에 없다").isFalse();
+    }
+
+    /**
+     * 강제 종료 유예를 묶는다 — <b>전 스위트가 이 분기를 한 번도 밟지 않았다.</b>
+     *
+     * <p>이 파일의 다른 칸 일곱과 {@code SessionLogContextTest} 가 모두
+     * {@code registry.terminationSignal("s1")} 을 {@code Mono.never()} 로 스텁한다. 그래서 단위
+     * 테스트에서 이 분기는 발화할 수 없었다. 통합 테스트에서는 제어 채널이 실제로 발화하지만
+     * 데이터 채널이 수십 ms 로 이겨서 {@code firstWithSignal} 이 3초 전에 완료하고 이 경로를
+     * 취소한다 — 그쪽 칸은 오히려 <b>이 분기가 쓰이지 않는다는 것을 단언한다</b>. 즉
+     * {@code firstWithSignal} 에서 {@code forcedClose.then(closeWithReason)} 를 지우는 변이가
+     * 전 스위트에서 생존했다.
+     *
+     * <p>커버리지보다 중요한 것: {@code ChatSessionRegistry.reapUnresponsiveIfFull} 의 javadoc 이
+     * 이 상수에서 하중 있는 경계를 파생한다 — "(유저, 방)당 실제 세션 수가 최대 2배, 지속 ≤8초 …
+     * {@code FORCED_CLOSE_GRACE} 3s + {@code CLOSE_FLUSH_TIMEOUT} 5s". 뒤쪽은 테스트 둘이 묶는데
+     * 앞쪽은 하나도 없었다. <b>다른 파일이 인용하는 불변식의 절반이 안 묶인 상수에 얹혀 있었다.</b>
+     *
+     * <p>3초를 <b>리터럴</b>로 적는다. 상수는 {@code private} 이고, 더 중요하게는 그 수가 다른
+     * 파일의 javadoc 에 인용돼 있어서 — 상수를 참조하면 값이 바뀔 때 단언이 따라가고 그 인용만
+     * 조용히 거짓이 된다. 바꾸려면 이 줄과 그 javadoc 을 함께 보게 만드는 쪽이 맞다.
+     */
+    @Test
+    @DisplayName("⭐ 강제 종료가 3초 유예 뒤에 닫는다 — 데이터 채널이 다 막힌 클라의 유일한 보상이다")
+    void forced_close_fires_after_the_grace() {
+        // given: outbound·inbound·send 가 전부 끝나지 않는 클라 — sink complete 가 버퍼에 막힌 모양
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        // ⚠️ close 를 반드시 스텁한다 — 안 하면 null 이 돌아와 .then(null) 로 NPE 가 나고,
+        // 그 빨강은 "유예가 없다" 와 구분되지 않는다(SPR-178 A5 에서 실제로 밟았다).
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
+        // 이 칸의 하중: 제어 채널이 **실제로** 발화한다. 나머지 칸은 전부 Mono.never() 다.
+        given(registry.terminationSignal("s1")).willReturn(Mono.just(CloseStatus.POLICY_VIOLATION));
+        given(registry.closeStatusOf("s1")).willReturn(CloseStatus.POLICY_VIOLATION);
+        ChatSession chatSession =
+                new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when & then
+        StepVerifier.withVirtualTime(() -> handler.runSession(session, chatSession))
+                // 유예 직전에는 아무것도 닫히지 않는다 — 여기서 닫히면 정상 클라가 남은 메시지를
+                // 받기 전에 끊긴다(그게 유예의 존재 이유다)
+                .thenAwait(Duration.ofSeconds(3).minusMillis(1))
+                .then(() -> then(session).should(never()).close(any()))
+                // 유예를 넘기면 사유를 실어 닫는다
+                .thenAwait(Duration.ofMillis(2))
+                // ⚠️ 상한을 준다. verifyComplete() 는 무상한이라, forcedClose 를 firstWithSignal 에서
+                // 빼는 변이가 **빨강이 아니라 멈춤**이 된다 — 실측으로 300초를 넘겨 죽여야 했다.
+                // 이 파일이 VERIFY_CEILING 을 두는 이유가 그것이다(근거: modules/chat/AGENTS.md).
+                .expectComplete()
+                .verify(VERIFY_CEILING);
+
+        then(session).should(times(1)).close(CloseStatus.POLICY_VIOLATION);
     }
 
     /**
@@ -1032,14 +1090,36 @@ class ChatWebSocketHandlerTest {
         then(registry).should(times(1)).sendToSession(eq("s1"), argThat(m -> "NOT_ACTIVE".equals(m.code())));
     }
 
+    /**
+     * 와이어 순서를 묶는다 — <b>조립 순서를 실행 순서로 읽던 단언을 고친다.</b>
+     *
+     * <p>Reactor 에서 {@code a.then(b)} 의 {@code b} 는 <b>조립 시점</b>에 평가된다.
+     * {@code sendToSession} 과 {@code renderToSession} 은 둘 다 조립 중에 목이 기록하는 즉시
+     * 호출이고 소스 순서대로 들어간다 — 즉 {@code InOrder} 로 그 둘을 보면 <b>선언 순서</b>를
+     * 고정하는 것이고 전달 순서는 고정하지 않는다. 생존하던 변이는 이렇다: 둘을 현재 순서로
+     * 지역변수에 올린 뒤 {@code sys.then(err)} 로 거꾸로 구독한다 — 조립 순서가 그대로라
+     * {@code InOrder} 는 초록인데 {@code ERROR} 와 {@code SYSTEM(ROOM_ENDED)} 의 와이어 순서가
+     * 뒤집힌다.
+     *
+     * <p>그게 왜 하중인가. {@code ERROR} 가 낙관적 버블 롤백에 필요한 {@code clientMsgId} 를 싣는
+     * <b>유일한</b> 프레임이고, 순서가 뒤집히면 sink 가 먼저 닫혀 뒤엣것이 사라진다.
+     *
+     * <p>그래서 스텁이 {@code Mono.fromRunnable} 로 <b>실행</b>을 공유 리스트에 기록한다.
+     * {@code terminateRoomEnded} 는 {@code doFinally} 람다 안이라 그 짝만은 원래부터 진짜 실행
+     * 순서였다 — 그 단언은 그대로 둔다. 형제
+     * {@code kicked_on_send_answers_before_terminating} 도 같은 이유로 건전하다.
+     */
     @Test
-    @DisplayName("방 종료 확인 — 정상 종료 경로와 같은 프레임·같은 코드로 닫는다(프론트가 구분할 필요 없게)")
+    @DisplayName("방 종료 확인 — ERROR 가 SYSTEM 보다 먼저 와이어에 나간다(조립 순서가 아니라 실행 순서로 잰다)")
     void roomEnded_onSend_mirrorsNormalEndPath() {
         // given: 이 Pod가 종료 신호를 놓쳤고 게이트가 마커로 방금 확인한 상황
+        List<String> wireOrder = new CopyOnWriteArrayList<>();
         given(entryGate.isRoomAlive(anyString(), any())).willReturn(Mono.just(false));
-        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.sendToSession(anyString(), any()))
+                .willReturn(Mono.fromRunnable(() -> wireOrder.add("ERROR")));
         given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
-        given(systemMessageService.renderToSession("s1", SystemMessageCode.ROOM_ENDED)).willReturn(Mono.empty());
+        given(systemMessageService.renderToSession("s1", SystemMessageCode.ROOM_ENDED))
+                .willReturn(Mono.fromRunnable(() -> wireOrder.add("SYSTEM")));
         given(sendUseCase.send(any())).willReturn(Mono.error(new LiveNotActiveException("ended")));
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
         String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
@@ -1048,9 +1128,15 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
 
         // then: ERROR(롤백 키) → SYSTEM(종료 사유) → 종료. 순서가 뒤집히면 sink가 닫혀 뒤엣것이 사라진다.
-        InOrder order = inOrder(registry, systemMessageService);
-        order.verify(registry).sendToSession(eq("s1"),
+        // ⭐ 실행 순서다 — InOrder 로 이 둘을 보면 조립 순서를 보는 것이고 hoist-and-swap 이 생존한다.
+        assertThat(wireOrder)
+                .as("ERROR 가 SYSTEM 보다 먼저 나가지 않았다 — 롤백 키를 실은 유일한 프레임이 뒤로 밀렸다")
+                .containsExactly("ERROR", "SYSTEM");
+        // 프레임의 내용은 따로 본다 — 순서 단언이 내용까지 덮지는 않는다.
+        then(registry).should(times(1)).sendToSession(eq("s1"),
                 argThat(m -> "NOT_ACTIVE".equals(m.code()) && "c1".equals(m.clientMsgId())));
+        // terminateRoomEnded 만은 doFinally 람다 안이라 원래부터 진짜 실행 순서였다.
+        InOrder order = inOrder(registry, systemMessageService);
         order.verify(systemMessageService).renderToSession("s1", SystemMessageCode.ROOM_ENDED);
         order.verify(registry).terminateRoomEnded("s1");
     }
