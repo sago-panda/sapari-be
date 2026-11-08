@@ -560,14 +560,18 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   close. Contention means another thread held the lock → drop that message, keep the session. Merging them
   makes load shed healthy viewers, whose reconnects raise load further.
 - Close codes: **1000** room ended, session-lifetime expiry, and liveness-check failure (all three on purpose
-  — see below), **1008** entry denial / kick / account-level ban, **1009** inbound frame over the 4 KB limit
+  — see below), **1008** entry denial / kick / account-level ban / **account withdrawal**, **1009** inbound frame over the 4 KB limit
   (Netty's decoder closes; the reason string leaks the configured limit), **1013** buffer overflow.
   1013 rather than 1000 exists to stop instant reconnect.
 - **1008 no longer implies "do not reconnect" — the SYSTEM code decides.** `KICKED`, `BANNED` and
   `ROOM_ENDED` are states a person cannot clear by retrying. `TOO_MANY_SESSIONS` (SPR-152) is the
   opposite: it clears as soon as one of that user's sessions in that room goes away, and a dead slot is
   reclaimed on the next attempt. So the client **may** retry it after a backoff, and must not fold it into
-  the "denied, give up" branch. Splitting the close code instead (1013-style) was rejected: 1008 is
+  the "denied, give up" branch. `WITHDRAWING` is a fifth, and it belongs to neither group: like the first
+  three it cannot be cleared by retrying, but unlike them **the account itself is going away**, so the
+  right client behaviour is to end the session rather than to show a denial. SPR-178 split it off
+  `MODERATION` in `chat.session.cut` for the same reason — a withdrawal is not a sanction — and this
+  line is the contract side of that split. Splitting the close code instead (1013-style) was rejected: 1008 is
   already the front end's "entry denial" bucket and splitting it changes how every denial is handled.
 - ⚠️ **1000 now means three different things, and only one of them carries an explanation.** Room end is
   preceded by `SYSTEM(ROOM_ENDED)`; lifetime expiry and liveness failure send no frame at all, because the
@@ -1150,12 +1154,24 @@ conditional variant really does fall back to NOOP.
 | `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
 | `chat.session.cut` | `reason` | the server closed a session |
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
-| `chat.persist.timeout` | — | the Mongo operation bound cut a `save` — **nothing was stored** |
+| `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
 
 ⚠️ **`chat.persist.timeout` is a different axis from `chat.delivery.dropped` and the two must never be
 summed.** `delivery.dropped` means *persisted, live delivery lost* — every `DeliveryStage` value rests on
-that. `persist.timeout` means the write never landed and the sender got an error instead of an ACK. Adding
-them produces a number that says "it is in the history" about messages that are not.
+that. Adding them produces a number that says "it is in the history" about messages that are not.
+
+⚠️ **`chat.persist.timeout` carries a `stage` tag, and its two values mean opposite things — do not sum
+them either** (`PersistStage`, SPR-178). `stage=write` means the write never landed and **nothing was
+stored**. `stage=duplicate_recovery_read` is the `DuplicateKey` recovery read: its premise is that the
+document **already exists**, so the message is in the history and what was cut is reading it back. Summing
+the two reports a stored message as lost — exactly the inversion the `delivery.dropped` warning above
+forbids in the other direction.
+
+The two also differ in what the sender sees. `stage=write` is translated to
+`ChatErrorCode.PERSIST_TIMEOUT` (503, `CHAT-012`); the recovery read is **not translated**, so the sender
+gets an untranslated 500. That gap is deliberate — translating it would make `CHAT-012`'s "저장하지
+못했습니다" false on a branch where the message was stored — and closing it needs one more error code,
+i.e. a wire-contract change. The count exists now; the per-branch wording does not.
 
 ⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
 `ChatMeterNames` declared it when it was added. The rule in this section is "a scrape test walks every enum
@@ -1174,9 +1190,17 @@ covers it" is a claim that needs the enumeration read, not assumed.
 - **`checkpoint` separates entry from send.** Open at entry only means a sanctioned user is watching; open at
   the send re-check means posts land in an ended room. A mutation test caught that this distinction was
   initially unguarded.
-- **`chat.session.cut` exists because close 1000 means three things** (room end, lifetime, liveness) and only
-  room end is preceded by an explaining frame. `MODERATION` (1008) and `BUFFER_OVERFLOW` (1013) are in the
-  same meter so the reasons sum to all server-initiated closes.
+- **`chat.session.cut` exists because the close code does not identify the cause.** Close 1000 means three
+  things (room end, lifetime, liveness) and only room end is preceded by an explaining frame; close 1008
+  means two (`MODERATION` and `WITHDRAWN` — a ban is a sanction, a withdrawal is the user's own click, and
+  merging them inflates the sanction rate). `BUFFER_OVERFLOW` (1013) is in the same meter.
+  - ⚠️ **The reasons do not sum to all server-initiated closes** — an earlier version of this line claimed
+    they did, and that was false. At least four closes never reach this meter: the three entry denials
+    (`KICKED`, `BANNED`, `ROOM_ENDED`) happen in `EntryGate` before a session exists and carry no metric at
+    all (of the denials only the session cap is counted, under `chat.sessions.admission_capped`), and a
+    frame over the 4 KiB limit closes with 1009 from the transport layer, which chat code never sees. Read
+    this meter as **sessions that were established and then cut by a server decision**, not as the whole of
+    server-initiated closes.
 - Every meter is **0 in the healthy case**, which is what makes alerting possible — tests assert the counters
   are not even created on a healthy path.
 - The Prometheus registry rejects same-name-different-tag-key meters, so a call that omits a tag makes that
@@ -1269,15 +1293,19 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     dies instead of serving". `ChatMongoConfig`'s startup index creation blocks, and against a closed
     address it throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is a stall bounded by **`ChatMongoConfig.INDEX_CREATE_CEILING`** (SPR-152; 10 min, and it is a
-    deadline over **all four** index creations, not per call). Measured driver defaults
+    cost is a stall bounded by **10 min 30 s** — `ChatMongoConfig.INDEX_CREATE_CEILING` (SPR-152;
+    10 min, a deadline over **all four** index creations, not per call) plus `INDEX_DROP_CEILING`
+    (SPR-178; 30 s, **outside** that deadline, for the superseded-index drop). Measured driver defaults
     (`MongoClientSettings.builder().build()`): `serverSelectionTimeoutMs=30000`,
     **`socketReadTimeoutMs=0` (infinite)**, `socketConnectTimeoutMs=10000`, global `timeoutMs=null` — and
     the repo sets no Mongo *client* timeout anywhere, so those defaults apply. So 30s bounds only the
     "never picks a server" mode; once a server *is* picked and `createIndex` does not answer, the driver
     has nothing that would cut it — which is why the bound lives at the call site instead.
-    - **This line has been wrong four times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
-      "worst wait is that one value" while the ceiling was still **per call**. The first three fixed the
+    - **This line has been wrong five times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
+      "worst wait is that one value" while the ceiling was still **per call** → "bounded by
+      `INDEX_CREATE_CEILING`" after SPR-178 added a drop with its **own** 30 s bound outside the shared
+      deadline. The fifth is the second judgment's shape exactly: a step was added and the number that
+      sizes the `startupProbe` was not re-derived. The first three fixed the
       *number* without measuring **what bounds it**; the fourth measured what bounds it but not the
       **unit** — per call or per method. Measured: ceiling 400ms × 4 calls at 300ms each → total
       **1,279 ms**, **0 throws** — a per-call ceiling does not bound the method, it scales with the count.

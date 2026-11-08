@@ -3,10 +3,12 @@ package com.sapari.liveapp.controller.chat;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Clock;
@@ -34,6 +36,8 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
+import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.global.time.TimeProvider;
@@ -56,8 +60,10 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 @WebMvcTest(controllers = ChatBanController.class,
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
+// GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
+// (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
 @Import({ChatBanController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
-        ChatBanReleaseAuthorizationTest.FixedClockConfig.class})
+        ChatBanReleaseAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("밴 해제 엔드포인트 — 관리자만 관문을 지난다")
 class ChatBanReleaseAuthorizationTest {
 
@@ -96,6 +102,19 @@ class ChatBanReleaseAuthorizationTest {
         Authentication auth = new UsernamePasswordAuthenticationToken(
                 principal, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
         return authentication(auth);
+    }
+
+    @Test
+    @DisplayName("⭐ 권한 거부가 선언한 상태코드로 HTTP 를 떠난다 — 관문이 아니라 서비스가 접은 경우다")
+    void thePermissionDeniedCodeLeavesAsForbidden() throws Exception {
+        // given: 관문은 통과했고(ADMIN) 서비스가 접었다 — 관문 403 과 같은 상태지만 코드가 다르다
+        willThrow(new ChatPermissionDeniedException("알 수 없는 역할이다"))
+                .given(releaseBanUseCase).release(any());
+
+        // when & then
+        mockMvc.perform(delete("/api/v1/chat/bans/{userId}", TARGET).with(as("ADMIN")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("CHAT-001"));
     }
 
     @Test

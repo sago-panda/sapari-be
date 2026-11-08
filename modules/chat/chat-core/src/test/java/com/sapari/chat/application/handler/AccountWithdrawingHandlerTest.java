@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
 import java.util.List;
@@ -20,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.application.port.AccountWithdrawingSource;
 import com.sapari.chat.application.port.ChatSessionManager;
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 
@@ -53,13 +55,33 @@ class AccountWithdrawingHandlerTest {
      * 그래서 두 스텁이 <b>구독될 때</b> 이름을 적고 그 순서를 단언한다.
      */
     @Test
+    @DisplayName("⭐ 탈퇴는 WITHDRAWN 사유로 끊는다 — MODERATION 으로 세면 제재율이 부풀고 그 수가 거짓이 된다")
+    void aWithdrawalIsCutUnderItsOwnReason() {
+        // given: 이 메서드의 운영 호출자는 둘이고(전수) 하나는 밴 집행, 하나는 이 탈퇴다.
+        // SystemMessageCode.WITHDRAWING 의 javadoc 이 탈퇴가 제재와 달라야 한다는 것을 이미 적는다 —
+        // 사유를 공유하면 사용자가 스스로 누른 탈퇴가 chat.session.cut{reason=moderation} 을 올린다.
+        given(source.withdrawing()).willReturn(Flux.just(userId));
+        given(sessionManager.sendToUserEverywhere(any(), any())).willReturn(Mono.empty());
+        given(sessionManager.closeUserEverywhere(any(), any())).willReturn(Mono.empty());
+
+        // when
+        handler.start();
+
+        // then
+        then(sessionManager).should(times(1))
+                .closeUserEverywhere(userId, SessionCutReason.WITHDRAWN);
+        then(sessionManager).should(never())
+                .closeUserEverywhere(userId, SessionCutReason.MODERATION);
+    }
+
+    @Test
     @DisplayName("사유를 먼저 보내고 그다음 끊는다 — 먼저 끊으면 사유 프레임이 조용히 사라진다")
     void theReasonIsSentBeforeTheClose() {
         List<String> ran = new CopyOnWriteArrayList<>();
         given(source.withdrawing()).willReturn(Flux.just(userId));
         given(sessionManager.sendToUserEverywhere(any(), any()))
                 .willReturn(Mono.fromRunnable(() -> ran.add("reason")));
-        given(sessionManager.closeUserEverywhere(any()))
+        given(sessionManager.closeUserEverywhere(any(), any()))
                 .willReturn(Mono.fromRunnable(() -> ran.add("close")));
 
         handler.start();
@@ -68,7 +90,7 @@ class AccountWithdrawingHandlerTest {
         then(sessionManager).should(times(1))
                 .sendToUserEverywhere(userId, OutboundMessage.system(SystemMessageCode.WITHDRAWING));
         // 한 번만 — 뒤쪽 호출이 순서 단언을 만족시켜 중복이 가려지는 면을 막는다.
-        then(sessionManager).should(times(1)).closeUserEverywhere(userId);
+        then(sessionManager).should(times(1)).closeUserEverywhere(userId, SessionCutReason.WITHDRAWN);
     }
 
     /**
@@ -85,13 +107,13 @@ class AccountWithdrawingHandlerTest {
         given(source.withdrawing()).willReturn(Flux.just(userId));
         given(sessionManager.sendToUserEverywhere(any(), any()))
                 .willReturn(Mono.error(new RuntimeException("전송 실패")));
-        given(sessionManager.closeUserEverywhere(any()))
+        given(sessionManager.closeUserEverywhere(any(), any()))
                 .willReturn(Mono.fromRunnable(() -> closed.set(true)));
 
         handler.start();
 
         assertThat(closed).as("구독돼 실제로 돌았는가 — 호출만으로는 구분되지 않는다").isTrue();
-        then(sessionManager).should(times(1)).closeUserEverywhere(userId);
+        then(sessionManager).should(times(1)).closeUserEverywhere(userId, SessionCutReason.WITHDRAWN);
     }
 
     @Test
@@ -101,9 +123,9 @@ class AccountWithdrawingHandlerTest {
         given(source.withdrawing()).willReturn(Flux.just(broken, userId));
         given(sessionManager.sendToUserEverywhere(any(), any())).willReturn(Mono.empty());
         AtomicBoolean secondClosed = new AtomicBoolean();
-        given(sessionManager.closeUserEverywhere(broken))
+        given(sessionManager.closeUserEverywhere(broken, SessionCutReason.WITHDRAWN))
                 .willReturn(Mono.error(new RuntimeException("종료 실패")));
-        given(sessionManager.closeUserEverywhere(userId))
+        given(sessionManager.closeUserEverywhere(userId, SessionCutReason.WITHDRAWN))
                 .willReturn(Mono.fromRunnable(() -> secondClosed.set(true)));
 
         handler.start();
@@ -125,7 +147,7 @@ class AccountWithdrawingHandlerTest {
                 userId, OutboundMessage.system(SystemMessageCode.WITHDRAWING)))
                 .willReturn(Mono.empty());
         AtomicBoolean closed = new AtomicBoolean();
-        given(sessionManager.closeUserEverywhere(userId))
+        given(sessionManager.closeUserEverywhere(userId, SessionCutReason.WITHDRAWN))
                 .willReturn(Mono.fromRunnable(() -> closed.set(true)));
 
         handler.start();

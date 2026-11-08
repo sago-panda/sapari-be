@@ -20,6 +20,7 @@ import reactor.core.publisher.Mono;
 import org.springframework.dao.support.PersistenceExceptionTranslator;
 import org.bson.codecs.configuration.CodecRegistry;
 import com.mongodb.ClientSessionOptions;
+import com.mongodb.MongoCommandException;
 import com.mongodb.reactivestreams.client.ClientSession;
 import com.mongodb.reactivestreams.client.MongoDatabase;
 import org.springframework.data.mongodb.core.index.ReactiveIndexOperations;
@@ -328,6 +329,29 @@ public class ChatMongoConfig {
     private static final Duration INDEX_CREATE_CEILING = Duration.ofMinutes(10);
 
     /**
+     * 옛 윈도우 인덱스 이름 — Mongo 의 파생 규칙이 정한 값이다(키 이름과 방향을 이어 붙인다).
+     *
+     * <p>이름을 적어 두는 것이 요점이다. 키로 찾아 지우려면 인덱스 목록을 왕복해 비교해야 하고,
+     * 그 비교가 "2키인데 다른 인덱스" 까지 집어낼 여지를 만든다.
+     *
+     * <p>⚠️ <b>이 이름은 현 윈도우 인덱스의 파생 이름과 달라야 한다.</b> 윈도우 인덱스를 2키로
+     * 되돌리면 그 파생 이름이 이 값과 같아져 <b>드롭이 방금 만든 인덱스를 지운다</b>. 코드에 그걸
+     * 막는 가드는 없고 테스트가 막는다({@code ChatMessageRepositoryImplTest} 의 인덱스 칸 둘).
+     */
+    private static final String SUPERSEDED_WINDOW_INDEX = "roomId_1_createdAt_1";
+
+    /**
+     * 드롭 상한 — 생성과 달리 짧게 잡는다.
+     *
+     * <p>인덱스 빌드는 컬렉션 크기에 비례하지만 드롭은 메타데이터 연산이라 그렇지 않다. 여기서
+     * 10분을 기다리면 "Mongo 가 응답하지 않는다" 를 부팅 내내 숨긴다.
+     */
+    private static final Duration INDEX_DROP_CEILING = Duration.ofSeconds(30);
+
+    /** 드라이버의 {@code IndexNotFound} — "그 이름의 인덱스가 없다" 하나만 뜻한다. */
+    private static final int INDEX_NOT_FOUND_ERROR_CODE = 27;
+
+    /**
      * 인덱스 4종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
      * 인덱스 정의 전체를 여기로 일원화한다. $type을 쓰는 이유: $exists:true는 null 저장 필드도 매칭해
      * clientMsgId=null 2건째에 DuplicateKey가 터진다. 생성된 인덱스 이름 목록 반환(테스트 검증용).
@@ -372,11 +396,114 @@ public class ChatMongoConfig {
         //
         // 방향은 ASC 다. 정렬 키가 _id 라 두 번째 필드의 방향이 경계에 영향을 주지 않는다(실측: ASC·DESC
         // 모두 112/112). 나머지 인덱스가 전부 ASC 라 그쪽에 맞춘다.
+        //
+        // ⚠️ 세 번째 키 _id 가 사는 이유는 <b>정렬이 아니라 docsExamined</b> 다. 위 "112/112" 는
+        // 112 ≤ limit 이었던 창의 참이고, 창이 limit 보다 크면 그 등식이 깨진다 — createdAt 이 범위라
+        // 이 인덱스는 _id 정렬을 공급하지 못하고 blocking SORT 가 남는데, _id 가 인덱스에 없으면
+        // 그 SORT 가 <b>FETCH 뒤</b>에 와서 창 전수를 읽는다. 즉 비용이 limit 이 아니라 그 방의 5분
+        // 생산량에 비례하고, 그 엔드포인트는 미인증 공개다.
+        //
+        // 실측(일회용 mongo:7.0): 창 60건 · limit 5 에서 2키는 IXSCAN{roomId,createdAt} ·
+        // docsExamined 60, 3키는 docsExamined 5. 12만건 규모에서는 333 → 50(=limit) 이었다.
+        // keysExamined 는 그대로 창 전수다 — SORT 가 인덱스 키 위에서 돌고 FETCH 만 limit 으로 줄어든다.
+        // 옛 2키 인덱스가 이것의 접두라 잃는 커버리지가 없다.
         String window = awaitIndex(ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
-                .on("createdAt", Sort.Direction.ASC)), deadline, ceiling, "roomId+createdAt(VOD 윈도우)");
+                .on("createdAt", Sort.Direction.ASC)
+                .on("_id", Sort.Direction.ASC)), deadline, ceiling, "roomId+createdAt+_id(VOD 윈도우)");
+
+        dropSupersededWindowIndex(mongoTemplate);
 
         return List.of(paging, dedup, ttl, window);
+    }
+
+    /**
+     * 옛 2키 윈도우 인덱스{@code (roomId, createdAt)} 를 걷어낸다 — 위에서 그 상위집합을 세운 <b>뒤</b>다.
+     *
+     * <p>왜 필요한가. 3키는 2키의 상위집합이라 이름이 달라지고, Mongo 는 기존 것을 두고 새 것을
+     * 하나 더 만든다(실측, 일회용 {@code mongo:7.0}:
+     * {@code _id_ | roomId_1_createdAt_1 | roomId_1_createdAt_1__id_1}). 조회에는 해가 없지만
+     * {@code chat_messages} 의 모든 insert 가 인덱스를 하나 더 쓴다 — 이 저장소에서 가장 뜨거운
+     * 쓰기 경로다. 잃는 커버리지는 없다: 2키가 3키의 접두라 2키로 답할 수 있는 질의는 3키로도 답한다.
+     *
+     * <p>순서가 계약이다. 드롭을 생성보다 앞에 두면 그 사이에 윈도우 조회가 인덱스 없이 돈다.
+     *
+     * <p><b>롤링 배포에서 무엇이 일어나는가.</b> 이 경로는 부팅에만 돈다 — 새 파드가 뜨면 3키를
+     * 만들고 2키를 지우고, 이미 떠 있는 옛 파드는 다시 만들지 않는다. 그래서 정상 롤링에서는 왕복이
+     * 한 번이다. 배포 창 안에 <b>옛 파드가 재시작하면</b> 2키를 다시 만들고 다음 새 파드가 또 지운다.
+     *
+     * <p>실측(일회용 {@code mongo:7.0}, 400,000 문서): 옛 2키 단독 빌드 <b>374ms</b>(건당
+     * 0.0009ms — ⚠️ 독립 2회에서 374ms·604ms 로 갈린다. <b>사이징에는 쓰지 않는다</b>; 그 수는
+     * 아래 {@code awaitIndex} javadoc 의 보수적인 0.0057ms/건이다) · 없는 이름 드롭은 <b>code 27 {@code IndexNotFound}</b>(아래 상수가 그 값이다) ·
+     * 빌드와 같은 이름 드롭이 겹치면 <b>드롭이 이기고</b> 컬렉션에 {@code _id_} 만 남는다. 즉 새
+     * 파드는 이 경쟁으로 죽지 않는다. ⚠️ <b>빌드 쪽이 받는 에러는 내 프로브가 분리 실행이라
+     * 못 잡았다</b> — 그쪽이 깨지면 그 파드의 부팅이 실패하고, 다음 재시작에는 지우는 쪽이 없어
+     * 성공한다. 그 재시작 빈도는 실파드가 없어 재지 못했다.
+     *
+     * <p>⚠️ <b>이 상한은 생성의 공유 데드라인 밖이다</b> — 부팅 창 전체가 10분이 아니라
+     * <b>10분 + 30초</b>다. 그 수를 쓰는 자리(startupProbe 사이징)가 {@code infra/AGENTS.md} 와
+     * {@code modules/chat/AGENTS.md} 에 있고 둘 다 고쳤다. 공유 데드라인 안으로 넣지 않은 이유는
+     * 아래 {@link #INDEX_DROP_CEILING} 에 적어 두었다.
+     *
+     * <p>이미 걷어낸 환경에서는 드라이버가 {@code IndexNotFound} 를 던진다(실측) — 그것만 삼킨다.
+     * 넓게 잡으면 권한 부족·연결 끊김까지 "이미 없다" 로 라벨을 갈아 붙이고, 그러면 쓰기 증폭이
+     * 남은 상태가 조용히 통과한다.
+     */
+    private static void dropSupersededWindowIndex(ReactiveMongoTemplate mongoTemplate) {
+        try {
+            mongoTemplate.indexOps(ChatMessageDocument.class)
+                    .dropIndex(SUPERSEDED_WINDOW_INDEX)
+                    .onErrorResume(ChatMongoConfig::isIndexNotFound, error -> Mono.empty())
+                    .block(INDEX_DROP_CEILING);
+        } catch (IllegalStateException e) {
+            // 형제 awaitIndex 와 같은 이유로 번역한다 — .block(Duration) 이 던지는
+            // "Timeout on blocking read" 만으로는 당직자가 "Mongo 가 죽었나" 와 "뭘 하다 멈췄나" 를
+            // 가를 수 없고, 조치가 정반대다. 상한을 30초로 고른 이유 자체가 "응답하지 않는다를
+            // 부팅 내내 숨기지 않겠다" 인데, 그 말이 메시지에 없으면 증상만 드러내고 진단을 버린다.
+            //
+            // ⚠️ **cause 로 가른다.** 한때 이 자리에 "catch 가 하나뿐이라 라벨을 갈아붙일 자리가
+            // 없다" 고 적혀 있었는데 거꾸로다 — 형제도 catch 가 하나이고, **그 하나가** 라벨이
+            // 갈리는 자리다. 실측: Mono.never().block(200ms) 는 cause = TimeoutException 이고 273ms
+            // 걸리지만, Mono.error(new IllegalStateException("state should be: ...")).block(5s) 는
+            // 그 ISE 를 **그대로 재던지고**(cause = null) **6ms** 에 죽는다. 드라이버
+            // mongodb-driver-core 의 Assertions 가 정확히 그 모양을 만든다. 조건 없이 잡으면 0ms 에
+            // 죽은 것이 "30초 기다렸다 + Mongo 를 보라" 로 나가고, 이 메시지는 조치까지 지시하므로
+            // 오라벨의 대가가 형제보다 크다.
+            if (!(e.getCause() instanceof java.util.concurrent.TimeoutException)) {
+                throw e;
+            }
+            throw new IllegalStateException(
+                    "옛 윈도우 인덱스 " + SUPERSEDED_WINDOW_INDEX + " 드롭이 "
+                            + INDEX_DROP_CEILING.toSeconds() + "초 안에 끝나지 않았다 — Mongo 가 응답하는지"
+                            + " 먼저 보라. 드롭은 메타데이터 연산이라 컬렉션 크기에 비례하지 않는다"
+                            + "(실측: 400,000 문서에서 즉시).", e);
+        }
+    }
+
+    /**
+     * "그 인덱스가 없다" 만 참 — 드라이버가 명령 실패를 코드로 말한다({@code IndexNotFound = 27}).
+     *
+     * <p>타입으로 가르지 않고 코드로 가르는 이유는 Spring Data 가 드라이버 예외를 자기 계층으로
+     * 감싸기 때문이다. 사슬을 걸어 내려가며 {@code MongoCommandException} 을 찾는다 —
+     * {@code getMostSpecificCause} 로는 못 가른다(같은 함정을 SPR-177 의
+     * {@code MongoOperationTimeout} 에서 실측했다).
+     *
+     * <p>코드 27 이 맞다는 것은 실측이다(일회용 {@code mongo:7.0}: 없는 이름 드롭 →
+     * {@code code=27 IndexNotFound}). 가시성이 패키지인 이유는 {@code MongoOperationTimeout.matches}
+     * 와 같다 — 이 판정을 좁게 잡은 근거(넓히면 권한 부족까지 "이미 없다" 로 라벨이 갈린다)를 재는
+     * 칸이 필요하고, 그 칸은 컨테이너 없이 손으로 지은 예외로 돈다.
+     */
+    static boolean isIndexNotFound(Throwable error) {
+        for (Throwable node = error; node != null; node = node.getCause()) {
+            if (node instanceof MongoCommandException command
+                    && command.getErrorCode() == INDEX_NOT_FOUND_ERROR_CODE) {
+                return true;
+            }
+            if (node.getCause() == node) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**

@@ -159,4 +159,32 @@ public final class ChatPermissionPolicy {
     public boolean canManageFilterWords(ChatRole actorRole) {
         return actorRole == ChatRole.ADMIN;
     }
+
+    /**
+     * 방의 종료 마커를 해제할 수 있는가 — <b>자기 방 SELLER 또는 ADMIN</b>.
+     *
+     * <p>위 셋과 달리 ADMIN 전용이 <b>아니다</b>. 근거는 <b>누가 손해를 보는가</b>다 — 마커가
+     * 잘못 걸리면 그 방의 방송이 통째로 막히고, 그 손해를 보는 사람이 방 주인이다. 그리고 이
+     * 조치는 {@code canReleaseBan} 처럼 남의 판단을 되돌리지 않는다: 해제가 통하는 것은 방이
+     * <b>아직 진행 중</b>일 때뿐이고(호출 서비스가 그걸 따로 검증한다) 그 조건에서 마커는 애초에
+     * 틀린 마커다.
+     *
+     * <p>소유 축이 필요한 이유는 {@link #canSend} 의 NOTICE 와 같다 — SELLER 계정도 남의 방에
+     * 시청자로 들어오므로 role 만으로 열면 남의 방 마커를 지울 수 있다.
+     *
+     * <p>⚠️ <b>소유 쪽은 역할을 묻지 않는다.</b> {@code SELLER && isRoomOwner} 로 좁히고 싶어지는
+     * 모양인데, 그러면 역할이 SELLER 에서 내려간 계정이 <b>자기가 만든 방</b>의 마커를 못 지운다.
+     * 이 판정은 {@code ClearRoomEndedMarkerService} 안에 인라인으로 있었고
+     * ({@code !isRoomOwner && role != ADMIN} → 거부) 이 메서드는 그 값을 <b>그대로</b> 옮긴 것이다 —
+     * 한 번 {@code SELLER &&} 로 좁혀 봤더니 역할×소유 전수에서 {@code (BUYER, owner)} ·
+     * {@code (GUEST, owner)} 두 칸이 허용→거부로 뒤집혔다(실측, 진리표 대조). 옮기는 변경이
+     * 동작을 바꾸면 그건 다른 티켓이다.
+     *
+     * <p>{@link #seesUnmaskedContent} 와 식이 같다. 합치지 않는 이유는 이 클래스의 기존 규약과
+     * 같다 — {@link #canReleaseBan} · {@link #canReconcileKickList} · {@link #canManageFilterWords}
+     * 셋도 값이 같고 이유가 달라서 따로 서 있다. 값이 갈릴 날의 근거가 서로 다르다.
+     */
+    public boolean canClearRoomEndedMarker(ChatRole actorRole, boolean isRoomOwner) {
+        return isRoomOwner || actorRole == ChatRole.ADMIN;
+    }
 }

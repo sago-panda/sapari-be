@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import com.sapari.global.logging.LogFields;
 import com.sapari.chat.application.port.AccountWithdrawingSource;
 import com.sapari.chat.application.port.ChatSessionManager;
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
 
@@ -104,7 +105,7 @@ public class AccountWithdrawingHandler {
                     log.warn("탈퇴 사유 전송 실패 — 종료는 그대로 진행한다", e);
                     return Mono.empty();
                 })
-                .then(sessionManager.closeUserEverywhere(userId))
+                .then(sessionManager.closeUserEverywhere(userId, SessionCutReason.WITHDRAWN))
                 // 구독 스레드라 세션 컨텍스트가 없다. 탈퇴는 사람 단위라 방을 모르므로 대상을
                 // 메시지에 넣는 대신 필드로 싣는다 — "이 사람에게 일어난 모든 줄" 로 묶이는 축이다.
                 .contextWrite(context -> context.put(LogFields.USER_ID, userId.toString()));

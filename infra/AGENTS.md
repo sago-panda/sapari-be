@@ -443,12 +443,13 @@ that on.
     `chat_messages` runs in an **eager singleton** (`ChatMongoConfig`), which is **before the port
     binds** — so for the whole of that window `httpGet` and `tcpSocket` both get **connection refused**,
     not a false `Ready` (asserted by a raw TCP connect in
-    `EagerSingletonsRunBeforeThePortBindsTest`). The window's length is bounded by
-    **`ChatMongoConfig.INDEX_CREATE_CEILING` = 10 min** (SPR-152), and that is **one deadline over all
-    four index creations**, not per call — a fifth index does not add to it. Nothing in the driver bounds
+    `EagerSingletonsRunBeforeThePortBindsTest`). The window's length is
+    **10 min 30 s** (SPR-178): `ChatMongoConfig.INDEX_CREATE_CEILING` = 10 min (SPR-152) is **one
+    deadline over all four index creations**, not per call — a fifth *creation* would not add to it —
+    and `INDEX_DROP_CEILING` = 30 s sits **outside** that deadline, for the one superseded-index drop. Nothing in the driver bounds
     it otherwise: `socketReadTimeoutMs` defaults to **0 (infinite)** and the repo sets no Mongo client
     timeout anywhere (measured).
-    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min**. Under that and
+    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min 30 s**. Under that and
       Kubernetes kills the pod before the app's own ceiling fires — which throws away the one message
       that tells the operator *which* of the two causes it was (Mongo silent vs. first build on a large
       collection). `livenessProbe`/`readinessProbe` are not the lever here; a `startupProbe` is, because
@@ -464,7 +465,7 @@ that on.
       disconnect leaves the server-side build in place — `createIndexes` op still listed,
       `IndexBuildsCoordinatorMongod-0` still running — and the index finishes with no client attached).
       So restarting does not undo progress and the loop is **not permanent**: a build taking N× the
-      ceiling costs roughly N restarts, and the wall clock is N × 10 min **plus Kubernetes'
+      ceiling costs roughly N restarts, and the wall clock is N × 10 min 30 s **plus Kubernetes'
       `CrashLoopBackOff` backoff**, which grows 10s → 20s → … up to a 5 min cap between restarts.
       - Scope, because this claim keeps getting repeated: **standalone**. A replica set builds in phases
         with a commit quorum and DocumentDB is a compatibility layer, and this repo does not record which
@@ -496,9 +497,13 @@ that on.
       reading one short.
     - ⚠️ **`chat.persist.timeout` is not the same axis as `chat.delivery.dropped`** and must not be
       summed with it. `delivery.dropped` means *the message is persisted and only live delivery was
-      lost*; `persist.timeout` means **nothing was stored** — the operation bound cut the write, and
-      the sender got an error rather than an ACK. Reading them as one number says "it is in the
-      history" about messages that are not.
+      lost*. Reading them as one number says "it is in the history" about messages that are not.
+    - ⚠️ **`chat.persist.timeout` has a `stage` tag whose two values must not be summed either**
+      (SPR-178). `stage=write` means **nothing was stored**; `stage=duplicate_recovery_read` is the
+      duplicate-recovery read, whose premise is that the document **already exists** — the message is
+      in the history and only reading it back was cut. Alert on `write` for data loss and on
+      `duplicate_recovery_read` for "the sender cannot see a message that is already stored"; they
+      need different responses. Details in `modules/chat/AGENTS.md`.
   - **Counters that are 0 when nobody is abusing** (added SPR-152): `chat.sessions.admission_capped` ·
     `chat.sessions.reaped` — the per-`(user, room)` session cap denying a connect, and the same cap
     reclaiming a slot whose socket had already gone silent. These are a different kind from the four

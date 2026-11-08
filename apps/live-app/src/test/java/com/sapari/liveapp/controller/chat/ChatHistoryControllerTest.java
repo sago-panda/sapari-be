@@ -65,6 +65,11 @@ import org.mockito.ArgumentCaptor;
 // GlobalExceptionHandler 를 명시로 올린다 — 이 슬라이스에는 컴포넌트 스캔이 없어서
 // @RestControllerAdvice 가 자동으로 잡히지 않는다. 없으면 도메인 예외가 매핑되지 않고
 // ServletException 으로 터져 "400 이 아니다" 가 아니라 "테스트가 못 돈다" 가 된다.
+//
+// SPR-178 전에는 chat 컨트롤러 테스트 넷 중 **이 파일만** 이것을 올렸고(실측), 그래서
+// CHAT-001/004/006/008/010/011 이 선언한 상태로 HTTP 를 떠나는지가 live-app 에서 단언되지
+// 않았다 — 역변이로 확인했다: CHAT-011 을 409 → 400 으로 뒤집어도 아무것도 깨지지 않았다.
+// 형제 셋이 이 주석을 가리키므로, 지우려면 그 셋을 먼저 볼 것.
 @Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, GlobalExceptionHandler.class})
 @DisplayName("이력 엔드포인트 — 비회원도 지나고, 신원은 인증 주체에서만 온다")
 class ChatHistoryControllerTest {
@@ -181,6 +186,24 @@ class ChatHistoryControllerTest {
         // then: 소비자(GetChatHistoryService)가 쓰는 파서를 그대로 돌린다 — 동등성만 보면
         // 양쪽을 같이 틀리게 고쳤을 때 통과한다.
         assertThat(ChatRole.valueOf(captured().requesterRole())).isEqualTo(ChatRole.BUYER);
+    }
+
+    @Test
+    @DisplayName("⭐ 모르는 플랫폼 역할은 chat 에러코드의 4xx 다 — 500 으로 새면 고칠 쪽이 서버라는 사실이 묻힌다")
+    void anUnknownPlatformRoleIsRejectedWithAChatErrorCode() throws Exception {
+        // given: 오늘 UserRole = {USER, SELLER, ADMIN} 이라 **빠진 멤버는 0** 이다. 이 칸이 재는 것은
+        // 지금 깨진 것이 아니라 **네 번째 역할이 생겼을 때 어디로 나가는가** 다. 그쪽에 가드가 없으면
+        // 그 역할 사용자만 500 을 받고, 드리프트 가드(PlatformRoleNamesTest)는 컨트롤러를 못 본다.
+        stubEmpty();
+
+        // when & then: 실측(SPR-178 전)으로 이 요청은 500 · COMMON-004 였다 —
+        // 컨트롤러의 catch 가 IllegalArgumentException 만 잡아 IllegalStateException 을 지나쳤다.
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID).with(as("PARTNER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("CHAT-001"));
+
+        // 그리고 그 요청은 서비스까지 가지 않는다 — 해석 못 하는 역할을 실어 보내면 소비자가 터진다.
+        then(getChatHistoryUseCase).shouldHaveNoInteractions();
     }
 
     @Test

@@ -186,6 +186,36 @@ class ChatPermissionPolicyTest {
                 .isEqualTo(role == ChatRole.ADMIN);
     }
 
+    /**
+     * 종료 마커 해제 — <b>방 주인 또는 ADMIN</b>.
+     *
+     * <p>이 판정만 정책 밖에 있었다({@code ClearRoomEndedMarkerService} 가
+     * {@code !room.sellerId().equals(actorId) && role != ADMIN} 을 인라인으로 적고 있었다).
+     * chat 서비스 일곱 중 여섯이 정책을 쓰는데 이것만 자기 것을 굴린 자리다 — <b>동작은 맞았고</b>
+     * 그래서 여기로 옮기는 것이 전부다.
+     *
+     * <p><b>기대식을 옛 인라인 식으로 적는다.</b> {@code SELLER && owner} 로 적으면 그게 옮기는
+     * 변경이 아니라 조이는 변경이 된다 — 진리표로 대조했더니 {@code (BUYER, owner)} ·
+     * {@code (GUEST, owner)} 두 칸이 허용→거부로 뒤집혔다. 소유 쪽이 역할을 묻지 않는 것이
+     * 계약이고, 그 이유는 정책 javadoc 에 적혀 있다.
+     *
+     * <p>{@code null}·{@code GUEST} 까지 전수로 돈다 — {@code null} 은 서명상 올 수 없어 보이지만
+     * ({@code ChatRole.fromPlatformRole} 이 {@code Optional} 이다) 이 메서드는 {@code public} 이라
+     * 다른 호출자가 생기면 올 수 있고, 그때 조용히 통과하면 안 된다.
+     */
+    @org.junit.jupiter.params.ParameterizedTest(name = "role={0}")
+    @org.junit.jupiter.params.provider.NullSource
+    @org.junit.jupiter.params.provider.EnumSource(ChatRole.class)
+    @DisplayName("⭐ 종료 마커 해제는 방 주인과 ADMIN 뿐이다 — 소유 쪽은 역할을 묻지 않는다")
+    void onlyTheRoomOwnerOrAnAdminMayClearTheEndedMarker(ChatRole role) {
+        ChatPermissionPolicy policy = new ChatPermissionPolicy();
+        for (boolean isRoomOwner : new boolean[] {true, false}) {
+            assertThat(policy.canClearRoomEndedMarker(role, isRoomOwner))
+                    .as("role=%s owner=%s 의 판정이 옛 인라인 식과 다르다", role, isRoomOwner)
+                    .isEqualTo(isRoomOwner || role == ChatRole.ADMIN);
+        }
+    }
+
     private static boolean isRepresentableAsASession(ChatRole role, boolean isRoomOwner) {
         try {
             new ChatSession(java.util.UUID.randomUUID(), java.util.UUID.randomUUID(),

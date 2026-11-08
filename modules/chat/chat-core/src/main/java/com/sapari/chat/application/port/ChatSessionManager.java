@@ -48,8 +48,12 @@ public interface ChatSessionManager {
      *
      * <p>방 색인을 쓸 수 없어 이 Pod의 세션을 훑는다. 그래도 되는 이유는 이 조치가 드물기 때문이다 —
      * 방 fan-out은 메시지마다 돌아 색인이 필요했지만, 밴은 시간당 몇 건이다.
+     *
+     * <p><b>사유를 인자로 받는다.</b> close 코드가 양쪽 다 1008 이라 와이어로는 갈리지 않고, 이
+     * 메서드의 운영 호출자가 둘이다 — 밴 집행(제재)과 계정 탈퇴(제재 아님). 사유를 안에서 고정하면
+     * 사용자가 스스로 누른 탈퇴가 제재율을 올린다.
      */
-    Mono<Void> closeUserEverywhere(UUID userId);
+    Mono<Void> closeUserEverywhere(UUID userId, SessionCutReason reason);
 
     // 고유 유저 수(HVALS distinct) — 멀티탭은 1로 집계
     Mono<Long> getActiveCount(UUID roomId);

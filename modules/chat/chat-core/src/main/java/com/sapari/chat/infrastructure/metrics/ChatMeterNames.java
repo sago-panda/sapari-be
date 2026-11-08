@@ -24,10 +24,14 @@ final class ChatMeterNames {
     static final String DICTIONARY_FAST_PATH_LOST = "chat.dictionary.fastpath.lost";
 
     /**
-     * 연산 상한이 <b>저장</b>을 끊었다 — 그 메시지는 영속되지 않았다.
+     * 연산 상한이 영속을 끊었다. 태그는 {@link #TAG_STAGE} 하나이고 {@code PersistStage} 가 그 값이다.
      *
-     * <p>⚠️ {@link #DELIVERY_DROPPED} 에 태우지 않는다. 그 미터의 정의가 "메시지는 영속됐고 실시간
-     * 전달만 잃었다" 이고 {@code DeliveryStage} 네 값이 모두 그 전제다 — 저장 실패를 거기 더하면
+     * <p>⚠️ <b>두 값의 뜻이 정반대라 합치면 안 된다.</b> {@code stage=write} 는 "아무것도 남지
+     * 않았다" 이고, {@code stage=duplicate_recovery_read} 는 전제가 {@code DuplicateKey} 라 문서가
+     * <b>이미 있고</b> 끊긴 것은 되읽는 쪽이다. 합치면 이력에 있는 메시지를 유실로 보고한다.
+     *
+     * <p>⚠️ {@link #DELIVERY_DROPPED} 에도 태우지 않는다. 그 미터의 정의가 "메시지는 영속됐고 실시간
+     * 전달만 잃었다" 이고 {@code DeliveryStage} 네 값이 모두 그 전제다 — 쓰기 실패를 거기 더하면
      * 그 정의가 거짓이 되고, 당직자가 "영속은 됐으니 이력에 있다" 로 읽는다.
      */
     static final String PERSIST_TIMEOUT = "chat.persist.timeout";

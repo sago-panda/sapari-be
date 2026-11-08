@@ -2,6 +2,7 @@ package com.sapari.chat.infrastructure.persistence.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.BDDMockito.willReturn;
 import static org.mockito.Mockito.mock;
 
@@ -18,6 +19,8 @@ import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import com.mongodb.MongoOperationTimeoutException;
 import com.mongodb.MongoSocketReadTimeoutException;
 import com.mongodb.ServerAddress;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.PersistStage;
 import com.sapari.chat.domain.exception.ChatPersistTimeoutException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
@@ -32,12 +35,20 @@ import reactor.test.StepVerifier;
  *
  * <p>왜 이 칸이 따로 있어야 하는가. 서비스 쪽 칸은 번역이 <b>끝난</b> 타입을 손으로 만들어 넣는다 —
  * 그래서 번역을 지워도 그 칸은 초록이다(실측: 어댑터의 {@code onErrorMap} 을 지우고 돌렸더니
- * {@code SendChatServiceTest} 가 그대로 통과했다). 번역이 끊기면 서비스는 분류를 못 하고
- * {@code chat.persist.timeout} 이 영원히 0 이 되는데, 그 상태가 "상한이 안 걸린다" 와 구분되지 않는다.
+ * {@code SendChatServiceTest} 가 그대로 통과했다). 번역이 끊기면 서비스는 분류를 못 한다.
  *
- * <p><b>재조회 갈래는 여기서 재지 않는다.</b> {@code recoverDuplicate} 의 되읽기도 같은 전역
- * 상한에 걸리지만 번역하지 않는다 — 그 경로의 전제가 DuplicateKey 라 문서가 <b>이미 있고</b>,
- * 그걸 "아무것도 남지 않았다" 로 세면 이력에 있는 메시지를 유실로 보고한다. 이유와 잃는 것은
+ * <p><b>갈래별 계수도 여기서 잰다</b>({@code PersistStage}). 쓰기와 중복복구 재조회를 가르는 수가
+ * 드라이버 예외라 그 판정은 이 층에만 있다 — 응용 계층은 {@code ArchUnit} 으로 그 타입에 닿을 수
+ * 없다. 두 갈래가 <b>정반대</b>를 뜻하므로 한 수로 세면 안 된다: 쓰기는 "아무것도 남지 않았다",
+ * 재조회는 전제가 {@code DuplicateKey} 라 문서가 <b>이미 있다</b>. 그래서 재조회는 번역하지 않고
+ * 수만 센다 — 번역하면 이력에 있는 메시지를 유실로 보고한다.
+ *
+ * <p><b>수를 적지 않는다, 어휘를 적는다.</b> 한때 "열한 자리에서 단정한다" 가 적혀 있었는데 그 11 은
+ * 갈래를 가르기 <b>전</b>에 센 값이고, 갈래를 준 커밋이 그 집합의 멤버를 고치면서 수를 다시 세지
+ * 않았다. 다시 세려면
+ * {@code 아무것도 남지 않았|영속되지 않았|저장이 안 됐|저장하지 못했} 로 전수 grep 하고, 그중
+ * <b>갈래로 좁혀지지 않은</b> 단정만 센다 — 지표 표 둘과 이 어댑터의 주석은 {@code stage} 로
+ * 좁혀져 빠진다. 수를 박아 두면 그 수를 바꾼 커밋이 그걸 다시 세지 않는 쪽으로 틀린다. 잃는 것(갈래별 사용자 문구)은
  * {@code ChatMessageRepositoryImpl.findByRoomIdAndSenderIdAndClientMsgId} 에 적어 두었다.
  *
  * <p>체인을 그대로 조립해 넣는 이유도 같다. CSOT 가 자를 때 오는 것은 전용 타입 하나가 아니라
@@ -53,9 +64,10 @@ class ChatMessagePersistTimeoutTranslationTest {
     private final ChatMessageMongoRepository mongoRepository = mock(ChatMessageMongoRepository.class);
     private final ReactiveMongoTemplate mongoTemplate = mock(ReactiveMongoTemplate.class);
     private final ChatMessageMapper mapper = mock(ChatMessageMapper.class);
+    private final ChatMetrics metrics = mock(ChatMetrics.class);
 
     private final ChatMessageRepositoryImpl repository =
-            new ChatMessageRepositoryImpl(mongoRepository, mongoTemplate, mapper);
+            new ChatMessageRepositoryImpl(mongoRepository, mongoTemplate, mapper, metrics);
 
     @Test
     @DisplayName("⭐ CSOT 체인이 ChatPersistTimeoutException 으로 번역된다 — 원인 사슬은 보존한다")
@@ -66,13 +78,48 @@ class ChatMessagePersistTimeoutTranslationTest {
         StepVerifier.create(repository.save(message()))
                 .expectErrorSatisfies(error -> {
                     assertThat(error)
-                            .as("번역이 끊기면 서비스가 분류를 못 하고 chat.persist.timeout 이 영원히 0 이다")
+                            // 수는 번역과 **다른 배선**에 실려 있다(doOnError). 그래서 번역이
+                            // 끊겼을 때 잃는 것은 지표가 아니라 **발신자에게 가는 에러코드**다 —
+                            // CHAT-012(503) 대신 번역되지 않은 500 이 나간다.
+                            .as("번역이 끊기면 발신자가 CHAT-012 대신 번역되지 않은 500 을 받는다")
                             .isInstanceOf(ChatPersistTimeoutException.class);
                     // 원인을 버리면 로그에서 "어느 상한이 걸렸나" 가 사라진다 — 응답 문구는
                     // 에러코드가 들고 있고 진단은 사슬에 있다.
                     assertThat(error.getCause()).isSameAs(driverChain);
                 })
                 .verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("⭐ 쓰기 상한은 stage=write 로 센다 — 갈래 없이 세면 두 사건이 한 수에 섞인다")
+    void aWriteTimeoutIsCountedUnderTheWriteStage() {
+        willReturn(Mono.error(timeoutChain())).given(mongoRepository).save(any());
+
+        StepVerifier.create(repository.save(message()))
+                .expectError(ChatPersistTimeoutException.class)
+                .verify(VERIFY_CEILING);
+
+        then(metrics).should().persistTimedOut(PersistStage.WRITE);
+    }
+
+    @Test
+    @DisplayName("⭐ 중복복구 재조회 상한은 stage=duplicate_recovery_read 로 세고 번역하지 않는다")
+    void aRecoveryReadTimeoutIsCountedWithoutBeingTranslated() {
+        // given: 이 갈래의 전제는 DuplicateKey 라 그 문서가 **이미 있다** — 끊긴 것은 되읽는 쪽이다
+        RuntimeException driverChain = timeoutChain();
+        willReturn(Mono.error(driverChain)).given(mongoRepository)
+                .findByRoomIdAndSenderIdAndClientMsgId(any(), any(), any());
+
+        // when & then: 번역하면 "아무것도 남지 않았다" 를 열한 자리에서 단정하게 되고, 이력에 있는
+        // 메시지를 유실로 보고한다. 그래서 예외는 그대로 두고 **수만** 남긴다.
+        StepVerifier.create(repository
+                        .findByRoomIdAndSenderIdAndClientMsgId(UUID.randomUUID(), UUID.randomUUID(), "c1"))
+                .expectErrorSatisfies(error -> assertThat(error)
+                        .as("재조회를 번역하면 저장 성공한 메시지를 유실로 보고한다")
+                        .isSameAs(driverChain))
+                .verify(VERIFY_CEILING);
+
+        then(metrics).should().persistTimedOut(PersistStage.DUPLICATE_RECOVERY_READ);
     }
 
     @Test

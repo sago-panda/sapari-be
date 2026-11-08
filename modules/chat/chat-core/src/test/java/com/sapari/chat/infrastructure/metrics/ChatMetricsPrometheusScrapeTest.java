@@ -11,6 +11,7 @@ import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
 import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.port.PolicyReadFailure;
+import com.sapari.chat.application.port.PersistStage;
 import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
@@ -73,10 +74,12 @@ class ChatMetricsPrometheusScrapeTest {
         for (SessionCutReason reason : SessionCutReason.values()) {
             metrics.sessionCut(reason);
         }
-        // 태그 없는 둘 — 조합은 없지만 **등록 자체**가 스크레이프에 나오는지는 같은 축이다.
+        for (PersistStage stage : PersistStage.values()) {
+            metrics.persistTimedOut(stage);
+        }
+        // 태그 없는 하나 — 조합은 없지만 **등록 자체**가 스크레이프에 나오는지는 같은 축이다.
         // 이 열거가 미터와 함께 늘지 않으면 "지표를 늘릴 때 여기에 한 줄" 규율이 깨진 채 초록이다.
         metrics.dictionaryFastPathLost();
-        metrics.persistTimedOut();
 
         // then
         assertThat(registry.find("chat.ratelimit.degraded").counters())
@@ -85,6 +88,8 @@ class ChatMetricsPrometheusScrapeTest {
                 .hasSize(DeliveryStage.values().length);
         assertThat(registry.find("chat.session.cut").counters())
                 .hasSize(SessionCutReason.values().length);
+        assertThat(registry.find("chat.persist.timeout").counters())
+                .hasSize(PersistStage.values().length);
 
         String scrape = registry.scrape();
         assertThat(scrape).contains("chat_ratelimit_degraded_total");

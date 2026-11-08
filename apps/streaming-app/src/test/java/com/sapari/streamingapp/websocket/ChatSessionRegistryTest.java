@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -183,7 +184,7 @@ class ChatSessionRegistryTest {
         // 상한을 준다. 안 주면 닫히지 않은 세션에서 이 테스트가 <b>영원히 기다린다</b> — 회귀가 빨간불이
         // 아니라 멈춤으로 나타나고, 그건 회귀를 알려 주지 않는 것과 같다(되돌림 확인에서 실제로 겪었다).
         StepVerifier.create(registry.outbound("s2"))
-                .then(() -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING))
+                .then(() -> registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING))
                 .expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
         StepVerifier.create(registry.outbound("s1"))
@@ -200,7 +201,7 @@ class ChatSessionRegistryTest {
         registry.register("s2", session(roomId, bystander)).block(VERIFY_CEILING);
 
         // when
-        registry.closeUserEverywhere(userId).block(VERIFY_CEILING);
+        registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING);
 
         // then: 옆 사람의 채널은 살아 있다 — 완료됐다면 방 전체를 끊은 것이다
         StepVerifier.create(registry.outbound("s2"))
@@ -736,7 +737,7 @@ class ChatSessionRegistryTest {
     @DisplayName("밴 팬아웃 종료도 emit보다 넉넉한 예산을 쓴다")
     void close_user_everywhere_outlasts_the_emit_budget() throws Exception {
         registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
-        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING),
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING),
                 CloseStatus.POLICY_VIOLATION);
     }
 
@@ -784,7 +785,7 @@ class ChatSessionRegistryTest {
         assertOneBudgetPerCall("sendToRoomGated", () -> registry.sendToRoomGated(roomId, s -> out("SYSTEM")).block(VERIFY_CEILING));
         assertOneBudgetPerCall("sendToUserEverywhere", () -> registry.sendToUserEverywhere(userId, out("SYSTEM")).block(VERIFY_CEILING));
         assertOneBudgetPerCall("closeUser", () -> registry.closeUser(roomId, userId).block(VERIFY_CEILING));
-        assertOneBudgetPerCall("closeUserEverywhere", () -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING));
+        assertOneBudgetPerCall("closeUserEverywhere", () -> registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING));
         assertOneBudgetPerCall("closeAll", () -> registry.closeAll(roomId).block(VERIFY_CEILING));
     }
 

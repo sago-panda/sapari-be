@@ -550,7 +550,7 @@ class SendChatServiceTest {
     }
 
     @Test
-    @DisplayName("⭐ 저장 상한이 끊으면 그 축의 카운터가 오른다 — delivery.dropped 는 오르지 않는다")
+    @DisplayName("⭐ 저장 상한은 발신자에게 에러로 가고 delivery.dropped 는 오르지 않는다")
     void aPersistTimeoutIsCountedOnItsOwnAxis() {
         // given: 어댑터가 드라이버 예외를 이 도메인 타입으로 **번역해서** 올린다 — 서비스는 드라이버
         // 타입을 보지 않는다(루트 AGENTS.md: 서비스에서 SDK 직접 호출 금지 / ArchUnit:
@@ -571,9 +571,11 @@ class SendChatServiceTest {
         assertThatThrownBy(() -> service.send(command("BUYER", false, true, "NORMAL", "안녕", "t1"))
                 .block(VERIFY_CEILING)).isNotNull();
 
-        // 그 축이 올라야 규모를 알 수 있다.
-        then(metrics).should().persistTimedOut();
-        // ⚠️ 그리고 delivery.dropped 는 **오르지 않아야** 한다. 그 미터의 문서상 의미가
+        // ⚠️ 상한 수를 세는 자리는 **영속 어댑터**다 — 쓰기와 중복복구 재조회를 가르는 수가 드라이버
+        // 예외이고 이 계층은 그것을 보지 않는다. 그 갈래별 계수는
+        // ChatMessagePersistTimeoutTranslationTest 가 단언한다.
+        //
+        // 여기서 재는 것은 delivery.dropped 가 **오르지 않는다**는 쪽이다. 그 미터의 문서상 의미가
         // "메시지는 영속됐고 실시간 전달만 잃었다" 라, 저장 실패를 거기 태우면 그 정의가 거짓이 된다.
         then(metrics).should(never()).deliveryDropped(any());
     }

@@ -6,6 +6,7 @@ import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.model.ChatAuditAction;
 import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
 import com.sapari.global.time.TimeProvider;
@@ -68,6 +69,7 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
     private final GetLiveRoomUseCase liveRoomReader;
     private final ChatRoomEndedWriteRepository roomEndedWriteRepository;
     private final ChatAuditRecorder auditRecorder;
+    private final ChatPermissionPolicy permissionPolicy;
     private final TimeProvider timeProvider;
 
     @Override
@@ -82,7 +84,9 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
                 .orElseThrow(() -> new ChatPermissionDeniedException(
                         "종료 마커를 해제할 수 없는 방이다 — roomId=" + command.roomId()));
 
-        if (!room.sellerId().equals(command.actorId()) && actorRole != ChatRole.ADMIN) {
+        // 판정은 정책이 한다 — chat 서비스 일곱이 쓰는 그 창구다. 여기서 손으로 적으면 특권 역할이
+        // 하나 늘 때 정책 테스트의 전수가 이 자리를 보지 못한다.
+        if (!permissionPolicy.canClearRoomEndedMarker(actorRole, room.sellerId().equals(command.actorId()))) {
             throw new ChatPermissionDeniedException(
                     "종료 마커 해제 권한이 없다 — actor=" + command.actorId() + " room=" + command.roomId());
         }
