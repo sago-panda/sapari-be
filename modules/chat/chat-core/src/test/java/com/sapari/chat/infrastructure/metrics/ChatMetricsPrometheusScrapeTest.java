@@ -129,6 +129,20 @@ class ChatMetricsPrometheusScrapeTest {
                 .as("권위 집합이 비면 이 칸은 아무것도 보증하지 않는다 — 분모가 0 이 된다")
                 .isNotEmpty();
 
+        // 이름 축을 **한 자리에서** 강제한다. 리플렉션만으로는 완전성만 닫히고, 오늘 일곱이 각각
+        // 리터럴에 묶인 것은 맞지만 그 리터럴이 세 파일에 흩어져 있어 **여덟 번째 이름이 리터럴을
+        // 얻도록 강제하는 것이 없다**. 집합 동일성이라 한쪽에만 생기면 깨진다.
+        assertThat(declared)
+                .as("선언 집합이 아래 스냅샷과 다르다 — 이름을 바꿨거나 새 이름에 리터럴을 안 줬다")
+                .containsExactlyInAnyOrder(
+                        "chat.policy.open",
+                        "chat.ratelimit.degraded",
+                        "chat.delivery.dropped",
+                        "chat.session.cut",
+                        "chat.dictionary.fastpath.lost",
+                        "chat.persist.timeout",
+                        "chat.subscription.resubscribed");
+
         // when: ChatMetrics 의 모든 메서드를 한 번씩 호출한다. 열거 인자는 첫 값으로 채운다 —
         // 조합은 위 두 칸이 보고, 여기서는 "그 이름의 미터가 등록되는가" 만 본다.
         for (Method method : ChatMetrics.class.getDeclaredMethods()) {

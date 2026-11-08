@@ -990,8 +990,8 @@ class ChatSessionRegistryTest {
      * {@code SendChatService} 가 반복해서 "절대 던지면 안 된다" 고 경고하는 그 자리다.
      *
      * <p><b>분모</b>: 테스트 트리 전수에서 {@code recordRateLimited} 의 인자가 전부 {@code 3}
-     * 또는 {@code 0} 이었다(호출지 5건). 60 초과도 음수도 한 번도 건너지 않아 {@code Math.max} ·
-     * {@code Math.min} 둘 다 지워도 스위트가 초록이었다.
+     * 또는 {@code 0} 이었다(호출지 5건). 60 초과도 음수도 한 번도 건너지 않아 클램프를 지워도
+     * 스위트가 초록이었다. 지금은 {@code Math.min} 만 지워도 이 칸이 빨강이다(단일 변이).
      *
      * <p>실측: {@code Duration.ofSeconds(Long.MAX_VALUE).toNanos()} 는
      * {@code ArithmeticException: long overflow} 를 던지고, {@code ofSeconds(9_223_372_036)} 은
@@ -1013,27 +1013,22 @@ class ChatSessionRegistryTest {
     }
 
     /**
-     * 음수가 들어와도 "제한 없음" 으로 읽히는지. <b>두 겹으로 막혀 있고 각각만으로 충분하다.</b>
+     * 음수가 들어와도 "제한 없음" 으로 읽히는지. <b>가드는 한 겹이고 그 한 겹이 이 칸에 묶인다.</b>
      *
-     * <p>⚠️ <b>이 칸의 분모를 세 번 틀렸고 그 과정을 그대로 적는다.</b>
-     * <ol>
-     *   <li>처음 쓰는 쪽({@code Math.max(0, ...)})에 걸었다 — 지워도 초록이다(실측).</li>
-     *   <li>그래서 읽는 쪽({@code remaining <= 0})이 진짜 가드라고 적고 옮겼다 — 그것만 지워도
-     *       초록이다(실측). {@code Math.max} 가 남아 {@code clamped = 0} 이 되고, 그러면
-     *       {@code remaining} 이 몇 나노초 음수라 올림 나눗셈이 0 을 돌려준다.</li>
-     *   <li><b>둘을 동시에</b> 지우면 빨강이다 — 실측 {@code expected: 0L but was: -4L}.</li>
-     * </ol>
+     * <p>접는 자리는 읽는 쪽 {@code rateLimitRetryAfterSeconds} 의 {@code remaining <= 0} 하나다.
+     * 실측: 그것만 지우면 이 칸이 빨강이다({@code expected: 0L but was: -4L}) — <b>단일 변이</b>다.
      *
-     * <p>그래서 참인 문장은 이것뿐이다: 음수 경로는 가드 둘이 덮고 <b>어느 하나만으로도 충분</b>하며,
-     * 이 칸은 <b>둘이 함께 사라질 때</b> 깨진다. "이 가드가 음수를 막는다" 를 어느 한쪽에 대해 쓰면
-     * 거짓이다 — 쓰는 쪽 주석을 그에 맞춰 고쳤다.
+     * <p>⚠️ <b>여기 오는 데 분모를 두 번 틀렸고, 그 경위는 커밋 메시지가 보관한다.</b> 요약하면
+     * 한때 쓰는 쪽에 가드가 하나 더 있었고 두 겹이 서로를 가려서 어느 쪽을 지워도 이 칸이
+     * 초록이었다. 그 가드는 <b>도달 불가</b>였으므로(이 필드의 독자가 읽는 쪽 하나뿐이다 —
+     * 전수: 쓰는 곳 1 · 읽는 곳 1) 지웠고, 그래서 남은 한 겹이 처음으로 묶였다.
      *
      * <p>곁가지 사실: 음수에서 {@code Duration} 환산은 <b>던지지 않는다</b>
      * ({@code ofSeconds(-5).toNanos() = -5_000_000_000}). 던지는 것은 위쪽 경계뿐이고 그 칸은
-     * {@link #rate_limit_window_is_clamped_above()} 가 따로 묶는다(그쪽은 단일 변이로 빨강이다).
+     * {@link #rate_limit_window_is_clamped_above()} 가 따로 묶는다(그쪽도 단일 변이로 빨강이다).
      */
     @Test
-    @DisplayName("⭐ 레이트리밋 창 — 음수는 제한 없음으로 읽힌다(가드 둘이 덮고, 둘이 함께 빠지면 음수가 샌다)")
+    @DisplayName("⭐ 레이트리밋 창 — 음수는 제한 없음으로 읽힌다(접는 가드 한 겹이 이 칸에 묶인다)")
     void rate_limit_window_folds_negatives() {
         // given
         registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);

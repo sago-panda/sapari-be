@@ -69,6 +69,10 @@ public interface ChatMetrics {
      * 재시도 2회 뒤 복구되어 수신 1건이었다 — 즉 영구 사망이 기본값은 아니다.
      * 그래서 필요한 것은 "지금 살아 있나" 가 아니라 <b>이 수가 멈추는가</b>다.
      *
+     * <p>⚠️ 이 미터가 못 보는 갈래는 상류가 조용히 {@code onComplete} 로 끝나는 쪽이다 —
+     * {@code retryWhen} 이 에러만 받으므로 재시도도 로그도 미터도 없이 영구히 멈춘다. 분모 5/5
+     * (어댑터 전부 {@code doOnComplete}·{@code repeat} 0건). 자세한 수는 {@code ChatMeterNames}.
+     *
      * <p>⚠️ 호출부가 {@code doBeforeRetry} 람다 안이다 — 이 포트의 "절대 던지지 않는다" 계약이
      * 거기서도 그대로 걸린다. 던지면 자가복구 루프가 그 자리에서 끝난다.
      */
