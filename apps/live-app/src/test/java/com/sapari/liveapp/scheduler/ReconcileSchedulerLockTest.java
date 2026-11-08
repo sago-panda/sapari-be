@@ -584,7 +584,7 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
-        public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now) {
+        public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now) {
             throw new UnsupportedOperationException();
         }
 
@@ -595,6 +595,17 @@ class ReconcileSchedulerLockTest {
 
         @Override
         public long countLiveRooms() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findSellerRooms(UUID sellerId, Set<Class<? extends LiveStatus>> statuses,
+                                              Instant cursorScheduledAt, UUID cursorId, int limit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId) {
             throw new UnsupportedOperationException();
         }
     }

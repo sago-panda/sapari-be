@@ -52,7 +52,7 @@ public class PrepareIngressService implements PrepareIngressUseCase {
         // 배정은 조건부 UPDATE 한 문장 — 위 가드는 스냅샷이라 동시 요청이 둘 다 통과할 수 있고,
         // 그러면 각자 ingress 를 만들어 판매자에게 유효한 streamKey 가 여러 개 나간다.
         boolean assigned = rtmpIngressAssigner.assignIfAbsent(
-                command.roomId(), command.sellerId(), result.ingressId(), timeProvider.now());
+                command.roomId(), command.sellerId(), result.ingressId(), result.rtmpUrl(), timeProvider.now());
         if (!assigned) {
             // 진 쪽은 자기가 만든 ingress 를 즉시 회수한다(단건 삭제 — 방 단위로 지우면 이긴 쪽 것까지 날아간다).
             // 이 삭제가 실패해도 고아 미디어 정리 잡이 회수하므로 여기서 더 다루지 않는다.
