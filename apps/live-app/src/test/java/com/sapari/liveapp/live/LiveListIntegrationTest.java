@@ -299,7 +299,7 @@ class LiveListIntegrationTest {
     }
 
     @Test
-    @DisplayName("예정 목록은 시작 전 방만 예정 시각 순으로, 커서로 끊김 없이 넘긴다 — 시작·종료된 방은 없다")
+    @DisplayName("예정 목록은 시작 전 방만 예정 시각 순으로, 커서로 끊김 없이 넘긴다 — 시작·종료·취소된 방은 없다")
     void upcomingPagesThroughScheduledAndReadyOnly() throws Exception {
         Instant base = Instant.now().plusSeconds(3600).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
         LiveRoom first = scheduledRoom("첫째", base);
@@ -311,6 +311,8 @@ class LiveListIntegrationTest {
         LiveRoom ended = scheduledRoom("끝남", base.plusSeconds(90));
         startBySeller(ended);
         endLiveUseCase.end(new EndLiveCommand(ended.id(), ended.sellerId()));
+        LiveRoom cancelled = scheduledRoom("취소함", base.plusSeconds(45));
+        liveRoomRepository.save(cancelled.cancel(Instant.now()));
 
         List<String> tie = java.util.stream.Stream.of(tieA.id(), tieB.id()).map(UUID::toString).sorted().toList();
         List<String> expected = List.of(first.id().toString(), tie.get(0), tie.get(1), ready.id().toString());
