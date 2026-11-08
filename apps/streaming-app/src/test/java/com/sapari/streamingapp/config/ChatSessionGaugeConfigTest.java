@@ -273,7 +273,7 @@ class ChatSessionGaugeConfigTest {
     }
 
     @Test
-    @DisplayName("⭐ 등록한 미터 집합을 고정한다 — 이름으로 찾는 단언은 '안 만든 미터' 를 못 잡는다")
+    @DisplayName("⭐ 등록한 미터 집합을 이름까지 고정한다 — 상수로 적으면 이름 변경을 따라가 버린다")
     void theRegisteredMeterSetIsPinned() {
         // 이 클래스의 다른 테스트는 전부 미터를 <b>이름으로</b> 조회한다. 그러면 새 미터를 상수만
         // 만들고 등록을 빠뜨려도 아무것도 깨지지 않는다 — 실제로 그랬다: chat.sessions.reaped 가
@@ -281,12 +281,18 @@ class ChatSessionGaugeConfigTest {
         // modules/chat/AGENTS.md)이 당직자에게 그 지표를 보라고 적고 있었다. 빈 패널이 하필 "공격" 서명으로 읽히는 쪽이라 더 나쁘다.
         assertThat(meters.getMeters().stream().map(meter -> meter.getId().getName()).toList())
                 .as("등록된 미터 집합이 바뀌었다 — 늘었으면 문서에, 줄었으면 당직 판독에 영향이 간다")
+                // 기댓값을 상수가 아니라 리터럴로 적는다. 상수를 참조하면 값이 바뀔 때 단언도 같이
+                // 따라가므로 이름 변경이 조용히 통과한다 — 실측: SESSIONS_GAUGE 를
+                // "chat.sessions.localx" 로 바꿨을 때 이 파일 8칸이 전부 초록이었다(SPR-179).
+                // 미터 이름은 발행된 인터페이스다 — infra/AGENTS.md 의 당직 런북이 이 다섯을 리터럴로
+                // 인용하므로, 이름이 바뀌면 그 런북이 조용히 거짓이 된다. 그래서 독립된 진실 원천은
+                // 코드가 아니라 그 런북이고, 여기 적힌 다섯 문자열이 그 사본이다.
                 .containsExactlyInAnyOrder(
-                        ChatSessionGaugeConfig.SESSIONS_GAUGE,
-                        ChatSessionGaugeConfig.ROOMS_GAUGE,
-                        ChatSessionGaugeConfig.ADMISSION_CAPPED_COUNTER,
-                        ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER,
-                        ChatSessionGaugeConfig.MAX_PER_ROOM_GAUGE);
+                        "chat.sessions.local",
+                        "chat.rooms.local",
+                        "chat.sessions.admission_capped",
+                        "chat.sessions.reaped",
+                        "chat.sessions.max_per_room");
     }
 
     @Test
