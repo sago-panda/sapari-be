@@ -55,6 +55,25 @@ public interface ChatMetrics {
     void persistTimedOut(PersistStage stage);
 
     /**
+     * pub/sub 구독이 <b>재구독을 시도했다</b>.
+     *
+     * <p>지금까지 이 축의 지표가 0건이었다 — {@code ChatMeterNames} 여섯도
+     * {@code ChatSessionGaugeConfig} 다섯도 구독을 보지 않는다. 신호는 최대 30초마다 남는
+     * {@code log.warn} 한 줄뿐이었고, 그 줄을 놓치면 <b>구독이 죽은 파드가 Ready 로 서 있는</b>
+     * 상태를 밖에서 알 수 없다.
+     *
+     * <p><b>이 카운터의 증가율이 "끊겼다 복구" 와 "영구히 막혔다" 를 가른다.</b> 재구독은
+     * {@code retryWhen} 루프이므로 복구되면 몇 번 오르고 멈추고, 막히면 끝없이 오른다.
+     * 실측(SPR-179): 운영 모양에서 {@code PSUBSCRIBE} 확립 응답을 상한 넘게 지연시켰을 때
+     * 재시도 2회 뒤 복구되어 수신 1건이었다 — 즉 영구 사망이 기본값은 아니다.
+     * 그래서 필요한 것은 "지금 살아 있나" 가 아니라 <b>이 수가 멈추는가</b>다.
+     *
+     * <p>⚠️ 호출부가 {@code doBeforeRetry} 람다 안이다 — 이 포트의 "절대 던지지 않는다" 계약이
+     * 거기서도 그대로 걸린다. 던지면 자가복구 루프가 그 자리에서 끝난다.
+     */
+    void subscriptionResubscribed(ChatSubscription subscription);
+
+    /**
      * 아무것도 하지 않는 구현. <b>registry 없이도 뜨는 것이 포트 구현의 기본값이어야 하기 때문</b>이고,
      * 실제 용도는 단위 테스트가 registry 를 세우지 않고 돌게 하는 것이다.
      */
@@ -66,5 +85,6 @@ public interface ChatMetrics {
         @Override public void sessionCut(SessionCutReason reason) { }
         @Override public void dictionaryFastPathLost() { }
         @Override public void persistTimedOut(PersistStage stage) { }
+        @Override public void subscriptionResubscribed(ChatSubscription subscription) { }
     };
 }

@@ -1170,6 +1170,18 @@ conditional variant really does fall back to NOOP.
 | `chat.session.cut` | `reason` | the server closed a session |
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
 | `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
+| `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
+
+⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
+is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged
+subscription makes it climb forever — the signal is whether it stops. 0 over a window means "no retry in
+this window", which also covers "the subscription was never established"; that branch is not answered here.
+Measured: with the production shape and the `PSUBSCRIBE` establish reply delayed past the command bound, it
+retried twice and recovered (one message received) — so permanent death is not the default, and what
+operators need is the *shape* of this counter rather than a liveness gauge. The tag is per subscription
+because the blast radii differ by orders of magnitude: `chat_pubsub` losing its stream drops **every chat
+delivery and every KICK notice on that pod** while senders still get their ACKs, whereas
+`profanity_dictionary` only means this pod enforces with a dictionary up to one cycle old.
 
 ⚠️ **`chat.persist.timeout` is a different axis from `chat.delivery.dropped` and the two must never be
 summed.** `delivery.dropped` means *persisted, live delivery lost* — every `DeliveryStage` value rests on

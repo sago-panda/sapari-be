@@ -70,11 +70,11 @@ class CrossPodBroadcastTest {
         ReactiveStringRedisTemplate templateA = new ReactiveStringRedisTemplate(factoryA);
         ReactiveStringRedisTemplate templateB = new ReactiveStringRedisTemplate(factoryB);
 
-        broadcasterA = new RedisChatBroadcaster(templateA);
+        broadcasterA = new RedisChatBroadcaster(templateA, ChatMetrics.NOOP);
 
         registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB, SYSTEM_TIME), new ChatPermissionPolicy(),
                 ChatMetrics.NOOP);
-        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB), registryB, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB, ChatMetrics.NOOP), registryB, new ChatPermissionPolicy(), ChatMetrics.NOOP);
     }
 
     @AfterAll

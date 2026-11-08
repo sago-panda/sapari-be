@@ -8,6 +8,8 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.ChatSubscription;
 import com.sapari.chat.application.port.AccountWithdrawingSource;
 
 import lombok.extern.slf4j.Slf4j;
@@ -38,12 +40,15 @@ public class RedisAccountWithdrawingSource implements AccountWithdrawingSource {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Flux<UUID> shared;
 
-    public RedisAccountWithdrawingSource(ReactiveStringRedisTemplate redis) {
+    public RedisAccountWithdrawingSource(ReactiveStringRedisTemplate redis, ChatMetrics metrics) {
         this.shared = redis.listenToChannel(CHANNEL)
                 .flatMap(message -> parse(message.getMessage()))
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(30))
-                        .doBeforeRetry(s -> log.warn("user:account:withdrawing 구독 재시도 — 끊김 후 자가복구",
-                                s.failure())))
+                        .doBeforeRetry(s -> {
+                            metrics.subscriptionResubscribed(ChatSubscription.ACCOUNT_WITHDRAWING);
+                            log.warn("user:account:withdrawing 구독 재시도 — 끊김 후 자가복구",
+                                    s.failure());
+                        }))
                 .publish()
                 .autoConnect(0);
     }

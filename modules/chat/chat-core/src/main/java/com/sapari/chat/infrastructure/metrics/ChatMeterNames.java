@@ -36,12 +36,23 @@ final class ChatMeterNames {
      */
     static final String PERSIST_TIMEOUT = "chat.persist.timeout";
 
+    /**
+     * pub/sub 구독이 재구독을 시도한 건수. 태그는 {@code subscription} 하나다.
+     *
+     * <p>⚠️ <b>증가율로 읽는다.</b> 재구독은 {@code retryWhen} 루프이므로 끊김 후 복구되면 몇 번
+     * 오르고 멈추고, 막히면 끝없이 오른다 — 누적값이 아니라 "멈추는가" 가 신호다.
+     * 그래서 0 은 "건강" 이 아니라 "이번 창에 재구독이 없었다" 다(구독이 애초에 안 섰을 수도 있다 —
+     * 그 갈래는 이 미터가 답하지 않는다).
+     */
+    static final String SUBSCRIPTION_RESUBSCRIBED = "chat.subscription.resubscribed";
+
     static final String TAG_POLICY = "policy";
     static final String TAG_CHECKPOINT = "checkpoint";
     static final String TAG_FAILURE = "failure";
     static final String TAG_MODE = "mode";
     static final String TAG_STAGE = "stage";
     static final String TAG_REASON = "reason";
+    static final String TAG_SUBSCRIPTION = "subscription";
 
     private ChatMeterNames() {
     }
