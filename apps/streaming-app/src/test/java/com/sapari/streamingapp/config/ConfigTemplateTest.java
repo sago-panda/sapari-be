@@ -9,8 +9,10 @@ import java.lang.reflect.Parameter;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -19,6 +21,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.convert.DurationStyle;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 
 import com.sapari.chat.infrastructure.config.ChatMongoConfig;
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
@@ -81,6 +84,15 @@ class ConfigTemplateTest {
      * 빈 문자열과 같은 실패로 간다. 그래서 {@code :} 뒤 공백까지 받는다.
      */
     private static final Pattern EMPTY_PLACEHOLDER_DEFAULT = Pattern.compile("\\$\\{[^}]*:\\s*}");
+
+    /**
+     * 이 파일이 덮는다고 선언한 접두의 {@code @Value} 모양.
+     *
+     * <p>{@code documentedDefaults()} 와 완전성 검사가 <b>같은</b> 패턴을 봐야 한다 — 서로 다른 집합을
+     * 보면 둘 다 초록인 채로 어긋난다.
+     */
+    private static final Pattern COVERED_PREFIX_VALUE =
+            Pattern.compile("\\$\\{chat\\.(?:session|mongo)\\.([a-z-]+):([^}]+)}");
 
     /** 주석 안에 적어 둔 코드 기본값 한 줄 — `#   max-lifetime: 60m   # …` 모양. */
     private static final Pattern DOCUMENTED_DEFAULT =
@@ -264,8 +276,7 @@ class ConfigTemplateTest {
                         }
                         // 접두를 session 하나로 못 박지 않는다 — 그랬으면 chat.mongo.* 키가 코드 쪽에서
                         // 아예 나오지 않아 크기 비교가 공허하게 통과한다(SPR-176 의 그 모양).
-                        Matcher matcher = Pattern.compile("\\$\\{chat\\.(?:session|mongo)\\.([a-z-]+):([^}]+)}")
-                                .matcher(value.value());
+                        Matcher matcher = COVERED_PREFIX_VALUE.matcher(value.value());
                         if (matcher.matches()) {
                             defaults.put(matcher.group(1), matcher.group(2));
                         }
@@ -294,6 +305,58 @@ class ConfigTemplateTest {
         }
         String key = line.substring(0, colon).strip();
         return DURATION_KEYS.stream().anyMatch(known -> key.equals(known) || key.endsWith("." + known));
+    }
+
+
+    /**
+     * {@link #CHAT_VALUE_SOURCES} 의 <b>완전성</b>을 코드가 센다 — 명단이 수기라서 생긴 구멍을 닫는다.
+     *
+     * <p>위 {@code CHAT_KEYS} javadoc 이 적는 구멍이 이것이다 — *"제3의 클래스에 같은 접두의 키가
+     * 생기면 이 검사는 그것을 보지 못한다."* 그 문장은 참이고, 이 칸이 그걸 거짓으로 만든다.
+     *
+     * <p>⚠️ <b>덮는 접두를 넓히지 않는다.</b> 오늘 {@code chat.*} 키는 여덟이고 다섯 클래스가 읽는데,
+     * 그중 이 파일이 덮는다고 선언한 접두({@code chat.session.*} · {@code chat.mongo.*})는
+     * <b>다섯 키 / 세 클래스이고 그 셋이 이미 명단에 있다</b>(실측, SPR-179). 나머지 셋은
+     * {@code chat.profanity.*}(List 바인딩) · {@code chat.room-token.*}(필수 비밀키)로 <b>접두가
+     * 다르다</b> — 명단에 넣으면 구멍이 닫히는 것이 아니라 이 파일의 주제가 바뀌고, Duration/int
+     * 전용 검사 둘에 바인딩 타입이 다른 키가 끌려 들어온다. 그래서 주제는 그대로 두고 완전성만 닫는다.
+     *
+     * <p>⚠️ 이 칸은 오늘 초록이다(분모 0). 근거는 역변이다 — {@code chat.session.*} {@code @Value} 를
+     * 가진 네 번째 클래스를 만들면 빨강이다.
+     */
+    @Test
+    @DisplayName("⭐ 덮는 접두를 읽는 클래스가 명단 밖에 생기면 빨강 — 수기 명단의 완전성을 코드가 센다")
+    void everyClassReadingTheCoveredPrefixesIsListed() {
+        // given: com.sapari 전수를 훑는다. 범위를 패키지 하나로 두는 이유는 이 접두가 우리 코드에서만
+        // 나오기 때문이고, 전수가 아니면 "못 봤다" 와 "없다" 의 출력이 같아진다.
+        ClassPathScanningCandidateComponentProvider scanner =
+                new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter((metadataReader, factory) -> true);
+
+        // when: 덮는 접두의 @Value 를 파라미터에 가진 클래스를 모은다. 추출 패턴은 documentedDefaults()
+        // 가 쓰는 것과 같은 것이어야 한다 — 다르면 두 기계가 서로 다른 집합을 보고도 둘 다 초록이다.
+        Set<Class<?>> declaring = new LinkedHashSet<>();
+        for (var candidate : scanner.findCandidateComponents("com.sapari")) {
+            Class<?> type;
+            try {
+                type = Class.forName(candidate.getBeanClassName());
+            } catch (Throwable notOnThisClasspath) {
+                continue;
+            }
+            boolean reads = Stream
+                    .concat(Stream.of(type.getDeclaredMethods()), Stream.of(type.getDeclaredConstructors()))
+                    .flatMap(executable -> Stream.of(executable.getParameters()))
+                    .map(parameter -> parameter.getAnnotation(Value.class))
+                    .anyMatch(value -> value != null && COVERED_PREFIX_VALUE.matcher(value.value()).matches());
+            if (reads) {
+                declaring.add(type);
+            }
+        }
+
+        // then: 스캐너가 아무것도 못 찾았으면 이 단언이 먼저 깨진다 — 0건과 "못 봤다" 를 가른다.
+        assertThat(declaring)
+                .as("덮는 접두를 읽는 클래스 집합이 수기 명단과 다르다 — 명단에 더하거나, 접두를 안 쓰게 바꾼다")
+                .containsExactlyInAnyOrderElementsOf(CHAT_VALUE_SOURCES);
     }
 
     /** 줄 끝 주석을 떼어 값만 남긴다 — `max-lifetime: ${X:}  # optional` 의 판정이 주석에 가리지 않게. */

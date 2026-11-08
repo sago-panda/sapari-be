@@ -3,6 +3,7 @@ package com.sapari.chat.infrastructure.metrics;
 import com.sapari.chat.application.port.ChatCheckpoint;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
+import com.sapari.chat.application.port.ChatSubscription;
 import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.port.PersistStage;
 import com.sapari.chat.application.port.PolicyReadFailure;
@@ -62,6 +63,12 @@ public class MicrometerChatMetrics implements ChatMetrics {
     public void persistTimedOut(PersistStage stage) {
         safe(() -> registry.counter(ChatMeterNames.PERSIST_TIMEOUT,
                 ChatMeterNames.TAG_STAGE, tag(stage)).increment());
+    }
+
+    @Override
+    public void subscriptionResubscribed(ChatSubscription subscription) {
+        safe(() -> registry.counter(ChatMeterNames.SUBSCRIPTION_RESUBSCRIBED,
+                ChatMeterNames.TAG_SUBSCRIPTION, tag(subscription)).increment());
     }
 
     /**

@@ -4,6 +4,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.any;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -47,6 +48,11 @@ class LivePublicRoutesTest {
             mvc.perform(get("/api/v1/lives/rooms")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/replay")).andExpect(status().isOk());
+            // 공개로 선언한 채팅 이력 — GET 과 HEAD 가 같이 열려야 한다. Spring MVC 는
+            // @GetMapping 에 대해 HEAD 를 서비스하므로, 매처를 GET 으로만 두면 같은 핸들러가
+            // HEAD 에서는 401 이 된다. 본문을 안 보내도 조회 비용(Postgres 1 + Mongo 1)은 같다.
+            mvc.perform(get("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
+            mvc.perform(head("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/ingress")).andExpect(status().isUnauthorized());
             mvc.perform(get("/api/v1/lives/future-private")).andExpect(status().isUnauthorized());
             mvc.perform(post("/api/v1/lives/rooms")).andExpect(status().isUnauthorized());

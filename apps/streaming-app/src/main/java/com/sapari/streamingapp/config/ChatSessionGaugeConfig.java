@@ -117,6 +117,22 @@ public class ChatSessionGaugeConfig {
     static final String MAX_PER_ROOM_GAUGE = "chat.sessions.max_per_room";
 
     /**
+     * 세션 명부 재등록이 실패한 누적 수.
+     *
+     * <p>이 값은 전부터 {@code AtomicLong} 으로 쌓였고 미터만 없었다 — 접근자를 읽는 곳이 테스트
+     * 하나뿐이어서, 운영에서는 10초로 솎아낸 WARN 한 줄이 유일한 신호였다. 재등록이 멈추면
+     * <b>살아 있는 시청자 전원이 상한 뒤에 집계에서 사라진다</b>(레지스트리 자기 javadoc).
+     *
+     * <p>⚠️ <b>이 수가 0 이어도 재등록이 멈춰 있을 수 있다.</b> 회차가 실패하면 세어지지만 아예
+     * 안 끝나면 세어지지 않는다 — 회차 길이를 재는 신호는 아직 없다. 그러니 이것은 "재등록이
+     * 실패하고 있다" 의 증거이고 "재등록이 건강하다" 의 증거가 아니다.
+     *
+     * <p>이 파일이 이미 그 거울 상을 겪었다 — {@code chat.sessions.reaped} 는 문서가 약속하는데
+     * 등록이 없었다. 이쪽은 반대로 실재하는 열화에 카운터는 있고 미터가 없던 경우다.
+     */
+    static final String HEARTBEAT_FAILURES_COUNTER = "chat.sessions.heartbeat_failures";
+
+    /**
      * 게이지를 등록하고 그 사실을 빈으로 남긴다.
      *
      * <p>표식 빈을 돌려주는 이유는 등록이 <b>부수효과</b>라서다 — 반환값이 없으면 이 메서드가
@@ -159,6 +175,12 @@ public class ChatSessionGaugeConfig {
                 .register(meters);
         FunctionCounter.builder(SLOTS_REAPED_COUNTER, registry, ChatSessionRegistry::slotsReaped)
                 .description("죽은 소켓이 들고 있던 동시 세션 자리를 거둔 누적 수")
+                .register(meters);
+        // 단조 증가라 FunctionCounter 다. 게이지로 내면 rate() 를 못 쓰고 "지금 몇 개" 로 오독된다 —
+        // 위 거부 카운터와 같은 이유다.
+        FunctionCounter.builder(HEARTBEAT_FAILURES_COUNTER, registry,
+                        ChatSessionRegistry::heartbeatFailures)
+                .description("세션 명부 재등록이 실패한 누적 수 (0 이어도 멈춤일 수 있다 — 미완료는 안 세어진다)")
                 .register(meters);
         return new SessionGauges(true);
     }

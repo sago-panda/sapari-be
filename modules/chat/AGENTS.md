@@ -578,8 +578,13 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   only thing the client should do is reconnect. **That makes "did a SYSTEM(ROOM_ENDED) arrive just before the
   close?" the sole signal separating "the broadcast is over" from "reconnect now"** — an implicit contract the
   front end must hold. If it instead reads 1000 as "ended", every healthy viewer sees "방송이 종료되었습니다"
-  once per lifetime window. **The front-end behaviour is not verifiable from this repo** (no front-end code
-  here), so treat it as an assumption to confirm, not a measured fact. Giving expiry its own code would remove
+  once per lifetime window. **The contract doc does specify it, and conditionally** —
+  `chat-frontend-guide.v1.2.md:78` reads `| 1000 | 방송 종료 | 재접속하지 않음 (직전
+  SYSTEM(ROOM_ENDED) 수신) |`, so "do not reconnect" is scoped to *having received that frame
+  first*. The implicit contract described above is therefore **explicit on the contract side**, and
+  what is unverified from here is only whether a given client honours the parenthetical. (An earlier version of this
+  line called the behaviour unverifiable from this repo — true about code, false as a conclusion:
+  there is no front-end code here but there is a contract doc, and it had not been read.) Giving expiry its own code would remove
   the ambiguity at the cost of a new front-end contract.
 - ⚠️ **1009 has no defined front-end behaviour yet** — nothing in this repo mentions it besides the limit
   itself. A client hitting it is sending frames the protocol layer refuses, so retrying unchanged will loop.
@@ -885,6 +890,15 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
 - **A single session's failure is absorbed.** If it ended the stream, the pod would stop re-registering
   *everything* and the whole audience would disappear after the staleness window — worse than the bug being
   fixed. `concatMap` also keeps a slow Redis from overlapping rounds and doubling the writes.
+- **The absorbed failures are counted** (SPR-179): `chat.sessions.heartbeat_failures`
+  (`ChatSessionGaugeConfig`, a `FunctionCounter` over `ChatSessionRegistry.heartbeatFailures()`). The
+  `AtomicLong` had existed all along with no meter and its only reader was a test, so in production the
+  single signal for the failure above was a WARN thinned to one line per 10s — and that latch is shared
+  with two other failure modes, so whichever fires first hides the others' first occurrence.
+  - ⚠️ **0 does not mean the heartbeat is healthy.** A round that *fails* increments it; a round that never
+    *finishes* does not, and that is the worse branch — re-registration stops permanently while this stays
+    0. No signal measures round duration yet. Treat it as evidence that re-registration **is failing**,
+    never as evidence that it is working.
 - Staleness is judged against the **reader's** wall clock, so cross-pod clock skew applies; the 3-beat margin
   swallows second-scale skew. Moving the comparison into Lua would use Redis's single clock but would also
   move a full scan onto its single thread, and that cost is measured to be fine where it is.
@@ -1155,6 +1169,18 @@ conditional variant really does fall back to NOOP.
 | `chat.session.cut` | `reason` | the server closed a session |
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
 | `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
+| `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
+
+⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
+is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged
+subscription makes it climb forever — the signal is whether it stops. 0 over a window means "no retry in
+this window", which also covers "the subscription was never established"; that branch is not answered here.
+Measured: with the production shape and the `PSUBSCRIBE` establish reply delayed past the command bound, it
+retried twice and recovered (one message received) — so permanent death is not the default, and what
+operators need is the *shape* of this counter rather than a liveness gauge. The tag is per subscription
+because the blast radii differ by orders of magnitude: `chat_pubsub` losing its stream drops **every chat
+delivery and every KICK notice on that pod** while senders still get their ACKs, whereas
+`profanity_dictionary` only means this pod enforces with a dictionary up to one cycle old.
 
 ⚠️ **`chat.persist.timeout` is a different axis from `chat.delivery.dropped` and the two must never be
 summed.** `delivery.dropped` means *persisted, live delivery lost* — every `DeliveryStage` value rests on

@@ -982,6 +982,70 @@ class ChatSessionRegistryTest {
         assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
     }
 
+    /**
+     * 클램프의 <b>위쪽</b> 가드 — 지우면 던진다. 그 던짐이 인바운드 스트림을 죽인다.
+     *
+     * <p>{@code recordRateLimited} 는 {@code onInbound} 의 {@code onErrorResume} 람다에서 불린다.
+     * 거기서 던지면 인바운드 {@code Flux} 의 {@code onError} 가 되어 연결이 끊긴다 — 이 파일과
+     * {@code SendChatService} 가 반복해서 "절대 던지면 안 된다" 고 경고하는 그 자리다.
+     *
+     * <p><b>분모</b>: 테스트 트리 전수에서 {@code recordRateLimited} 의 인자가 전부 {@code 3}
+     * 또는 {@code 0} 이었다(호출지 5건). 60 초과도 음수도 한 번도 건너지 않아 클램프를 지워도
+     * 스위트가 초록이었다. 지금은 {@code Math.min} 만 지워도 이 칸이 빨강이다(단일 변이).
+     *
+     * <p>실측: {@code Duration.ofSeconds(Long.MAX_VALUE).toNanos()} 는
+     * {@code ArithmeticException: long overflow} 를 던지고, {@code ofSeconds(9_223_372_036)} 은
+     * 던지지 않는다(경계가 거기다).
+     */
+    @Test
+    @DisplayName("⭐ 레이트리밋 창 상한 — 큰 수가 와도 던지지 않는다(던지면 인바운드가 죽는다)")
+    void rate_limit_window_is_clamped_above() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+
+        // when & then: Math.min 을 지우면 여기서 ArithmeticException 이 샌다
+        assertThatCode(() -> registry.recordRateLimited("s1", Long.MAX_VALUE))
+                .as("상한이 없으면 Duration 환산이 던지고, 그 던짐이 onErrorResume 람다에서 연결을 끊는다")
+                .doesNotThrowAnyException();
+        assertThat(registry.rateLimitRetryAfterSeconds("s1"))
+                .as("상한 60초를 넘겨 적혔다 — 해제까지 로컬에서 끊는 구간이 그만큼 길어진다")
+                .isBetween(1L, 60L);
+    }
+
+    /**
+     * 음수가 들어와도 "제한 없음" 으로 읽히는지. <b>가드는 한 겹이고 그 한 겹이 이 칸에 묶인다.</b>
+     *
+     * <p>접는 자리는 읽는 쪽 {@code rateLimitRetryAfterSeconds} 의 {@code remaining <= 0} 하나다.
+     * 실측: 그것만 지우면 이 칸이 빨강이다({@code expected: 0L but was: -4L}) — <b>단일 변이</b>다.
+     *
+     * <p>⚠️ <b>여기 오는 데 분모를 두 번 틀렸고, 그 경위는 커밋 메시지가 보관한다.</b> 요약하면
+     * 한때 쓰는 쪽에 가드가 하나 더 있었고 두 겹이 서로를 가려서 어느 쪽을 지워도 이 칸이
+     * 초록이었다. 그 가드는 <b>도달 불가</b>였으므로(이 필드의 독자가 읽는 쪽 하나뿐이다 —
+     * 전수: 쓰는 곳 1 · 읽는 곳 1) 지웠고, 그래서 남은 한 겹이 처음으로 묶였다.
+     *
+     * <p>곁가지 사실: 음수에서 {@code Duration} 환산은 <b>던지지 않는다</b>
+     * ({@code ofSeconds(-5).toNanos() = -5_000_000_000}). 던지는 것은 위쪽 경계뿐이고 그 칸은
+     * {@link #rate_limit_window_is_clamped_above()} 가 따로 묶는다(그쪽도 단일 변이로 빨강이다).
+     */
+    @Test
+    @DisplayName("⭐ 레이트리밋 창 — 음수는 제한 없음으로 읽힌다(접는 가드 한 겹이 이 칸에 묶인다)")
+    void rate_limit_window_folds_negatives() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.recordRateLimited("s1", 3);
+        assertThat(registry.rateLimitRetryAfterSeconds("s1")).isBetween(1L, 3L);
+
+        // when: 음수가 들어온다 — 던지지 않는다
+        assertThatCode(() -> registry.recordRateLimited("s1", -5))
+                .as("음수에서 Duration 환산은 던지지 않는다 — 여기서 빨강이면 전제가 바뀐 것이다")
+                .doesNotThrowAnyException();
+
+        // then: 음수 초가 새어 나가면 클라 카운트다운이 음수를 받는다
+        assertThat(registry.rateLimitRetryAfterSeconds("s1"))
+                .as("남은 초가 음수로 나왔다 — '제한 없음'과 구분되지 않아야 할 값이 음수가 됐다")
+                .isZero();
+    }
+
     @Test
     @DisplayName("레이트리밋 창 — 모르는 세션은 제한 없음으로 답한다(막는 데만 쓰는 값)")
     void rate_limit_window_unknown_session_is_not_limited() {

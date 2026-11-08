@@ -140,6 +140,60 @@ class EntryGateTest {
                 });
     }
 
+
+    /**
+     * 거부에도 신호가 남는지 — 집행에 분모가 없으면 {@code chat.policy.open{policy=kick}} 을 읽을 수 없다.
+     *
+     * <p>이 파일의 모든 <b>강등</b> 분기는 {@code metrics.policyNotEnforced(...)} + 솎은 로그를 갖는데
+     * <b>거부</b> 분기 셋은 로그도 지표도 없었다. 그래서 당직자가 "강퇴가 집행되고 있고 강퇴당한
+     * 사람이 없다" 와 "강퇴 조회가 전원에게 조용히 false 를 돌려준다" 를 가를 수 없다 — 분자는 있고
+     * 분모가 없는 상태다.
+     *
+     * <p>세션 중간의 등가물은 전부 덮여 있다({@code terminateKicked} 가 WARN + {@code sessionCut}).
+     * 핸드셰이크 거부만 조용했고, 그중 {@code TOO_MANY_SESSIONS} 하나만
+     * {@code chat.sessions.admission_capped} 로 세어진다 — 비대칭이 한 enum 안에 있었다.
+     *
+     * <p>지표가 아니라 로그인 이유: 새 포트 표면이 0 이고 기존 솎기 기계
+     * ({@code counterFor}/{@code dueToLog})를 그대로 쓴다. 미터 버전은 {@code ChatMetrics} 메서드가
+     * 하나 늘어서 별건이다.
+     */
+    @Test
+    @DisplayName("⭐ 거부 세 사유가 각자 한 줄을 남긴다 — 집행에 분모가 없으면 게이트 지표를 못 읽는다")
+    void everyDenialLeavesALine() {
+        Logger logger = (Logger) LoggerFactory.getLogger(EntryGate.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            // 방 종료 거부
+            given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.just(true));
+            StepVerifier.create(gate.verify(member()))
+                    .expectError(EntryDeniedException.class).verify(VERIFY_CEILING);
+
+            // 강퇴 거부
+            givenRoomAlive();
+            givenNotBanned();
+            given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(true));
+            StepVerifier.create(gate.verify(member()))
+                    .expectError(EntryDeniedException.class).verify(VERIFY_CEILING);
+
+            // 밴 거부
+            given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+            given(banRepository.isBanned(userId)).willReturn(Mono.just(true));
+            StepVerifier.create(gate.verify(member()))
+                    .expectError(EntryDeniedException.class).verify(VERIFY_CEILING);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        // then: 사유가 실린 줄이 셋. 사유를 안 실으면 세 줄이 같아져 분모가 다시 뭉친다.
+        assertThat(appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList())
+                .as("거부가 조용하다 — 집행 건수의 분모가 비어 있다")
+                .anySatisfy(line -> assertThat(line).contains("입장 거부").contains("방 종료"))
+                .anySatisfy(line -> assertThat(line).contains("입장 거부").contains("강퇴"))
+                .anySatisfy(line -> assertThat(line).contains("입장 거부").contains("밴"));
+    }
+
     @Test
     @DisplayName("밴이면 거부 — 방과 무관하게 어디도 못 들어온다")
     void banned_denied() {

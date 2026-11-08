@@ -2,11 +2,6 @@ package com.sapari.chat.infrastructure.persistence.repository;
 
 import java.util.UUID;
 
-import org.bson.types.ObjectId;
-import org.springframework.data.domain.Sort;
-import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
-import org.springframework.data.mongodb.core.query.Criteria;
-import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Repository;
 
 import com.sapari.chat.application.port.ChatMetrics;
@@ -19,7 +14,6 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapper;
 
 import lombok.RequiredArgsConstructor;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Repository
@@ -27,7 +21,6 @@ import reactor.core.publisher.Mono;
 public class ChatMessageRepositoryImpl implements ChatMessageRepository {
 
     private final ChatMessageMongoRepository mongoRepository;
-    private final ReactiveMongoTemplate mongoTemplate;
     private final ChatMessageMapper mapper;
 
     /**

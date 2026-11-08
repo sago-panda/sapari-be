@@ -486,7 +486,7 @@ that on.
   boots (see the bullet above). The template no longer calls that line optional (it did for one day, while the guard already
   required it — follow that stale template and the pod CrashLoopBackOffs). Developers running locally copy
   the `management` block from `application.yml.example`.
-- **What the metrics carry** — two kinds, and they want different alerts.
+- **What the metrics carry** — **four kinds**, and they want different alerts. (This said "two" while three groups were already listed below, and the fourth arrives with SPR-179; the count is the kind of number that drifts because nothing reads it.)
   - **Counters that are 0 when healthy**: `chat.policy.open`, `chat.ratelimit.degraded`,
     `chat.delivery.dropped`, `chat.session.cut`, `chat.dictionary.fastpath.lost`,
     `chat.persist.timeout`. Every one of them is a *policy not being enforced* right
@@ -501,7 +501,14 @@ that on.
     - ⚠️ **`chat.persist.timeout` has a `stage` tag whose two values must not be summed either**
       (SPR-178). `stage=write` means **nothing was stored**; `stage=duplicate_recovery_read` is the
       duplicate-recovery read, whose premise is that the document **already exists** — the message is
-      in the history and only reading it back was cut. Alert on `write` for data loss and on
+      in the history and only reading it back was cut. Alert on `write` for **a persist whose result is
+      unknown** — ⚠️ **not** for confirmed data loss: a client-side timeout does not cancel the
+      server's write, and both branches surface as the same driver exception, so the caller cannot
+      tell "nothing was stored" from "stored but unconfirmed" (measured on mongo:7.0 with driver
+      5.6.5: a 3ms/5ms operation bound threw while the document was present). The exception's own
+      javadoc and three other faces still say "nothing was stored" and are being corrected under
+      SPR-181; this line is fixed first because it is the one that wakes a human on a false premise.
+      Also alert on
       `duplicate_recovery_read` for "the sender cannot see a message that is already stored"; they
       need different responses. Details in `modules/chat/AGENTS.md`.
   - **Counters that are 0 when nobody is abusing** (added SPR-152): `chat.sessions.admission_capped` ·
@@ -533,6 +540,27 @@ that on.
     outbound buffer*, so a pod with backed-up sessions costs more — which means the app side is not the
     constraint and the cap has to come from transport-side load testing. Order: gauge → threshold alert
     → cap.
+  - **Counters whose 0 is ambiguous** (added SPR-179): `chat.sessions.heartbeat_failures` — the session
+    registry's re-registration failing. It belongs to none of the three groups above: not a policy being
+    let through, not a policy firing, not a capacity reading. It is an infrastructure failure, and the
+    consequence is severe — if re-registration stops, **every live viewer drops out of the count** after
+    the staleness window (4 × the heartbeat interval).
+    - ⚠️ **Do not read 0 as healthy.** A round that *fails* is counted; a round that never *finishes* is
+      not, and the registry's own javadoc records that branch as the worse one. No signal measures round
+      duration yet, so this counter is evidence that re-registration **is failing** — never evidence that
+      it is working. The only reading available for a stall today is `chat.sessions.local` holding steady
+      while connections continue.
+    - Before this meter existed the only signal was a WARN thinned to one line per 10s, and that latch is
+      **shared** with two other failure modes, so whichever fires first hides the others' first
+      occurrence. Details in `modules/chat/AGENTS.md`.
+    - `chat.subscription.resubscribed{subscription}` — a Redis pub/sub subscription retrying its establish.
+      Same ambiguity, different shape: re-subscription is a `retryWhen` loop, so **a recovered drop climbs a
+      few times and stops while a wedged subscription climbs forever**. Alert on "still climbing after N
+      minutes", not on non-zero. 0 also covers "never established", which this counter does not answer.
+      Measured (SPR-179): the production shape retried twice and recovered when the `PSUBSCRIBE` establish
+      reply was delayed past the 1s command bound — so treat permanent death as a shape to watch for, not
+      the default. Per-subscription tag because `chat_pubsub` losing its stream silently drops every chat
+      delivery and every KICK notice on that pod, while `profanity_dictionary` only ages the dictionary.
 - **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
   network restrictions above are enforced from here.
 

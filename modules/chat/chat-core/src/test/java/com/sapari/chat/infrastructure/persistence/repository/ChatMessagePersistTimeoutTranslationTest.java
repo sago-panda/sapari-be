@@ -14,7 +14,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.mongodb.UncategorizedMongoDbException;
-import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 
 import com.mongodb.MongoOperationTimeoutException;
 import com.mongodb.MongoSocketReadTimeoutException;
@@ -62,12 +61,11 @@ class ChatMessagePersistTimeoutTranslationTest {
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
 
     private final ChatMessageMongoRepository mongoRepository = mock(ChatMessageMongoRepository.class);
-    private final ReactiveMongoTemplate mongoTemplate = mock(ReactiveMongoTemplate.class);
     private final ChatMessageMapper mapper = mock(ChatMessageMapper.class);
     private final ChatMetrics metrics = mock(ChatMetrics.class);
 
     private final ChatMessageRepositoryImpl repository =
-            new ChatMessageRepositoryImpl(mongoRepository, mongoTemplate, mapper, metrics);
+            new ChatMessageRepositoryImpl(mongoRepository, mapper, metrics);
 
     @Test
     @DisplayName("⭐ CSOT 체인이 ChatPersistTimeoutException 으로 번역된다 — 원인 사슬은 보존한다")
