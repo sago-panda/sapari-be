@@ -70,20 +70,43 @@ public class EnterRateLimiter {
     private static final int BURST_HEADROOM = 2;
 
     /**
-     * 샤드 선택에 섞는 <b>프로세스 로컬 솔트</b> — 샤드를 <b>조준 불가</b>로 만든다.
+     * 샤드 선택 <b>키</b> — 프로세스 로컬 랜덤. 샤드를 <b>조준 불가</b>로 만든다.
      *
-     * <p>솔트가 없으면 공격자가 대상의 샤드를 <b>오프라인에서</b> 계산한다: 샤드 키가
-     * {@code sub}(=userId)이고 {@code String.hashCode} 는 JDK 규격이라 값이 재현되며,
-     * 미인증으로 열린 목록 응답({@code GetLiveView.LiveRoomSummary.sellerId})이 방송 중
-     * 판매자의 userId 를 그대로 준다. 그 샤드에 떨어지는 계정이 나올 때까지 가입만 하면
+     * <p>막으려는 것: 공격자가 대상의 샤드를 <b>오프라인에서</b> 계산하는 것. 샤드 키가
+     * {@code sub}(=userId)이고 미인증으로 열린 목록 응답이 방송 중 판매자의 userId 를 그대로
+     * 준다(실측으로 확인한 경로: {@code LiveSecurityConfig} 의 {@code GET /api/v1/lives/rooms}
+     * → {@code permitAll} → {@code LiveController.getRooms} → {@code GetLiveView.rooms} →
+     * {@code LiveRoomSummary.sellerId}). 그 샤드에 떨어지는 계정이 나올 때까지 가입만 하면
      * (가입 스로틀 없음) 계정 하나로 그 샤드를 상시 비울 수 있고, 그러면 판매자가 재입장으로
      * {@code owner} 클레임을 복구할 수 없다 — chat 의 강퇴·비마스킹 원문 게이트가 그 클레임이다.
      *
-     * <p>솔트는 인스턴스마다 다르므로 같은 판매자가 레플리카마다 다른 샤드에 떨어진다. 남는
-     * 위험은 조준이 아니라 <b>살포</b>다(샤드 전부를 덮으려면 계정이 많이 필요하다 — 아래
-     * {@code shardFor} javadoc).
+     * <p>⚠️ <b>한때 이것이 문자열 솔트를 주체 앞에 <i>이어 붙이는</i> 방식이었고, 그 방식은
+     * 위 공격을 막지 못했다(SPR-179 에서 실측).</b> 이유는 대수다 —
+     * {@code hash(a+b) = hash(a)·31^|b| + hash(b)} 이고 UUID 문자열 길이 36 은 짝수라
+     * {@code 31^36 ≡ 1 (mod 64)}, 그래서 솔트는 샤드 인덱스에 <b>상수 회전</b>으로만 들어갔다.
+     * 공격자에게 필요한 것은 절대 샤드 번호가 아니라 "내 계정이 타깃과 같은 샤드인가" 이고
+     * 그 <b>관계</b>에서는 회전이 양쪽에 똑같이 더해져 소거된다. 실측: 솔트를 모른 채
+     * {@code salt=""} 로 고른 후보가 실제 솔트에서도 타깃과 같은 샤드인 비율이
+     * <b>2000/2000 = 100%</b>(대조군 1.25% · 우연 기대 1.5625%)였다.
+     *
+     * <p>그래서 이어 붙이지 않고 <b>키로 쓴다</b>(HmacSHA256). MAC 은 키 없이 충돌 관계를
+     * 계산할 수 없으므로 위 소거가 성립하지 않는다. 비용도 쟀다 — 연접 0.056µs/call,
+     * HMAC(스레드 로컬 재사용) <b>0.147µs/call</b>, HMAC(호출마다 init) 0.412µs/call.
+     * 이 경로는 통과 시 Redis 왕복 3회(≈3ms)를 쓰므로 0.147µs 는 그 0.005% 다.
+     *
+     * <p>남는 위험은 조준이 아니라 <b>살포</b>다 — 샤드 전부를 덮으려면 계정이 많이 필요하다
+     * (아래 {@code shardFor} javadoc의 쿠폰 수집 수치).
      */
-    private final String shardSalt = java.util.UUID.randomUUID().toString();
+    private final byte[] shardKey = newShardKey();
+
+    /**
+     * {@code Mac} 은 상태를 들고 있어 스레드 안전하지 않다 — 스레드마다 하나 둔다.
+     *
+     * <p>{@code ThreadLocal} 누수를 걱정하지 않는 이유는 호출자가 서블릿 스레드 풀(유계)이기
+     * 때문이다. 호출마다 새로 만드는 쪽도 0.412µs 로 충분히 싸지만, 3배 차이를 공짜로 버릴
+     * 이유가 없다.
+     */
+    private final ThreadLocal<javax.crypto.Mac> shardMac = ThreadLocal.withInitial(this::newShardMac);
 
     private final EnterRateLimitProperties properties;
     private final LiveMetrics metrics;
@@ -222,7 +245,7 @@ public class EnterRateLimiter {
     }
 
     /**
-     * 주체를 샤드에 붙인다 — {@link #shardSalt} 를 앞에 붙여 조준을 막는다.
+     * 주체를 샤드에 붙인다 — {@link #shardKey} 로 키 혼합(MAC)해 조준을 막는다.
      *
      * <p>{@code floorMod} 를 쓰는 이유: {@code hashCode()} 는 음수일 수 있고 {@code %} 는 그
      * 부호를 보존해 배열 인덱스가 음수가 된다.
@@ -242,7 +265,37 @@ public class EnterRateLimiter {
      * 샤드 용량이었다).
      */
     int shardIndexFor(String subject) {
-        return Math.floorMod((shardSalt + subject).hashCode(), memberShards.length);
+        byte[] digest = shardMac.get()
+                .doFinal(subject.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        // 앞 4바이트를 int 로 접는다. MAC 출력은 균등하므로 어느 4바이트를 쓰든 같다 —
+        // floorMod 로 음수를 접는 것은 이 int 가 부호 있는 값이기 때문이다.
+        int folded = ((digest[0] & 0xff) << 24) | ((digest[1] & 0xff) << 16)
+                | ((digest[2] & 0xff) << 8) | (digest[3] & 0xff);
+        return Math.floorMod(folded, memberShards.length);
+    }
+
+    private static byte[] newShardKey() {
+        byte[] key = new byte[32];
+        new java.security.SecureRandom().nextBytes(key);
+        return key;
+    }
+
+    /**
+     * 스레드 하나를 위한 MAC.
+     *
+     * <p>{@code HmacSHA256} 이 없는 JRE 는 없다(JCA 필수 알고리즘)지만, 없으면 <b>던진다</b> —
+     * 조용히 연접으로 떨어지면 위 javadoc 이 적은 공격이 그대로 돌아오고, 그 사실이 어디에도
+     * 안 남는다. 샤드 배치는 상한의 일부이므로 "관측을 잃는" 것이 아니라 "집행을 잃는" 쪽이다.
+     */
+    private javax.crypto.Mac newShardMac() {
+        try {
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(shardKey, "HmacSHA256"));
+            return mac;
+        } catch (java.security.GeneralSecurityException e) {
+            throw new IllegalStateException(
+                    "HmacSHA256 을 쓸 수 없다 — 샤드 조준 방어가 성립하지 않으므로 기동을 막는다", e);
+        }
     }
 
     /** 올림 나눗셈. 샤드 몫이 전역을 <b>넘도록</b> 올려야 집계 천장이 전역에서 집행된다. */

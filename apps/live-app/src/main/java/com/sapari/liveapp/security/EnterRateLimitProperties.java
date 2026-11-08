@@ -44,7 +44,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * {@code sub}(=userId)이고 {@code String.hashCode} 는 JDK 규격이라 재현되는데, 미인증으로
  * 열린 목록 응답({@code GetLiveView.LiveRoomSummary.sellerId})이 방송 중 판매자의 userId 를
  * 준다. 솔트가 없으면 그 샤드를 오프라인에서 계산해 계정 하나(지속 8/s)로 특정 판매자를
- * 상시 끊을 수 있었다. 근거와 남는 위험은 {@code EnterRateLimiter.shardSalt} javadoc.
+ * 상시 끊을 수 있었다. 근거와 남는 위험은 {@code EnterRateLimiter.shardKey} javadoc.
+ * ⚠️ 그 방어가 <b>한때 문자열 솔트를 이어 붙이는 방식이었고 위 공격을 막지 못했다</b>(SPR-179 실측:
+ * 솔트를 모른 채 고른 후보가 실제 솔트에서도 같은 샤드인 비율 2000/2000). 지금은 키 혼합(MAC)이다.
  *
  * <p>게스트는 샤딩하지 않는다. 신원이 없어 키가 없고, 요청마다 새로 만들 수 있는 값
  * (IP·헤더)을 키로 쓰면 형제가 반박한 그 모양이 된다.
