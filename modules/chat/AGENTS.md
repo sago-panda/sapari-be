@@ -582,10 +582,9 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   `chat-frontend-guide.v1.2.md:78` reads `| 1000 | 방송 종료 | 재접속하지 않음 (직전
   SYSTEM(ROOM_ENDED) 수신) |`, so "do not reconnect" is scoped to *having received that frame
   first*. The implicit contract described above is therefore **explicit on the contract side**, and
-  what is unverified from here is only whether a given client honours the parenthetical. (This line
-  previously read "not verifiable from this repo (no front-end code here)" — true about code,
-  false as a conclusion: there is no front-end code here but there is a contract doc, and it was
-  never read before that sentence was written.) Giving expiry its own code would remove
+  what is unverified from here is only whether a given client honours the parenthetical. (An earlier version of this
+  line called the behaviour unverifiable from this repo — true about code, false as a conclusion:
+  there is no front-end code here but there is a contract doc, and it had not been read.) Giving expiry its own code would remove
   the ambiguity at the cost of a new front-end contract.
 - ⚠️ **1009 has no defined front-end behaviour yet** — nothing in this repo mentions it besides the limit
   itself. A client hitting it is sending frames the protocol layer refuses, so retrying unchanged will loop.

@@ -8,6 +8,11 @@ import lombok.extern.slf4j.Slf4j;
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
 import com.sapari.live.application.port.LiveMetrics;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 /**
  * 입장(=룸 토큰 발급) 상한. 게스트와 회원이 각자 버킷을 갖는다.
@@ -106,7 +111,7 @@ public class EnterRateLimiter {
      * 때문이다. 호출마다 새로 만드는 쪽도 0.412µs 로 충분히 싸지만, 3배 차이를 공짜로 버릴
      * 이유가 없다.
      */
-    private final ThreadLocal<javax.crypto.Mac> shardMac = ThreadLocal.withInitial(this::newShardMac);
+    private final ThreadLocal<Mac> shardMac = ThreadLocal.withInitial(this::newShardMac);
 
     private final EnterRateLimitProperties properties;
     private final LiveMetrics metrics;
@@ -266,7 +271,7 @@ public class EnterRateLimiter {
      */
     int shardIndexFor(String subject) {
         byte[] digest = shardMac.get()
-                .doFinal(subject.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                .doFinal(subject.getBytes(StandardCharsets.UTF_8));
         // 앞 4바이트를 int 로 접는다. MAC 출력은 균등하므로 어느 4바이트를 쓰든 같다 —
         // floorMod 로 음수를 접는 것은 이 int 가 부호 있는 값이기 때문이다.
         int folded = ((digest[0] & 0xff) << 24) | ((digest[1] & 0xff) << 16)
@@ -276,7 +281,7 @@ public class EnterRateLimiter {
 
     private static byte[] newShardKey() {
         byte[] key = new byte[32];
-        new java.security.SecureRandom().nextBytes(key);
+        new SecureRandom().nextBytes(key);
         return key;
     }
 
@@ -287,12 +292,12 @@ public class EnterRateLimiter {
      * 조용히 연접으로 떨어지면 위 javadoc 이 적은 공격이 그대로 돌아오고, 그 사실이 어디에도
      * 안 남는다. 샤드 배치는 상한의 일부이므로 "관측을 잃는" 것이 아니라 "집행을 잃는" 쪽이다.
      */
-    private javax.crypto.Mac newShardMac() {
+    private Mac newShardMac() {
         try {
-            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
-            mac.init(new javax.crypto.spec.SecretKeySpec(shardKey, "HmacSHA256"));
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(shardKey, "HmacSHA256"));
             return mac;
-        } catch (java.security.GeneralSecurityException e) {
+        } catch (GeneralSecurityException e) {
             throw new IllegalStateException(
                     "HmacSHA256 을 쓸 수 없다 — 샤드 조준 방어가 성립하지 않으므로 기동을 막는다", e);
         }

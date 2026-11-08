@@ -146,11 +146,17 @@ class ChatMetricsPrometheusScrapeTest {
             method.invoke(metrics, args);
         }
 
-        // then: 선언된 이름마다 미터가 실재한다. 상수만 늘고 등록이 없으면 여기서 걸린다.
+        // then: 선언된 이름마다 미터가 실재하고, <b>실제 스크레이프 텍스트</b>에 나온다.
+        // 등록만 보면 이 클래스의 축(스크레이프)을 안 보는 것이고, 리플렉션은 상수를 따라가므로
+        // 이름 변경도 못 잡는다 — 그래서 변환된 이름을 스크레이프에서 찾는다(점 → 밑줄).
+        String scrape = registry.scrape();
         for (String name : declared) {
             assertThat(registry.find(name).meters())
                     .as("선언만 있고 등록이 없다 — 또는 이 칸을 안 늘렸다: %s", name)
                     .isNotEmpty();
+            assertThat(scrape)
+                    .as("등록은 됐는데 스크레이프에 안 나온다(태그 키 집합 충돌이 그 모양이다): %s", name)
+                    .contains(name.replace('.', '_'));
         }
     }
 

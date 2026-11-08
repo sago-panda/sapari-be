@@ -57,8 +57,9 @@ public interface ChatMetrics {
     /**
      * pub/sub 구독이 <b>재구독을 시도했다</b>.
      *
-     * <p>지금까지 이 축의 지표가 0건이었다 — {@code ChatMeterNames} 여섯도
-     * {@code ChatSessionGaugeConfig} 다섯도 구독을 보지 않는다. 신호는 최대 30초마다 남는
+     * <p><b>이 메서드가 생기기 전까지</b> 이 축의 지표가 0건이었다 — 그때
+     * {@code ChatMeterNames} 여섯과 {@code ChatSessionGaugeConfig} 다섯 중 구독을 보는 것이
+     * 하나도 없었다(지금은 이 이름이 더해져 각각 일곱·여섯이다). 신호는 최대 30초마다 남는
      * {@code log.warn} 한 줄뿐이었고, 그 줄을 놓치면 <b>구독이 죽은 파드가 Ready 로 서 있는</b>
      * 상태를 밖에서 알 수 없다.
      *

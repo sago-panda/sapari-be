@@ -56,7 +56,15 @@ public class EntryGate {
     /** 사유별로 따로 센다 — 하나를 공유하면 먼저 찍은 쪽이 다른 사유의 첫 발생을 통째로 덮는다. */
     private final Map<String, GateOpenLog> gateOpenLogs = new ConcurrentHashMap<>();
 
-    private record GateOpenLog(AtomicLong lastNanos, AtomicLong passedThrough) {
+    /**
+     * 솎기 래치 + 누적 수.
+     *
+     * <p>⚠️ 수 필드 이름이 중립({@code occurrences})인 이유: 이 기계를 <b>거부</b> 쪽도 쓴다
+     * (아래 {@code logDenial}). 한때 이름이 "통과" 였고, 그때는 거부 건수를 통과라는 이름의
+     * 필드에 담는 모양이었다 — 읽는 사람이 뜻을 거꾸로 받는다. 무엇의 수인지는 맵 키
+     * ({@code what})가 말한다.
+     */
+    private record GateOpenLog(AtomicLong lastNanos, AtomicLong occurrences) {
     }
 
     private final ChatKickRepository kickRepository;
@@ -225,7 +233,7 @@ public class EntryGate {
         }
         metrics.policyNotEnforced(policy, checkpoint, PolicyReadFailure.UNAVAILABLE);
         GateOpenLog entry = counterFor(what);
-        long total = entry.passedThrough().incrementAndGet();
+        long total = entry.occurrences().incrementAndGet();
         if (dueToLog(entry)) {
             // 누적 건수를 함께 남긴다 — 게이트가 열린 동안 몇 명이 그냥 통과했는지가 이 자리의 핵심 수치다.
             log.warn("{} 조회 실패 — 입장 허용(게이트 열림) roomId={} userId={} cause={} 누적통과={}",
@@ -242,7 +250,7 @@ public class EntryGate {
             ChatSession session, KickStoreCorruptedException cause) {
         metrics.policyNotEnforced(policy, checkpoint, PolicyReadFailure.STORE_CORRUPTED);
         GateOpenLog entry = counterFor(what + "/키 타입 충돌");
-        long total = entry.passedThrough().incrementAndGet();
+        long total = entry.occurrences().incrementAndGet();
         if (dueToLog(entry)) {
             log.error("{} 조회 불가(키 타입 어긋남) — 입장 허용(게이트 열림). 재시도로 낫지 않으니 사람이 그 키를 "
                             + "치워야 한다. key={} roomId={} 누적통과={}",
@@ -279,7 +287,7 @@ public class EntryGate {
      */
     private void logDenial(String what, ChatSession session) {
         GateOpenLog entry = counterFor("거부/" + what);
-        long total = entry.passedThrough().incrementAndGet();
+        long total = entry.occurrences().incrementAndGet();
         if (dueToLog(entry)) {
             log.warn("입장 거부 — {} roomId={} userId={} 누적거부={}",
                     what, session.roomId(), session.userId(), total);
