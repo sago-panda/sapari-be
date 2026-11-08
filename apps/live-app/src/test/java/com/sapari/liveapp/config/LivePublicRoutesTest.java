@@ -48,6 +48,14 @@ class LivePublicRoutesTest {
             mvc.perform(get("/api/v1/lives/upcoming")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/replay")).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/lives/rooms/room-id/detail")).andExpect(status().isOk());
+            // 판매자 조회는 공개 GET 형태(/rooms/{한 세그먼트})를 피해 /seller 아래에 둔다 — 익명은 401.
+            mvc.perform(get("/api/v1/lives/seller/rooms")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/api/v1/lives/seller/rooms/counts")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/api/v1/lives/seller/rooms/room-id")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/api/v1/lives/rooms/room-id/cancel")).andExpect(status().isUnauthorized());
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .put("/api/v1/lives/rooms/room-id")).andExpect(status().isUnauthorized());
             mvc.perform(get("/api/v1/lives/rooms/room-id/ingress")).andExpect(status().isUnauthorized());
             mvc.perform(get("/api/v1/lives/future-private")).andExpect(status().isUnauthorized());
             mvc.perform(post("/api/v1/lives/rooms")).andExpect(status().isUnauthorized());

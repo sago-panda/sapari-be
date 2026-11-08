@@ -37,7 +37,7 @@ public class GetLiveRoomService implements GetLiveRoomUseCase {
         return new LiveRoomView(room.id(), room.sellerId(), live, startedAtOf(status));
     }
 
-    // default 를 쓰지 않는다 — 상태가 추가되면 컴파일이 깨져서 알려주도록 다섯 갈래를 모두 나열한다.
+    // default 를 쓰지 않는다 — 상태가 추가되면 컴파일이 깨져서 알려주도록 모든 갈래를 나열한다.
     private static Instant startedAtOf(LiveStatus status) {
         return switch (status) {
             case LiveStatus.Scheduled ignored -> null;
@@ -45,6 +45,7 @@ public class GetLiveRoomService implements GetLiveRoomUseCase {
             case LiveStatus.Live l -> l.startedAt();
             case LiveStatus.Ended e -> e.startedAt();
             case LiveStatus.Suspended s -> s.startedAt();
+            case LiveStatus.Cancelled ignored -> null;
         };
     }
 }

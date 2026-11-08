@@ -351,6 +351,7 @@ public class LiveSecurityConfig {
                                 "/api/v1/lives/upcoming",
                                 "/api/v1/lives/rooms/{roomId}",
                                 "/api/v1/lives/rooms/{roomId}/replay",
+                                "/api/v1/lives/rooms/{roomId}/detail",
                                 "/api/v1/lives/{roomId}/chat/history").permitAll()
                         // 채팅 강퇴는 판매자와 관리자 둘 다 — 관리자는 남의 방도 통제한다.
                         // 아래 판매자 전용 규칙보다 먼저 와야 한다(먼저 맞는 규칙이 이긴다).

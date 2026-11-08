@@ -7,7 +7,7 @@ dependencies {
     implementation(project(':storage:redis-core'))
     implementation(project(':common:core'))
     implementation(project(':common:global'))
-    implementation(project(':common:page'))
+    implementation(project(':common:page'))   // 판매자 내 방 목록 키셋 커서 · 예정 방송 목록 CursorPage
     implementation(project(':modules:live:live-api'))
 
     api 'jakarta.persistence:jakarta.persistence-api'
@@ -40,6 +40,16 @@ dependencies {
 
     // FixtureMonkey
     testImplementation "com.navercorp.fixturemonkey:fixture-monkey-starter:1.1.19"
+
+    // 판매자 목록 키셋·탭별 개수 쿼리(JPQL)와 rtmp_url 컬럼을 실제 Postgres 와 운영 마이그레이션으로 검증한다.
+    // 선례: chat-core(같은 live 마이그레이션을 같은 방식으로 적용).
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation platform('org.testcontainers:testcontainers-bom:1.20.4')
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
+    testRuntimeOnly 'org.postgresql:postgresql'
+    testImplementation 'org.springframework.boot:spring-boot-data-jpa-test'
+    testImplementation 'org.springframework.boot:spring-boot-jdbc-test'
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

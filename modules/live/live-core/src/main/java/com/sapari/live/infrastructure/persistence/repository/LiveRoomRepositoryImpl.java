@@ -5,7 +5,10 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -16,6 +19,7 @@ import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Repository;
 
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
@@ -74,9 +78,9 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     }
 
     @Override
-    public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now){
+    public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now){
         return liveRoomJpaRepository.assignRtmpIngressIfAbsent(
-                roomId, sellerId, ingressId, StreamType.RTMP, LiveRoomStatus.SCHEDULED, now) == 1;
+                roomId, sellerId, ingressId, rtmpUrl, StreamType.RTMP, LiveRoomStatus.SCHEDULED, now) == 1;
     }
 
     @Override
@@ -117,6 +121,40 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     @Override
     public long countLiveRooms(){
         return liveRoomJpaRepository.countByLiveStatus(LiveRoomStatus.LIVE);
+    }
+
+    /**
+     * 도메인 상태 종류 ↔ 영속 enum. 포트가 영속 enum 을 노출하지 않게 여기서만 바꾼다.
+     * 상태를 추가하면 여기에도 넣어야 한다 — 빠지면 그 상태의 방이 판매자 목록에서 조용히 사라진다
+     * ({@code LiveRoomRepositoryImplStatusMapTest} 가 sealed permits 전부를 대조해 막는다).
+     */
+    static final Map<Class<? extends LiveStatus>, LiveRoomStatus> STATUS_COLUMN = Map.of(
+            LiveStatus.Scheduled.class, LiveRoomStatus.SCHEDULED,
+            LiveStatus.Ready.class, LiveRoomStatus.READY,
+            LiveStatus.Live.class, LiveRoomStatus.LIVE,
+            LiveStatus.Suspended.class, LiveRoomStatus.SUSPENDED,
+            LiveStatus.Ended.class, LiveRoomStatus.ENDED,
+            LiveStatus.Cancelled.class, LiveRoomStatus.CANCELLED);
+
+    @Override
+    public List<LiveRoom> findSellerRooms(UUID sellerId, Set<Class<? extends LiveStatus>> statuses,
+                                          Instant cursorScheduledAt, UUID cursorId, int limit){
+        List<LiveRoomStatus> columns = statuses.stream().map(STATUS_COLUMN::get).toList();
+        List<LiveRoomEntity> rows = (cursorScheduledAt == null && cursorId == null)
+                ? liveRoomJpaRepository.findSellerRoomsFirstPage(sellerId, columns, Limit.of(limit))
+                : liveRoomJpaRepository.findSellerRoomsAfter(sellerId, columns, cursorScheduledAt, cursorId, Limit.of(limit));
+        return rows.stream().map(liveRoomMapper::toDomain).toList();
+    }
+
+    @Override
+    public Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId){
+        Map<LiveRoomStatus, Class<? extends LiveStatus>> byColumn = new EnumMap<>(LiveRoomStatus.class);
+        STATUS_COLUMN.forEach((type, column) -> byColumn.put(column, type));
+        Map<Class<? extends LiveStatus>, Long> counts = new HashMap<>();
+        for (Object[] row : liveRoomJpaRepository.countBySellerGroupByStatus(sellerId)) {
+            counts.put(byColumn.get((LiveRoomStatus) row[0]), (Long) row[1]);
+        }
+        return counts;
     }
 
     /** 예정 목록에 들어가는 상태 — 포함 조건이다. 제외 목록으로 바꾸면 새 상태가 공개 목록에 새어 나온다. */

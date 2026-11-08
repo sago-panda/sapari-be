@@ -9,6 +9,7 @@ dependencies {
     // RefreshTokenRedisRepository 하나다 — 그건 거기서 스캔 제외한다.
     implementation project(':common:auth')
     implementation(project(":modules:live:live-api"))
+    implementation project(':common:page')   // 판매자 내 방 목록 응답(CursorPage)
     implementation(project(":modules:live:live-core"))
 
     // 강퇴 REST. chat-core 는 리액티브 스타터를 함께 끌고 오는데(streaming-app 과 한 모듈을 공유한다),

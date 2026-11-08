@@ -7,6 +7,7 @@ import org.mapstruct.ReportingPolicy;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStreamType;
+import com.sapari.live.domain.model.LiveStatus.Cancelled;
 import com.sapari.live.domain.model.LiveStatus.Ended;
 import com.sapari.live.domain.model.LiveStatus.Live;
 import com.sapari.live.domain.model.LiveStatus.Ready;
@@ -21,7 +22,7 @@ import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
  *
  * <p>평면 필드(sellerId/title/description/sellerNickname/thumbnailUrl)만 MapStruct가 자동 매핑한다
  * ({@code toDomain} 직접, {@code toEntity}는 {@code toEntityBase} 경유).
- * sealed {@link LiveStatus}(4-variant) ↔ {@link LiveRoomStatus} enum, variant별 필드, 그리고 엔티티의
+ * sealed {@link LiveStatus} ↔ {@link LiveRoomStatus} enum, variant별 필드, 그리고 엔티티의
  * mutator(applyXxx/updateXxx) 기반 변경은 자동 생성이 불가해 아래 default 메서드가 담당한다.
  *
  * <p>상태 추가 시 {@code toStatus}·{@code toStatusEnum}·{@code applyStatusFields}의 switch를 함께
@@ -34,9 +35,10 @@ import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface LiveRoomMapper {
 
-    // top-level scheduledAt 은 비워 둔다(상태가 보유). streamInfo 는 컬럼에서 복원한다.
+    // top-level scheduledAt 은 읽기에서만 컬럼 값으로 채운다 — Live·Ended·Cancelled 방도 예정 시각을 보여 주고
+    // 판매자 목록이 그 값으로 정렬하기 때문이다. 쓰기는 여전히 상태 기반이다(toEntityBase 는 무시,
+    // updateEntityFromDomain 은 applyScheduledAt). streamInfo 는 컬럼에서 복원한다.
     @Mapping(target = "streamInfo", expression = "java(toStreamInfo(entity))")
-    @Mapping(target = "scheduledAt", ignore = true)
     @Mapping(target = "streamType", expression = "java(toStreamType(entity))")
     @Mapping(target = "status", expression = "java(toStatus(entity))")
     LiveRoom toDomain(LiveRoomEntity entity);
@@ -91,8 +93,8 @@ public interface LiveRoomMapper {
         entity.updateDescription(room.description());
         entity.updateSellerNickname(room.sellerNickname());
         entity.updateThumbnailUrl(room.thumbnailUrl());
-        // scheduledAt 은 top-level 이 아니라 상태(Scheduled/Ready)에만 담긴다(toDomain 이 top-level 을 비움).
-        // room.scheduledAt() 을 그대로 쓰면 되저장 시 scheduled_at 컬럼이 null 로 지워지므로 상태 기반으로 세팅한다.
+        // scheduled_at 은 상태 기반으로만 쓴다(Scheduled/Ready 만 갱신, 나머지는 컬럼 보존). top-level scheduledAt 은
+        // 읽기 전용 표시값이다 — 그것을 쓰면 빌더로 만든 방(top-level 미설정)을 저장할 때 컬럼이 null 로 지워진다.
         applyScheduledAt(entity, room.status());
 
         if (room.streamInfo() != null) {
@@ -126,6 +128,8 @@ public interface LiveRoomMapper {
                     entity.getStartedAt(), entity.getEndedAt(), archiveUrl(entity));
             case SUSPENDED -> new Suspended(
                     entity.getStartedAt(), entity.getSuspendedAt(), entity.getSuspendedReason());
+            // 취소 시각은 종단 시각 컬럼(ended_at)에 있다 — applyCancelled 가 쓰는 컬럼이다.
+            case CANCELLED -> new Cancelled(entity.getScheduledAt(), entity.getEndedAt());
         };
     }
 
@@ -159,6 +163,7 @@ public interface LiveRoomMapper {
             case Live l -> LiveRoomStatus.LIVE;
             case Ended e -> LiveRoomStatus.ENDED;
             case Suspended s -> LiveRoomStatus.SUSPENDED;
+            case Cancelled c -> LiveRoomStatus.CANCELLED;
         };
     }
 
@@ -170,6 +175,7 @@ public interface LiveRoomMapper {
             case Live l -> { }
             case Ended e -> { }
             case Suspended s -> { }
+            case Cancelled c -> { }
         }
     }
 
@@ -188,6 +194,7 @@ public interface LiveRoomMapper {
                 entity.applyEnded(e.endedAt(), archive);
             }
             case Suspended s -> entity.applySuspended(s.suspendedAt(), s.reason());
+            case Cancelled c -> entity.applyCancelled(c.cancelledAt());
         }
     }
 }

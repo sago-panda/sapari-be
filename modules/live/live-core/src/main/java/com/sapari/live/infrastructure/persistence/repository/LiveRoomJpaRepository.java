@@ -54,13 +54,14 @@ public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUI
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
             UPDATE LiveRoomEntity r
-               SET r.ingressId = :ingressId, r.streamType = :rtmp, r.updatedAt = :now
+               SET r.ingressId = :ingressId, r.rtmpUrl = :rtmpUrl, r.streamType = :rtmp, r.updatedAt = :now
              WHERE r.id = :roomId AND r.sellerId = :sellerId
                AND r.liveStatus = :scheduled AND r.ingressId IS NULL
             """)
     int assignRtmpIngressIfAbsent(@Param("roomId") UUID roomId,
                                   @Param("sellerId") UUID sellerId,
                                   @Param("ingressId") String ingressId,
+                                  @Param("rtmpUrl") String rtmpUrl,
                                   @Param("rtmp") StreamType rtmp,
                                   @Param("scheduled") LiveRoomStatus scheduled,
                                   @Param("now") Instant now);
@@ -78,6 +79,37 @@ public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUI
 
     /** 활성 방 수 게이지용. 인덱스가 있는 상태 컬럼 하나짜리 집계다. */
     long countByLiveStatus(LiveRoomStatus liveStatus);
+
+    /*
+     * 판매자 내 방 목록 키셋 — 정렬과 WHERE 가 같은 두 키(scheduled_at DESC, id DESC)를 쓴다.
+     * 인덱스 (seller_id, scheduled_at DESC, id DESC) 가 짝이다(V202611081200). 첫 페이지와 이후 페이지를
+     * 두 쿼리로 나눴다 — "커서가 null 이면 조건 무시" 같은 OR 분기 없이 키셋 조건이 그대로 남게.
+     * scheduled_at 은 create() 가 필수로 받고 어떤 상태도 지우지 않아 NULL 행이 없다는 전제다.
+     */
+    @Query("""
+            SELECT r FROM LiveRoomEntity r
+             WHERE r.sellerId = :sellerId AND r.liveStatus IN :statuses
+             ORDER BY r.scheduledAt DESC, r.id DESC
+            """)
+    List<LiveRoomEntity> findSellerRoomsFirstPage(@Param("sellerId") UUID sellerId,
+                                                  @Param("statuses") Collection<LiveRoomStatus> statuses,
+                                                  Limit limit);
+
+    @Query("""
+            SELECT r FROM LiveRoomEntity r
+             WHERE r.sellerId = :sellerId AND r.liveStatus IN :statuses
+               AND (r.scheduledAt < :scheduledAt OR (r.scheduledAt = :scheduledAt AND r.id < :id))
+             ORDER BY r.scheduledAt DESC, r.id DESC
+            """)
+    List<LiveRoomEntity> findSellerRoomsAfter(@Param("sellerId") UUID sellerId,
+                                              @Param("statuses") Collection<LiveRoomStatus> statuses,
+                                              @Param("scheduledAt") Instant scheduledAt,
+                                              @Param("id") UUID id,
+                                              Limit limit);
+
+    /** 탭별 개수용. 기존 인덱스 (seller_id, status, created_at) 의 앞 두 키로 풀린다. */
+    @Query("SELECT r.liveStatus, COUNT(r) FROM LiveRoomEntity r WHERE r.sellerId = :sellerId GROUP BY r.liveStatus")
+    List<Object[]> countBySellerGroupByStatus(@Param("sellerId") UUID sellerId);
 
     /** 공개 방송 중 목록 재조정의 원본 — 지금 Live 인 방 전부(상한 limit). */
     List<LiveRoomEntity> findByLiveStatusOrderByIdAsc(LiveRoomStatus liveStatus, Limit limit);

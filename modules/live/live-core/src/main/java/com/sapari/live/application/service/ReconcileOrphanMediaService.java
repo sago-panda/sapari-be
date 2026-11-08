@@ -63,13 +63,13 @@ import com.sapari.live.port.ReconcileOrphanMediaUseCase;
  * 그래서 마감을 넣은 순간 상한·회전은 존재 이유를 잃었다.
  *
  * <p><b>회전을 두지 않는 이유</b>(기아가 불가능해서가 아니다): 정지 규칙이 마감 하나라 적체가 한 회차
- * 처리량보다 크면 <b>꼬리는 여전히 밀린다</b>. 후보 순서도 결정적이다(Ended → updated_at → roomId).
+ * 처리량보다 크면 <b>꼬리는 여전히 밀린다</b>. 후보 순서도 결정적이다(종단(Ended·Cancelled) → updated_at → roomId).
  * 회전은 그걸 못 고친다 — 누가 기다릴지 순서만 바꿀 뿐 처리량을 늘리지 않고, 정렬 위에 창을 얹는 것이
  * 창 기아 결함들이 나온 자리였다. 매 회차 전수 조회를 하므로 처리된 리소스는 다음 회차 목록에서
  * 사라지고, 남는 건 실패했거나 예산이 모자란 것이다 — 그건 {@code ORPHAN_ROOM_CANDIDATE} 가 회차를
  * 거쳐도 줄지 않는 것으로 드러나야 할 신호이지 회전으로 가릴 게 아니다.
  *
- * <p>리소스별 판정 술어({@link #isOrphanIngress}, egress 나이·활성·상태 조건, Ended 방만 닫기)는
+ * <p>리소스별 판정 술어({@link #isOrphanIngress}, egress 나이·활성·상태 조건, 종단 방만 닫기)는
  * 예전 그대로다 — 바뀐 건 순회뿐이다.
  */
 @Slf4j
@@ -189,14 +189,14 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Map<UUID, LiveRoom> snapshots = loadRooms(worthLoading);
 
-        // 오래된 방부터. Ended 방을 앞세우는 건 그 방의 리소스가 전부 확실한 고아이기 때문이다
-        // (Ended 가 아닌 방에서는 경합 패자 ingress 하나만 고아다). 회전이 없으니 이 정렬이
+        // 오래된 방부터. 종단 방(Ended·Cancelled)을 앞세우는 건 그 방의 리소스가 전부 확실한 고아이기 때문이다
+        // (종단이 아닌 방에서는 경합 패자 ingress 하나만 고아다). 회전이 없으니 이 정렬이
         // 실제 처리 순서 그대로다 — 예전에는 창이 이 위에 얹혀 선두 방문이 확률이었다.
         List<UUID> candidates = worthLoading.stream()
                 .filter(roomId -> hasAnythingToDo(roomId, byRoom.get(roomId), snapshots.get(roomId), threshold))
                 .sorted(Comparator
                         .comparing((UUID roomId) ->
-                                !(snapshots.get(roomId).status() instanceof LiveStatus.Ended))
+                                !snapshots.get(roomId).status().isTerminal())
                         .thenComparing(roomId -> snapshots.get(roomId).updatedAt(),
                                 Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(UUID::toString))
@@ -219,9 +219,9 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                 }
                 roomsVisited++;
                 // <b>만지기 직전에</b> 방을 다시 읽는다(AGENTS "per room, right before touching it").
-                // Ended 는 종단 상태라 되돌아오지 않으므로 스냅샷을 그대로 믿는다 — 그 방만 조회를 아낀다.
+                // 종단 상태(Ended·Cancelled)는 되돌아오지 않으므로 스냅샷을 그대로 믿는다 — 그 방만 조회를 아낀다.
                 LiveRoom snapshot = snapshots.get(roomId);
-                LiveRoom current = snapshot.status() instanceof LiveStatus.Ended
+                LiveRoom current = snapshot.status().isTerminal()
                         ? snapshot : liveRoomRepository.findById(roomId).orElse(null);
                 if (current == null) {
                     continue; // 조회 사이에 사라진 방 — 판정 불가는 건드리지 않는다
@@ -282,7 +282,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                     }
                 }
 
-                // 3) 방 닫기 — Ended 인 방만. <b>이 방의 정리가 끝났을 때만</b> 닫는다: 마감에 걸려
+                // 3) 방 닫기 — 종단(Ended·Cancelled) 방만. <b>이 방의 정리가 끝났을 때만</b> 닫는다: 마감에 걸려
                 //    ingress 나 egress 를 남겼으면 방을 열어 둔 채 다음 회차로 넘긴다. 예전 구조는 이 조건을
                 //    표현할 수 없었고(스윕이 달랐다), 그래서 "ingress 는 밀렸는데 방은 닫힘" 이 났다.
                 // 삭제 포트는 <b>실패를 삼킨다</b>(비-2xx·예외 모두). 그래서 "지웠다고 요청했다"와
@@ -299,7 +299,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                 // (lock-at-most-for=PT10M 이면 2분). "리스 ≥ 예산 + 방 하나의 fan-out" 을 어디서도
                 // 강제하지 못하므로, 강제 대신 여기서 멈춘다 — 남은 방은 다음 회차가 가져간다.
                 if (!roomCleanupIncomplete && resources.hasSfuRoom()
-                        && current.status() instanceof LiveStatus.Ended
+                        && current.status().isTerminal()
                         && !timeProvider.now().isBefore(deadline)) {
                     budgetExhausted = true;
                     roomCleanupIncomplete = true;
@@ -307,7 +307,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                 }
 
                 if (!roomCleanupIncomplete && resources.hasSfuRoom()
-                        && current.status() instanceof LiveStatus.Ended) {
+                        && current.status().isTerminal()) {
                     try {
                         List<IngressSummary> survivors = liveMediaManager.listRoomIngress(roomId);
                         if (!survivors.isEmpty()) {
@@ -321,15 +321,15 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                     }
                 }
 
-                if (resources.hasSfuRoom() && current.status() instanceof LiveStatus.Ended && !roomCleanupIncomplete) {
-                    // <b>유예를 두지 않는다.</b> Ended 방에 정당한 SFU 방은 존재할 수 없다(시작은
-                    // Scheduled 에서만 하고 그 시점의 DB 는 Ended 가 아니다). 유예는 보호하는 게 없으면서
+                if (resources.hasSfuRoom() && current.status().isTerminal() && !roomCleanupIncomplete) {
+                    // <b>유예를 두지 않는다.</b> 종단 방(Ended·Cancelled)에 정당한 SFU 방은 존재할 수 없다(시작은
+                    // Scheduled 에서만 하고, 종단에서 나가는 전이는 없다). 유예는 보호하는 게 없으면서
                     // 구멍을 만든다: 판매자가 토큰으로 재입장하면 방이 새 생성 시각으로 다시 생기므로,
                     // 유예보다 짧은 주기로 재입장하면 이 잡이 영원히 발화하지 않는다 — 그게 이 경로를
                     // 만든 시나리오다. 참가자 수도 판정에 쓰지 않고 로그에만 싣는다.
                     liveMediaManager.closeRoom(roomId.toString());
                     roomCloses++;
-                    log.warn("종료된 방의 SFU 방 회수 — 판매자 토큰 재입장 또는 종료 정리 실패."
+                    log.warn("종료·취소된 방의 SFU 방 회수 — 판매자 토큰 재입장 또는 종료 정리 실패."
                                     + " roomId={}, 참가자={}, ingress 삭제={}",
                             roomId, resources.participants(), deletedHere);
                 }
@@ -424,32 +424,33 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
                     roomId, resources.ingresses().size(), resources.egresses().size(), resources.hasSfuRoom());
             return false;
         }
-        boolean ended = snapshot.status() instanceof LiveStatus.Ended;
+        boolean terminal = snapshot.status().isTerminal();
         boolean orphanIngress = ingressGraceElapsed(snapshot, threshold)
                 && resources.ingresses().stream()
                 .anyMatch(ingress -> isOrphanIngress(snapshot, ingress.ingressId()));
         boolean orphanEgress = !(snapshot.status() instanceof LiveStatus.Live)
                 && resources.egresses().stream().anyMatch(egress -> isOrphanEgress(egress, threshold));
-        return orphanIngress || orphanEgress || (resources.hasSfuRoom() && ended);
+        return orphanIngress || orphanEgress || (resources.hasSfuRoom() && terminal);
     }
 
     /**
      * ingress 삭제에만 거는 유예. 방금 {@code createIngress} 를 마치고 {@code save} 가 아직인 정상
      * 요청이 고아와 똑같이 보이므로, 방의 {@code updated_at} 이 유예를 지났을 때만 손댄다.
-     * Ended 방에는 유예가 없다 — 그 상태에 정당한 ingress 는 존재하지 않는다.
+     * 종단 방(Ended·Cancelled)에는 유예가 없다 — 그 상태에 정당한 ingress 는 존재하지 않는다.
+     * 취소는 updated_at 을 갱신하므로, 유예를 걸면 취소 직후 정리 실패분을 유예 동안 못 본다(종료와 같은 이유).
      *
      * <p>egress 에는 이 게이트를 쓰지 않는다({@link #isOrphanEgress} 참고).
      */
     private boolean ingressGraceElapsed(LiveRoom room, Instant threshold) {
-        if (room.status() instanceof LiveStatus.Ended) {
+        if (room.status().isTerminal()) {
             return true;
         }
         return room.updatedAt() != null && !room.updatedAt().isAfter(threshold);
     }
 
-    /** 방이 인정하는 ingress 는 "종료되지 않은 방의 ingress_id" 하나뿐. 그 외는 전부 고아다. */
+    /** 방이 인정하는 ingress 는 "종단이 아닌 방의 ingress_id" 하나뿐. 그 외는 전부 고아다. */
     private boolean isOrphanIngress(LiveRoom room, String ingressId) {
-        if (room.status() instanceof LiveStatus.Ended) {
+        if (room.status().isTerminal()) {
             return true;
         }
         return !(room.streamType() instanceof LiveStreamType.Rtmp rtmp)
