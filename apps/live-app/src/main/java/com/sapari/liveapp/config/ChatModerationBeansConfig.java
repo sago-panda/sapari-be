@@ -60,6 +60,9 @@ import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * 강퇴 경로의 <b>블로킹</b> 조각을 이 앱에 세운다.
@@ -97,6 +100,39 @@ public class ChatModerationBeansConfig {
     @Bean
     public MongoClientSettingsBuilderCustomizer liveAppChatUuidRepresentationCustomizer() {
         return builder -> builder.uuidRepresentation(UuidRepresentation.STANDARD);
+    }
+
+    /**
+     * live-app 의 Mongo <b>연산 상한</b>. streaming-app 의 것이 여기에 적용되지 않는다 —
+     * 그쪽 상한은 {@code ChatMongoConfig} 가 걸고 이 앱은 그 설정을 들이지 않는다(위 UUID
+     * 커스터마이저만 따로 등록한 이유와 같다).
+     *
+     * <p><b>왜 필요한가.</b> 드라이버 기본값은 전체 연산 상한이 <b>미설정</b>이고 socket read
+     * timeout 이 <b>0</b> 이다. 그래서 이 앱의 이력·증거 조회는 <b>동기</b> {@code MongoTemplate} 을
+     * 쓰면서 상한이 코드로 보장되지 않는다 — 멈춘 Mongo 아래에서 HTTP 워커가 무한정 점유된다.
+     * ⚠️ 운영 URI 에 별도 상한이 있을 수는 있어 "운영에서도 반드시 무제한" 이라고 단정하지 않는다.
+     * 단정하는 것은 <b>코드와 예시 설정만으로는 상한이 보장되지 않는다</b> 는 쪽이다.
+     *
+     * <p><b>값의 축이 streaming-app 과 다르다.</b> 그쪽은 전송이 {@code concatMap} 으로 직렬화돼
+     * 상한이 <b>메시지마다</b> 걸리므로 축이 "(세션이 막혀도 되는 시간 ÷ 대기 프레임 수)" 였다.
+     * 이쪽은 요청 하나가 Mongo 조회 하나를 쓰고 끝나므로 축이 <b>"HTTP 워커를 몇 초까지 점유해도
+     * 되는가"</b> 다. 동시 점유 수는 공개 이력 조회 상한(기본 20/s)이 위에서 잡는다.
+     *
+     * <p>⚠️ 3초는 <b>재지 않은 값</b>이다 — 잴 수 없어서가 아니라 안 쟀다. 재서 나온 것은
+     * "상한이 없다" 와 "축이 워커 점유다" 둘이고 그 수는 거기서 나오지 않는다. 운영에서 올리는
+     * 것이 복구 수단이고, 잘못된 값만 부팅에서 막는다.
+     */
+    @Bean
+    public MongoClientSettingsBuilderCustomizer liveAppChatMongoOperationTimeoutCustomizer(
+            @Value("${live.chat.mongo.operation-timeout:3s}") Duration operationTimeout) {
+        long millis = operationTimeout.toMillis();
+        if (millis < 1) {
+            // 프로퍼티 이름을 메시지에 싣는다 — 기동 로그만 보고 어느 키를 고칠지 알아야 한다
+            // (형제 chat.mongo.operation-timeout 과 같은 모양이다).
+            throw new IllegalArgumentException(
+                    "live.chat.mongo.operation-timeout 은 1ms 이상이어야 합니다: " + operationTimeout);
+        }
+        return builder -> builder.timeout(millis, TimeUnit.MILLISECONDS);
     }
 
     /** 순수 정책이라 프레임워크 애너테이션이 없다 — 그래서 호스트가 직접 세운다. */
