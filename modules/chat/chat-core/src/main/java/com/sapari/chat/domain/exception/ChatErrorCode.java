@@ -75,7 +75,12 @@ public enum ChatErrorCode implements ErrorCode {
     // 않는다 — 그 갈래의 전제가 DuplicateKey 라 문서가 이미 있고, 위 문구가 그 경우에 거짓이 된다.
     // 그 갈래는 번역 없이 5xx 로 가고 수만 chat.persist.timeout{stage=duplicate_recovery_read} 가
     // 센다(SPR-178). 갈래별 문구를 주려면 코드가 하나 더 필요하고 그건 와이어 계약 변경이다.
-    PERSIST_TIMEOUT(503, "CHAT-012", "메시지를 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+    // ⚠️ "저장하지 못했습니다" 가 아니다 — 클라이언트 상한은 서버 쓰기를 취소하지 않으므로
+    // 저장됐을 수도 있다(실측: 상한 3ms·5ms 에서 예외인데 문서 1건). 그래서 결과를 단정하지 않고
+    // "같은 내용으로" 를 안내한다 — 같은 clientMsgId 재전송은 유니크 파셜 인덱스가 중복을 막지만
+    // 새 clientMsgId 로 보내면 중복이 생긴다(SPR-178 A23).
+    PERSIST_TIMEOUT(503, "CHAT-012",
+            "메시지 저장 결과를 확인하지 못했습니다. 같은 내용으로 다시 시도해 주세요.");
 
     private final int status;
     private final String code;

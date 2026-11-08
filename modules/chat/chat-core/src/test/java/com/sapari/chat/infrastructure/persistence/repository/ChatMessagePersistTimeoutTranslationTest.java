@@ -38,9 +38,10 @@ import reactor.test.StepVerifier;
  *
  * <p><b>갈래별 계수도 여기서 잰다</b>({@code PersistStage}). 쓰기와 중복복구 재조회를 가르는 수가
  * 드라이버 예외라 그 판정은 이 층에만 있다 — 응용 계층은 {@code ArchUnit} 으로 그 타입에 닿을 수
- * 없다. 두 갈래가 <b>정반대</b>를 뜻하므로 한 수로 세면 안 된다: 쓰기는 "아무것도 남지 않았다",
+ * 없다. 두 갈래의 <b>확신 수준</b>이 달라 한 수로 세면 안 된다: 쓰기는 <b>결과를 알 수 없고</b>
+ * (클라이언트 상한이 서버 쓰기를 취소하지 않는다 — 실측으로 예외와 함께 문서가 남은 경우가 있다),
  * 재조회는 전제가 {@code DuplicateKey} 라 문서가 <b>이미 있다</b>. 그래서 재조회는 번역하지 않고
- * 수만 센다 — 번역하면 이력에 있는 메시지를 유실로 보고한다.
+ * 수만 센다 — 번역하면 "존재 확정" 을 "불명" 과 같은 타입으로 올린다.
  *
  * <p><b>수를 적지 않는다, 어휘를 적는다.</b> 한때 "열한 자리에서 단정한다" 가 적혀 있었는데 그 11 은
  * 갈래를 가르기 <b>전</b>에 센 값이고, 갈래를 준 커밋이 그 집합의 멤버를 고치면서 수를 다시 세지
@@ -108,8 +109,8 @@ class ChatMessagePersistTimeoutTranslationTest {
         willReturn(Mono.error(driverChain)).given(mongoRepository)
                 .findByRoomIdAndSenderIdAndClientMsgId(any(), any(), any());
 
-        // when & then: 번역하면 "아무것도 남지 않았다" 를 열한 자리에서 단정하게 되고, 이력에 있는
-        // 메시지를 유실로 보고한다. 그래서 예외는 그대로 두고 **수만** 남긴다.
+        // when & then: 번역하면 "존재 확정" 인 이 갈래가 "결과 불명" 과 같은 타입으로 올라간다.
+        // 그래서 예외는 그대로 두고 **수만** 남긴다.
         StepVerifier.create(repository
                         .findByRoomIdAndSenderIdAndClientMsgId(UUID.randomUUID(), UUID.randomUUID(), "c1"))
                 .expectErrorSatisfies(error -> assertThat(error)

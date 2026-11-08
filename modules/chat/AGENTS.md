@@ -1187,17 +1187,32 @@ summed.** `delivery.dropped` means *persisted, live delivery lost* — every `De
 that. Adding them produces a number that says "it is in the history" about messages that are not.
 
 ⚠️ **`chat.persist.timeout` carries a `stage` tag, and its two values mean opposite things — do not sum
-them either** (`PersistStage`, SPR-178). `stage=write` means the write never landed and **nothing was
-stored**. `stage=duplicate_recovery_read` is the `DuplicateKey` recovery read: its premise is that the
-document **already exists**, so the message is in the history and what was cut is reading it back. Summing
-the two reports a stored message as lost — exactly the inversion the `delivery.dropped` warning above
-forbids in the other direction.
+them either** (`PersistStage`, SPR-178). `stage=write` means **the write's result is unknown** — a
+client-side bound does **not** cancel the server's write (measured on mongo:7.0 with driver 5.6.5,
+bound reduced per handle: 1ms/2ms → exception with **no** document, 3ms/5ms → exception with the
+document **present**, and **both branches are the same exception class**, so the caller cannot tell them
+apart). `stage=duplicate_recovery_read` is the `DuplicateKey` recovery read: its premise is that the
+document **already exists**. Summing mixes a *known-present* count into an *unknown* one and neither
+can be read afterwards.
+
+⚠️ An earlier version of this paragraph said `write` means "nothing was stored". That was false, and it
+propagated to **ten faces** (this table, the `infra/AGENTS.md` runbook, the exception javadoc, the meter
+javadoc, two adapter comments, `SendChatService`, two test comments, and `CHAT-012`'s user-facing text).
+Corrected under SPR-180.
 
 The two also differ in what the sender sees. `stage=write` is translated to
 `ChatErrorCode.PERSIST_TIMEOUT` (503, `CHAT-012`); the recovery read is **not translated**, so the sender
-gets an untranslated 500. That gap is deliberate — translating it would make `CHAT-012`'s "저장하지
-못했습니다" false on a branch where the message was stored — and closing it needs one more error code,
-i.e. a wire-contract change. The count exists now; the per-branch wording does not.
+gets an untranslated 500. That gap is deliberate, and the reason changed with SPR-180: `CHAT-012` no
+longer asserts failure (its text is now "저장 결과를 확인하지 못했습니다. 같은 내용으로 다시 시도해
+주세요."), so the old argument — that translating would make `CHAT-012` false — no longer applies. What
+still blocks the merge of the two branches is that they carry **different** certainty (unknown vs
+known-present) and separating that in the response needs one more error code, i.e. a wire-contract
+change. The count exists; the per-branch wording does not.
+
+⚠️ **`CHAT-012` steers the client to retry with the same content.** A retry carrying the same
+`clientMsgId` is idempotent — the unique partial index on `(roomId, senderId, clientMsgId)` rejects the
+duplicate (SPR-178 A23). A retry with a **new** `clientMsgId` can duplicate the message, because the
+first write may have landed.
 
 ⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
 `ChatMeterNames` declared it when it was added. The rule in this section is "a scrape test walks every enum

@@ -26,9 +26,15 @@ final class ChatMeterNames {
     /**
      * 연산 상한이 영속을 끊었다. 태그는 {@link #TAG_STAGE} 하나이고 {@code PersistStage} 가 그 값이다.
      *
-     * <p>⚠️ <b>두 값의 뜻이 정반대라 합치면 안 된다.</b> {@code stage=write} 는 "아무것도 남지
-     * 않았다" 이고, {@code stage=duplicate_recovery_read} 는 전제가 {@code DuplicateKey} 라 문서가
-     * <b>이미 있고</b> 끊긴 것은 되읽는 쪽이다. 합치면 이력에 있는 메시지를 유실로 보고한다.
+     * <p>⚠️ <b>두 값의 확신 수준이 달라서 합치면 안 된다.</b> {@code stage=write} 는 <b>결과를 알 수
+     * 없다</b>(문서가 있을 수도 없을 수도 있다 — 클라이언트 상한은 서버 쓰기를 취소하지 않는다.
+     * 실측: 상한 3ms·5ms 에서 예외인데 문서 1건, 1ms·2ms 에서는 0건, <b>두 갈래가 같은 예외
+     * 클래스</b>). {@code stage=duplicate_recovery_read} 는 전제가 {@code DuplicateKey} 라 문서가
+     * <b>이미 있다</b>. 합치면 "존재 확정" 을 "불명" 에 섞어 둘 다 못 읽는 수가 된다.
+     *
+     * <p>⚠️ <b>{@code write} 를 데이터 유실 확정으로 경보하지 않는다.</b> 한때 이 자리와
+     * {@code infra/AGENTS.md} 런북이 그렇게 적었고 거짓이었다. 유실일 수도 있으니 경보 자체는
+     * 유효하지만, 당직자가 받는 문장은 "유실" 이 아니라 <b>"결과 미확인 — 확인이 필요하다"</b> 다.
      *
      * <p>⚠️ {@link #DELIVERY_DROPPED} 에도 태우지 않는다. 그 미터의 정의가 "메시지는 영속됐고 실시간
      * 전달만 잃었다" 이고 {@code DeliveryStage} 네 값이 모두 그 전제다 — 쓰기 실패를 거기 더하면

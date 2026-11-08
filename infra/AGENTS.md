@@ -499,15 +499,19 @@ that on.
       summed with it. `delivery.dropped` means *the message is persisted and only live delivery was
       lost*. Reading them as one number says "it is in the history" about messages that are not.
     - ⚠️ **`chat.persist.timeout` has a `stage` tag whose two values must not be summed either**
-      (SPR-178). `stage=write` means **nothing was stored**; `stage=duplicate_recovery_read` is the
+      (SPR-178). `stage=write` means **the write's result is unknown**; `stage=duplicate_recovery_read` is the
       duplicate-recovery read, whose premise is that the document **already exists** — the message is
       in the history and only reading it back was cut. Alert on `write` for **a persist whose result is
       unknown** — ⚠️ **not** for confirmed data loss: a client-side timeout does not cancel the
       server's write, and both branches surface as the same driver exception, so the caller cannot
       tell "nothing was stored" from "stored but unconfirmed" (measured on mongo:7.0 with driver
-      5.6.5: a 3ms/5ms operation bound threw while the document was present). The exception's own
-      javadoc and three other faces still say "nothing was stored" and are being corrected under
-      SPR-181; this line is fixed first because it is the one that wakes a human on a false premise.
+      5.6.5: a 1ms/2ms bound threw with **no** document, a 3ms/5ms bound threw while the document was
+      **present**). The claim that `write` means nothing was stored had reached **ten faces** and all of
+      them were corrected under SPR-180; this runbook line was fixed one ticket earlier because it is
+      the one that wakes a human on a false premise.
+    - **What to do when `write` fires**: do not report data loss. Check whether the message is in the
+      history, and tell the client to retry **with the same content** — a retry carrying the same
+      `clientMsgId` is rejected by the unique partial index, while a new one can duplicate.
       Also alert on
       `duplicate_recovery_read` for "the sender cannot see a message that is already stored"; they
       need different responses. Details in `modules/chat/AGENTS.md`.

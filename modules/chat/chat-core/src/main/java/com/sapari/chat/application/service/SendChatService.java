@@ -52,8 +52,9 @@ import reactor.core.publisher.Mono;
  * {@code concatMap} 으로 직렬화돼 있고, PONG 이 생존 시계를 계속 갱신해 생존 판정도 그걸 못 끊는다.
  * 상한이 끊으면 {@code chat.persist.timeout} 이 오르고 발신자에게는 <b>에러</b>가 간다(ack 가 아니다).
  *
- * <p>⚠️ 그 미터는 <b>갈래가 둘</b>이다({@code PersistStage}). {@code stage=write} 는 "아무것도 남지
- * 않았다" 이고, 이 클래스의 {@code recoverDuplicate} 가 타는 {@code stage=duplicate_recovery_read} 는
+ * <p>⚠️ 그 미터는 <b>갈래가 둘</b>이다({@code PersistStage}). {@code stage=write} 는 <b>결과를 알 수
+ * 없다</b>(클라이언트 상한이 서버 쓰기를 취소하지 않는다 — 실측으로 예외와 함께 문서가 남은
+ * 경우가 있다), 이 클래스의 {@code recoverDuplicate} 가 타는 {@code stage=duplicate_recovery_read} 는
  * 전제가 {@code DuplicateKey} 라 문서가 <b>이미 있다</b> — 끊긴 것은 되읽는 쪽이다. 그래서 "저장이
  * 안 됐으므로" 를 이 클래스 수준에서 단정하지 않는다. 두 갈래의 처분이 다른 이유는
  * {@code ChatMessageRepositoryImpl.findByRoomIdAndSenderIdAndClientMsgId} 에 적혀 있다.
