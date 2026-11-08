@@ -1,5 +1,6 @@
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter'
+    implementation project(':common:page')   // use-case 반환 타입 CursorPage — -api 가 물 수 있는 유일한 토대
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

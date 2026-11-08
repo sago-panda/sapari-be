@@ -1,5 +1,6 @@
 dependencies {
     implementation project(':common:web')
+    implementation project(':common:page')   // 예정 방송 목록 CursorPage
 
     // 폐기 조회(TokenRevocationFilter)가 쓰는 정본 리더 둘 — AccessTokenBlacklistRedisRepository ·
     // SessionRevocationRedisRepository. 키 규약(TokenStoreKeys)을 세 번째 자리에 복제하는 대신

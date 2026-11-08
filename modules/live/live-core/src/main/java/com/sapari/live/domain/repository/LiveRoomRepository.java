@@ -62,4 +62,14 @@ public interface LiveRoomRepository {
      * 결정은 방마다 잠금 재조회로 판정해야 한다.
      */
     long countLiveRooms();
+
+    /** 지금 Live 인 방, 최대 {@code limit} 건. 공개 목록 재조정의 원본이다. */
+    List<LiveRoom> findAllLive(int limit);
+
+    /**
+     * 아직 시작하지 않은 방(Scheduled·Ready)을 {@code scheduledAt, id} 오름차순으로, 커서 뒤부터 최대 {@code limit} 건.
+     * 커서가 없으면({@code afterScheduledAt == null}) 처음부터. 상태는 포함 조건으로만 거른다 — 새 상태(취소 등)는
+     * 자동으로 빠진다.
+     */
+    List<LiveRoom> findUpcoming(Instant afterScheduledAt, UUID afterId, int limit);
 }

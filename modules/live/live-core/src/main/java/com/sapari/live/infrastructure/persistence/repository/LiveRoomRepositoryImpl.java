@@ -118,4 +118,22 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     public long countLiveRooms(){
         return liveRoomJpaRepository.countByLiveStatus(LiveRoomStatus.LIVE);
     }
+
+    /** 예정 목록에 들어가는 상태 — 포함 조건이다. 제외 목록으로 바꾸면 새 상태가 공개 목록에 새어 나온다. */
+    private static final List<LiveRoomStatus> UPCOMING = List.of(LiveRoomStatus.SCHEDULED, LiveRoomStatus.READY);
+
+    @Override
+    public List<LiveRoom> findAllLive(int limit){
+        return liveRoomJpaRepository.findByLiveStatusOrderByIdAsc(LiveRoomStatus.LIVE, Limit.of(limit))
+                .stream().map(liveRoomMapper::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<LiveRoom> findUpcoming(Instant afterScheduledAt, UUID afterId, int limit){
+        List<LiveRoomEntity> rows = afterScheduledAt == null
+                ? liveRoomJpaRepository.findUpcoming(UPCOMING, Limit.of(limit))
+                : liveRoomJpaRepository.findUpcomingAfter(UPCOMING, afterScheduledAt, afterId, Limit.of(limit));
+        return rows.stream().map(liveRoomMapper::toDomain).toList();
+    }
 }

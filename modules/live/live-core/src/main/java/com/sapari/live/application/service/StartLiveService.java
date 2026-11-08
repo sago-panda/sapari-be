@@ -41,6 +41,7 @@ public class StartLiveService implements StartLiveUseCase {
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
     private final LiveMetrics liveMetrics;
+    private final LiveListCacheSync liveListCacheSync;
 
     @Override
     @Transactional
@@ -85,6 +86,7 @@ public class StartLiveService implements StartLiveUseCase {
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송
 
         liveRoomRepository.save(updatedRoom);
+        liveListCacheSync.registerAfterCommit(updatedRoom);
         liveMetrics.roomTransitioned(room.status(), updatedRoom.status());
         return updatedRoom.toStartLiveResult(sfuToken, liveMediaManager.getSfuUrl());
     }
@@ -110,6 +112,7 @@ public class StartLiveService implements StartLiveUseCase {
             StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl(), egressResult.hlsArchiveUrl());
             LiveRoom liveRoom = armed.goLiveFromReady(streamInfo, timeProvider.now());
             liveRoomRepository.save(liveRoom);
+            liveListCacheSync.registerAfterCommit(liveRoom);
             // arm 과 승격이 한 트랜잭션에서 일어난 랑데부다. 두 전이를 각각 세야 깔때기(Scheduled→Ready→Live)
             // 의 단계별 이탈이 보인다 — 합쳐 세면 Ready 에서 멈춘 방과 구분되지 않는다.
             liveMetrics.roomTransitioned(room.status(), armed.status());

@@ -96,7 +96,8 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
      * <p>치우지는 않는다 — 낡은 항목의 제거는 TTL 과 방 종료({@code clearRoom})가 맡는다. 읽기가
      * 쓰기를 하면 집계 조회가 쓰기 경로가 되고, 그 경로는 입장마다 불린다.
      */
-    private static final Duration STALE_AFTER = HEARTBEAT_INTERVAL.multipliedBy(4);
+    // package-private: ChatViewerCountRedisRepository 가 같은 규칙으로 센다 — 두 곳이 갈리면 화면마다 시청자 수가 다르다.
+    static final Duration STALE_AFTER = HEARTBEAT_INTERVAL.multipliedBy(4);
 
     static {
         // 가드를 상수 옆에 둔다 — 둘은 한 결정이고, 한쪽만 바꾸면 살아 있는 시청자가 집계에서
@@ -190,7 +191,7 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
      * <p>타임스탬프가 숫자가 아닌 값도 같은 이유로 살아 있는 것으로 본다 — 깨진 항목 하나가
      * 집계를 줄이는 쪽으로 기울면 "시청자가 없다" 와 구분되지 않는다.
      */
-    private static String liveUserId(String value, Instant staleBefore) {
+    static String liveUserId(String value, Instant staleBefore) {
         int separator = value.lastIndexOf(VALUE_SEPARATOR);
         if (separator < 0) {
             return value;

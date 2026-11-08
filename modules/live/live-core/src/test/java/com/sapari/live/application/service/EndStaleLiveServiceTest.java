@@ -63,6 +63,9 @@ class EndStaleLiveServiceTest {
     @Spy
     private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
+    @Mock
+    private LiveListCacheSync liveListCacheSync;
+
     @InjectMocks
     private EndStaleLiveService endStaleLiveService;
 
@@ -118,6 +121,7 @@ class EndStaleLiveServiceTest {
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ended.class);
     
         org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Live->Ended");
+        then(liveListCacheSync).should(times(1)).removeAfterCommit(roomId);
     }
 
     @Test

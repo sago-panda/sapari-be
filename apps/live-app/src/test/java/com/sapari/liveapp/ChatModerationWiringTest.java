@@ -244,6 +244,8 @@ class ChatModerationWiringTest {
                 // 종료 마커 해제 — 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 해서
                 // 이 앱에 있다. 기록·조회는 리액티브 쪽이고 streaming-app 이 쓴다.
                 "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",
+                // 방송 중 목록의 시청자 수 — live 재조정이 chat-api 포트로 읽는다(SPR-157).
+                "ChatViewerCountRedisRepository", "GetChatViewerCountsService",
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",

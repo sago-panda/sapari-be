@@ -13,24 +13,28 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.liveapp.controller.live.dto.StartBroadcastRequest;
 import com.sapari.liveapp.controller.live.dto.CreateRoomRequest;
 import com.sapari.liveapp.security.LiveUserPrincipal;
+import com.sapari.common.page.CursorPage;
 import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.command.EndLiveCommand;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.command.GetLiveCommand;
+import com.sapari.live.command.GetUpcomingLivesQuery;
 import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.port.CreateLiveUseCase;
 import com.sapari.live.port.EndLiveUseCase;
 import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.port.GetLiveUseCase;
+import com.sapari.live.port.GetUpcomingLivesUseCase;
 import com.sapari.live.port.GetLiveReplayUseCase;
 import com.sapari.live.port.PrepareIngressUseCase;
 import com.sapari.live.port.StartLiveUseCase;
@@ -40,6 +44,7 @@ import com.sapari.live.view.GetLiveView;
 import com.sapari.live.view.IngressCredentialView;
 import com.sapari.live.view.ReplayView;
 import com.sapari.live.view.StartLiveView;
+import com.sapari.live.view.UpcomingLiveView;
 
 @RestController
 @RequiredArgsConstructor
@@ -53,6 +58,7 @@ public class LiveController {
     private final GetLiveUseCase getLiveUseCase;
     private final GetLiveReplayUseCase getLiveReplayUseCase;
     private final PrepareIngressUseCase prepareIngressUseCase;
+    private final GetUpcomingLivesUseCase getUpcomingLivesUseCase;
 
     @PostMapping("/rooms")
     @ResponseStatus(HttpStatus.CREATED)
@@ -109,6 +115,14 @@ public class LiveController {
     @GetMapping("/rooms")
     public ResponseEnvelope<GetLiveView> getRooms() {
         return ResponseEnvelope.success(getLiveUseCase.getRooms(GetLiveCommand.defaultMain()));
+    }
+
+    /** 예정 방송 공개 목록. 경로는 SPR-154 결정에 따라 바뀔 수 있다 — 바꿀 때 {@code LiveSecurityConfig} 공개 목록도 함께. */
+    @GetMapping("/upcoming")
+    public ResponseEnvelope<CursorPage<UpcomingLiveView>> getUpcoming(
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer size) {
+        return ResponseEnvelope.success(getUpcomingLivesUseCase.getUpcoming(new GetUpcomingLivesQuery(cursor, size)));
     }
 
     @GetMapping("/rooms/{roomId}/replay")

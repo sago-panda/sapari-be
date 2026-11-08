@@ -45,6 +45,7 @@ class LivePublicRoutesTest {
             MockMvc mvc = MockMvcBuilders.webAppContextSetup(context)
                     .addFilters(context.getBean(FilterChainProxy.class)).build();
             mvc.perform(get("/api/v1/lives/rooms")).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/lives/upcoming")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/replay")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/ingress")).andExpect(status().isUnauthorized());

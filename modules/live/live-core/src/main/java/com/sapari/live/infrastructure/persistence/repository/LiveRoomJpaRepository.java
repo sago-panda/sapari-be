@@ -1,6 +1,7 @@
 package com.sapari.live.infrastructure.persistence.repository;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -77,4 +78,28 @@ public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUI
 
     /** 활성 방 수 게이지용. 인덱스가 있는 상태 컬럼 하나짜리 집계다. */
     long countByLiveStatus(LiveRoomStatus liveStatus);
+
+    /** 공개 방송 중 목록 재조정의 원본 — 지금 Live 인 방 전부(상한 limit). */
+    List<LiveRoomEntity> findByLiveStatusOrderByIdAsc(LiveRoomStatus liveStatus, Limit limit);
+
+    /** 공개 예정 목록 첫 페이지. 정렬은 {@code scheduledAt, id} — 커서가 그 둘을 싣는다. */
+    @Query("""
+            SELECT r FROM LiveRoomEntity r
+             WHERE r.liveStatus IN :statuses
+             ORDER BY r.scheduledAt ASC, r.id ASC
+            """)
+    List<LiveRoomEntity> findUpcoming(@Param("statuses") Collection<LiveRoomStatus> statuses, Limit limit);
+
+    /** 공개 예정 목록 다음 페이지 — {@code (scheduledAt, id)} 가 커서보다 뒤인 행(keyset). */
+    @Query("""
+            SELECT r FROM LiveRoomEntity r
+             WHERE r.liveStatus IN :statuses
+               AND (r.scheduledAt > :afterScheduledAt
+                    OR (r.scheduledAt = :afterScheduledAt AND r.id > :afterId))
+             ORDER BY r.scheduledAt ASC, r.id ASC
+            """)
+    List<LiveRoomEntity> findUpcomingAfter(@Param("statuses") Collection<LiveRoomStatus> statuses,
+                                           @Param("afterScheduledAt") Instant afterScheduledAt,
+                                           @Param("afterId") UUID afterId,
+                                           Limit limit);
 }

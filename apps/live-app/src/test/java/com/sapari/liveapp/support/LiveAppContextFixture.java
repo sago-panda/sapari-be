@@ -73,6 +73,8 @@ public final class LiveAppContextFixture {
 
         // 정리 잡을 끈다 — 돌면 LiveKit 에 실제로 가려 한다.
         registry.add("live.reconcile.enabled", () -> "false");
+        // 목록 갱신 주기 잡도 끈다 — 테스트가 RefreshLiveListUseCase 를 직접 불러 시점을 쥔다.
+        registry.add("live.list.refresh.enabled", () -> "false");
 
         // 스키마는 운영 마이그레이션으로 세운다. 스키마 생성까지 Flyway 에 맡긴다 —
         // 컨테이너에는 live_schema 가 없다.
