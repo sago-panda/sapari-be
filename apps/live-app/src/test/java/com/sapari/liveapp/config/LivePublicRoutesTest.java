@@ -50,6 +50,7 @@ class LivePublicRoutesTest {
             mvc.perform(get("/api/v1/lives/rooms/room-id/ingress")).andExpect(status().isUnauthorized());
             mvc.perform(get("/api/v1/lives/future-private")).andExpect(status().isUnauthorized());
             mvc.perform(post("/api/v1/lives/rooms")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/api/v1/lives/thumbnails/uploads")).andExpect(status().isUnauthorized());
         }
     }
 

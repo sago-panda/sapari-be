@@ -100,6 +100,18 @@ live:
     private-key: ${LIVE_ROOM_TOKEN_PRIVATE_KEY:}
 
   # -------------------------------------------------------------------------
+  # 방 썸네일 업로드 허가(presigned POST, SPR-156). 서버는 서명만 하고 바이트는 받지 않는다.
+  # 키는 egress 와 같은 정적 키를 쓴다(S3_*). 임시 자격증명(IRSA)은 미지원 — 전환 시 서명기 교체 필요.
+  # -------------------------------------------------------------------------
+  thumbnail:
+    bucket: ${S3_BUCKET:}                     # REQUIRED
+    region: ${S3_REGION:ap-northeast-2}
+    access-key: ${S3_ACCESS_KEY:}             # REQUIRED
+    secret-key: ${S3_SECRET_KEY:}             # REQUIRED
+    # REQUIRED — 검증 완료 썸네일(thumbnails/)을 노출하는 CDN(https). 방 썸네일 주소는 이 호스트만 허용된다.
+    cdn-base-url: ${THUMBNAIL_CDN_URL:}
+
+  # -------------------------------------------------------------------------
   # 고아 라이브 정리 스케줄러 (전부 optional — 코드 기본값 있음)
   #
   # 잡마다 enabled 를 나눈 건 end-stale-live 만 따로 끄기 위해서다 — 셋 중 유일하게 살아 있을지도

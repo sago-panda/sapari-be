@@ -224,7 +224,7 @@ public record LiveRoom(
 
     public StartLiveView toStartLiveResult(String sfuToken, String sfuUrl){
         return new StartLiveView(
-                id.toString(),
+                id,
                 sfuToken,
                 hlsUrl(),
                 sfuUrl

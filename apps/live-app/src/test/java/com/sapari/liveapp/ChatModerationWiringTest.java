@@ -85,6 +85,11 @@ class ChatModerationWiringTest {
         registry.add("livekit.s3.secret-key", () -> "test-secret");
         registry.add("livekit.hls.cdn-base-url", () -> "http://localhost/hls");
         registry.add("livekit.hls.segment-duration", () -> 4);
+        registry.add("live.thumbnail.bucket", () -> "test-bucket");
+        registry.add("live.thumbnail.region", () -> "ap-northeast-2");
+        registry.add("live.thumbnail.access-key", () -> "test-access");
+        registry.add("live.thumbnail.secret-key", () -> "test-secret");
+        registry.add("live.thumbnail.cdn-base-url", () -> "https://cdn.example.test");
 
         registry.add("management.server.port", () -> 0);
         // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아 지표가 조용히 빈다

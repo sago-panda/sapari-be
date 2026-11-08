@@ -117,13 +117,13 @@ public class StartLiveService implements StartLiveUseCase {
             liveMetrics.rtmpPromoted(PromotionTrigger.SELLER_START);
             log.info("RTMP 방송 시작 — 시작 시점 ingress 활성 확인, 즉시 Live 전이. roomId={}", command.roomId());
             // RTMP는 셀러 토큰을 쓰지 않는다(ingress push). sfuToken/sfuUrl 은 미사용이라 null.
-            return new StartLiveView(liveRoom.id().toString(), null, liveRoom.hlsUrl(), null);
+            return new StartLiveView(liveRoom.id(), null, liveRoom.hlsUrl(), null);
         }
 
         liveRoomRepository.save(armed);
         liveMetrics.roomTransitioned(room.status(), armed.status());
         log.info("RTMP 방송 시작 — OBS 미연결, 시작 대기(Ready)로 저장. roomId={}", command.roomId());
-        return new StartLiveView(armed.id().toString(), null, null, null);
+        return new StartLiveView(armed.id(), null, null, null);
     }
 
     /**

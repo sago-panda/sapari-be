@@ -133,7 +133,7 @@ public class StartLiveServiceTest {
         var result = startLiveService.start(command);
 
         //then
-        assertThat(result.roomId()).isEqualTo(roomId.toString());
+        assertThat(result.roomId()).isEqualTo(roomId);
         assertThat(result.sfuToken()).isEqualTo(expectedSfuToken);
         assertThat(result.hlsUrl()).isEqualTo(egressResult.hlsUrl());
 

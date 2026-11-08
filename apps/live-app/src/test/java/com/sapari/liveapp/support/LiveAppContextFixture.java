@@ -63,6 +63,11 @@ public final class LiveAppContextFixture {
         registry.add("livekit.s3.secret-key", () -> "test-secret-key");
         registry.add("livekit.hls.cdn-base-url", () -> "https://cdn.example.test");
         registry.add("livekit.hls.segment-duration", () -> "4");
+        registry.add("live.thumbnail.bucket", () -> "test-bucket");
+        registry.add("live.thumbnail.region", () -> "ap-northeast-2");
+        registry.add("live.thumbnail.access-key", () -> "test-access-key");
+        registry.add("live.thumbnail.secret-key", () -> "test-secret-key");
+        registry.add("live.thumbnail.cdn-base-url", () -> "https://cdn.example.test");
 
         // api-app 이 발급한 access 토큰을 이 앱이 검증한다(StatelessJwtAuthenticationFilter).
         // 시크릿은 32자 이상이어야 한다 — 더미여도 길이 제약은 실제 규칙이다.

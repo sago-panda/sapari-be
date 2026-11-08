@@ -87,6 +87,20 @@ so both sides must reach the same outcome — if they diverge, the room's fate d
   the domain guard** — add a `LiveStatus` variant and the compiler won't remind you. Don't spread it.
 - End cleanup deletes ingress room-wide **before** `closeRoom`; a survivor lets OBS re-create the room.
 
+## Room thumbnail — presigned POST, server signs only
+
+Seller asks `POST /api/v1/lives/thumbnails/uploads` → browser POSTs the file straight to S3; bytes never pass
+the app. Content (magic bytes) is checked **after** upload by an infra Lambda (separate ticket), which moves
+`uploads/thumbnails/{sellerId}/{objectId}` → `thumbnails/{sellerId}/{objectId}` — **prefix swap only**, no
+conversion, so the final URL is known at issue time. Until that ticket ships, `thumbnails/` stays empty and
+issued URLs 404 even though room create accepts them.
+
+- `ThumbnailUrlRule` (LIVE-016) accepts only `https://{cdn}{basePath}/thumbnails/{requester's sellerId}/{UUID}`,
+  compared on the raw path. It is string-only — it never asks S3 whether the object exists.
+- `S3PostPolicySigner` hand-rolls SigV4 POST (SDK v2 has no POST-policy presign; `content-length-range` needs
+  POST). Pinned by AWS's published vector. **Static keys only** — no `x-amz-security-token`, so moving to IRSA
+  means replacing this signer too. Never log the policy, signature or keys.
+
 ## Orphan reconciliation — three `@Scheduled` jobs (live-app)
 
 Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. Two of them move broadcasts:
@@ -425,7 +439,8 @@ Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII
 Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`RuntimeException` escapes a service.
 A state violation gets **one code per request kind** (start LIVE-003, end/expire 009, enter 010, ingress 011) via
 `InvalidLiveStateException(code, msg)` — keep the single class, reconcile jobs catch it as "lost the race, skip".
-Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`, never IAE —
+Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`; room input
+(schedule not future 015, thumbnail URL 016) is `InvalidLiveRoomException` — never IAE —
 IAE reaches the global net as 500. A new request kind (cancel, edit, …) adds its own code; don't reuse 003.
 Tests in `live-core/src/test` (Mockito on ports); scheduler wiring in `live-app` via `ApplicationContextRunner`.
 FixtureMonkey for fixtures, plain builders when asserting specific values (random strings trip VO validation).
