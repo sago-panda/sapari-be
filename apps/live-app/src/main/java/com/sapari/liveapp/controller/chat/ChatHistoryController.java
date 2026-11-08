@@ -43,7 +43,20 @@ import lombok.RequiredArgsConstructor;
 @RequestMapping("api/v1/lives/{roomId}/chat")
 public class ChatHistoryController {
 
-    /** 커서 모드 기본 페이지 크기. 공용 페이징 기본값({@code PageSupport})과 같은 수다. */
+    /**
+     * 커서 모드 기본 페이지 크기 — <b>chat 자기 수다.</b>
+     *
+     * <p>⚠️ 전에는 "공용 페이징 기본값({@code PageSupport})과 같은 수다" 로 적혀 있었다. 그 주장은
+     * <b>이 자리에서 검증할 수 없다</b> — 실측: {@code build.gradle} 37개 전수에서
+     * {@code common:page} 선언은 정확히 1건({@code modules/product/product-api})이고
+     * {@code apps/live-app} 도 {@code modules/chat/chat-api} 도 그것을 물지 않는다. 즉
+     * {@code PageSupport.MAX_SIZE} 를 바꿔도 여기서는 아무것도 깨지지 않는다.
+     *
+     * <p>그리고 수가 같아도 <b>정책이 다르다</b>: {@code PageSupport.normalizeSize} 는 범위를
+     * <b>보정</b>하고(초과 → {@code MAX_SIZE}), chat 은 {@code GetChatHistoryCommand} 에서
+     * <b>거부</b>한다({@code size는 1~100 범위여야 합니다}). "같은 수다" 는 정렬을 암시하는데
+     * 동작이 갈리므로, 그 문장을 지우고 이 수를 chat 것으로 적는다.
+     */
     private static final int DEFAULT_SIZE = 15;
 
     private final GetChatHistoryUseCase getChatHistoryUseCase;

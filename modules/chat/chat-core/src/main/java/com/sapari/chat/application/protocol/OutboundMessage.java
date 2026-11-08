@@ -106,7 +106,16 @@ public record OutboundMessage(
                 .build();
     }
 
-    /** 입장 시 1회. {@code activeCount}가 null이면 "모른다"다 — 조회 실패에 0을 보내지 않는다. */
+    /**
+     * 입장 시 1회, 그리고 <b>수가 변할 때마다</b> 다시 나간다
+     * ({@code ChatSessionRegistry.pushViewerCounts} 가 재등록 타이머를 탄다).
+     *
+     * <p>{@code activeCount} 가 null 이면 "모른다" 다 — 조회 실패에 0 을 보내지 않는다.
+     *
+     * <p>⚠️ 앞 절이 "입장 시 1회" 로만 적혀 있었고 하트비트 push 가 들어온 뒤로 거짓이었다.
+     * 계약 문서 쪽은 이미 "입장 시 + 변할 때마다" 로 갱신돼 있었다 — 코드 주석만 낡은,
+     * 문서가 코드를 앞선 드문 방향이다.
+     */
     public static OutboundMessage roomInfo(Long activeCount, boolean isRoomOwner) {
         return OutboundMessage.builder()
                 .type("ROOM_INFO")
