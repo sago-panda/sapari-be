@@ -42,6 +42,7 @@ public class EndStaleLiveService implements EndStaleLiveUseCase {
     private final LiveEventPublisher liveEventPublisher;
     private final TimeProvider timeProvider;
     private final LiveMetrics liveMetrics;
+    private final LiveListCacheSync liveListCacheSync;
 
     @Override
     @Transactional
@@ -62,6 +63,8 @@ public class EndStaleLiveService implements EndStaleLiveUseCase {
         // 등록 순서 = 실행 순서. 미디어를 먼저 걷고 나서 chat 에 알린다.
         PostCommitMediaCleanup.register(liveMediaManager, room);
         registerRoomEndedPublish(command.roomId(), endedAt);
+        // 목록 제거는 마지막 — 복구 가능한 목록 쓰기가 앞의 두 훅을 막지 않게(EndLiveService 와 같은 이유).
+        liveListCacheSync.removeAfterCommit(endedRoom.id());
         log.info("방치된 Live 방 종료. roomId={}", command.roomId());
     }
 

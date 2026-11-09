@@ -63,6 +63,9 @@ public class EndLiveServiceTest {
     @Spy
     private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
+    @Mock
+    private LiveListCacheSync liveListCacheSync;
+
     @InjectMocks
     private EndLiveService endLiveService;
 
@@ -138,6 +141,7 @@ public class EndLiveServiceTest {
         // 종료 세 경로(판매자 종료·방치 종료·만료)가 같은 래퍼를 복사한 구조라, 전이 상수를
         // 잘못 넣어도 빌드가 통과한다. 갈래를 여기서 못박는다.
         org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Live->Ended");
+        then(liveListCacheSync).should(times(1)).removeAfterCommit(roomId);
     }
 
     @Test
@@ -353,4 +357,36 @@ public class EndLiveServiceTest {
         then(liveEventPublisher).shouldHaveNoInteractions();
         then(liveMediaManager).shouldHaveNoInteractions();
     }
+
+    @Test
+    @DisplayName("목록 제거 훅이 던져도 미디어 정리와 RoomEnded 발행은 이미 끝나 있다 — 목록 훅은 마지막이다")
+    void listRemovalHookRunsLast() {
+        EndLiveCommand command = new EndLiveCommand(roomId, sellerId);
+        Instant endedAt = Instant.parse("2026-11-07T00:00:00Z");
+        LiveRoom mockRoom = fixtureMonkey.giveMeBuilder(LiveRoom.class)
+                .set("id", roomId).set("sellerId", sellerId)
+                .set("status", new LiveStatus.Live(endedAt, "sfu", "eg", "http://hls/index.m3u8"))
+                .set("streamInfo", StreamInfo.of("sfu", "eg", "http://hls/index.m3u8", null))
+                .set("streamType", new LiveStreamType.WebRtc()).sample();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(mockRoom));
+        given(timeProvider.now()).willReturn(endedAt);
+        // 실제 동기화처럼 커밋 후 훅을 등록하고, 그 훅이 저장소 예외가 아닌 결함으로 던지게 한다.
+        org.mockito.BDDMockito.willAnswer(inv -> {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    throw new IllegalStateException("connection factory stopped");
+                }
+            });
+            return null;
+        }).given(liveListCacheSync).removeAfterCommit(roomId);
+
+        endLiveService.end(command);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(this::triggerAfterCommit)
+                .isInstanceOf(IllegalStateException.class);
+        then(liveMediaManager).should(times(1)).closeRoom("sfu");
+        then(liveEventPublisher).should(times(1)).publishRoomEnded(roomId, endedAt);
+    }
+
 }

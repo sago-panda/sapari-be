@@ -2,6 +2,7 @@ dependencies {
     // 판매자 내 방 목록 유스케이스가 CursorPage 를 돌려준다 — -api 가 물 수 있는 유일한 공용 패키지(root AGENTS.md).
     implementation project(':common:page')
     implementation 'org.springframework.boot:spring-boot-starter'
+    implementation project(':common:page')   // use-case 반환 타입 CursorPage — -api 가 물 수 있는 유일한 토대
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

@@ -33,6 +33,7 @@ public class EndLiveService implements EndLiveUseCase {
     private final LiveEventPublisher liveEventPublisher;
     private final TimeProvider timeProvider;
     private final LiveMetrics liveMetrics;
+    private final LiveListCacheSync liveListCacheSync;
 
     @Override
     @Transactional
@@ -57,6 +58,10 @@ public class EndLiveService implements EndLiveUseCase {
 
         // 종료 커밋 이후에만 RoomEnded 발행 — 롤백 시 오발행(멀쩡한 방 세션을 chat이 닫는 것)을 막는다.
         registerRoomEndedPublish(command.roomId(), endedAt);
+
+        // 목록 제거는 마지막 커밋 후 훅이다 — 훅은 순서대로 돌고 하나가 던지면 뒤가 생략되므로,
+        // 복구 가능한 목록 쓰기가 미디어 정리·RoomEnded 발행을 막지 않게 한다(목록은 재조정이 고친다).
+        liveListCacheSync.removeAfterCommit(endedRoom.id());
     }
 
     private void registerRoomEndedPublish(UUID roomId, Instant endedAt) {

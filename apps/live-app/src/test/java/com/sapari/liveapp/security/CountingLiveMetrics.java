@@ -6,6 +6,7 @@ import java.util.List;
 
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
+import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
@@ -45,6 +46,22 @@ class CountingLiveMetrics implements LiveMetrics {
     @Override
     public void tokenRevocationLookupFailed() {
         revocationLookupFailures++;
+    }
+
+    @Override
+    public void listCacheWriteFailed(ListCacheWrite write) {
+    }
+
+    @Override
+    public void listViewerCountUnavailable() {
+    }
+
+    @Override
+    public void listRefreshSaturated() {
+    }
+
+    @Override
+    public void listRefreshFailed() {
     }
 
     @Override

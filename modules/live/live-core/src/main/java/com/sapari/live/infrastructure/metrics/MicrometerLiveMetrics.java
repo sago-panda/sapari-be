@@ -17,6 +17,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
 import com.sapari.live.application.port.TokenRevocationAxis;
+import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
@@ -167,6 +168,35 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     @Override
     public void tokenRevocationLookupFailed() {
         safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOCATION_FAILED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listCacheWriteFailed(ListCacheWrite write) {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_CACHE_WRITE_FAILED)
+                .tag(LiveMeterNames.TAG_WRITE, tag(write))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listViewerCountUnavailable() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_VIEWER_COUNT_UNAVAILABLE)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listRefreshSaturated() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_REFRESH_SATURATED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listRefreshFailed() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_REFRESH_FAILED)
                 .register(registry)
                 .increment());
     }
