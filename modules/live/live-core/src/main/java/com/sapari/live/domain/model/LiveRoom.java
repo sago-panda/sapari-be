@@ -5,6 +5,7 @@ import lombok.Builder;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
@@ -46,14 +47,14 @@ public record LiveRoom(
         if (sellerId == null) {
             throw new IllegalArgumentException("sellerId는 필수입니다.");
         }
-        requireEditableFields(title, scheduledAt);
+        requireEditableFields(title, scheduledAt, now);
         if (sellerNickname == null || sellerNickname.isBlank()) {
             throw new IllegalArgumentException("sellerNickname은 필수입니다.");
         }
         return builder()
                 .sellerId(sellerId)
                 .title(title)
-                .description(description)
+                .description(normalizeDescription(description))
                 .sellerNickname(sellerNickname)
                 .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
@@ -66,14 +67,28 @@ public record LiveRoom(
                 .build();
     }
 
-    /** 생성과 수정이 함께 지키는 필드 규칙. 둘이 갈리지 않게 한곳에 둔다. */
-    private static void requireEditableFields(String title, Instant scheduledAt) {
+    /**
+     * 생성과 수정이 함께 지키는 필드 규칙. 둘이 갈리지 않게 한곳에 둔다.
+     *
+     * <p>예정 시각은 현재보다 뒤여야 한다(같으면 거부) — 판매자 입력이므로 IAE 가 아니라 LIVE-015.
+     * null 은 요청 DTO 가 먼저 막으므로 여기 오면 서버 결함이라 IAE 로 남긴다.
+     */
+    private static void requireEditableFields(String title, Instant scheduledAt, Instant now) {
         if (title == null || title.isBlank()) {
             throw new IllegalArgumentException("title은 필수입니다.");
         }
         if (scheduledAt == null) {
             throw new IllegalArgumentException("scheduledAt은 필수입니다.");
         }
+        if (!scheduledAt.isAfter(now)) {
+            throw new InvalidLiveRoomException(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE,
+                    LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE.getMessage());
+        }
+    }
+
+    /** 설명은 선택 항목이다 — 공백뿐이면 없는 것으로 저장한다. */
+    private static String normalizeDescription(String description) {
+        return (description == null || description.isBlank()) ? null : description;
     }
 
     public LiveRoom withSfuRoomId(String sfuRoomId) {
@@ -197,10 +212,10 @@ public record LiveRoom(
         if (!canUpdate()) {
             throw new InvalidLiveStateException(LiveErrorCode.UPDATE_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
-        requireEditableFields(title, scheduledAt);
+        requireEditableFields(title, scheduledAt, now);
         return toBuilder()
                 .title(title)
-                .description(description)
+                .description(normalizeDescription(description))
                 .thumbnailUrl(thumbnailUrl)
                 .status(new LiveStatus.Scheduled(scheduledAt))
                 .scheduledAt(scheduledAt)

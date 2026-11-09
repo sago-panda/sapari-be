@@ -40,6 +40,7 @@ import com.sapari.common.web.security.CurrentUserIdArgumentResolver;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveProductException;
+import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.port.CreateLiveUseCase;
@@ -240,6 +241,21 @@ class LiveSellerControllerTest {
         ArgumentCaptor<CreateLiveCommand> command = ArgumentCaptor.forClass(CreateLiveCommand.class);
         then(createLiveUseCase).should().create(command.capture());
         assertThat(command.getValue().description()).isNull();
+    }
+
+    @Test
+    @DisplayName("방 생성 — 예정 시각 LIVE-015 / 썸네일 LIVE-016 은 400")
+    void createRoomInputViolations() throws Exception {
+        given(createLiveUseCase.create(any()))
+                .willThrow(new InvalidLiveRoomException(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE, "x"))
+                .willThrow(new InvalidLiveRoomException(LiveErrorCode.INVALID_THUMBNAIL_URL, "x"));
+
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                .content(createBody("\"제목\"", "null"))), "LIVE-015")
+                .andExpect(jsonPath("$.error.message").value("방송 예정 시각은 현재 이후여야 합니다."));
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                .content(createBody("\"제목\"", "null"))), "LIVE-016")
+                .andExpect(jsonPath("$.error.message").value("허용되지 않은 썸네일 주소입니다."));
     }
 
     @Test

@@ -13,6 +13,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveErrorCode;
@@ -314,5 +315,50 @@ class LiveRoomTest {
         assertThat(everyStatus().map(a -> (LiveStatus) a.get()[1]).filter(LiveStatus::isTerminal)
                 .map(Object::getClass))
                 .containsExactlyInAnyOrder(LiveStatus.Ended.class, LiveStatus.Cancelled.class);
+    }
+
+    // ---- SPR-156: 예정 시각은 미래만(LIVE-015), 설명은 선택 — create·update 가 같은 규칙 ----
+
+    private static final Instant T0 = Instant.parse("2026-06-09T00:00:00Z");
+
+    @ParameterizedTest
+    @MethodSource("nonFutureSchedules")
+    @DisplayName("create — 예정 시각이 현재 이하면 LIVE-015")
+    void create_rejectsNonFutureSchedule(Instant scheduledAt) {
+        assertThatThrownBy(() -> LiveRoom.create(UUID.randomUUID(), "제목", null, "닉네임", "https://thumb", scheduledAt, T0))
+                .isInstanceOf(InvalidLiveRoomException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE);
+    }
+
+    @ParameterizedTest
+    @MethodSource("nonFutureSchedules")
+    @DisplayName("update — 예정 시각이 현재 이하면 LIVE-015")
+    void update_rejectsNonFutureSchedule(Instant scheduledAt) {
+        assertThatThrownBy(() -> scheduledRoom().update("제목", null, "https://thumb", scheduledAt, T0))
+                .isInstanceOf(InvalidLiveRoomException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE);
+    }
+
+    static Stream<Instant> nonFutureSchedules() {
+        return Stream.of(T0, T0.minusMillis(1));
+    }
+
+    @Test
+    @DisplayName("create·update — 현재+1ms 는 통과")
+    void futureByOneMillisPasses() {
+        Instant at = T0.plusMillis(1);
+        assertThat(LiveRoom.create(UUID.randomUUID(), "제목", null, "닉네임", "https://thumb", at, T0).scheduledAt()).isEqualTo(at);
+        assertThat(scheduledRoom().update("제목", null, "https://thumb", at, T0).scheduledAt()).isEqualTo(at);
+    }
+
+    @Test
+    @DisplayName("create·update — 공백뿐인 설명은 없음(null)으로 저장")
+    void blankDescriptionBecomesNull() {
+        Instant at = T0.plusSeconds(60);
+        assertThat(LiveRoom.create(UUID.randomUUID(), "제목", "  ", "닉네임", "https://thumb", at, T0).description()).isNull();
+        assertThat(scheduledRoom().update("제목", " ", "https://thumb", at, T0).description()).isNull();
+        assertThat(scheduledRoom().update("제목", "설명", "https://thumb", at, T0).description()).isEqualTo("설명");
     }
 }

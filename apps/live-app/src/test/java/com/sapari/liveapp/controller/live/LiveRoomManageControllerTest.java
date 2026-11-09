@@ -42,6 +42,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.live.command.CancelLiveCommand;
 import com.sapari.live.command.GetSellerRoomsCommand;
 import com.sapari.live.command.UpdateLiveCommand;
+import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.port.CancelLiveUseCase;
@@ -144,6 +145,34 @@ class LiveRoomManageControllerTest {
                         .content(UPDATE_BODY.replace("\"새 제목\"", "\" \"")))
                 .andExpect(status().isBadRequest());
         then(updateLiveUseCase).should(never()).update(any());
+    }
+
+    @Test
+    @DisplayName("수정 — 제목 101자는 400 COMMON-001, 설명은 없어도 된다(생성과 같은 규칙)")
+    void updateSharesCreateFieldRules() throws Exception {
+        expectFailure(mvc.perform(put("/api/v1/lives/rooms/{roomId}", ROOM_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(UPDATE_BODY.replace("\"새 제목\"", "\"" + "가".repeat(101) + "\""))), "COMMON-001");
+        then(updateLiveUseCase).should(never()).update(any());
+
+        mvc.perform(put("/api/v1/lives/rooms/{roomId}", ROOM_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(UPDATE_BODY.replace("\"새 설명\"", "null")))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    @DisplayName("수정 — 예정 시각 LIVE-015 / 썸네일 LIVE-016 은 400")
+    void updateRoomInputViolations() throws Exception {
+        willThrow(new InvalidLiveRoomException(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE, "x"))
+                .given(updateLiveUseCase).update(any());
+        expectFailure(mvc.perform(put("/api/v1/lives/rooms/{roomId}", ROOM_ID)
+                .contentType(MediaType.APPLICATION_JSON).content(UPDATE_BODY)), "LIVE-015");
+
+        willThrow(new InvalidLiveRoomException(LiveErrorCode.INVALID_THUMBNAIL_URL, "x"))
+                .given(updateLiveUseCase).update(any());
+        expectFailure(mvc.perform(put("/api/v1/lives/rooms/{roomId}", ROOM_ID)
+                .contentType(MediaType.APPLICATION_JSON).content(UPDATE_BODY)), "LIVE-016");
     }
 
     @Test

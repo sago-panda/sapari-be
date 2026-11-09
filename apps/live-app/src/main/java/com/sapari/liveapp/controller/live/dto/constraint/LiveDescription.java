@@ -17,8 +17,8 @@ import jakarta.validation.ReportAsSingleViolation;
 import jakarta.validation.constraints.Size;
 
 /**
- * 방송 설명 길이 한도(≤{@value LiveFieldLimits#DESCRIPTION_MAX}). null 은 통과한다 — 필수 여부는 요청마다 다르므로
- * 생성 요청은 {@code @NotBlank} 를 따로 붙이고, 방 수정(SPR-158)도 같은 애너테이션을 쓴다.
+ * 방송 설명 길이 한도(≤{@value LiveFieldLimits#DESCRIPTION_MAX}). 설명은 선택 항목이라 null 은 통과한다 —
+ * 방 생성과 방 수정(SPR-158)이 같은 애너테이션을 쓴다. 공백뿐인 설명은 도메인이 없음(null)으로 저장한다.
  */
 @Documented
 @Constraint(validatedBy = {})

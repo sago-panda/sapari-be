@@ -19,6 +19,9 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 | `Scheduled` | `cancel()` (seller) | `Cancelled` | `canCancel()` — else LIVE-013 |
 | `Scheduled` | `update()` (seller) | `Scheduled` | `canUpdate()` — else LIVE-014 |
 
+`create()` and `update()` share `requireEditableFields`: `scheduledAt` must be after now (LIVE-015), so editing a
+`Scheduled` room whose time has passed requires rescheduling it — intended (SPR-156).
+
 - `Ended` and `Cancelled` are terminal (`LiveStatus.isTerminal()`). `expire()` and `cancel()` publish no `RoomEnded` — the room was never `Live`, so chat has no session.
 - `cancel()` is `Scheduled`-only: `Ready` races the OBS-connect webhook, so it is left to the expire batch. LiveKit cleanup runs after commit (`PostCommitMediaCleanup`); leftovers are reclaimed by orphan reconciliation, which treats every terminal state alike — check `isTerminal()`, not `Ended`, there. Replay stays `Ended`-only.
 - No transition INTO `Suspended` exists yet (record + exit only).
@@ -102,6 +105,7 @@ issued URLs 404 even though room create accepts them.
 
 - `ThumbnailUrlRule` (LIVE-016) accepts only `https://{cdn}{basePath}/thumbnails/{requester's sellerId}/{UUID}`,
   compared on the raw path. It is string-only — it never asks S3 whether the object exists.
+  Update checks it **only when the URL changes** — rooms created before the rule keep their stored thumbnail.
 - `S3PostPolicySigner` hand-rolls SigV4 POST (SDK v2 has no POST-policy presign; `content-length-range` needs
   POST). Pinned by AWS's published vector. **Static keys only** — no `x-amz-security-token`, so moving to IRSA
   means replacing this signer too. Never log the policy, signature or keys.

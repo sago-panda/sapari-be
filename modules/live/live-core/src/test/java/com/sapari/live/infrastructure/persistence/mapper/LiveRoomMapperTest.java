@@ -113,7 +113,7 @@ class LiveRoomMapperTest {
         Instant now = Instant.parse("2026-09-11T00:00:00Z");
         StreamInfo stream = StreamInfo.of("sfu", "egress", "https://cdn/720p/index.m3u8",
                 "https://cdn/720p/playlist.m3u8");
-        LiveRoom room = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now, now)
+        LiveRoom room = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now.plusSeconds(3600), now)
                 .startLive(stream, now);
         LiveRoomEntity entity = mapper.toEntity(room);
         assertThat(entity.getHlsArchiveUrl()).isEqualTo(stream.hlsArchiveUrl());
@@ -128,7 +128,7 @@ class LiveRoomMapperTest {
     @Test
     void archiveSurvivesStartUpdateReloadAndSuspendedEnd() {
         Instant now = Instant.parse("2026-09-11T00:00:00Z");
-        LiveRoom scheduled = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now, now);
+        LiveRoom scheduled = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now.plusSeconds(3600), now);
         LiveRoomEntity entity = mapper.toEntity(scheduled);
         StreamInfo stream = StreamInfo.of("sfu", "egress", "https://cdn/master.m3u8",
                 "https://cdn/archive-master.m3u8");
