@@ -167,7 +167,7 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   cannot see "half new" — a whitelist entry only means something next to the profanity it covers.
   The version bump + `SET` + `PUBLISH` are **one Lua script**; split them and you get "version
   advanced, body did not", after which the receiver's poll reads the old body and advances its version
-  anyway. The bump is `current + 1` under a CAS, not an `INCR` — see the next bullet.
+  anyway. The bump is `max(current + 1, publish time ms)` under a CAS, not an `INCR` — see the next bullets.
 - **streaming-app reads.** `ProfanityDictionaryRefreshHandler` merges three triggers (boot, notify,
   poll) into one `concatMap` stream, so only one refresh runs at a time and monotonicity is a field
   comparison. ⚠️ The **poll** is what makes propagation work, not the notification: Redis pub/sub is
@@ -232,28 +232,16 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   cell, and narrowing acceptance only moves the cell. Two earlier attempts failed there (refusing →
   every dictionary write 500s forever; resetting to 1 → the same number carried two different bodies
   and pods holding 1 skipped it in silence).
-- **At the boundary cell the base falls to 0 and the next publish restarts at v1 — and that restart is
-  logged.** v1 *is* readable, which is what separates this from the discarded reset: the reset reused a
-  number *silently*, this one says so. Reaching the cell needs one out-of-band write plus one
-  eviction/`DEL`, so it is not exotic.
-
-  Two things that paragraph used to get wrong. **The residual is not "irreducible with ephemeral
-  state"** — the receiver has the decoded body in hand (`apply(snapshot, …)`), so comparing *content*
-  would close it; what keeps it open is the *choice* to compare only versions. ⚠️ That choice's price
-  is **not** "a trie rebuild per equal-version poll" — an earlier draft said so and it is false in both
-  readings: today the upstream `filter(published != processedVersion)` sits *above* `read()`, so an
-  equal-version poll ends at the version `GET` and builds **nothing**; and a content comparison would
-  still only build when the content differs. The price is the **body transfer plus decode — ~11 KB per
-  pod per poll** (1,078 + 38 bundled entries), which is exactly the cost the version key exists to
-  avoid. Do not read "irreducible" as a reason to stop looking at that axis, and do not price the axis
-  by trie builds. And **the recovery is not "delete both keys"** — that reproduces the
-  deadlock (base 0 → v1 again). Measured: boundary + write → v1 (fleet at 1 skips) → `DEL` both →
-  v1 again → skip again; whereas *re-sending the same ADMIN write* bases on the 1 this publish just
-  wrote → v2 → the fleet applies. Adds are idempotent and publish even when nothing changed, so "send
-  it once more" is the whole procedure. Verify by the receiver's `갈아 끼웠다 … version=` INFO (its
-  absence for the response's `version` is the verdict) — the same check `FilterWordChange.version`'s
-  javadoc already prescribes; the functional check (does the word mask?) is the backup, since there is
-  no dry-run endpoint and it needs a live room.
+- **At the boundary cell the base falls to 0 — and that restart is logged.** Reaching the cell needs one
+  out-of-band write plus one eviction/`DEL`, so it is not exotic. Losing both keys together (`FLUSHDB`, an
+  old RDB restore, a stale-replica failover) lands on the same base 0.
+- **A base of 0 does not reuse a number: the new version is `max(base + 1, publish time in ms)`.** The
+  receiver skips an *equal* version without reading the body, so a reused number meant "different body,
+  never applied" on every pod that held it — before the floor, both-keys-lost restarted at v1 and the
+  recovery had to be "send the same ADMIN write once more". Now the restart starts at the current time,
+  which is above every earlier number (each was at most its own publish time, plus a few within one
+  millisecond). What remains is a clock that moved back past an earlier publish *and* both keys lost.
+  Pinned by `ProfanityDictionarySnapshotRedisPublisherTest.losingBothKeysDoesNotReuseAVersion`.
 - **The config CSV (`chat.profanity.words`) is boot-only and dies at the first swap.** It is *not*
   merged into propagated filters on purpose: merging would make the enforced set differ from the set
   live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps

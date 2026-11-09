@@ -194,8 +194,8 @@ public class ChatModerationBeansConfig {
      */
     @Bean
     public ProfanityDictionarySnapshotPublisher profanityDictionarySnapshotPublisher(
-            StringRedisTemplate redisTemplate) {
-        return new ProfanityDictionarySnapshotRedisPublisher(redisTemplate);
+            StringRedisTemplate redisTemplate, TimeProvider timeProvider) {
+        return new ProfanityDictionarySnapshotRedisPublisher(redisTemplate, timeProvider);
     }
 
     /**
