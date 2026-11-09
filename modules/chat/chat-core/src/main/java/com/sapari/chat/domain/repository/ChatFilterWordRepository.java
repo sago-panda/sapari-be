@@ -23,6 +23,15 @@ import com.sapari.chat.domain.model.FilterWordKind;
  */
 public interface ChatFilterWordRepository {
 
+    /**
+     * 사전 쓰기를 이 트랜잭션이 끝날 때까지 직렬화한다. 트랜잭션 안에서만 부른다.
+     *
+     * <p>검사가 두 집합 전체를 보므로(제거는 "욕설이 남는가", 추가는 두 kind 를 가로지르는 규칙)
+     * 동시 쓰기 둘이 각자 통과하고 합친 결과만 어길 수 있다. 읽기 전에 이것을 잡으면 뒤쪽은 앞쪽의
+     * 커밋을 보고 검사한다.
+     */
+    void lockForWrite();
+
     /** 그 종류의 항목 전체. 스냅샷 발행과 시드 판정이 쓴다. */
     Set<String> findWords(FilterWordKind kind);
 

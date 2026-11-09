@@ -88,11 +88,7 @@ application-layer observation on the strength of that rule.
 
 What is true is narrower. `ChatMetrics` is deliberately written in **domain-event** vocabulary, not
 `counter`/`gauge`, so adding a signal means adding a method to that port — not injecting a
-`MeterRegistry`. And one swallow in this module does *not* carry a counter on purpose:
-`ManageFilterWordsService.warnIfCommittedSourceViolates` swallows a **diagnostic** read that runs after
-the write and the publish have both succeeded, and the state it would have reported is caught by the
-next write's `guardSource` as a 409 — an externally visible, structural signal. That is the argument for
-leaving it out; "the layer cannot hold one" is not.
+`MeterRegistry`.
 
 ## Profanity dictionary — the table is the source, the file seeds it, and short words are the trap
 
@@ -247,15 +243,13 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps
   while writes passed — the same gate-plane/runtime-plane split this ticket keeps closing. Its lifetime
   is logged at boot so it does not vanish silently; durable changes go through the ADMIN API.
-- **Rule (1) crosses kinds, so two concurrent adds can each pass and still commit a violation**
-  (`rejectUselessWhitelist` tests a whitelist entry against the *word* set). No lock — and the reason is
-  **not** that closing it is expensive: `ChatKickRecorder.record` already shows the cheap shape (advisory
-  lock as the first statement inside `REQUIRES_NEW`, Redis only after it returns), so there would be no
-  external call inside the transaction. The real cost is **one more lock resource**, which
-  `ChatKickRecorder` obliges you to order or prove acyclic. It is left open because the probability is
-  low (same string, both kinds, simultaneously, at human typing rates), the result is recoverable
-  (remove either), and a post-write re-check now logs it against the request that caused it. If any of
-  those three changes — e.g. dictionary writes become automated — revisit it.
+- **Read → check → write runs under one dictionary lock** (`ChatFilterWordWriteRecorder.underWriteLock`:
+  a transaction-scoped advisory lock taken before the reads; publish stays outside). The checks look at
+  both whole sets, so without it two concurrent writes could each pass and commit a combined violation:
+  two removes of the last two profanities empty the table (after which every add is 409 and removal of
+  the last word is refused — no API way out), and rule (1) crosses kinds so the same string added to both
+  kinds at once breaks the whitelist rule. The lock adds a resource; no cycle — only the two dictionary
+  writes take it and they take nothing else.
 - **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
   first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
   set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.

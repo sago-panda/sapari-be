@@ -88,6 +88,9 @@ class ManageFilterWordsServiceTest {
                 new DictionaryProfanityFilterFactory(),
                 new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
         given(publishService.publishFromSource()).willReturn(42L);
+        // 잠금 래퍼는 받은 본문을 그대로 돌린다 — 잠금 자체는 실제 Postgres 스위트가 잰다.
+        given(writeRecorder.underWriteLock(any()))
+                .willAnswer(invocation -> invocation.<java.util.function.Supplier<?>>getArgument(0).get());
         given(writeRecorder.add(any(), anyString(), any(), any(), any())).willReturn(true);
         given(writeRecorder.remove(any(), anyString(), any(), any(), any())).willReturn(true);
     }
@@ -428,39 +431,6 @@ class ManageFilterWordsServiceTest {
     }
 
     /**
-     * ⭐ <b>커밋 뒤의 진단 읽기가 본선을 죽이지 않는다.</b>
-     *
-     * <p>{@code warnIfCommittedSourceViolates} 의 두 읽기가 {@code try} <b>밖</b>에 있었고 호출
-     * 위치도 발행 <b>앞</b>이었다. 그 읽기의 일시 오류가 <b>쓰기는 커밋됐는데 발행은 안 되고
-     * 응답은 일반 500</b> 을 만들었다 — 진단이 자기가 알리려던 바로 그 상태를 만드는 모양이다.
-     *
-     * <p>지금은 둘 다 고쳤다: 호출이 <b>발행 뒤</b>로 갔고(그래서 진단이 전파를 잃게 할 수
-     * 없다) 읽기도 {@code try} 안이다. 이 벡터는 그 둘이 되돌려지는 것을 같이 막는다 — 호출만
-     * 앞으로 되돌리면 삼킴이 남아 통과하지만, {@code try} 를 걷으면 그때 발행을 잃는다.
-     */
-    @Test
-    @DisplayName("⭐ 커밋 뒤 진단 읽기가 실패해도 발행은 간다 — 진단이 본선을 죽이면 안 된다")
-    void aFailedDiagnosticReadDoesNotSkipThePublish() {
-        // given: 선검사의 두 읽기는 되고, 커밋 뒤 재검사의 두 읽기가 터진다
-        given(repository.findWords(FilterWordKind.PROFANITY))
-                .willReturn(Set.of("시발"))
-                .willThrow(new org.springframework.dao.QueryTimeoutException("일시 DB 오류"));
-        given(repository.findWords(FilterWordKind.WHITELIST))
-                .willReturn(Set.of())
-                .willThrow(new org.springframework.dao.QueryTimeoutException("일시 DB 오류"));
-
-        // when
-        var change = service.add(add("PROFANITY", "지랄", "ADMIN"));
-
-        // then
-        verify(publishService)
-                .publishFromSource();
-        assertThat(change.version())
-                .as("진단 읽기가 실패했다고 발행을 건너뛰면 정본과 함대가 갈린 채로 200 이 나간다")
-                .isEqualTo(42);
-    }
-
-    /**
      * ⭐ <b>발행 실패가 무엇을 잃었는지와 함께 적힌다.</b>
      *
      * <p>성공 로그가 발행 <b>뒤</b>에 있다. 그래서 발행이 실패하면 <정본은 바뀌었는데 함대는
@@ -499,98 +469,25 @@ class ManageFilterWordsServiceTest {
     }
 
     /**
-     * ⭐ <b>삼키는 범위가 삼키는 근거와 같다.</b>
+     * ⭐ <b>읽기·검사·쓰기가 잠금 안이고 발행이 그 뒤다.</b>
      *
-     * <p>잡는 타입이 {@code RuntimeException} 이었다. 삼킴의 근거는 "읽기가 일시적으로 실패할
-     * 수 있다" 인데 그 범위는 {@code DataAccessException} 이고, 넓게 잡으면 이 경로의 코드 결함
-     * (NPE 등)까지 WARN 한 줄로 사라진다 — 진단이 자기 버그를 숨기는 모양이다.
+     * <p>잠금 래퍼가 읽기보다 먼저 불려야 뒤쪽 쓰기가 앞쪽의 커밋을 읽는다. 발행은 래퍼가 돌아온
+     * 뒤다 — 안에서 발행하면 롤백된 단어가 함대에 깔린다. 잠금이 실제로 직렬화하는지는
+     * {@code ManageFilterWordsConcurrencyTest} 가 실제 Postgres 에서 잰다.
      */
     @Test
-    @DisplayName("⭐ 진단 경로의 코드 결함은 삼키지 않는다 — 삼킴은 DB 실패에만 적용된다")
-    void aCodeDefectInTheDiagnosticIsNotSwallowed() {
-        given(repository.findWords(FilterWordKind.PROFANITY))
-                .willReturn(Set.of("시발"))
-                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
-        given(repository.findWords(FilterWordKind.WHITELIST))
-                .willReturn(Set.of())
-                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
-
-        assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
-                .as("넓게 잡으면 이 결함이 WARN 한 줄로 사라진다")
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("코드 결함");
-    }
-
-    /**
-     * ⭐ <b>진단이 발행 뒤라는 것을 순서로 못 박는다.</b>
-     *
-     * <p>이 순서를 옮긴 커밋에 <b>어떤 테스트도 걸리지 않았다</b> — 되돌려 전체 수트를 돌리면
-     * 895건 0실패였다. 삼킴이 남아 있어서 "발행을 잃는가" 축이 통과하기 때문이다.
-     *
-     * <p>그런데 삼킴을 {@code DataAccessException} 으로 좁힌 뒤에는 남는 벡터가 있다 — 진단
-     * 경로의 {@code IllegalStateException}(바로 위 테스트가 못 박은 그 타입)이 발행 <b>앞</b>에
-     * 있으면 발행을 통째로 잃는다. 그래서 순서 자체를 단언한다.
-     */
-    @Test
-    @DisplayName("⭐ 발행 → 감사 로그 → 진단 순서다 — 진단이 앞이면 발행을, 로그 앞이면 감사를 잃는다")
-    void theDiagnosticRunsAfterThePublish() {
+    @DisplayName("⭐ 잠금 → 읽기 → 쓰기 → 발행 순서다 — 읽기가 잠금 앞이면 동시 쓰기가 각자 통과한다")
+    void readsAndWriteRunInsideTheLockAndPublishAfter() {
         sourceIs(Set.of("시발"), Set.of());
 
         service.add(add("PROFANITY", "지랄", "ADMIN"));
 
-        // 선검사 읽기 2회 → 쓰기 → 발행 → 진단 읽기 2회.
         var order = inOrder(repository, writeRecorder, publishService);
+        order.verify(writeRecorder).underWriteLock(any());
         order.verify(repository).findWords(FilterWordKind.PROFANITY);
         order.verify(repository).findWords(FilterWordKind.WHITELIST);
         order.verify(writeRecorder).add(FilterWordKind.PROFANITY, "지랄", admin, ChatRole.ADMIN, NOW);
         order.verify(publishService).publishFromSource();
-        order.verify(repository, times(2)).findWords(any());
-    }
-
-    /**
-     * ⭐ <b>감사 로그가 진단보다 앞이라는 것을 로그 축에서 잰다.</b>
-     *
-     * <p>{@code InOrder} 는 발행↔진단 축만 못 박는다 — Mockito 가 {@code log.info} 를 못 보므로
-     * <b>감사 로그 축은 0</b>이었다. 실측: {@code log.info} 를 진단 뒤로 되돌려도 25건 0실패다.
-     * 그래서 그 자리의 {@code @DisplayName}("로그 앞이면 감사를 잃는다")이 재지 않는 것을
-     * 재는 것처럼 적혀 있었다.
-     *
-     * <p>잃는 것은 이것이다 — 진단이 {@code DataAccessException} <b>밖</b>을 던지면(바로 위
-     * 테스트가 못 박은 {@code IllegalStateException}) 쓰기와 발행이 둘 다 성공한 권한 있는
-     * 조정 변경이 <b>누가 무엇을 바꿨는지 한 줄도 없이</b> 일반 500 으로 나간다. 발행이
-     * 성공했으니 {@code publishOrLogLoss} 의 ERROR 도 안 찍힌다.
-     */
-    @Test
-    @DisplayName("⭐ 진단이 던져도 감사 로그는 이미 남아 있다 — 성공한 제재 변경이 흔적 없이 사라지면 안 된다")
-    void theAuditLineSurvivesAThrowingDiagnostic() {
-        given(repository.findWords(FilterWordKind.PROFANITY))
-                .willReturn(Set.of("시발"))
-                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
-        given(repository.findWords(FilterWordKind.WHITELIST))
-                .willReturn(Set.of())
-                .willThrow(new IllegalStateException("진단 경로의 코드 결함"));
-
-        ListAppender<ILoggingEvent> appender = new ListAppender<>();
-        appender.start();
-        Logger logger = (Logger) LoggerFactory.getLogger(ManageFilterWordsService.class);
-        logger.addAppender(appender);
-        try {
-            assertThatThrownBy(() -> service.add(add("PROFANITY", "지랄", "ADMIN")))
-                    .isInstanceOf(IllegalStateException.class);
-
-            assertThat(appender.list.stream()
-                    .filter(event -> event.getLevel() == Level.INFO)
-                    .map(ILoggingEvent::getFormattedMessage)
-                    .toList())
-                    .as("쓰기·발행이 둘 다 성공했는데 누가 무엇을 바꿨는지가 아무 데도 없으면 "
-                            + "제재 변경의 흔적이 사라진다")
-                    .anySatisfy(message -> assertThat(message)
-                            .contains("사전에 항목을 더했다")
-                            .contains("version=42"));
-        } finally {
-            logger.detachAppender(appender);
-            appender.stop();
-        }
     }
 
     @Test
