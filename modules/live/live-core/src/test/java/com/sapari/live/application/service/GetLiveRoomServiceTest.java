@@ -39,7 +39,7 @@ class GetLiveRoomServiceTest {
     void setup() {
         sellerId = UUID.randomUUID();
         roomId = UUID.randomUUID();
-        scheduled = LiveRoom.create(sellerId, "타이틀", "설명", "판매자닉", "http://thumb", NOW, NOW)
+        scheduled = LiveRoom.create(sellerId, "타이틀", "설명", "판매자닉", "http://thumb", NOW.plusSeconds(3600), NOW)
                 .toBuilder().id(roomId).build();
     }
 

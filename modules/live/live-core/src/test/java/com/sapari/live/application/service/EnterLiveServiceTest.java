@@ -51,7 +51,7 @@ class EnterLiveServiceTest {
         sellerId = UUID.randomUUID();
         roomId = UUID.randomUUID();
         LiveRoom scheduled = LiveRoom.create(
-                        sellerId, "타이틀", "설명", "판매자닉", "http://thumb", now, now)
+                        sellerId, "타이틀", "설명", "판매자닉", "http://thumb", now.plusSeconds(3600), now)
                 .toBuilder().id(roomId).build();
         // Live 상태로 전이 + hlsUrl 세팅
         liveRoom = scheduled.startLive(StreamInfo.of("sfu-room", "egress-1", "http://cdn/master.m3u8", null), now);
@@ -194,7 +194,7 @@ class EnterLiveServiceTest {
     void rejects_whenNotLive() {
         Instant now = Instant.parse("2026-07-03T00:00:00Z");
         UUID scheduledId = UUID.randomUUID();
-        LiveRoom scheduled = LiveRoom.create(sellerId, "t", "d", "n", "http://th", now, now)
+        LiveRoom scheduled = LiveRoom.create(sellerId, "t", "d", "n", "http://th", now.plusSeconds(3600), now)
                 .toBuilder().id(scheduledId).build(); // Scheduled
         given(liveRoomRepository.findById(scheduledId)).willReturn(Optional.of(scheduled));
 

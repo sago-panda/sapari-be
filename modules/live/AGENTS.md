@@ -19,6 +19,9 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 | `Scheduled` | `cancel()` (seller) | `Cancelled` | `canCancel()` — else LIVE-013 |
 | `Scheduled` | `update()` (seller) | `Scheduled` | `canUpdate()` — else LIVE-014 |
 
+`create()` and `update()` share `requireEditableFields`: `scheduledAt` must be after now (LIVE-015), so editing a
+`Scheduled` room whose time has passed requires rescheduling it — intended (SPR-156).
+
 - `Ended` and `Cancelled` are terminal (`LiveStatus.isTerminal()`). `expire()` and `cancel()` publish no `RoomEnded` — the room was never `Live`, so chat has no session.
 - `cancel()` is `Scheduled`-only: `Ready` races the OBS-connect webhook, so it is left to the expire batch. LiveKit cleanup runs after commit (`PostCommitMediaCleanup`); leftovers are reclaimed by orphan reconciliation, which treats every terminal state alike — check `isTerminal()`, not `Ended`, there. Replay stays `Ended`-only.
 - No transition INTO `Suspended` exists yet (record + exit only).
@@ -91,6 +94,21 @@ so both sides must reach the same outcome — if they diverge, the room's fate d
   assignment is a conditional UPDATE (`assignRtmpIngressIfAbsent`). **The one place where a WHERE clause is
   the domain guard** — add a `LiveStatus` variant and the compiler won't remind you. Don't spread it.
 - End cleanup deletes ingress room-wide **before** `closeRoom`; a survivor lets OBS re-create the room.
+
+## Room thumbnail — presigned POST, server signs only
+
+Seller asks `POST /api/v1/lives/thumbnails/uploads` → browser POSTs the file straight to S3; bytes never pass
+the app. Content (magic bytes) is checked **after** upload by an infra Lambda (separate ticket), which moves
+`uploads/thumbnails/{sellerId}/{objectId}` → `thumbnails/{sellerId}/{objectId}` — **prefix swap only**, no
+conversion, so the final URL is known at issue time. Until that ticket ships, `thumbnails/` stays empty and
+issued URLs 404 even though room create accepts them.
+
+- `ThumbnailUrlRule` (LIVE-016) accepts only `https://{cdn}{basePath}/thumbnails/{requester's sellerId}/{UUID}`,
+  compared on the raw path. It is string-only — it never asks S3 whether the object exists.
+  Update checks it **only when the URL changes** — rooms created before the rule keep their stored thumbnail.
+- `S3PostPolicySigner` hand-rolls SigV4 POST (SDK v2 has no POST-policy presign; `content-length-range` needs
+  POST). Pinned by AWS's published vector. **Static keys only** — no `x-amz-security-token`, so moving to IRSA
+  means replacing this signer too. Never log the policy, signature or keys.
 
 ## Orphan reconciliation — three `@Scheduled` jobs (live-app)
 
@@ -440,7 +458,8 @@ Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII
 Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`RuntimeException` escapes a service.
 A state violation gets **one code per request kind** (start LIVE-003, end/expire 009, enter 010, ingress 011, cancel 013, update 014) via
 `InvalidLiveStateException(code, msg)` — keep the single class, reconcile jobs catch it as "lost the race, skip".
-Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`, never IAE —
+Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`; room input
+(schedule not future 015, thumbnail URL 016) is `InvalidLiveRoomException` — never IAE —
 IAE reaches the global net as 500. A new request kind (cancel, edit, …) adds its own code; don't reuse 003.
 Tests in `live-core/src/test` (Mockito on ports); scheduler wiring in `live-app` via `ApplicationContextRunner`.
 FixtureMonkey for fixtures, plain builders when asserting specific values (random strings trip VO validation).

@@ -10,6 +10,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -18,6 +19,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +40,7 @@ import com.sapari.common.web.security.CurrentUserIdArgumentResolver;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveProductException;
+import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.port.CreateLiveUseCase;
@@ -106,7 +110,8 @@ class LiveSellerControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                         {"title":"여름 라이브","description":"설명","sellerNickname":"스토어",
-                         "thumbnailUrl":"https://cdn/t.jpg","scheduledAt":"2026-11-07T09:00:00Z"}
+                         "thumbnailUrl":"https://cdn.example.com/thumbnails/33333333-3333-3333-3333-333333333333/44444444-4444-4444-4444-444444444444",
+                         "scheduledAt":"2026-11-07T09:00:00Z"}
                         """));
 
         expectSuccessEnvelope(result.andExpect(status().isCreated()))
@@ -121,12 +126,13 @@ class LiveSellerControllerTest {
     @DisplayName("방송 시작 — 200 + 봉투")
     void startBroadcastReturns200Envelope() throws Exception {
         given(startLiveUseCase.start(any())).willReturn(
-                new StartLiveView(ROOM_ID.toString(), "sfu-token", "https://cdn/index.m3u8", "wss://sfu"));
+                new StartLiveView(ROOM_ID, "sfu-token", "https://cdn/index.m3u8", "wss://sfu"));
 
         ResultActions result = mvc.perform(post("/api/v1/lives/rooms/{roomId}/broadcast/start", ROOM_ID)
                 .contentType(MediaType.APPLICATION_JSON).content(START_BODY));
 
         expectSuccessEnvelope(result.andExpect(status().isOk()))
+                .andExpect(jsonPath("$.data.roomId").value(ROOM_ID.toString()))
                 .andExpect(jsonPath("$.data.sfuToken").value("sfu-token"))
                 .andExpect(jsonPath("$.data.hlsUrl").value("https://cdn/index.m3u8"));
     }
@@ -214,6 +220,77 @@ class LiveSellerControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content(START_BODY))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.error.code").value("COMMON-004"));
+    }
+
+    @Test
+    @DisplayName("방 생성 — 제목 101자는 400 COMMON-001(전에는 DB 에서 500), 유스케이스 미호출")
+    void createRoomTitleTooLongIs400() throws Exception {
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                .content(createBody("\"" + "가".repeat(101) + "\"", "\"설명\""))), "COMMON-001");
+        then(createLiveUseCase).should(never()).create(any());
+    }
+
+    @Test
+    @DisplayName("방 생성 — description 이 없어도 201")
+    void createRoomWithoutDescriptionIs201() throws Exception {
+        given(createLiveUseCase.create(any())).willReturn(new CreateLiveView(ROOM_ID, "여름 라이브", null));
+
+        mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("\"여름 라이브\"", "null")))
+                .andExpect(status().isCreated());
+
+        ArgumentCaptor<CreateLiveCommand> command = ArgumentCaptor.forClass(CreateLiveCommand.class);
+        then(createLiveUseCase).should().create(command.capture());
+        assertThat(command.getValue().description()).isNull();
+    }
+
+    @Test
+    @DisplayName("방 생성 — 예정 시각 LIVE-015 / 썸네일 LIVE-016 은 400")
+    void createRoomInputViolations() throws Exception {
+        given(createLiveUseCase.create(any()))
+                .willThrow(new InvalidLiveRoomException(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE, "x"))
+                .willThrow(new InvalidLiveRoomException(LiveErrorCode.INVALID_THUMBNAIL_URL, "x"));
+
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                .content(createBody("\"제목\"", "null"))), "LIVE-015")
+                .andExpect(jsonPath("$.error.message").value("방송 예정 시각은 현재 이후여야 합니다."));
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                .content(createBody("\"제목\"", "null"))), "LIVE-016")
+                .andExpect(jsonPath("$.error.message").value("허용되지 않은 썸네일 주소입니다."));
+    }
+
+    @Test
+    @DisplayName("방송 시작 — 상품 51개는 400 COMMON-001, 유스케이스 미호출(방 조회보다 먼저)")
+    void startWith51ProductsIs400() throws Exception {
+        String products = IntStream.range(0, 51)
+                .mapToObj(i -> product(UUID.randomUUID(), i == 0))
+                .collect(Collectors.joining(","));
+
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms/{roomId}/broadcast/start", ROOM_ID)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"products\":[" + products + "]}")), "COMMON-001");
+        then(startLiveUseCase).should(never()).start(any());
+    }
+
+    @Test
+    @DisplayName("방송 시작 — productId 중복은 400 COMMON-001, 유스케이스 미호출")
+    void startWithDuplicateProductIdIs400() throws Exception {
+        UUID same = UUID.randomUUID();
+        String body = "{\"products\":[" + product(same, true) + "," + product(same, false) + "]}";
+
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms/{roomId}/broadcast/start", ROOM_ID)
+                .contentType(MediaType.APPLICATION_JSON).content(body)), "COMMON-001")
+                .andExpect(jsonPath("$.error.message").value(containsString("상품 ID가 중복되었습니다.")));
+        then(startLiveUseCase).should(never()).start(any());
+    }
+
+    private static String createBody(String titleJson, String descriptionJson) {
+        return "{\"title\":" + titleJson + ",\"description\":" + descriptionJson + ",\"sellerNickname\":\"스토어\","
+                + "\"thumbnailUrl\":\"https://cdn.example.com/thumbnails/a/b\",\"scheduledAt\":\"2026-11-07T09:00:00Z\"}";
+    }
+
+    private static String product(UUID productId, boolean pinned) {
+        return "{\"productId\":\"" + productId + "\",\"originalPrice\":30000,\"discountPrice\":25000,"
+                + "\"liveDiscountPrice\":22500,\"isPinned\":" + pinned + "}";
     }
 
     /** 실패 봉투: 400, success=false, data 는 null 로 존재, error.code. */

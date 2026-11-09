@@ -223,6 +223,12 @@ An egress writes two manifests per rendition and they are **not** interchangeabl
   Knowing a live URL can reveal the full archive by changing the filename, and viewers can keep downloaded
   copies. This is an accepted consequence of the ticket's explicit full-public replay requirement, not a
   technical claim that the old threat disappeared. Revoking already downloaded copies is not supported.
+- **Room thumbnail uploads share `S3_BUCKET` — public scope must exclude `uploads/` (SPR-156).** Sellers
+  write unchecked bytes to `uploads/thumbnails/` via presigned POST; only the validation Lambda promotes
+  them to `thumbnails/`. Opening the whole bucket (bucket-wide policy, or a CDN origin at the bucket root)
+  serves those unchecked bytes from our domain. Grant public read to the HLS prefixes and `thumbnails/`
+  only and explicitly deny `uploads/*` — or move uploads to their own bucket. Give `uploads/` its own short
+  lifecycle (rejected/abandoned uploads otherwise stay forever); keep it off the HLS prefixes.
 - **SPR-148 replay backfill is re-run until it reports completion; one pass is never enough.** Rooms live
   across the deploy only become ENDED after `max_duration_seconds` (default 7200), so a single pass
   misses them. `infra/replay-backfill/backfill-archive-url.sh` reads only — it verifies EVENT/ENDLIST and
