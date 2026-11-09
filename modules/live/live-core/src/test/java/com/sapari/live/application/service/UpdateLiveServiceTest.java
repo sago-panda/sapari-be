@@ -96,6 +96,20 @@ class UpdateLiveServiceTest {
     }
 
     @Test
+    @DisplayName("수정 불가 상태 + 다른 썸네일 — 썸네일(LIVE-016)보다 상태(LIVE-014)가 먼저")
+    void stateCheckedBeforeThumbnail() {
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId))
+                .willReturn(Optional.of(room(new LiveStatus.Cancelled(SCHEDULED_AT, NOW))));
+        given(timeProvider.now()).willReturn(NOW);
+
+        assertThatThrownBy(() -> updateLiveService.update(command("https://other.com/x.jpg", NEW_AT)))
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.UPDATE_NOT_ALLOWED);
+        then(liveRoomRepository).should(never()).save(any());
+    }
+
+    @Test
     @DisplayName("없는 방·남의 방 — 404")
     void rejectsMissingOrForeignRoom() {
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.empty());
@@ -106,6 +120,7 @@ class UpdateLiveServiceTest {
     @Test
     @DisplayName("썸네일을 바꾸면서 다른 판매자 경로를 주면 LIVE-016, 저장 없음")
     void rejectsForeignThumbnail() {
+        given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId))
                 .willReturn(Optional.of(room(new LiveStatus.Scheduled(SCHEDULED_AT))));
         String foreign = "https://cdn.example.com/thumbnails/" + UUID.randomUUID() + "/44444444-4444-4444-4444-444444444444";
@@ -136,6 +151,7 @@ class UpdateLiveServiceTest {
     @Test
     @DisplayName("기존 썸네일을 다른 비규칙 주소로 바꾸면 LIVE-016")
     void rejectsChangeToNonCdnThumbnail() {
+        given(timeProvider.now()).willReturn(NOW);
         given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId))
                 .willReturn(Optional.of(room(new LiveStatus.Scheduled(SCHEDULED_AT)).toBuilder()
                         .thumbnailUrl("https://legacy.example.com/old.jpg").build()));

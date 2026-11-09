@@ -18,4 +18,12 @@ public record ThumbnailUploadView(
         Instant expiresAt,
         String thumbnailUrl
 ) {
+
+    /** 정책·서명은 업로드 허가 그 자체라 어떤 로그에도 남기지 않는다 — 필드 이름만 보인다. */
+    @Override
+    public String toString() {
+        return "ThumbnailUploadView[uploadUrl=" + uploadUrl + ", fields="
+                + (fields == null ? null : fields.keySet()) + ", expiresAt=" + expiresAt
+                + ", thumbnailUrl=" + thumbnailUrl + "]";
+    }
 }

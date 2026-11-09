@@ -14,4 +14,10 @@ public record PresignedPost(String url, Map<String, String> fields, Instant expi
     public PresignedPost {
         fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
     }
+
+    /** 정책·서명은 업로드 허가 그 자체라 어떤 로그에도 남기지 않는다 — 필드 이름만 보인다. */
+    @Override
+    public String toString() {
+        return "PresignedPost[url=" + url + ", fields=" + fields.keySet() + ", expiresAt=" + expiresAt + "]";
+    }
 }
