@@ -307,6 +307,19 @@ live:
   # ⚠️ 복구 = 롤링 재시작(위 enter 와 같은 이유).
   # -------------------------------------------------------------------------
   chat:
+    # -------------------------------------------------------------------------
+    # live-app 의 Mongo 연산 상한 (SPR-180)
+    #
+    # streaming-app 의 chat.mongo.operation-timeout 은 이 앱에 적용되지 않는다 — 그쪽 설정을
+    # 들이지 않기 때문이다. 드라이버 기본값은 전체 연산 상한 미설정 · socket read timeout 0 이라
+    # 멈춘 Mongo 아래에서 HTTP 워커가 무한정 점유된다.
+    # ⚠️ 축이 streaming-app 과 다르다: 그쪽은 메시지마다 걸려서 "(세션 허용 시간 ÷ 대기 프레임)"
+    # 이고, 이쪽은 요청당 조회 하나라 "HTTP 워커를 몇 초까지 점유해도 되는가" 다.
+    # ⚠️ 3s 는 재지 않은 값이다. 운영에서 올리는 것이 복구 수단이고 1ms 미만만 부팅을 막는다.
+    # -------------------------------------------------------------------------
+    mongo:
+      operation-timeout: ${LIVE_CHAT_MONGO_OPERATION_TIMEOUT:3s}
+
     history:
       rate-limit:
         permits-per-second: ${LIVE_CHAT_HISTORY_PERMITS:20}
