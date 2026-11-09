@@ -72,13 +72,18 @@ public class CachingRoomTokenIssuer implements RoomTokenIssuer {
     private final long ttlNanos;
 
     /**
-     * 조준을 막는 프로세스 로컬 salt — 형제 {@code EnterRateLimiter.shardSalt} 와 같은 이유다.
+     * 조준을 막는 프로세스 로컬 salt — 형제 {@code EnterRateLimiter.shardKey} 와 <b>목적</b>이 같다.
+     *
+     * <p>⚠️ <b>방식은 다르고, 보장도 같지 않다.</b> 형제는 키 혼합(HmacSHA256)이라 키 없이는 두 주체가
+     * 같은 샤드인지 계산할 수 없다. 이쪽은 해시에 salt 를 <b>더하고</b> xor-fold 할 뿐이라, 전체 32비트
+     * 해시가 같은 두 키는 salt 와 무관하게 같은 슬롯이다 — 그 관계는 salt 로 지워지지 않는다. 미스는
+     * 서명으로 끝나 비용 문제에 그치므로 보강은 따로 미뤘다(SPR-185 범위 밖).
      *
      * <p>키의 {@code userId} 는 공개 목록 응답({@code GetLiveView.LiveRoomSummary.sellerId})으로
      * 밖에 나가고 {@code UUID.hashCode} 는 JDK 가 명세한 함수다. salt 가 없으면 공격자가 특정
      * 판매자의 슬롯을 오프라인으로 계산해 그 자리만 계속 덮어 <b>그 사람의 적중만</b> 없앨 수
-     * 있다. 그것만으로 기능이 깨지지는 않지만(미스는 그냥 서명한다) 비용 공격의 표적이 되고,
-     * salt 하나로 조준이 분사(spraying)로 내려간다.
+     * 있다. 그것만으로 기능이 깨지지는 않지만(미스는 그냥 서명한다) 비용 공격의 표적이 된다.
+     * salt 는 슬롯 번호를 오프라인으로 계산하는 것을 막는다 — 위 단락의 전체 해시 충돌은 예외다.
      */
     private final int salt = UUID.randomUUID().hashCode();
 

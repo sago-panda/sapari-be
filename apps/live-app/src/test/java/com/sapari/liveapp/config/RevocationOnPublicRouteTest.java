@@ -190,7 +190,7 @@ class RevocationOnPublicRouteTest {
             StubChecker checker = checkerForThisCase;
             // 상한은 이 테스트의 축이 아니다 — 한도를 넉넉히 둬서 경로 판정을 가리지 않게 한다.
             EnterRateLimitFilter rateLimit = new EnterRateLimitFilter(new EnterRateLimiter(
-                    new EnterRateLimitProperties(1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
+                    new EnterRateLimitProperties(1_000_000, 1_000_000, 1_000_000, 1_000_000, 1, null, null, null),
                     LiveMetrics.NOOP));
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(sellerTokenProvider()),

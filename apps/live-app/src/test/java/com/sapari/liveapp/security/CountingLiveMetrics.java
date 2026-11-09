@@ -55,6 +55,10 @@ class CountingLiveMetrics implements LiveMetrics {
     }
 
     @Override
+    public void roomEndedSignalFailed(com.sapari.live.application.port.RoomEndedSignal signal) {
+    }
+
+    @Override
     public void reconcileRoundCompleted(ReconcileJob job, Duration took) {
     }
 

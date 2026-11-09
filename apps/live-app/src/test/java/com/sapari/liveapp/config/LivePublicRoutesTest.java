@@ -74,7 +74,7 @@ class LivePublicRoutesTest {
             // 둬서 상한이 경로 판정 결과를 가리지 않게 한다.
             EnterRateLimitFilter enterRateLimitFilter = new EnterRateLimitFilter(
                     new EnterRateLimiter(new EnterRateLimitProperties(
-                            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
+                            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1, null, null, null),
                             com.sapari.live.application.port.LiveMetrics.NOOP));
             // 폐기 조회도 이 테스트의 축이 아니다. 이 테스트의 요청은 전부 토큰이 없어
             // principal 이 null 이므로 체커는 호출되지 않는다 — 목을 두는 것은 체인을

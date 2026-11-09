@@ -16,6 +16,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
+import com.sapari.live.application.port.RoomEndedSignal;
 import com.sapari.live.application.port.RoomTokenSignatureSource;
 import com.sapari.live.application.port.TokenRevocationAxis;
 import com.sapari.live.application.port.LiveMetrics;
@@ -153,6 +154,14 @@ public class MicrometerLiveMetrics implements LiveMetrics {
         safe(() -> Counter.builder(LiveMeterNames.ENTER_REJECTED)
                 .tag(LiveMeterNames.TAG_POPULATION, tag(population))
                 .tag(LiveMeterNames.TAG_GATE, tag(gate))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void roomEndedSignalFailed(RoomEndedSignal signal) {
+        safe(() -> Counter.builder(LiveMeterNames.ROOM_ENDED_SIGNAL_FAILED)
+                .tag(LiveMeterNames.TAG_SIGNAL, tag(signal))
                 .register(registry)
                 .increment());
     }

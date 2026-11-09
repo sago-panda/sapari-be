@@ -46,7 +46,7 @@ class EnterRateLimitFilterTest {
 
     /** 샤드 1 — 샤드 축을 재는 칸이 아니면 전역 버킷과 같게 둔다. */
     private static EnterRateLimitProperties props(int guest, int member) {
-        return new EnterRateLimitProperties(guest, guest, member, member, 1);
+        return new EnterRateLimitProperties(guest, guest, member, member, 1, null, null, null);
     }
 
     /** 멈춘 시계 — 가장 느린 버킷도 초당 1개는 차서 실시계면 "비었다" 단정의 창이 1초다. */
@@ -80,7 +80,15 @@ class EnterRateLimitFilterTest {
     }
 
     private static void authenticate(UUID userId) {
-        LiveUserPrincipal principal = new LiveUserPrincipal(userId, UUID.randomUUID(), UUID.randomUUID(), "USER", "닉", "a@b.c");
+        authenticate(userId, "USER");
+    }
+
+    private static void authenticateSeller() {
+        authenticate(UUID.randomUUID(), "SELLER");
+    }
+
+    private static void authenticate(UUID userId, String role) {
+        LiveUserPrincipal principal = new LiveUserPrincipal(userId, UUID.randomUUID(), UUID.randomUUID(), role, "닉", "a@b.c");
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(principal, null, java.util.List.of()));
     }
@@ -213,13 +221,16 @@ class EnterRateLimitFilterTest {
     @DisplayName("기본값은 500/s · burst 1000 이고, 잘못된 값은 부팅에서 막는다")
     void defaultsAreFixedAndInvalidLimitsRefuseToBoot() {
         EnterRateLimitProperties defaults =
-                new EnterRateLimitProperties(null, null, null, null, null);
+                new EnterRateLimitProperties(null, null, null, null, null, null, null, null);
         // 세 면(코드·yaml·AGENTS.md)에 같은 수가 적혀 있다 — 한 면만 고치면 여기서 깨진다.
         assertThat(defaults.guestPermitsPerSecond()).isEqualTo(500);
         assertThat(defaults.guestBurst()).isEqualTo(1_000);
         assertThat(defaults.memberPermitsPerSecond()).isEqualTo(500);
         assertThat(defaults.memberBurst()).isEqualTo(1_000);
         assertThat(defaults.memberShards()).isEqualTo(64);
+        assertThat(defaults.sellerPermitsPerSecond()).isEqualTo(8);
+        assertThat(defaults.sellerBurst()).isEqualTo(32);
+        assertThat(defaults.sellerShards()).isEqualTo(8);
 
         for (String[] bad : new String[][] {
                 {"live.enter.rate-limit.guest-permits-per-second=0"},
@@ -229,6 +240,14 @@ class EnterRateLimitFilterTest {
                 {"live.enter.rate-limit.member-permits-per-second=100",
                         "live.enter.rate-limit.member-burst=99"},
                 {"live.enter.rate-limit.member-shards=0"},
+                {"live.enter.rate-limit.seller-permits-per-second=0"},
+                {"live.enter.rate-limit.seller-permits-per-second=10",
+                        "live.enter.rate-limit.seller-burst=9"},
+                {"live.enter.rate-limit.seller-shards=0"},
+                {"live.enter.rate-limit.seller-shards=4097"},
+                {"live.enter.rate-limit.seller-permits-per-second=10",
+                        "live.enter.rate-limit.seller-burst=10",
+                        "live.enter.rate-limit.seller-shards=11"},
                 // 상한이 없으면 이 조합이 통과해 그 길이의 배열을 할당하려 든다 —
                 // 기동 실패 자리가 설정 검증이 아니라 할당이 된다.
                 {"live.enter.rate-limit.member-permits-per-second=2147483647",
@@ -269,7 +288,7 @@ class EnterRateLimitFilterTest {
     void oneMemberCannotStarveAllMembers() throws Exception {
         // 전역 burst 100 · 샤드 4개 → 샤드 몫 ⌈100/4⌉×2 = 50. 한 샤드를 비워도 전역에 50 남는다.
         EnterRateLimiter limiter = new EnterRateLimiter(
-                new EnterRateLimitProperties(1, 1, 100, 100, 4), LiveMetrics.NOOP, () -> 0L);
+                new EnterRateLimitProperties(1, 1, 100, 100, 4, null, null, null), LiveMetrics.NOOP, () -> 0L);
         EnterRateLimitFilter filter = new EnterRateLimitFilter(limiter);
         CountingChain chain = new CountingChain();
 
@@ -309,6 +328,111 @@ class EnterRateLimitFilterTest {
         filter.doFilter(get(ENTER_URI), otherShard, chain);
         assertThat(otherShard.getStatus())
                 .as("샤드가 없거나 전역을 먼저 검사하면 여기도 429 다")
+                .isEqualTo(200);
+    }
+
+    /**
+     * ⭐ <b>회원 통로가 다 차도 판매자는 들어온다 — 판매자 전용 통로(SPR-185).</b>
+     *
+     * <p>판매자가 회원 샤드·전역을 같이 쓰던 때는 시청자가 몰리는 순간 판매자 재접속이 429 였고,
+     * 그러면 {@code owner} 클레임이 실린 룸 토큰을 못 받아 chat 의 강퇴·비마스킹 권한을 잃었다.
+     */
+    @Test
+    @DisplayName("⭐ 회원 통로가 다 차도 판매자는 판매자 통로로 들어온다")
+    void aSellerEntersEvenWhenTheMemberLaneIsExhausted() throws Exception {
+        EnterRateLimitFilter filter = new EnterRateLimitFilter(new EnterRateLimiter(
+                new EnterRateLimitProperties(1, 1, 1, 1, 1, 1, 1, 1), LiveMetrics.NOOP, () -> 0L));
+        CountingChain chain = new CountingChain();
+
+        authenticate();
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        MockHttpServletResponse memberRejected = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), memberRejected, chain);
+        assertThat(memberRejected.getStatus()).as("전제 — 회원 통로가 비었다").isEqualTo(429);
+
+        authenticateSeller();
+        MockHttpServletResponse seller = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), seller, chain);
+        assertThat(seller.getStatus())
+                .as("판매자가 회원 통로를 같이 쓰면 여기서 429 다")
+                .isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("⭐ 판매자 통로에도 상한이 있고, 판매자 입장은 회원 통로를 쓰지 않는다")
+    void theSellerLaneIsCappedAndDoesNotDrainTheMemberLane() throws Exception {
+        CountingLiveMetrics metrics = new CountingLiveMetrics();
+        EnterRateLimitFilter filter = new EnterRateLimitFilter(new EnterRateLimiter(
+                new EnterRateLimitProperties(1, 1, 1, 1, 1, 2, 2, 1), metrics, () -> 0L));
+        CountingChain chain = new CountingChain();
+
+        authenticateSeller();
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        MockHttpServletResponse sellerRejected = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), sellerRejected, chain);
+        assertThat(sellerRejected.getStatus())
+                .as("판매자 가입은 셀프서비스라 이 통로가 무제한이면 입장 상한 전체의 우회로다")
+                .isEqualTo(429);
+        assertThat(metrics.rejections).containsExactly(EnterPopulation.SELLER);
+
+        authenticate();
+        MockHttpServletResponse member = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), member, chain);
+        assertThat(member.getStatus())
+                .as("판매자 입장이 회원 토큰을 썼다면 회원 통로(1장)가 이미 비어 429 다")
+                .isEqualTo(200);
+    }
+
+    /**
+     * ⭐ <b>판매자 한 명이 판매자 전체를 굶히지 못한다 — 판매자 통로도 샤드로 나눈다.</b>
+     *
+     * <p>판매자 가입도 셀프서비스라, 통로가 버킷 하나면 판매자 계정 하나가 그 통로를 상시 비워
+     * <b>모든</b> 판매자의 재접속을 막을 수 있었다(비용은 판매자 수가 아니라 공격자 한 명의 요청률이다).
+     * 회원과 같은 키 혼합 샤드가 그 피해를 같은 샤드의 판매자로 묶는다.
+     */
+    @Test
+    @DisplayName("⭐ 판매자 한 명이 판매자 전체를 굶히지 못한다 — 판매자 통로도 샤드가 묶는다")
+    void oneSellerCannotStarveAllSellers() throws Exception {
+        // 판매자 전역 burst 100 · 샤드 4개 → 샤드 몫 ⌈100/4⌉×2 = 50. 한 샤드를 비워도 전역에 50 남는다.
+        EnterRateLimiter limiter = new EnterRateLimiter(
+                new EnterRateLimitProperties(1, 1, 1, 1, 1, 100, 100, 4), LiveMetrics.NOOP, () -> 0L);
+        EnterRateLimitFilter filter = new EnterRateLimitFilter(limiter);
+        CountingChain chain = new CountingChain();
+
+        UUID attacker = UUID.randomUUID();
+        int attackerShard = limiter.sellerShardIndexFor(attacker.toString());
+        UUID victim = null;
+        UUID bystander = null;
+        for (int i = 0; i < 500 && (victim == null || bystander == null); i++) {
+            UUID candidate = UUID.randomUUID();
+            int shard = limiter.sellerShardIndexFor(candidate.toString());
+            if (shard == attackerShard && victim == null) {
+                victim = candidate;
+            } else if (shard != attackerShard && bystander == null) {
+                bystander = candidate;
+            }
+        }
+        assertThat(victim).as("전제 — 같은 샤드 판매자를 찾아야 한다").isNotNull();
+        assertThat(bystander).as("전제 — 다른 샤드 판매자를 찾아야 한다").isNotNull();
+
+        authenticate(attacker, "SELLER");
+        for (int i = 0; i < 400; i++) {
+            filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        }
+
+        authenticate(victim, "SELLER");
+        MockHttpServletResponse sameShard = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), sameShard, chain);
+        assertThat(sameShard.getStatus())
+                .as("같은 샤드는 같이 거부된다 — 샤딩은 없애는 것이 아니라 묶는 것이다")
+                .isEqualTo(429);
+
+        authenticate(bystander, "SELLER");
+        MockHttpServletResponse otherShard = new MockHttpServletResponse();
+        filter.doFilter(get(ENTER_URI), otherShard, chain);
+        assertThat(otherShard.getStatus())
+                .as("판매자 통로가 버킷 하나면 여기도 429 다")
                 .isEqualTo(200);
     }
 

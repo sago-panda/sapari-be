@@ -94,7 +94,7 @@ live:
     issuer: ${LIVE_ROOM_TOKEN_ISSUER:live}
     audience: ${LIVE_ROOM_TOKEN_AUDIENCE:chat}
     # 짧게 유지(60~120s). jti 가 없어 창 안에서는 재사용이 가능하므로 창 자체가 방어다.
-    expiration-seconds: ${LIVE_ROOM_TOKEN_EXPIRATION_SECONDS:90}
+    expiration-seconds: ${LIVE_ROOM_TOKEN_EXPIRATION_SECONDS:90}   # 300 이하여야 부팅된다(chat 이 이 상한에 맞춰 TTL 을 정한다)
     # REQUIRED — Base64(PKCS#8 DER), PEM 헤더·개행 제외.
     # 기본값을 두지 말 것: resources 에 들어간 값은 jar 에 실려 배포된다(운영에서 env 로 덮어써도 남는다).
     private-key: ${LIVE_ROOM_TOKEN_PRIVATE_KEY:}
@@ -293,6 +293,10 @@ live:
       member-burst: ${LIVE_ENTER_MEMBER_BURST:1000}     # permits 이상이어야 부팅된다
       member-shards: ${LIVE_ENTER_MEMBER_SHARDS:64}     # 1~4096 이고 member-permits 이하여야 부팅된다
                                                         # (상한이 없으면 오타가 거대한 배열을 만든다)
+      # 판매자 전용 통로 — 회원 샤드·전역을 건너뛴다(재접속으로 owner 클레임을 복구해야 해서).
+      seller-permits-per-second: ${LIVE_ENTER_SELLER_PERMITS:8}
+      seller-burst: ${LIVE_ENTER_SELLER_BURST:32}       # permits 이상이어야 부팅된다
+      seller-shards: ${LIVE_ENTER_SELLER_SHARDS:8}     # 1~4096 이고 seller-permits 이하여야 부팅된다
 
   # -------------------------------------------------------------------------
   # 공개 채팅 이력 조회 상한 (SPR-179)
