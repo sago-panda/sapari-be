@@ -203,7 +203,8 @@ class ChatMessageQueryPlanTest {
                 .as("읽은 인덱스 키 수가 limit(%d) 에 묶였다 — 그러면 ChatMongoConfig 의 "
                         + "\"keysExamined 는 그대로 창 전수다\" 가 거짓이 된 것이다. 실제=%s · 계획=%s",
                         WINDOW_LIMIT, profiled.getInteger("keysExamined"), profiled.getString("planSummary"))
-                .isGreaterThan(WINDOW_LIMIT)
+                // 축이 하나다 — 한때 isGreaterThan(WINDOW_LIMIT) 을 앞에 붙였는데 60 > 5 라 뒤에
+                // 완전히 먹혔다. 둘처럼 보이면 나중에 뒤를 느슨하게 한 사람이 "6 이면 통과" 만 남긴다.
                 .isGreaterThanOrEqualTo(MESSAGES_IN_WINDOW);
     }
 

@@ -20,7 +20,7 @@ package com.sapari.chat.domain.exception;
  * {@code doOnError} 로 센다(SPR-178).
  *
  * <p>사용자 잘못이 아니라 서버 쪽 상태라 5xx({@link ChatErrorCode#PERSIST_TIMEOUT})다.
- * <b>흡수하지 않는다</b> — 저장이 안 됐으므로 ack 를 주면 "유실이 성공" 으로 보고된다.
+ * <b>흡수하지 않는다</b> — 결과를 모르는데 ack 를 주면 "확인 못 한 것이 성공" 으로 보고된다.
  *
  * <p>번역이 <b>어댑터</b>에서 일어나는 이유. 판정에 드라이버 타입이 필요한데 루트 {@code AGENTS.md}
  * 가 서비스의 SDK 직접 사용을 금지하고, ArchUnit 의

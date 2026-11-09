@@ -567,7 +567,7 @@ class SendChatServiceTest {
         // 앞서 stubAllowedAndSaved 가 걸어 둔 answer 가 null 인자로 실행돼 NPE 가 난다(실측).
         willReturn(Mono.error(wrapped)).given(chatMessageRepository).save(any());
 
-        // when & then: 발신자에게는 에러가 간다 — 저장이 안 됐으므로 ack 를 주면 "유실이 성공" 이 된다.
+        // when & then: 발신자에게는 에러가 간다 — 결과를 모르는데 ack 를 주면 "확인 못 한 것이 성공" 이 된다.
         assertThatThrownBy(() -> service.send(command("BUYER", false, true, "NORMAL", "안녕", "t1"))
                 .block(VERIFY_CEILING)).isNotNull();
 

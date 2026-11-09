@@ -29,6 +29,7 @@ import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
 import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.port.KickUserUseCase;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 강퇴 경로가 <b>이 앱에서 실제로 조립되는지</b>를 컨텍스트를 띄워 확인한다.
@@ -208,15 +209,50 @@ class ChatModerationWiringTest {
         // ⚠️ 순서가 중요하다. Boot 자신의 커스터마이저(@Order(0))가 프로퍼티 값으로 이 필드를 덮으므로,
         //    정렬하지 않고 적용하면 우리 값이 지워진 결과가 나온다(실측: UNSPECIFIED). 실제 조립과 같게
         //    @Order로 정렬해야 우리 커스터마이저가 마지막에 온다.
+        // when & then
+        assertThat(appliedMongoSettings().getUuidRepresentation()).isEqualTo(UuidRepresentation.STANDARD);
+    }
+
+    /**
+     * 연산 상한이 <b>앱 배선을 통해</b> 걸리는지.
+     *
+     * <p>⚠️ <b>이 칸이 없으면 축 하나가 통째로 빈다.</b> {@code LiveAppChatMongoTimeoutTest} 는
+     * {@code new ChatModerationBeansConfig()} 로 빈 메서드를 직접 불러 값·분모·부팅가드를 재는데,
+     * 그러면 <b>그 빈이 앱에 등록되는지</b>는 아무도 안 잰다. 실측: 커스터마이저의 {@code @Bean} 만
+     * 떼고 live-app 전수를 돌리면 <b>초록이다</b>(34클래스 183칸 실패 0) — 이 티켓이 고치려는 결함이
+     * 그대로 돌아와도 게이트가 통과한다.
+     *
+     * <p>이 클래스에서 <b>이미 한 번 터진 모양</b>이다 —
+     * {@code ChatMessageEvidenceMongoRepositoryTest} 가 적어 두었다: *"앱이 해야 할 배선을 테스트가
+     * 대신 해 주면 앱에서 그게 빠져도 이 테스트는 초록이다 — 실제로 그렇게 빠진 적이 있고, 그때 이
+     * 테스트는 통과했다."*
+     *
+     * <p>그래서 형제 칸과 같은 자리에서 잰다 — 실제 컨텍스트의 커스터마이저 빈을 <b>전부 모아</b>
+     * {@code @Order} 로 정렬해 적용한 결과를 본다(손열거가 아니라 구조적 수집이라 새 빈이 그냥 실린다).
+     */
+    @Test
+    @DisplayName("⭐ Mongo 연산 상한이 앱 배선으로 걸린다 — 빈이 빠지면 상한 없는 파드가 뜬다")
+    void mongoOperationTimeoutIsWiredIntoTheApp() {
+        assertThat(appliedMongoSettings().getTimeout(TimeUnit.MILLISECONDS))
+                .as("연산 상한이 조립된 설정에 없다 — 드라이버 기본값은 '무제한' 이고, 멈춘 Mongo "
+                        + "아래에서 HTTP 워커가 무한정 점유된다")
+                .isEqualTo(3_000L);
+    }
+
+    /**
+     * 실제 조립을 재현한다 — 등록된 커스터마이저 전부를 {@code @Order} 로 정렬해 빌더에 얹는다.
+     *
+     * <p>⚠️ 순서가 하중이다. Boot 자신의 커스터마이저({@code @Order(0)})가 프로퍼티 값으로 필드를
+     * 덮으므로 정렬하지 않으면 우리 값이 지워진 결과가 나온다(실측: UUID 가 UNSPECIFIED).
+     */
+    private MongoClientSettings appliedMongoSettings() {
         List<MongoClientSettingsBuilderCustomizer> customizers =
                 new ArrayList<>(context.getBeansOfType(MongoClientSettingsBuilderCustomizer.class).values());
         AnnotationAwareOrderComparator.sort(customizers);
 
         MongoClientSettings.Builder builder = MongoClientSettings.builder();
         customizers.forEach(customizer -> customizer.customize(builder));
-
-        // when & then
-        assertThat(builder.build().getUuidRepresentation()).isEqualTo(UuidRepresentation.STANDARD);
+        return builder.build();
     }
 
     /**
