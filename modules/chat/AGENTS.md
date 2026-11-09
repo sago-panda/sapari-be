@@ -692,8 +692,8 @@ and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). `
 that agrees with the record, whether the write comes back `EXTENDED` or `UNCHANGED` is set by the difference
 of two unmeasured delays — the kick's TTL is computed from `kickedAt` (before its commit), which makes the
 mirror *longer*, and the reconcile's `now` is read before its own lock and commit, which makes `want` longer.
-Measured by the peer review on redis:7.4 with the production script: 10ms/2ms → all `UNCHANGED`, 10ms/25ms →
-all `EXTENDED`. So a genuinely short mirror and ms-level jitter share that result; the axis carries no
+Measured by the peer review on redis:7.4 with the production script: 10ms/2ms → `UNCHANGED` 200/200, 10ms/25ms →
+`EXTENDED` 200/200. So a genuinely short mirror and ms-level jitter share that result; the axis carries no
 signal until the jitter bound is known. Every write that is not `STALE` also publishes the account
 ban event, like a kick does — a user who joined while the key was lost keeps an open session otherwise, and
 when a reconcile reaches the mirror ahead of an overlapping kick, the kick's write is `STALE` and the kick

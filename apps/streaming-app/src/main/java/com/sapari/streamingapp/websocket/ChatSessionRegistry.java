@@ -1389,8 +1389,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 탈퇴·로그아웃은 세션을 폐기하고({@code JwtTokenLifecycle.revoke}/{@code revokeAll}) live-app 의
      * {@code TokenRevocationFilter} 가 그것을 조회하므로, 그 사람은 재접속에서 <b>새</b> 토큰을 받지 못한다.
      * 다만 <b>이미 받아 둔</b> 룸 토큰은 만료까지 핸드셰이크를 지나므로, 로그아웃의 반영 상한은 "그 토큰의 잔여
-     * TTL 안에 다시 들어온 세션의 수명" 까지다. 탈퇴는 그 창도 닫힌다 — 입장 관문이 탈퇴 기록을 본다
-     * ({@code EntryGate}). 한때 여기에 "반영 상한이 이 수명 하나로 줄었다" 고 적혀 있었는데 받아 둔 토큰을
+     * TTL 안에 다시 들어온 세션의 수명" 까지다. 한때 여기에 "반영 상한이 이 수명 하나로 줄었다" 고 적혀 있었는데 받아 둔 토큰을
      * 빠뜨린 문장이었고, 그 전에는 "이 수명 + access 잔여 TTL" 이었다(live-app 이 폐기를 보지 않던 때).
      *
      * <p>⚠️ <b>역할 강등은 다르다.</b> 그 경로가 토큰을 폐기하지 않으면 폐기 조회가 집지 못한다 —
