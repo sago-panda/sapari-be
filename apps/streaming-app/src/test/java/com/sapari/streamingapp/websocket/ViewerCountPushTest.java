@@ -36,7 +36,8 @@ import reactor.core.publisher.Mono;
  * <b>순수 상태 setter</b>({@code setActiveCount} + {@code setOwnerMode})라 반복 수신이 멱등이고,
  * 반대로 모르는 {@code type} 을 어떻게 다루는지는 계약에 없어서 새 타입이 더 위험하다.
  *
- * <p>세 가지를 본다 — <b>변했을 때만</b> 보내는가(조용한 방이 비용 0), <b>수를 모를 때</b> 안 보내는가
+ * <p>네 가지를 본다 — <b>변했을 때만</b> 보내는가(조용한 방이 비용 0), 마지막으로 보낸 수가 없을 때
+ * (첫 회차 · 새 입장 뒤) 보내는가, <b>수를 모를 때</b> 안 보내는가
  * (조회 실패에 {@code null} 을 보내면 화면의 숫자가 사라진다), 그리고 세션마다 자기
  * {@code isRoomOwner} 를 받는가.
  */
@@ -79,24 +80,23 @@ class ViewerCountPushTest {
     @Test
     @DisplayName("⭐ 수가 변하면 그 방 세션에 ROOM_INFO 가 다시 간다")
     void aChangedCountIsPushed() {
-        // given: 입장 시 1 → 첫 회차가 기준선을 잡고(안 보냄) → 두 번째 회차에 7
+        // given: 첫 회차 1 → 두 번째 회차 7
         // register 는 count 를 읽지 않는다 — 입장 ROOM_INFO 는 핸들러(roomInfoFor)가 보낸다.
-        // 그래서 첫 회차가 기준선 1 을 잡고, 두 번째 회차가 7 을 본다.
         given(sessionRepository.count(roomId)).willReturn(Mono.just(1L), Mono.just(7L));
         register("s1", buyerId, false);
         List<OutboundMessage> frames = received("s1");
 
-        // when: 첫 회차는 기준선(이 Pod 가 그 방을 처음 보는 회차)이라 보내지 않는다
+        // when
         registry.pushViewerCounts().block(VERIFY_CEILING);
         registry.pushViewerCounts().block(VERIFY_CEILING);
 
-        // then
+        // then: 첫 회차는 보낸 수가 없어서 보내고, 두 번째는 변해서 보낸다
         assertThat(frames).extracting(OutboundMessage::type).containsOnly("ROOM_INFO");
-        assertThat(frames).extracting(OutboundMessage::activeCount).containsExactly(7L);
+        assertThat(frames).extracting(OutboundMessage::activeCount).containsExactly(1L, 7L);
     }
 
     @Test
-    @DisplayName("⭐ 수가 그대로면 아무것도 보내지 않는다 — 조용한 방이 비용 0 이어야 한다")
+    @DisplayName("⭐ 수가 그대로면 첫 회차 뒤로는 아무것도 보내지 않는다 — 조용한 방이 비용 0 이어야 한다")
     void anUnchangedCountIsNotPushed() {
         // given
         given(sessionRepository.count(roomId)).willReturn(Mono.just(3L));
@@ -108,14 +108,15 @@ class ViewerCountPushTest {
         registry.pushViewerCounts().block(VERIFY_CEILING);
         registry.pushViewerCounts().block(VERIFY_CEILING);
 
-        // then
-        assertThat(frames).as("변하지 않은 수를 매 회차 뿌리면 큰 방에서 그 비용이 전부다").isEmpty();
+        // then: 첫 회차의 한 번뿐이다
+        assertThat(frames).as("변하지 않은 수를 매 회차 뿌리면 큰 방에서 그 비용이 전부다")
+                .extracting(OutboundMessage::activeCount).containsExactly(3L);
     }
 
     @Test
     @DisplayName("⭐ 수를 모를 때는 보내지 않는다 — null 을 보내면 화면의 숫자가 사라진다")
     void anUnknownCountIsNotPushed() {
-        // given: 첫 회차가 기준선 5 를 잡고, 그 뒤 조회가 실패한다
+        // given: 첫 회차가 5 를 보내고, 그 뒤 조회가 실패한다
         given(sessionRepository.count(roomId))
                 .willReturn(Mono.just(5L), Mono.error(new IllegalStateException("Redis down")));
         register("s1", buyerId, false);
@@ -127,7 +128,7 @@ class ViewerCountPushTest {
 
         // then: ROOM_INFO 의 activeCount 는 "모른다"를 뜻하는 null 을 가질 수 있는데,
         // 그걸 갱신으로 보내면 보이던 숫자가 사라진다 — 입장 시의 "모름"과 다른 상황이다.
-        assertThat(frames).isEmpty();
+        assertThat(frames).extracting(OutboundMessage::activeCount).containsExactly(5L);
     }
 
     @Test
@@ -144,11 +145,44 @@ class ViewerCountPushTest {
         registry.pushViewerCounts().block(VERIFY_CEILING);
         registry.pushViewerCounts().block(VERIFY_CEILING);
 
+        // then: 두 회차 모두 보낸다(첫 회차 · 변함) — 어느 프레임도 남의 플래그를 싣지 않는다
+        assertThat(ownerFrames).hasSize(2).allSatisfy(frame -> assertThat(frame.isRoomOwner()).isTrue());
+        assertThat(viewerFrames).hasSize(2).allSatisfy(frame -> assertThat(frame.isRoomOwner()).isFalse());
+    }
+
+    @Test
+    @DisplayName("⭐ 첫 회차가 입장 때와 다른 수를 보면 보낸다 — 건너뛰면 인원이 다시 변할 때까지 틀린 수가 남는다")
+    void theFirstCycleCorrectsTheEntrySnapshot() {
+        // given: 입장 ROOM_INFO 는 캐시를 거친 값이라 지금 수와 다를 수 있다. 그 뒤 인원이 안 변한다.
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(4L));
+        register("s1", buyerId, false);
+        List<OutboundMessage> frames = received("s1");
+
+        // when
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+
         // then
-        assertThat(ownerFrames).singleElement()
-                .satisfies(frame -> assertThat(frame.isRoomOwner()).isTrue());
-        assertThat(viewerFrames).singleElement()
-                .satisfies(frame -> assertThat(frame.isRoomOwner()).isFalse());
+        assertThat(frames).extracting(OutboundMessage::activeCount).containsExactly(4L);
+    }
+
+    @Test
+    @DisplayName("⭐ 새 입장 뒤 회차는 수가 같아도 보낸다 — 들어온 세션이 받은 입장 수를 맞춘다")
+    void anEntryMakesTheNextCycleSendEvenIfTheCountIsUnchanged() {
+        // given: 회차가 한 번 돈 뒤 새 세션이 들어온다. 방 수는 회차 사이에 그대로다
+        // (한 명 나가고 한 명 들어온 경우와 같은 모양).
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(2L));
+        register("s1", buyerId, false);
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+        register("s2", UUID.randomUUID(), false);
+        List<OutboundMessage> newcomer = received("s2");
+
+        // when
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+
+        // then: 입장 뒤 첫 회차 한 번, 그다음은 변하지 않아 없다
+        assertThat(newcomer).extracting(OutboundMessage::activeCount).containsExactly(2L);
     }
 
     @Test
@@ -202,10 +236,10 @@ class ViewerCountPushTest {
         // 아무 주기에도 얹히지 않으면 ROOM_INFO 는 입장 시 1회로 돌아가고, 화면의 시청자 수는 다시
         // 고정 스냅샷이 된다 — 계산은 정확한데 아무에게도 도달하지 않는 모양이다.
         //
-        // 주기를 짧게 줘서 두 회차를 기다린다. 첫 회차가 기준선 1 을 잡고(변화 없음 → 안 보냄),
-        // 두 번째가 7 을 본다. 세 번째 이후는 다시 7 이라 변화가 없어 프레임이 하나로 끝난다.
+        // 주기를 짧게 줘서 회차를 기다린다. 첫 회차는 보낸 수가 없어 7 을 보내고, 그 뒤는 다시 7 이라
+        // 변화가 없어 프레임이 하나로 끝난다.
         given(sessionRepository.heartbeatInterval()).willReturn(Duration.ofMillis(30));
-        given(sessionRepository.count(roomId)).willReturn(Mono.just(1L), Mono.just(7L));
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(7L));
         register("s1", buyerId, false);
         // 타이머 스레드가 쓰고 이 스레드가 읽으므로 ArrayList 로는 가시성 보장이 없다
         List<OutboundMessage> frames = new CopyOnWriteArrayList<>();
@@ -234,7 +268,7 @@ class ViewerCountPushTest {
         // 않는다(잎 셋이 모두 흡수한다) — 그래서 이 테스트가 그 자리를 직접 만든다. 막으려는 것은
         // "잎 하나가 흡수를 빼먹는 변경" 이고, 그때 깨지는 것은 한 회차가 아니라 이 파드의 관측 전부다.
         given(sessionRepository.heartbeatInterval()).willReturn(Duration.ofMillis(30));
-        given(sessionRepository.count(roomId)).willReturn(Mono.just(1L), Mono.just(7L));
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(7L));
         AtomicInteger rounds = new AtomicInteger();
         ChatSessionRegistry failingFirstRound = new ChatSessionRegistry(
                 sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP) {
@@ -251,8 +285,8 @@ class ViewerCountPushTest {
         List<OutboundMessage> frames = new CopyOnWriteArrayList<>();
         failingFirstRound.outbound("s1").subscribe(frames::add);
 
-        // when: 1회차 실패 → 2회차가 기준선 1 → 3회차가 7 을 본다. 흡수가 없으면 1회차에서 바깥
-        // subscribe() 가 끝나므로 2·3회차가 아예 오지 않고 프레임도 영원히 없다.
+        // when: 1회차 실패 → 2회차가 7 을 보낸다. 흡수가 없으면 1회차에서 바깥 subscribe() 가
+        // 끝나므로 2회차가 아예 오지 않고 프레임도 영원히 없다.
         failingFirstRound.startHeartbeat();
         try {
             long deadline = System.nanoTime() + VERIFY_CEILING.toNanos();

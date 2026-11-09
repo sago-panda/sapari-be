@@ -400,7 +400,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * ⚠️ 그래도 <b>프론트 계약 추가</b>다 — "입장 시 1회만" 이 그 문서에 명시돼 있으니 함께 고쳐야 한다.
      *
      * <p><b>변했을 때만 보낸다.</b> 매 회차 뿌리면 조용한 방도 세션 수만큼의 프레임을 계속 쓴다 —
-     * 큰 방에서는 그게 이 기능의 비용 전부가 된다.
+     * 큰 방에서는 그게 이 기능의 비용 전부가 된다. 예외는 마지막으로 보낸 수가 없을 때(이 Pod 의 첫
+     * 회차, 또는 그 뒤 누가 들어와 {@code register} 가 지운 뒤)이고 그때는 수가 같아도 한 번 보낸다.
+     * 입장이 잦은 방은 대개 인원도 같이 변해 어차피 보내므로, 이 예외가 더하는 비용은 작다.
      *
      * <p><b>수를 모를 때는 보내지 않는다.</b> {@code activeCount} 는 null 로 "모른다" 를 뜻할 수 있는데
      * (조회 실패), 그걸 갱신으로 보내면 <b>보이던 숫자가 사라진다</b>. 입장 시의 "모름" 과 다른 상황이다.
@@ -432,10 +434,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
                         lastPushedCount.remove(roomId);
                         return Mono.<Void>empty();
                     }
-                    if (previous == null || previous.equals(count)) {
-                        // previous == null 은 이 Pod 가 그 방을 처음 보는 회차다. 보내지 않는다 —
-                        // 입장 시 핸들러가 이미 ROOM_INFO 를 보냈고 그것이 기준선이다. 여기서 또
-                        // 보내면 방마다 한 번씩 전원에게 같은 숫자가 중복으로 간다.
+                    if (count.equals(previous)) {
+                        // previous == null 은 보낸다 — 이 Pod 가 그 방을 처음 보는 회차이거나, 그 뒤에 누가
+                        // 들어와 register 가 값을 지운 회차다. 입장 ROOM_INFO 는 기준선이 못 된다: 캐시를
+                        // 거친 값이라 이 회차의 수와 다를 수 있고, 세션마다 들어온 시각이 달라 방 하나에
+                        // 기준선이 하나로 정해지지도 않는다. 한때 null 을 건너뛰었는데, 그러면 입장 때 받은
+                        // 수가 틀렸을 때 인원이 다시 변할 때까지 그 숫자가 화면에 남았다.
                         return Mono.empty();
                     }
                     // 뷰 둘을 미리 만들어 세션마다 고르기만 한다. 세션마다 새로 만들면 같은 내용인
@@ -843,6 +847,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
             roomSessions.compute(session.roomId(), (room, sessionIds) -> {
                 Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
                 ids.add(sessionId);
+                // 새 세션이 입장 때 받는 수는 캐시를 거친 값이라 지금 방의 수와 다를 수 있다. 마지막으로
+                // 보낸 수를 지워 두면 다음 시청자 수 회차가 수가 같아도 한 번 보내 그 세션을 맞춘다.
+                lastPushedCount.remove(room);
                 return ids;
             });
             // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·

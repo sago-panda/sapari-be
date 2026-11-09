@@ -1054,8 +1054,11 @@ count accurate, and nothing could deliver that accurate number to sessions alrea
   ⚠️ It is still a **front-end contract addition**: that guide says "join only", and it has been updated.
 - **Only on change.** Pushing every round costs one frame per session per round forever, which in a large
   room is the entire cost of the feature. A quiet room now costs nothing.
-- **The first round seeds, it does not send.** The join-time `ROOM_INFO` is the baseline; sending again would
-  hand every session in every room one duplicate of a number it already has.
+- **No last-sent value → send, even if unchanged.** That is the pod's first round for the room, or the round
+  after a join (`register` clears the room's last-sent value). The join-time `ROOM_INFO` cannot be the
+  baseline: it comes through the 3s count cache, and sessions join at different times, so a room has no
+  single baseline. It used to skip that round, and a wrong join-time number stayed on screen until the count
+  changed again. Busy rooms change count on most joins anyway, so the extra frames are few.
 - **An unknown count is never pushed.** `activeCount` is nullable to mean "don't know", and pushing that as an
   *update* blanks a number the viewer could already see — different from not knowing it at join.
 - **The read bypasses the 3s count cache.** That cache exists to damp a join storm, but this timer's whole job
