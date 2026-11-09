@@ -5,6 +5,7 @@ include:
   # MR 자동 리뷰는 중단했다. 다시 켜려면 아래 줄의 주석을 풀고, CI 변수
   # CLAUDE_CODE_OAUTH_TOKEN · GITLAB_API_TOKEN 을 다시 등록한다(설명은 mr-review.yml 상단).
   # - local: '.gitlab/ci/mr-review.yml'
+  - local: '.gitlab/ci/image.yml'
 
 # stages 는 여기서만 선언한다. include 된 파일이 각자 선언하면 나중 것이 앞의 것을 덮어써
 # 잡이 통째로 사라진다.
@@ -14,3 +15,4 @@ stages:
   - precheck
   - review
   - comment
+  - publish # dev push 전용(image.yml). MR 파이프라인에는 이 단계의 잡이 없다
