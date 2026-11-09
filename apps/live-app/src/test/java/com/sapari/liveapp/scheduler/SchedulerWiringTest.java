@@ -32,7 +32,9 @@ import com.sapari.live.port.ReconcileExpiredReadyUseCase;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 import com.sapari.live.port.ReconcileStaleLiveUseCase;
+import com.sapari.live.port.RefreshLiveListUseCase;
 import com.sapari.liveapp.config.ReconcileLockConfig;
+import com.sapari.liveapp.config.LiveListSchedulingConfig;
 import com.sapari.liveapp.config.SchedulingConfig;
 import com.sapari.liveapp.config.TrackingLockProvider;
 import com.sapari.liveapp.config.ShedLockTableGuard;
@@ -143,6 +145,51 @@ class SchedulerWiringTest {
             runnerFor(OrphanMediaScheduler.class)
                     .withPropertyValues("live.reconcile.orphan-media.enabled=false")
                     .run(context -> assertThat(context).doesNotHaveBean(OrphanMediaScheduler.class));
+        }
+    }
+
+    @Nested
+    @DisplayName("방송 중 목록 재조정")
+    class LiveListRefresh {
+
+        private ApplicationContextRunner runner() {
+            return new ApplicationContextRunner()
+                    .withBean(RefreshLiveListUseCase.class, () -> mock(RefreshLiveListUseCase.class))
+                    .withUserConfiguration(LiveListRefreshScheduler.class);
+        }
+
+        @Test
+        void registeredByDefault() {
+            runner().run(context -> assertThat(context).hasSingleBean(LiveListRefreshScheduler.class));
+        }
+
+        @Test
+        void switchTurnsItOff() {
+            runner().withPropertyValues("live.list.refresh.enabled=false")
+                    .run(context -> assertThat(context).doesNotHaveBean(LiveListRefreshScheduler.class));
+        }
+
+        @Test
+        @DisplayName("정리 잡을 모두 내려도 목록 갱신은 돈다 — 스케줄링이 정리 스위치에 묶이지 않는다")
+        void survivesReconcileMasterSwitch() {
+            runner().withUserConfiguration(SchedulingConfig.class, LiveListSchedulingConfig.class)
+                    .withPropertyValues("live.reconcile.enabled=false")
+                    .run(context -> {
+                        assertThat(context).doesNotHaveBean(SchedulingConfig.class);
+                        assertThat(context).hasSingleBean(LiveListSchedulingConfig.class);
+                        assertThat(context).hasSingleBean(LiveListRefreshScheduler.class);
+                    });
+        }
+
+        @Test
+        @DisplayName("트리거는 실패를 다음 회차로 넘긴다 — 스케줄러 스레드로 던지지 않는다")
+        void triggerDelegatesAndContinuesOnFailure() {
+            RefreshLiveListUseCase useCase = mock(RefreshLiveListUseCase.class);
+            org.mockito.BDDMockito.willThrow(new IllegalStateException("x")).given(useCase).refresh();
+
+            new LiveListRefreshScheduler(useCase).run();
+
+            org.mockito.Mockito.verify(useCase).refresh();
         }
     }
 

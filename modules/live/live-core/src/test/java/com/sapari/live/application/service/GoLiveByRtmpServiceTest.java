@@ -51,6 +51,9 @@ class GoLiveByRtmpServiceTest {
     @Spy
     private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
+    @Mock
+    private LiveListCacheSync liveListCacheSync;
+
     @InjectMocks
     private GoLiveByRtmpService goLiveByRtmpService;
 
@@ -120,6 +123,7 @@ class GoLiveByRtmpServiceTest {
         verify(liveRoomRepository).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Live.class);
         assertThat(captor.getValue().streamInfo().hlsArchiveUrl()).isEqualTo("http://archive/playlist.m3u8");
+        verify(liveListCacheSync).registerAfterCommit(captor.getValue());
     }
 
     @Test
@@ -146,6 +150,8 @@ class GoLiveByRtmpServiceTest {
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+        // 중복 웹훅이 목록을 다시 쓰지 않는다 — 등록은 실제 승격에만 붙는다.
+        verify(liveListCacheSync, never()).registerAfterCommit(any());
     }
 
     @Test

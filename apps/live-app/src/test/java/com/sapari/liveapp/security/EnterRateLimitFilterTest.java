@@ -145,10 +145,11 @@ class EnterRateLimitFilterTest {
         EnterRateLimitFilter filter = filter(props(1, 1));
         CountingChain chain = new CountingChain();
 
-        // 목록·다시보기·상세·POST 는 룸 토큰을 찍지 않는다. 접두사만 보면 전부 걸린다.
+        // 목록·예정 목록·다시보기·상세·POST 는 룸 토큰을 찍지 않는다. 접두사만 보면 전부 걸린다.
         for (String uri : java.util.List.of(
                 "/api/v1/lives/rooms",
                 "/api/v1/lives/rooms/",
+                "/api/v1/lives/upcoming",
                 ENTER_URI + "/replay",
                 ENTER_URI + "/detail")) {
             for (int i = 0; i < 5; i++) {

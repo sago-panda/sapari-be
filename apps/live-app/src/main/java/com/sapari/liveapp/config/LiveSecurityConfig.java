@@ -348,6 +348,7 @@ public class LiveSecurityConfig {
                         // 조인 쪽이 맞고, chat 경로를 여기 적는 비용이 그 안전의 값이다.
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/lives/rooms",
+                                "/api/v1/lives/upcoming",
                                 "/api/v1/lives/rooms/{roomId}",
                                 "/api/v1/lives/rooms/{roomId}/replay",
                                 "/api/v1/lives/rooms/{roomId}/detail",

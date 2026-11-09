@@ -119,7 +119,7 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
 |---|---|
 | `enabled` | on — master switch; drops `@EnableScheduling`, the job beans and the lock config |
 | `<job>.enabled` · `<job>.cron` | on · staggered 10-min (`0/10`, `3/10`, `6/10` — keep them apart) |
-| | the 3-min stagger only separates *short* rounds; budgets are 40m/20m/16m, so a backlogged round overlaps the other jobs and the pool has 3 threads on purpose |
+| | the 3-min stagger only separates *short* rounds; budgets are 40m/20m/16m, so a backlogged round overlaps the other jobs and the pool has one thread per job on purpose (3 reconcile + 1 list refresh = 4) |
 | `expire-ready.threshold` · `end-stale-live.threshold` · `orphan-media.grace` | 60m · 60m · 15m |
 | `<job>.batch-size` | 20 / 10 · **orphan-media has none** (removed key; refuses to boot) |
 | `<job>.lock-at-most-for` · `lock-at-least-for` | 50m / 25m / 20m · 1m (ShedLock; see the lock bullet) |
@@ -311,7 +311,17 @@ through a bounded stream, not `@RequestBody byte[]`.
   the latter and conclude the lock is missing.
 - `LiveRoomMapper`: `status`/`streamInfo` come from columns, not auto-mapping; `scheduledAt` lives inside the
   status, so `updateEntityFromDomain` must write it from there or a re-save wipes it.
-- Ranking reads Redis only (`LiveRoomCache`), no DB.
+- **Live list = Redis, DB is the source.** `GET /rooms` reads Redis only (`LiveRoomCache`). Every transition
+  into `Live` calls `LiveListCacheSync.registerAfterCommit`, every exit `removeAfterCommit` — **a new exit
+  (e.g. into `Suspended`) must add the remove**. Store failures there are swallowed + counted on purpose
+  (a throw in afterCommit fails an already-committed start); `RefreshLiveListService` (live-app, 15s, no
+  ShedLock — idempotent) rewrites the list from DB and sets viewer scores via the `LiveViewerCounter` port,
+  which live-app wires to chat-api (live-core must not depend on chat-api: chat already reads live-api,
+  and ArchUnit rejects the cycle). Chat down → membership still fixed, scores keep their last value.
+  Overlaps with a round cost one round either way (accepted race): an ended room can reappear, a just-started
+  room can drop out. Over `MAX_LIVE_ROOMS` the round skips pruning and counts `live.list.refresh.saturated`.
+- **Upcoming list** (`GET /upcoming`) is DB, `status IN (SCHEDULED, READY)` — inclusion only, so new states
+  stay out. Cursor sort key is `scheduled_at` in epoch **micros** (column precision; millis breaks keyset ties).
 
 ## Enter rate limit — the signing ceiling
 

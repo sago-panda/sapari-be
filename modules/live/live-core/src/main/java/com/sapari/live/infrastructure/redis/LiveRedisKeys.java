@@ -7,6 +7,11 @@ final class LiveRedisKeys {
     private LiveRedisKeys() {}
 
     static String room(UUID roomId) {
+        return rawRoom(roomId.toString());
+    }
+
+    /** 랭킹 구성원 문자열 그대로 — 정리 대상은 UUID 로 읽히지 않는 잔재일 수도 있다. */
+    static String rawRoom(String roomId) {
         return "live:room:" + roomId;
     }
 

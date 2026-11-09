@@ -7,7 +7,7 @@ dependencies {
     implementation(project(':storage:redis-core'))
     implementation(project(':common:core'))
     implementation(project(':common:global'))
-    implementation(project(':common:page'))   // 판매자 내 방 목록 키셋 커서(CursorCodec·PageSupport)
+    implementation(project(':common:page'))   // 판매자 내 방 목록 키셋 커서 · 예정 방송 목록 CursorPage
     implementation(project(':modules:live:live-api'))
 
     api 'jakarta.persistence:jakarta.persistence-api'

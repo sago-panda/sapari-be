@@ -26,6 +26,10 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public final List<EnterRejectionGate> enterRejectionGates = new ArrayList<>();
     public final List<TokenRevocationAxis> tokenRevocationHits = new ArrayList<>();
     public int tokenRevocationLookupFailures;
+    public final List<ListCacheWrite> listCacheWriteFailures = new ArrayList<>();
+    public int listViewerCountUnavailable;
+    public int listRefreshSaturated;
+    public int listRefreshFailed;
 
     @Override
     public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
@@ -41,6 +45,26 @@ public class RecordingLiveMetrics implements LiveMetrics {
     @Override
     public void tokenRevocationLookupFailed() {
         tokenRevocationLookupFailures++;
+    }
+
+    @Override
+    public void listCacheWriteFailed(ListCacheWrite write) {
+        listCacheWriteFailures.add(write);
+    }
+
+    @Override
+    public void listViewerCountUnavailable() {
+        listViewerCountUnavailable++;
+    }
+
+    @Override
+    public void listRefreshSaturated() {
+        listRefreshSaturated++;
+    }
+
+    @Override
+    public void listRefreshFailed() {
+        listRefreshFailed++;
     }
 
     @Override

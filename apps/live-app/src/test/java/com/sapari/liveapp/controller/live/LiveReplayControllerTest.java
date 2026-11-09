@@ -23,6 +23,7 @@ import com.sapari.live.port.EndLiveUseCase;
 import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.port.GetLiveReplayUseCase;
 import com.sapari.live.port.GetLiveUseCase;
+import com.sapari.live.port.GetUpcomingLivesUseCase;
 import com.sapari.live.port.PrepareIngressUseCase;
 import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.ReplayView;
@@ -38,7 +39,7 @@ class LiveReplayControllerTest {
         given(timeProvider.now()).willReturn(Instant.parse("2026-09-11T00:00:00Z"));
         LiveController controller = new LiveController(mock(CreateLiveUseCase.class), mock(StartLiveUseCase.class),
                 mock(EnterLiveUseCase.class), mock(EndLiveUseCase.class), mock(GetLiveUseCase.class), replay,
-                mock(PrepareIngressUseCase.class));
+                mock(PrepareIngressUseCase.class), mock(GetUpcomingLivesUseCase.class));
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler(timeProvider)).build();
     }

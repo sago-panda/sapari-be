@@ -72,6 +72,9 @@ public class StartLiveServiceTest {
     @Spy
     private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
+    @Mock
+    private LiveListCacheSync liveListCacheSync;
+
     @InjectMocks
     private StartLiveService startLiveService;
 
@@ -141,6 +144,10 @@ public class StartLiveServiceTest {
         verify(liveMediaManager).issueSellerToken(roomId, sellerId);
         verify(liveMediaManager).startHlsEgress(roomId);
         verify(liveRoomRepository).save(any(LiveRoom.class));
+        // 공개 목록 등록은 Live 로 저장한 방으로(커밋 후 반영은 LiveListCacheSync 의 몫)
+        ArgumentCaptor<LiveRoom> listed = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveListCacheSync).registerAfterCommit(listed.capture());
+        assertThat(listed.getValue().status()).isInstanceOf(LiveStatus.Live.class);
     }
 
     @Test
@@ -331,6 +338,8 @@ public class StartLiveServiceTest {
         // 아직 승격이 아니다 — 전이는 한 건, 승격 계측은 없어야 한다.
         org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Scheduled->Ready");
         org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).isEmpty();
+        // Ready 는 방송 중이 아니다 — 공개 목록에 넣지 않는다.
+        verify(liveListCacheSync, never()).registerAfterCommit(any());
     }
 
     @Test
@@ -365,6 +374,7 @@ public class StartLiveServiceTest {
         // WEBHOOK 으로 새면 "OBS 연결 즉시 시작" 통계가 부풀고 랑데부 지연이 보이지 않는다.
         org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Scheduled->Ready", "Ready->Live");
         org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).containsExactly(PromotionTrigger.SELLER_START);
+        verify(liveListCacheSync).registerAfterCommit(captor.getValue());
     }
 
     @Test

@@ -33,6 +33,10 @@ import com.sapari.live.port.EndLiveUseCase;
 import com.sapari.live.port.EnterLiveUseCase;
 import com.sapari.live.port.GetLiveReplayUseCase;
 import com.sapari.live.port.GetLiveUseCase;
+import com.sapari.live.port.GetUpcomingLivesUseCase;
+import com.sapari.live.command.GetUpcomingLivesQuery;
+import com.sapari.live.view.UpcomingLiveView;
+import com.sapari.common.page.CursorPage;
 import com.sapari.live.port.PrepareIngressUseCase;
 import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.EnterLiveView;
@@ -46,6 +50,7 @@ class LiveViewerControllerTest {
 
     private final EnterLiveUseCase enterLiveUseCase = mock(EnterLiveUseCase.class);
     private final GetLiveUseCase getLiveUseCase = mock(GetLiveUseCase.class);
+    private final GetUpcomingLivesUseCase getUpcomingLivesUseCase = mock(GetUpcomingLivesUseCase.class);
     private MockMvc mvc;
 
     @BeforeEach
@@ -54,7 +59,7 @@ class LiveViewerControllerTest {
         given(timeProvider.now()).willReturn(Instant.parse("2026-11-06T00:00:00Z"));
         LiveController controller = new LiveController(mock(CreateLiveUseCase.class), mock(StartLiveUseCase.class),
                 enterLiveUseCase, mock(EndLiveUseCase.class), getLiveUseCase,
-                mock(GetLiveReplayUseCase.class), mock(PrepareIngressUseCase.class));
+                mock(GetLiveReplayUseCase.class), mock(PrepareIngressUseCase.class), getUpcomingLivesUseCase);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver())
                 .setControllerAdvice(new GlobalExceptionHandler(timeProvider))
@@ -82,6 +87,22 @@ class LiveViewerControllerTest {
 
         expectSuccessEnvelope(mvc.perform(get("/api/v1/lives/rooms")).andExpect(status().isOk()))
                 .andExpect(jsonPath("$.data.rooms").isArray());
+    }
+
+    @Test
+    @DisplayName("예정 방송 목록 — 200 + 봉투 안에 커서 페이지, 커서·크기가 그대로 전달된다")
+    void getUpcomingReturnsCursorPageEnvelope() throws Exception {
+        UpcomingLiveView row = new UpcomingLiveView(ROOM_ID, UUID.randomUUID(), "판매자", "내일 방송", null,
+                Instant.parse("2026-11-07T10:00:00Z"));
+        given(getUpcomingLivesUseCase.getUpcoming(any())).willReturn(new CursorPage<>(List.of(row), "next", true));
+
+        expectSuccessEnvelope(mvc.perform(get("/api/v1/lives/upcoming").param("cursor", "abc").param("size", "5"))
+                .andExpect(status().isOk()))
+                .andExpect(jsonPath("$.data.content[0].roomId").value(ROOM_ID.toString()))
+                .andExpect(jsonPath("$.data.content[0].scheduledAt").exists())
+                .andExpect(jsonPath("$.data.nextCursor").value("next"))
+                .andExpect(jsonPath("$.data.hasNext").value(true));
+        then(getUpcomingLivesUseCase).should().getUpcoming(new GetUpcomingLivesQuery("abc", 5));
     }
 
     @Test

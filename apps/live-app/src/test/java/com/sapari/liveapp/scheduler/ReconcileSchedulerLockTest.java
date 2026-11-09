@@ -46,6 +46,7 @@ import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
 import com.sapari.live.application.port.PromotionTrigger;
@@ -504,6 +505,22 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
+        public void listCacheWriteFailed(ListCacheWrite write) {
+        }
+
+        @Override
+        public void listViewerCountUnavailable() {
+        }
+
+        @Override
+        public void listRefreshSaturated() {
+        }
+
+        @Override
+        public void listRefreshFailed() {
+        }
+
+        @Override
         public void reconcileRoundCompleted(ReconcileJob job, Duration elapsed) {
             completed.incrementAndGet();
         }
@@ -606,6 +623,16 @@ class ReconcileSchedulerLockTest {
 
         @Override
         public Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findAllLive(int limit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findUpcoming(Instant afterScheduledAt, UUID afterId, int limit) {
             throw new UnsupportedOperationException();
         }
     }
