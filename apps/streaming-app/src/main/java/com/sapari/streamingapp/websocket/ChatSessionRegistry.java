@@ -395,6 +395,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>등록 안에서 지우면 안 되는 이유: 등록과 입장 ROOM_INFO 사이에 회차가 끼면 그 회차가 맞는 수를
      * 보내고 기록한 뒤 캐시의 수가 <b>나중에</b> 도착한다. 다음 회차는 기록과 같은 수라 건너뛰고, 틀린 수가
      * 인원이 다시 변할 때까지 남는다. 보낸 뒤에 지우면 그 사이에 낀 회차의 기록도 함께 지워진다.
+     *
+     * <p>순서를 닫는 것은 둘이다. 회차가 기록({@code lastPushedCount.put})을 보내기 <b>전에</b> 하므로, 낀 회차가
+     * 있었다면 이 지우기 전에 이미 기록이 있다. 그리고 같은 세션으로의 전송은 {@code emitSerially} 로 직렬이라
+     * 입장 프레임 뒤에 쌓인 회차 프레임이 앞지르지 못한다. 입장 프레임이 경합으로 버려져도 지우기는 돌아
+     * 다음 회차가 보낸다 — 실패가 안전한 쪽으로 난다.
      */
     void forgetLastPushedCount(UUID roomId) {
         lastPushedCount.remove(roomId);
@@ -1382,9 +1387,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>계정 상태는 축이 갈린다.</b> 역할은 live DB 가 아니라 <b>access 토큰 claims</b> 에서 온다.
      * 탈퇴·로그아웃은 세션을 폐기하고({@code JwtTokenLifecycle.revoke}/{@code revokeAll}) live-app 의
-     * {@code TokenRevocationFilter} 가 그것을 조회하므로, 그 사람은 <b>재접속에서 토큰을 받지 못한다</b>
-     * — 즉 반영 상한이 이 수명 하나로 줄었다(한때 여기에 "이 수명 + access 잔여 TTL" 이라 적혀 있었는데,
-     * 그건 live-app 이 폐기를 보지 않던 때의 값이다).
+     * {@code TokenRevocationFilter} 가 그것을 조회하므로, 그 사람은 재접속에서 <b>새</b> 토큰을 받지 못한다.
+     * 다만 <b>이미 받아 둔</b> 룸 토큰은 만료까지 핸드셰이크를 지나므로, 로그아웃의 반영 상한은 "그 토큰의 잔여
+     * TTL 안에 다시 들어온 세션의 수명" 까지다. 탈퇴는 그 창도 닫힌다 — 입장 관문이 탈퇴 기록을 본다
+     * ({@code EntryGate}). 한때 여기에 "반영 상한이 이 수명 하나로 줄었다" 고 적혀 있었는데 받아 둔 토큰을
+     * 빠뜨린 문장이었고, 그 전에는 "이 수명 + access 잔여 TTL" 이었다(live-app 이 폐기를 보지 않던 때).
      *
      * <p>⚠️ <b>역할 강등은 다르다.</b> 그 경로가 토큰을 폐기하지 않으면 폐기 조회가 집지 못한다 —
      * 지금은 역할을 바꾸는 쓰기 경로가 이 저장소에 아예 없다({@code UserEntity} 정적 팩터리 둘뿐).

@@ -79,8 +79,10 @@ public class ReconcileBanMirrorService implements ReconcileBanMirrorUseCase {
             active++;
             VersionedBan it = snapshot.get();
             MirrorApply applied = banWriteRepository.ban(userId, it.ban().expiresAt(), now, it.version());
-            // 연장은 세지 않는다. 강퇴가 쓴 TTL 은 커밋 전에 잡은 kickedAt 기준이라, 정본과 맞는 미러도
-            // 지금 시각 기준의 TTL 보다 그 간격만큼 짧아 이 쓰기가 연장으로 나온다.
+            // 연장은 세지 않는다. 정본과 맞는 미러에서 이 쓰기가 연장으로 나올지 무변화로 나올지는 두 지연의
+            // 차가 정한다 — 강퇴가 쓴 TTL 은 커밋 전 시각(kickedAt) 기준이라 미러를 그만큼 길게 하고, 여기의
+            // now 도 잠금·커밋 앞에서 읽혀 want 를 그만큼 길게 한다. 그 차는 코드로 정해지지 않아, 진짜로
+            // 짧았던 미러와 ms 급 지연차가 같은 반환으로 섞인다.
             if (applied == MirrorApply.CREATED) {
                 restored++;
             }

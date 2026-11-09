@@ -102,7 +102,7 @@ class ReconcileBanMirrorServiceTest {
     }
 
     @Test
-    @DisplayName("⭐ 미러에 없어서 새로 쓴 것만 어긋남으로 센다 — 연장·무변화·늦은 번호는 아니다")
+    @DisplayName("⭐ 미러에 없어서 새로 쓴 것만 어긋남으로 센다 — 연장은 맞는 미러에서도 지연차로 나와 뜻이 없다")
     void onlyCreatedCountsAsRestored() {
         // given: 넷 중 하나만 미러에 없었다
         List<UUID> users = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());

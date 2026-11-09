@@ -688,9 +688,13 @@ having existed — a retry takes a fresh version.
 **Ban-mirror reconcile** (`PUT /api/v1/chat/bans/mirror`, ADMIN, `ReconcileBanMirrorService`) is the ban
 side of the kick-list reconcile: enforcement is key presence, so a lost key reads as a normal "not banned"
 and no fail-open counter sees it. It walks every active row, re-reads each under the lock with a version,
-and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). `EXTENDED` is not counted: a
-kick writes the TTL from `kickedAt`, taken before the commit, so a mirror that agrees with the record still
-comes back a little shorter than `expiresAt − now`. Every write that is not `STALE` also publishes the account
+and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). `EXTENDED` is not counted: on a mirror
+that agrees with the record, whether the write comes back `EXTENDED` or `UNCHANGED` is set by the difference
+of two unmeasured delays — the kick's TTL is computed from `kickedAt` (before its commit), which makes the
+mirror *longer*, and the reconcile's `now` is read before its own lock and commit, which makes `want` longer.
+Measured by the peer review on redis:7.4 with the production script: 10ms/2ms → all `UNCHANGED`, 10ms/25ms →
+all `EXTENDED`. So a genuinely short mirror and ms-level jitter share that result; the axis carries no
+signal until the jitter bound is known. Every write that is not `STALE` also publishes the account
 ban event, like a kick does — a user who joined while the key was lost keeps an open session otherwise, and
 when a reconcile reaches the mirror ahead of an overlapping kick, the kick's write is `STALE` and the kick
 skips its event, so this one is the only cut. It does not fix the opposite direction (a key with no row) —
@@ -803,8 +807,12 @@ the other's actions too.
 Why the signal is the **request**, not the hard delete: withdrawal is two-phase (status → `WITHDRAWING`
 immediately; hard delete later in batch). The account stops being active at the request, so waiting for the
 delete would leave the whole grace period open. And the request path already calls `revokeAllSessions`, which
-stops **new** room tokens being issued (live-app's `TokenRevocationFilter` checks every request) — **an
-established WS session never looks at the token again**, so that revocation and this event are different axes.
+stops **new** room tokens being issued once it has run (live-app's `TokenRevocationFilter` checks every
+request, and token issuance — cached or not — sits behind it in the controller, so a cache hit cannot bypass
+it; that is structural, not measured) — **an established WS session never looks at the token again**, so that
+revocation and this event are different axes. The event is published **before** the revocation
+(`requestWithdrawal` publishes after commit, then the caller runs `revokeAllSessions`), so a token can still be
+issued in that gap.
 A room token issued *before* the request is still valid until it expires, and a closed client reconnects at
 once, so the handler first writes `chat:withdrawing:{userId}` and `EntryGate` denies on it (`WITHDRAWING`,
 1008) — fail-open like the ban read.
