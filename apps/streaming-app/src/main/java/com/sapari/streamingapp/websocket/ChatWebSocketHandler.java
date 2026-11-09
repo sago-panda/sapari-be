@@ -371,6 +371,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             return registry.register(sid, chatSession)
                     .then(roomInfoFor(roomId, chatSession))
                     .flatMap(info -> registry.sendToSession(sid, info))
+                    .then(Mono.fromRunnable(() -> registry.forgetLastPushedCount(roomId)))
                     // firstWithSignal: 다섯 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
                     // (sink complete → outbound), 그 둘이 다 막혔을 때의 강제 종료, 그리고 수명 상한·생존 확인.
                     // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.

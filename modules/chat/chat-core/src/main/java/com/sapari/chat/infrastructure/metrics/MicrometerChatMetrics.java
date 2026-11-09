@@ -60,6 +60,11 @@ public class MicrometerChatMetrics implements ChatMetrics {
     }
 
     @Override
+    public void withdrawalRecordFailed() {
+        safe(() -> registry.counter(ChatMeterNames.WITHDRAWAL_RECORD_FAILED).increment());
+    }
+
+    @Override
     public void persistTimedOut(PersistStage stage) {
         safe(() -> registry.counter(ChatMeterNames.PERSIST_TIMEOUT,
                 ChatMeterNames.TAG_STAGE, tag(stage)).increment());

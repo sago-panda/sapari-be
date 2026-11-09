@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -26,6 +27,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.command.ReconcileBanMirrorCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatAuditAction;
@@ -61,6 +63,8 @@ class ReconcileBanMirrorServiceTest {
     private ChatBanWriteRepository banWriteRepository;
     @Mock
     private ChatAuditRecorder auditRecorder;
+    @Mock
+    private ChatAccountEventPublisher accountEventPublisher;
 
     private final UUID actorId = UUID.randomUUID();
     private ReconcileBanMirrorService service;
@@ -69,7 +73,7 @@ class ReconcileBanMirrorServiceTest {
     void setUp() {
         TimeProvider clock = new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
         service = new ReconcileBanMirrorService(new ChatPermissionPolicy(), banStateRepository, snapshotter,
-                banWriteRepository, auditRecorder, clock);
+                banWriteRepository, auditRecorder, accountEventPublisher, clock);
     }
 
     private ReconcileBanMirrorCommand command(String role) {
@@ -116,6 +120,37 @@ class ReconcileBanMirrorServiceTest {
 
         // then
         assertThat(outcome).isEqualTo(new ReconcileOutcome(4, 1));
+    }
+
+    /**
+     * ⭐ 번호에 지지 않은 밴마다 계정 밴 이벤트를 낸다.
+     *
+     * <p>재적재가 강퇴보다 먼저 미러에 닿으면 강퇴 쪽 쓰기는 늦은 번호로 거절되고 강퇴는 이벤트를 건너뛴다.
+     * 그 사람의 열린 세션을 끊는 것이 이 이벤트뿐이라, 새로 썼든 이미 있었든 낸다. 늦은 번호는 그 사이에
+     * 해제가 지나갔다는 뜻이라 내지 않는다.
+     */
+    @Test
+    @DisplayName("⭐ 늦은 번호가 아닌 밴마다 계정 밴 이벤트를 낸다 — 재적재가 강퇴를 앞지르면 세션을 끊는 것이 이것뿐이다")
+    void publishesBannedForEveryBanNotRejectedAsStale() {
+        // given
+        List<UUID> users = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        List<MirrorApply> results = List.of(
+                MirrorApply.CREATED, MirrorApply.EXTENDED, MirrorApply.UNCHANGED, MirrorApply.STALE);
+        given(banStateRepository.findActiveUserIds(NOW)).willReturn(users);
+        for (int i = 0; i < users.size(); i++) {
+            UUID user = users.get(i);
+            given(snapshotter.snapshot(user, NOW)).willReturn(Optional.of(banOf(user, null, i + 1)));
+            given(banWriteRepository.ban(user, null, NOW, i + 1)).willReturn(results.get(i));
+        }
+
+        // when
+        service.reconcile(command("ADMIN"));
+
+        // then
+        then(accountEventPublisher).should().publishBanned(users.get(0));
+        then(accountEventPublisher).should().publishBanned(users.get(1));
+        then(accountEventPublisher).should().publishBanned(users.get(2));
+        then(accountEventPublisher).should(never()).publishBanned(users.get(3));
     }
 
     @Test

@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.command.ReconcileBanMirrorCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatAuditAction;
@@ -29,6 +30,11 @@ import lombok.extern.slf4j.Slf4j;
  * 쓴다. 강퇴가 미러에 쓰는 것과 같은 모양이고 같은 번호 규칙을 따르므로, 재적재 도중 들어온 해제가
  * 재적재에 지지 않는다.
  *
+ * <p>번호에 지지 않은 밴마다 계정 밴 이벤트를 낸다 — 강퇴가 미러 쓰기 뒤에 내는 것과 같은 규칙이다.
+ * 미러를 잃은 동안 들어온 사람의 열린 세션은 미러를 되살려도 끊기지 않는다. 그리고 강퇴와 겹치면
+ * 재적재가 더 큰 번호로 먼저 미러에 닿아 강퇴 쪽 쓰기가 늦은 번호로 거절되고, 강퇴는 이벤트를 건너뛴다
+ * — 그때 세션을 끊는 것은 이 이벤트뿐이다. 다시 보내도 같은 결과라 재시도해도 수렴한다.
+ *
  * <p>쓰기는 늘리기 전용이라 미러에 이미 더 긴 키가 있으면 줄이지 않는다. 그 방향의 어긋남(과다 차단)은
  * 밴 해제가 고친다.
  *
@@ -46,6 +52,7 @@ public class ReconcileBanMirrorService implements ReconcileBanMirrorUseCase {
     private final ChatBanMirrorSnapshotter snapshotter;
     private final ChatBanWriteRepository banWriteRepository;
     private final ChatAuditRecorder auditRecorder;
+    private final ChatAccountEventPublisher accountEventPublisher;
     private final TimeProvider timeProvider;
 
     @Override
@@ -71,8 +78,14 @@ public class ReconcileBanMirrorService implements ReconcileBanMirrorUseCase {
             }
             active++;
             VersionedBan it = snapshot.get();
-            if (banWriteRepository.ban(userId, it.ban().expiresAt(), now, it.version()) == MirrorApply.CREATED) {
+            MirrorApply applied = banWriteRepository.ban(userId, it.ban().expiresAt(), now, it.version());
+            // 연장은 세지 않는다. 강퇴가 쓴 TTL 은 커밋 전에 잡은 kickedAt 기준이라, 정본과 맞는 미러도
+            // 지금 시각 기준의 TTL 보다 그 간격만큼 짧아 이 쓰기가 연장으로 나온다.
+            if (applied == MirrorApply.CREATED) {
                 restored++;
+            }
+            if (applied != MirrorApply.STALE) {
+                accountEventPublisher.publishBanned(userId);
             }
         }
 

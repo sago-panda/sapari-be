@@ -370,9 +370,10 @@ public class ChatModerationBeansConfig {
                                                                ChatBanMirrorSnapshotter snapshotter,
                                                                ChatBanWriteRepository banWriteRepository,
                                                                ChatAuditRecorder auditRecorder,
+                                                               ChatAccountEventPublisher accountEventPublisher,
                                                                TimeProvider timeProvider) {
         return new ReconcileBanMirrorService(permissionPolicy, banStateRepository, snapshotter,
-                banWriteRepository, auditRecorder, timeProvider);
+                banWriteRepository, auditRecorder, accountEventPublisher, timeProvider);
     }
 
     /**

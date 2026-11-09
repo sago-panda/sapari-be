@@ -688,8 +688,13 @@ having existed — a retry takes a fresh version.
 **Ban-mirror reconcile** (`PUT /api/v1/chat/bans/mirror`, ADMIN, `ReconcileBanMirrorService`) is the ban
 side of the kick-list reconcile: enforcement is key presence, so a lost key reads as a normal "not banned"
 and no fail-open counter sees it. It walks every active row, re-reads each under the lock with a version,
-and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). It does not fix the opposite
-direction (a key with no row) — those users cannot be enumerated from the record; release fixes that one.
+and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). `EXTENDED` is not counted: a
+kick writes the TTL from `kickedAt`, taken before the commit, so a mirror that agrees with the record still
+comes back a little shorter than `expiresAt − now`. Every write that is not `STALE` also publishes the account
+ban event, like a kick does — a user who joined while the key was lost keeps an open session otherwise, and
+when a reconcile reaches the mirror ahead of an overlapping kick, the kick's write is `STALE` and the kick
+skips its event, so this one is the only cut. It does not fix the opposite direction (a key with no row) —
+those users cannot be enumerated from the record; release fixes that one.
 
 Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Since
 SPR-165 the window has **two lower bounds**: that 2 years *and the user's most recent ban release*,
@@ -1052,7 +1057,9 @@ count accurate, and nothing could deliver that accurate number to sessions alrea
 - **Only on change.** Pushing every round costs one frame per session per round forever, which in a large
   room is the entire cost of the feature. A quiet room now costs nothing.
 - **No last-sent value → send, even if unchanged.** That is the pod's first round for the room, or the round
-  after a join (`register` clears the room's last-sent value). The join-time `ROOM_INFO` cannot be the
+  after a join (the handler clears the room's last-sent value **after** the join-time `ROOM_INFO` is
+  emitted — clearing it in `register` let a round that ran in between record the right number and the
+  cached one arrive last, so the next round skipped). The join-time `ROOM_INFO` cannot be the
   baseline: it comes through the 3s count cache, and sessions join at different times, so a room has no
   single baseline. It used to skip that round, and a wrong join-time number stayed on screen until the count
   changed again. Busy rooms change count on most joins anyway, so the extra frames are few.
@@ -1170,6 +1177,7 @@ conditional variant really does fall back to NOOP.
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
 | `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
 | `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
+| `chat.withdrawal.record.failed` | — | a pod could not write `chat:withdrawing:{userId}`; the close still ran, so the pre-withdrawal room token re-enters until it expires |
 
 ⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
 is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged

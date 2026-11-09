@@ -22,6 +22,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.application.port.AccountWithdrawingSource;
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -46,6 +47,9 @@ class AccountWithdrawingHandlerTest {
 
     @Mock
     private ChatWithdrawalWriteRepository withdrawalWriteRepository;
+
+    @Mock
+    private ChatMetrics metrics;
 
     @InjectMocks
     private AccountWithdrawingHandler handler;
@@ -77,6 +81,7 @@ class AccountWithdrawingHandlerTest {
         handler.start();
 
         assertThat(ran).containsExactly("record", "reason", "close");
+        then(metrics).should(never()).withdrawalRecordFailed();
     }
 
     @Test
@@ -96,6 +101,7 @@ class AccountWithdrawingHandlerTest {
         // 뒤의 사유 전송 onErrorResume 이 기록 실패도 받아 주므로 "끊긴다" 만 재면 기록 쪽 복구를 지워도
         // 통과한다 — 그때 빠지는 것이 사유 프레임이라 그것까지 단언한다.
         assertThat(ran).containsExactly("reason", "close");
+        then(metrics).should().withdrawalRecordFailed();
     }
 
     /**

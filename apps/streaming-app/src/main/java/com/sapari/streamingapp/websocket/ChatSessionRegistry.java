@@ -389,6 +389,18 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
+     * 입장 ROOM_INFO 를 보낸 <b>뒤</b> 부른다 — 그 방의 마지막으로 보낸 수를 지워 다음 회차가 수가 같아도
+     * 한 번 보내게 한다. 입장 때 받은 수는 캐시를 거친 값이라 지금 방의 수와 다를 수 있다.
+     *
+     * <p>등록 안에서 지우면 안 되는 이유: 등록과 입장 ROOM_INFO 사이에 회차가 끼면 그 회차가 맞는 수를
+     * 보내고 기록한 뒤 캐시의 수가 <b>나중에</b> 도착한다. 다음 회차는 기록과 같은 수라 건너뛰고, 틀린 수가
+     * 인원이 다시 변할 때까지 남는다. 보낸 뒤에 지우면 그 사이에 낀 회차의 기록도 함께 지워진다.
+     */
+    void forgetLastPushedCount(UUID roomId) {
+        lastPushedCount.remove(roomId);
+    }
+
+    /**
      * 로컬 세션이 있는 방마다 시청자 수를 다시 읽고, <b>변했으면</b> {@code ROOM_INFO} 를 다시 보낸다.
      *
      * <p>지금까지 그 수는 입장 시 1회뿐이라 <b>고정 스냅샷</b>이었다 — 앞 작업이 좀비 항목을 걷어내
@@ -436,7 +448,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                     }
                     if (count.equals(previous)) {
                         // previous == null 은 보낸다 — 이 Pod 가 그 방을 처음 보는 회차이거나, 그 뒤에 누가
-                        // 들어와 register 가 값을 지운 회차다. 입장 ROOM_INFO 는 기준선이 못 된다: 캐시를
+                        // 들어와 입장 ROOM_INFO 를 받은 뒤 값이 지워진 회차다(forgetLastPushedCount). 입장 ROOM_INFO 는 기준선이 못 된다: 캐시를
                         // 거친 값이라 이 회차의 수와 다를 수 있고, 세션마다 들어온 시각이 달라 방 하나에
                         // 기준선이 하나로 정해지지도 않는다. 한때 null 을 건너뛰었는데, 그러면 입장 때 받은
                         // 수가 틀렸을 때 인원이 다시 변할 때까지 그 숫자가 화면에 남았다.
@@ -847,9 +859,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
             roomSessions.compute(session.roomId(), (room, sessionIds) -> {
                 Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
                 ids.add(sessionId);
-                // 새 세션이 입장 때 받는 수는 캐시를 거친 값이라 지금 방의 수와 다를 수 있다. 마지막으로
-                // 보낸 수를 지워 두면 다음 시청자 수 회차가 수가 같아도 한 번 보내 그 세션을 맞춘다.
-                lastPushedCount.remove(room);
                 return ids;
             });
             // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·

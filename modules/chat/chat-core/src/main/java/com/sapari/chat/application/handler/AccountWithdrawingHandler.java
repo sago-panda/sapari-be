@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 
 import com.sapari.global.logging.LogFields;
 import com.sapari.chat.application.port.AccountWithdrawingSource;
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.OutboundMessage;
@@ -72,6 +73,7 @@ public class AccountWithdrawingHandler {
     private final AccountWithdrawingSource source;
     private final ChatSessionManager sessionManager;
     private final ChatWithdrawalWriteRepository withdrawalWriteRepository;
+    private final ChatMetrics metrics;
 
     private Disposable subscription;
 
@@ -118,6 +120,8 @@ public class AccountWithdrawingHandler {
         // 자체가 내려가면 전부 실패하고, 그때 남는 창이 남은 룸 토큰 수명이다).
         return withdrawalWriteRepository.markWithdrawing(userId)
                 .onErrorResume(e -> {
+                    // 로그를 솎지 않는 이유: 탈퇴 한 건에 Pod 마다 한 번 돈다(건당 호출되는 전송 경로와 다르다).
+                    metrics.withdrawalRecordFailed();
                     log.error("탈퇴 기록 실패 — 남은 룸 토큰으로 재입장할 수 있다. 끊기는 그대로 진행한다", e);
                     return Mono.empty();
                 })

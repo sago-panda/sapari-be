@@ -175,6 +175,7 @@ class ViewerCountPushTest {
         register("s1", buyerId, false);
         registry.pushViewerCounts().block(VERIFY_CEILING);
         register("s2", UUID.randomUUID(), false);
+        registry.forgetLastPushedCount(roomId);   // 핸들러가 입장 ROOM_INFO 를 보낸 뒤 부르는 자리
         List<OutboundMessage> newcomer = received("s2");
 
         // when
@@ -183,6 +184,31 @@ class ViewerCountPushTest {
 
         // then: 입장 뒤 첫 회차 한 번, 그다음은 변하지 않아 없다
         assertThat(newcomer).extracting(OutboundMessage::activeCount).containsExactly(2L);
+    }
+
+    /**
+     * ⭐ 등록과 입장 ROOM_INFO 사이에 회차가 끼어도 그다음 회차가 맞춘다.
+     *
+     * <p>지우기가 등록 안에 있으면, 낀 회차가 맞는 수를 보내고 기록한 뒤 캐시의 수가 나중에 도착해 화면에
+     * 남고 다음 회차는 기록과 같아 건너뛴다. 보낸 뒤에 지우면 낀 회차의 기록도 지워져 한 번 더 보낸다.
+     */
+    @Test
+    @DisplayName("⭐ 입장 ROOM_INFO 보다 먼저 낀 회차가 있어도 그다음 회차가 다시 보낸다 — 늦게 온 캐시 수가 남지 않는다")
+    void aCycleBetweenRegisterAndTheEntryRoomInfoDoesNotPinTheCachedCount() {
+        // given: 등록 직후, 입장 ROOM_INFO 가 나가기 전에 회차가 돈다
+        given(sessionRepository.count(roomId)).willReturn(Mono.just(2L));
+        register("s1", buyerId, false);
+        List<OutboundMessage> newcomer = received("s1");
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+        // 여기서 캐시를 거친 입장 ROOM_INFO(다른 수)가 도착했다고 본다 — 핸들러가 그 뒤에 지운다
+        registry.forgetLastPushedCount(roomId);
+
+        // when
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+        registry.pushViewerCounts().block(VERIFY_CEILING);
+
+        // then: 낀 회차 한 번 + 입장 ROOM_INFO 뒤 회차 한 번, 그다음은 없다
+        assertThat(newcomer).extracting(OutboundMessage::activeCount).containsExactly(2L, 2L);
     }
 
     @Test
