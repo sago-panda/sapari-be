@@ -2,7 +2,7 @@
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
 ✅ connect / send / fan-out / room-end / kick + ban escalation / history (VOD) / reverse paths —
-ban release, kick-list reconcile, end-marker clear, dictionary propagation + admin API
+ban release, kick-list reconcile, ban-mirror reconcile, end-marker clear, dictionary propagation + admin API
 (REST host: **live-app**). Run `./gradlew :modules:chat:chat-core:test`.
 
 ## One module, two stacks — the rule that governs everything else
@@ -459,6 +459,7 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and only this marker stops their sends); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
+| `chat:ban:ver:{userId}` | String | highest change version that reached the mirror; 1d TTL (only has to outlive one request's commit→Redis gap). Writes at or below it are rejected |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
 
@@ -674,10 +675,19 @@ three writes as one command: delete the record row, append an **amnesty baseline
 The prescription above said "`DEL` + set" — a reprieve turned out to need only the delete, because the
 mirror's extend-only script returns 0 on a key with no TTL, so a permanent ban cannot be shortened by
 writing at all. Order is **record → mirror**, with the commit in between: the reverse leaves a row that
-the next kick re-mirrors, so the ban *resurrects*. The remaining mismatch is the mirror axis — a kick
-writes the mirror **after** its commit, outside the lock by design, so a release landing in that window
-is undone in the mirror only (over-blocking, repaired by pressing release again; that is why the mirror
-delete must not be gated on the row having existed).
+the next kick re-mirrors, so the ban *resurrects*. The mirror axis — a kick writes the mirror **after** its
+commit, outside the lock by design, so a release landing in that window was undone in the mirror only — is
+closed by a **change version** (SPR-181): kick, release and reconcile each take
+`nextval('live_schema.chat_ban_change_seq')` inside `lockForBanDecision`, carry it to the mirror, and the
+mirror (`chat:ban:ver:{userId}`) rejects anything at or below what it has seen. A rejected kick write
+(`MirrorApply.STALE`) also skips the account `Banned` event. The mirror delete is still not gated on the row
+having existed — a retry takes a fresh version.
+
+**Ban-mirror reconcile** (`PUT /api/v1/chat/bans/mirror`, ADMIN, `ReconcileBanMirrorService`) is the ban
+side of the kick-list reconcile: enforcement is key presence, so a lost key reads as a normal "not banned"
+and no fail-open counter sees it. It walks every active row, re-reads each under the lock with a version,
+and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). It does not fix the opposite
+direction (a key with no row) — those users cannot be enumerated from the record; release fixes that one.
 
 Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Since
 SPR-165 the window has **two lower bounds**: that 2 years *and the user's most recent ban release*,

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -31,6 +32,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.sapari.chat.support.LiveSchema;
 import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.domain.model.VersionedBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.repository.ChatAuditLogRepository;
@@ -256,7 +258,7 @@ class ChatKickRecorderTest {
         // when
         recorder.record(kick(UUID.randomUUID(), sameSeller, NOW));
         recorder.record(kick(UUID.randomUUID(), sameSeller, NOW));
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), sameSeller, NOW));
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), sameSeller, NOW)).map(VersionedBan::ban);
 
         // then: 행은 셋이지만 확증한 사람은 하나다
         assertThat(ban).isEmpty();
@@ -273,7 +275,7 @@ class ChatKickRecorderTest {
         // given: 호출자가 트랜잭션을 열지 않은, 실제 유스케이스와 같은 조건
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW)).map(VersionedBan::ban);
 
         // then: 예외 없이 커밋됐고, 누적 1회는 임계 미만이라 밴은 없다
         assertThat(ban).isEmpty();
@@ -290,7 +292,7 @@ class ChatKickRecorderTest {
         recorder.record(kick(UUID.randomUUID(), NOW));
 
         // when
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW)).map(VersionedBan::ban);
 
         // then: 돌려받은 값과 정본이 같은 밴이다 — 호출자는 이걸 미러에 쓴다
         assertThat(ban).isPresent();
@@ -409,6 +411,16 @@ class ChatKickRecorderTest {
             }
 
             @Override
+            public long nextChangeVersion() {
+                return bans.nextChangeVersion();
+            }
+
+            @Override
+            public List<UUID> findActiveUserIds(Instant now) {
+                throw new UnsupportedOperationException("이 테스트는 재적재를 쓰지 않는다");
+            }
+
+            @Override
             public ChatBanStateRepository.Released release(UUID userId, UUID releasedById, Instant now) {
                 // 이 테스트는 승격 경로의 트랜잭션 경계만 잰다. 해제는 그 경계에 들어오지 않는다 —
                 // 불리면 그건 이 테스트가 모르는 경로가 생긴 것이므로 조용히 통과시키지 않는다.
@@ -461,7 +473,7 @@ class ChatKickRecorderTest {
         transactionTemplate.executeWithoutResult(status -> deleteBansOfTarget());
 
         // when: 같은 방을 다시 강퇴한다 — 로그는 이미 있으므로 누적이 늘지 않는다
-        Optional<ChatBan> ban = recorder.record(kick(room, NOW));
+        Optional<ChatBan> ban = recorder.record(kick(room, NOW)).map(VersionedBan::ban);
 
         // then: 가드가 없으면 여기서 누적 3을 세어 1주 밴이 생긴다
         assertThat(ban)
@@ -489,7 +501,7 @@ class ChatKickRecorderTest {
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when: 같은 방 재강퇴 — 로그는 no-op이다
-        Optional<ChatBan> ban = recorder.record(kick(room, NOW));
+        Optional<ChatBan> ban = recorder.record(kick(room, NOW)).map(VersionedBan::ban);
 
         // then: 그래도 밴을 돌려줘야 호출자가 미러를 되살린다
         assertThat(ban)
@@ -515,7 +527,7 @@ class ChatKickRecorderTest {
                 new ChatBan(targetUserId, UUID.randomUUID(), expiry, NOW.minus(Duration.ofDays(1)))));
 
         // when: 3회째 — 가드가 없으면 여기서 1주 밴이 새로 생기고 그것이 반환된다
-        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW));
+        Optional<ChatBan> ban = recorder.record(kick(UUID.randomUUID(), NOW)).map(VersionedBan::ban);
 
         // then: 기존 밴을 그대로 돌려주고, 정본에도 새 행이 생기지 않았다
         assertThat(ban).isPresent();

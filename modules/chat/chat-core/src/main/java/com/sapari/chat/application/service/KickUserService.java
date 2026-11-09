@@ -15,11 +15,12 @@ import com.sapari.chat.domain.exception.ChatKickContendedException;
 import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
-import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.model.VersionedBan;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
+import com.sapari.chat.domain.repository.ChatBanWriteRepository.MirrorApply;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
@@ -117,9 +118,12 @@ public class KickUserService implements KickUserUseCase {
         // Redis와 발행으로 간다 — 한 트랜잭션에 넣으면 롤백된 강퇴가 Redis에만 남는다.
         // 돌려받은 밴을 그대로 비춘다. 동시 강퇴에서 이 값이 가장 긴 것이 아닐 수 있지만, 미러 쓰기가
         // 늘리기 전용이라 짧은 쪽이 긴 것을 덮지 못한다 — 순서 문제를 순서와 무관한 쓰기로 닫는다.
-        Optional<ChatBan> ban = record(kickLog);
-        ban.ifPresent(it -> banWriteRepository.ban(
-                command.targetUserId(), it.expiresAt(), kickLog.kickedAt()));
+        // 이 쓰기와 해제의 순서는 번호가 정한다. 기록이 커밋된 뒤 해제가 끼어들어 미러를 먼저 지웠으면
+        // 이 쓰기는 늦은 번호로 거절된다(STALE) — 정본에 밴이 없으니 되살리면 안 된다.
+        boolean banMirrored = record(kickLog)
+                .map(it -> banWriteRepository.ban(command.targetUserId(), it.ban().expiresAt(),
+                        kickLog.kickedAt(), it.version()) != MirrorApply.STALE)
+                .orElse(false);
 
         kickWriteRepository.register(command.roomId(), command.targetUserId());
         kickEventPublisher.publishKicked(command.roomId(), command.targetUserId());
@@ -138,7 +142,13 @@ public class KickUserService implements KickUserUseCase {
         // 밴이 새로 걸렸든 이미 있던 것이든 알린다. 이미 있던 경우를 건너뛰면, 그 밴보다 먼저 열려
         // 어떤 이유로든 안 닫힌 세션이 영영 남는다 — 다시 알리면 다음 강퇴가 그걸 치운다.
         // 미러 쓰기가 두 경우 모두에서 도는 것과 같은 이유다.
-        ban.ifPresent(it -> accountEventPublisher.publishBanned(command.targetUserId()));
+        //
+        // 미러가 늦은 번호로 거절한 밴은 알리지 않는다 — 해제가 이미 지나간 밴으로 세션을 끊으면 풀린
+        // 사람을 한 번 더 내보낸다. 발행이 미러 쓰기의 결과를 따른다 — 번호에 진 밴은 미러에도 이벤트에도
+        // 닿지 않는다.
+        if (banMirrored) {
+            accountEventPublisher.publishBanned(command.targetUserId());
+        }
     }
 
     /**
@@ -205,7 +215,7 @@ public class KickUserService implements KickUserUseCase {
      * 판단이 두 벌이 된다. ② 여기서 잡는다는 것은 트랜잭션이 <b>이미 되감긴 뒤</b>라는 뜻이라, 취소된
      * 트랜잭션 위에서 무언가를 더 하려는 코드가 자라지 않는다.
      */
-    private Optional<ChatBan> record(ChatKickLog kickLog) {   // 이름이 log가 아닌 것은 로거 필드와 겹쳐서다
+    private Optional<VersionedBan> record(ChatKickLog kickLog) {   // 이름이 log가 아닌 것은 로거 필드와 겹쳐서다
         try {
             return kickRecorder.record(kickLog);
         } catch (PessimisticLockingFailureException | QueryTimeoutException | TransactionTimedOutException e) {

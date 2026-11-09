@@ -24,11 +24,13 @@ import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogReposit
 import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordRepositoryImpl;
 import com.sapari.chat.infrastructure.redis.ProfanityDictionarySnapshotRedisPublisher;
+import com.sapari.chat.application.service.ChatBanMirrorSnapshotter;
 import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
 import com.sapari.chat.application.service.ClearRoomEndedMarkerService;
+import com.sapari.chat.application.service.ReconcileBanMirrorService;
 import com.sapari.chat.application.service.ReconcileKickListService;
 import com.sapari.chat.application.service.ReleaseBanService;
 import com.sapari.chat.domain.repository.ChatHistoryRepository;
@@ -56,6 +58,7 @@ import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
 import com.sapari.chat.infrastructure.redis.ChatRoomEndedWriteRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
+import com.sapari.chat.port.ReconcileBanMirrorUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.global.time.TimeProvider;
@@ -352,6 +355,24 @@ public class ChatModerationBeansConfig {
                                                              TimeProvider timeProvider) {
         return new ReconcileKickListService(permissionPolicy, liveRoomReader, kickLogRepository,
                 kickWriteRepository, auditRecorder, timeProvider);
+    }
+
+    /** 밴 미러 재적재가 사용자마다 잠금 안에서 읽는 트랜잭션 빈 — {@code chatKickRecorder}와 같은 이유로 별도 빈이다. */
+    @Bean
+    public ChatBanMirrorSnapshotter chatBanMirrorSnapshotter(ChatBanStateRepository banStateRepository) {
+        return new ChatBanMirrorSnapshotter(banStateRepository);
+    }
+
+    /** 밴 미러 재적재 — 강퇴 명단 재적재의 밴 쪽 짝이다. 방을 읽지 않는다(밴은 사람에 붙는다). */
+    @Bean
+    public ReconcileBanMirrorUseCase reconcileBanMirrorUseCase(ChatPermissionPolicy permissionPolicy,
+                                                               ChatBanStateRepository banStateRepository,
+                                                               ChatBanMirrorSnapshotter snapshotter,
+                                                               ChatBanWriteRepository banWriteRepository,
+                                                               ChatAuditRecorder auditRecorder,
+                                                               TimeProvider timeProvider) {
+        return new ReconcileBanMirrorService(permissionPolicy, banStateRepository, snapshotter,
+                banWriteRepository, auditRecorder, timeProvider);
     }
 
     /**

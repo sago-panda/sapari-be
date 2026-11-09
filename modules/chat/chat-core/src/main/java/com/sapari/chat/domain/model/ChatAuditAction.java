@@ -41,6 +41,12 @@ public enum ChatAuditAction {
     /** 방의 강퇴 집행 명단을 정본에서 다시 깔았다(미러 손상 복구). */
     CHAT_RECONCILE_KICK_LIST(ChatAuditTargetType.LIVE_ROOM, true),
 
+    /**
+     * 유효한 밴 전부를 정본에서 미러로 다시 깔았다(미러 유실 복구). 대상이 사용자 집합이라 한 id 로
+     * 가리킬 수 없다 — 몇 명이었고 몇 명이 어긋나 있었는지는 {@code detail} 에 있다.
+     */
+    CHAT_RECONCILE_BAN_MIRROR(ChatAuditTargetType.USER, false),
+
     /** 방의 종료 마커를 지웠다(오발행으로 멈춘 채팅 복구). */
     CHAT_CLEAR_ROOM_ENDED_MARKER(ChatAuditTargetType.LIVE_ROOM, true);
 

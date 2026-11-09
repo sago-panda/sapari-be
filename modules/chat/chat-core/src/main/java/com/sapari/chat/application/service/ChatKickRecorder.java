@@ -13,6 +13,7 @@ import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatBanTier;
 import com.sapari.chat.domain.model.ChatKickLog;
+import com.sapari.chat.domain.model.VersionedBan;
 import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
@@ -85,6 +86,10 @@ public class ChatKickRecorder {
      * <p><b>미러에 반영할 밴을 돌려준다</b> — 새로 건 것이든 이미 있던 것이든. 후자도 돌려주는 이유는
      * 미러 키가 사라졌던 사용자가 다음 강퇴에서 되찾을 수 있어야 해서다.
      *
+     * <p><b>미러 변경 번호가 함께 온다.</b> 잠금 안에서 집으므로 같은 사용자의 해제와 견준 순서가 커밋
+     * 순서와 같다 — 호출자가 커밋 뒤에 미러를 쓰는 동안 해제가 끼어들어도, 늦게 도착한 이 쓰기를 미러가
+     * 번호로 거절한다.
+     *
      * <p>동시 강퇴에서 이 값이 <b>가장 긴 밴이 아닐 수 있다</b>. 그래도 해롭지 않은 것은 미러 쓰기가
      * 늘리기 전용이어서다 — 짧은 쪽이 나중에 도착해도 긴 것을 덮지 못한다. 그 보장이 없다면 여기서
      * 정본을 다시 읽어야 하고, 실제로 그렇게 해 봤지만 <b>레이스를 좁힐 뿐 닫지 못했다</b>(무엇을 쓸지는
@@ -131,7 +136,7 @@ public class ChatKickRecorder {
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = TRANSACTION_TIMEOUT_SECONDS)
-    public Optional<ChatBan> record(ChatKickLog kickLog) {
+    public Optional<VersionedBan> record(ChatKickLog kickLog) {
         Instant now = kickLog.kickedAt();
         // 승격 판단 전체를 사용자 단위로 줄 세운다. 세기·견주기·쓰기가 세 걸음이고 그 사이에 남의
         // 미커밋 강퇴가 보이지 않으므로(READ COMMITTED), 직렬화하지 않으면 서로 다른 방의 두 강퇴가
@@ -171,7 +176,7 @@ public class ChatKickRecorder {
 
         Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);
         if (active.isPresent()) {
-            return active;
+            return active.map(this::versioned);
         }
         if (!firstKickInThisRoom) {
             return Optional.empty();
@@ -205,8 +210,17 @@ public class ChatKickRecorder {
                         log.info("자동 밴 승격 생략 — 이미 더 긴 밴이 있다 userId={} 확증={}명 이 단계={} 남은 만료={}",
                                 kickLog.targetUserId(), kickers, tier, write.effective().expiresAt());
                     }
-                    return write.effective();
+                    return versioned(write.effective());
                 });
+    }
+
+    /**
+     * 미러에 실을 번호를 <b>이 트랜잭션 안에서</b> 집는다 — 위 어드바이저리 잠금이 같은 사용자의 해제와
+     * 이 강퇴를 줄 세우므로, 여기서 집은 번호의 순서가 곧 커밋 순서다. 미러 쓰기는 커밋 뒤라 도착이
+     * 뒤집힐 수 있고, 미러가 이 번호로 늦은 쪽을 거절한다.
+     */
+    private VersionedBan versioned(ChatBan ban) {
+        return new VersionedBan(ban, banStateRepository.nextChangeVersion());
     }
 
     /**

@@ -48,7 +48,8 @@ class ChatAuditEntryTest {
 
     private static final EnumSet<ChatAuditAction> SPEAKS_THROUGH_DETAIL = EnumSet.of(
             ChatAuditAction.CHAT_ADD_FILTER_WORD,
-            ChatAuditAction.CHAT_REMOVE_FILTER_WORD);
+            ChatAuditAction.CHAT_REMOVE_FILTER_WORD,
+            ChatAuditAction.CHAT_RECONCILE_BAN_MIRROR);
 
     static Stream<ChatAuditAction> needsTarget() {
         return NEEDS_TARGET.stream();
@@ -61,12 +62,12 @@ class ChatAuditEntryTest {
     /**
      * ⭐ <b>이 가드의 분모가 대상의 전수와 같은지</b>를 박는다.
      *
-     * <p>위 두 목록은 손열거이고 오늘 4 + 2 = 6 이 전량이다. 일곱 번째 행위를 더하면 어느 목록에도
+     * <p>위 두 목록은 손열거이고 오늘 4 + 3 = 7 이 전량이다. 여덟 번째 행위를 더하면 어느 목록에도
      * 안 들어가 <b>조용히 미검증</b>이 되는데, 그 사실을 말해 주는 것이 아무것도 없었다. 지키는
      * 대상이 {@code values()} 이므로 분모도 거기에 맞춘다 — 새 행위는 이 칸에서 먼저 걸린다.
      */
     @Test
-    @DisplayName("⭐ 두 목록이 행위 전수를 덮는다 — 일곱 번째가 조용히 빠지지 않는다")
+    @DisplayName("⭐ 두 목록이 행위 전수를 덮는다 — 새 행위가 조용히 빠지지 않는다")
     void theTwoListsCoverEveryAction() {
         EnumSet<ChatAuditAction> union = EnumSet.copyOf(NEEDS_TARGET);
         union.addAll(SPEAKS_THROUGH_DETAIL);
