@@ -95,7 +95,7 @@ class LiveFilterOrderTest {
         SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
             EnterRateLimitFilter enterRateLimitFilter = new EnterRateLimitFilter(
                     new EnterRateLimiter(
-                            new EnterRateLimitProperties(1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
+                            new EnterRateLimitProperties(1_000_000, 1_000_000, 1_000_000, 1_000_000, 1, null, null, null),
                             LiveMetrics.NOOP));
             TokenRevocationFilter tokenRevocationFilter = new TokenRevocationFilter(
                     mock(AccessTokenRevocationChecker.class), mock(SessionRevocationChecker.class),

@@ -18,6 +18,11 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 | `Live`/`Suspended` | `endLive()` | `Ended` | `canEndLive()` |
 
 - `Ended` is terminal. `expire()` publishes no `RoomEnded` — the room was never `Live`, so chat has no session.
+- On end, `afterCommit` (after media cleanup) writes `live:room:ended:{roomId}` (endedAt, TTL 70m) and then
+  publishes `RoomEnded`. Both are **at-most-once** — no retry, no outbox; a crash between commit and
+  `afterCommit` loses both, and a failure is only an ERROR log + `live.room.ended.signal.failed{signal}`.
+  Accepted: the room is already `Ended` in the DB. The key has **no reader yet** (chat follow-up), and its
+  70m TTL is a hand copy of chat's `ENDED_TTL` (session max-lifetime 60m + margin) with no cross-check.
 - No transition INTO `Suspended` exists yet (record + exit only).
 - `Suspended` counts as **not live** for external readers (`GetLiveRoomUseCase.live=false`) — 송출이 멈춘 방이므로 진행 중 통제(강퇴 등)의 판정 근거를 그렇게 제공한다. 거부 여부는 소비 도메인이 정한다. `startedAt` 은 다시보기 싱크용으로 보존한다. 뷰에서 `Ended` 와 구분되지 않으므로, `Suspended` 로 들어가는 전이를 만들 때 구분이 필요하면 그때 필드를 추가할 것.
 - Adding a state = `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum, together.
@@ -325,9 +330,18 @@ neither the `findById` nor the signature is paid.
 
 - **This is a CPU ceiling, not availability protection** — the same requirement the webhook limit
   carries, and **rps fairness belongs upstream**. The guest/member split covers one direction: a guest
-  flood cannot starve logged-in viewers. The room owner has no reserved capacity, so a saturated
-  member bucket blocks a seller from recovering the `owner` claim by reconnecting — bounded to the
-  reconnect moment, since existing WS sessions survive.
+  flood cannot starve logged-in viewers. **Sellers (`role=SELLER`) skip the member shard and global
+  and use their own lane** — same shape as members (`seller-shards` keyed buckets under a seller global;
+  defaults 8/s · burst 32 · 8 shards), so a member flood cannot block a seller from recovering the
+  `owner` claim by reconnecting. A single seller bucket was rejected: one seller account at a few
+  requests/s would block **every** seller — the cost scales with one attacker's rate, not with the
+  number of sellers. Shards bound that to the attacker's shard (~1/8) — **for one account**. The seller
+  shard refills sum exactly to the seller global (8 × 1/s), so ~22 accounts (coupon collector over 8
+  shards) drain it and block every seller. Accepted because seller signup verifies the business
+  registration externally and rejects duplicate business numbers (`SellerAuthService`), so each account
+  needs a distinct real business; revisit shards/global if that check is relaxed.
+  It is never unlimited, or it becomes a bypass of the whole cap. Residual: this filter runs before
+  `TokenRevocationFilter`, so a revoked seller token keeps draining its shard until it expires.
 - **Member traffic passes two gates with different jobs.** A shard bucket bounds **one account**;
   the **global bucket enforces the aggregate ceiling**. `member-shards` (default 64) fixed-size
   buckets are sized `ceil(global/shards)` — refill as is, burst times a headroom factor — so the
@@ -357,7 +371,7 @@ neither the `findById` nor the signature is paid.
   this is a fixed-size **array**, bounded by construction *and* by an explicit `member-shards`
   ceiling (4096); without that ceiling a typo could pass validation and allocate an array that fails
   at allocation rather than at config validation.
-- **Rejections are counted** — `live.enter.rejected{population="guest"|"member", gate="shard"|"global"}`.
+- **Rejections are counted** — `live.enter.rejected{population="guest"|"member"|"seller", gate="shard"|"global"}`.
   The `gate` tag exists because the two gates call for **opposite responses**: `shard` means one
   account exceeded its own share (go find it), `global` means the aggregate hit the ceiling (raise the
   limit or add capacity). Since the shard sums now exceed the global, most rejections under
@@ -380,9 +394,9 @@ neither the `findById` nor the signature is paid.
   carries **no `error.code`**, unlike every other error on the endpoint.
 - **A controller must not assemble this.** `apps/AGENTS.md` forbids it and its raw-DTO exemption
   covers success bodies only — that is why the cap is a filter, not a branch in `enterRoom`.
-- **`guest-permits-per-second` / `guest-burst` / `member-*` refuse to boot** when a limit is ≤0, a
-  burst is below its permits, `member-shards` is outside `1..4096`, or
-  `member-permits-per-second < member-shards` (the shard refills would then far exceed the global and
+- **`guest-permits-per-second` / `guest-burst` / `member-*` / `seller-*` refuse to boot** when a limit is ≤0, a
+  burst is below its permits, `member-shards`/`seller-shards` is outside `1..4096`, or
+  permits-per-second < shards for either (the shard refills would then far exceed the global and
   the shard would bound nothing) — the same fail-closed shape as the reconcile guards.
 - **Every bucket is instance-local** (population and shard alike), so the fleet limit is
   `limit × replicas`; there is none.
@@ -394,7 +408,7 @@ neither the `findById` nor the signature is paid.
 ## Room token — chat entry auth
 
 `enter` issues an RS256 token; distinct key/alg/`aud` from the api-app HMAC token, never interchangeable.
-Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp`.
+Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp` — **capped at 300s** (refuses to boot above it; chat sizes its TTLs on that cap).
 **email is PII** — never log the raw token. **Not single-use** — replayable within the TTL.
 
 Repeat enters by the same member inside the cache TTL now receive the **identical** token, not a

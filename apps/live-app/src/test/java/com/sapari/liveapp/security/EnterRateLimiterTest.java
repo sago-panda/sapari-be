@@ -32,7 +32,7 @@ class EnterRateLimiterTest {
     void nullSubjectStillHitsTheGlobalCeiling() {
         CountingLiveMetrics metrics = new CountingLiveMetrics();
         EnterRateLimiter limiter = new EnterRateLimiter(
-                new EnterRateLimitProperties(1, 1, 2, 2, 2), metrics, () -> 0L);
+                new EnterRateLimitProperties(1, 1, 2, 2, 2, null, null, null), metrics, () -> 0L);
 
         assertThat(limiter.tryMemberEntry(null)).isTrue();
         assertThat(limiter.tryMemberEntry(null)).isTrue();
@@ -241,7 +241,7 @@ class EnterRateLimiterTest {
 
     private static EnterRateLimiter limiter(int shards, int burst, int permits) {
         return new EnterRateLimiter(
-                new EnterRateLimitProperties(permits, burst, permits, burst, shards),
+                new EnterRateLimitProperties(permits, burst, permits, burst, shards, null, null, null),
                 LiveMetrics.NOOP, () -> 0L);
     }
 
@@ -258,7 +258,7 @@ class EnterRateLimiterTest {
     void theGlobalBucketEnforcesTheSustainedCeiling() {
         java.util.concurrent.atomic.AtomicLong nanos = new java.util.concurrent.atomic.AtomicLong();
         EnterRateLimiter limiter = new EnterRateLimiter(
-                new EnterRateLimitProperties(1_000, 1_000, 1_000, 1_000, 64),
+                new EnterRateLimitProperties(1_000, 1_000, 1_000, 1_000, 64, null, null, null),
                 LiveMetrics.NOOP, nanos::get);
 
         // 전역·샤드를 <전부> 비운다. 4,000 으로는 샤드마다 잔여가 남아 1초 뒤 (잔여 + 리필)이

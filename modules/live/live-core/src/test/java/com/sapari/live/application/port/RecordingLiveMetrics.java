@@ -50,6 +50,10 @@ public class RecordingLiveMetrics implements LiveMetrics {
     }
 
     @Override
+    public void roomEndedSignalFailed(RoomEndedSignal signal) {
+    }
+
+    @Override
     public void reconcileRoundCompleted(ReconcileJob job, Duration took) {
         completedRounds.add(job);
     }

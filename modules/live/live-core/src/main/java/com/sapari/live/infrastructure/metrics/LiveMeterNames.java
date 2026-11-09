@@ -34,6 +34,9 @@ final class LiveMeterNames {
      */
     static final String TOKEN_SIGNATURE = "live.token.signature";
 
+    /** 방 종료 신호(키·이벤트) 실패 — {@code signal} 태그가 어느 쪽인지 가른다. */
+    static final String ROOM_ENDED_SIGNAL_FAILED = "live.room.ended.signal.failed";
+
     static final String TAG_JOB = "job";
     static final String TAG_OUTCOME = "outcome";
     static final String TAG_REASON = "reason";
@@ -47,6 +50,7 @@ final class LiveMeterNames {
     static final String TAG_FROM = "from";
     static final String TAG_TO = "to";
     static final String TAG_TRIGGER = "trigger";
+    static final String TAG_SIGNAL = "signal";
 
     private LiveMeterNames() {
     }

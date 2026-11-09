@@ -93,6 +93,8 @@ class PrometheusScrapeTest {
                 com.sapari.live.application.port.EnterRejectionGate.SHARD);
         metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.MEMBER,
                 com.sapari.live.application.port.EnterRejectionGate.GLOBAL);
+        metrics.enterRateLimited(com.sapari.live.application.port.EnterPopulation.SELLER,
+                com.sapari.live.application.port.EnterRejectionGate.GLOBAL);
 
         String scrape = registry.scrape();
 
@@ -102,7 +104,8 @@ class PrometheusScrapeTest {
         assertThat(scrape)
                 .as("태그 값은 소문자다 — 문서가 대문자로 적으면 쿼리가 시계열을 못 찾는다")
                 .contains("population=\"guest\"")
-                .contains("population=\"member\"");
+                .contains("population=\"member\"")
+                .contains("population=\"seller\"");
         assertThat(scrape)
                 .as("대문자 값은 나오지 않는다 — 이 단정이 문서 쪽 드리프트를 잡는 면이다")
                 .doesNotContain("population=\"GUEST\"")
@@ -167,5 +170,17 @@ class PrometheusScrapeTest {
                 .as("대문자 값은 나오지 않는다 — 문서 쪽 드리프트를 잡는 면이다")
                 .doesNotContain("source=\"SIGNED\"")
                 .doesNotContain("source=\"CACHED\"");
+    }
+
+    @Test
+    @DisplayName("방 종료 신호 실패 지표의 이름·태그 값이 스크레이프 출력에 있다")
+    void roomEndedSignalFailed_appearsInScrape() {
+        metrics.roomEndedSignalFailed(com.sapari.live.application.port.RoomEndedSignal.MARKER);
+        metrics.roomEndedSignalFailed(com.sapari.live.application.port.RoomEndedSignal.EVENT);
+
+        assertThat(registry.scrape())
+                .contains("live_room_ended_signal_failed_total")
+                .contains("signal=\"marker\"")
+                .contains("signal=\"event\"");
     }
 }

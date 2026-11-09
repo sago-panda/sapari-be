@@ -331,7 +331,7 @@ class TokenRevocationFilterTest {
         TokenRevocationFilter revocation =
                 filter(token, CountingChecker.active(), new CountingLiveMetrics());
         EnterRateLimitFilter rateLimit = new EnterRateLimitFilter(new EnterRateLimiter(
-                new EnterRateLimitProperties(1, 1, 1, 1, 1), LiveMetrics.NOOP, () -> 0L));
+                new EnterRateLimitProperties(1, 1, 1, 1, 1, 1, 1, 1), LiveMetrics.NOOP, () -> 0L));
         CountingChain tail = new CountingChain();
         authenticate();
 

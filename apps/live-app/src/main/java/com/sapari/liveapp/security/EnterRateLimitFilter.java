@@ -41,6 +41,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @RequiredArgsConstructor
 public class EnterRateLimitFilter extends OncePerRequestFilter {
 
+    /** access JWT 의 role claim 원문 — {@code LiveSecurityConfig} 의 {@code hasRole("SELLER")} 와 같은 값. */
+    private static final String SELLER_ROLE = "SELLER";
+
     private final EnterRateLimiter rateLimiter;
 
     @Override
@@ -54,9 +57,14 @@ public class EnterRateLimitFilter extends OncePerRequestFilter {
             return;
         }
         LiveUserPrincipal member = member();
-        boolean allowed = member != null
-                ? rateLimiter.tryMemberEntry(member.userId().toString())
-                : rateLimiter.tryGuestEntry();
+        boolean allowed;
+        if (member == null) {
+            allowed = rateLimiter.tryGuestEntry();
+        } else if (SELLER_ROLE.equals(member.role())) {
+            allowed = rateLimiter.trySellerEntry(member.userId().toString());
+        } else {
+            allowed = rateLimiter.tryMemberEntry(member.userId().toString());
+        }
         if (allowed) {
             filterChain.doFilter(request, response);
             return;

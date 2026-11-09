@@ -12,7 +12,7 @@ package com.sapari.live.application.port;
  */
 public enum EnterRejectionGate {
 
-    /** 계정 단위 샤드 버킷. 회원 경로에만 있다. */
+    /** 계정 단위 샤드 버킷. 회원·판매자 경로에 있다. */
     SHARD,
 
     /** 집단 전역 버킷. 게스트 거부는 항상 이쪽이다 — 게스트에는 샤드가 없다. */

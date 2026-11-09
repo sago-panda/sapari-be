@@ -5,7 +5,7 @@ import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 입장(=룸 토큰 발급) 경로의 상한. <b>게스트와 회원이 각자 버킷을 갖는다.</b>
+ * 입장(=룸 토큰 발급) 경로의 상한. <b>게스트·회원·판매자가 각자 통로를 갖는다.</b>
  *
  * <p>미설정은 허용하고(기본값) 잘못된 값은 부팅에서 막는다 — {@code application*.yml} 이 추적되지
  * 않아 "설정 없음" 이 정상 상태다. 다만 0 이나 음수로 뜨면 그 집단의 입장이 전량 막힌다.
@@ -62,7 +62,10 @@ public record EnterRateLimitProperties(
         Integer guestBurst,
         Integer memberPermitsPerSecond,
         Integer memberBurst,
-        Integer memberShards
+        Integer memberShards,
+        Integer sellerPermitsPerSecond,
+        Integer sellerBurst,
+        Integer sellerShards
 ) {
     /**
      * <b>CPU 상한에서 역산했고, 정상 트래픽은 측정되지 않았다.</b>
@@ -151,6 +154,27 @@ public record EnterRateLimitProperties(
      */
     private static final int MAX_MEMBER_SHARDS = 4_096;
 
+    /**
+     * 판매자 통로 — 회원 샤드·전역과 <b>분리된 통로</b>다(SPR-185). 구조는 회원과 같다(샤드 + 전역).
+     *
+     * <p><b>샤드로 나누는 이유:</b> 통로가 버킷 하나면 판매자 계정 <b>하나</b>가 초당 몇 건만으로 모든
+     * 판매자의 재접속을 막는다 — 그 비용은 판매자 수가 아니라 공격자 한 명의 요청률로 정해진다. 샤드가
+     * 그 피해를 같은 샤드의 판매자(기본 1/8)로 묶는다.
+     *
+     * <p>⚠️ <b>1/8 은 계정 하나일 때의 수다.</b> 샤드 지속 몫의 합(8 × 1/s)이 전역 8/s 와 같아서, 계정
+     * 약 22개(쿠폰 수집 기댓값)로 8개 샤드를 모두 덮으면 전역이 말라 모든 판매자가 막힌다. 이를 받아들인
+     * 근거는 계정 비용이다 — 판매자 가입은 사업자등록 외부 검증과 사업자번호 중복 차단을 거치므로
+     * ({@code SellerAuthService.validateBusinessRegistration}) 계정마다 실재하는 서로 다른 사업자가
+     * 필요하다. 그 전제가 바뀌면(검증 제거·완화) 샤드 수와 전역을 다시 볼 것.
+     *
+     * <p>기본값에서 샤드 몫은 지속 <b>1/s</b>(= ⌈8/8⌉) · 버스트 <b>8</b>(= ⌈32/8⌉ × 헤드룸 2)이고, 정상
+     * 판매자의 가끔 있는 재접속에는 충분하다. 전역 8/s 는 회원 500/s 에 비하면 서명 비용에 보태는 몫이
+     * 작다. 0 으로 두지 않는 것은 상한 없는 통로가 입장 상한 전체의 우회로가 되기 때문이다.
+     */
+    private static final int DEFAULT_SELLER_PERMITS_PER_SECOND = 8;
+    private static final int DEFAULT_SELLER_BURST = 32;
+    private static final int DEFAULT_SELLER_SHARDS = 8;
+
     public EnterRateLimitProperties {
         if (guestPermitsPerSecond == null) {
             guestPermitsPerSecond = DEFAULT_PERMITS_PER_SECOND;
@@ -167,8 +191,19 @@ public record EnterRateLimitProperties(
         if (memberShards == null) {
             memberShards = DEFAULT_MEMBER_SHARDS;
         }
+        if (sellerPermitsPerSecond == null) {
+            sellerPermitsPerSecond = DEFAULT_SELLER_PERMITS_PER_SECOND;
+        }
+        if (sellerBurst == null) {
+            sellerBurst = DEFAULT_SELLER_BURST;
+        }
+        if (sellerShards == null) {
+            sellerShards = DEFAULT_SELLER_SHARDS;
+        }
         validate("guest", guestPermitsPerSecond, guestBurst);
         validate("member", memberPermitsPerSecond, memberBurst);
+        validate("seller", sellerPermitsPerSecond, sellerBurst);
+        validateShards("seller", sellerPermitsPerSecond, sellerShards);
         if (memberShards <= 0) {
             throw new IllegalArgumentException(
                     "live.enter.rate-limit.member-shards 는 양수여야 합니다: " + memberShards);
@@ -186,6 +221,19 @@ public record EnterRateLimitProperties(
                     "live.enter.rate-limit.member-shards 는 member-permits-per-second 이하여야 "
                             + "합니다(샤드당 허용량이 0 이 된다): "
                             + memberShards + " > " + memberPermitsPerSecond);
+        }
+    }
+
+    /** 회원 샤드와 같은 세 가드 — 근거는 위 {@code memberShards} 검사의 주석과 같다. */
+    private static void validateShards(String which, int permitsPerSecond, int shards) {
+        if (shards <= 0 || shards > MAX_MEMBER_SHARDS) {
+            throw new IllegalArgumentException("live.enter.rate-limit." + which
+                    + "-shards 는 1~" + MAX_MEMBER_SHARDS + " 이어야 합니다: " + shards);
+        }
+        if (permitsPerSecond < shards) {
+            throw new IllegalArgumentException("live.enter.rate-limit." + which
+                    + "-shards 는 " + which + "-permits-per-second 이하여야 합니다(샤드당 허용량이 "
+                    + "0 이 된다): " + shards + " > " + permitsPerSecond);
         }
     }
 

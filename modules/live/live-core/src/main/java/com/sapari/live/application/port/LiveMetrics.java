@@ -119,6 +119,15 @@ public interface LiveMetrics {
     void roomTokenIssued(RoomTokenSignatureSource source);
 
     /**
+     * 방 종료 신호 하나를 내보내지 못했다(SPR-185).
+     *
+     * <p>발행 어댑터는 커밋 뒤에 돌아서 실패를 던질 수 없다 — 던져도 되돌릴 것이 없고 판매자에게
+     * 종료 실패만 보인다. 그래서 로그 외에 이 수가 <b>chat 이 종료를 모를 수 있는 방</b>의 유일한
+     * 집계 신호다. 어느 신호인지는 {@link RoomEndedSignal} 이 가른다.
+     */
+    void roomEndedSignalFailed(RoomEndedSignal signal);
+
+    /**
      * 아무것도 하지 않는 구현. <b>단위 테스트가 registry 없이 돌게 하는 것</b>이 실제 용도다.
      *
      * <p>(오해 주의: 지금 {@code live-core} 를 의존하는 앱은 {@code live-app} 하나뿐이다 — 확인함:
@@ -139,5 +148,6 @@ public interface LiveMetrics {
         @Override public void tokenRevocationHit(TokenRevocationAxis axis) { }
         @Override public void tokenRevocationLookupFailed() { }
         @Override public void roomTokenIssued(RoomTokenSignatureSource source) { }
+        @Override public void roomEndedSignalFailed(RoomEndedSignal signal) { }
     };
 }
