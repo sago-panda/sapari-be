@@ -24,6 +24,7 @@ import org.springframework.util.ClassUtils;
 
 import com.mongodb.MongoClientSettings;
 import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
+import com.sapari.chat.application.service.ChatBanMirrorSnapshotter;
 import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
 import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
@@ -159,6 +160,15 @@ class ChatModerationWiringTest {
                 .isTrue();
     }
 
+    /** 재적재의 잠금 읽기도 같은 축이다 — 프록시가 아니면 잠금이 즉시 풀려 번호 순서가 커밋 순서와 갈린다. */
+    @Test
+    @DisplayName("⭐ 밴 미러 스냅샷도 트랜잭션 프록시다 — 잠금과 번호가 한 트랜잭션이어야 한다")
+    void banMirrorSnapshotterIsATransactionalProxy() {
+        assertThat(AopUtils.isAopProxy(context.getBean(ChatBanMirrorSnapshotter.class)))
+                .as("ChatBanMirrorSnapshotter가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
     /**
      * ⭐ 사전 쓰기 둘도 같은 축을 갖는다 — <b>다만 깨지는 시점이 다르다.</b>
      *
@@ -277,6 +287,9 @@ class ChatModerationWiringTest {
                 "ChatBanReleaseRecorder", "ReleaseBanService",
                 // 강퇴 집행 캐시의 역경로 — 정본을 읽어 Redis SET 을 다시 세운다.
                 "ReconcileKickListService",
+                // 밴 미러의 역경로 — 유효한 밴 전부를 정본에서 미러로 다시 깐다. 사용자마다 잠금 안에서 읽는
+                // 트랜잭션 빈이 함께 온다(미러 변경 번호가 해제와 같은 순서여야 한다).
+                "ChatBanMirrorSnapshotter", "ReconcileBanMirrorService",
                 // 종료 마커 해제 — 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 해서
                 // 이 앱에 있다. 기록·조회는 리액티브 쪽이고 streaming-app 이 쓴다.
                 "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",

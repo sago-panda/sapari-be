@@ -6,12 +6,14 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.lenient;
 
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -20,10 +22,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.chat.application.port.AccountWithdrawingSource;
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
+import com.sapari.chat.domain.repository.ChatWithdrawalWriteRepository;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -41,10 +45,64 @@ class AccountWithdrawingHandlerTest {
     @Mock
     private ChatSessionManager sessionManager;
 
+    @Mock
+    private ChatWithdrawalWriteRepository withdrawalWriteRepository;
+
+    @Mock
+    private ChatMetrics metrics;
+
     @InjectMocks
     private AccountWithdrawingHandler handler;
 
     private final UUID userId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+    /** 기본은 기록 성공 — 끊기의 축을 재는 칸이 기록을 따로 세우지 않아도 되게 한다. */
+    @BeforeEach
+    void recordSucceedsByDefault() {
+        lenient().when(withdrawalWriteRepository.markWithdrawing(any())).thenReturn(Mono.empty());
+    }
+
+    /**
+     * ⭐ 기록이 끊기보다 먼저 <b>실행</b>된다. 반대면 끊긴 직후의 재접속이 기록보다 먼저 입장 게이트에
+     * 닿아 남은 룸 토큰으로 들어온다. 형제 칸과 같은 이유로 호출 순서가 아니라 실행 순서를 잰다.
+     */
+    @Test
+    @DisplayName("⭐ 탈퇴를 기록한 뒤에 끊는다 — 먼저 끊으면 재접속이 기록보다 앞설 수 있다")
+    void theRecordIsWrittenBeforeTheClose() {
+        List<String> ran = new CopyOnWriteArrayList<>();
+        given(source.withdrawing()).willReturn(Flux.just(userId));
+        given(withdrawalWriteRepository.markWithdrawing(userId))
+                .willReturn(Mono.fromRunnable(() -> ran.add("record")));
+        given(sessionManager.sendToUserEverywhere(any(), any()))
+                .willReturn(Mono.fromRunnable(() -> ran.add("reason")));
+        given(sessionManager.closeUserEverywhere(any(), any()))
+                .willReturn(Mono.fromRunnable(() -> ran.add("close")));
+
+        handler.start();
+
+        assertThat(ran).containsExactly("record", "reason", "close");
+        then(metrics).should(never()).withdrawalRecordFailed();
+    }
+
+    @Test
+    @DisplayName("기록이 실패해도 사유를 보내고 끊는다 — 기록 실패가 사유 전송까지 건너뛰게 하지 않는다")
+    void theReasonAndCloseProceedEvenIfTheRecordFails() {
+        List<String> ran = new CopyOnWriteArrayList<>();
+        given(source.withdrawing()).willReturn(Flux.just(userId));
+        given(withdrawalWriteRepository.markWithdrawing(userId))
+                .willReturn(Mono.error(new RuntimeException("Redis 장애")));
+        given(sessionManager.sendToUserEverywhere(any(), any()))
+                .willReturn(Mono.fromRunnable(() -> ran.add("reason")));
+        given(sessionManager.closeUserEverywhere(any(), any()))
+                .willReturn(Mono.fromRunnable(() -> ran.add("close")));
+
+        handler.start();
+
+        // 뒤의 사유 전송 onErrorResume 이 기록 실패도 받아 주므로 "끊긴다" 만 재면 기록 쪽 복구를 지워도
+        // 통과한다 — 그때 빠지는 것이 사유 프레임이라 그것까지 단언한다.
+        assertThat(ran).containsExactly("reason", "close");
+        then(metrics).should().withdrawalRecordFailed();
+    }
 
     /**
      * ⚠️ <b>{@code inOrder} 로 재지 않는다 — 그것은 호출 순서이고 계약은 실행 순서다.</b>

@@ -12,6 +12,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -23,6 +24,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+
+import com.sapari.chat.domain.repository.ChatBanWriteRepository.MirrorApply;
 
 /**
  * 밴 미러 쓰기가 <b>줄어들지 않는지</b>를 실제 Redis에서 고정한다.
@@ -53,6 +56,9 @@ class ChatBanWriteRedisRepositoryTest {
     private static final Duration WEEK = Duration.ofDays(7);
     private static final Duration MONTH = Duration.ofDays(30);
 
+    /** 정본 잠금이 집어 주는 번호의 대역. 순서대로 부르면 커밋 순서대로 집은 것과 같다. */
+    private static final AtomicLong VERSIONS = new AtomicLong();
+
     private UUID userId;
 
     @BeforeAll
@@ -77,12 +83,16 @@ class ChatBanWriteRedisRepositoryTest {
         return "chat:banned:" + userId;
     }
 
-    private void ban(Duration length) {
-        repository.ban(userId, NOW.plus(length), NOW);
+    private static long nextVersion() {
+        return VERSIONS.incrementAndGet();
     }
 
-    private void banForever() {
-        repository.ban(userId, null, NOW);
+    private MirrorApply ban(Duration length) {
+        return repository.ban(userId, NOW.plus(length), NOW, nextVersion());
+    }
+
+    private MirrorApply banForever() {
+        return repository.ban(userId, null, NOW, nextVersion());
     }
 
     /** 남은 TTL. 만료 없음은 -1, 키 없음은 -2 — Redis의 규약을 그대로 쓴다. */
@@ -165,11 +175,16 @@ class ChatBanWriteRedisRepositoryTest {
                 for (int w = 0; w < writersPerRound; w++) {
                     // 절반은 가장 긴 것, 절반은 가장 짧은 것 — 짧은 쪽이 이기면 최댓값이 깨진다
                     Duration length = (w % 2 == 0) ? longest : shortest;
+                    // 긴 쪽이 더 큰 번호다 — 정본이 늘리기 전용이라 잠금 안에서 나중에 집은 번호가 더
+                    // 짧은 밴을 들 수 없다. 도착 순서는 섞인다: 짧은 쪽이 늦게 오면 번호로, 긴 쪽이
+                    // 늦게 오면 만료 비교로 결과가 같아야 한다.
+                    long version = nextVersion() + (w % 2 == 0 ? writersPerRound : 0);
+                    UUID target = userId;
                     writers.add(pool.submit(() -> {
                         if (!start.await(30, TimeUnit.SECONDS)) {
                             throw new IllegalStateException("시작 래치가 30초 안에 열리지 않았다 — 주 스레드가 countDown 전에 터졌다. 상한이 없으면 이 스레드가 영원히 블록된 채 남아 같은 JVM 의 뒤따르는 테스트를 오염시킨다");
                         }
-                        ban(length);
+                        repository.ban(target, NOW.plus(length), NOW, version);
                         return null;
                     }));
                 }
@@ -218,7 +233,7 @@ class ChatBanWriteRedisRepositoryTest {
     @DisplayName("이미 지난 만료는 아무것도 쓰지 않는다 — 음수 TTL은 거부되고, 정본에 없는 상태다")
     void expiredBanWritesNothing() {
         // when: 만료가 현재보다 과거다
-        repository.ban(userId, NOW.minus(Duration.ofDays(1)), NOW);
+        repository.ban(userId, NOW.minus(Duration.ofDays(1)), NOW, nextVersion());
 
         // then: 키 자체가 생기지 않는다
         assertThat(redisTemplate.hasKey(key())).isFalse();
@@ -231,7 +246,7 @@ class ChatBanWriteRedisRepositoryTest {
         ban(MONTH);
 
         // when
-        repository.ban(userId, NOW.minus(Duration.ofDays(1)), NOW);
+        repository.ban(userId, NOW.minus(Duration.ofDays(1)), NOW, nextVersion());
 
         // then
         assertThat(ttlMillis()).isGreaterThan(MONTH.toMillis() - 2_000L);
@@ -240,7 +255,7 @@ class ChatBanWriteRedisRepositoryTest {
     /**
      * 해제가 쓰기가 아니라 <b>삭제</b>여야 하는 이유를 그대로 잰다.
      *
-     * <p>영구 밴은 TTL 이 없다. 위 {@code EXTEND_ONLY} 스크립트는 {@code PTTL == -1}(만료 없음)에서
+     * <p>영구 밴은 TTL 이 없다. 어댑터의 {@code VERSIONED_EXTEND_ONLY} 스크립트는 {@code PTTL == -1}(만료 없음)에서
      * 즉시 0 을 돌려주므로, 어떤 값을 넘겨도 영구 밴은 <b>줄어들지도 사라지지도 않는다</b>.
      * 그래서 해제는 이 경로를 타면 안 되고, 그 사실이 이 테스트의 내용이다.
      */
@@ -248,14 +263,14 @@ class ChatBanWriteRedisRepositoryTest {
     @DisplayName("⭐ 영구 밴(TTL 없음)도 해제로 지워진다 — 늘리기 전용 쓰기로는 못 지운다")
     void releaseMirrorRemovesAPermanentBan() {
         // given: 만료 없는 영구 밴
-        repository.ban(userId, null, NOW);
+        repository.ban(userId, null, NOW, nextVersion());
         assertThat(redisTemplate.hasKey(key())).isTrue();
         assertThat(ttlMillis())
                 .as("영구 밴은 TTL 이 없어야 한다 — 그래서 스스로 풀리지 않는다")
                 .isNegative();
 
         // when
-        repository.releaseMirror(userId);
+        repository.releaseMirror(userId, nextVersion());
 
         // then
         assertThat(redisTemplate.hasKey(key()))
@@ -270,7 +285,7 @@ class ChatBanWriteRedisRepositoryTest {
         assertThat(redisTemplate.hasKey(key())).isFalse();
 
         // when & then: 여기서 던지면 재시도 경로가 끊긴다
-        repository.releaseMirror(userId);
+        repository.releaseMirror(userId, nextVersion());
         assertThat(redisTemplate.hasKey(key())).isFalse();
     }
 
@@ -281,9 +296,89 @@ class ChatBanWriteRedisRepositoryTest {
         ban(MONTH);
 
         // when
-        repository.releaseMirror(userId);
+        repository.releaseMirror(userId, nextVersion());
 
         // then: 오판정 하나가 최소 7일·최대 1년이던 것이 이 삭제로 끝난다
         assertThat(redisTemplate.hasKey(key())).isFalse();
+    }
+
+    /**
+     * 해제와 적용이 엇갈리는 경쟁 — 늘리기 전용만으로는 못 막던 것이다.
+     *
+     * <p>순서: 강퇴가 잠금 안에서 번호 v1 을 집고 커밋 → 해제가 v2 를 집고 커밋 → 해제의 삭제가 먼저
+     * 미러에 닿음 → 강퇴의 쓰기가 늦게 닿음. 번호가 없으면 키가 없으므로({@code PTTL = -2}) 늦은 쓰기가
+     * 무조건 이기고, 영구 밴이면 스스로 사라지지도 않는다.
+     */
+    @Test
+    @DisplayName("⭐ 해제 뒤에 늦게 온 적용은 거절된다 — 풀린 영구 밴이 미러에 되살아나지 않는다")
+    void aStaleApplyAfterReleaseIsRejected() {
+        // given: 강퇴가 집은 번호와 해제가 집은 번호. 해제가 나중에 잠금을 지났다
+        long kickVersion = nextVersion();
+        long releaseVersion = nextVersion();
+        assertThat(repository.releaseMirror(userId, releaseVersion)).isTrue();
+
+        // when: 강퇴의 쓰기가 늦게 도착한다
+        MirrorApply result = repository.ban(userId, null, NOW, kickVersion);
+
+        // then
+        assertThat(result).isEqualTo(MirrorApply.STALE);
+        assertThat(redisTemplate.hasKey(key()))
+                .as("정본에 밴이 없는데 미러에 생기면 영구 과다 차단이다 — TTL 이 없어 스스로 안 풀린다")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("⭐ 새 밴 뒤에 늦게 온 해제 삭제는 거절된다 — 해제 다음에 걸린 밴을 지우지 않는다")
+    void aStaleReleaseAfterANewerBanIsRejected() {
+        // given: 해제가 v1, 그 뒤 새 강퇴가 v2 로 밴을 걸었고 그 쓰기가 먼저 닿았다
+        long releaseVersion = nextVersion();
+        long banVersion = nextVersion();
+        assertThat(repository.ban(userId, NOW.plus(WEEK), NOW, banVersion)).isEqualTo(MirrorApply.CREATED);
+
+        // when: 해제의 삭제가 늦게 도착한다
+        boolean cleared = repository.releaseMirror(userId, releaseVersion);
+
+        // then
+        assertThat(cleared).isFalse();
+        assertThat(redisTemplate.hasKey(key())).as("정본에 있는 밴이 미러에서 사라지면 집행되지 않는다").isTrue();
+    }
+
+    @Test
+    @DisplayName("해제 뒤에 새로 걸린 밴은 더 큰 번호라 그대로 쓰인다 — 거절은 늦은 것만 겨눈다")
+    void aNewerBanAfterReleaseIsApplied() {
+        repository.releaseMirror(userId, nextVersion());
+
+        assertThat(ban(WEEK)).isEqualTo(MirrorApply.CREATED);
+        assertThat(redisTemplate.hasKey(key())).isTrue();
+    }
+
+    @Test
+    @DisplayName("같은 번호를 두 번 쓰면 두 번째는 거절된다 — 번호는 '본 것보다 큰가' 만 묻는다")
+    void theSameVersionTwiceIsStale() {
+        long version = nextVersion();
+        assertThat(repository.ban(userId, NOW.plus(WEEK), NOW, version)).isEqualTo(MirrorApply.CREATED);
+
+        assertThat(repository.ban(userId, NOW.plus(MONTH), NOW, version)).isEqualTo(MirrorApply.STALE);
+        assertThat(ttlMillis()).isLessThanOrEqualTo(WEEK.toMillis());
+    }
+
+    /** 재적재가 "미러에 없던 밴" 을 세는 근거가 이 구분이다. */
+    @Test
+    @DisplayName("결과가 새로 씀·연장·무변화를 가른다 — 재적재는 새로 쓴 수를 어긋났던 수로 센다")
+    void theResultTellsCreatedFromExtendedFromUnchanged() {
+        assertThat(ban(WEEK)).isEqualTo(MirrorApply.CREATED);
+        assertThat(ban(MONTH)).isEqualTo(MirrorApply.EXTENDED);
+        assertThat(ban(WEEK)).isEqualTo(MirrorApply.UNCHANGED);
+        assertThat(banForever()).isEqualTo(MirrorApply.EXTENDED);
+        assertThat(ban(MONTH)).isEqualTo(MirrorApply.UNCHANGED);
+    }
+
+    @Test
+    @DisplayName("번호 키에는 수명이 있다 — 밴마다 영원히 남는 키를 만들지 않는다")
+    void theVersionKeyExpires() {
+        banForever();
+
+        Long ttl = redisTemplate.getExpire("chat:ban:ver:" + userId, TimeUnit.MILLISECONDS);
+        assertThat(ttl).isPositive().isLessThanOrEqualTo(ChatBanWriteRedisRepository.VERSION_TTL.toMillis());
     }
 }

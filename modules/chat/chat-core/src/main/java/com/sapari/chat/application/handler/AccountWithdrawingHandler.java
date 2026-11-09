@@ -6,10 +6,12 @@ import org.springframework.stereotype.Component;
 
 import com.sapari.global.logging.LogFields;
 import com.sapari.chat.application.port.AccountWithdrawingSource;
+import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatSessionManager;
 import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
+import com.sapari.chat.domain.repository.ChatWithdrawalWriteRepository;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -25,6 +27,11 @@ import reactor.core.publisher.Mono;
  * 욕설)에 <b>계정 상태를 묻는 것이 없다</b>. 그리고 탈퇴 경로가 이미 access 토큰을 폐기하지만
  * ({@code revokeAllSessions}) <b>이미 수립된 WS 세션은 토큰을 다시 보지 않는다</b> — 폐기가 막는
  * 것은 재입장뿐이다. 그래서 탈퇴를 신청한 사람이 열려 있던 세션으로 계속 채팅한다.
+ *
+ * <p><b>그 폐기도 재입장을 다 막지 못한다.</b> 폐기가 막는 것은 새 룸 토큰의 발급이고, <b>이미 받아 둔</b>
+ * 룸 토큰은 만료 전까지 핸드셰이크를 지난다. 그래서 끊기 전에 탈퇴를 기록하고
+ * ({@link ChatWithdrawalWriteRepository}) 입장 게이트가 그 기록을 본다. 순서가 기록 → 끊기인 이유:
+ * 반대로 하면 끊긴 직후의 재접속이 기록보다 먼저 게이트에 닿을 수 있다.
  *
  * <p><b>왜 {@link ChatAccountEventHandler} 에 분기를 더하지 않는가.</b> 그쪽 소스는 chat 이 자기
  * 채널에 발행한 봉투({@code ChatAccountEvent})를 받고, 이 사건은 user 가 자기 채널에 자기 모양으로
@@ -65,6 +72,8 @@ public class AccountWithdrawingHandler {
 
     private final AccountWithdrawingSource source;
     private final ChatSessionManager sessionManager;
+    private final ChatWithdrawalWriteRepository withdrawalWriteRepository;
+    private final ChatMetrics metrics;
 
     private Disposable subscription;
 
@@ -87,20 +96,36 @@ public class AccountWithdrawingHandler {
     }
 
     /**
-     * 사유를 먼저 보내고, 성공하든 실패하든 끊는다. (테스트 진입점)
+     * 탈퇴 기록을 남기고, 사유를 보내고, 성공하든 실패하든 끊는다. (테스트 진입점)
      *
-     * <p>순서가 계약이다. 먼저 끊으면 sink 가 닫혀 뒤이은 사유 프레임이 조용히 사라지고, 다른 탭에서
+     * <p>기록이 끊기보다 앞선다. 끊긴 클라이언트는 곧바로 재접속하는데, 그 사람이 탈퇴 전에 받아 둔 룸
+     * 토큰은 아직 유효하다 — 입장 관문이 그것을 막는 근거가 이 기록이라, 끊고 나서 쓰면 재접속이 기록보다
+     * 먼저 관문에 닿을 수 있다.
+     *
+     * <p>사유와 끊기의 순서도 계약이다. 먼저 끊으면 sink 가 닫혀 뒤이은 사유 프레임이 조용히 사라지고, 다른 탭에서
      * 보고 있던 본인은 <b>아무것도 누르지 않았는데</b> 끊긴 이유를 모른다 — 강퇴·밴 경로가 같은
      * 이유로 같은 순서를 쓴다.
      *
      * <p>사유 전송 실패가 종료를 막지 않는다. 알림 하나 때문에 <b>세션이 안 닫히는</b> 것이 여기서
      * 가장 나쁜 결과다 — 탈퇴한 사람이 그대로 남는다.
      *
-     * <p>이 Pod 에 그 사람의 세션이 없으면 둘 다 아무 일도 하지 않는다. 대부분의 Pod 가 그 경우다.
+     * <p>이 Pod 에 그 사람의 세션이 없으면 사유와 끊기는 아무 일도 하지 않는다. 대부분의 Pod 가 그 경우다.
+     * 기록은 그런 Pod 도 쓴다 — 같은 키·같은 값이라 여러 번 써도 하나다.
      */
     Mono<Void> onWithdrawing(UUID userId) {
         OutboundMessage withdrawing = OutboundMessage.system(SystemMessageCode.WITHDRAWING);
-        return sessionManager.sendToUserEverywhere(userId, withdrawing)
+        // 기록이 실패해도 끊기는 그대로 간다 — 열려 있는 세션을 닫는 것이 이 핸들러의 본업이고, 기록을
+        // 못 남긴 대가(남은 토큰으로의 재입장)는 끊지 않는 대가(열린 세션이 계속 산다)보다 작다. 모든
+        // Pod 가 같은 이벤트로 같은 기록을 쓰므로 한 Pod 에만 난 실패는 다른 Pod 의 쓰기가 덮는다(Redis
+        // 자체가 내려가면 전부 실패하고, 그때 남는 창이 남은 룸 토큰 수명이다).
+        return withdrawalWriteRepository.markWithdrawing(userId)
+                .onErrorResume(e -> {
+                    // 로그를 솎지 않는 이유: 탈퇴 한 건에 Pod 마다 한 번 돈다(건당 호출되는 전송 경로와 다르다).
+                    metrics.withdrawalRecordFailed();
+                    log.error("탈퇴 기록 실패 — 남은 룸 토큰으로 재입장할 수 있다. 끊기는 그대로 진행한다", e);
+                    return Mono.empty();
+                })
+                .then(sessionManager.sendToUserEverywhere(userId, withdrawing))
                 .onErrorResume(e -> {
                     log.warn("탈퇴 사유 전송 실패 — 종료는 그대로 진행한다", e);
                     return Mono.empty();

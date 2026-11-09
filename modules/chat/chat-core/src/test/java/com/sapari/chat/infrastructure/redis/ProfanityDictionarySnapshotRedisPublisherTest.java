@@ -3,6 +3,9 @@ package com.sapari.chat.infrastructure.redis;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.OptionalLong;
@@ -30,6 +33,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.sapari.chat.application.port.ProfanityDictionarySnapshot;
+import com.sapari.global.time.TimeProvider;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -67,13 +71,21 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
     private static final String VERSION = "chat:dict:version";
     private static final String CHANNEL = "chat:dict:changed";
 
+    /**
+     * 발행 시각 하한이 0 인 시계. 이 클래스의 칸 대부분은 번호를 <b>기준 + 1</b> 로 단언한다 —
+     * 시각 하한은 아래 두 칸이 따로 잰다. 실제 시계를 쓰면 모든 번호가 지금 시각이 된다.
+     * 이 시계에서는 기준 0 의 재시작이 v1 이다 — 아래 칸들이 적는 v1 은 이 시계의 값이고, 운영에서는
+     * 그 자리가 발행 시각이라 함대가 든 번호와 겹치지 않는다({@link #losingBothKeysDoesNotReuseAVersion}).
+     */
+    private static final TimeProvider AT_EPOCH = new TimeProvider(Clock.fixed(Instant.EPOCH, ZoneOffset.UTC));
+
     @BeforeAll
     static void startTemplate() {
         connectionFactory = new LettuceConnectionFactory(redis.getHost(), redis.getFirstMappedPort());
         connectionFactory.afterPropertiesSet();
         redisTemplate = new StringRedisTemplate(connectionFactory);
         redisTemplate.afterPropertiesSet();
-        publisher = new ProfanityDictionarySnapshotRedisPublisher(redisTemplate);
+        publisher = new ProfanityDictionarySnapshotRedisPublisher(redisTemplate, AT_EPOCH);
     }
 
     @AfterAll
@@ -152,6 +164,40 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
         // 본문의 버전도 같이 올라간다 — 두 값이 어긋나 보이면 주기 확인이 틀린 판단을 한다.
         assertThat(ProfanityDictionarySnapshotCodec.decode(
                 redisTemplate.opsForValue().get(SNAPSHOT)).version()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("⭐ 두 키를 함께 잃어도 번호가 재사용되지 않는다 — 같은 번호면 받는 쪽이 내용이 달라도 건너뛴다")
+    void losingBothKeysDoesNotReuseAVersion() {
+        // given: 실제 시각대의 발행 하나. 받는 쪽 Pod 은 이 번호를 처리했다
+        long t = 1_800_000_000_000L;
+        long processed = publisherAt(t).publishIfUnchanged(0L, ordered("시발"), Set.of()).orElseThrow();
+        assertThat(processed).as("기준 0 + 1 보다 시각이 크다").isEqualTo(t);
+
+        // when: FLUSHDB · 옛 RDB 복원 · 낡은 레플리카 페일오버 — 두 키가 함께 사라진 뒤 새 사전이 나간다
+        redisTemplate.delete(List.of(SNAPSHOT, VERSION));
+        long next = publisherAt(t + 60_000).publishIfUnchanged(0L, ordered("지랄"), Set.of()).orElseThrow();
+
+        // then: 시각 하한이 없으면 1 이다. 그 번호를 처리한 Pod 이 있으면 지랄을 영영 안 받는다
+        assertThat(next).isNotEqualTo(processed).isGreaterThan(processed);
+    }
+
+    @Test
+    @DisplayName("같은 밀리초 안의 연속 발행도 번호가 오른다 — 하한은 기준 + 1 을 내리지 않는다")
+    void publishesWithinOneMillisecondStillAdvance() {
+        long t = 1_800_000_000_000L;
+        ProfanityDictionarySnapshotRedisPublisher frozen = publisherAt(t);
+
+        long first = frozen.publishIfUnchanged(frozen.currentVersion(), ordered("시발"), Set.of()).orElseThrow();
+        long second = frozen.publishIfUnchanged(frozen.currentVersion(), ordered("지랄"), Set.of()).orElseThrow();
+
+        assertThat(first).isEqualTo(t);
+        assertThat(second).isEqualTo(t + 1);
+    }
+
+    private static ProfanityDictionarySnapshotRedisPublisher publisherAt(long epochMillis) {
+        return new ProfanityDictionarySnapshotRedisPublisher(redisTemplate,
+                new TimeProvider(Clock.fixed(Instant.ofEpochMilli(epochMillis), ZoneOffset.UTC)));
     }
 
     /**
@@ -798,7 +844,7 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
         Mockito.doReturn(true).when(racing).hasKey(SNAPSHOT);
         Mockito.doReturn(true).when(racing).hasKey(VERSION);
         ProfanityDictionarySnapshotRedisPublisher racingPublisher =
-                new ProfanityDictionarySnapshotRedisPublisher(racing);
+                new ProfanityDictionarySnapshotRedisPublisher(racing, AT_EPOCH);
 
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
@@ -907,11 +953,9 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
      * ⭐ <b>경계 칸이 조용하지 않다.</b>
      *
      * <p>이 칸의 결함은 번호 선택이 아니라 <b>전 경로 무음</b>이었다 — 발행 200 · 함대 미집행 ·
-     * 로그 0줄. 쓰는 번호를 "읽히는 값" 으로 바꿨어도 남는 위험이 하나 있다(함대가 이미 1 을
-     * 들고 있으면 그 v1 을 건너뛴다). 그 위험이 남는 이유는 <b>"버전만 비교한다" 는 선택</b>이고
-     * (받는 쪽은 본문을 손에 들고 있다) 휘발 저장 때문이 아니다 — 그 축과 가격은
-     * {@code modules/chat/AGENTS.md} 에 있다. 이 자리에서 할 수 있는 것은 <b>보이게</b> 만드는
-     * 것이다.
+     * 로그 0줄. 다음 번호는 발행 시각 하한이라 함대가 든 번호와 겹치지 않지만
+     * ({@link #losingBothKeysDoesNotReuseAVersion}), 키가 사라졌거나 오염됐다는 사실은 여전히
+     * <b>보이게</b> 만든다.
      */
     @Test
     @DisplayName("⭐ 기준이 0 으로 떨어지면 WARN 이 남는다 — 이 칸이 무음이던 것이 결함이었다")
@@ -930,12 +974,12 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                     .filter(event -> event.getLevel() == Level.WARN)
                     .map(ILoggingEvent::getFormattedMessage)
                     .toList())
-                    .as("키가 있는데 기준이 0 이면 다음 발행이 v1 에서 다시 시작한다 — 조용하면 "
-                            + "함대가 그것을 건너뛰어도 아무도 모른다")
+                    .as("키가 있는데 기준이 0 이다 — 조용하면 키가 사라졌거나 오염된 것을 아무도 모른다")
                     .anySatisfy(message -> assertThat(message)
                             // 사유 — "기여 없음" 과 "값 0" 을 뭉개면 정상 값 0 에도 거짓 사유가 붙는다.
                             .contains("기준이 0 으로 떨어졌다")
-                            .contains("v1 에서 다시 시작")
+                            .as("다음 번호가 어떻게 정해지는지가 없으면 당직자가 함대 분열을 의심한다")
+                            .contains("이전 번호와 겹치지 않는다")
                             .as("어느 키가 왜 기준이 못 됐는지가 없으면 당직자가 둘을 다 뒤진다")
                             .contains("읽히지만 +1 을 쌓으면")
                             // 확인 — 적용 성공은 받는 쪽 INFO 로 남으므로 그 부재가 판정이다.
@@ -944,11 +988,10 @@ class ProfanityDictionarySnapshotRedisPublisherTest {
                             // 그 INFO 와 맞춰 보라고 지시하고 있었다.
                             .as("확인 방법이 틀리면 당직자가 없는 줄을 찾다가 '확인했다' 로 닫는다")
                             .contains("갈아 끼웠다")
-                            // 복구 — 두 키 DEL 은 교착을 재생산한다(실측: 또 v1 → 또 건너뛴다).
-                            // 실효 복구는 같은 쓰기를 한 번 더 보내는 것이다(기준 1 → v2).
-                            .as("지시를 그대로 따르면 그 상태가 풀려야 한다 — DEL 은 v1 을 다시 쓴다")
-                            .contains("한 번 더 보낸다")
-                            .doesNotContain("두 키를 지워"));
+                            // 한때 이 줄이 "같은 쓰기를 한 번 더 보낸다" 를 복구로 지시했다 — 시각 하한
+                            // 전에는 재시작이 v1 이라 함대가 1 이면 건너뛰었기 때문이다. 지금은
+                            // 그 교착이 없어 지시가 필요 없다.
+                            .doesNotContain("한 번 더 보낸다"));
         } finally {
             logger.detachAppender(appender);
             appender.stop();

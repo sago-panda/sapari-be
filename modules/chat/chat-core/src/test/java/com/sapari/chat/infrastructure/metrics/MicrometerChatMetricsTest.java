@@ -55,9 +55,10 @@ class MicrometerChatMetricsTest {
         metrics.rateLimitDegraded(RateLimitDegradation.LOCAL_WINDOW);
         metrics.deliveryDropped(DeliveryStage.SESSION_EMIT_CONTENTION);
         metrics.sessionCut(SessionCutReason.LIFETIME);
-        // 태그가 없는 둘도 같이 센다 — 손열거라 미터를 더할 때 여기가 같이 늘지 않으면 그 미터의
+        // 태그가 없는 셋도 같이 센다 — 손열거라 미터를 더할 때 여기가 같이 늘지 않으면 그 미터의
         // safe() 누락이 아무 칸에도 안 걸린다(실측: persistTimedOut 이 그 상태로 들어왔다).
         metrics.dictionaryFastPathLost();
+        metrics.withdrawalRecordFailed();
         metrics.persistTimedOut(PersistStage.WRITE);
 
         // then
@@ -67,6 +68,7 @@ class MicrometerChatMetricsTest {
                 .counter().count()).isEqualTo(1);
         assertThat(registry.get("chat.session.cut").tags("reason", "lifetime")
                 .counter().count()).isEqualTo(1);
+        assertThat(registry.get("chat.withdrawal.record.failed").counter().count()).isEqualTo(1);
     }
 
     /**

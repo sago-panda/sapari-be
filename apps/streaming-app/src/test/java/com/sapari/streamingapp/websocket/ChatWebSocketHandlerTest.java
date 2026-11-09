@@ -340,6 +340,40 @@ class ChatWebSocketHandlerTest {
     }
 
     /**
+     * ⭐ 마지막으로 보낸 시청자 수를 입장 ROOM_INFO 를 <b>보낸 뒤</b> 지운다.
+     *
+     * <p>먼저 지우면 그 사이에 낀 회차가 기록을 남기고, 캐시를 거친 입장 수가 그 뒤에 도착해 화면에 남는다.
+     * 호출 순서가 아니라 실행 순서가 계약이라 스텁이 실행될 때 이름을 적는다.
+     */
+    @Test
+    @DisplayName("⭐ 입장 ROOM_INFO 를 보낸 뒤에 마지막 보낸 수를 지운다 — 먼저 지우면 낀 회차가 캐시 수를 고정한다")
+    void the_last_pushed_count_is_forgotten_after_the_entry_room_info() {
+        List<String> ran = new CopyOnWriteArrayList<>();
+        WebSocketSession session = mock(WebSocketSession.class);
+        given(session.getId()).willReturn("s1");
+        given(session.receive()).willReturn(Flux.never());
+        given(session.send(any())).willReturn(Mono.never());
+        given(session.close(any())).willReturn(Mono.empty());
+        given(registry.register(eq("s1"), any())).willReturn(Mono.empty());
+        given(registry.getActiveCount(roomId)).willReturn(Mono.just(1L));
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.fromRunnable(() -> ran.add("entry")));
+        org.mockito.BDDMockito.willAnswer(inv -> ran.add("forget")).given(registry).forgetLastPushedCount(roomId);
+        given(registry.outboundFrames("s1")).willReturn(Flux.never());
+        given(registry.terminationSignal("s1")).willReturn(Mono.never());
+        given(registry.unregister(roomId, "s1")).willReturn(Mono.empty());
+        given(subscriber.subscribeRoom(roomId)).willReturn(() -> { });
+        ChatSession chatSession =
+                new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        Disposable running = handler.runSession(session, chatSession).subscribe();
+        try {
+            assertThat(ran).containsExactly("entry", "forget");
+        } finally {
+            running.dispose();
+        }
+    }
+
+    /**
      * ⭐ 죽은 자리 수거가 <b>배선돼 있는지</b> — 등록보다 먼저, 핸들러의 기한으로 불리는지.
      *
      * <p>수거 자체는 {@code SessionAdmissionCapTest} 가 네 건으로 고정한다. 그런데 그 보장은

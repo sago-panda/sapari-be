@@ -622,6 +622,33 @@ class ChatBanStateRepositoryImplTest {
         assertThat(kickLogs.countConfirmingKickersSince(userId, since)).isZero();
     }
 
+    @Test
+    @DisplayName("미러 변경 번호는 부를 때마다 커진다 — 미러가 '본 것보다 큰가' 로 늦은 쓰기를 거절하는 근거다")
+    void changeVersionsStrictlyIncrease() {
+        long first = repository().nextChangeVersion();
+        long second = repository().nextChangeVersion();
+
+        assertThat(second).isGreaterThan(first);
+    }
+
+    @Test
+    @DisplayName("재적재 입력은 유효한 밴만이다 — 영구·남은 밴은 들고 만료된 밴은 뺀다")
+    void activeUserIdsAreTheSameSetAsFindActive() {
+        // given
+        UUID permanent = UUID.randomUUID();
+        UUID timed = UUID.randomUUID();
+        UUID expired = UUID.randomUUID();
+        repository().extendOrCreate(new ChatBan(permanent, SYSTEM, null, NOW.minus(Duration.ofDays(1))));
+        repository().extendOrCreate(new ChatBan(timed, SYSTEM, NOW.plus(Duration.ofDays(3)), NOW.minus(Duration.ofDays(4))));
+        repository().extendOrCreate(new ChatBan(expired, SYSTEM, NOW.minus(Duration.ofDays(1)), NOW.minus(Duration.ofDays(8))));
+
+        // when
+        List<UUID> active = repository().findActiveUserIds(NOW);
+
+        // then: 다른 테스트가 남긴 행이 있을 수 있어 포함 관계로 본다
+        assertThat(active).contains(permanent, timed).doesNotContain(expired);
+    }
+
     /**
      * {@code chat_ban_release} 의 가장 최근 기준선.
      *

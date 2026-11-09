@@ -389,6 +389,23 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
+     * 입장 ROOM_INFO 를 보낸 <b>뒤</b> 부른다 — 그 방의 마지막으로 보낸 수를 지워 다음 회차가 수가 같아도
+     * 한 번 보내게 한다. 입장 때 받은 수는 캐시를 거친 값이라 지금 방의 수와 다를 수 있다.
+     *
+     * <p>등록 안에서 지우면 안 되는 이유: 등록과 입장 ROOM_INFO 사이에 회차가 끼면 그 회차가 맞는 수를
+     * 보내고 기록한 뒤 캐시의 수가 <b>나중에</b> 도착한다. 다음 회차는 기록과 같은 수라 건너뛰고, 틀린 수가
+     * 인원이 다시 변할 때까지 남는다. 보낸 뒤에 지우면 그 사이에 낀 회차의 기록도 함께 지워진다.
+     *
+     * <p>순서를 닫는 것은 둘이다. 회차가 기록({@code lastPushedCount.put})을 보내기 <b>전에</b> 하므로, 낀 회차가
+     * 있었다면 이 지우기 전에 이미 기록이 있다. 그리고 같은 세션으로의 전송은 {@code emitSerially} 로 직렬이라
+     * 입장 프레임 뒤에 쌓인 회차 프레임이 앞지르지 못한다. 입장 프레임이 경합으로 버려져도 지우기는 돌아
+     * 다음 회차가 보낸다 — 실패가 안전한 쪽으로 난다.
+     */
+    void forgetLastPushedCount(UUID roomId) {
+        lastPushedCount.remove(roomId);
+    }
+
+    /**
      * 로컬 세션이 있는 방마다 시청자 수를 다시 읽고, <b>변했으면</b> {@code ROOM_INFO} 를 다시 보낸다.
      *
      * <p>지금까지 그 수는 입장 시 1회뿐이라 <b>고정 스냅샷</b>이었다 — 앞 작업이 좀비 항목을 걷어내
@@ -400,7 +417,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * ⚠️ 그래도 <b>프론트 계약 추가</b>다 — "입장 시 1회만" 이 그 문서에 명시돼 있으니 함께 고쳐야 한다.
      *
      * <p><b>변했을 때만 보낸다.</b> 매 회차 뿌리면 조용한 방도 세션 수만큼의 프레임을 계속 쓴다 —
-     * 큰 방에서는 그게 이 기능의 비용 전부가 된다.
+     * 큰 방에서는 그게 이 기능의 비용 전부가 된다. 예외는 마지막으로 보낸 수가 없을 때(이 Pod 의 첫
+     * 회차, 또는 그 뒤 누가 들어와 {@code register} 가 지운 뒤)이고 그때는 수가 같아도 한 번 보낸다.
+     * 입장이 잦은 방은 대개 인원도 같이 변해 어차피 보내므로, 이 예외가 더하는 비용은 작다.
      *
      * <p><b>수를 모를 때는 보내지 않는다.</b> {@code activeCount} 는 null 로 "모른다" 를 뜻할 수 있는데
      * (조회 실패), 그걸 갱신으로 보내면 <b>보이던 숫자가 사라진다</b>. 입장 시의 "모름" 과 다른 상황이다.
@@ -432,10 +451,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
                         lastPushedCount.remove(roomId);
                         return Mono.<Void>empty();
                     }
-                    if (previous == null || previous.equals(count)) {
-                        // previous == null 은 이 Pod 가 그 방을 처음 보는 회차다. 보내지 않는다 —
-                        // 입장 시 핸들러가 이미 ROOM_INFO 를 보냈고 그것이 기준선이다. 여기서 또
-                        // 보내면 방마다 한 번씩 전원에게 같은 숫자가 중복으로 간다.
+                    if (count.equals(previous)) {
+                        // previous == null 은 보낸다 — 이 Pod 가 그 방을 처음 보는 회차이거나, 그 뒤에 누가
+                        // 들어와 입장 ROOM_INFO 를 받은 뒤 값이 지워진 회차다(forgetLastPushedCount). 입장 ROOM_INFO 는 기준선이 못 된다: 캐시를
+                        // 거친 값이라 이 회차의 수와 다를 수 있고, 세션마다 들어온 시각이 달라 방 하나에
+                        // 기준선이 하나로 정해지지도 않는다. 한때 null 을 건너뛰었는데, 그러면 입장 때 받은
+                        // 수가 틀렸을 때 인원이 다시 변할 때까지 그 숫자가 화면에 남았다.
                         return Mono.empty();
                     }
                     // 뷰 둘을 미리 만들어 세션마다 고르기만 한다. 세션마다 새로 만들면 같은 내용인
@@ -743,7 +764,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ local.put 사이에
         // 할당이 없다. 대가는 거부 1건마다 버려지는 아웃바운드 큐 하나(256슬롯, 약 2.3KB)이고,
         // 거부 경로가 남용 경로라 공짜가 아니다 — 다만 그 1건은 이미 WS 핸드셰이크와 토큰 검증과
-        // 입장 게이트의 Redis 왕복 셋을 쓴 뒤다.
+        // 입장 게이트의 Redis 왕복 넷을 쓴 뒤다.
         LocalSession pending = new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(
                         Queues.<OutboundFrame>get(OUTBOUND_BUFFER_SIZE).get()),
@@ -1366,9 +1387,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>계정 상태는 축이 갈린다.</b> 역할은 live DB 가 아니라 <b>access 토큰 claims</b> 에서 온다.
      * 탈퇴·로그아웃은 세션을 폐기하고({@code JwtTokenLifecycle.revoke}/{@code revokeAll}) live-app 의
-     * {@code TokenRevocationFilter} 가 그것을 조회하므로, 그 사람은 <b>재접속에서 토큰을 받지 못한다</b>
-     * — 즉 반영 상한이 이 수명 하나로 줄었다(한때 여기에 "이 수명 + access 잔여 TTL" 이라 적혀 있었는데,
-     * 그건 live-app 이 폐기를 보지 않던 때의 값이다).
+     * {@code TokenRevocationFilter} 가 그것을 조회하므로, 그 사람은 재접속에서 <b>새</b> 토큰을 받지 못한다.
+     * 다만 <b>이미 받아 둔</b> 룸 토큰은 만료까지 핸드셰이크를 지나므로, 로그아웃의 반영 상한은 "그 토큰의 잔여
+     * TTL 안에 다시 들어온 세션의 수명" 까지다. 한때 여기에 "반영 상한이 이 수명 하나로 줄었다" 고 적혀 있었는데 받아 둔 토큰을
+     * 빠뜨린 문장이었고, 그 전에는 "이 수명 + access 잔여 TTL" 이었다(live-app 이 폐기를 보지 않던 때).
      *
      * <p>⚠️ <b>역할 강등은 다르다.</b> 그 경로가 토큰을 폐기하지 않으면 폐기 조회가 집지 못한다 —
      * 지금은 역할을 바꾸는 쓰기 경로가 이 저장소에 아예 없다({@code UserEntity} 정적 팩터리 둘뿐).

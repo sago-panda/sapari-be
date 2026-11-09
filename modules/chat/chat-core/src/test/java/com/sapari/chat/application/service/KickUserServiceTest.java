@@ -12,6 +12,7 @@ import org.springframework.dao.QueryTimeoutException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.inOrder;
@@ -42,6 +43,7 @@ import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.domain.model.VersionedBan;
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatMessageEvidence;
 import com.sapari.chat.domain.model.ChatRole;
@@ -87,6 +89,8 @@ class KickUserServiceTest {
     private KickUserService service;
 
     private static final Instant NOW = Instant.parse("2026-09-05T00:00:00Z");
+    /** 리코더가 잠금 안에서 집었다고 치는 번호 — 서비스가 그것을 그대로 미러에 싣는지를 본다. */
+    private static final long BAN_VERSION = 17L;
 
     private static final UUID SYSTEM = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
@@ -257,8 +261,8 @@ class KickUserServiceTest {
         void publishesWhenABanIsInEffect() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any())).willReturn(Optional.of(
-                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+            given(kickRecorder.record(any())).willReturn(Optional.of(new VersionedBan(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW), BAN_VERSION)));
 
             // when
             service.kick(ownerKick());
@@ -286,8 +290,8 @@ class KickUserServiceTest {
         void publishesAfterTheEnforcingWrites() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any())).willReturn(Optional.of(
-                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW)));
+            given(kickRecorder.record(any())).willReturn(Optional.of(new VersionedBan(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW), BAN_VERSION)));
 
             // when
             service.kick(ownerKick());
@@ -298,6 +302,24 @@ class KickUserServiceTest {
             order.verify(kickWriteRepository).register(roomId, targetId);
             order.verify(kickEventPublisher).publishKicked(roomId, targetId);
             order.verify(accountEventPublisher).publishBanned(targetId);
+        }
+
+        @Test
+        @DisplayName("⭐ 미러가 늦은 번호로 거절한 밴은 알리지 않는다 — 해제가 지나간 밴으로 세션을 끊지 않는다")
+        void aBanTheMirrorRejectedAsStaleIsNotPublished() {
+            // given: 기록이 커밋된 뒤 해제가 끼어들어 미러를 먼저 지웠다
+            givenHappyPath();
+            given(kickRecorder.record(any())).willReturn(Optional.of(new VersionedBan(
+                    new ChatBan(targetId, SYSTEM, NOW.plus(Duration.ofDays(7)), NOW), BAN_VERSION)));
+            given(banWriteRepository.ban(any(), any(), any(), anyLong()))
+                    .willReturn(ChatBanWriteRepository.MirrorApply.STALE);
+
+            // when
+            service.kick(ownerKick());
+
+            // then: 강퇴 자체는 그대로 성립하고, 밴 발행만 빠진다
+            verify(kickWriteRepository).register(roomId, targetId);
+            verify(accountEventPublisher, never()).publishBanned(any());
         }
     }
 
@@ -524,7 +546,7 @@ class KickUserServiceTest {
             service.kick(ownerKick());
 
             // then
-            verify(banWriteRepository, never()).ban(any(), any(), any());
+            verify(banWriteRepository, never()).ban(any(), any(), any(), anyLong());
         }
 
         @Test
@@ -533,14 +555,14 @@ class KickUserServiceTest {
             // given
             Instant expiry = NOW.plus(Duration.ofDays(7));
             givenHappyPath();
-            given(kickRecorder.record(any())).willReturn(Optional.of(
-                    new ChatBan(targetId, UUID.randomUUID(), expiry, NOW)));
+            given(kickRecorder.record(any())).willReturn(Optional.of(new VersionedBan(
+                    new ChatBan(targetId, UUID.randomUUID(), expiry, NOW), BAN_VERSION)));
 
             // when
             service.kick(ownerKick());
 
             // then
-            verify(banWriteRepository).ban(targetId, expiry, NOW);
+            verify(banWriteRepository).ban(targetId, expiry, NOW, BAN_VERSION);
         }
 
         /**
@@ -552,14 +574,14 @@ class KickUserServiceTest {
         void manualPermanentBanHasNoExpiry() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any())).willReturn(Optional.of(
-                    new ChatBan(targetId, UUID.randomUUID(), null, NOW)));
+            given(kickRecorder.record(any())).willReturn(Optional.of(new VersionedBan(
+                    new ChatBan(targetId, UUID.randomUUID(), null, NOW), BAN_VERSION)));
 
             // when
             service.kick(ownerKick());
 
             // then
-            verify(banWriteRepository).ban(targetId, null, NOW);
+            verify(banWriteRepository).ban(targetId, null, NOW, BAN_VERSION);
         }
 
         @Test
@@ -567,8 +589,8 @@ class KickUserServiceTest {
         void mirrorPrecedesEnforcement() {
             // given
             givenHappyPath();
-            given(kickRecorder.record(any())).willReturn(Optional.of(
-                    new ChatBan(targetId, UUID.randomUUID(), NOW.plus(Duration.ofDays(7)), NOW)));
+            given(kickRecorder.record(any())).willReturn(Optional.of(new VersionedBan(
+                    new ChatBan(targetId, UUID.randomUUID(), NOW.plus(Duration.ofDays(7)), NOW), BAN_VERSION)));
 
             // when
             service.kick(ownerKick());
@@ -577,7 +599,7 @@ class KickUserServiceTest {
             InOrder order = inOrder(kickRecorder, banWriteRepository,
                     kickWriteRepository, kickEventPublisher);
             order.verify(kickRecorder).record(any());
-            order.verify(banWriteRepository).ban(any(), any(), any());
+            order.verify(banWriteRepository).ban(any(), any(), any(), anyLong());
             order.verify(kickWriteRepository).register(roomId, targetId);
             order.verify(kickEventPublisher).publishKicked(roomId, targetId);
         }

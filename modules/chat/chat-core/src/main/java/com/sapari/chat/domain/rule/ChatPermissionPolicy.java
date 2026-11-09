@@ -142,6 +142,17 @@ public final class ChatPermissionPolicy {
     }
 
     /**
+     * 밴 미러를 정본에서 다시 깔 수 있는가 — <b>ADMIN 만이다.</b>
+     *
+     * <p>{@link #canReconcileKickList}와 근거가 같다 — 입력이 정본이라 과다 차단을 새로 만들지 못하고,
+     * 필요하다는 신호(미러 유실)를 읽는 사람이 플랫폼 운영자다. 그래도 합치지 않는 것은 대상이 다르기
+     * 때문이다: 그쪽은 방 하나, 이쪽은 플랫폼의 모든 밴이라 근거가 갈릴 날이 따로 온다.
+     */
+    public boolean canReconcileBanMirror(ChatRole actorRole) {
+        return actorRole == ChatRole.ADMIN;
+    }
+
+    /**
      * 욕설 사전을 고칠 수 있는가 — <b>ADMIN 만이다.</b>
      *
      * <p>위 둘과 값이 같고 <b>이유는 또 다르다.</b> 이쪽 근거는 <b>영향 범위</b>다. 강퇴와 밴은

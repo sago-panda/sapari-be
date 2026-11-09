@@ -18,6 +18,9 @@ public class EntryDeniedException extends RuntimeException {
         BANNED,
         ROOM_ENDED,
 
+        /** 탈퇴를 신청했다 — 이미 받아 둔 룸 토큰으로 다시 들어오려 했다. 영구다(재접속하지 않는다). */
+        WITHDRAWING,
+
         /**
          * 같은 (유저, 방)의 동시 세션 상한 초과. 모더레이션이 아니라 남용 상한이다 —
          * {@code ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM} 필드에 근거가 적혀 있다

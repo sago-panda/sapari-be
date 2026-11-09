@@ -2,7 +2,7 @@
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
 ✅ connect / send / fan-out / room-end / kick + ban escalation / history (VOD) / reverse paths —
-ban release, kick-list reconcile, end-marker clear, dictionary propagation + admin API
+ban release, kick-list reconcile, ban-mirror reconcile, end-marker clear, dictionary propagation + admin API
 (REST host: **live-app**). Run `./gradlew :modules:chat:chat-core:test`.
 
 ## One module, two stacks — the rule that governs everything else
@@ -56,6 +56,7 @@ There is still no fail-closed path in chat.
 | room-ended marker (entry + send re-check) | allow | ended-room blocking |
 | kick set | allow | kick enforcement |
 | ban key | allow | ban enforcement |
+| withdrawal record | allow | re-entry block on a pre-withdrawal room token |
 | rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
 | session HASH register / viewer count | allow | count accuracy only |
 
@@ -88,11 +89,7 @@ application-layer observation on the strength of that rule.
 
 What is true is narrower. `ChatMetrics` is deliberately written in **domain-event** vocabulary, not
 `counter`/`gauge`, so adding a signal means adding a method to that port — not injecting a
-`MeterRegistry`. And one swallow in this module does *not* carry a counter on purpose:
-`ManageFilterWordsService.warnIfCommittedSourceViolates` swallows a **diagnostic** read that runs after
-the write and the publish have both succeeded, and the state it would have reported is caught by the
-next write's `guardSource` as a 409 — an externally visible, structural signal. That is the argument for
-leaving it out; "the layer cannot hold one" is not.
+`MeterRegistry`.
 
 ## Profanity dictionary — the table is the source, the file seeds it, and short words are the trap
 
@@ -167,7 +164,7 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   cannot see "half new" — a whitelist entry only means something next to the profanity it covers.
   The version bump + `SET` + `PUBLISH` are **one Lua script**; split them and you get "version
   advanced, body did not", after which the receiver's poll reads the old body and advances its version
-  anyway. The bump is `current + 1` under a CAS, not an `INCR` — see the next bullet.
+  anyway. The bump is `max(current + 1, publish time ms)` under a CAS, not an `INCR` — see the next bullets.
 - **streaming-app reads.** `ProfanityDictionaryRefreshHandler` merges three triggers (boot, notify,
   poll) into one `concatMap` stream, so only one refresh runs at a time and monotonicity is a field
   comparison. ⚠️ The **poll** is what makes propagation work, not the notification: Redis pub/sub is
@@ -232,42 +229,28 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   cell, and narrowing acceptance only moves the cell. Two earlier attempts failed there (refusing →
   every dictionary write 500s forever; resetting to 1 → the same number carried two different bodies
   and pods holding 1 skipped it in silence).
-- **At the boundary cell the base falls to 0 and the next publish restarts at v1 — and that restart is
-  logged.** v1 *is* readable, which is what separates this from the discarded reset: the reset reused a
-  number *silently*, this one says so. Reaching the cell needs one out-of-band write plus one
-  eviction/`DEL`, so it is not exotic.
-
-  Two things that paragraph used to get wrong. **The residual is not "irreducible with ephemeral
-  state"** — the receiver has the decoded body in hand (`apply(snapshot, …)`), so comparing *content*
-  would close it; what keeps it open is the *choice* to compare only versions. ⚠️ That choice's price
-  is **not** "a trie rebuild per equal-version poll" — an earlier draft said so and it is false in both
-  readings: today the upstream `filter(published != processedVersion)` sits *above* `read()`, so an
-  equal-version poll ends at the version `GET` and builds **nothing**; and a content comparison would
-  still only build when the content differs. The price is the **body transfer plus decode — ~11 KB per
-  pod per poll** (1,078 + 38 bundled entries), which is exactly the cost the version key exists to
-  avoid. Do not read "irreducible" as a reason to stop looking at that axis, and do not price the axis
-  by trie builds. And **the recovery is not "delete both keys"** — that reproduces the
-  deadlock (base 0 → v1 again). Measured: boundary + write → v1 (fleet at 1 skips) → `DEL` both →
-  v1 again → skip again; whereas *re-sending the same ADMIN write* bases on the 1 this publish just
-  wrote → v2 → the fleet applies. Adds are idempotent and publish even when nothing changed, so "send
-  it once more" is the whole procedure. Verify by the receiver's `갈아 끼웠다 … version=` INFO (its
-  absence for the response's `version` is the verdict) — the same check `FilterWordChange.version`'s
-  javadoc already prescribes; the functional check (does the word mask?) is the backup, since there is
-  no dry-run endpoint and it needs a live room.
+- **At the boundary cell the base falls to 0 — and that restart is logged.** Reaching the cell needs one
+  out-of-band write plus one eviction/`DEL`, so it is not exotic. Losing both keys together (`FLUSHDB`, an
+  old RDB restore, a stale-replica failover) lands on the same base 0.
+- **A base of 0 does not reuse a number: the new version is `max(base + 1, publish time in ms)`.** The
+  receiver skips an *equal* version without reading the body, so a reused number meant "different body,
+  never applied" on every pod that held it — before the floor, both-keys-lost restarted at v1 and the
+  recovery had to be "send the same ADMIN write once more". Now the restart starts at the current time,
+  which is above every earlier number (each was at most its own publish time, plus a few within one
+  millisecond). What remains is a clock that moved back past an earlier publish *and* both keys lost.
+  Pinned by `ProfanityDictionarySnapshotRedisPublisherTest.losingBothKeysDoesNotReuseAVersion`.
 - **The config CSV (`chat.profanity.words`) is boot-only and dies at the first swap.** It is *not*
   merged into propagated filters on purpose: merging would make the enforced set differ from the set
   live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps
   while writes passed — the same gate-plane/runtime-plane split this ticket keeps closing. Its lifetime
   is logged at boot so it does not vanish silently; durable changes go through the ADMIN API.
-- **Rule (1) crosses kinds, so two concurrent adds can each pass and still commit a violation**
-  (`rejectUselessWhitelist` tests a whitelist entry against the *word* set). No lock — and the reason is
-  **not** that closing it is expensive: `ChatKickRecorder.record` already shows the cheap shape (advisory
-  lock as the first statement inside `REQUIRES_NEW`, Redis only after it returns), so there would be no
-  external call inside the transaction. The real cost is **one more lock resource**, which
-  `ChatKickRecorder` obliges you to order or prove acyclic. It is left open because the probability is
-  low (same string, both kinds, simultaneously, at human typing rates), the result is recoverable
-  (remove either), and a post-write re-check now logs it against the request that caused it. If any of
-  those three changes — e.g. dictionary writes become automated — revisit it.
+- **Read → check → write runs under one dictionary lock** (`ChatFilterWordWriteRecorder.underWriteLock`:
+  a transaction-scoped advisory lock taken before the reads; publish stays outside). The checks look at
+  both whole sets, so without it two concurrent writes could each pass and commit a combined violation:
+  two removes of the last two profanities empty the table (after which every add is 409 and removal of
+  the last word is refused — no API way out), and rule (1) crosses kinds so the same string added to both
+  kinds at once breaks the whitelist rule. The lock adds a resource; no cycle — only the two dictionary
+  writes take it and they take nothing else.
 - **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
   first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
   set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.
@@ -474,9 +457,11 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 |---|---|---|
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
 | `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
-| `chat:room:{id}:ended` | String | 30m — floor = longest room token, ceiling = blast radius of a false end signal |
+| `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and only this marker stops their sends); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
+| `chat:withdrawing:{userId}` | String | key presence = withdrawal requested; written by **every** streaming pod on `user:account:withdrawing` before it closes that user's sessions, read by `EntryGate`. TTL `chat.withdrawal.record-ttl` (24h) — floor = the remaining life of a room token issued before the withdrawal (`live.room-token.expiration-seconds`, 90s default; chat cannot read it, so no boot check). No cancel path exists today; one that is added must delete this key |
+| `chat:ban:ver:{userId}` | String | highest change version that reached the mirror; 1d TTL (only has to outlive one request's commit→Redis gap). Writes at or below it are rejected |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
 
@@ -692,10 +677,28 @@ three writes as one command: delete the record row, append an **amnesty baseline
 The prescription above said "`DEL` + set" — a reprieve turned out to need only the delete, because the
 mirror's extend-only script returns 0 on a key with no TTL, so a permanent ban cannot be shortened by
 writing at all. Order is **record → mirror**, with the commit in between: the reverse leaves a row that
-the next kick re-mirrors, so the ban *resurrects*. The remaining mismatch is the mirror axis — a kick
-writes the mirror **after** its commit, outside the lock by design, so a release landing in that window
-is undone in the mirror only (over-blocking, repaired by pressing release again; that is why the mirror
-delete must not be gated on the row having existed).
+the next kick re-mirrors, so the ban *resurrects*. The mirror axis — a kick writes the mirror **after** its
+commit, outside the lock by design, so a release landing in that window was undone in the mirror only — is
+closed by a **change version** (SPR-181): kick, release and reconcile each take
+`nextval('live_schema.chat_ban_change_seq')` inside `lockForBanDecision`, carry it to the mirror, and the
+mirror (`chat:ban:ver:{userId}`) rejects anything at or below what it has seen. A rejected kick write
+(`MirrorApply.STALE`) also skips the account `Banned` event. The mirror delete is still not gated on the row
+having existed — a retry takes a fresh version.
+
+**Ban-mirror reconcile** (`PUT /api/v1/chat/bans/mirror`, ADMIN, `ReconcileBanMirrorService`) is the ban
+side of the kick-list reconcile: enforcement is key presence, so a lost key reads as a normal "not banned"
+and no fail-open counter sees it. It walks every active row, re-reads each under the lock with a version,
+and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). `EXTENDED` is not counted: on a mirror
+that agrees with the record, whether the write comes back `EXTENDED` or `UNCHANGED` is set by the difference
+of two unmeasured delays — the kick's TTL is computed from `kickedAt` (before its commit), which makes the
+mirror *longer*, and the reconcile's `now` is read before its own lock and commit, which makes `want` longer.
+Measured by the peer review on redis:7.4 with the production script: 10ms/2ms → `UNCHANGED` 200/200, 10ms/25ms →
+`EXTENDED` 200/200. So a genuinely short mirror and ms-level jitter share that result; the axis carries no
+signal until the jitter bound is known. Every write that is not `STALE` also publishes the account
+ban event, like a kick does — a user who joined while the key was lost keeps an open session otherwise, and
+when a reconcile reaches the mirror ahead of an overlapping kick, the kick's write is `STALE` and the kick
+skips its event, so this one is the only cut. It does not fix the opposite direction (a key with no row) —
+those users cannot be enumerated from the record; release fixes that one.
 
 Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Since
 SPR-165 the window has **two lower bounds**: that 2 years *and the user's most recent ban release*,
@@ -804,8 +807,15 @@ the other's actions too.
 Why the signal is the **request**, not the hard delete: withdrawal is two-phase (status → `WITHDRAWING`
 immediately; hard delete later in batch). The account stops being active at the request, so waiting for the
 delete would leave the whole grace period open. And the request path already calls `revokeAllSessions`, which
-only blocks re-entry — **an established WS session never looks at the token again**, so that revocation and
-this event are different axes.
+stops **new** room tokens being issued once it has run (live-app's `TokenRevocationFilter` checks every
+request, and token issuance — cached or not — sits behind it in the controller, so a cache hit cannot bypass
+it; that is structural, not measured) — **an established WS session never looks at the token again**, so that
+revocation and this event are different axes. The event is published **before** the revocation
+(`requestWithdrawal` publishes after commit, then the caller runs `revokeAllSessions`), so a token can still be
+issued in that gap.
+A room token issued *before* the request is still valid until it expires, and a closed client reconnects at
+once, so the handler first writes `chat:withdrawing:{userId}` and `EntryGate` denies on it (`WITHDRAWING`,
+1008) — fail-open like the ban read.
 
 ⚠️ **There is no backstop for a missed publish**, and there are two ways to miss one: the publish itself
 failing, and **a publish that arrives while the subscription is down** (Pub/Sub keeps nothing, so that window's
@@ -1054,8 +1064,13 @@ count accurate, and nothing could deliver that accurate number to sessions alrea
   ⚠️ It is still a **front-end contract addition**: that guide says "join only", and it has been updated.
 - **Only on change.** Pushing every round costs one frame per session per round forever, which in a large
   room is the entire cost of the feature. A quiet room now costs nothing.
-- **The first round seeds, it does not send.** The join-time `ROOM_INFO` is the baseline; sending again would
-  hand every session in every room one duplicate of a number it already has.
+- **No last-sent value → send, even if unchanged.** That is the pod's first round for the room, or the round
+  after a join (the handler clears the room's last-sent value **after** the join-time `ROOM_INFO` is
+  emitted — clearing it in `register` let a round that ran in between record the right number and the
+  cached one arrive last, so the next round skipped). The join-time `ROOM_INFO` cannot be the
+  baseline: it comes through the 3s count cache, and sessions join at different times, so a room has no
+  single baseline. It used to skip that round, and a wrong join-time number stayed on screen until the count
+  changed again. Busy rooms change count on most joins anyway, so the extra frames are few.
 - **An unknown count is never pushed.** `activeCount` is nullable to mean "don't know", and pushing that as an
   *update* blanks a number the viewer could already see — different from not knowing it at join.
 - **The read bypasses the 3s count cache.** That cache exists to damp a join storm, but this timer's whole job
@@ -1170,6 +1185,7 @@ conditional variant really does fall back to NOOP.
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
 | `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
 | `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
+| `chat.withdrawal.record.failed` | — | a pod could not write `chat:withdrawing:{userId}`; the close still ran, so the pre-withdrawal room token re-enters until it expires |
 
 ⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
 is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged

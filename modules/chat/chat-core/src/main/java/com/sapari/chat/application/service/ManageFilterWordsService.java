@@ -4,7 +4,6 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
 
-import org.springframework.dao.DataAccessException;
 
 import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.command.AddFilterWordCommand;
@@ -73,38 +72,27 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         FilterWordKind kind = parseKind(command.kind());
         String word = fold(command.word());
 
-        Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
-        Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
-        // 변경 전이 이미 어기는가 — 그렇다면 원인은 운영자의 입력이 아니다.
-        guardSource(words, whitelist);
+        // 읽기·검사·쓰기를 사전 쓰기 잠금 아래 한 트랜잭션으로 묶는다 — 검사가 두 집합 전체를 보므로
+        // 잠금이 없으면 동시 쓰기 둘이 각자 통과하고 합집합만 어긴다(ChatFilterWordWriteRecorder javadoc).
+        boolean changed = writeRecorder.underWriteLock(() -> {
+            Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
+            Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
+            // 변경 전이 이미 어기는가 — 그렇다면 원인은 운영자의 입력이 아니다.
+            guardSource(words, whitelist);
 
-        Set<String> nextWords = plus(words, kind == FilterWordKind.PROFANITY ? word : null);
-        Set<String> nextWhitelist =
-                plus(whitelist, kind == FilterWordKind.WHITELIST ? word : null);
-        // 변경 전이 멀쩡했으므로 여기서 떨어지면 차이는 보낸 항목 하나뿐이다.
-        guardRequested(nextWords, nextWhitelist, word);
+            Set<String> nextWords = plus(words, kind == FilterWordKind.PROFANITY ? word : null);
+            Set<String> nextWhitelist =
+                    plus(whitelist, kind == FilterWordKind.WHITELIST ? word : null);
+            // 변경 전이 멀쩡했으므로 여기서 떨어지면 차이는 보낸 항목 하나뿐이다.
+            guardRequested(nextWords, nextWhitelist, word);
 
-        boolean changed = writeRecorder.add(
-                kind, word, command.actorId(), actorRole, timeProvider.now());
-        // ⚠️ 커밋된 집합을 다시 본다. 선검사는 <자기 요청의 결과>만 보는데 규칙 (1)은 두 kind 를
-        // 가로지르므로, 같은 문자열을 서로 다른 kind 에 동시에 넣는 두 요청이 각자 통과하고
-        // 커밋된 합집합만 어길 수 있다(ChatFilterWordWriteRecorder javadoc). 롤백하지 않는다 —
-        // 이미 커밋됐고, 성공한 쓰기에 오류를 돌려주면 누른 사람이 재시도한다. 하는 일은 그
-        // 상태가 <그 요청의 로그에 붙게> 하는 것이다. 다음 쓰기는 guardSource 가 409 로 막고,
-        // 복구는 어긴 둘 중 하나를 제거하는 것이다.
+            return writeRecorder.add(kind, word, command.actorId(), actorRole, timeProvider.now());
+        });
         // 멱등 호출(이미 있던 단어)에도 발행한다 — 건너뛰면 스냅샷이 유실된 상태를 되돌릴
         // 경로가 하나 줄어든다.
         long version = publishOrLogLoss("추가", kind, word.length(), changed, command.actorId());
-        // ⚠️ 감사 로그가 진단 <앞>이다. 진단은 DataAccessException 밖을 다시 던지므로, 뒤에 두면
-        // 쓰기와 발행이 둘 다 성공한 권한 있는 조정 변경이 <누가 무엇을 바꿨는지 한 줄도 없이>
-        // 일반 500 으로 나간다(발행이 성공했으니 publishOrLogLoss 의 ERROR 도 안 찍힌다).
-        // 줄 순서만으로 닫히고 재던지기 성질은 그대로다.
         log.info("사전에 항목을 더했다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
-        // 진단은 발행 <뒤>다. 앞에 두면 이 읽기의 일시 오류가 전파를 잃게 하고, 그래서 삼킴의
-        // 근거를 "올리면 발행을 잃는다" 로 세울 수밖에 없었다. 뒤로 옮기면 그 근거가 필요 없다 —
-        // 쓰기도 발행도 이미 끝났고 남은 것은 응답뿐이다.
-        warnIfCommittedSourceViolates(command.actorId());
         return new FilterWordChange(changed, version);
     }
 
@@ -114,15 +102,18 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
         FilterWordKind kind = parseKind(command.kind());
         String word = fold(command.word());
 
-        Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
-        Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
-        Set<String> nextWords = minus(words, kind == FilterWordKind.PROFANITY ? word : null);
-        Set<String> nextWhitelist =
-                minus(whitelist, kind == FilterWordKind.WHITELIST ? word : null);
-        guardRemoval(nextWords, nextWhitelist);
+        // 추가와 같은 잠금 — 남은 욕설이 둘일 때 둘을 동시에 지우면 각자 "하나가 남는다" 로 통과해
+        // 사전이 빈다.
+        boolean changed = writeRecorder.underWriteLock(() -> {
+            Set<String> words = repository.findWords(FilterWordKind.PROFANITY);
+            Set<String> whitelist = repository.findWords(FilterWordKind.WHITELIST);
+            Set<String> nextWords = minus(words, kind == FilterWordKind.PROFANITY ? word : null);
+            Set<String> nextWhitelist =
+                    minus(whitelist, kind == FilterWordKind.WHITELIST ? word : null);
+            guardRemoval(nextWords, nextWhitelist);
 
-        boolean changed = writeRecorder.remove(
-                kind, word, command.actorId(), actorRole, timeProvider.now());
+            return writeRecorder.remove(kind, word, command.actorId(), actorRole, timeProvider.now());
+        });
         long version = publishOrLogLoss("제거", kind, word.length(), changed, command.actorId());
         log.info("사전에서 항목을 뺐다 — kind={} changed={} version={} actorId={}",
                 kind, changed, version, command.actorId());
@@ -161,59 +152,6 @@ public class ManageFilterWordsService implements ManageFilterWordsUseCase {
                             + "kind={} 항목길이={} changed={} actorId={}",
                     action, kind, wordLength, changed, actorId, e);
             throw e;
-        }
-    }
-
-    /**
-     * 커밋된 정본이 문을 지나는지 본다 — <b>로그만</b> 남긴다.
-     *
-     * <p>⚠️ <b>삼킴에 카운터를 안 달았다 — 못 달아서가 아니다.</b> 한때 이 자리에 "ArchUnit 이
-     * {@code application/} 에 메트릭을 금지하므로 못 갖는다" 고 적었는데 <b>거짓이었다.</b> 그
-     * 규칙(16번)은 {@code io.micrometer..} <b>라이브러리</b>만 막고 javadoc 자신이 "포트를 두라"
-     * 고 적으며, chat 은 그 포트를 이미 갖고 application 에서 쓴다
-     * ({@code application/port/ChatMetrics} → {@code SendChatService} ·
-     * {@code ChatBroadcastSubscriber}).
-     *
-     * <p>안 단 근거는 이것이다 — 이 삼킴의 대상은 쓰기와 발행이 <b>둘 다 성공한 뒤</b>의 진단
-     * 읽기이고, 그것이 알리려던 상태는 다음 쓰기의 {@link #guardSource} 가 409 로 바꿔 밖에서
-     * 보인다. 즉 구조적 신호가 이미 있다. 그래도 세고 싶으면 {@code ChatMetrics} 에 메서드를
-     * 더하는 것이 길이다({@code MeterRegistry} 주입이 아니다).
-     *
-     * <p>선검사를 지나왔는데도 어길 수 있는 이유는 규칙 (1)이 두 kind 를 가로지르기 때문이다
-     * (조합은 {@code ChatFilterWordWriteRecorder} javadoc). 그 상태는 복구 가능하지만
-     * <b>조용하면</b> 운영자가 "사전을 고쳤는데 안 먹는다" 의 원인을 찾을 길이 이 로그뿐이고,
-     * 이 로그가 없으면 아무 데도 없다.
-     */
-    private void warnIfCommittedSourceViolates(UUID actorId) {
-        Set<String> words;
-        Set<String> whitelist;
-        // ⚠️ 이 두 읽기가 try 밖에 있었다. 그때는 호출 위치가 발행 <앞>이라, 여기서 일시 DB
-        // 오류가 나면 <쓰기는 커밋됐고 발행은 안 됐고 응답은 일반 500> 이 됐다 — 진단이 자기가
-        // 알리려던 그 상태를 만드는 모양이다. 지금은 호출이 발행 뒤로 갔고 읽기도 try 안이다.
-        //
-        // 읽기 실패는 여기서 삼킨다. 쓰기도 발행도 끝났으므로 올려서 지키는 것이 없고, 올리면
-        // 완전히 성공한 조치에 500 이 나간다. 어기는지 모르는 상태는 다음 쓰기의 guardSource 가
-        // 409 로 잡는다.
-        //
-        // 잡는 타입을 DataAccessException 으로 좁힌다 — RuntimeException 이었을 때는 이 경로의
-        // NPE 같은 코드 결함까지 WARN 한 줄로 사라졌다. 삼키는 근거("읽기가 일시적으로 실패할
-        // 수 있다")가 덮는 범위와 잡는 범위를 같게 둔다.
-        try {
-            words = repository.findWords(FilterWordKind.PROFANITY);
-            whitelist = repository.findWords(FilterWordKind.WHITELIST);
-        } catch (DataAccessException e) {
-            log.warn("사전 쓰기 뒤 정본 재검사를 하지 못했다 — 읽기가 실패했다. 이 검사는 "
-                            + "진단이므로 쓰기·발행을 막지 않는다. 어기는 상태였다면 다음 쓰기의 "
-                            + "선검사가 409 로 잡는다. actorId={}", actorId, e);
-            return;
-        }
-        try {
-            filterFactory.from(SOURCE_ORIGIN, words, whitelist);
-        } catch (IllegalStateException e) {
-            log.error("사전 쓰기 뒤 정본이 문을 통과하지 못한다 — 동시 쓰기 둘이 각자 선검사를 "
-                            + "지나고 커밋된 합집합만 어긴 경우다. 전 Pod 가 교체를 거부하고 이후 "
-                            + "모든 추가가 409 가 된다 — 어긴 항목 중 하나를 제거해야 풀린다. "
-                            + "actorId={} 사유={}", actorId, e.getMessage());
         }
     }
 

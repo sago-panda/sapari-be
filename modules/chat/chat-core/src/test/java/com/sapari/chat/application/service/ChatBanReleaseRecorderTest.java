@@ -139,4 +139,23 @@ class ChatBanReleaseRecorderTest {
         order.verify(banStateRepository).release(targetUserId, actorId, NOW);
         order.verify(auditLogRepository).append(Mockito.any());
     }
+
+    /**
+     * ⭐ 미러 번호를 <b>잠금 뒤에</b> 집는다. 잠금 앞에서 집으면 같은 사용자의 강퇴와 번호 순서가 커밋
+     * 순서와 갈릴 수 있고, 그러면 미러가 늦은 쪽이 아니라 이른 쪽을 거절한다.
+     */
+    @Test
+    @DisplayName("⭐ 미러 번호는 잠금 안에서 집고 그대로 돌려준다")
+    void theMirrorVersionIsTakenUnderTheLock() {
+        given(banStateRepository.release(targetUserId, actorId, NOW))
+                .willReturn(new Released(true, null, UUID.randomUUID()));
+        given(banStateRepository.nextChangeVersion()).willReturn(99L);
+
+        ChatBanReleaseRecorder.Recorded recorded = recorder().release(targetUserId, actorId, ChatRole.ADMIN, NOW);
+
+        assertThat(recorded.mirrorVersion()).isEqualTo(99L);
+        InOrder order = Mockito.inOrder(banStateRepository);
+        order.verify(banStateRepository).lockForBanDecision(targetUserId);
+        order.verify(banStateRepository).nextChangeVersion();
+    }
 }

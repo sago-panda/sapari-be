@@ -79,6 +79,12 @@ public interface ChatMetrics {
     void subscriptionResubscribed(ChatSubscription subscription);
 
     /**
+     * 탈퇴 신청 기록을 쓰지 못했다 — 그 사람은 탈퇴 전에 받아 둔 룸 토큰이 만료될 때까지 다시 들어올 수
+     * 있다. 끊기는 그대로 진행되므로 사용자 쪽 증상이 없고, 이 수가 유일한 신호다.
+     */
+    void withdrawalRecordFailed();
+
+    /**
      * 아무것도 하지 않는 구현. <b>registry 없이도 뜨는 것이 포트 구현의 기본값이어야 하기 때문</b>이고,
      * 실제 용도는 단위 테스트가 registry 를 세우지 않고 돌게 하는 것이다.
      */
@@ -91,5 +97,6 @@ public interface ChatMetrics {
         @Override public void dictionaryFastPathLost() { }
         @Override public void persistTimedOut(PersistStage stage) { }
         @Override public void subscriptionResubscribed(ChatSubscription subscription) { }
+        @Override public void withdrawalRecordFailed() { }
     };
 }

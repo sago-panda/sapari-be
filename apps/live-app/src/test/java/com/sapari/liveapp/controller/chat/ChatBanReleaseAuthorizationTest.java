@@ -8,6 +8,7 @@ import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -34,6 +36,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import com.sapari.chat.command.ReconcileBanMirrorCommand;
+import com.sapari.chat.port.ReconcileBanMirrorUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
@@ -75,6 +79,9 @@ class ChatBanReleaseAuthorizationTest {
 
     @MockitoBean
     private ReleaseBanUseCase releaseBanUseCase;
+
+    @MockitoBean
+    private ReconcileBanMirrorUseCase reconcileBanMirrorUseCase;
 
     @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
@@ -194,6 +201,32 @@ class ChatBanReleaseAuthorizationTest {
 
         // then: 관문에서 끊겼으므로 서비스까지 가지 않는다
         then(releaseBanUseCase).should(never()).release(any());
+    }
+
+    /** 미러 재적재도 같은 {@code /chat/bans/**} 규칙 아래다 — 경로를 옮기면 그 규칙에서 빠진다. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"USER", "SELLER"})
+    @DisplayName("⭐ 미러 재적재도 관리자만 — 판매자·구매자는 관문에서 끊긴다")
+    void nonAdminIsDeniedAtTheMirrorGate(String role) throws Exception {
+        mockMvc.perform(put("/api/v1/chat/bans/mirror").with(as(role)))
+                .andExpect(status().isForbidden());
+
+        then(reconcileBanMirrorUseCase).should(never()).reconcile(any());
+    }
+
+    @Test
+    @DisplayName("관리자는 미러 재적재에 닿고, 행위자는 인증 주체다")
+    void adminReachesTheMirrorReconcile() throws Exception {
+        given(reconcileBanMirrorUseCase.reconcile(any()))
+                .willReturn(new ReconcileBanMirrorUseCase.ReconcileOutcome(3, 1));
+
+        mockMvc.perform(put("/api/v1/chat/bans/mirror").with(as("ADMIN")))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ReconcileBanMirrorCommand> captor = ArgumentCaptor.forClass(ReconcileBanMirrorCommand.class);
+        then(reconcileBanMirrorUseCase).should().reconcile(captor.capture());
+        assertThat(captor.getValue().actorId()).isEqualTo(PRINCIPAL_ID);
+        assertThat(captor.getValue().actorRole()).isEqualTo("ADMIN");
     }
 
     @Test
