@@ -53,6 +53,11 @@ final class ChatRedisKeys {
         return "chat:ban:ver:" + userId;
     }
 
+    /** 탈퇴 신청 기록. <b>키가 있으면 입장 거부</b>이고 값은 보지 않는다. 수명은 어댑터가 설정에서 받는다. */
+    static String withdrawing(UUID userId) {
+        return "chat:withdrawing:" + userId;
+    }
+
     /**
      * 전파된 욕설 사전 스냅샷 — <b>버전과 두 집합이 이 키 하나에 함께</b> 들어 있다.
      *

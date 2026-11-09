@@ -26,6 +26,7 @@ import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatBanRepository;
+import com.sapari.chat.domain.repository.ChatWithdrawalRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
@@ -40,6 +41,7 @@ class EntryGateTest {
     private ChatKickRepository kickRepository;
     private ChatRoomEndedRepository roomEndedRepository;
     private ChatBanRepository banRepository;
+    private ChatWithdrawalRepository withdrawalRepository;
     private ChatSessionRegistry registry;
     private EntryGate gate;
 
@@ -51,8 +53,12 @@ class EntryGateTest {
         kickRepository = mock(ChatKickRepository.class);
         roomEndedRepository = mock(ChatRoomEndedRepository.class);
         banRepository = mock(ChatBanRepository.class);
+        // 기본은 탈퇴 기록 없음 — 앞선 세 분기를 재는 칸이 네 번째 분기를 따로 세우지 않아도 되게 한다.
+        withdrawalRepository = mock(ChatWithdrawalRepository.class);
+        given(withdrawalRepository.isWithdrawing(any())).willReturn(Mono.just(false));
         registry = mock(ChatSessionRegistry.class);
-        gate = new EntryGate(kickRepository, roomEndedRepository, banRepository, ChatMetrics.NOOP, registry);
+        gate = new EntryGate(kickRepository, roomEndedRepository, banRepository, withdrawalRepository,
+                ChatMetrics.NOOP, registry);
     }
 
     /** 방이 살아있다는 전제 — 종료 검사를 통과시킨다. */
@@ -233,6 +239,59 @@ class EntryGateTest {
 
         // when & then
         StepVerifier.create(gate.verify(member())).expectComplete().verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("⭐ 탈퇴를 신청했으면 거부 — 이미 받아 둔 룸 토큰으로는 다시 못 들어온다")
+    void withdrawing_denied() {
+        // given: 토큰은 유효하고 강퇴·밴도 없다. 남은 것은 탈퇴 기록뿐이다
+        givenRoomAlive();
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+        givenNotBanned();
+        given(withdrawalRepository.isWithdrawing(userId)).willReturn(Mono.just(true));
+
+        // when & then
+        StepVerifier.create(gate.verify(member()))
+                .expectErrorMatches(e -> e instanceof EntryDeniedException ed
+                        && ed.reason() == EntryDeniedException.Reason.WITHDRAWING)
+                .verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("탈퇴 기록 조회 Redis 에러 → fail-open(입장 허용) — 다른 셋과 같은 저울질")
+    void withdrawal_lookup_error_fails_open() {
+        givenRoomAlive();
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+        givenNotBanned();
+        given(withdrawalRepository.isWithdrawing(userId)).willReturn(Mono.error(new RuntimeException("redis down")));
+
+        StepVerifier.create(gate.verify(member())).expectComplete().verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("게스트 → 탈퇴 검사도 건너뛴다")
+    void guest_skips_withdrawal_check() {
+        givenRoomAlive();
+        ChatSession guest = new ChatSession(roomId, userId, ChatRole.GUEST, null, null, false);
+
+        StepVerifier.create(gate.verify(guest)).expectComplete().verify(VERIFY_CEILING);
+
+        then(withdrawalRepository).should(never()).isWithdrawing(any());
+    }
+
+    @Test
+    @DisplayName("밴으로 이미 거부되면 탈퇴는 묻지 않는다 — 앞에서 걸리면 왕복이 줄어든다")
+    void banned_denial_skips_withdrawal_lookup() {
+        givenRoomAlive();
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+        given(banRepository.isBanned(userId)).willReturn(Mono.just(true));
+
+        StepVerifier.create(gate.verify(member()))
+                .expectErrorMatches(e -> e instanceof EntryDeniedException ed
+                        && ed.reason() == EntryDeniedException.Reason.BANNED)
+                .verify(VERIFY_CEILING);
+
+        then(withdrawalRepository).should(never()).isWithdrawing(any());
     }
 
     @Test

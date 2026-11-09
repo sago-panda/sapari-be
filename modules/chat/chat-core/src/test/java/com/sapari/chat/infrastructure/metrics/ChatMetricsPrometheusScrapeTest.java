@@ -48,9 +48,10 @@ class ChatMetricsPrometheusScrapeTest {
     }
 
     @Test
-    @DisplayName("판정 통과 여섯 조합이 모두 스크레이프에 나온다")
+    @DisplayName("판정 통과 여덟 조합이 모두 스크레이프에 나온다")
     void everyPolicyOpenCombinationSurvivesScrape() {
-        // when: 실제로 쓰이는 조합 전부
+        // when: 정책 × 지점 전부. (WITHDRAWING, SEND) 는 오늘 발화하는 자리가 없다 — 탈퇴는 입장에서만
+        // 본다 — 그래도 등록이 거부되지 않는지는 같은 축이라 함께 센다.
         for (ChatPolicy policy : ChatPolicy.values()) {
             for (ChatCheckpoint checkpoint : ChatCheckpoint.values()) {
                 metrics.policyNotEnforced(policy, checkpoint, PolicyReadFailure.UNAVAILABLE);
@@ -61,8 +62,9 @@ class ChatMetricsPrometheusScrapeTest {
         // then: 하나라도 거부됐으면 미터 수가 모자란다
         String scrape = registry.scrape();
         assertThat(registry.find("chat.policy.open").counters())
-                .as("등록이 조용히 거부되면 개수가 줄어든다").hasSize(7);
-        assertThat(scrape).contains("policy=\"room_ended\"", "policy=\"kick\"", "policy=\"ban\"");
+                .as("등록이 조용히 거부되면 개수가 줄어든다").hasSize(9);
+        assertThat(scrape).contains("policy=\"room_ended\"", "policy=\"kick\"", "policy=\"ban\"",
+                "policy=\"withdrawing\"");
         assertThat(scrape).contains("checkpoint=\"entry\"", "checkpoint=\"send\"");
         assertThat(scrape).contains("failure=\"unavailable\"", "failure=\"store_corrupted\"");
     }

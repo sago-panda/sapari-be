@@ -56,6 +56,7 @@ There is still no fail-closed path in chat.
 | room-ended marker (entry + send re-check) | allow | ended-room blocking |
 | kick set | allow | kick enforcement |
 | ban key | allow | ban enforcement |
+| withdrawal record | allow | re-entry block on a pre-withdrawal room token |
 | rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
 | session HASH register / viewer count | allow | count accuracy only |
 
@@ -459,6 +460,7 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and only this marker stops their sends); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
+| `chat:withdrawing:{userId}` | String | key presence = withdrawal requested; written by **every** streaming pod on `user:account:withdrawing` before it closes that user's sessions, read by `EntryGate`. TTL `chat.withdrawal.record-ttl` (24h) — floor = the remaining life of a room token issued before the withdrawal (`live.room-token.expiration-seconds`, 90s default; chat cannot read it, so no boot check). No cancel path exists today; one that is added must delete this key |
 | `chat:ban:ver:{userId}` | String | highest change version that reached the mirror; 1d TTL (only has to outlive one request's commit→Redis gap). Writes at or below it are rejected |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
@@ -796,8 +798,11 @@ the other's actions too.
 Why the signal is the **request**, not the hard delete: withdrawal is two-phase (status → `WITHDRAWING`
 immediately; hard delete later in batch). The account stops being active at the request, so waiting for the
 delete would leave the whole grace period open. And the request path already calls `revokeAllSessions`, which
-only blocks re-entry — **an established WS session never looks at the token again**, so that revocation and
-this event are different axes.
+stops **new** room tokens being issued (live-app's `TokenRevocationFilter` checks every request) — **an
+established WS session never looks at the token again**, so that revocation and this event are different axes.
+A room token issued *before* the request is still valid until it expires, and a closed client reconnects at
+once, so the handler first writes `chat:withdrawing:{userId}` and `EntryGate` denies on it (`WITHDRAWING`,
+1008) — fail-open like the ban read.
 
 ⚠️ **There is no backstop for a missed publish**, and there are two ways to miss one: the publish itself
 failing, and **a publish that arrives while the subscription is down** (Pub/Sub keeps nothing, so that window's

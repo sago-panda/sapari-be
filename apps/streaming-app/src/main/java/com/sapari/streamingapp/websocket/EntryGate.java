@@ -10,6 +10,7 @@ import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatBanRepository;
+import com.sapari.chat.domain.repository.ChatWithdrawalRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 
@@ -28,10 +29,11 @@ import reactor.core.publisher.Mono;
  * <p>토큰은 "라이브 여부 + 신원 + owner"까지 담지만 enter <i>이후</i>의 강퇴/밴은 못 담는다. 그건 chat 소유
  * 상태(Redis)라 핸드셰이크에서 여기서 검사한다.
  *
- * <p>검사는 셋이다 — <b>방 종료 마커</b>(게스트 포함 전원), <b>강퇴</b>(회원만), <b>플랫폼 밴</b>(회원만).
- * 강퇴는 이 방에서 나가는 것이고 밴은 어느 방에도 못 들어오는 것이라, 축이 달라 따로 본다.
+ * <p>검사는 넷이다 — <b>방 종료 마커</b>(게스트 포함 전원), <b>강퇴</b>(회원만), <b>플랫폼 밴</b>(회원만),
+ * <b>탈퇴 신청</b>(회원만). 강퇴는 이 방에서 나가는 것이고 밴은 어느 방에도 못 들어오는 것이라, 축이 달라
+ * 따로 본다. 탈퇴는 밴과 축이 같지만(사람) 근거가 다르다 — 이미 받아 둔 토큰이 탈퇴 뒤에도 유효하다.
  *
- * <p><b>둘 다 fail-open</b>: 조회 실패(Redis 장애) 시 입장을 <i>허용</i>한다(가용성 우선 — 채팅 전면 불능이
+ * <p><b>전부 fail-open</b>: 조회 실패(Redis 장애) 시 입장을 <i>허용</i>한다(가용성 우선 — 채팅 전면 불능이
  * 강퇴자·종료방 일시 통과보다 나쁜 결과). 열린 구간은 사유별로 스로틀 로그 + 누적 통과 건수를 남긴다.
  *
  * <p>게스트(에페메랄 id)는 강퇴·밴 대상이 아니므로 건너뛴다 — 접속마다 id가 새로 발급돼 명단에 올려도
@@ -70,6 +72,7 @@ public class EntryGate {
     private final ChatKickRepository kickRepository;
     private final ChatRoomEndedRepository roomEndedRepository;
     private final ChatBanRepository banRepository;
+    private final ChatWithdrawalRepository withdrawalRepository;
 
     /**
      * 관측 포트. 아래 스로틀 카운터는 프로세스 안에만 있었고 솎인 로그 줄은 아예 남지 않는다 —
@@ -127,18 +130,18 @@ public class EntryGate {
         // 순서는 싼 것부터가 아니라 <b>넓은 것부터</b>다. 끝난 방은 신원과 무관하게 아무도 못 들어오고,
         // 강퇴는 이 방에서, 밴은 이 사람에게 걸린다. 앞에서 걸리면 뒤는 묻지 않으므로 왕복이 줄어든다.
         //
-        // 왕복이 셋이 됐다. 하나로 묶는 것(pipeline)은 정합성과 무관한 순수 성능이라 여기서 하지 않는다 —
-        // 묶으면 세 조회의 실패를 따로 분류하던 것이 한 덩어리가 되어, 어느 게이트가 열렸는지가 흐려진다.
+        // 왕복이 넷이 됐다. 하나로 묶는 것(pipeline)은 정합성과 무관한 순수 성능이라 여기서 하지 않는다 —
+        // 묶으면 네 조회의 실패를 따로 분류하던 것이 한 덩어리가 되어, 어느 게이트가 열렸는지가 흐려진다.
         //
-        // 비용은 접속당(메시지당이 아니다) 왕복 셋이다.
+        // 비용은 접속당(메시지당이 아니다) 왕복 넷이다.
         //
         // ⚠️ 병렬화(Mono.zip)도 재 보고 하지 않았다. 분류와 우선순위는 지킬 수 있지만 셈이 이렇다:
         //
         //            명령 수   지연        메모
-        //   현재 허용   3       3 RTT      대다수 경로
+        //   현재 허용   4       4 RTT      대다수 경로
         //   현재 거부   1       1 RTT      앞에서 걸리면 뒤를 묻지 않는다(아래 테스트가 계약으로 고정)
-        //   병렬 허용   3       1 RTT      명령 수는 그대로
-        //   병렬 거부   3       1 RTT      명령 수가 는다
+        //   병렬 허용   4       1 RTT      명령 수는 그대로
+        //   병렬 거부   4       1 RTT      명령 수가 는다
         //
         // Redis 는 명령 수 바운드라 허용 경로의 부하는 그대로이고 거부 경로만 늘어난다. 얻는 것은
         // 핸드셰이크당 1~2ms 지연뿐인데, 그 대가로 "앞에서 걸리면 왕복이 줄어든다" 는 계약과 그걸
@@ -146,7 +149,29 @@ public class EntryGate {
         // 것과 비교하면 값이 서지 않는다. 재접속 폭풍에서 지연이 실제로 꼬리에 닿으면 다시 볼 것.
         return verifyRoomAlive(session)
                 .then(Mono.defer(() -> verifyNotKicked(session)))
-                .then(Mono.defer(() -> verifyNotBanned(session)));
+                .then(Mono.defer(() -> verifyNotBanned(session)))
+                .then(Mono.defer(() -> verifyNotWithdrawing(session)));
+    }
+
+    /**
+     * 탈퇴를 신청한 사람이 <b>이미 받아 둔</b> 룸 토큰으로 다시 들어오는 것을 막는다.
+     *
+     * <p>토큰 검증은 서명과 만료만 본다. 탈퇴 이벤트는 그 순간 열려 있던 세션을 끊을 뿐이라, 이 분기가
+     * 없으면 끊긴 직후 같은 토큰으로 다시 들어와 그 연결이 세션 수명(토큰의 만료와 무관하다)까지 산다.
+     * 밴 뒤에 둔다 — 대상이 같고(사람), 밴으로 이미 거부된 입장은 이 조회를 치르지 않는다.
+     */
+    private Mono<Void> verifyNotWithdrawing(ChatSession session) {
+        if (session.role() == ChatRole.GUEST) {
+            return Mono.empty();
+        }
+        return withdrawalRepository.isWithdrawing(session.userId())
+                .onErrorResume(e -> {
+                    logGateOpen("탈퇴", ChatPolicy.WITHDRAWING, ChatCheckpoint.ENTRY, session, e);
+                    return Mono.just(false);
+                })
+                .flatMap(withdrawing -> withdrawing
+                        ? Mono.<Void>error(deniedAndLogged(EntryDeniedException.Reason.WITHDRAWING, "탈퇴", session))
+                        : Mono.empty());
     }
 
     /**
@@ -261,7 +286,7 @@ public class EntryGate {
     /**
      * 거부를 남기고 그 예외를 만든다. 삼항의 거부 가지 안에서만 평가되므로 허용 경로는 안 거친다.
      *
-     * <p>로그와 예외를 한 자리에 묶는 이유는 셋이 전부 같은 모양이라 한쪽만 빠뜨리기 쉬웠기
+     * <p>로그와 예외를 한 자리에 묶는 이유는 거부 분기가 전부 같은 모양이라 한쪽만 빠뜨리기 쉬웠기
      * 때문이다 — 지금 빠뜨리면 그 사유의 분모만 조용히 비고, 그건 "집행이 0" 과 출력이 같다.
      */
     private EntryDeniedException deniedAndLogged(EntryDeniedException.Reason reason, String what,
@@ -281,7 +306,7 @@ public class EntryGate {
      * 0 이다. 스로틀 키는 사유별로 갈린다({@code what} 이 맵 키다), 그래서 한 사유가 다른 사유의
      * 첫 발생을 덮지 않는다 — 이 클래스가 적어 둔 그 결론({@code "사유별로 따로 센다"})과 같다.
      *
-     * <p>⚠️ 이 로그는 <b>게이트 거부 셋</b>만 덮는다. {@code TOO_MANY_SESSIONS} 는 여기가 아니라
+     * <p>⚠️ 이 로그는 <b>게이트 거부 넷</b>만 덮는다. {@code TOO_MANY_SESSIONS} 는 여기가 아니라
      * 레지스트리가 세고({@code chat.sessions.admission_capped}), 그래서 거부 사유 전체의 합은
      * 여전히 한 자리에서 안 보인다. 그걸 닫으려면 {@code ChatMetrics} 메서드가 하나 늘어야 한다.
      */

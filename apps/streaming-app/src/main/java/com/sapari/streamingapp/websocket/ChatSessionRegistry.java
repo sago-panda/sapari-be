@@ -747,7 +747,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ local.put 사이에
         // 할당이 없다. 대가는 거부 1건마다 버려지는 아웃바운드 큐 하나(256슬롯, 약 2.3KB)이고,
         // 거부 경로가 남용 경로라 공짜가 아니다 — 다만 그 1건은 이미 WS 핸드셰이크와 토큰 검증과
-        // 입장 게이트의 Redis 왕복 셋을 쓴 뒤다.
+        // 입장 게이트의 Redis 왕복 넷을 쓴 뒤다.
         LocalSession pending = new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(
                         Queues.<OutboundFrame>get(OUTBOUND_BUFFER_SIZE).get()),
