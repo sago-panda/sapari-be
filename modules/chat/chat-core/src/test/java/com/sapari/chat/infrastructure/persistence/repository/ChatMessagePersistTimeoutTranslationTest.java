@@ -55,9 +55,22 @@ import reactor.test.StepVerifier;
  *       "안 남았다" 를 뜻하지 않으므로). 정정 전에 옳던 필터가 정정 후에 두 면을 숨겼다.</li>
  * </ol>
  *
- * <p>그래서 쓸 때는 <b>주체</b>로 쓴다 — {@code stage=write|PersistStage.WRITE|PERSIST_TIMEOUT} 로
- * 전수 grep 하고 <b>적중 전부를 읽는다</b>(세지 않는다). 수를 적으면 그 수를 바꾼 커밋이 다시 세지
- * 않는 쪽으로 틀리고, 실제로 "넷" 과 "열, 전부 고쳤다" 가 연달아 짧았다.
+ * <p>그래서 쓸 때는 <b>주체</b>로 쓴다 —
+ * {@code stage=write|PersistStage|PERSIST_TIMEOUT|ChatPersistTimeoutException} 로 전수 grep 하고
+ * <b>적중 전부를 읽는다</b>(세지 않는다). 수를 적으면 그 수를 바꾼 커밋이 다시 세지 않는 쪽으로
+ * 틀리고, 실제로 "넷" 과 "열, 전부 고쳤다" 가 연달아 짧았다.
+ *
+ * <p>⚠️ <b>이 패턴의 네 조각이 각각 왜 있는지 — 지시 자체도 한 번 분모를 쟀다.</b> 처음엔
+ * {@code PersistStage.WRITE} 와 세 조각만 적었는데 실측으로 두 군데가 우연이었다:
+ * <ul>
+ *   <li>{@code SendChatServiceTest} 가 <b>0건</b>이었다 — 하필 샌 세 면 중 하나가 있던 파일이다.
+ *       {@code ChatPersistTimeoutException} 을 더하면 그 파일이 들어온다.</li>
+ *   <li>{@code PersistStage.java} 의 적중이 <b>1건</b>이고 그게 javadoc 안의 인용 한 줄이었다 —
+ *       선언 파일 안에서는 상수가 맨 {@code WRITE} 라 {@code PersistStage.WRITE} 가 안 걸린다.
+ *       점을 떼고 {@code PersistStage} 로 쓰면 <b>선언으로</b> 걸리므로, 누가 그 인용을 다듬어도
+ *       태그 축 enum 이 쓸기에서 빠지지 않는다.</li>
+ * </ul>
+ * 실측: 11파일 → <b>14파일</b>이고 늘어난 셋은 전부 이 주체의 반경 안이다.
  * 잃는 것(갈래별 사용자 문구)은
  * {@code ChatMessageRepositoryImpl.findByRoomIdAndSenderIdAndClientMsgId} 에 적어 두었다.
  *
