@@ -318,15 +318,16 @@ public class SendChatService implements SendChatUseCase {
                 .flatMap(saved -> broadcaster.publish(command.roomId(), saved)
                         // publish 실패는 흡수한다 — 저장은 됐으므로 반환 view(=ack)를 그대로 돌려준다.
                         // 낙관적 렌더 모델: 발신자는 send 시점에 자기 메시지를 이미 로컬 렌더했고 이 ack로 확정한다
-                        // → 서버 에코 불필요. 크로스 Pod·동일 Pod 타 세션은 실시간 미전달(허용, 메시지는 영속됨).
+                        // → 서버 에코 불필요. 크로스 Pod·동일 Pod 타 세션은 실시간 미전달 — 의도한 선택이고 재발행하지
+                        // 않는다. 메시지는 이력 조회로 보인다.
                         .onErrorResume(err -> {
                             // 장애 중엔 전 전송이 이 경로다 — 건당 스택트레이스는 원인 로그를 묻는다(레이트리밋과 동일)
                             metrics.deliveryDropped(DeliveryStage.REDIS_PUBLISH);
                             long count = publishFailureCount.incrementAndGet();
                             if (shouldLog(lastPublishFailureLog)) {
-                                // WARN — 메시지는 Mongo 에 있고(저장 보장) 잃은 것은 실시간 전달뿐이다.
+                                // WARN — 저장은 이미 끝났고 잃은 것은 실시간 전달뿐이다.
                                 // 규모는 chat.delivery.dropped{stage=redis_publish} 가 들고 있다.
-                                log.warn("Redis publish 실패 — 저장 보장, 발신자는 낙관적 렌더+ack로 표시"
+                                log.warn("Redis publish 실패 — 저장됨·실시간 전달만 실패, 발신자는 낙관적 렌더+ack로 표시"
                                         + "(누적 {}건) 표본 roomId={}", count, command.roomId(), err);
                             }
                             return Mono.empty();

@@ -168,8 +168,9 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
 - **streaming-app reads.** `ProfanityDictionaryRefreshHandler` merges three triggers (boot, notify,
   poll) into one `concatMap` stream, so only one refresh runs at a time and monotonicity is a field
   comparison. ⚠️ The **poll** is what makes propagation work, not the notification: Redis pub/sub is
-  non-persistent, so a pod whose subscription was down during a publish never gets that message and
-  would enforce the old dictionary until restart. The notification only saves the poll interval.
+  non-persistent, so a pod whose subscription was down during a publish never gets that message and,
+  with the notification alone, would enforce the old dictionary until restart. The notification only
+  saves the poll interval.
 - **Failure directions are deliberate.** A transport failure does **not** advance the local version
   (otherwise the poll sees "same" and never retries — that ordering is the load-bearing part of the
   self-heal, pinned by a revert test). A **content** refusal does advance it, because re-reading the
@@ -828,7 +829,8 @@ its next send (`terminateRoomEnded`) even with a dead subscription — bound = w
 pod is not closed until it sends"), and the remaining mechanism is room-ended cleanup, which rides **the same
 subscription** (`ClearRoomEndedMarkerService`: "the only caller of markEnded is `LiveRoomEndedHandler` — woken
 only by the `live:room:ended` subscription"). For a pod whose subscription was down, that never arrives either,
-so the real bound is a **pod restart**.
+so the bound is the **session lifetime** (`chat.session.max-lifetime`, 60m default): `ChatWebSocketHandler` closes
+every session at it unconditionally (jitter only shortens it), and the reconnect goes through live's entry again.
 
 (This paragraph first claimed the bound was simply "until the broadcast ends, because room-ended clears
 sessions". The conclusion held for the send axis but the mechanism cited was the very subscription whose loss
