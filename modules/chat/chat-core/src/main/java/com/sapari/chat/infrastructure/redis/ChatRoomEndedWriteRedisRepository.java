@@ -31,7 +31,7 @@ public class ChatRoomEndedWriteRedisRepository implements ChatRoomEndedWriteRepo
     /**
      * 값과 만료를 기록 어댑터에서 <b>참조</b>한다 — 복사하지 않는다. 복사하면 한쪽을 고칠 때
      * 되돌린 마커가 원래보다 짧거나 길게 살아, 되돌리려던 상태와 다른 상태가 된다.
-     * ({@code ChatRoomEndedRedisRepository} 가 그 둘을 package-private 으로 내주는 이유다.)
+     * (같은 패키지라 {@code ChatRoomEndedRedisRepository} 의 두 상수를 그대로 읽는다.)
      *
      * <p>만료를 <b>처음부터 다시</b> 건다 — 남은 시간을 계산해 붙이지 않는다. 지우기 전의 잔여
      * 시간을 알 길이 없고(지웠으니까), 되돌림은 "방이 방금 끝난 것으로 드러났다" 는 뜻이라

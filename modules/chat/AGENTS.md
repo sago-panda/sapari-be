@@ -474,7 +474,7 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 |---|---|---|
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
 | `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
-| `chat:room:{id}:ended` | String | 30m — floor = longest room token, ceiling = blast radius of a false end signal |
+| `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and only this marker stops their sends); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |

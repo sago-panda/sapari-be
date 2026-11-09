@@ -18,6 +18,7 @@ import reactor.netty.http.server.WebsocketServerSpec;
 import com.sapari.chat.application.handler.ChatBroadcastSubscriber;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.service.SystemMessageService;
+import com.sapari.chat.infrastructure.redis.ChatRoomEndedRedisRepository;
 import com.sapari.chat.port.SendChatUseCase;
 import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 import com.sapari.streamingapp.websocket.ChatWebSocketHandler;
@@ -54,7 +55,27 @@ public class WebSocketConfig {
             @Value("${chat.session.max-lifetime:60m}") Duration maxLifetime,
             @Value("${chat.session.ping-interval:30s}") Duration pingInterval,
             @Value("${chat.session.liveness-deadline:90s}") Duration livenessDeadline) {
-        return new SessionTimeouts(maxLifetime, pingInterval, livenessDeadline);
+        SessionTimeouts timeouts = new SessionTimeouts(maxLifetime, pingInterval, livenessDeadline);
+        requireEndedMarkerOutlivesSession(timeouts.maxLifetime(), ChatRoomEndedRedisRepository.ENDED_TTL);
+        return timeouts;
+    }
+
+    /**
+     * 수명이 종료 마커보다 길면 기동을 멈춘다.
+     *
+     * <p>종료 신호를 놓친 Pod 의 세션은 수명이 다할 때까지 남고, 그 세션의 전송을 막는 것은 마커
+     * 재확인뿐이다. 마커가 먼저 사라지면 끝난 방에 글이 쌓인다 — 그 갭이 설정 한 줄로 생기므로
+     * 조용히 두지 않는다. 마커 쪽 근거는 {@code ChatRoomEndedRedisRepository.ENDED_TTL} 에 있다.
+     *
+     * <p>{@code SessionTimeouts} 안에 두지 않은 이유: 그 레코드는 연결 상한 셋 사이의 제약만 갖고,
+     * 이 검사는 chat-core 어댑터의 상수를 읽는다.
+     */
+    static void requireEndedMarkerOutlivesSession(Duration maxLifetime, Duration endedMarkerTtl) {
+        if (maxLifetime.compareTo(endedMarkerTtl) > 0) {
+            throw new IllegalArgumentException(
+                    "세션 수명이 방 종료 마커 보관 기간보다 깁니다 — 종료 신호를 놓친 Pod 의 세션이 마커 만료 뒤 "
+                            + "끝난 방에 쓸 수 있습니다: lifetime=" + maxLifetime + " marker=" + endedMarkerTtl);
+        }
     }
 
     @Bean
