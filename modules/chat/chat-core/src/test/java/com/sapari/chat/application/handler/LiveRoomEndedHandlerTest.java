@@ -86,7 +86,7 @@ class LiveRoomEndedHandlerTest {
     }
 
     @Test
-    @DisplayName("마커 기록 실패해도 세션 종료는 끝까지 진행한다 — 여기서 멈추면 세션이 아예 안 닫힌다")
+    @DisplayName("마커 기록 실패해도 세션 종료는 끝까지 진행한다 — 여기서 멈추면 그 방 세션이 이 사건으로는 안 닫히고 수명 상한까지 남는다")
     void onRoomEnded_ContinuesWhenMarkerFails() {
         // given
         given(roomEndedRepository.markEnded(roomId))

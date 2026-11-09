@@ -59,7 +59,8 @@ import reactor.core.publisher.Mono;
  *       "markEnded 호출처는 {@code LiveRoomEndedHandler} 하나 — live:room:ended 구독으로만
  *       깨어난다" 고 적는다). 그 Pod 의 구독이 죽어 있었다면 그쪽도 안 오므로, 상한은
  *       <b>세션 수명</b>({@code chat.session.max-lifetime}, 기본 60분)이다 — {@code ChatWebSocketHandler}
- *       가 모든 세션을 조건 없이 그때 닫고, 재접속은 live 의 입장을 다시 탄다.
+ *       가 그때 모든 세션의 종료를 조건 없이 촉발하고(막힌 클라도 유예 3s + flush 상한 5s 안에 닫힌다),
+ *       재접속은 live 의 입장을 다시 탄다.
  * </ul>
  *
  * <p>⚠️ 한때 이 자리에 "방 종료가 세션을 정리하므로 상한은 그 방송의 남은 길이다" 라고만 적었다.
