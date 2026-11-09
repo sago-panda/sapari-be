@@ -57,13 +57,13 @@ public class ChatMessageRepositoryImpl implements ChatMessageRepository {
         //
         // 이 경로에 오는 전제가 DuplicateKey 다 — 그 (roomId, senderId, clientMsgId) 문서가
         // **이미 있다**는 뜻이고, 끊긴 것은 그걸 되읽는 쪽이다. 그런데 그 예외와
-        // ChatErrorCode.PERSIST_TIMEOUT 은 "아무것도 남지 않았다 · 영속되지 않았다 ·
-        // 저장하지 못했습니다" 를 단정한다. 그 둘을 같은 타입으로 올리면 **이력에 있는 메시지를
-        // 유실로 보고**하고, 사용자 문구도 그 갈래에서 거짓이 된다 — modules/chat/AGENTS.md 의 ⚠️ 가
-        // delivery.dropped 합산을 금지하는 이유("이력에 없는 것을 있다고 말한다")의 정확히 뒤집힌 꼴이다.
+        // ChatErrorCode.PERSIST_TIMEOUT 은 "저장 결과를 알 수 없다" 를 뜻한다. 그런데 이 갈래는
+        // 전제가 DuplicateKey 라 **존재가 확정**이다 — 확신 수준이 반대쪽이다. 그 둘을 같은 타입으로
+        // 올리면 "존재 확정" 을 "불명" 으로 내려 보고하고, 사용자 문구도 이 갈래에서는 과하게
+        // 약해진다(이미 있는 메시지를 "확인하지 못했다" 로 안내한다).
         //
         // 그래서 **수는 세고 타입은 그대로 둔다**(위 doOnError). 지표가 갈래를 들고 있으므로
-        // chat.persist.timeout{stage=write} 의 "아무것도 남지 않았다" 가 참으로 남는다.
+        // chat.persist.timeout{stage=write} 가 "결과 미확인" 으로 남고 이쪽은 "존재 확정" 으로 남는다.
         //
         // 아직 없는 것은 **갈래별 사용자 문구**다. 이 갈래에서 발신자가 받는 것은 번역되지 않은
         // UncategorizedMongoDbException(500)이고, 그 문구를 가르려면 에러코드가 하나 더 필요하다 —

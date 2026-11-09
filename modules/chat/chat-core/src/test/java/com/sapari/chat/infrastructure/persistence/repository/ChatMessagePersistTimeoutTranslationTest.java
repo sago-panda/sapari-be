@@ -38,16 +38,40 @@ import reactor.test.StepVerifier;
  *
  * <p><b>갈래별 계수도 여기서 잰다</b>({@code PersistStage}). 쓰기와 중복복구 재조회를 가르는 수가
  * 드라이버 예외라 그 판정은 이 층에만 있다 — 응용 계층은 {@code ArchUnit} 으로 그 타입에 닿을 수
- * 없다. 두 갈래가 <b>정반대</b>를 뜻하므로 한 수로 세면 안 된다: 쓰기는 "아무것도 남지 않았다",
+ * 없다. 두 갈래의 <b>확신 수준</b>이 달라 한 수로 세면 안 된다: 쓰기는 <b>결과를 알 수 없고</b>
+ * (클라이언트 상한이 서버 쓰기를 취소하지 않는다 — 실측으로 예외와 함께 문서가 남은 경우가 있다),
  * 재조회는 전제가 {@code DuplicateKey} 라 문서가 <b>이미 있다</b>. 그래서 재조회는 번역하지 않고
- * 수만 센다 — 번역하면 이력에 있는 메시지를 유실로 보고한다.
+ * 수만 센다 — 번역하면 "존재 확정" 을 "불명" 과 같은 타입으로 올린다.
  *
- * <p><b>수를 적지 않는다, 어휘를 적는다.</b> 한때 "열한 자리에서 단정한다" 가 적혀 있었는데 그 11 은
- * 갈래를 가르기 <b>전</b>에 센 값이고, 갈래를 준 커밋이 그 집합의 멤버를 고치면서 수를 다시 세지
- * 않았다. 다시 세려면
- * {@code 아무것도 남지 않았|영속되지 않았|저장이 안 됐|저장하지 못했} 로 전수 grep 하고, 그중
- * <b>갈래로 좁혀지지 않은</b> 단정만 센다 — 지표 표 둘과 이 어댑터의 주석은 {@code stage} 로
- * 좁혀져 빠진다. 수를 박아 두면 그 수를 바꾼 커밋이 그걸 다시 세지 않는 쪽으로 틀린다. 잃는 것(갈래별 사용자 문구)은
+ * <p><b>수를 적지 않는다. 그리고 술어가 아니라 주체로 쓴다.</b> 이 자리가 쓸기 지시를 보관하는데,
+ * 한때 그 지시가 <b>두 군데 틀려서</b> 같은 결함이 세 번 샜다(SPR-180).
+ *
+ * <ol>
+ *   <li><b>패턴이 술어의 한 표기만 잡았다.</b> {@code 아무것도 남지} 로 쓸었고
+ *       {@code PersistStage.WRITE} javadoc 은 {@code 아무 <b>데도</b> 남지} 라 0건으로 나왔다 —
+ *       하필 런북이 당직자를 보내는 태그 축 enum 자신이다.</li>
+ *   <li><b>필터가 가리는 장치였다.</b> "갈래로 좁혀지지 않은 단정만 센다" 가 그 지시였는데,
+ *       정정 뒤에는 <b>갈래로 좁혀져 있다는 것이 바로 거짓인 이유</b>다({@code stage=write} 가
+ *       "안 남았다" 를 뜻하지 않으므로). 정정 전에 옳던 필터가 정정 후에 두 면을 숨겼다.</li>
+ * </ol>
+ *
+ * <p>그래서 쓸 때는 <b>주체</b>로 쓴다 —
+ * {@code stage=write|PersistStage|PERSIST_TIMEOUT|ChatPersistTimeoutException} 로 전수 grep 하고
+ * <b>적중 전부를 읽는다</b>(세지 않는다). 수를 적으면 그 수를 바꾼 커밋이 다시 세지 않는 쪽으로
+ * 틀리고, 실제로 "넷" 과 "열, 전부 고쳤다" 가 연달아 짧았다.
+ *
+ * <p>⚠️ <b>이 패턴의 네 조각이 각각 왜 있는지 — 지시 자체도 한 번 분모를 쟀다.</b> 처음엔
+ * {@code PersistStage.WRITE} 와 세 조각만 적었는데 실측으로 두 군데가 우연이었다:
+ * <ul>
+ *   <li>{@code SendChatServiceTest} 가 <b>0건</b>이었다 — 하필 샌 세 면 중 하나가 있던 파일이다.
+ *       {@code ChatPersistTimeoutException} 을 더하면 그 파일이 들어온다.</li>
+ *   <li>{@code PersistStage.java} 의 적중이 <b>1건</b>이고 그게 javadoc 안의 인용 한 줄이었다 —
+ *       선언 파일 안에서는 상수가 맨 {@code WRITE} 라 {@code PersistStage.WRITE} 가 안 걸린다.
+ *       점을 떼고 {@code PersistStage} 로 쓰면 <b>선언으로</b> 걸리므로, 누가 그 인용을 다듬어도
+ *       태그 축 enum 이 쓸기에서 빠지지 않는다.</li>
+ * </ul>
+ * 실측: 11파일 → <b>14파일</b>이고 늘어난 셋은 전부 이 주체의 반경 안이다.
+ * 잃는 것(갈래별 사용자 문구)은
  * {@code ChatMessageRepositoryImpl.findByRoomIdAndSenderIdAndClientMsgId} 에 적어 두었다.
  *
  * <p>체인을 그대로 조립해 넣는 이유도 같다. CSOT 가 자를 때 오는 것은 전용 타입 하나가 아니라
@@ -108,8 +132,8 @@ class ChatMessagePersistTimeoutTranslationTest {
         willReturn(Mono.error(driverChain)).given(mongoRepository)
                 .findByRoomIdAndSenderIdAndClientMsgId(any(), any(), any());
 
-        // when & then: 번역하면 "아무것도 남지 않았다" 를 열한 자리에서 단정하게 되고, 이력에 있는
-        // 메시지를 유실로 보고한다. 그래서 예외는 그대로 두고 **수만** 남긴다.
+        // when & then: 번역하면 "존재 확정" 인 이 갈래가 "결과 불명" 과 같은 타입으로 올라간다.
+        // 그래서 예외는 그대로 두고 **수만** 남긴다.
         StepVerifier.create(repository
                         .findByRoomIdAndSenderIdAndClientMsgId(UUID.randomUUID(), UUID.randomUUID(), "c1"))
                 .expectErrorSatisfies(error -> assertThat(error)

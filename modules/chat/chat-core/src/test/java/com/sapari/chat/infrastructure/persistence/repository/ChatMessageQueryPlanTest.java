@@ -188,6 +188,24 @@ class ChatMessageQueryPlanTest {
                         + "5분 생산량에 비례하고 그 엔드포인트는 미인증 공개다. 고른 계획: %s",
                         WINDOW_LIMIT, MESSAGES_IN_WINDOW, profiled.getString("planSummary"))
                 .isEqualTo(WINDOW_LIMIT);
+
+        // 그리고 **묶이지 않는 축**을 같이 박는다. ChatMongoConfig:402-408 이 이미 사실로 적는다 —
+        // 이 인덱스는 _id 정렬을 공급하지 못해 blocking SORT 가 남고 "keysExamined 는 그대로 창
+        // 전수다 — SORT 가 인덱스 키 위에서 돌고 FETCH 만 limit 으로 줄어든다". 그 문장이 맞는데
+        // **단언하는 칸이 없어** 안 묶여 있었다(외부 리뷰가 그 축을 재서 지적했고, 저장소 문장은
+        // 이미 맞았으므로 문장은 건드리지 않고 칸만 더한다).
+        //
+        // 정확한 수를 못박지 않는다 — 경계 키 한둘이 구현·버전에 따라 붙을 수 있다. 하중 있는
+        // 주장은 "limit 에 묶이지 않고 창에 비례한다" 이고 그것만 단언한다. 이 부등식이 깨지는
+        // 방향은 둘뿐이다: 정렬을 공급하는 인덱스가 생겼거나(그러면 이 주석을 지운다),
+        // 질의가 창을 더 좁게 잡게 바뀌었거나.
+        assertThat(profiled.getInteger("keysExamined"))
+                .as("읽은 인덱스 키 수가 limit(%d) 에 묶였다 — 그러면 ChatMongoConfig 의 "
+                        + "\"keysExamined 는 그대로 창 전수다\" 가 거짓이 된 것이다. 실제=%s · 계획=%s",
+                        WINDOW_LIMIT, profiled.getInteger("keysExamined"), profiled.getString("planSummary"))
+                // 축이 하나다 — 한때 isGreaterThan(WINDOW_LIMIT) 을 앞에 붙였는데 60 > 5 라 뒤에
+                // 완전히 먹혔다. 둘처럼 보이면 나중에 뒤를 느슨하게 한 사람이 "6 이면 통과" 만 남긴다.
+                .isGreaterThanOrEqualTo(MESSAGES_IN_WINDOW);
     }
 
     /** {@code system.profile} 에서 윈도우 조회를 찾는다 — {@code createdAt} 범위를 필터에 담은 읽기가 그것뿐이다. */
