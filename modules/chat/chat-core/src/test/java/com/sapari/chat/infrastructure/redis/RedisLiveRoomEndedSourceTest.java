@@ -67,7 +67,7 @@ class RedisLiveRoomEndedSourceTest {
     @DisplayName("채널 구독이 끊겨도 재구독으로 되살아나 이후 종료 신호가 다시 들어온다")
     void ended_recovers_after_upstream_failure() {
         // given: 첫 구독은 즉시 끊기고, 재구독부터 정상 스트림을 준다.
-        // 이 스트림이 죽은 채로 남으면 방이 끝나도 세션이 수명 상한까지 안 닫힌다 — 그 창을 막는 것은 자가복구다.
+        // 이 스트림이 죽은 채로 남으면 방이 끝나도 수신 전용 세션이 수명 상한까지 남는다 — 그 창을 막는 것은 자가복구다.
         UUID roomId = UUID.fromString("22222222-2222-2222-2222-222222222222");
         Sinks.Many<Message<String, String>> afterReconnect = Sinks.many().replay().all();
         AtomicInteger subscribeCount = new AtomicInteger();
