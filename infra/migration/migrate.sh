@@ -12,6 +12,7 @@
 #           ./infra/migration/migrate.sh        (flyway CLI 설치 시)
 #   docker: infra/migration/Dockerfile로 빌드한 이미지 실행 (아래 Dockerfile 참고)
 #   운영:   같은 이미지를 Helm pre-upgrade Job이 실행 (운영 진입 시 승격)
+#   일부만: MIGRATE_SCHEMAS="live:live_schema" — 대상 스키마만 지정 (기본: 아래 전체 목록)
 # =============================================================================
 set -eu
 
@@ -36,7 +37,7 @@ export FLYWAY_USER="$DB_USER"
 export FLYWAY_PASSWORD="$DB_PASSWORD"
 
 # 폴더명:스키마명 (스키마 추가 시 여기에 한 줄 + db/migration/<폴더> 생성)
-SCHEMAS="
+SCHEMAS="${MIGRATE_SCHEMAS:-
 user:user_schema
 customer:customer_schema
 seller:seller_schema
@@ -48,7 +49,7 @@ notification:notification_schema
 settlement:settlement_schema
 live:live_schema
 batch:batch_schema
-"
+}"
 
 for entry in $SCHEMAS; do
     folder="${entry%%:*}"
