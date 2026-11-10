@@ -126,6 +126,12 @@ public interface LiveMetrics {
     void listRefreshFailed();
 
     /**
+     * 최근 본 기록 하나를 버렸다. 입장은 이미 성공으로 끝났으므로 예외 대신 이 수가 유일한 신호다.
+     * 이유별 대응이 반대라 갈라 센다({@link RecentViewDropReason}).
+     */
+    void recentViewDropped(RecentViewDropReason reason);
+
+    /**
      * 아무것도 하지 않는 구현. <b>단위 테스트가 registry 없이 돌게 하는 것</b>이 실제 용도다.
      *
      * <p>(오해 주의: 지금 {@code live-core} 를 의존하는 앱은 {@code live-app} 하나뿐이다 — 확인함:
@@ -149,5 +155,6 @@ public interface LiveMetrics {
         @Override public void listViewerCountUnavailable() { }
         @Override public void listRefreshSaturated() { }
         @Override public void listRefreshFailed() { }
+        @Override public void recentViewDropped(RecentViewDropReason reason) { }
     };
 }

@@ -21,6 +21,7 @@ import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
+import com.sapari.live.application.port.RecentViewDropReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.ReconcileLockResult;
@@ -197,6 +198,14 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     @Override
     public void listRefreshFailed() {
         safe(() -> Counter.builder(LiveMeterNames.LIST_REFRESH_FAILED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void recentViewDropped(RecentViewDropReason reason) {
+        safe(() -> Counter.builder(LiveMeterNames.RECENT_VIEW_DROPPED)
+                .tag(LiveMeterNames.TAG_REASON, tag(reason))
                 .register(registry)
                 .increment());
     }

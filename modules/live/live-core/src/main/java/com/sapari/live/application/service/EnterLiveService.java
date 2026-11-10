@@ -7,6 +7,8 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 
+import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.RecentViewRecorder;
 import com.sapari.live.application.port.RoomTokenClaims;
 import com.sapari.live.application.port.RoomTokenIssuer;
 import com.sapari.live.command.EnterLiveCommand;
@@ -26,6 +28,8 @@ public class EnterLiveService implements EnterLiveUseCase {
 
     private final LiveRoomRepository liveRoomRepository;
     private final RoomTokenIssuer roomTokenIssuer;
+    private final RecentViewRecorder recentViewRecorder;
+    private final TimeProvider timeProvider;
 
     /**
      * ⚠️ <b>{@code @Transactional} 이 없다 — 의도다.</b> 이 메서드가 하는 일은 PK 단건 읽기
@@ -46,6 +50,9 @@ public class EnterLiveService implements EnterLiveUseCase {
      * <p>⚠️ 읽기가 둘 이상이 되거나 엔티티에 연관이 생기면 이 전제가 깨진다. 그때는
      * 트랜잭션을 다시 붙이는 대신 <b>읽기만</b> 감싸고 서명을 밖에 두라 — 감싸는 범위가
      * 넓어지는 것이 이 결함의 모양이었다.
+     *
+     * <p>최근 본 기록(SPR-172)은 {@link RecentViewRecorder} 에 <b>넘기기만</b> 한다 — 쓰기는 전용 실행기에서 돌아
+     * 이 스레드는 기록 때문에 커넥션을 잡지 않고, 기록 실패·지연이 입장 응답에 보이지 않는다.
      */
     @Override
     public EnterLiveView enter(EnterLiveCommand command) {
@@ -58,9 +65,15 @@ public class EnterLiveService implements EnterLiveUseCase {
         }
 
         // 회원은 신원 기반 토큰, 게스트(미인증)는 에페메랄 GUEST 토큰 — 둘 다 채팅 입장은 가능(GUEST는 수신 전용).
-        String roomToken = command.isAuthenticated()
-                ? issueRoomToken(command, room)
-                : issueGuestToken(command.roomId());
+        String roomToken;
+        if (command.isAuthenticated()) {
+            roomToken = issueRoomToken(command, room);
+            // 성공한 회원 입장만 — 거부·게스트는 여기 오지 않는다. 발급 <b>뒤</b>에 두므로, 발급자를 감싸는 데코레이터(dev 의
+            // 서명 캐시 등)가 붙어도 재접속은 같은 길로 기록된다.
+            recentViewRecorder.record(command.userId(), command.roomId(), timeProvider.now());
+        } else {
+            roomToken = issueGuestToken(command.roomId());
+        }
 
         log.info("live 입장. roomId={}, authenticated={}", command.roomId(), command.isAuthenticated());
         return new EnterLiveView(room.hlsUrl(), roomToken);
