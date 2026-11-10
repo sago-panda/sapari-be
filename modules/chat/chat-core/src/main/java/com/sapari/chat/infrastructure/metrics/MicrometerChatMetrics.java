@@ -65,6 +65,11 @@ public class MicrometerChatMetrics implements ChatMetrics {
     }
 
     @Override
+    public void inboundFrameDropped() {
+        safe(() -> registry.counter(ChatMeterNames.INBOUND_DROPPED).increment());
+    }
+
+    @Override
     public void persistTimedOut(PersistStage stage) {
         safe(() -> registry.counter(ChatMeterNames.PERSIST_TIMEOUT,
                 ChatMeterNames.TAG_STAGE, tag(stage)).increment());

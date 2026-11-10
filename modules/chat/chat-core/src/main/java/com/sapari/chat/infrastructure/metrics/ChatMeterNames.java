@@ -63,6 +63,9 @@ final class ChatMeterNames {
     /** 탈퇴 신청 기록을 쓰지 못한 건수. */
     static final String WITHDRAWAL_RECORD_FAILED = "chat.withdrawal.record.failed";
 
+    /** 세션당 인바운드 상한을 넘어 읽지 않고 버린 프레임 수. */
+    static final String INBOUND_DROPPED = "chat.inbound.dropped";
+
     static final String TAG_POLICY = "policy";
     static final String TAG_CHECKPOINT = "checkpoint";
     static final String TAG_FAILURE = "failure";

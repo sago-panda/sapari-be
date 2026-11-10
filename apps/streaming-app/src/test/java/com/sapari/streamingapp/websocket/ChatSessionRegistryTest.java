@@ -1069,6 +1069,62 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("인바운드 상한 — 버스트까지 받고 그 다음 프레임부터 버린다(연결은 유지)")
+    void inbound_cap_drops_after_burst() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+
+        // when: 시간이 거의 흐르지 않는 사이 버스트만큼 보낸다
+        for (int i = 0; i < ChatSessionRegistry.INBOUND_FRAME_BURST; i++) {
+            assertThat(registry.shouldDropInbound("s1")).as("%d번째 프레임", i + 1).isFalse();
+        }
+
+        // then
+        assertThat(registry.shouldDropInbound("s1")).isTrue();
+        assertThat(registry.isTerminating("s1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("인바운드 상한 — 간격 하나가 지나면 한 칸이 돌아온다")
+    void inbound_cap_refills_one_frame_per_interval() {
+        // given: 버스트를 다 쓴 상태
+        long interval = ChatSessionRegistry.INBOUND_FRAME_INTERVAL_NANOS;
+        long t0 = 1_000_000_000L;
+        java.util.concurrent.atomic.AtomicLong allowedAt = new java.util.concurrent.atomic.AtomicLong(t0);
+        for (int i = 0; i < ChatSessionRegistry.INBOUND_FRAME_BURST; i++) {
+            assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0)).isTrue();
+        }
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0)).isFalse();
+
+        // when & then: 간격 직전엔 아직 없고, 간격이 지나면 정확히 한 칸
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0 + interval - 1)).isFalse();
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0 + interval)).isTrue();
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0 + interval)).isFalse();
+    }
+
+    @Test
+    @DisplayName("인바운드 상한 — 오래 쉬어도 몫은 버스트까지만 쌓인다")
+    void inbound_cap_idle_credit_is_capped_at_burst() {
+        // given: 등록 직후 아무것도 안 보내고 한참(버스트를 채우고도 남는 시간) 지났다
+        long t0 = 1_000_000_000L;
+        java.util.concurrent.atomic.AtomicLong allowedAt = new java.util.concurrent.atomic.AtomicLong(t0);
+        long later = t0 + Duration.ofMinutes(10).toNanos();
+
+        // when & then
+        for (int i = 0; i < ChatSessionRegistry.INBOUND_FRAME_BURST; i++) {
+            assertThat(ChatSessionRegistry.admitInbound(allowedAt, later)).as("%d번째 프레임", i + 1).isTrue();
+        }
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, later)).isFalse();
+    }
+
+    @Test
+    @DisplayName("인바운드 상한 — 모르는 세션은 버리지 않는다(상한은 등록된 세션의 상태다)")
+    void inbound_cap_unknown_session_is_not_dropped() {
+        // when & then
+        assertThat(registry.shouldDropInbound("없는세션")).isFalse();
+    }
+
+    @Test
     @DisplayName("거부 응답 솎기 — 모르는 세션엔 답하지 않는다")
     void rejection_reply_unknown_session_is_not_answered() {
         // when & then

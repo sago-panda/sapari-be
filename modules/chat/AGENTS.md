@@ -535,6 +535,11 @@ save → publish. Zero-cost checks first; reordering makes a rejected guest cost
 
 - **`concatMap`, never `flatMap`** on inbound frames — flatMap's 256 concurrency lets a pipelining client
   bypass the local rate-limit window entirely.
+- **Per-session inbound cap before parsing** (`ChatSessionRegistry.shouldDropInbound`: 10 frames/s, burst 20,
+  GCRA). Parsing runs on the event loop before the rate limit, and the rate limit only thins the *replies*,
+  so without it one client at line rate puts its parse cost straight on the loop. Over-cap frames get **no
+  reply** and the connection stays; the only signal is `chat.inbound.dropped`. Measured parse cost for a
+  4 KiB frame: 2.5µs valid … 27µs repeated unknown keys (production ObjectMapper, M3 Pro, single thread).
 - **Persist before publish**, so `DuplicateKey` is caught before a duplicate broadcast.
 - **Publish failure is absorbed**: saved + ACK'd is a success; cross-pod delivery is best-effort.
 - Rate-limit exemption is `role + room ownership`, not role — a seller in someone else's room is a viewer.
@@ -1196,6 +1201,7 @@ conditional variant really does fall back to NOOP.
 | `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
 | `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
 | `chat.withdrawal.record.failed` | — | a pod could not write `chat:withdrawing:{userId}`; the close still ran, so the pre-withdrawal room token re-enters until it expires |
+| `chat.inbound.dropped` | — | a frame over the per-session inbound cap was dropped unread and unanswered; normal clients do not reach the cap |
 
 ⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
 is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged

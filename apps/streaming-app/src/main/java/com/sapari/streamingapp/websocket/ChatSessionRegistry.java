@@ -75,6 +75,23 @@ public class ChatSessionRegistry implements ChatSessionManager {
     private static final long REJECTION_REPLY_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos();
 
     /**
+     * 세션당 인바운드 프레임 상한 — 간격 하나에 한 프레임, 연달아서는 {@link #INBOUND_FRAME_BURST} 까지.
+     *
+     * <p><b>막으려는 것은 파싱 비용이다.</b> 프레임은 이벤트 루프에서 JSON 으로 읽히고, 레이트리밋과 거부
+     * 응답 솎기는 둘 다 그 파싱 <b>뒤</b>에 있다. 그래서 이것이 없으면 회선 속도로 미는 클라 하나가 프레임마다
+     * 파싱 비용을 이벤트 루프에 얹는다. 4KiB 프레임의 파싱은 모양에 따라 2.5µs(정상)~27µs(모르는 키 반복, 파싱은
+     * 성공)였다(실측: 운영 ObjectMapper 설정, M3 Pro 단일 스레드, 15배치 중앙값). 이 상한에서 세션 하나가
+     * 지속으로 쓰는 파싱 시간은 최악 모양으로 초당 약 0.27ms(27µs × 10)다.
+     *
+     * <p><b>정상 클라는 닿지 않는다.</b> 회원은 레이트리밋이 3초에 한 건이고, 레이트리밋이 면제되는 방주인도
+     * 사람이 치는 속도다. 이 값은 정상 사용량을 재서 정한 것이 아니라 그보다 넉넉히 둔 것이다.
+     */
+    static final long INBOUND_FRAME_INTERVAL_NANOS = Duration.ofMillis(100).toNanos();
+
+    /** 쉬다가 연달아 받을 수 있는 프레임 수. */
+    static final int INBOUND_FRAME_BURST = 20;
+
+    /**
      * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
      *
      * <p>락 보유 구간은 큐 적재 + 드레인(직렬화)이라 정상 상태엔 수십 µs 수준이고 5ms는 두 자릿수 여유다.
@@ -677,7 +694,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
             AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
             AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded,
-            AtomicLong lastInboundNanos) {
+            AtomicLong lastInboundNanos, AtomicLong inboundAllowedAtNanos) {
     }
 
     /**
@@ -777,6 +794,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 new AtomicLong(System.nanoTime()),
                 new AtomicBoolean(),
                 // 생존 시계도 지금부터 — 방금 핸드셰이크를 마쳤으므로 응답이 없는 상태가 아니다.
+                new AtomicLong(System.nanoTime()),
+                // 인바운드 상한도 지금부터 — 버스트 전부를 쥐고 시작한다.
                 new AtomicLong(System.nanoTime()));
 
         boolean[] admitted = {false};
@@ -1334,6 +1353,38 @@ public class ChatSessionRegistry implements ChatSessionManager {
         long last = ls.lastRejectionReplyNanos().get();
         return now - last >= REJECTION_REPLY_INTERVAL_NANOS
                 && ls.lastRejectionReplyNanos().compareAndSet(last, now);
+    }
+
+    /**
+     * transport 전용: 이 프레임을 읽지 않고 버려야 하는가 — 세션당 인바운드 상한을 넘었으면 true.
+     *
+     * <p>버린 프레임에는 아무것도 답하지 않는다. 답하면 그 응답이 다시 비용이 되고, 상한을 넘는 속도는
+     * 정상 클라가 내지 않으므로 알려 줄 상대도 없다. 연결은 끊지 않는다.
+     *
+     * <p>모르는 세션은 버리지 않는다 — 상한은 등록된 세션의 상태라 셀 것이 없다.
+     */
+    public boolean shouldDropInbound(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        return ls != null && !admitInbound(ls.inboundAllowedAtNanos(), System.nanoTime());
+    }
+
+    /**
+     * GCRA — {@code allowedAt} 은 받은 프레임을 간격 하나씩 줄 세웠을 때 그 줄이 끝나는 시각이다. 받을 때마다
+     * 간격 하나씩 민다. 줄 끝이 지금보다 {@code (버스트 - 1) × 간격} 넘게 앞서 있으면 버스트를 다 쓴 것이다.
+     * 줄 끝이 지나간 과거면 지금부터 다시 세운다 — 쉬는 동안 몫이 버스트보다 많이 쌓이지 않는 이유다.
+     *
+     * <p>읽고 쓰기가 원자적이지 않다. 호출자가 한 세션의 프레임을 하나씩 차례로 처리하므로
+     * ({@code ChatWebSocketHandler.runInbound} 의 {@code concatMap}) 같은 세션에서 겹쳐 불리지 않는다.
+     * nanoTime 은 원점이 임의라 크기 비교 대신 차이의 부호로 비교한다.
+     */
+    static boolean admitInbound(AtomicLong allowedAt, long now) {
+        long at = allowedAt.get();
+        long base = at - now > 0 ? at : now;
+        if (base - now > (INBOUND_FRAME_BURST - 1) * INBOUND_FRAME_INTERVAL_NANOS) {
+            return false;
+        }
+        allowedAt.set(base + INBOUND_FRAME_INTERVAL_NANOS);
+        return true;
     }
 
     /**

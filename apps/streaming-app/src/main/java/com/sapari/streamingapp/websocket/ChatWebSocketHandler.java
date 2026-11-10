@@ -511,6 +511,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         if (registry.isTerminating(sid)) {
             return Mono.empty();
         }
+        // 상한은 파싱보다 앞이어야 한다 — 막으려는 것이 파싱 비용이고, 레이트리밋은 파싱 뒤라 그것을 못 줄인다.
+        if (registry.shouldDropInbound(sid)) {
+            metrics.inboundFrameDropped();
+            return Mono.empty();
+        }
         InboundMessage in;
         try {
             in = objectMapper.readValue(payload, InboundMessage.class);

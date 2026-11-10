@@ -59,7 +59,7 @@ public interface ChatMetrics {
      *
      * <p><b>이 메서드가 생기기 전까지</b> 이 축의 지표가 0건이었다 — 그때
      * {@code ChatMeterNames} 여섯과 {@code ChatSessionGaugeConfig} 다섯 중 구독을 보는 것이
-     * 하나도 없었다(지금은 이 이름이 더해져 각각 일곱·여섯이다). 신호는 최대 30초마다 남는
+     * 하나도 없었다(이 이름이 그 첫 번째다). 신호는 최대 30초마다 남는
      * {@code log.warn} 한 줄뿐이었고, 그 줄을 놓치면 <b>구독이 죽은 파드가 Ready 로 서 있는</b>
      * 상태를 밖에서 알 수 없다.
      *
@@ -85,6 +85,12 @@ public interface ChatMetrics {
     void withdrawalRecordFailed();
 
     /**
+     * 세션당 인바운드 상한을 넘은 프레임을 읽지 않고 버렸다. 클라에게는 아무것도 돌아가지 않으므로
+     * 이 수가 유일한 신호다. 정상 클라가 닿는 속도가 아니라서, 오르면 그 세션은 회선 속도로 미는 쪽이다.
+     */
+    void inboundFrameDropped();
+
+    /**
      * 아무것도 하지 않는 구현. <b>registry 없이도 뜨는 것이 포트 구현의 기본값이어야 하기 때문</b>이고,
      * 실제 용도는 단위 테스트가 registry 를 세우지 않고 돌게 하는 것이다.
      */
@@ -98,5 +104,6 @@ public interface ChatMetrics {
         @Override public void persistTimedOut(PersistStage stage) { }
         @Override public void subscriptionResubscribed(ChatSubscription subscription) { }
         @Override public void withdrawalRecordFailed() { }
+        @Override public void inboundFrameDropped() { }
     };
 }
