@@ -30,6 +30,7 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public int listViewerCountUnavailable;
     public int listRefreshSaturated;
     public int listRefreshFailed;
+    public final List<RecentViewDropReason> recentViewDrops = new ArrayList<>();
 
     @Override
     public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
@@ -65,6 +66,11 @@ public class RecordingLiveMetrics implements LiveMetrics {
     @Override
     public void listRefreshFailed() {
         listRefreshFailed++;
+    }
+
+    @Override
+    public void recentViewDropped(RecentViewDropReason reason) {
+        recentViewDrops.add(reason);
     }
 
     @Override

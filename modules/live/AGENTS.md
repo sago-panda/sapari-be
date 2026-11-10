@@ -322,6 +322,18 @@ through a bounded stream, not `@RequestBody byte[]`.
   room can drop out. Over `MAX_LIVE_ROOMS` the round skips pruning and counts `live.list.refresh.saturated`.
 - **Upcoming list** (`GET /upcoming`) is DB, `status IN (SCHEDULED, READY)` — inclusion only, so new states
   stay out. Cursor sort key is `scheduled_at` in epoch **micros** (column precision; millis breaks keyset ties).
+- **Recent views** (`GET /recent`, SPR-172): `enter` hands a successful **member** entry to `RecentViewRecorder` after
+  the token is issued — guests, 429/503 and rejected entries never get there. The adapter runs the upsert on its own
+  2-thread / 1,000-queue pool (`live.recent-view.*`; owned by `RecentViewConfig`, **not a bean** — an `Executor` bean makes Boot drop its default
+  `applicationTaskExecutor`), so the request thread holds no connection and never waits. Queue full or write
+  failure **drops and counts** `live.recent_view.dropped{reason}` — the entry already succeeded. One row per
+  (user, room); the upsert only moves `viewed_at` when the new time is **>1 min later** — reordered writes never move
+  time back, and reconnect storms don't rewrite an indexed column (no HOT update → bloat/WAL). Listed for 90 days; older rows are not deleted.
+  `/recent` sits above the `/api/v1/lives/**` SELLER floor in `LiveSecurityConfig` — buyers use it.
+  `RecentViewConfig` takes `RecentViewWriter` in its **constructor** so the pool shuts down before the DataSource
+  (as a factory-method argument only, the pool outlived it and every deploy counted leftovers as `failed`).
+  ⚠️ **Retention unresolved (follow-up ticket)**: viewing history is per-member behaviour data, yet neither >90-day
+  rows nor withdrawn members' rows are ever deleted.
 
 ## Enter rate limit — the signing ceiling
 

@@ -39,6 +39,9 @@ final class LiveMeterNames {
     /** 목록 재조정 회차가 예외로 끝난 수. */
     static final String LIST_REFRESH_FAILED = "live.list.refresh.failed";
 
+    /** 버린 최근 본 기록 수. 이유는 {@code reason} 태그(rejected·failed). */
+    static final String RECENT_VIEW_DROPPED = "live.recent_view.dropped";
+
     static final String TAG_JOB = "job";
     static final String TAG_WRITE = "write";
     static final String TAG_OUTCOME = "outcome";

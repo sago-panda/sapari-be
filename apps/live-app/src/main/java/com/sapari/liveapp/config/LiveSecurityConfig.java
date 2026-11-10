@@ -409,6 +409,9 @@ public class LiveSecurityConfig {
                         // 다른 답이다. 끝난 방을 되살리는 데 쓰이지 못하게 막는 것은 역할이 아니라
                         // 유스케이스의 LIVE 검증이다(ClearRoomEndedMarkerService).
                         .requestMatchers("/api/v1/lives/*/chat/ended").hasAnyRole("SELLER", "ADMIN")
+                        // 최근 본 라이브는 구매자도 쓰는 회원 경로 — 아래 판매자 바닥보다 먼저 와야 한다.
+                        // 메서드를 한정하지 않는 이유는 위 /chat/bans/** 주석과 같다(폴스루에 역할 바닥).
+                        .requestMatchers("/api/v1/lives/recent").authenticated()
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

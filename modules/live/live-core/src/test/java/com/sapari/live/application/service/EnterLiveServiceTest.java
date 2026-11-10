@@ -19,12 +19,15 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.RecentViewRecorder;
 import com.sapari.live.application.port.RoomTokenClaims;
 import com.sapari.live.application.port.RoomTokenIssuer;
 import com.sapari.live.command.EnterLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveErrorCode;
+import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.exception.UnsupportedRoleException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.StreamInfo;
@@ -38,6 +41,10 @@ class EnterLiveServiceTest {
     private LiveRoomRepository liveRoomRepository;
     @Mock
     private RoomTokenIssuer roomTokenIssuer;
+    @Mock
+    private RecentViewRecorder recentViewRecorder;
+    @Mock
+    private TimeProvider timeProvider;
     @InjectMocks
     private EnterLiveService enterLiveService;
 
@@ -205,6 +212,72 @@ class EnterLiveServiceTest {
                 .extracting(e -> ((LiveDomainException) e).getErrorCode())
                 .isEqualTo(LiveErrorCode.LIVE_ENTER_NOT_ALLOWED);
         verify(roomTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any());
+    }
+
+    // ── 최근 본 라이브 기록(SPR-172) ──────────────────────────────────────────────
+
+    @Test
+    @DisplayName("회원 입장이 성공하면 토큰 발급 뒤에 (회원, 방, 지금) 을 기록기에 한 번 넘긴다")
+    void recordsRecentView_afterTokenIssued_whenMemberEnters() {
+        UUID userId = UUID.randomUUID();
+        Instant now = Instant.parse("2026-11-10T09:00:00.123456Z");
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+        given(roomTokenIssuer.issue(org.mockito.ArgumentMatchers.any())).willReturn("signed-token");
+        given(timeProvider.now()).willReturn(now);
+
+        enterLiveService.enter(new EnterLiveCommand(roomId, userId, "USER", "구매자", "b@sapari.com"));
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(roomTokenIssuer, recentViewRecorder);
+        order.verify(roomTokenIssuer).issue(org.mockito.ArgumentMatchers.any());
+        order.verify(recentViewRecorder).record(userId, roomId, now);
+        org.mockito.Mockito.verifyNoMoreInteractions(recentViewRecorder);
+    }
+
+    @Test
+    @DisplayName("게스트 입장은 기록하지 않는다")
+    void doesNotRecord_whenGuest() {
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+        given(roomTokenIssuer.issue(org.mockito.ArgumentMatchers.any())).willReturn("guest-token");
+
+        enterLiveService.enter(new EnterLiveCommand(roomId, null, null, null, null));
+
+        org.mockito.Mockito.verifyNoInteractions(recentViewRecorder);
+    }
+
+    @Test
+    @DisplayName("없는 방이면 기록하지 않는다")
+    void doesNotRecord_whenRoomMissing() {
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> enterLiveService.enter(
+                new EnterLiveCommand(roomId, UUID.randomUUID(), "USER", "n", "e@e.com")))
+                .isInstanceOf(LiveNotFoundException.class);
+        org.mockito.Mockito.verifyNoInteractions(recentViewRecorder);
+    }
+
+    @Test
+    @DisplayName("방송 중이 아니어서 거부되면 기록하지 않는다")
+    void doesNotRecord_whenNotLive() {
+        Instant now = Instant.parse("2026-07-03T00:00:00Z");
+        LiveRoom scheduled = LiveRoom.create(sellerId, "t", "d", "n", "http://th", now.plusSeconds(3600), now)
+                .toBuilder().id(roomId).build();
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(scheduled));
+
+        assertThatThrownBy(() -> enterLiveService.enter(
+                new EnterLiveCommand(roomId, UUID.randomUUID(), "USER", "n", "e@e.com")))
+                .isInstanceOf(InvalidLiveStateException.class);
+        org.mockito.Mockito.verifyNoInteractions(recentViewRecorder);
+    }
+
+    @Test
+    @DisplayName("토큰 발급이 실패하면(지원하지 않는 role) 기록하지 않는다")
+    void doesNotRecord_whenTokenIssuanceFails() {
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(liveRoom));
+
+        assertThatThrownBy(() -> enterLiveService.enter(
+                new EnterLiveCommand(roomId, UUID.randomUUID(), "UNKNOWN", "n", "e@e.com")))
+                .isInstanceOf(UnsupportedRoleException.class);
+        org.mockito.Mockito.verifyNoInteractions(recentViewRecorder);
     }
 
     /**

@@ -10,6 +10,7 @@ import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
+import com.sapari.live.application.port.RecentViewDropReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.ReconcileLockResult;
@@ -62,6 +63,10 @@ class CountingLiveMetrics implements LiveMetrics {
 
     @Override
     public void listRefreshFailed() {
+    }
+
+    @Override
+    public void recentViewDropped(RecentViewDropReason reason) {
     }
 
     @Override

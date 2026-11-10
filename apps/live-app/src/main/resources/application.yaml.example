@@ -276,6 +276,14 @@ live:
       member-burst: ${LIVE_ENTER_MEMBER_BURST:1000}     # permits 이상이어야 부팅된다
       member-shards: ${LIVE_ENTER_MEMBER_SHARDS:64}     # 1~4096 이고 member-permits 이하여야 부팅된다
                                                         # (상한이 없으면 오타가 거대한 배열을 만든다)
+  # 최근 본 라이브 기록 실행기(SPR-172). 회원 입장마다 비동기 upsert 를 하나 넣는다.
+  # 넘치거나 실패한 기록은 버리고 live.recent_view.dropped{reason=rejected|failed} 로 센다 — 입장은 영향 없다.
+  # 큐 기본값이 위 member-burst 와 같아서, 큰 방송 시작에 rejected 가 이어지면 queue-capacity 를 먼저 올린다.
+  # threads 는 기록이 동시에 쥐는 커넥션 수이기도 하다 — 올리면 DB 장애 중 상태 전이와 풀(Hikari 기본 10)을 나눠 쓴다.
+  # 0 이하는 부팅이 실패한다.
+  recent-view:
+    threads: ${LIVE_RECENT_VIEW_THREADS:2}
+    queue-capacity: ${LIVE_RECENT_VIEW_QUEUE_CAPACITY:1000}
 
 # ---------------------------------------------------------------------------
 # LiveKit
