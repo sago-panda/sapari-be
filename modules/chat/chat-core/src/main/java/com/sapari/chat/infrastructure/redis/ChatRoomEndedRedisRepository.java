@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.redis;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -13,7 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
- * chat:room:{roomId}:ended 마커 어댑터 — 종료 사실 기록(SET)·조회(EXISTS).
+ * chat:room:{roomId}:ended 마커 어댑터 — 종료 사실 기록(SET)·조회(EXISTS, live 의 종료 키도 함께 본다).
  *
  * <p>이 키는 강퇴 SET과 달리 타입 충돌에 노출되지 않는다 — SET은 기존 타입을 덮어쓰고 EXISTS는 타입을
  * 보지 않아, 남이 같은 이름을 먼저 써도 WRONGTYPE이 나지 않는다.
@@ -29,7 +30,8 @@ public class ChatRoomEndedRedisRepository implements ChatRoomEndedRepository {
      * <p><b>하한은 세션 수명({@code chat.session.max-lifetime})이다.</b> 종료 신호는 Pub/Sub 이라 구독이
      * 끊겨 있던 Pod 는 그것을 통째로 놓치고, 그 Pod 의 세션은 종료 뒤에도 수명이 다할 때까지 남는다.
      * 그 세션을 막는 것은 전송 경로의 재확인({@code EntryGate.isRoomAlive})뿐이고 그 재확인이 읽는 것이
-     * 이 마커다. 마커가 수명보다 먼저 사라지면 그 뒤의 전송은 종료 판정을 통과한다. 수명 지터는 아래로만
+     * 이 마커다(live 의 종료 키도 함께 읽지만 그 키는 없을 수 있다 — {@link #isEnded}). 마커가 수명보다
+     * 먼저 사라지면 그 뒤의 전송은 종료 판정을 통과한다. 수명 지터는 아래로만
      * 흩으므로 지터 전 수명이 그대로 하한이다. 새 입장은 이 하한에 따로 걸리지 않는다 — 입장도 이 마커를
      * 읽고, 토큰으로 입장할 수 있는 기간은 {@code min(exp, 수명)} 이라 수명 안에 들어온다.
      *
@@ -71,8 +73,30 @@ public class ChatRoomEndedRedisRepository implements ChatRoomEndedRepository {
                 .then();
     }
 
+    /**
+     * chat 마커 또는 live 의 종료 키 중 하나라도 있으면 끝난 방이다.
+     *
+     * <p>chat 마커는 종료 신호(Pub/Sub)를 받은 Pod 가 쓰고, 공유 Redis 라 신호를 놓친 Pod 도 그것을 읽는다.
+     * 그래서 마커가 비는 것은 <b>어느 Pod 도 쓰지 못했을 때</b>다 — 발행 실패, 그 순간 전 Pod 의 구독 단절,
+     * 마커 쓰기 실패. live 의 종료 키는 신호를 거치지 않는 기록이라 그 경우를 메운다.
+     *
+     * <p>live 키가 <b>없다고</b> 진행 중이라는 뜻은 아니다. live 는 미디어 정리 뒤에 키를 쓰고 쓰기 실패를
+     * 재시도하지 않는다. 그래서 두 키는 둘 중 하나만 있어도 종료이고, 어느 쪽도 다른 쪽을 대신하지 않는다.
+     */
     @Override
     public Mono<Boolean> isEnded(UUID roomId) {
-        return redisTemplate.hasKey(ChatRedisKeys.roomEnded(roomId));
+        return redisTemplate.countExistingKeys(List.of(ChatRedisKeys.roomEnded(roomId), liveRoomEnded(roomId)))
+                .map(count -> count > 0);
+    }
+
+    /**
+     * live 가 소유하는 종료 키. 값(종료 시각 epoch millis)은 읽지 않는다 — 키가 있는 것이 신호다.
+     *
+     * <p>live 쪽 정의({@code LiveRedisKeys.roomEnded})가 package-private 이라 문자열을 복사해 둔다. 두
+     * 정의를 함께 검사하는 장치는 없으니, 한쪽 이름을 바꾸면 다른 쪽도 같이 바꿔야 한다. live 채널 이름을
+     * {@code RedisLiveRoomEndedSource} 가 따로 들고 있는 것과 같은 이유로 {@link ChatRedisKeys} 에 두지 않는다.
+     */
+    private static String liveRoomEnded(UUID roomId) {
+        return "live:room:ended:" + roomId;
     }
 }

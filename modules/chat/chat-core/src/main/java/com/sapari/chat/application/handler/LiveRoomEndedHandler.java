@@ -89,7 +89,7 @@ public class LiveRoomEndedHandler {
      */
     Mono<Void> onRoomEnded(UUID roomId) {
         return keepGoing(roomEndedRepository.markEnded(roomId), roomId,
-                        "종료 마커 기록 실패 — 이 방의 종료 판정이 전 세션에서 무력화된다(재입장·전송 모두)", true)
+                        "종료 마커 기록 실패 — live 종료 키마저 없으면 이 방의 종료 판정이 전 세션에서 무력화된다(재입장·전송 모두)", true)
                 .then(keepGoing(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED), roomId,
                         "종료 알림 전송 실패 — 클라는 사유 없이 끊긴다", true))
                 .then(keepGoing(sessionManager.closeAll(roomId), roomId,

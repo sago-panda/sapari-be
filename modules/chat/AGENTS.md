@@ -461,12 +461,16 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 | `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and only this marker stops their sends); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
-| `chat:withdrawing:{userId}` | String | key presence = withdrawal requested; written by **every** streaming pod on `user:account:withdrawing` before it closes that user's sessions, read by `EntryGate`. TTL `chat.withdrawal.record-ttl` (24h) — floor = the remaining life of a room token issued before the withdrawal (`live.room-token.expiration-seconds`, 90s default; chat cannot read it, so no boot check). No cancel path exists today; one that is added must delete this key |
+| `chat:withdrawing:{userId}` | String | key presence = withdrawal requested; written by **every** streaming pod on `user:account:withdrawing` before it closes that user's sessions, read by `EntryGate`. TTL `chat.withdrawal.record-ttl` (24h) — floor = the remaining life of a room token issued before the withdrawal (`live.room-token.expiration-seconds`, 90s default; chat cannot read it, but live refuses to boot above 300s, so any value ≥ 300s holds). No cancel path exists today; one that is added must delete this key |
 | `chat:ban:ver:{userId}` | String | highest change version that reached the mirror; 1d TTL (only has to outlive one request's commit→Redis gap). Writes at or below it are rejected |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
 
 `live:room:ended` is **live's channel** — subscribed, never written, and deliberately not in `ChatRedisKeys`.
+`live:room:ended:{roomId}` is **live's durable ended key** (value endedAt millis, TTL 70m) — read by
+`ChatRoomEndedRedisRepository.isEnded` together with the chat marker in one `EXISTS`, never written, and
+likewise not in `ChatRedisKeys`. The string is copied from live's package-private `LiveRedisKeys`; nothing
+checks the two against each other.
 
 Only the kick SET is exposed to WRONGTYPE (`SISMEMBER` type-checks). `SET`/`EXISTS` keys are not, so the
 corruption split is not widened to them.
@@ -587,8 +591,11 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
 `live:room:ended` is Pub/Sub with no persistence: a pod whose subscription was down misses it entirely, and
 its sessions keep writing to a finished room.
 
-1. Send path re-checks the marker on a **30s window**, and **stops asking once ended** — a window alone only
-   blocks one frame per interval.
+1. Send path re-checks the ended state on a **30s window**, and **stops asking once ended** — a window alone only
+   blocks one frame per interval. "Ended" = the chat marker **or** live's `live:room:ended:{roomId}`. The
+   marker is shared, so a pod that missed the signal still reads what other pods wrote; live's key covers the
+   case where **no** pod wrote it. Its absence proves nothing — live writes it after media cleanup and does
+   not retry a failed write.
 2. On discovery it closes **that session only** (1000, same frames as the normal path). Room-wide closing
    would mean duplicating the 5-step handler in transport.
 3. Session HASH TTL is the last backstop.
