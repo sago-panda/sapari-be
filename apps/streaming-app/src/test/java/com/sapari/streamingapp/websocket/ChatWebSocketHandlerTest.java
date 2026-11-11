@@ -1034,6 +1034,64 @@ class ChatWebSocketHandlerTest {
     }
 
     @Test
+    @DisplayName("인바운드 상한을 넘은 프레임은 파싱·응답 없이 버리고 지표만 남긴다")
+    void inbound_over_cap_is_dropped_silently() {
+        // given: 상한을 넘은 세션. 프레임 자체는 정상이라, 버리지 않으면 전송까지 간다
+        io.micrometer.core.instrument.MeterRegistry meters =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        ChatWebSocketHandler metered = new ChatWebSocketHandler(
+                mock(RoomTokenVerifier.class), entryGate, registry, sendUseCase, subscriber, connections,
+                systemMessageService, new SessionTimeouts(Duration.ofHours(1), PING_INTERVAL, LIVENESS_DEADLINE),
+                new com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics(meters));
+        given(registry.shouldDropInbound("s1")).willReturn(true);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.create(metered.runInbound(Flux.just(
+                        text("{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}")), "s1", session))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then: 아무것도 돌려주지 않는다 — 거부 응답을 주면 그 응답이 다시 비용이 된다
+        then(sendUseCase).should(never()).send(any());
+        then(entryGate).should(never()).isRoomAlive(anyString(), any());
+        then(registry).should(never()).shouldReplyToRejection(anyString());
+        then(registry).should(never()).sendToSession(anyString(), any());
+        assertThat(meters.get("chat.inbound.dropped").counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("인바운드 상한은 파싱보다 앞이다 — 상한을 넘은 깨진 프레임은 형식 거부 경로에도 닿지 않는다")
+    void inbound_cap_runs_before_parse() {
+        // given: 파싱하면 형식 거부(솎기 경로)로 가는 프레임
+        given(registry.shouldDropInbound("s1")).willReturn(true);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.create(handler.runInbound(Flux.just(text("{not json")), "s1", session))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        then(registry).should(never()).shouldReplyToRejection(anyString());
+    }
+
+    @Test
+    @DisplayName("인바운드 상한은 디코드보다 앞이다 — 버린 프레임은 문자열로 읽히지 않는다")
+    void inbound_cap_runs_before_decode() {
+        // given
+        given(registry.shouldDropInbound("s1")).willReturn(true);
+        WebSocketMessage frame = mock(WebSocketMessage.class);
+        given(frame.getType()).willReturn(WebSocketMessage.Type.TEXT);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.create(handler.runInbound(Flux.just(frame), "s1", session))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        then(frame).should(never()).getPayloadAsText();
+    }
+
+    @Test
     @DisplayName("파싱은 됐지만 커맨드에서 거부된 프레임도 솎기 경로를 탄다 — 응답 비용은 거부 사유를 가리지 않는다")
     void inbound_routes_command_rejection_through_throttle() {
         // given: {}는 파싱에 성공하고 커맨드 생성에서 떨어진다
@@ -1290,8 +1348,8 @@ class ChatWebSocketHandlerTest {
                 .delayElement(Duration.ofMillis(20))
                 .doOnNext(v -> inFlight.decrementAndGet()));
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
-        Flux<String> payloads = Flux.range(1, 5)
-                .map(i -> "{\"type\":\"NORMAL\",\"content\":\"m" + i + "\",\"clientMsgId\":\"c" + i + "\"}");
+        Flux<WebSocketMessage> payloads = Flux.range(1, 5)
+                .map(i -> text("{\"type\":\"NORMAL\",\"content\":\"m" + i + "\",\"clientMsgId\":\"c" + i + "\"}"));
 
         // when
         StepVerifier.create(handler.runInbound(payloads, "s1", session))
@@ -1318,10 +1376,10 @@ class ChatWebSocketHandlerTest {
                     .thenReturn(view("id"));
         });
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
-        Flux<String> payloads = Flux.just(
-                "{\"type\":\"NORMAL\",\"content\":\"m1\",\"clientMsgId\":\"c1\"}",
-                "{\"type\":\"NORMAL\",\"content\":\"m2\",\"clientMsgId\":\"c2\"}",
-                "{\"type\":\"NORMAL\",\"content\":\"m3\",\"clientMsgId\":\"c3\"}");
+        Flux<WebSocketMessage> payloads = Flux.just(
+                text("{\"type\":\"NORMAL\",\"content\":\"m1\",\"clientMsgId\":\"c1\"}"),
+                text("{\"type\":\"NORMAL\",\"content\":\"m2\",\"clientMsgId\":\"c2\"}"),
+                text("{\"type\":\"NORMAL\",\"content\":\"m3\",\"clientMsgId\":\"c3\"}"));
 
         // when
         StepVerifier.create(handler.runInbound(payloads, "s1", session)).expectComplete().verify(VERIFY_CEILING);
@@ -1352,5 +1410,11 @@ class ChatWebSocketHandlerTest {
     private ChatMessageView view(String id) {
         return new ChatMessageView(id, roomId, userId, "닉", null, "BUYER", "NORMAL",
                 "hi", null, "c1", Instant.parse("2026-06-11T00:00:00Z"));
+    }
+
+    private static WebSocketMessage text(String payload) {
+        return new WebSocketMessage(WebSocketMessage.Type.TEXT,
+                org.springframework.core.io.buffer.DefaultDataBufferFactory.sharedInstance
+                        .wrap(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 }

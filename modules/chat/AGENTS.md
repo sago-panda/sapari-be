@@ -458,15 +458,22 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 |---|---|---|
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
 | `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
-| `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and only this marker stops their sends); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
+| `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and their sends are stopped only by this marker or live's `live:room:ended:{roomId}`, which may be absent); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
-| `chat:withdrawing:{userId}` | String | key presence = withdrawal requested; written by **every** streaming pod on `user:account:withdrawing` before it closes that user's sessions, read by `EntryGate`. TTL `chat.withdrawal.record-ttl` (24h) — floor = the remaining life of a room token issued before the withdrawal (`live.room-token.expiration-seconds`, 90s default; chat cannot read it, so no boot check). No cancel path exists today; one that is added must delete this key |
+| `chat:withdrawing:{userId}` | String | key presence = withdrawal requested; written by **every** streaming pod on `user:account:withdrawing` before it closes that user's sessions, read by `EntryGate`. TTL `chat.withdrawal.record-ttl` (24h) — floor = the remaining life of a room token issued before the withdrawal (`live.room-token.expiration-seconds`, 90s default; chat cannot read it, but live refuses to boot above 300s, so the adapter refuses to boot below 300s — a copied number, nothing checks it against live's). No cancel path exists today; one that is added must delete this key |
 | `chat:ban:ver:{userId}` | String | highest change version that reached the mirror; 1d TTL (only has to outlive one request's commit→Redis gap). Writes at or below it are rejected |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
 
 `live:room:ended` is **live's channel** — subscribed, never written, and deliberately not in `ChatRedisKeys`.
+`live:room:ended:{roomId}` is **live's durable ended key** (value endedAt millis, TTL 70m) — read by
+`ChatRoomEndedRedisRepository.isEnded` together with the chat marker in one `EXISTS`, never written, and
+likewise not in `ChatRedisKeys`. The string is copied from live's package-private `LiveRedisKeys`; nothing
+checks the two against each other. Its **TTL is copied the other way**: live's `ROOM_ENDED_TTL` (70m) is a
+copy of `ENDED_TTL`. Raising `max-lifetime` (and so `ENDED_TTL`) passes chat's boot check while live's key
+still expires at 70m — tell live first. The one `EXISTS` covers two keys with no shared hash tag: fine on
+today's single-node Redis, `CROSSSLOT` on a cluster.
 
 Only the kick SET is exposed to WRONGTYPE (`SISMEMBER` type-checks). `SET`/`EXISTS` keys are not, so the
 corruption split is not widened to them.
@@ -531,6 +538,14 @@ save → publish. Zero-cost checks first; reordering makes a rejected guest cost
 
 - **`concatMap`, never `flatMap`** on inbound frames — flatMap's 256 concurrency lets a pipelining client
   bypass the local rate-limit window entirely.
+- **Per-session inbound cap before decoding** (`ChatWebSocketHandler.runInbound` → `ChatSessionRegistry.shouldDropInbound`:
+  10 frames/s, burst 20, GCRA). UTF-8 decode and JSON parse run on the event loop, and the rate limit and the
+  reply throttle both sit after them, so without it one client at line rate puts that cost straight on the
+  loop. A dropped frame costs one map lookup; receive/framing before it is bounded only by the 4 KiB frame
+  limit and the wire. Over-cap frames get **no reply** and the connection stays — the liveness tap in `handle`
+  must stay **ahead** of the cap or capped sessions get reaped as unresponsive. Measured for a 4 KiB frame:
+  parse 2.5µs valid … ~29µs unknown keys with nested-object values, decode ~2.3µs Korean (production
+  ObjectMapper, openjdk 21, 15-batch median).
 - **Persist before publish**, so `DuplicateKey` is caught before a duplicate broadcast.
 - **Publish failure is absorbed**: saved + ACK'd is a success; cross-pod delivery is best-effort.
 - Rate-limit exemption is `role + room ownership`, not role — a seller in someone else's room is a viewer.
@@ -587,8 +602,11 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
 `live:room:ended` is Pub/Sub with no persistence: a pod whose subscription was down misses it entirely, and
 its sessions keep writing to a finished room.
 
-1. Send path re-checks the marker on a **30s window**, and **stops asking once ended** — a window alone only
-   blocks one frame per interval.
+1. Send path re-checks the ended state on a **30s window**, and **stops asking once ended** — a window alone only
+   blocks one frame per interval. "Ended" = the chat marker **or** live's `live:room:ended:{roomId}`. The
+   marker is shared, so a pod that missed the signal still reads what other pods wrote; live's key covers the
+   case where **no** pod wrote it. Its absence proves nothing — live writes it after media cleanup and does
+   not retry a failed write.
 2. On discovery it closes **that session only** (1000, same frames as the normal path). Room-wide closing
    would mean duplicating the 5-step handler in transport.
 3. Session HASH TTL is the last backstop.
@@ -823,7 +841,7 @@ failing, and **a publish that arrives while the subscription is down** (Pub/Sub 
 messages are gone).
 
 **The bound then differs by axis.** On the **send** side it holds and does not depend on the signal:
-`EntryGate.isRoomAlive` re-reads the persisted ended-marker on the send path, so a stale session is closed on
+`EntryGate.isRoomAlive` re-reads the persisted ended-marker (and live's ended key) on the send path, so a stale session is closed on
 its next send (`terminateRoomEnded`) even with a dead subscription — bound = window + next send. On the
 **read-only** side it does not: that re-check exists only on the send path ("a receive-only session on the same
 pod is not closed until it sends"), and the remaining mechanism is room-ended cleanup, which rides **the same
@@ -950,7 +968,8 @@ one half. Both were investigated; the reasons differ.
   unit is `(user, room)` because a room token is scoped to one room and is **replayable within its ~90s
   TTL** (`modules/live/AGENTS.md`), so that pair is the narrowest thing that closes the replay window.
   ⚠️ **Three live-owned references still name the old symbol** and this side cannot fix them:
-  `modules/live/AGENTS.md:392` and `:402` cite `MAX_SESSIONS_PER_USER_PER_ROOM`, and
+  `modules/live/AGENTS.md` cites `MAX_SESSIONS_PER_USER_PER_ROOM` twice (the last bullet of "Enter rate
+  limit — the signing ceiling" and the token-cache paragraph of "Room token — chat entry auth"), and
   `apps/live-app/src/main/resources/application.yaml.example:279` states
   `"streaming-app 의 MAX_SESSIONS_PER_USER_PER_ROOM=5 는 …"` — a value that is no longer a constant.
   Neither prose statement depends on the number (one says the issuance cap does not bound it, the other
@@ -1189,6 +1208,7 @@ conditional variant really does fall back to NOOP.
 | `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
 | `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
 | `chat.withdrawal.record.failed` | — | a pod could not write `chat:withdrawing:{userId}`; the close still ran, so the pre-withdrawal room token re-enters until it expires |
+| `chat.inbound.dropped` | — | a frame over the per-session inbound cap was dropped unread and unanswered; expected 0 (normal clients do not reach the cap). Pod-level only — **which session is not recoverable** (no tag, no log) |
 
 ⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
 is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged

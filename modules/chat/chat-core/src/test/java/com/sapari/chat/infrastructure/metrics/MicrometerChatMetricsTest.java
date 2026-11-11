@@ -59,6 +59,7 @@ class MicrometerChatMetricsTest {
         // safe() 누락이 아무 칸에도 안 걸린다(실측: persistTimedOut 이 그 상태로 들어왔다).
         metrics.dictionaryFastPathLost();
         metrics.withdrawalRecordFailed();
+        metrics.inboundFrameDropped();
         metrics.persistTimedOut(PersistStage.WRITE);
 
         // then
@@ -69,6 +70,7 @@ class MicrometerChatMetricsTest {
         assertThat(registry.get("chat.session.cut").tags("reason", "lifetime")
                 .counter().count()).isEqualTo(1);
         assertThat(registry.get("chat.withdrawal.record.failed").counter().count()).isEqualTo(1);
+        assertThat(registry.get("chat.inbound.dropped").counter().count()).isEqualTo(1);
     }
 
     /**

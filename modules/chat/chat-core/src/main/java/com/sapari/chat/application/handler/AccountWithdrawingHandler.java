@@ -49,7 +49,7 @@ import reactor.core.publisher.Mono;
  * <p>놓쳤을 때의 상한은 <b>축마다 다르다.</b>
  * <ul>
  *   <li><b>보내는 쪽</b>은 상한이 선다. {@code EntryGate.isRoomAlive} 가 전송 경로에서 창 간격으로
- *       종료 마커를 다시 읽고, 끝난 방이면 {@code LiveNotActiveException} → 그 세션이 닫힌다
+ *       종료 마커(와 live 의 종료 키)를 다시 읽고, 끝난 방이면 {@code LiveNotActiveException} → 그 세션이 닫힌다
  *       ({@code ChatWebSocketHandler.terminateRoomEnded}). 이 기구는 <b>신호에 의존하지 않는다</b>
  *       — 지속 마커를 직접 읽으므로 구독이 죽어 있어도 돈다. 그래서 상한이 창 길이 + 다음 전송이다.
  *   <li><b>읽기만 하는 쪽</b>은 상한이 그렇게 서지 않는다. 그 재확인이 전송 경로에만 있어

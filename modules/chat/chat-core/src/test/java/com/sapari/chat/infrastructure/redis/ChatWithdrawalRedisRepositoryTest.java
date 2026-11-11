@@ -84,4 +84,18 @@ class ChatWithdrawalRedisRepositoryTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("chat.withdrawal.record-ttl");
     }
+
+    @Test
+    @DisplayName("수명이 룸 토큰 수명 상한(300초)보다 짧으면 기동이 실패한다 — 탈퇴 전에 받은 토큰이 기록보다 오래 산다")
+    void aTtlBelowTheRoomTokenCapIsRejected() {
+        assertThatThrownBy(() -> new ChatWithdrawalRedisRepository(redisTemplate, Duration.ofSeconds(299)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("chat.withdrawal.record-ttl");
+    }
+
+    @Test
+    @DisplayName("수명이 정확히 300초면 기동한다")
+    void aTtlAtTheRoomTokenCapIsAccepted() {
+        new ChatWithdrawalRedisRepository(redisTemplate, Duration.ofSeconds(300));
+    }
 }
