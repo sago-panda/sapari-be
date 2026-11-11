@@ -283,12 +283,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     // PONG 이 일반 프레임 경로로 올라오기 때문이다({@code WebsocketServerSpec.handlePing()}
                     // 기본값 false = PING 자동 응답). 그 핸들러를 파이프라인에 끼우거나 서버를 바꾸면
                     // <b>이 기능이 조용히 죽는다.</b>
-                    .doOnNext(message -> registry.recordInbound(sid))
-                    // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
-                    // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(들어오는 PING 은 reactor-netty 가 자동
-                    // 응답하고 올려주지 않는다 — 위 문단의 귀속과 같다. PONG 은 올라오므로 위 탭이 센다).
-                    .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
-                    .map(WebSocketMessage::getPayloadAsText), sid, chatSession);
+                    //
+                    // 인바운드 상한(runInbound)보다도 앞이어야 한다 — 상한에 걸려 버려지는 프레임도 시계를
+                    // 밀어야 "버리되 연결은 유지한다" 가 참이다. 이 탭이 뒤로 가면 상한에 걸린 세션이
+                    // 무응답으로 걷힌다.
+                    .doOnNext(message -> registry.recordInbound(sid)), sid, chatSession);
 
             // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
             // 위한 것이라, 정상 클라가 남은 메시지를 다 받고 스스로 끝낼 시간을 준 뒤에야 발화한다.
@@ -511,11 +510,6 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         if (registry.isTerminating(sid)) {
             return Mono.empty();
         }
-        // 상한은 파싱보다 앞이어야 한다 — 막으려는 것이 파싱 비용이고, 레이트리밋은 파싱 뒤라 그것을 못 줄인다.
-        if (registry.shouldDropInbound(sid)) {
-            metrics.inboundFrameDropped();
-            return Mono.empty();
-        }
         InboundMessage in;
         try {
             in = objectMapper.readValue(payload, InboundMessage.class);
@@ -627,9 +621,28 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      *
      * <p>병렬로 처리해서 얻는 것도 없다. 오히려 저장·중계 순서가 전송 순서와 어긋난다
      * (레이트리밋이 면제되는 방 주인에게서 실제로 드러난다).
+     *
+     * <p><b>세션당 인바운드 상한은 디코드보다 앞이다.</b> 상한이 막으려는 것은 이벤트 루프에서 드는 프레임당
+     * 비용이고, 그 비용은 UTF-8 디코드({@code getPayloadAsText})에서 시작한다. 레이트리밋과 거부 응답 솎기는
+     * 둘 다 그 뒤라 그것을 줄이지 못한다. 상한에 걸린 프레임에 남는 비용은 맵 조회 하나다(버퍼는
+     * reactor-netty 가 해제한다 — {@code handle} 의 생존 시계 탭 주석).
      */
-    Mono<Void> runInbound(Flux<String> payloads, String sid, ChatSession chatSession) {
-        return payloads.concatMap(payload -> onInbound(sid, chatSession, payload)).then();
+    Mono<Void> runInbound(Flux<WebSocketMessage> frames, String sid, ChatSession chatSession) {
+        return frames
+                // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
+                // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(들어오는 PING 은 reactor-netty 가 자동
+                // 응답하고 올려주지 않는다. PONG 은 올라오므로 handle 의 생존 시계 탭이 센다).
+                .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
+                .filter(message -> {
+                    if (registry.shouldDropInbound(sid)) {
+                        metrics.inboundFrameDropped();
+                        return false;
+                    }
+                    return true;
+                })
+                .map(WebSocketMessage::getPayloadAsText)
+                .concatMap(payload -> onInbound(sid, chatSession, payload))
+                .then();
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──

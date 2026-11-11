@@ -1047,8 +1047,8 @@ class ChatWebSocketHandlerTest {
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when
-        StepVerifier.create(metered.onInbound("s1", session,
-                        "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}"))
+        StepVerifier.create(metered.runInbound(Flux.just(
+                        text("{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}")), "s1", session))
                 .expectComplete().verify(VERIFY_CEILING);
 
         // then: 아무것도 돌려주지 않는다 — 거부 응답을 주면 그 응답이 다시 비용이 된다
@@ -1067,11 +1067,28 @@ class ChatWebSocketHandlerTest {
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
 
         // when
-        StepVerifier.create(handler.onInbound("s1", session, "{not json"))
+        StepVerifier.create(handler.runInbound(Flux.just(text("{not json")), "s1", session))
                 .expectComplete().verify(VERIFY_CEILING);
 
         // then
         then(registry).should(never()).shouldReplyToRejection(anyString());
+    }
+
+    @Test
+    @DisplayName("인바운드 상한은 디코드보다 앞이다 — 버린 프레임은 문자열로 읽히지 않는다")
+    void inbound_cap_runs_before_decode() {
+        // given
+        given(registry.shouldDropInbound("s1")).willReturn(true);
+        WebSocketMessage frame = mock(WebSocketMessage.class);
+        given(frame.getType()).willReturn(WebSocketMessage.Type.TEXT);
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+
+        // when
+        StepVerifier.create(handler.runInbound(Flux.just(frame), "s1", session))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        then(frame).should(never()).getPayloadAsText();
     }
 
     @Test
@@ -1331,8 +1348,8 @@ class ChatWebSocketHandlerTest {
                 .delayElement(Duration.ofMillis(20))
                 .doOnNext(v -> inFlight.decrementAndGet()));
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
-        Flux<String> payloads = Flux.range(1, 5)
-                .map(i -> "{\"type\":\"NORMAL\",\"content\":\"m" + i + "\",\"clientMsgId\":\"c" + i + "\"}");
+        Flux<WebSocketMessage> payloads = Flux.range(1, 5)
+                .map(i -> text("{\"type\":\"NORMAL\",\"content\":\"m" + i + "\",\"clientMsgId\":\"c" + i + "\"}"));
 
         // when
         StepVerifier.create(handler.runInbound(payloads, "s1", session))
@@ -1359,10 +1376,10 @@ class ChatWebSocketHandlerTest {
                     .thenReturn(view("id"));
         });
         ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
-        Flux<String> payloads = Flux.just(
-                "{\"type\":\"NORMAL\",\"content\":\"m1\",\"clientMsgId\":\"c1\"}",
-                "{\"type\":\"NORMAL\",\"content\":\"m2\",\"clientMsgId\":\"c2\"}",
-                "{\"type\":\"NORMAL\",\"content\":\"m3\",\"clientMsgId\":\"c3\"}");
+        Flux<WebSocketMessage> payloads = Flux.just(
+                text("{\"type\":\"NORMAL\",\"content\":\"m1\",\"clientMsgId\":\"c1\"}"),
+                text("{\"type\":\"NORMAL\",\"content\":\"m2\",\"clientMsgId\":\"c2\"}"),
+                text("{\"type\":\"NORMAL\",\"content\":\"m3\",\"clientMsgId\":\"c3\"}"));
 
         // when
         StepVerifier.create(handler.runInbound(payloads, "s1", session)).expectComplete().verify(VERIFY_CEILING);
@@ -1393,5 +1410,11 @@ class ChatWebSocketHandlerTest {
     private ChatMessageView view(String id) {
         return new ChatMessageView(id, roomId, userId, "닉", null, "BUYER", "NORMAL",
                 "hi", null, "c1", Instant.parse("2026-06-11T00:00:00Z"));
+    }
+
+    private static WebSocketMessage text(String payload) {
+        return new WebSocketMessage(WebSocketMessage.Type.TEXT,
+                org.springframework.core.io.buffer.DefaultDataBufferFactory.sharedInstance
+                        .wrap(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 }
