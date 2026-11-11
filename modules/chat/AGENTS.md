@@ -968,7 +968,8 @@ one half. Both were investigated; the reasons differ.
   unit is `(user, room)` because a room token is scoped to one room and is **replayable within its ~90s
   TTL** (`modules/live/AGENTS.md`), so that pair is the narrowest thing that closes the replay window.
   ⚠️ **Three live-owned references still name the old symbol** and this side cannot fix them:
-  `modules/live/AGENTS.md:392` and `:402` cite `MAX_SESSIONS_PER_USER_PER_ROOM`, and
+  `modules/live/AGENTS.md` cites `MAX_SESSIONS_PER_USER_PER_ROOM` twice (the last bullet of "Enter rate
+  limit — the signing ceiling" and the token-cache paragraph of "Room token — chat entry auth"), and
   `apps/live-app/src/main/resources/application.yaml.example:279` states
   `"streaming-app 의 MAX_SESSIONS_PER_USER_PER_ROOM=5 는 …"` — a value that is no longer a constant.
   Neither prose statement depends on the number (one says the issuance cap does not bound it, the other
