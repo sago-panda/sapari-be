@@ -519,8 +519,8 @@ that on.
       predicate.
     - **What to do when `write` fires**: do not report data loss. Check whether the message is in the
       history. Do not tell the user to retype the message: the client resends with the *same*
-      `clientMsgId` and body (front-end guide, SPR-188), which the unique partial index deduplicates
-      if the first write landed. A retyped message is a new UUID and can duplicate.
+      `clientMsgId` and body ("Retry contract (SPR-188)" in `modules/chat/AGENTS.md`), which the
+      unique partial index deduplicates if the first write landed. A retyped message is a new UUID and can duplicate.
       Also alert on
       `duplicate_recovery_read` for "the sender cannot see a message that is already stored"; they
       need different responses. Details in `modules/chat/AGENTS.md`.

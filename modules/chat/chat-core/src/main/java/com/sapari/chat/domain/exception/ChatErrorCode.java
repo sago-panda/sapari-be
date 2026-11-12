@@ -79,8 +79,8 @@ public enum ChatErrorCode implements ErrorCode {
     // 저장됐을 수도 있다(실측: 상한 3ms·5ms 에서 예외인데 문서 1건). 그래서 결과를 단정하지 않는다.
     //
     // 이 문구는 WS 로 나가지 않는다 — WS 의 ERROR 프레임은 코드 문자열과 clientMsgId 만 싣고, 이 예외는
-    // 거기서 INTERNAL 이 된다. 재시도 규칙은 그래서 프론트 가이드의 INTERNAL 처리에 있다: 실패한 버블을
-    // 남겨 두고 <b>같은 clientMsgId 와 같은 본문</b>으로 다시 보낸다. 첫 쓰기가 남아 있었으면 유니크
+    // 거기서 INTERNAL 이 된다. 재시도 규칙은 그래서 modules/chat/AGENTS.md 의 "Retry contract" 에 있다:
+    // 실패한 버블을 남겨 두고 <b>같은 clientMsgId 와 같은 본문</b>으로 다시 보낸다. 첫 쓰기가 남아 있었으면 유니크
     // 파셜 인덱스가 막고 그 메시지가 ACK 로 돌아온다. 새 UUID 로 보내면 중복이 생길 수 있다.
     PERSIST_TIMEOUT(503, "CHAT-012",
             "메시지 저장 결과를 확인하지 못했습니다. 잠시 후 이력을 확인해 주세요."),
