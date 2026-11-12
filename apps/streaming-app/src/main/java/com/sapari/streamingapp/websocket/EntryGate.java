@@ -6,6 +6,7 @@ import com.sapari.chat.application.port.ChatCheckpoint;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
 import com.sapari.chat.application.port.PolicyReadFailure;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
@@ -33,8 +34,10 @@ import reactor.core.publisher.Mono;
  * <b>탈퇴 신청</b>(회원만). 강퇴는 이 방에서 나가는 것이고 밴은 어느 방에도 못 들어오는 것이라, 축이 달라
  * 따로 본다. 탈퇴는 밴과 축이 같지만(사람) 근거가 다르다 — 이미 받아 둔 토큰이 탈퇴 뒤에도 유효하다.
  *
- * <p><b>전부 fail-open</b>: 조회 실패(Redis 장애) 시 입장을 <i>허용</i>한다(가용성 우선 — 채팅 전면 불능이
- * 강퇴자·종료방 일시 통과보다 나쁜 결과). 열린 구간은 사유별로 스로틀 로그 + 누적 통과 건수를 남긴다.
+ * <p><b>입장 검사는 전부 fail-open</b>: 조회 실패(Redis 장애) 시 입장을 <i>허용</i>한다. 막으면 1008 로
+ * 닫히고 프론트는 1008 에 재접속하지 않으므로, Redis 가 살아난 뒤에도 정상 시청자가 채팅에서 빠진 채
+ * 남는다. 통과한 사람이 할 수 있는 것은 읽기뿐이다 — 전송은 판정을 못 읽으면 거절하고({@link #isRoomAlive},
+ * {@code SendChatService}), 읽기는 게스트도 한다. 열린 구간은 사유별로 스로틀 로그 + 누적 통과 건수를 남긴다.
  *
  * <p>게스트(에페메랄 id)는 강퇴·밴 대상이 아니므로 건너뛴다 — 접속마다 id가 새로 발급돼 명단에 올려도
  * 다음 접속에서 다른 사람이 된다. 검사해봐야 항상 통과라 Redis 왕복만 늘어난다.
@@ -99,8 +102,9 @@ public class EntryGate {
      * <p>다만 <b>종료를 확인한 뒤로는 다시 묻지 않고 계속 막는다</b>. 끝난 방이 다시 라이브가 되지는
      * 않으므로, 여기서 창을 다시 여는 건 그 방에 글이 더 쌓일 틈만 만든다.
      *
-     * <p>조회 실패는 입장 게이트와 <b>같은 fail-open</b>이다 — Redis가 죽었다고 채팅이 통째로 멈추는 쪽이
-     * 끝난 방에 몇 줄 더 쌓이는 것보다 나쁘다.
+     * <p>조회 실패는 입장 게이트와 <b>반대로 거절</b>이다({@link ChatSendUnavailableException}). 종료 확인과
+     * 실시간 전달이 같은 Redis 라, 못 읽는 동안 통과시켜도 보는 사람 없이 이력에만 남는다. 다음 프레임이
+     * 다시 묻도록 창을 되돌린다 — 그대로 두면 이번 실패가 창을 소비해 다음 창 길이만큼은 묻지 않고 통과한다.
      */
     public Mono<Boolean> isRoomAlive(String sessionId, ChatSession session) {
         // 한 번 확인된 종료는 되묻지 않는다. 창으로만 두면 확인한 직후부터 다음 확인까지의 프레임이
@@ -119,8 +123,8 @@ public class EntryGate {
                 })
                 .map(ended -> !ended)
                 .onErrorResume(e -> {
-                    logGateOpen("방 종료 재확인", ChatPolicy.ROOM_ENDED, ChatCheckpoint.SEND, session, e);
-                    return Mono.just(true);
+                    registry.requireRoomAliveRecheck(sessionId);
+                    return Mono.error(refuseRoomAliveUnreadable(session, e));
                 });
     }
 
@@ -317,6 +321,22 @@ public class EntryGate {
             log.warn("입장 거부 — {} roomId={} userId={} 누적거부={}",
                     what, session.roomId(), session.userId(), total);
         }
+    }
+
+    /**
+     * 방 종료 재확인을 못 읽어 전송을 거절한다. 입장 쪽 열림과 같은 스로틀 기계를 쓰되 키를 따로 둔다.
+     *
+     * <p>던지지 않는다 — 예외를 <b>만들어 돌려줄</b> 뿐이고, 호출부가 그것을 {@code Mono.error} 로 싣는다.
+     */
+    private ChatSendUnavailableException refuseRoomAliveUnreadable(ChatSession session, Throwable cause) {
+        metrics.sendRefused(ChatPolicy.ROOM_ENDED);
+        GateOpenLog entry = counterFor("전송 거절/방 종료 재확인");
+        long total = entry.occurrences().incrementAndGet();
+        if (dueToLog(entry)) {
+            log.warn("방 종료 재확인 실패 — 전송 거절 roomId={} cause={} 누적거절={}",
+                    session.roomId(), cause.getClass().getSimpleName(), total);
+        }
+        return new ChatSendUnavailableException(cause);
     }
 
     private GateOpenLog counterFor(String what) {

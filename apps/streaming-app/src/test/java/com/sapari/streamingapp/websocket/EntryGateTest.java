@@ -22,6 +22,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
@@ -391,14 +392,19 @@ class EntryGateTest {
     }
 
     @Test
-    @DisplayName("재확인 — 조회 실패는 입장 게이트와 같은 fail-open(전송 허용)")
-    void isRoomAlive_FailsOpen() {
+    @DisplayName("재확인 — 조회 실패는 입장과 반대로 전송 거절(UNAVAILABLE)이고, 다음 프레임이 다시 묻는다")
+    void isRoomAlive_RefusesWhenUnreadable() {
         // given
         given(registry.shouldRecheckRoomAlive("s1")).willReturn(true);
         given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.error(new RuntimeException("redis down")));
 
-        // when & then: Redis가 죽었다고 채팅이 통째로 멈추는 쪽이 더 나쁜 결과다
-        StepVerifier.create(gate.isRoomAlive("s1", member())).expectNext(true).expectComplete().verify(VERIFY_CEILING);
+        // when
+        StepVerifier.create(gate.isRoomAlive("s1", member()))
+                .expectError(ChatSendUnavailableException.class).verify(VERIFY_CEILING);
+
+        // then: 창을 되돌리지 않으면 실패한 확인이 다음 30초 동안 확인한 것으로 남아 전부 통과한다
+        then(registry).should(times(1)).requireRoomAliveRecheck("s1");
+        then(registry).should(never()).markRoomEnded("s1");
     }
 
     @Test

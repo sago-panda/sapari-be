@@ -25,6 +25,7 @@ import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.repository.ChatBanRepository;
@@ -45,7 +46,7 @@ import reactor.test.StepVerifier;
 /**
  * 전송 경로의 <b>가용성 정책이 발화한 사실이 밖으로 나가는지</b>를 본다.
  *
- * <p>이 저장소의 chat 은 실패를 삼키지 않는 대신 방향을 정해 삼킨다 — 모더레이션 조회는 열고,
+ * <p>이 저장소의 chat 은 실패를 삼키지 않는 대신 방향을 정해 삼킨다 — 전송 판정을 못 읽으면 거절하고,
  * 실시간 전달은 포기한다. 그 선택은 전부 "지금은 집행되지 않는다" 를 뜻하는데, 지금까지 그 사실은
  * 프로세스 안의 {@code AtomicLong} 과 10초마다 솎아낸 로그 줄에만 있었다. 로그는 사람이 읽을 때만
  * 읽히고 솎아내진 쪽은 아예 안 남으므로, <b>정책이 쉬고 있는 구간을 알림으로 받을 수가 없었다.</b>
@@ -114,20 +115,19 @@ class SendChatServiceMetricsTest {
     }
 
     @Test
-    @DisplayName("⭐ 강퇴 조회가 실패해 통과시키면 policy=kick checkpoint=send failure=unavailable 이 오른다")
+    @DisplayName("⭐ 강퇴 조회가 실패해 거절하면 chat.send.refused{policy=kick} 이 오르고 chat.policy.open 은 안 오른다")
     void kick_read_failure_is_reported() {
         // given
-        stubSaveAndPublish();
-        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
         given(kickRepository.isKicked(any(), any()))
                 .willReturn(Mono.error(new IllegalStateException("Redis down")));
 
-        // when: fail-open 이라 전송은 성공한다
-        StepVerifier.create(service.send(normalSend())).expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
+        // when
+        StepVerifier.create(service.send(normalSend()))
+                .expectError(ChatSendUnavailableException.class).verify(VERIFY_CEILING);
 
-        // then
-        assertThat(count("chat.policy.open", "policy", "kick", "checkpoint", "send",
-                "failure", "unavailable")).isEqualTo(1);
+        // then: 통과시킨 것이 아니므로 open 쪽에 담기면 거짓이다
+        assertThat(count("chat.send.refused", "policy", "kick")).isEqualTo(1);
+        assertThat(registry.find("chat.policy.open").counters()).isEmpty();
     }
 
     @Test
@@ -150,20 +150,19 @@ class SendChatServiceMetricsTest {
     }
 
     @Test
-    @DisplayName("⭐ 밴 조회가 실패해 통과시키면 policy=ban 이 오른다")
+    @DisplayName("⭐ 밴 조회가 실패해 거절하면 chat.send.refused{policy=ban} 이 오른다")
     void ban_read_failure_is_reported() {
         // given
-        stubSaveAndPublish();
-        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
         given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
         given(banRepository.isBanned(any())).willReturn(Mono.error(new IllegalStateException("Redis down")));
 
         // when
-        StepVerifier.create(service.send(normalSend())).expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
+        StepVerifier.create(service.send(normalSend()))
+                .expectError(ChatSendUnavailableException.class).verify(VERIFY_CEILING);
 
         // then
-        assertThat(count("chat.policy.open", "policy", "ban", "checkpoint", "send",
-                "failure", "unavailable")).isEqualTo(1);
+        assertThat(count("chat.send.refused", "policy", "ban")).isEqualTo(1);
+        assertThat(registry.find("chat.policy.open").counters()).isEmpty();
     }
 
     @Test
@@ -195,29 +194,48 @@ class SendChatServiceMetricsTest {
 
         // then
         assertThat(registry.find("chat.policy.open").counters()).isEmpty();
+        assertThat(registry.find("chat.send.refused").counters()).isEmpty();
         assertThat(registry.find("chat.delivery.dropped").counters()).isEmpty();
     }
 
     @Test
-    @DisplayName("⭐ 지표 기록이 던져도 fail-open 은 뒤집히지 않는다 — 관측이 가용성 정책을 바꾸면 안 된다")
+    @DisplayName("⭐ 지표 기록이 던져도 통과시키기로 한 전송은 뒤집히지 않는다 — 관측이 정책을 바꾸면 안 된다")
     void a_throwing_registry_must_not_flip_fail_open() {
-        // given: 모든 계측 호출이 던지는 레지스트리. 호출부가 onErrorResume 람다 안이라, 여기서
-        // 예외가 새면 Reactor 가 하류로 전파해 "통과시키기로 한" 전송이 거부된다.
-        SendChatService throwingMetrics = newService(new MicrometerChatMetrics(new SimpleMeterRegistry() {
-            @Override
-            public Counter counter(String name, String... tags) {
-                throw new IllegalStateException("registry 고장");
-            }
-        }));
+        // given: 모든 계측 호출이 던지는 레지스트리. 전송 경로에 남은 통과 분기는 강퇴 키 타입 충돌
+        // 하나이고 호출부가 onErrorResume 람다 안이라, 여기서 예외가 새면 그 전송이 거부된다.
+        SendChatService throwingMetrics = newService(throwingRegistryMetrics());
         stubSaveAndPublish();
         given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
         given(kickRepository.isKicked(any(), any()))
-                .willReturn(Mono.error(new IllegalStateException("Redis down")));
+                .willReturn(Mono.error(new KickStoreCorruptedException("chat:kicked:" + roomId, null)));
 
         // when & then: 전송이 성공해야 한다
         StepVerifier.create(throwingMetrics.send(normalSend()))
                 .expectNextCount(1)
                 .expectComplete()
                 .verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("지표 기록이 던져도 거절의 종류는 바뀌지 않는다 — 클라가 재시도해도 되는 UNAVAILABLE 로 남는다")
+    void a_throwing_registry_must_not_change_the_refusal() {
+        // given
+        SendChatService throwingMetrics = newService(throwingRegistryMetrics());
+        given(kickRepository.isKicked(any(), any()))
+                .willReturn(Mono.error(new IllegalStateException("Redis down")));
+
+        // when & then
+        StepVerifier.create(throwingMetrics.send(normalSend()))
+                .expectError(ChatSendUnavailableException.class)
+                .verify(VERIFY_CEILING);
+    }
+
+    private ChatMetrics throwingRegistryMetrics() {
+        return new MicrometerChatMetrics(new SimpleMeterRegistry() {
+            @Override
+            public Counter counter(String name, String... tags) {
+                throw new IllegalStateException("registry 고장");
+            }
+        });
     }
 }

@@ -138,6 +138,27 @@ class ChatMessageRepositoryImplTest {
         assertThat(recovered.displayMessage()).isEqualTo("원본");
     }
 
+    /**
+     * 중복 복구가 본문을 대 보는 축은 원문이다({@code SendChatService.recoverDuplicate}). 재조회가 원문을
+     * 표시문과 따로 실어 오는지를 둘을 다르게 두고 본다 — 같게 두면 둘을 바꿔 매핑해도 초록이다.
+     */
+    @Test
+    @DisplayName("중복 재조회는 원문을 표시문과 따로 실어 온다 — 본문 비교가 기대는 필드다")
+    void duplicate_recovery_carries_original_message() {
+        // given
+        repository.save(new ChatMessage(null, roomId, senderId, "구매자닉", "buyer@example.com",
+                ChatRole.BUYER, new ChatMessageType.Normal(), "원문", "표시문", "dup-orig", Instant.now()))
+                .block(VERIFY_CEILING);
+
+        // when
+        ChatMessage recovered = repository
+                .findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "dup-orig").block(VERIFY_CEILING);
+
+        // then
+        assertThat(recovered.originalMessage()).isEqualTo("원문");
+        assertThat(recovered.displayMessage()).isEqualTo("표시문");
+    }
+
     @Test
     @DisplayName("dedup — clientMsgId=null은 partial 인덱스 미적용이라 2건 이상 저장 가능")
     void null_clientMsgId_is_not_deduplicated() {

@@ -37,6 +37,12 @@ public class MicrometerChatMetrics implements ChatMetrics {
     }
 
     @Override
+    public void sendRefused(ChatPolicy policy) {
+        safe(() -> registry.counter(ChatMeterNames.SEND_REFUSED,
+                ChatMeterNames.TAG_POLICY, tag(policy)).increment());
+    }
+
+    @Override
     public void rateLimitDegraded(RateLimitDegradation mode) {
         safe(() -> registry.counter(ChatMeterNames.RATE_LIMIT_DEGRADED,
                 ChatMeterNames.TAG_MODE, tag(mode)).increment());

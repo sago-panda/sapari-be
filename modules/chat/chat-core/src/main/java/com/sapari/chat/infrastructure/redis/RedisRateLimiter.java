@@ -90,8 +90,8 @@ public class RedisRateLimiter implements RateLimiter {
      * 드러나는데 그 방향이 자리마다 다르다:
      * <ul>
      *   <li>여기: 느리면 <b>로컬 창으로 떨어진다</b> — 같은 방향의 유계 강등이다.
-     *   <li>강퇴·밴 조회: 느리면 <b>밴이 없는 것으로 본다</b> — 모더레이션 판정의 fail-open 이고,
-     *       {@code modules/chat/AGENTS.md} 가 그것을 의도된 결정으로 따로 다룬다.
+     *   <li>전송 경로의 강퇴·밴 조회: 느리면 <b>그 전송을 거절한다</b> — {@code modules/chat/AGENTS.md}
+     *       가 그것을 의도된 결정으로 따로 다룬다.
      *   <li>종료 마커 조회: 느리면 <b>끝난 방에 입장을 허용한다</b> — 또 다른 방향이다.
      *   <li>시청자 수 조회({@code ChatSessionRedisRepository.count}): 느리면 <b>시청자 수 없이
      *       입장시킨다</b> — 이미 fail-open 으로 구현돼 있다. 연산자 상한이 없어 클라이언트 상한

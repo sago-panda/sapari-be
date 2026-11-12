@@ -19,6 +19,8 @@ import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
+import com.sapari.chat.domain.exception.ClientMsgIdReusedException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserBannedException;
@@ -43,7 +45,7 @@ import reactor.core.publisher.Mono;
 /**
  * 메시지 전송 파이프라인 (reactive — streaming-app 이벤트루프에서 호출).
  *
- * <p><b>전송 체크 순서는 계약이다</b>: isRoomAlive → 입력검증 → 권한 → kicked → rate limit → 욕설필터 → 저장 → 발행.
+ * <p><b>전송 체크 순서는 계약이다</b>: isRoomAlive → 입력검증 → 권한 → kicked·banned → rate limit → 욕설필터 → 저장 → 발행.
  * 비용 0(메모리·입력)을 앞에 두고 Redis는 뒤로 미뤄 불필요한 I/O를 차단한다.
  *
  * <p><b>저장에는 상한이 있다</b>({@code chat.mongo.operation-timeout}, 기본 2s — 드라이버 CSOT).
@@ -62,26 +64,18 @@ import reactor.core.publisher.Mono;
  * <p>{@code @Transactional}을 두지 않는다 — 단일 Mongo 문서 저장 + Redis 발행이라 다중 엔티티 트랜잭션이 없고,
  * 같은 키의 재삽입은 (roomId,senderId,clientMsgId) unique 인덱스가 막는다(DuplicateKey → 기존 메시지 재조회).
  *
- * <p>⚠️ <b>그것을 "재전송 멱등" 이라 부르지 않는다 — 본문 축에서 참이 아니다.</b> 인덱스 키에
- * <b>본문이 없고</b> {@code recoverDuplicate} 도 본문을 비교하지 않는다. 그래서 같은
- * {@code clientMsgId} 로 <b>다른 본문</b>을 보내면 서버는 <b>첫 번째 메시지의 view 를 ACK 로</b>
- * 돌려주고, 이번 본문은 저장되지도 발행되지도 않는다. 같은 본문의 재전송에서는 멱등이 맞지만
- * 다른 본문에서는 <b>유실이 성공으로 보고</b>된다.
+ * <p><b>같은 키의 재삽입은 본문을 대 본다.</b> 인덱스 키에는 본문이 없어서, 같은 {@code clientMsgId} 로
+ * 다른 본문이 와도 {@code DuplicateKey} 가 난다. 그때 먼저 저장된 메시지를 ACK 로 돌려주면 이번 본문은
+ * 저장도 발행도 안 된 채 성공으로 보고된다. 그래서 {@code recoverDuplicate} 가 원문을 비교해 다르면
+ * {@link ClientMsgIdReusedException} 으로 거절한다. 비교 축은 {@code displayMessage} 가 아니라
+ * {@code originalMessage} 다 — 사전이 런타임에 바뀌면 같은 원문이 다른 표시문이 된다.
  *
- * <p>발신자 화면에서 그것이 어떻게 보이는지까지 적어 둔다. ACK 가 싣고 가는 {@code id} 는
- * <b>첫 본문의 것</b>이고(재조회 → {@code toView}), 프론트는 낙관적 렌더 모델이라 그 {@code id} 를
- * 이번 본문의 버블에 박은 뒤 같은 {@code id} 의 브로드캐스트를 dedup 한다. 그래서
- * <b>화면에는 이번 본문이 "전송 완료" 로 남고 이력에는 첫 본문만 있다</b> — 새로고침하면 바뀐다.
- *
- * <p>그 동작은 실수가 아니라 <b>고정돼 있다</b> — 다른 경로의
- * {@code infrastructure/persistence/repository/ChatMessageRepositoryImplTest} 가 본문을
- * "원본"/"중복" 으로 달리 넣고 복구 결과가 <b>첫 본문</b>임을 단정한다. 그리고 이 동작을 가드로
- * 바꾸는 데는 <b>두 선행조건</b>이 있다. 하나, 프론트 가이드에 같은 {@code clientMsgId} 의
- * 재사용을 금지하는 문장이 <b>없다</b>(가이드가 그 값에 대해 규정하는 것은 여럿이지만, <b>같은
- * id 로 다른 본문을 보내는 경우</b>는 한 줄도 없다). 둘, 본문을 비교한다면 그 축은
- * {@code displayMessage} 가 아니라 {@code originalMessage} 다 — 사전이 런타임에 교체되면 같은
- * 원문이 다른 표시문이 되기 때문이다({@code persistAndPublish} 가 매 메시지마다 "지금 것" 을
- * 묻는 이유와 같은 축이다).
+ * <p><b>전송 판정을 못 읽으면 거절한다</b>(강퇴·밴 여기, 방 종료는 {@code EntryGate.isRoomAlive}).
+ * 판정과 실시간 전달이 같은 Redis 에 있어서, 판정을 못 읽는 동안에는 발행도 대개 함께 실패한다.
+ * 그때 통과시키면 보는 사람 없이 검사 안 된 메시지가 이력에만 남고 발신자는 성공을 본다. 거절은 저장
+ * 전이라 같은 {@code clientMsgId} 로 다시 보내면 된다. 예외는 강퇴 명단 키의 타입 충돌 하나다 — Redis 는
+ * 살아 있고 전달도 되는데 재시도로 낫지 않으므로, 막으면 사람이 키를 치울 때까지 그 방 채팅이 통째로
+ * 멈춘다. 그 경우만 통과시키고 ERROR 로 남긴다.
  */
 @Slf4j
 @Service
@@ -112,68 +106,64 @@ public class SendChatService implements SendChatUseCase {
      */
     private final ChatMetrics metrics;
 
-    // 열화 경로 관측 — 통과시키되 규모와 시작 시점은 남긴다.
-    private final AtomicLong kickedFailOpenCount = new AtomicLong();
+    // 열화 경로 관측 — 규모와 시작 시점을 남긴다.
+    private final AtomicLong kickRefusedCount = new AtomicLong();
     private final AtomicLong kickStoreCorruptedCount = new AtomicLong();
-    private final AtomicLong bannedFailOpenCount = new AtomicLong();
+    private final AtomicLong banRefusedCount = new AtomicLong();
     private final AtomicLong publishFailureCount = new AtomicLong();
-    private final AtomicReference<Instant> lastKickedFailOpenLog = new AtomicReference<>(Instant.EPOCH);
+    private final AtomicReference<Instant> lastKickRefusedLog = new AtomicReference<>(Instant.EPOCH);
     private final AtomicReference<Instant> lastKickStoreCorruptedLog = new AtomicReference<>(Instant.EPOCH);
-    private final AtomicReference<Instant> lastBannedFailOpenLog = new AtomicReference<>(Instant.EPOCH);
+    private final AtomicReference<Instant> lastBanRefusedLog = new AtomicReference<>(Instant.EPOCH);
     private final AtomicReference<Instant> lastPublishFailureLog = new AtomicReference<>(Instant.EPOCH);
 
     /**
-     * 강퇴 조회 실패를 기록한다.
+     * 강퇴 명단 키의 타입이 어긋났다 — 이 경우만 전송을 통과시킨다(클래스 javadoc).
      *
-     * <p><b>여기서는 던질 수 있는 호출을 하지 마라.</b> 이 메서드는 fail-open 분기(onErrorResume 람다) 안에서
-     * 불리는데, 예외가 나가면 Reactor가 하류로 전파해 전송이 <i>거부</i>된다 — 가용성 우선 정책이 정반대로
-     * 뒤집힌다. 지금 호출하는 것들(원자적 증가·주입된 Clock·로거·instanceof)은 모두 던지지 않는다.
-     * 메트릭·감사 같은 걸 추가할 때 이 불변식을 깨지 않도록 확인할 것.
-     *
-     * <p>낫지 않는 실패는 <b>따로 센다</b>. 카운터와 스로틀을 공유하면 먼저 찍은 쪽이 다른 쪽의 첫 발생을
-     * 덮어, 영영 안 낫는 상태가 곧 복구될 장애의 로그에 묻힌다.
+     * <p><b>여기서는 던질 수 있는 호출을 하지 마라.</b> 이 메서드는 통과시키기로 한 분기(onErrorResume 람다)
+     * 안에서 불리는데, 예외가 나가면 Reactor가 하류로 전파해 전송이 <i>거부</i>된다 — 그 방 채팅을 멈추지
+     * 않으려고 고른 방향이 뒤집힌다. 지금 호출하는 것들(원자적 증가·주입된 Clock·로거)은 모두 던지지 않는다.
      */
-    private void recordKickedFailOpen(UUID roomId, Throwable err) {
-        if (err instanceof KickStoreCorruptedException corrupted) {
-            metrics.policyNotEnforced(ChatPolicy.KICK, ChatCheckpoint.SEND, PolicyReadFailure.STORE_CORRUPTED);
-            long count = kickStoreCorruptedCount.incrementAndGet();
-            if (shouldLog(lastKickStoreCorruptedLog)) {
-                // 예외 객체는 싣지 않는다 — 진단은 이 문장과 key로 끝나고, 스택은 Reactor 내부를 가리켜
-                // 손댈 곳을 알려주지 못한다. 대신 재시도로 낫지 않는다는 사실을 문장에 박는다.
-                log.error("강퇴 명단 키의 타입이 어긋났다 — 이 방의 강퇴는 사람이 그 키를 치울 때까지 계속 "
-                                + "무력화된다(재시도로 낫지 않음). fail-open으로 전송 허용(누적 {}건) key={} roomId={}",
-                        count, corrupted.getKey(), roomId);
-            }
-            return;
-        }
-        metrics.policyNotEnforced(ChatPolicy.KICK, ChatCheckpoint.SEND, PolicyReadFailure.UNAVAILABLE);
-        long count = kickedFailOpenCount.incrementAndGet();
-        if (shouldLog(lastKickedFailOpenLog)) {
-            // WARN 이다 — Redis 가 돌아오면 저절로 낫고 사람이 조치할 것이 없다. 규모는
-            // chat.policy.open{policy=kick,failure=unavailable} 가 비율로 들고 있어 알림은 그쪽에
-            // 건다. 위의 키 타입 충돌만 ERROR 로 남는다(그건 사람이 키를 치워야 한다) — 둘을 같은
-            // 등급에 두면 정작 조치가 필요한 쪽이 일시 장애의 잡음에 묻힌다.
-            log.warn("강퇴 조회 실패 — fail-open으로 전송 허용(누적 {}건) 표본 roomId={}",
-                    count, roomId, err);
+    private void recordKickStoreCorrupted(UUID roomId, KickStoreCorruptedException corrupted) {
+        metrics.policyNotEnforced(ChatPolicy.KICK, ChatCheckpoint.SEND, PolicyReadFailure.STORE_CORRUPTED);
+        long count = kickStoreCorruptedCount.incrementAndGet();
+        if (shouldLog(lastKickStoreCorruptedLog)) {
+            // 예외 객체는 싣지 않는다 — 진단은 이 문장과 key로 끝나고, 스택은 Reactor 내부를 가리켜
+            // 손댈 곳을 알려주지 못한다. 대신 재시도로 낫지 않는다는 사실을 문장에 박는다.
+            log.error("강퇴 명단 키의 타입이 어긋났다 — 이 방의 강퇴는 사람이 그 키를 치울 때까지 계속 "
+                            + "무력화된다(재시도로 낫지 않음). 전송 허용(누적 {}건) key={} roomId={}",
+                    count, corrupted.getKey(), roomId);
         }
     }
 
     /**
-     * 밴 조회 실패를 기록한다. 강퇴와 카운터·스로틀을 나누는 이유는 위와 같다 — 함께 세면 먼저 찍은 쪽이
-     * 다른 쪽의 첫 발생을 덮는다.
+     * 강퇴 조회를 못 읽어 전송을 거절한다. 밴과 카운터·스로틀을 나누는 이유는 둘 중 먼저 찍은 쪽이 다른
+     * 쪽의 첫 발생을 덮기 때문이다.
+     *
+     * <p>WARN 이다 — Redis 가 돌아오면 저절로 낫고 사람이 조치할 것이 없다. 규모는
+     * {@code chat.send.refused{policy=kick}} 가 들고 있다.
+     */
+    private ChatSendUnavailableException refuseKickUnreadable(UUID roomId, Throwable err) {
+        metrics.sendRefused(ChatPolicy.KICK);
+        long count = kickRefusedCount.incrementAndGet();
+        if (shouldLog(lastKickRefusedLog)) {
+            log.warn("강퇴 조회 실패 — 전송 거절(누적 {}건) 표본 roomId={}", count, roomId, err);
+        }
+        return new ChatSendUnavailableException(err);
+    }
+
+    /**
+     * 밴 조회를 못 읽어 전송을 거절한다.
      *
      * <p>roomId를 남기지 않는 것은 의도다. 밴은 계정 단위라 어느 방에서 조회했는지가 진단에 쓰이지 않고,
-     * userId는 로그에 싣지 않는다. 여기서 필요한 것은 "밴 집행이 언제부터 몇 건이나 열렸는가" 하나다.
-     *
-     * <p>{@link #recordKickedFailOpen}과 같은 제약을 받는다 — <b>던질 수 있는 호출을 넣지 마라.</b>
+     * userId는 로그에 싣지 않는다.
      */
-    private void recordBannedFailOpen(Throwable err) {
-        metrics.policyNotEnforced(ChatPolicy.BAN, ChatCheckpoint.SEND, PolicyReadFailure.UNAVAILABLE);
-        long count = bannedFailOpenCount.incrementAndGet();
-        if (shouldLog(lastBannedFailOpenLog)) {
-            // WARN — 위 강퇴 조회와 같은 근거다(저절로 낫고, 규모는 지표가 들고 있다).
-            log.warn("밴 조회 실패 — fail-open으로 전송 허용(누적 {}건)", count, err);
+    private ChatSendUnavailableException refuseBanUnreadable(Throwable err) {
+        metrics.sendRefused(ChatPolicy.BAN);
+        long count = banRefusedCount.incrementAndGet();
+        if (shouldLog(lastBanRefusedLog)) {
+            log.warn("밴 조회 실패 — 전송 거절(누적 {}건)", count, err);
         }
+        return new ChatSendUnavailableException(err);
     }
 
     /**
@@ -229,9 +219,9 @@ public class SendChatService implements SendChatUseCase {
             return Mono.error(new ChatPermissionDeniedException("해당 메시지를 보낼 권한이 없습니다."));
         }
 
-        // 4) kicked·banned — 에러는 둘 다 fail-open(전송 허용) — 어댑터는 error 전파, 매핑은 여기.
-        // 통과시키되 흔적은 남긴다 — 이 경로가 열린 구간은 집행이 무력화된 구간이라, 시작 시점과 규모를
-        // 남겨야 사후에 "언제 몇 건이 우회했는가"를 짚을 수 있다.
+        // 4) kicked·banned — 못 읽으면 거절한다(클래스 javadoc). 어댑터는 error 전파, 매핑은 여기.
+        // 강퇴 명단 키의 타입 충돌만 통과시킨다 — Redis 가 살아 있는데 재시도로 낫지 않는 경우라,
+        // 막으면 그 방 채팅이 사람이 올 때까지 멈춘다.
         //
         // 밴을 여기서도 보는 이유: 입장 게이트는 새 접속만 막는다. 한 사람이 여러 방에 동시 접속한
         // 상태에서 한 방의 강퇴로 밴이 걸리면, 그 방 세션만 닫히고 나머지 방 세션은 그대로 살아 계속
@@ -242,14 +232,14 @@ public class SendChatService implements SendChatUseCase {
         // 비례해 커진다. 두 조회는 서로의 결과를 쓰지 않으므로 순서를 지킬 이유가 없다.
         Mono<Boolean> kickedCheck = kickRepository.isKicked(command.roomId(), command.senderId())
                 .onErrorResume(err -> {
-                    recordKickedFailOpen(command.roomId(), err);
-                    return Mono.just(false);
+                    if (err instanceof KickStoreCorruptedException corrupted) {
+                        recordKickStoreCorrupted(command.roomId(), corrupted);
+                        return Mono.just(false);
+                    }
+                    return Mono.error(refuseKickUnreadable(command.roomId(), err));
                 });
         Mono<Boolean> bannedCheck = banRepository.isBanned(command.senderId())
-                .onErrorResume(err -> {
-                    recordBannedFailOpen(err);
-                    return Mono.just(false);
-                });
+                .onErrorResume(err -> Mono.error(refuseBanUnreadable(err)));
         return Mono.zip(kickedCheck, bannedCheck)
                 // 강퇴를 먼저 본다. 둘 다 걸린 사람에게는 이 방에서 끊긴 사유가 더 구체적이고,
                 // 어느 쪽이든 전송 계층의 처리(사유 프레임 + 세션 종료)는 같다.
@@ -286,8 +276,8 @@ public class SendChatService implements SendChatUseCase {
      * 6) 욕설필터 → 도메인 생성 → 저장(먼저) → 발행.
      *
      * <p>DuplicateKey 는 <b>같은 키의 재삽입</b>이고 원인을 재전송으로 단정하지 않는다 — 본문이
-     * 달라도 같은 키면 여기로 온다. 기존 메시지를 재조회해 돌려주고 재발행은 생략한다. 그 선택의
-     * 범위와 대가는 클래스 javadoc 에 적어 뒀다.
+     * 달라도 같은 키면 여기로 온다. 기존 메시지를 재조회해 원문이 같으면 그것을 돌려주고(재발행은
+     * 생략한다), 다르면 거절한다(클래스 javadoc).
      */
     private Mono<ChatMessageView> persistAndPublish(SendChatCommand command, ChatRole role,
                                                     ChatMessageType type, String content) {
@@ -339,7 +329,9 @@ public class SendChatService implements SendChatUseCase {
     private Mono<ChatMessageView> recoverDuplicate(SendChatCommand command) {
         return chatMessageRepository
                 .findByRoomIdAndSenderIdAndClientMsgId(command.roomId(), command.senderId(), command.clientMsgId())
-                .map(ChatMessage::toView)
+                .flatMap(existing -> command.content().equals(existing.originalMessage())
+                        ? Mono.just(existing.toView())
+                        : Mono.<ChatMessageView>error(new ClientMsgIdReusedException()))
                 // 재조회 miss 시 empty 전파를 막는다 — 그대로 두면 send()가 무응답 complete → 동일 clientMsgId 재시도 루프
                 .switchIfEmpty(Mono.error(new IllegalStateException(
                         "DuplicateKey 후 재조회 miss — clientMsgId=" + command.clientMsgId())));

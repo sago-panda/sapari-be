@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
@@ -156,8 +157,8 @@ class EntryGateMetricsTest {
     }
 
     @Test
-    @DisplayName("⭐ 전송 재확인이 열리면 checkpoint=send 다 — 입장과 합치면 끝난 방에 글이 들어온 사실이 묻힌다")
-    void theSendPathRecheckIsASeparateCheckpoint() {
+    @DisplayName("⭐ 전송 재확인을 못 읽으면 chat.send.refused{policy=room_ended} 다 — 통과가 아니라 open 에 담지 않는다")
+    void anUnreadableSendRecheckIsCountedAsRefused() {
         // given: 재확인 창이 열려 있고 그 조회가 실패한다
         ChatSessionRegistry registry = mock(ChatSessionRegistry.class);
         given(registry.isRoomKnownEnded("s1")).willReturn(false);
@@ -166,13 +167,15 @@ class EntryGateMetricsTest {
         EntryGate sendGate = new EntryGate(kickRepository, roomEndedRepository, banRepository,
                 withdrawalRepository, new MicrometerChatMetrics(this.registry), registry);
 
-        // when: fail-open 이라 전송은 통과한다
-        StepVerifier.create(sendGate.isRoomAlive("s1", session())).expectNext(true).expectComplete().verify(VERIFY_CEILING);
+        // when: 전송은 거절된다
+        StepVerifier.create(sendGate.isRoomAlive("s1", session()))
+                .expectError(ChatSendUnavailableException.class).verify(VERIFY_CEILING);
 
-        // then: 입장 쪽이 아니라 전송 쪽으로 세어진다
-        assertThat(open("room_ended", "send", "unavailable")).isEqualTo(1);
-        assertThat(open("room_ended", "entry", "unavailable"))
-                .as("두 자리는 잃는 것이 다르다 — 입장만 열렸다면 그 사람은 보고만 있다").isZero();
+        // then
+        assertThat(this.registry.get("chat.send.refused").tags("policy", "room_ended").counter().count())
+                .isEqualTo(1);
+        assertThat(this.registry.find("chat.policy.open").counters())
+                .as("통과시킨 것이 아니다 — open 에 담기면 집행이 쉰 것으로 읽힌다").isEmpty();
     }
 
     @Test

@@ -14,8 +14,8 @@ import reactor.core.publisher.Mono;
  * 종료 직전에 토큰을 받은 사람은 세션이 닫힌 뒤에도 토큰 만료 전까지 다시 접속할 수 있다.
  *
  * <p><b>어댑터 계약</b>: Redis 장애 시 {@code false}로 흡수하지 말고 <b>error를 전파</b>한다 —
- * "확실히 살아있음"과 "조회 불가"를 소비처가 구분할 수 있어야 한다. 소비처(입장 게이트) 정책은
- * 강퇴 조회와 같은 fail-open이다.
+ * "확실히 살아있음"과 "조회 불가"를 소비처가 구분할 수 있어야 한다. 소비처 정책은 강퇴 조회와 같다 —
+ * 입장 게이트는 통과, 전송 재확인은 그 전송의 거절이다.
  */
 public interface ChatRoomEndedRepository {
 

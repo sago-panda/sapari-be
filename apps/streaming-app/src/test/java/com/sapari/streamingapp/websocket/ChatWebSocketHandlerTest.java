@@ -41,6 +41,8 @@ import com.sapari.chat.application.protocol.SystemMessageCode;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
+import com.sapari.chat.domain.exception.ClientMsgIdReusedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserKickedException;
 import com.sapari.chat.domain.model.ChatRole;
@@ -769,6 +771,9 @@ class ChatWebSocketHandlerTest {
         assertThat(handler.toError(new ChatPermissionDeniedException("x"), "c").code()).isEqualTo("PERMISSION");
         assertThat(handler.toError(new UserKickedException("x"), "c").code()).isEqualTo("KICKED");
         assertThat(handler.toError(new IllegalArgumentException("x"), "c").code()).isEqualTo("VALIDATION");
+        assertThat(handler.toError(new ChatSendUnavailableException(new RuntimeException("x")), "c").code())
+                .isEqualTo("UNAVAILABLE");
+        assertThat(handler.toError(new ClientMsgIdReusedException(), "c").code()).isEqualTo("CLIENT_MSG_ID_REUSED");
 
         OutboundMessage internal = handler.toError(new RuntimeException("x"), "c");
         assertThat(internal.type()).isEqualTo("ERROR");
@@ -1125,6 +1130,31 @@ class ChatWebSocketHandlerTest {
         ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
         then(registry).should(times(1)).sendToSession(eq("s1"), sent.capture());
         assertThat(sent.getValue().code()).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    @DisplayName("방 종료 재확인을 못 읽으면 ERROR(UNAVAILABLE) 만 돌려주고 세션은 유지한다 — 종료로 읽지 않는다")
+    void unreadable_room_alive_is_answered_without_closing() {
+        // given
+        given(registry.sendToSession(anyString(), any())).willReturn(Mono.empty());
+        given(registry.shouldReplyToRejection("s1")).willReturn(true);
+        given(registry.rateLimitRetryAfterSeconds("s1")).willReturn(0L);
+        given(entryGate.isRoomAlive(anyString(), any()))
+                .willReturn(Mono.error(new ChatSendUnavailableException(new RuntimeException("redis down"))));
+        ChatSession session = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);
+        String payload = "{\"type\":\"NORMAL\",\"content\":\"안녕\",\"clientMsgId\":\"c1\"}";
+
+        // when
+        StepVerifier.create(handler.onInbound("s1", session, payload)).expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        then(sendUseCase).should(never()).send(any());
+        then(registry).should(never()).terminateRoomEnded(anyString());
+        then(registry).should(never()).terminateKicked(anyString());
+        ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
+        then(registry).should(times(1)).sendToSession(eq("s1"), sent.capture());
+        assertThat(sent.getValue().code()).isEqualTo("UNAVAILABLE");
+        assertThat(sent.getValue().clientMsgId()).isEqualTo("c1");
     }
 
     @Test
