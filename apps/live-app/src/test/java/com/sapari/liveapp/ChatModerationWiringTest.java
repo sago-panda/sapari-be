@@ -29,6 +29,8 @@ import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
 import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
+import com.sapari.chat.port.GetChatHistoryUseCase;
+import com.sapari.chat.port.GetChatNoticeUseCase;
 import com.sapari.chat.port.KickUserUseCase;
 import java.util.concurrent.TimeUnit;
 
@@ -123,6 +125,14 @@ class ChatModerationWiringTest {
     @DisplayName("강퇴 유스케이스가 조립된다 — 빠진 협력자가 있으면 부팅이 실패한다")
     void kickUseCaseIsAssembled() {
         assertThat(context.getBean(KickUserUseCase.class)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("⭐ 이력·공지 두 포트가 같은 빈 하나로 주입된다 — 반환 타입이 한쪽 인터페이스면 생성 순서에 따라 갈린다")
+    void historyAndNoticePortsResolveToTheSameBean() {
+        // 빈이 하나 더 등록되면 getBean 이 NoUniqueBeanDefinitionException 으로 실패한다
+        assertThat(context.getBean(GetChatNoticeUseCase.class))
+                .isSameAs(context.getBean(GetChatHistoryUseCase.class));
     }
 
     @Test

@@ -53,6 +53,9 @@ class LivePublicRoutesTest {
             // HEAD 에서는 401 이 된다. 본문을 안 보내도 조회 비용(Postgres 1 + Mongo 1)은 같다.
             mvc.perform(get("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
             mvc.perform(head("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
+            // 현재 공지도 같은 모양이다 — 비회원도 입장 때 공지를 본다.
+            mvc.perform(get("/api/v1/lives/room-id/chat/notice")).andExpect(status().isOk());
+            mvc.perform(head("/api/v1/lives/room-id/chat/notice")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/ingress")).andExpect(status().isUnauthorized());
             mvc.perform(get("/api/v1/lives/future-private")).andExpect(status().isUnauthorized());
             mvc.perform(post("/api/v1/lives/rooms")).andExpect(status().isUnauthorized());
