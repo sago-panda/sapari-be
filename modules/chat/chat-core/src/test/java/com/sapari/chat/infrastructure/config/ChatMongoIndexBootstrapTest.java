@@ -33,7 +33,7 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
  * 포트는 이미 열려 있었다(실측: {@code EagerSingletonsRunBeforeThePortBindsTest}). 인덱스 셋에
  * 그 창 동안 이 Pod 는 인덱스 없는 컬렉션으로 들어온 요청을 받았다. 창의 길이는 한때 "최악 90초"
  * 라고 적었는데 드라이버 기본값이 {@code socketReadTimeoutMs=0}(무한)이라 상한이 없었고, 지금은
- * {@code ChatMongoConfig.INDEX_CREATE_CEILING} 이 네 인덱스 <b>전체</b>에 하나로 걸린다.
+ * {@code ChatMongoConfig.INDEX_CREATE_CEILING} 이 인덱스 <b>전체</b>에 하나로 걸린다.
  *
  * <p>그래서 단언을 "컨텍스트가 뜬 뒤 인덱스가 있다"로 두지 않는다 — 러너 버전도 그건 통과한다.
  * <b>phase {@code MIN_VALUE} lifecycle 이 start 될 때</b> 이미 있었는지를 본다. lifecycle 은 phase
@@ -138,7 +138,7 @@ class ChatMongoIndexBootstrapTest {
      * 적어 두는 쪽을 골랐다.
      */
     @Test
-    @DisplayName("⭐ 포트가 열리기 전에 인덱스 4종이 이미 서 있다")
+    @DisplayName("⭐ 포트가 열리기 전에 인덱스 5종이 이미 서 있다")
     void indexesExistBeforeTheProcessCanServeTraffic() {
         // given: 이름을 하드코딩하지 않는다 — 생성이 멱등이라 같은 호출이 같은 이름을 돌려준다
         List<String> expected = ChatMongoConfig.createChatMessagesIndexes(mongoTemplate);

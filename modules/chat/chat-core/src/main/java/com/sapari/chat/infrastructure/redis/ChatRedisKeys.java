@@ -103,7 +103,10 @@ final class ChatRedisKeys {
         return "chat:dict:changed";
     }
 
-    /** 전송 레이트리밋 키 (3초 TTL). 면제는 운영자와 이 방을 진행하는 판매자뿐 — 남의 방 판매자도 대상이다. */
+    /**
+     * 전송 레이트리밋 키 — 값은 다음 허용 시각(ms), 수명은 그 시각까지다({@code RedisRateLimiter}).
+     * 면제는 운영자와 이 방을 진행하는 판매자뿐 — 남의 방 판매자도 대상이다.
+     */
     static String rateLimit(UUID userId) {
         return "ratelimit:chat:" + userId;
     }

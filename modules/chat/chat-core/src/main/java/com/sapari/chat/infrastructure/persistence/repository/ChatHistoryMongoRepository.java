@@ -3,6 +3,7 @@ package com.sapari.chat.infrastructure.persistence.repository;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.bson.types.ObjectId;
@@ -36,6 +37,9 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
 
     /** 역순 페이징 인덱스가 {@code (roomId, _id)} 라 그 순서를 그대로 쓴다. */
     private static final Sort NEWEST_FIRST = Sort.by(Sort.Direction.DESC, "_id");
+
+    /** 문서의 {@code type} 값. 매퍼가 쓰는 문자열과 같다({@code ChatMessageMapper}). */
+    private static final String NOTICE_TYPE = "NOTICE";
 
     private final MongoTemplate mongoTemplate;
 
@@ -89,6 +93,17 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
         Criteria criteria = roomScope(roomId, excludedSenderIds)
                 .and("createdAt").gte(from).lte(to);
         return read(Query.query(criteria).with(NEWEST_FIRST).limit(limit));
+    }
+
+    /**
+     * {@code type} 등치가 질의에 있어야 공지 전용 파셜 인덱스를 쓴다 — 파셜 인덱스는 질의가 그 필터를
+     * 포함할 때만 후보가 된다. 없으면 페이징 인덱스로 방의 메시지를 최신부터 훑고, 공지가 없는 방이면
+     * 방 전체를 읽는다.
+     */
+    @Override
+    public Optional<ChatMessage> findLatestNotice(UUID roomId, Collection<UUID> excludedSenderIds) {
+        Criteria criteria = roomScope(roomId, excludedSenderIds).and("type").is(NOTICE_TYPE);
+        return read(Query.query(criteria).with(NEWEST_FIRST).limit(1)).stream().findFirst();
     }
 
     /**

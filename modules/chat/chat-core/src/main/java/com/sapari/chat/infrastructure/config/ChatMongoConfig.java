@@ -216,7 +216,7 @@ public class ChatMongoConfig {
      * <p>그래서 <b>이 호출부에서 상한을 건다</b> — {@link #INDEX_CREATE_CEILING}. 그 상한이 없으면
      * 이 가드의 의도("시끄럽게 죽는다")가 <b>조용한 멈춤</b>으로 뒤집힌다.
      *
-     * <p>상한은 네 인덱스 <b>전체</b>에 하나로 걸린다({@link #INDEX_CREATE_CEILING}) — 데드라인을
+     * <p>상한은 인덱스 <b>전체</b>에 하나로 걸린다({@link #INDEX_CREATE_CEILING}) — 데드라인을
      * 한 번 잡고 각 호출에 남은 시간을 넘긴다. 호출마다 따로 걸면 던지지 않는 느린 건들이 누적돼
      * 최악이 건수에 비례한다(실측: 상한 400ms × 4건, 각 300ms → 총 1,279ms, 던짐 0). "4종이면
      * 120초" 도 "하나 더 만들면 30초 늘어난다" 도 그래서 성립하지 않는다 — 이 수는 인덱스 수와
@@ -341,6 +341,13 @@ public class ChatMongoConfig {
     private static final String SUPERSEDED_WINDOW_INDEX = "roomId_1_createdAt_1";
 
     /**
+     * 공지 파셜 인덱스 이름 — 이름을 직접 준다. 키가 페이징 인덱스와 같아(roomId, _id) 자동 이름이
+     * {@code roomId_1__id_1} 로 겹친다. 실측(일회용 mongo:7.0): 이름을 빼면 부팅의 인덱스 생성이
+     * error 86 {@code IndexKeySpecsConflict} 로 실패한다.
+     */
+    static final String NOTICE_INDEX = "roomId_1__id_1_notice";
+
+    /**
      * 드롭 상한 — 생성과 달리 짧게 잡는다.
      *
      * <p>인덱스 빌드는 컬렉션 크기에 비례하지만 드롭은 메타데이터 연산이라 그렇지 않다. 여기서
@@ -352,7 +359,7 @@ public class ChatMongoConfig {
     private static final int INDEX_NOT_FOUND_ERROR_CODE = 27;
 
     /**
-     * 인덱스 4종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
+     * 인덱스 5종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
      * 인덱스 정의 전체를 여기로 일원화한다. $type을 쓰는 이유: $exists:true는 null 저장 필드도 매칭해
      * clientMsgId=null 2건째에 DuplicateKey가 터진다. 생성된 인덱스 이름 목록 반환(테스트 검증용).
      */
@@ -412,9 +419,22 @@ public class ChatMongoConfig {
                 .on("createdAt", Sort.Direction.ASC)
                 .on("_id", Sort.Direction.ASC)), deadline, ceiling, "roomId+createdAt+_id(VOD 윈도우)");
 
+        // 방의 최근 공지 한 건. type=NOTICE 행만 담는 파셜 인덱스다 — 공지는 방의 메시지 중 소수라
+        // 인덱스가 작고, insert 대부분(NORMAL)은 이 인덱스를 쓰지 않는다.
+        //
+        // 없으면 플래너가 페이징 인덱스(roomId, _id)를 최신부터 훑으며 type 을 FETCH 로 거른다 —
+        // 실측(일회용 mongo:7.0, 방에 일반 20건): 공지가 없는 방 docsExamined 20, 공지 뒤에 일반 20건이
+        // 쌓인 방 21. 이 인덱스가 붙으면 0 · 1 이다(ChatMessageQueryPlanTest).
+        String notice = awaitIndex(ops.createIndex(new Index()
+                .on("roomId", Sort.Direction.ASC)
+                .on("_id", Sort.Direction.ASC)
+                .named(NOTICE_INDEX)
+                .partial(PartialIndexFilter.of(new org.bson.Document("type", "NOTICE")))),
+                deadline, ceiling, "roomId+_id NOTICE partial(최근 공지)");
+
         dropSupersededWindowIndex(mongoTemplate);
 
-        return List.of(paging, dedup, ttl, window);
+        return List.of(paging, dedup, ttl, window, notice);
     }
 
     /**
@@ -551,7 +571,7 @@ public class ChatMongoConfig {
             }
             throw new IllegalStateException(
                     "chat_messages 인덱스 생성이 " + humanize(ceiling) + " 안에 끝나지 않았다"
-                            + "(이 상한은 네 인덱스 전체에 걸린다) — " + label
+                            + "(이 상한은 인덱스 전체에 걸린다) — " + label
                             + ". 둘 중 하나다: (1) Mongo 가 응답하지 않는다(드라이버 기본값이 "
                             + "socketReadTimeoutMs=0 이라 이 상한이 유일한 경계다) — Mongo 를 볼 것. "
                             + "(2) 큰 컬렉션에 이 인덱스를 처음 만드는 중이다 — 실측 건당 0.0057ms 로 "

@@ -3,6 +3,7 @@ package com.sapari.chat.domain.repository;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatMessage;
@@ -52,4 +53,12 @@ public interface ChatHistoryRepository {
      */
     List<ChatMessage> findWindow(UUID roomId, Instant from, Instant to, int limit,
             Collection<UUID> excludedSenderIds);
+
+    /**
+     * 그 방의 가장 최근 공지(NOTICE) 한 건. 없으면 빈 값이다.
+     *
+     * <p>제외 대상은 위 두 조회와 같다 — 이력에서 빠지는 강퇴자의 공지가 여기서만 보이면 같은 방의
+     * 두 조회가 다른 답을 한다.
+     */
+    Optional<ChatMessage> findLatestNotice(UUID roomId, Collection<UUID> excludedSenderIds);
 }

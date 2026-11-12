@@ -233,26 +233,31 @@ class ChatWebSocketIntegrationTest {
     }
 
     @Test
-    @DisplayName("레이트리밋 — BUYER 연속 전송 시 2번째는 RATE_LIMIT")
+    @DisplayName("레이트리밋 — BUYER 연속 전송은 3건까지 받고 4번째가 RATE_LIMIT")
     void rapid_send_rate_limited() {
         // given
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
-        String m1 = "{\"type\":\"NORMAL\",\"content\":\"a\",\"clientMsgId\":\"r1\"}";
-        String m2 = "{\"type\":\"NORMAL\",\"content\":\"b\",\"clientMsgId\":\"r2\"}";
+        List<String> sends = List.of("r1", "r2", "r3", "r4").stream()
+                .map(id -> "{\"type\":\"NORMAL\",\"content\":\"" + id + "\",\"clientMsgId\":\"" + id + "\"}")
+                .toList();
 
         List<String> frames = new CopyOnWriteArrayList<>();
         new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
                 session.send(Flux.concat(
-                                Mono.just(session.textMessage(m1)).delaySubscription(Duration.ofMillis(500)),
-                                Mono.just(session.textMessage(m2)).delaySubscription(Duration.ofMillis(150))))
+                                Mono.just(session.textMessage(sends.get(0))).delaySubscription(Duration.ofMillis(500)),
+                                Flux.fromIterable(sends.subList(1, sends.size()))
+                                        .concatMap(m -> Mono.just(session.textMessage(m))
+                                                .delaySubscription(Duration.ofMillis(150)))))
                         .and(session.receive().map(WebSocketMessage::getPayloadAsText)
                                 .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
                 .block(Duration.ofSeconds(20));
 
-        // when & then
-        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"") && f.contains("\"clientMsgId\":\"r2\""));
+        // when & then: 고정 창이면 r2 에서 막혔다
+        assertThat(frames).anyMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"") && f.contains("\"clientMsgId\":\"r4\""));
+        assertThat(frames).noneMatch(f -> f.contains("\"type\":\"RATE_LIMIT\"")
+                && (f.contains("\"clientMsgId\":\"r2\"") || f.contains("\"clientMsgId\":\"r3\"")));
     }
 
     @Test

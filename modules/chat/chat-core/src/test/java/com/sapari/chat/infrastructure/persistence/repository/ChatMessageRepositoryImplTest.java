@@ -173,16 +173,18 @@ class ChatMessageRepositoryImplTest {
     }
 
     @Test
-    @DisplayName("인덱스 4종(페이징·dedup unique partial·TTL 2년·VOD 윈도우)이 생성된다")
-    void creates_four_indexes() {
+    @DisplayName("인덱스 5종(페이징·dedup unique partial·TTL 2년·VOD 윈도우·공지 partial)이 생성된다")
+    void creates_five_indexes() {
         // given
         var indexes = mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo().collectList().block(VERIFY_CEILING);
 
-        // when & then: 넷을 다 적는다 — 종전에는 셋만 적어 윈도우 인덱스의 이름이 아무 데도
+        // when & then: 다섯을 다 적는다 — 종전에는 셋만 적어 윈도우 인덱스의 이름이 아무 데도
         // 단언되지 않았고, 그래서 그 인덱스의 키가 바뀌어도 이 칸이 초록이었다.
         assertThat(indexes).extracting(i -> i.getName())
                 .contains("roomId_1__id_1", "roomId_1_senderId_1_clientMsgId_1", "createdAt_1",
-                        "roomId_1_createdAt_1__id_1");
+                        "roomId_1_createdAt_1__id_1", "roomId_1__id_1_notice");
+        var notice = indexes.stream().filter(i -> i.getName().equals("roomId_1__id_1_notice")).findFirst().orElseThrow();
+        assertThat(notice.getPartialFilterExpression()).contains("NOTICE");
         var ttl = indexes.stream().filter(i -> i.getName().equals("createdAt_1")).findFirst().orElseThrow();
         assertThat(ttl.getExpireAfter()).isPresent();
         assertThat(ttl.getExpireAfter().get().toDays()).isEqualTo(730);

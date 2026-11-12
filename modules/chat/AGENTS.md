@@ -45,8 +45,8 @@ name a service something other than `KickUserService` and it silently guards not
 
 Moderation reads (kick, ban, room-ended, withdrawal) are **fail-open at entry** and **fail-closed at send**
 (SPR-188). The rate limit is **not** one of them
-any more: it falls back to a pod-local window of the same length, so a Redis **outage — or a round trip
-slower than 200ms** — no longer removes the cap. The latency half matters: dropping packets instead of
+any more: it falls back to a pod-local copy of the same rule (GCRA: one per 3s on average, burst 3), so a
+Redis **outage — or a round trip slower than 200ms** — no longer removes the cap. The latency half matters: dropping packets instead of
 dying keeps the command pending to Lettuce's 60s default, and without the bound the fallback never fires.
 It also means degradation is no longer a rare event you can leave to a throttled `log.error`; it fires on
 latency, so "what fraction of the time was enforcement pod-local" wants a metric, not a log line.
@@ -60,7 +60,7 @@ latency, so "what fraction of the time was enforcement pod-local" wants a metric
 | ban key — entry | allow | ban enforcement at entry |
 | ban key — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send, plus a definite kick read alongside it (below) |
 | withdrawal record (entry only) | allow | re-entry block on a pre-withdrawal room token |
-| rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
+| rate limit | **degrade** (pod-local GCRA, same 3s / burst 3) | cross-pod accuracy (≈ N pods × the per-user allowance) |
 | session HASH register / viewer count | allow | count accuracy only |
 
 **Why the two checkpoints point opposite ways.** Delivery is Redis Pub/Sub only — even same-pod sessions
@@ -95,8 +95,8 @@ first, which is backwards. Reasons are counted separately so one does not bury a
 production log statements all pass `sessionId`/`roomId`/`userId`/`role` scalars. The same holds for any
 record that carries `email` or an unmasked body. Absorbing a failure is also not the same as silencing
 it: when a handler swallows to keep a verdict, it still owes a counter and an interval-throttled log
-(`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
-put back). ⚠️ **A previous version of this paragraph claimed a counter cannot live in `application/`.
+(`RedisRateLimiter`'s local fallback is the worked example — it keeps enforcing and still raises
+`chat.ratelimit.degraded` and an interval-throttled WARN). ⚠️ **A previous version of this paragraph claimed a counter cannot live in `application/`.
 That was false** — rule 16 (`domain_and_application_must_not_depend_on_metrics_library`) bans the
 *library* (`io.micrometer..`), and its own javadoc says to put a port there instead. chat already has
 that port and injects it in `application/`: `application/port/ChatMetrics` →
@@ -898,7 +898,7 @@ The cost was investigated and **no redesign is warranted** (measured, redis:7 co
 | Shape | Worst concurrent command |
 |---|---|
 | `HVALS`+distinct alone, 12,000 entries | p50 3ms / max 6ms |
-| 100 concurrent on the *same* 12,000-entry hash | SETNX **211ms** — crosses the rate limiter's 200ms |
+| 100 concurrent on the *same* 12,000-entry hash | SETNX **211ms** (the limiter's call before SPR-189's script) — crosses the rate limiter's 200ms |
 | after in-flight merge: 60,000 sessions in one room | 28ms |
 | after merge: 6 pods × 100 rooms (360,000 entries at once) | 130ms |
 
@@ -1189,7 +1189,7 @@ individual lines.
 |---|---|---|
 | Moderation read failed, request let through (entry) | WARN | heals when Redis returns; `chat.policy.open` has the rate |
 | Moderation read failed, send refused | WARN | heals when Redis returns; `chat.send.refused` has the rate |
-| Rate limit degraded / TTL fallback | WARN | enforcement continues, only accuracy is lost |
+| Rate limit degraded | WARN | enforcement continues, only accuracy is lost |
 | Publish or fan-out dropped | WARN | the message is persisted; only live delivery was lost |
 | **Key type conflict** (`WRONGTYPE`) | **ERROR** | retries never heal it; a human must clear the key |
 | Payload parse / deserialize failure | **ERROR** | a contract mismatch; it takes a deploy |
@@ -1219,7 +1219,7 @@ conditional variant really does fall back to NOOP.
 |---|---|---|
 | `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through (entry; at send only the kick-key type conflict) |
 | `chat.send.refused` | `policy` | a send-side moderation read failed and the send was refused before persist. **Per tag, not per send:** kick and ban usually fail together and both count, so one refusal can raise the sum by 2 — alert on `max by (policy)`, not the sum |
-| `chat.ratelimit.degraded` | `mode` | pod-local window, or a denial whose TTL read failed |
+| `chat.ratelimit.degraded` | `mode` | Redis did not answer and this pod judged locally (`local_window` — name kept from the fixed-window days) |
 | `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
 | `chat.session.cut` | `reason` | the server closed a session |
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
@@ -1468,7 +1468,7 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
       commit (the start latch was a bare→bounded **conversion** there, not an addition) — and
       `ChatSessionGaugeConfigTest` has **no**
       `await(` at all — what grew there was `block(VERIFY_CEILING)`.
-    - A fourth statement-form site shows up in the discard list (`RedisRateLimiterDegradedTest:337`) and
+    - A fourth statement-form site shows up in the discard list (`RedisRateLimiterDegradedTest:231`) and
       it is **not** the same defect: that one is a `CyclicBarrier`, whose `await(timeout, unit)`
       **throws** `TimeoutException` instead of returning a boolean, so discarding its result loses
       nothing. Only `CountDownLatch.await` is silent on timeout. Do not "fix" the barrier site.
