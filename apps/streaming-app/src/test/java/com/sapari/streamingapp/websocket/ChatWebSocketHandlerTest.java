@@ -862,7 +862,7 @@ class ChatWebSocketHandlerTest {
         StepVerifier.create(handler.onInbound("s1", session, "{\"type\":\"NORMAL\",\"content\":\"도배\"}"))
                 .expectComplete().verify(VERIFY_CEILING);
 
-        // then: 전송 파이프라인에 아예 들어가지 않는다 — Redis 강퇴 조회는 장애 시 통과(fail-open)라 믿을 수 없다
+        // then: 전송 파이프라인에 아예 들어가지 않는다 — 종료가 확정된 세션은 Redis 판정을 다시 묻지 않는다
         then(sendUseCase).should(never()).send(any());
     }
 

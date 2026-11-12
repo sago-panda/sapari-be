@@ -165,6 +165,29 @@ class SendChatServiceMetricsTest {
         assertThat(registry.find("chat.policy.open").counters()).isEmpty();
     }
 
+    /**
+     * 한 Redis 라 둘이 <b>같이</b> 실패하는 것이 흔한 모양이다. {@code Mono.zip} 이 두 소스를 먼저 구독하고
+     * 에러는 그 뒤에 전파하므로 두 거절 기록이 다 돈다 — 거절 1건에 태그 둘이 오른다. 그래서
+     * {@code chat.send.refused} 의 태그 합은 거절 건수가 아니다(에러가 벌어져 도착하면 먼저 온 쪽이 다른
+     * 쪽을 취소해 1회가 되기도 한다). 이 칸은 즉시 실패하는 두 읽기의 모양을 고정한다.
+     */
+    @Test
+    @DisplayName("강퇴·밴이 같이 실패하면 거절 1건에 policy=kick·policy=ban 이 하나씩 오른다 — 태그 합은 거절 건수가 아니다")
+    void both_reads_failing_count_once_per_policy() {
+        // given
+        given(kickRepository.isKicked(any(), any()))
+                .willReturn(Mono.error(new IllegalStateException("Redis down")));
+        given(banRepository.isBanned(any())).willReturn(Mono.error(new IllegalStateException("Redis down")));
+
+        // when
+        StepVerifier.create(service.send(normalSend()))
+                .expectError(ChatSendUnavailableException.class).verify(VERIFY_CEILING);
+
+        // then
+        assertThat(count("chat.send.refused", "policy", "kick")).isEqualTo(1);
+        assertThat(count("chat.send.refused", "policy", "ban")).isEqualTo(1);
+    }
+
     @Test
     @DisplayName("⭐ 저장 뒤 발행이 실패하면 stage=redis_publish 가 오른다 — 영속은 됐고 실시간만 잃었다")
     void publish_failure_is_reported() {
@@ -200,7 +223,7 @@ class SendChatServiceMetricsTest {
 
     @Test
     @DisplayName("⭐ 지표 기록이 던져도 통과시키기로 한 전송은 뒤집히지 않는다 — 관측이 정책을 바꾸면 안 된다")
-    void a_throwing_registry_must_not_flip_fail_open() {
+    void a_throwing_registry_must_not_flip_a_let_through_send() {
         // given: 모든 계측 호출이 던지는 레지스트리. 전송 경로에 남은 통과 분기는 강퇴 키 타입 충돌
         // 하나이고 호출부가 onErrorResume 람다 안이라, 여기서 예외가 새면 그 전송이 거부된다.
         SendChatService throwingMetrics = newService(throwingRegistryMetrics());

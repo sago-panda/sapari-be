@@ -91,8 +91,11 @@ public enum ChatErrorCode implements ErrorCode {
     SEND_UNAVAILABLE(503, "CHAT-013", "지금은 메시지를 보낼 수 없습니다. 잠시 후 다시 보내 주세요."),
 
     // 같은 clientMsgId 로 이미 저장된 메시지와 본문이 다르다. 그대로 두면 서버가 먼저 저장된 메시지를
-    // ACK 로 돌려줘 이번 본문이 사라진 채 성공으로 보고된다. 키를 고르는 것은 클라이언트라 4xx 이고,
-    // 서버 상태와 부딪힌 것이라 409 다.
+    // ACK 로 돌려줘 이번 본문이 사라진 채 성공으로 보고된다.
+    //
+    // 이 항목과 위 SEND_UNAVAILABLE 의 상태값·문구는 WS 로 나가지 않는다 — 전송은 WS 뿐이고, WS 의 ERROR
+    // 코드는 핸들러가 예외 타입으로 만든다(UNAVAILABLE · CLIENT_MSG_ID_REUSED). 값은 다른 항목과 모양을
+    // 맞춘 것이다.
     CLIENT_MSG_ID_REUSED(409, "CHAT-014", "같은 메시지 키로 다른 내용을 보낼 수 없습니다.");
 
     private final int status;

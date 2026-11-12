@@ -56,9 +56,9 @@ latency, so "what fraction of the time was enforcement pod-local" wants a metric
 | room-ended marker — entry | allow | ended-room blocking at entry |
 | room-ended marker — send re-check | **refuse** that send (`ERROR(UNAVAILABLE)`), next frame re-checks | that one send |
 | kick set — entry | allow | kick enforcement at entry |
-| kick set — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send |
+| kick set — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send, plus a definite ban read alongside it (below) |
 | ban key — entry | allow | ban enforcement at entry |
-| ban key — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send |
+| ban key — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send, plus a definite kick read alongside it (below) |
 | withdrawal record (entry only) | allow | re-entry block on a pre-withdrawal room token |
 | rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
 | session HASH register / viewer count | allow | count accuracy only |
@@ -70,6 +70,11 @@ ACK that reports success. A refused send is refused **before persist**, so retry
 `clientMsgId` cannot duplicate. Entry goes the other way because refusing it closes with 1008, which the
 frontend guide treats as "do not reconnect" — viewers would stay out after Redis recovers — and whoever gets
 in through an open entry gate can only read, which a guest can do anyway.
+
+The two send reads run together in `Mono.zip`, so one failing read decides the result even when the other
+came back definite. With kick = true and the ban read failing, the client gets `UNAVAILABLE`, not `KICKED`,
+and the session is **not** closed. That send is still blocked, so nothing is bypassed; the next frame reads
+again.
 
 **Adapters propagate, consumers decide** — an adapter that swallows into `false` destroys the distinction
 between "definitely not kicked" and "could not ask".
@@ -1213,7 +1218,7 @@ conditional variant really does fall back to NOOP.
 | Meter | Tags | What it means |
 |---|---|---|
 | `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through (entry; at send only the kick-key type conflict) |
-| `chat.send.refused` | `policy` | a send-side moderation read failed and that send was refused before persist |
+| `chat.send.refused` | `policy` | a send-side moderation read failed and the send was refused before persist. **Per tag, not per send:** kick and ban usually fail together and both count, so one refusal can raise the sum by 2 — alert on `max by (policy)`, not the sum |
 | `chat.ratelimit.degraded` | `mode` | pod-local window, or a denial whose TTL read failed |
 | `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
 | `chat.session.cut` | `reason` | the server closed a session |

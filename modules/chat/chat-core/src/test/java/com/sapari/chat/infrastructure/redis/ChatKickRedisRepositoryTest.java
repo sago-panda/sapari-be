@@ -88,7 +88,7 @@ class ChatKickRedisRepositoryTest {
     }
 
     @Test
-    @DisplayName("어댑터 계약 — Redis 장애 시 false로 흡수하지 않고 error를 전파한다(정책은 소비처 fail-open 몫; 삼키면 '조회 불가'와 '비강퇴'를 구분 못 함)")
+    @DisplayName("어댑터 계약 — Redis 장애 시 false로 흡수하지 않고 error를 전파한다(통과·거절은 소비처가 정한다; 삼키면 '조회 불가'와 '비강퇴'를 구분 못 함)")
     @SuppressWarnings("unchecked")
     void redis_failure_propagates_error_not_false() {
         // given

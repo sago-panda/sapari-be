@@ -491,7 +491,8 @@ that on.
     `chat.delivery.dropped`, `chat.session.cut`, `chat.dictionary.fastpath.lost`,
     `chat.persist.timeout`, `chat.send.refused`. Every one of them is a *policy not being enforced*
     right now — or, for the last, sends refused because the policy could not be read — so any
-    non-zero rate is worth watching. Details in `modules/chat/AGENTS.md`.
+    non-zero rate is worth watching. `chat.send.refused` counts failed reads per `policy`, not
+    refused sends (one send can raise kick and ban together); alert on the max over `policy`. Details in `modules/chat/AGENTS.md`.
     - ⚠️ **`chat.dictionary.fastpath.lost` was missing from this list** until SPR-177, while
       `ChatMeterNames` had declared it since it was added — the discipline is "add a line when adding
       a meter" and that line was never added. Whoever reads this list as the set of chat counters was
