@@ -1330,6 +1330,22 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("방 종료 재확인 창 — 확인이 실패하면 되돌려 다음 프레임이 다시 묻는다")
+    void roomAliveRecheck_isRequiredAgainAfterAFailedCheck() {
+        // given: 창이 열려 이번 프레임이 확인을 맡았다(창을 소비했다)
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
+        registry.expireRoomAliveWindow("s1");
+        assertThat(registry.shouldRecheckRoomAlive("s1")).isTrue();
+
+        // when: 그 확인이 실패했다
+        registry.requireRoomAliveRecheck("s1");
+
+        // then: 되돌리지 않으면 30초 동안 확인 없이 통과한다
+        assertThat(registry.shouldRecheckRoomAlive("s1")).isTrue();
+    }
+
+    @Test
     @DisplayName("방 종료로 끊긴 세션은 1000으로 닫힌다 — 강퇴(1008)와 달라야 프론트가 재접속 금지로 오독하지 않는다")
     void closeStatus_reflectsRoomEnded() {
         // given

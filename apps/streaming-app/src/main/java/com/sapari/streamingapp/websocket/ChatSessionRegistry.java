@@ -891,10 +891,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
             //
             // 다만 이 관용이 실제로 값을 내는 건 <b>일시적·부분적</b> 실패일 때다. Redis가 통째로 죽으면 전달
-            // 자체가 Pub/Sub이라 아무도 못 받고, 그때 남는 건 "저장은 되고 발신자만 ack 받는" 상태다 —
-            // 강퇴·밴·종료 마커가 같이 열려 있어 그 창의 전송이 이력에 그대로 쌓인다(레이트리밋은
-            // 아니다 — 그쪽은 Pod 로컬 창으로 강등해 상한이 남는다). 그 구간을 막을지는
-            // 전송 경로(publish 실패 처리)의 정책 문제라 여기서 결정하지 않는다.
+            // 자체가 Pub/Sub이라 아무도 못 받는다. 그 구간의 전송은 강퇴·밴·종료 판정을 못 읽어 거절되므로
+            // (SendChatService·EntryGate.isRoomAlive) 검사 없이 이력에 쌓이지 않는다.
             Mono<Void> registration = sessionRepository.add(session.roomId(), sessionId, session.userId())
                     .onErrorResume(e -> {
                         log.warn("세션 명부 등재 실패 — 접속은 진행(시청자 수만 부정확) roomId={} cause={}",
@@ -1288,6 +1286,18 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // CAS로 한 번만 통과시킨다 — 통과한 쪽만 실제로 조회하고, 나머지는 그 결과를 기다리지 않고 지나간다.
         return now - last >= ROOM_ALIVE_RECHECK_INTERVAL_NANOS
                 && ls.lastRoomAliveCheckNanos().compareAndSet(last, now);
+    }
+
+    /**
+     * transport 전용: 다음 프레임이 방 종료를 <b>다시 묻게</b> 한다. 확인이 실패했을 때 쓴다 —
+     * {@link #shouldRecheckRoomAlive} 가 통과시킨 순간 창을 소비하므로, 되돌리지 않으면 실패한 확인이
+     * 다음 창 길이만큼 확인한 것으로 남는다.
+     */
+    public void requireRoomAliveRecheck(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.lastRoomAliveCheckNanos().set(System.nanoTime() - ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
+        }
     }
 
     /**

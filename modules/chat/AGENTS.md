@@ -41,31 +41,47 @@ ArchUnit enforces the calling direction: streaming-app must not touch blocking R
 blocking chat use cases; live-app (MVC) must not touch reactive ones. **Rule ② matches class names by regex** —
 name a service something other than `KickUserService` and it silently guards nothing.
 
-## Failure policy — the moderation reads open, the rate limit degrades
+## Failure policy — entry reads open, send reads refuse, the rate limit degrades
 
-Every moderation read (kick, ban, room-ended) is **fail-open**. The rate limit is **not** one of them
+Moderation reads (kick, ban, room-ended, withdrawal) are **fail-open at entry** and **fail-closed at send**
+(SPR-188). The rate limit is **not** one of them
 any more: it falls back to a pod-local window of the same length, so a Redis **outage — or a round trip
 slower than 200ms** — no longer removes the cap. The latency half matters: dropping packets instead of
 dying keeps the command pending to Lettuce's 60s default, and without the bound the fallback never fires.
 It also means degradation is no longer a rare event you can leave to a throttled `log.error`; it fires on
 latency, so "what fraction of the time was enforcement pod-local" wants a metric, not a log line.
-There is still no fail-closed path in chat.
 
 | Read | On failure | Loses |
 |---|---|---|
-| room-ended marker (entry + send re-check) | allow | ended-room blocking |
-| kick set | allow | kick enforcement |
-| ban key | allow | ban enforcement |
-| withdrawal record | allow | re-entry block on a pre-withdrawal room token |
+| room-ended marker — entry | allow | ended-room blocking at entry |
+| room-ended marker — send re-check | **refuse** that send (`ERROR(UNAVAILABLE)`), next frame re-checks | that one send |
+| kick set — entry | allow | kick enforcement at entry |
+| kick set — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send, plus a definite ban read alongside it (below) |
+| ban key — entry | allow | ban enforcement at entry |
+| ban key — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send, plus a definite kick read alongside it (below) |
+| withdrawal record (entry only) | allow | re-entry block on a pre-withdrawal room token |
 | rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
 | session HASH register / viewer count | allow | count accuracy only |
 
-The bet: total chat outage is worse than a kicked user slipping through. **Adapters propagate, consumers
-decide** — an adapter that swallows into `false` destroys the distinction between "definitely not kicked"
-and "could not ask".
+**Why the two checkpoints point opposite ways.** Delivery is Redis Pub/Sub only — even same-pod sessions
+receive through it (`RedisChatBroadcaster`). So while these reads fail, publish usually fails with them:
+letting a send through buys no one seeing it, and costs an unchecked message in permanent history plus an
+ACK that reports success. A refused send is refused **before persist**, so retrying with the same
+`clientMsgId` cannot duplicate. Entry goes the other way because refusing it closes with 1008, which the
+frontend guide treats as "do not reconnect" — viewers would stay out after Redis recovers — and whoever gets
+in through an open entry gate can only read, which a guest can do anyway.
 
-**One exception, and it changes severity, not policy.** A kick key of the wrong Redis type keeps failing
-forever — retry is idempotent *and* permanently futile. `KickStoreCorruptedException` splits it so the
+The two send reads run together in `Mono.zip`, so one failing read decides the result even when the other
+came back definite. With kick = true and the ban read failing, the client gets `UNAVAILABLE`, not `KICKED`,
+and the session is **not** closed. That send is still blocked, so nothing is bypassed; the next frame reads
+again.
+
+**Adapters propagate, consumers decide** — an adapter that swallows into `false` destroys the distinction
+between "definitely not kicked" and "could not ask".
+
+**One exception: a kick key of the wrong Redis type.** It keeps failing forever — retry is idempotent *and*
+permanently futile. At send it is **let through**, not refused: Redis is up and delivery works, so refusing
+would stop that room's chat until a human clears the key. `KickStoreCorruptedException` splits it so the
 "never heals" case is not buried in the logs of an outage that will. Detection is by message prefix
 (`RedisWrongType`), because the driver uses one exception type for every server-side error; measured, not
 assumed. **No self-healing DEL** — that would erase the room's whole kick list and possibly someone else's data.
@@ -1171,7 +1187,8 @@ individual lines.
 
 | Shape | Level | Why |
 |---|---|---|
-| Moderation read failed, request let through | WARN | heals when Redis returns; `chat.policy.open` has the rate |
+| Moderation read failed, request let through (entry) | WARN | heals when Redis returns; `chat.policy.open` has the rate |
+| Moderation read failed, send refused | WARN | heals when Redis returns; `chat.send.refused` has the rate |
 | Rate limit degraded / TTL fallback | WARN | enforcement continues, only accuracy is lost |
 | Publish or fan-out dropped | WARN | the message is persisted; only live delivery was lost |
 | **Key type conflict** (`WRONGTYPE`) | **ERROR** | retries never heal it; a human must clear the key |
@@ -1200,7 +1217,8 @@ conditional variant really does fall back to NOOP.
 
 | Meter | Tags | What it means |
 |---|---|---|
-| `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through |
+| `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through (entry; at send only the kick-key type conflict) |
+| `chat.send.refused` | `policy` | a send-side moderation read failed and the send was refused before persist. **Per tag, not per send:** kick and ban usually fail together and both count, so one refusal can raise the sum by 2 — alert on `max by (policy)`, not the sum |
 | `chat.ratelimit.degraded` | `mode` | pod-local window, or a denial whose TTL read failed |
 | `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
 | `chat.session.cut` | `reason` | the server closed a session |
@@ -1251,20 +1269,19 @@ of the predicate.
 The two also differ in what the sender sees. `stage=write` is translated to
 `ChatErrorCode.PERSIST_TIMEOUT` (503, `CHAT-012`); the recovery read is **not translated**, so the sender
 gets an untranslated 500. That gap is deliberate, and the reason changed with SPR-180: `CHAT-012` no
-longer asserts failure (its text is now "저장 결과를 확인하지 못했습니다. 같은 내용으로 다시 시도해
+longer asserts failure (its text is now "메시지 저장 결과를 확인하지 못했습니다. 잠시 후 이력을 확인해
 주세요."), so the old argument — that translating would make `CHAT-012` false — no longer applies. What
 still blocks the merge of the two branches is that they carry **different** certainty (unknown vs
 known-present) and separating that in the response needs one more error code, i.e. a wire-contract
 change. The count exists; the per-branch wording does not.
 
-⚠️ **`CHAT-012` does not ask for a retry, and that is deliberate.** The only safe retry carries the same
-`clientMsgId` — the unique partial index on `(roomId, senderId, clientMsgId)` rejects the duplicate
-(SPR-178 A23) — but that value is generated by the client and not reachable by the user, and
-`chat-frontend-guide.v1.2.md` has **no line** requiring its reuse after the optimistic bubble is rolled
-back. So a user-initiated retry is a new UUID, which cannot be deduplicated if the first write landed:
-asking for a retry would raise the duplicate rate on exactly the branch the exception warns about.
-Adding "retry `CHAT-012` with the same `clientMsgId`" to the guide is a user-owned decision; the wording
-can carry the guidance once that line exists.
+**Retry contract (SPR-188).** `CHAT-012`'s text never reaches a chat sender: the WS `ERROR` frame carries
+only a code and `clientMsgId`, and both persist branches arrive as `ERROR(INTERNAL)`. The retry rule
+therefore lives in `chat-frontend-guide.v1.2.md`: on `INTERNAL` and `UNAVAILABLE` the client keeps the
+failed bubble and resends with the **same `clientMsgId` and the same body**. Every branch is safe under it —
+not stored → stored now; stored → `DuplicateKey` → same original body → the stored message comes back as
+the ACK; a different body under a used key → `ERROR(CLIENT_MSG_ID_REUSED)`, where it used to be a silent
+success carrying the first body's id. A new UUID is the unsafe retry: the index cannot deduplicate it.
 
 ⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
 `ChatMeterNames` declared it when it was added. The rule in this section is "a scrape test walks every enum

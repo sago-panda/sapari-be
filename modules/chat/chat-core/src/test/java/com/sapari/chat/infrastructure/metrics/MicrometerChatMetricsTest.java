@@ -61,6 +61,7 @@ class MicrometerChatMetricsTest {
         metrics.withdrawalRecordFailed();
         metrics.inboundFrameDropped();
         metrics.persistTimedOut(PersistStage.WRITE);
+        metrics.sendRefused(ChatPolicy.KICK);
 
         // then
         assertThat(registry.get("chat.ratelimit.degraded").tags("mode", "local_window")
@@ -71,6 +72,7 @@ class MicrometerChatMetricsTest {
                 .counter().count()).isEqualTo(1);
         assertThat(registry.get("chat.withdrawal.record.failed").counter().count()).isEqualTo(1);
         assertThat(registry.get("chat.inbound.dropped").counter().count()).isEqualTo(1);
+        assertThat(registry.get("chat.send.refused").tags("policy", "kick").counter().count()).isEqualTo(1);
     }
 
     /**

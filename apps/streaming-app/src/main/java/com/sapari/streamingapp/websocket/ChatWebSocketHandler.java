@@ -30,6 +30,8 @@ import com.sapari.chat.application.service.SystemMessageService;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
+import com.sapari.chat.domain.exception.ClientMsgIdReusedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
@@ -506,7 +508,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     /** 인바운드 1건 처리 — 어떤 입력이 와도 ERROR 응답으로 끝내고 연결은 유지한다. (단위 테스트 진입점) */
     Mono<Void> onInbound(String sid, ChatSession chatSession, String payload) {
         // 종료가 확정된 세션은 소켓이 닫히기 전이라도 더 받지 않는다 — 그 창에 강퇴된 사용자가 계속
-        // 보낼 수 있고, 그걸 막는 건 전송 경로의 Redis 조회뿐인데 그건 장애 시 통과(fail-open)한다.
+        // 보낼 수 있고, 그걸 막는 건 전송 경로의 Redis 조회뿐이다.
         if (registry.isTerminating(sid)) {
             return Mono.empty();
         }
@@ -697,6 +699,14 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         }
         if (e instanceof IllegalArgumentException) {
             return "VALIDATION";
+        }
+        // 저장 전에 거절했다 — 아무것도 남지 않았다. 결과를 모를 수 있는 INTERNAL 과 가른다.
+        if (e instanceof ChatSendUnavailableException) {
+            return "UNAVAILABLE";
+        }
+        // 클라이언트가 키를 재사용했다 — 다시 보내도 같은 답이다. 새 clientMsgId 로 보내야 한다.
+        if (e instanceof ClientMsgIdReusedException) {
+            return "CLIENT_MSG_ID_REUSED";
         }
         return "INTERNAL";
     }

@@ -29,7 +29,7 @@ public class ChatKickRedisRepository implements ChatKickRepository {
         String key = ChatRedisKeys.kicked(roomId);
         return redisTemplate.opsForSet()
                 .isMember(key, userId.toString())
-                // 일시 장애는 그대로 흘려보낸다 — 소비처의 fail-open 정책은 바뀌지 않는다.
+                // 일시 장애는 그대로 흘려보낸다 — 통과시킬지 거절할지는 소비처가 정한다.
                 // 낫지 않는 쪽만 타입으로 갈라, 소비처가 "곧 복구될 실패"와 섞어 로그하지 않게 한다.
                 .onErrorMap(RedisWrongType::matches, e -> new KickStoreCorruptedException(key, e));
     }

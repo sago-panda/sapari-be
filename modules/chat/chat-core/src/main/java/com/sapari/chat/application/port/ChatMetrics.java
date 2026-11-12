@@ -8,9 +8,10 @@ package com.sapari.chat.application.port;
  * 도구를 바꿔도 도메인 문장이 흔들리지 않는다. 같은 모양이 live 에 이미 있다({@code LiveMetrics}).
  *
  * <p><b>이 포트가 나르는 것은 chat 의 가용성 정책이 실제로 발화했는가다.</b> 이 저장소의 chat 은
- * 실패를 삼키지 않는 대신 <b>방향을 정해</b> 삼킨다 — 모더레이션 조회는 열고, 레이트리밋은 강등하고,
- * 실시간 전달은 포기한다. 그 선택들은 전부 "지금은 집행되지 않는다" 를 뜻하는데, 지금까지 그 사실은
- * 프로세스 안의 카운터와 솎아낸 로그 줄에만 있었다. 즉 <b>정책이 쉬고 있는지를 밖에서 알 수 없었다.</b>
+ * 실패를 삼키지 않는 대신 <b>방향을 정해</b> 삼킨다 — 입장 판정은 열고, 전송 판정은 거절하고,
+ * 레이트리밋은 강등하고, 실시간 전달은 포기한다. 거절을 뺀 셋은 "지금은 집행되지 않는다" 를 뜻하고,
+ * 거절은 "지금은 받지 않는다" 를 뜻한다. 지금까지 그 사실은 프로세스 안의 카운터와 솎아낸 로그 줄에만
+ * 있었다. 즉 <b>정책이 쉬고 있는지를 밖에서 알 수 없었다.</b>
  *
  * <p><b>구현은 절대 예외를 던지지 않는다.</b> 이건 취향이 아니라 업무 계약이다 — 이 포트의 호출부
  * 대부분이 {@code onErrorResume} 람다 안, 즉 fail-open 분기다. 거기서 던지면 Reactor 가 하류로
@@ -27,6 +28,12 @@ public interface ChatMetrics {
      * 상태가 곧 복구될 장애에 묻힌다.
      */
     void policyNotEnforced(ChatPolicy policy, ChatCheckpoint checkpoint, PolicyReadFailure failure);
+
+    /**
+     * 전송 판정을 못 읽어 <b>그 전송을 거절했다</b>. {@link #policyNotEnforced} 의 반대 방향이다 —
+     * 그쪽은 통과시켰고 이쪽은 막았다. 거절된 전송은 저장되지 않으므로 발신자가 같은 키로 다시 보낸다.
+     */
+    void sendRefused(ChatPolicy policy);
 
     /** 레이트리밋이 완전한 판정을 못 하고 내려앉았다. 집행은 계속된다 — 정확도만 잃는다. */
     void rateLimitDegraded(RateLimitDegradation mode);
@@ -98,6 +105,7 @@ public interface ChatMetrics {
     ChatMetrics NOOP = new ChatMetrics() {
         @Override public void policyNotEnforced(ChatPolicy policy, ChatCheckpoint checkpoint,
                 PolicyReadFailure failure) { }
+        @Override public void sendRefused(ChatPolicy policy) { }
         @Override public void rateLimitDegraded(RateLimitDegradation mode) { }
         @Override public void deliveryDropped(DeliveryStage stage) { }
         @Override public void sessionCut(SessionCutReason reason) { }

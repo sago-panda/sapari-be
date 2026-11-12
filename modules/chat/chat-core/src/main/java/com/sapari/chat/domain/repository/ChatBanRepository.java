@@ -20,7 +20,7 @@ import reactor.core.publisher.Mono;
  *
  * <p><b>어댑터 계약</b>: Redis 장애 시 {@code false}로 흡수하지 말고 <b>error를 전파</b>한다.
  * {@code false}(=정상 유저)로 삼키면 소비처가 "확실히 정상"과 "조회 불가"를 구분할 수 없다.
- * 소비처(입장 게이트) 정책은 종료 마커·강퇴 조회와 같은 <b>fail-open</b>이다.
+ * 소비처 정책은 종료 마커·강퇴 조회와 같다 — 입장 게이트는 <b>fail-open</b>, 전송 경로는 그 전송의 거절이다.
  */
 public interface ChatBanRepository {
 

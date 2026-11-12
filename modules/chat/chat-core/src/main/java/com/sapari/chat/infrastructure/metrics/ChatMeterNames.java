@@ -66,6 +66,9 @@ final class ChatMeterNames {
     /** 세션당 인바운드 상한을 넘어 읽지 않고 버린 프레임 수. */
     static final String INBOUND_DROPPED = "chat.inbound.dropped";
 
+    /** 전송 판정을 못 읽어 거절한 전송 수. */
+    static final String SEND_REFUSED = "chat.send.refused";
+
     static final String TAG_POLICY = "policy";
     static final String TAG_CHECKPOINT = "checkpoint";
     static final String TAG_FAILURE = "failure";
