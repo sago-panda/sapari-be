@@ -85,7 +85,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 최악 모양으로 초당 약 0.31ms((29 + 2.3)µs × 10)이고, 버린 프레임에는 맵 조회 하나만 남는다.
      * 이 상한이 묶지 않는 것은 그 앞의 수신·프레이밍이다 — 그쪽은 프레임 크기 상한과 회선이 정한다.
      *
-     * <p><b>정상 클라는 닿지 않는다.</b> 회원은 레이트리밋이 3초에 한 건이고, 레이트리밋이 면제되는 방주인도
+     * <p><b>정상 클라는 닿지 않는다.</b> 회원은 레이트리밋이 평균 3초에 한 건(연속 3건)이고, 레이트리밋이 면제되는 방주인도
      * 사람이 치는 속도다. 이 값은 정상 사용량을 재서 정한 것이 아니라 그보다 넉넉히 둔 것이다.
      */
     static final long INBOUND_FRAME_INTERVAL_NANOS = Duration.ofMillis(100).toNanos();
@@ -703,7 +703,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * transport 전용: 레이트리밋에 걸렸다는 사실과 해제 시각을 이 세션에 적어둔다.
      *
      * <p>거부 자체는 레이트리밋이 하지만, <b>거부하는 비용</b>은 제한하지 못한다 — 거부 한 번에 Redis 왕복이
-     * 세 번(강퇴 조회·SET NX·잔여 TTL 조회) 든다. 회선 속도로 밀면 그 비용이 그대로 반복된다.
+     * 세 번(강퇴·밴 조회·레이트리밋 스크립트) 든다. 회선 속도로 밀면 그 비용이 그대로 반복된다.
      * 해제 시각을 알고 있는 동안은 같은 답을 다시 물을 이유가 없으므로 여기에 적어두고 로컬에서 끊는다.
      */
     public void recordRateLimited(String sessionId, long retryAfterSeconds) {
@@ -1005,8 +1005,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>그 N 배가 레이트리밋까지 끌어내린다.</b> 이 조회는 {@code HVALS} 로 방 해시 전체를
      * O(N) 으로 당겨오고 입장마다 불리는데 입장 엔드포인트에는 레이트리밋이 없다. 그만큼 느려지면
-     * {@code RedisRateLimiter} 의 200ms 상한에 걸려 <b>그 Pod 의 레이트리밋 집행이 로컬 창으로
-     * 강등</b>된다. 실측으로 재 봤다 — 12,000 엔트리 해시에 동시 100건을 걸면 그 순간의 SETNX 가
+     * {@code RedisRateLimiter} 의 200ms 상한에 걸려 <b>그 Pod 의 레이트리밋 집행이 로컬 판정으로
+     * 강등</b>된다. 실측으로 재 봤다 — 12,000 엔트리 해시에 동시 100건을 걸면 그 순간의 SETNX(당시 레이트리밋 호출)가
      * 211ms 로 상한을 넘는다. 그래서 이 병합은 "표시용 숫자 하나" 를 아끼는 것이 아니다.
      *
      * <p><b>그리고 병합이 그 경로를 닫는다 — 부분 완화가 아니다</b>(실측). 병합 뒤의 모양은 방마다

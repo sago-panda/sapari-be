@@ -530,8 +530,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 커맨드 생성(신뢰경계 검증)은 반드시 flatMap 안에서 한다 — 밖에서 만들면 인자 평가 위치에서 터져
         // 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결째 끊긴다. flatMap 안의 throw는
         // onError 신호가 되므로 그 프레임만 ERROR로 돌아간다.
-        // 레이트리밋 창 안이면 Redis에 다시 묻지 않는다 — 답을 이미 안다. 묻는 비용이 왕복 3회(강퇴 조회·
-        // SET NX·잔여 TTL)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
+        // 레이트리밋 창 안이면 Redis에 다시 묻지 않는다 — 답을 이미 안다. 묻는 비용이 왕복 3회(강퇴·밴 조회·
+        // 레이트리밋 스크립트)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
         long retryAfter = registry.rateLimitRetryAfterSeconds(sid);
         if (retryAfter > 0) {
             return respondRejected(sid, OutboundMessage.rateLimit(retryAfter, clientMsgId));

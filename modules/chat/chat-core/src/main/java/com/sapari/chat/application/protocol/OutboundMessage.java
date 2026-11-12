@@ -124,7 +124,7 @@ public record OutboundMessage(
                 .build();
     }
 
-    /** 레이트리밋 거부. 서버가 준 값이든 로컬 창에서 만든 값이든 같은 모양이어야 한다. */
+    /** 레이트리밋 거부. 서버가 준 값이든 로컬 판정에서 만든 값이든 같은 모양이어야 한다. */
     public static OutboundMessage rateLimit(long retryAfterSeconds, String clientMsgId) {
         return OutboundMessage.builder()
                 .type("RATE_LIMIT")
