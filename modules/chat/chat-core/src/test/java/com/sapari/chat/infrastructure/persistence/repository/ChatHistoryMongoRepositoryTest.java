@@ -100,13 +100,21 @@ class ChatHistoryMongoRepositoryTest {
      * <p>한 건씩 순차로 저장한다 — {@code ObjectId} 가 생성 순으로 커지므로 저장 순서가 곧 정렬 순서다.
      */
     private String save(UUID room, UUID sender, String body, Instant createdAt) {
+        return save(room, sender, body, createdAt, new ChatMessageType.Normal());
+    }
+
+    private String saveNotice(UUID room, UUID sender, String body) {
+        return save(room, sender, body, BASE, new ChatMessageType.Notice());
+    }
+
+    private String save(UUID room, UUID sender, String body, Instant createdAt, ChatMessageType type) {
         ChatMessage saved = writeRepository.save(ChatMessage.builder()
                 .roomId(room)
                 .senderId(sender)
                 .senderNickname("닉")
                 .senderEmail("e@example.com")
                 .senderRole(ChatRole.BUYER)
-                .type(new ChatMessageType.Normal())
+                .type(type)
                 .originalMessage(body)
                 .displayMessage(body)
                 .clientMsgId(UUID.randomUUID().toString())
@@ -252,5 +260,39 @@ class ChatHistoryMongoRepositoryTest {
                 roomId, BASE.plusSeconds(10), BASE, 200, Set.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("from이 to보다 늦다");
+    }
+
+    @Test
+    @DisplayName("⭐ 공지 조회는 그 방의 가장 최근 공지를 준다 — 뒤에 쌓인 일반 메시지·다른 방 공지가 아니다")
+    void theLatestNoticeOfTheRoomComesBack() {
+        // given
+        saveNotice(roomId, cleanSender, "옛 공지");
+        saveNotice(roomId, cleanSender, "최근 공지");
+        save(roomId, cleanSender, "일반", BASE.plusSeconds(10));
+        saveNotice(otherRoomId, cleanSender, "다른 방 공지");
+
+        // when & then
+        assertThat(repository.findLatestNotice(roomId, Set.of()))
+                .map(ChatMessage::displayMessage).contains("최근 공지");
+    }
+
+    @Test
+    @DisplayName("⭐ 강퇴자의 공지는 건너뛰고 그 앞의 공지를 준다 — 읽은 뒤 거르면 빈 값이 된다")
+    void aKickedSendersNoticeIsSkipped() {
+        // given
+        saveNotice(roomId, cleanSender, "남는 공지");
+        saveNotice(roomId, kickedSender, "강퇴자 공지");
+
+        // when & then
+        assertThat(repository.findLatestNotice(roomId, Set.of(kickedSender)))
+                .map(ChatMessage::displayMessage).contains("남는 공지");
+    }
+
+    @Test
+    @DisplayName("공지가 없는 방은 빈 값이다")
+    void aRoomWithoutNoticesIsEmpty() {
+        save(roomId, cleanSender, "일반", BASE);
+
+        assertThat(repository.findLatestNotice(roomId, Set.of())).isEmpty();
     }
 }

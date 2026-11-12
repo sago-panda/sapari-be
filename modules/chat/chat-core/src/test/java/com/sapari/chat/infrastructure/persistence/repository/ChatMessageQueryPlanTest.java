@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.bson.Document;
@@ -208,6 +209,67 @@ class ChatMessageQueryPlanTest {
                 .isGreaterThanOrEqualTo(MESSAGES_IN_WINDOW);
     }
 
+    @Test
+    @DisplayName("⭐ 공지가 없는 방의 공지 조회가 방의 메시지를 읽지 않는다")
+    void theNoticeReadOfARoomWithoutNoticesReadsNoDocument() {
+        // given: 일반 메시지만 깔아 둔다 — 페이징 인덱스로 훑으면 이 수가 docsExamined 다
+        for (int i = 0; i < OTHER_MESSAGES_IN_ROOM; i++) {
+            repository.save(message("기타-" + i, "other-" + i)).block(VERIFY_CEILING);
+        }
+
+        // when
+        runCommand(new Document("profile", 2)).block(VERIFY_CEILING);
+        Optional<ChatMessage> notice = historyRepository.findLatestNotice(roomId, List.of());
+        runCommand(new Document("profile", 0)).block(VERIFY_CEILING);
+
+        // then: 분모 먼저
+        Document profiled = lastNoticeRead();
+        assertThat(profiled)
+                .as("프로파일러가 공지 조회를 못 잡았다 — 아래 수치의 분모가 0 이다")
+                .isNotNull();
+        assertThat(notice).isEmpty();
+
+        assertThat(profiled.getInteger("docsExamined"))
+                .as("공지가 없는데 문서를 읽었다 — 방의 메시지 수(%d)에 비례한다. 고른 계획: %s",
+                        OTHER_MESSAGES_IN_ROOM, profiled.getString("planSummary"))
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("⭐ 공지 조회가 그 뒤에 쌓인 일반 메시지를 읽지 않고 최근 공지 1문서만 읽는다")
+    void theNoticeReadSkipsTheNormalMessagesAfterIt() {
+        // given: 옛 공지 · 최근 공지 다음에 일반 메시지를 쌓는다
+        repository.save(notice("옛 공지", "notice-old")).block(VERIFY_CEILING);
+        repository.save(notice("최근 공지", "notice-new")).block(VERIFY_CEILING);
+        for (int i = 0; i < OTHER_MESSAGES_IN_ROOM; i++) {
+            repository.save(message("기타-" + i, "other-" + i)).block(VERIFY_CEILING);
+        }
+
+        // when
+        runCommand(new Document("profile", 2)).block(VERIFY_CEILING);
+        Optional<ChatMessage> notice = historyRepository.findLatestNotice(roomId, List.of());
+        runCommand(new Document("profile", 0)).block(VERIFY_CEILING);
+
+        // then
+        Document profiled = lastNoticeRead();
+        assertThat(profiled)
+                .as("프로파일러가 공지 조회를 못 잡았다 — 아래 수치의 분모가 0 이다")
+                .isNotNull();
+        assertThat(notice).map(ChatMessage::displayMessage).contains("최근 공지");
+
+        assertThat(profiled.getInteger("docsExamined"))
+                .as("최근 공지 1건보다 많이 읽었다(뒤에 쌓인 일반 메시지: %d). 고른 계획: %s",
+                        OTHER_MESSAGES_IN_ROOM, profiled.getString("planSummary"))
+                .isEqualTo(1);
+    }
+
+    /** {@code system.profile} 에서 공지 조회를 찾는다 — {@code type} 을 필터에 담은 읽기가 그것뿐이다. */
+    private Document lastNoticeRead() {
+        Document filter = new Document("op", "query")
+                .append("command.filter.type", new Document("$exists", true));
+        return findProfiled(filter);
+    }
+
     /** {@code system.profile} 에서 윈도우 조회를 찾는다 — {@code createdAt} 범위를 필터에 담은 읽기가 그것뿐이다. */
     private Document lastWindowRead() {
         Document filter = new Document("op", "query")
@@ -239,6 +301,11 @@ class ChatMessageQueryPlanTest {
 
     private ChatMessage message(String text, String clientMsgId) {
         return message(text, clientMsgId, Instant.now());
+    }
+
+    private ChatMessage notice(String text, String clientMsgId) {
+        return new ChatMessage(null, roomId, senderId, "판매자닉", "seller@example.com",
+                ChatRole.SELLER, new ChatMessageType.Notice(), text, text, clientMsgId, Instant.now());
     }
 
     private ChatMessage message(String text, String clientMsgId, Instant createdAt) {
