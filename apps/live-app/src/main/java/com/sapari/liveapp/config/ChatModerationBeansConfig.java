@@ -37,7 +37,6 @@ import com.sapari.chat.domain.repository.ChatHistoryRepository;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapper;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapperImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatHistoryMongoRepository;
-import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
@@ -204,13 +203,18 @@ public class ChatModerationBeansConfig {
     }
 
     /**
-     * 이력 조회 유스케이스.
+     * 이력 조회 · 현재 공지 조회 유스케이스.
      *
      * <p>{@code GetLiveRoomUseCase} 를 받는다 — 특권 뷰 판정에 방 주인이 필요하고, VOD 창을 역산하는
      * 기준이 방송 시작 시각이다. 둘 다 live 소유 값이라 포트로만 묻는다.
+     *
+     * <p>반환 타입이 구현 클래스인 이유: 한 서비스가 두 포트({@code GetChatHistoryUseCase} ·
+     * {@code GetChatNoticeUseCase})를 구현한다. 반환 타입을 한쪽 인터페이스로 두면 다른 쪽 포트 주입이
+     * 빈 생성 순서에 따라 갈린다 — 이 빈이 아직 안 만들어졌으면 선언된 반환 타입으로만 매칭해 실패한다.
+     * 같은 서비스로 빈을 하나 더 등록하면 인스턴스가 둘이 되므로 그렇게 하지 않는다.
      */
     @Bean
-    public GetChatHistoryUseCase getChatHistoryUseCase(GetLiveRoomUseCase liveRoomReader,
+    public GetChatHistoryService getChatHistoryUseCase(GetLiveRoomUseCase liveRoomReader,
                                                         ChatHistoryRepository historyRepository,
                                                         ChatKickLogRepository kickLogRepository,
                                                         ChatPermissionPolicy permissionPolicy) {

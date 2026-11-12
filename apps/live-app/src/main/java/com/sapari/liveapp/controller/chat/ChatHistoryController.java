@@ -10,10 +10,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
+import com.sapari.chat.command.GetChatNoticeCommand;
 import com.sapari.chat.domain.exception.ChatHistoryQueryInvalidException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.port.GetChatHistoryUseCase;
+import com.sapari.chat.port.GetChatNoticeUseCase;
+import com.sapari.chat.view.ChatMessageView;
 import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.common.response.ResponseEnvelope;
 import com.sapari.liveapp.security.LiveUserPrincipal;
@@ -21,7 +24,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 import lombok.RequiredArgsConstructor;
 
 /**
- * 다시보기 채팅 이력 조회.
+ * 다시보기 채팅 이력 조회 · 방의 현재 공지 조회.
  *
  * <p><b>공개 조회다</b> — 비회원도 다시보기 채팅을 본다(설계 확정). 그래서 principal 이 없을 수 있고,
  * 없으면 명령에 신원을 비워 보낸다. 신원이 없으면 특권 뷰(원문·발신자 이메일)를 받지 못할 뿐이고
@@ -60,6 +63,7 @@ public class ChatHistoryController {
     private static final int DEFAULT_SIZE = 15;
 
     private final GetChatHistoryUseCase getChatHistoryUseCase;
+    private final GetChatNoticeUseCase getChatNoticeUseCase;
 
     @GetMapping("/history")
     public ResponseEnvelope<GetChatHistoryView> history(
@@ -71,6 +75,25 @@ public class ChatHistoryController {
 
         return ResponseEnvelope.success(getChatHistoryUseCase.getHistory(
                 command(roomId, beforeId, playbackPositionMs, size, principal)));
+    }
+
+    /**
+     * 방의 현재 공지 — 가장 최근 NOTICE 한 건. 없으면 {@code data: null} 이다.
+     *
+     * <p>라이브 입장 시 한 번 부른다. 입장 뒤 새 공지는 WS 의 {@code NOTICE} 프레임으로 온다.
+     * 이력과 같은 판정을 쓰고(없는 방 거부 · 특권 뷰 · 강퇴자 제외) 같은 공개 조회다. 신원도 이력과
+     * 같이 인증 주체에서만 온다.
+     */
+    @GetMapping("/notice")
+    public ResponseEnvelope<ChatMessageView> notice(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal LiveUserPrincipal principal) {
+
+        GetChatNoticeCommand command = new GetChatNoticeCommand(
+                roomId,
+                principal == null ? null : principal.userId(),
+                principal == null ? null : chatRoleNameOf(principal.role()));
+        return ResponseEnvelope.success(getChatNoticeUseCase.findLatestNotice(command).orElse(null));
     }
 
     /**

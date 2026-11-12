@@ -329,6 +329,12 @@ live:
         permits-per-second: ${LIVE_CHAT_HISTORY_PERMITS:20}
         burst: ${LIVE_CHAT_HISTORY_BURST:40}            # permits 이상이어야 부팅된다
 
+    # 현재 공지 — 입장마다 1회 불려 이력과 버킷을 가른다. 기본값은 잰 값이 아니다(입장 상한과 같은 자릿수).
+    notice:
+      rate-limit:
+        permits-per-second: ${LIVE_CHAT_NOTICE_PERMITS:500}
+        burst: ${LIVE_CHAT_NOTICE_BURST:1000}           # permits 이상이어야 부팅된다
+
 # ---------------------------------------------------------------------------
 # LiveKit
 #

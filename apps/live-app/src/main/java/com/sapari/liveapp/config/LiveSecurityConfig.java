@@ -364,6 +364,13 @@ public class LiveSecurityConfig {
                                 "/api/v1/lives/{roomId}/chat/history").permitAll()
                         .requestMatchers(HttpMethod.HEAD,
                                 "/api/v1/lives/{roomId}/chat/history").permitAll()
+                        // 현재 공지도 이력과 같은 모양이다 — 비회원도 입장 때 공지를 본다. GET 과
+                        // HEAD 를 같이 여는 이유와 그 비용은 위 이력 주석과 같고, 상한은 따로 둔
+                        // ChatNoticeRateLimitFilter 가 GET 과 HEAD 를 같은 버킷으로 센다.
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/lives/{roomId}/chat/notice").permitAll()
+                        .requestMatchers(HttpMethod.HEAD,
+                                "/api/v1/lives/{roomId}/chat/notice").permitAll()
                         // 채팅 강퇴는 판매자와 관리자 둘 다 — 관리자는 남의 방도 통제한다.
                         // 아래 판매자 전용 규칙보다 먼저 와야 한다(먼저 맞는 규칙이 이긴다).
                         // 실제 판정은 여기서 끝나지 않는다: 자기 방인지, 방이 진행 중인지, 대상이
