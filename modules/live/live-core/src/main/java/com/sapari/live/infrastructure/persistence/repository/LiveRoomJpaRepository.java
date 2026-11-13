@@ -18,6 +18,7 @@ import org.springframework.data.repository.query.Param;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 import com.sapari.live.infrastructure.persistence.entity.StreamType;
+import com.sapari.live.infrastructure.persistence.entity.VodStatus;
 
 public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUID> {
 
@@ -134,4 +135,70 @@ public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUI
                                            @Param("afterScheduledAt") Instant afterScheduledAt,
                                            @Param("afterId") UUID afterId,
                                            Limit limit);
+
+    /**
+     * 다시보기 처리 상태를 앞으로만 옮긴다 — {@code vod_status IN (:from)} 이 단조성 가드다(중복·역순 알림은 0행).
+     * 네이티브인 이유: 엔티티는 이 두 컬럼을 {@code insertable/updatable = false} 로 매핑해 저장 경로가 쓰지 못하게
+     * 막았다(전체 컬럼 UPDATE 가 웹훅 결과를 낡은 값으로 되돌린다). {@code updated_at} 은 일부러 쓰지 않는다 —
+     * 고아 미디어 정리 잡이 그 값을 "방을 마지막으로 손댄 시각"으로 유예 판정에 쓴다.
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(value = """
+            UPDATE live_schema.live_rooms
+               SET vod_status = :target, vod_failed_reason = :reason
+             WHERE egress_id = :egressId AND vod_status IN (:from)
+            """, nativeQuery = true)
+    int advanceVodStatus(@Param("egressId") String egressId,
+                         @Param("target") String target,
+                         @Param("reason") String reason,
+                         @Param("from") Collection<String> from);
+
+    /*
+     * 공개 다시보기 목록 키셋 — 정렬과 WHERE 가 같은 두 키(ended_at DESC, id DESC).
+     * 인덱스 (status, vod_status, ended_at DESC, id DESC) 가 짝이다(V202611121200). 아카이브 조건은
+     * GetLiveReplayService·LiveRoomMapper 의 "다시보기 없음" 판정(빈 값, 레거시 hls_archive_url = hls_url)과 같다.
+     * ENDED 는 endLive/expire 가 ended_at 을 반드시 채운다는 전제다.
+     */
+    @Query("""
+            SELECT r FROM LiveRoomEntity r
+             WHERE r.liveStatus = :ended AND r.vodStatus = :ready AND r.isVodPublic = true
+               AND r.hlsArchiveUrl IS NOT NULL AND TRIM(r.hlsArchiveUrl) <> ''
+               AND (r.hlsUrl IS NULL OR r.hlsArchiveUrl <> r.hlsUrl)
+             ORDER BY r.endedAt DESC, r.id DESC
+            """)
+    List<LiveRoomEntity> findReplays(@Param("ended") LiveRoomStatus ended,
+                                     @Param("ready") VodStatus ready,
+                                     Limit limit);
+
+    @Query("""
+            SELECT r FROM LiveRoomEntity r
+             WHERE r.liveStatus = :ended AND r.vodStatus = :ready AND r.isVodPublic = true
+               AND r.hlsArchiveUrl IS NOT NULL AND TRIM(r.hlsArchiveUrl) <> ''
+               AND (r.hlsUrl IS NULL OR r.hlsArchiveUrl <> r.hlsUrl)
+               AND (r.endedAt < :endedAt OR (r.endedAt = :endedAt AND r.id < :id))
+             ORDER BY r.endedAt DESC, r.id DESC
+            """)
+    List<LiveRoomEntity> findReplaysAfter(@Param("ended") LiveRoomStatus ended,
+                                          @Param("ready") VodStatus ready,
+                                          @Param("endedAt") Instant endedAt,
+                                          @Param("id") UUID id,
+                                          Limit limit);
+
+    /*
+     * 놓친 녹화 종료 알림의 대체 — 조건은 백필 V202611121201 과 같다(종료 ∧ 아카이브 있음 ∧ 레거시 복사 아님).
+     * advanceVodStatus 처럼 NONE/PROCESSING 에서만 옮기므로 끝 상태(READY/FAILED)는 건드리지 않고, 그 뒤 늦게 온
+     * FAILED 는 0행이 된다. updated_at 은 쓰지 않는다(advanceVodStatus 주석과 같은 이유).
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(value = """
+            UPDATE live_schema.live_rooms
+               SET vod_status = 'READY'
+             WHERE status = 'ENDED'
+               AND vod_status IN ('NONE', 'PROCESSING')
+               AND ended_at < :endedBefore
+               AND hls_archive_url IS NOT NULL
+               AND TRIM(hls_archive_url) <> ''
+               AND (hls_url IS NULL OR hls_archive_url <> hls_url)
+            """, nativeQuery = true)
+    int recoverStuckReplays(@Param("endedBefore") Instant endedBefore);
 }

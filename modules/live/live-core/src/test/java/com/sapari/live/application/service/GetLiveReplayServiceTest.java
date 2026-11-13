@@ -19,6 +19,7 @@ import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveReplayNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.VodStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.view.ReplayView;
 
@@ -34,7 +35,8 @@ class GetLiveReplayServiceTest {
     void endedRoomReturnsPublicArchive(String archive) {
         givenRoom(new LiveStatus.Ended(NOW, NOW.plusSeconds(440), archive));
 
-        assertThat(service.getReplay(roomId)).isEqualTo(new ReplayView(roomId, archive));
+        assertThat(service.getReplay(roomId))
+                .isEqualTo(new ReplayView(roomId, archive, "지난 방송", 440L, NOW.plusSeconds(440)));
     }
 
     @ParameterizedTest
@@ -55,6 +57,29 @@ class GetLiveReplayServiceTest {
                 new LiveStatus.Ended(NOW, NOW.plusSeconds(440), "   "));
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = VodStatus.class, names = "READY", mode =
+            org.junit.jupiter.params.provider.EnumSource.Mode.EXCLUDE)
+    void replayRequiresFinishedRecording(VodStatus vod) {
+        // 녹화가 정상 완료되지 않은(없음·처리 중·실패) 방은 아카이브 주소가 있어도 다시보기가 없다.
+        given(repository.findById(roomId)).willReturn(Optional.of(
+                LiveRoom.builder().id(roomId).vodPublic(true).vodStatus(vod).title("지난 방송")
+                        .status(new LiveStatus.Ended(NOW, NOW.plusSeconds(440), "https://cdn/live/720p/playlist.m3u8"))
+                        .build()));
+
+        assertThatThrownBy(() -> service.getReplay(roomId)).isInstanceOf(LiveReplayNotFoundException.class);
+    }
+
+    @Test
+    void durationIsNullWithoutStart() {
+        given(repository.findById(roomId)).willReturn(Optional.of(
+                LiveRoom.builder().id(roomId).vodPublic(true).vodStatus(VodStatus.READY).title("지난 방송")
+                        .status(new LiveStatus.Ended(null, NOW, "https://cdn/live/720p/playlist.m3u8"))
+                        .build()));
+
+        assertThat(service.getReplay(roomId).durationSeconds()).isNull();
+    }
+
     @Test
     void missingRoomIsNotFound() {
         given(repository.findById(roomId)).willReturn(Optional.empty());
@@ -65,7 +90,7 @@ class GetLiveReplayServiceTest {
     void nonPublicVodIsNotFound() {
         // is_vod_public=false 인 방은 아카이브가 멀쩡해도 내보내지 않는다.
         given(repository.findById(roomId)).willReturn(Optional.of(
-                LiveRoom.builder().id(roomId).vodPublic(false)
+                LiveRoom.builder().id(roomId).vodPublic(false).vodStatus(VodStatus.READY)
                         .status(new LiveStatus.Ended(NOW, NOW.plusSeconds(440), "https://cdn/live/720p/playlist.m3u8"))
                         .build()));
 
@@ -74,6 +99,7 @@ class GetLiveReplayServiceTest {
 
     private void givenRoom(LiveStatus status) {
         given(repository.findById(roomId)).willReturn(Optional.of(
-                LiveRoom.builder().id(roomId).vodPublic(true).status(status).build()));
+                LiveRoom.builder().id(roomId).vodPublic(true).vodStatus(VodStatus.READY).title("지난 방송")
+                        .status(status).build()));
     }
 }

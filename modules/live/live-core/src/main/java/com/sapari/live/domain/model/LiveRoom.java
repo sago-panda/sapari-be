@@ -26,7 +26,8 @@ public record LiveRoom(
         // 방별 다시보기 공개 스위치(live_rooms.is_vod_public, DB 기본 true). 읽기 전용이다 —
         // 엔티티 빌더에 이 필드가 없고 update 경로도 건드리지 않으므로 앱이 값을 덮어쓸 수 없다.
         boolean vodPublic,
-        // 다시보기 처리 상태(live_rooms.vod_status). vodPublic 과 같이 읽기 전용 — 쓰는 경로가 없다.
+        // 다시보기 처리 상태(live_rooms.vod_status). 이 레코드로는 읽기 전용 — LiveRoomRepository 의
+        // 조건부 UPDATE 두 개(웹훅 advanceVodStatus, 복구 recoverStuckReplays)만 쓴다. 다시보기 노출은 READY 만.
         VodStatus vodStatus,
         // RTMP 송출 주소(live_rooms.rtmp_url). 발급의 조건부 UPDATE 만 쓴다(RtmpIngressAssigner) — 읽기 전용.
         // 자격증명이 아니다: 키(streamKey) 없이는 송출할 수 없고, 키는 저장하지 않는다.

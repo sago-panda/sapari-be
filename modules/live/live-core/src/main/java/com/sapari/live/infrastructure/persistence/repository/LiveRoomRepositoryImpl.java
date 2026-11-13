@@ -20,6 +20,7 @@ import org.springframework.stereotype.Repository;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.VodStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
@@ -174,4 +175,31 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
                 : liveRoomJpaRepository.findUpcomingAfter(UPCOMING, afterScheduledAt, afterId, Limit.of(limit));
         return rows.stream().map(liveRoomMapper::toDomain).toList();
     }
+
+    @Override
+    public boolean advanceVodStatus(String egressId, VodStatus target, String failedReason){
+        Set<VodStatus> predecessors = target.predecessors();
+        if (predecessors.isEmpty()) {
+            return false;
+        }
+        List<String> from = predecessors.stream().map(Enum::name).toList();
+        return liveRoomJpaRepository.advanceVodStatus(egressId, target.name(), failedReason, from) > 0;
+    }
+
+    @Override
+    public List<LiveRoom> findReplays(Instant afterEndedAt, UUID afterId, int limit){
+        List<LiveRoomEntity> rows = afterEndedAt == null
+                ? liveRoomJpaRepository.findReplays(LiveRoomStatus.ENDED, REPLAY_READY, Limit.of(limit))
+                : liveRoomJpaRepository.findReplaysAfter(LiveRoomStatus.ENDED, REPLAY_READY, afterEndedAt, afterId,
+                        Limit.of(limit));
+        return rows.stream().map(liveRoomMapper::toDomain).toList();
+    }
+
+    @Override
+    public int recoverStuckReplays(Instant endedBefore){
+        return liveRoomJpaRepository.recoverStuckReplays(endedBefore);
+    }
+
+    private static final com.sapari.live.infrastructure.persistence.entity.VodStatus REPLAY_READY =
+            com.sapari.live.infrastructure.persistence.entity.VodStatus.READY;
 }

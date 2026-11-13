@@ -111,11 +111,15 @@ public class LiveRoomEntity extends UuidTimeEntity {
 
     private Integer vodDurationSeconds;
 
+    // vod_status·vod_failed_reason 은 조건부 UPDATE 두 개(웹훅 advanceVodStatus, 복구 recoverStuckReplays)만 쓰고, 둘 다 NONE/PROCESSING 에서만 옮긴다.
+    // 엔티티는 변경 필드가 하나만 있어도 모든 컬럼을 UPDATE 하므로, 쓰기 가능하면 그 전에 읽어 둔 낡은 값으로 결과를
+    // 되돌린다.
+    // 삽입 값은 DB 기본값('NONE')이 채운다. @DynamicUpdate 가 없어서 생기는 일이므로 이 매핑을 "고치지" 말 것.
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
+    @Column(nullable = false, length = 20, insertable = false, updatable = false)
     private VodStatus vodStatus = VodStatus.NONE;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "TEXT", insertable = false, updatable = false)
     private String vodFailedReason;
 
     @Column(nullable = false)

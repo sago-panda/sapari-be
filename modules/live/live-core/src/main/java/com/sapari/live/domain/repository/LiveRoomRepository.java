@@ -9,6 +9,7 @@ import java.util.UUID;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.VodStatus;
 
 public interface LiveRoomRepository {
     LiveRoom save(LiveRoom liveRoom);
@@ -86,4 +87,27 @@ public interface LiveRoomRepository {
      * 자동으로 빠진다.
      */
     List<LiveRoom> findUpcoming(Instant afterScheduledAt, UUID afterId, int limit);
+
+    /**
+     * egress 웹훅 결과로 다시보기 처리 상태를 앞으로 옮긴다. 검사와 쓰기가 한 문장이라 <b>WHERE 절이 단조성 가드</b>다 —
+     * {@code egressId} 가 방에 기록된 값과 같고 현재 상태가 {@link VodStatus#predecessors()} 에 있을 때만 쓴다.
+     * vod_status 는 조건부 UPDATE 두 개(웹훅 advanceVodStatus, 복구 recoverStuckReplays)만 쓰고, 둘 다 NONE/PROCESSING 에서만 옮긴다(엔티티 매핑은 이 컬럼을 쓰지 않는다).
+     *
+     * @return 갱신했으면 true. false 는 중복·역순 알림이거나 방이 기록하지 않은 egress(비대표 화질 등)다 — 정상.
+     */
+    boolean advanceVodStatus(String egressId, VodStatus target, String failedReason);
+
+    /**
+     * 공개 다시보기 목록 — 종료 ∧ 녹화 완료(READY) ∧ 공개 ∧ 아카이브 있음(레거시 {@code hls_archive_url = hls_url}
+     * 제외)인 방을 {@code endedAt DESC, id DESC} 로 최대 {@code limit} 건. 커서가 없으면 처음부터.
+     */
+    List<LiveRoom> findReplays(Instant afterEndedAt, UUID afterId, int limit);
+
+    /**
+     * 녹화 종료 알림을 놓친 다시보기를 READY 로 올린다 — {@code endedBefore} 전에 끝났고 아카이브가 있는데(레거시
+     * 복사 제외) vod_status 가 아직 NONE/PROCESSING 인 종료 방. 공개 여부는 보지 않는다(노출은 조회가 따로 거른다).
+     *
+     * @return 올린 방 수
+     */
+    int recoverStuckReplays(Instant endedBefore);
 }

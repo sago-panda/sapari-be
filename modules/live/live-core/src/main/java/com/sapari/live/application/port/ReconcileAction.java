@@ -13,6 +13,17 @@ public enum ReconcileAction {
     EXPIRED,
     /** 방치된 Live 방을 종료 */
     ENDED,
+    /**
+     * 녹화 종료 알림을 놓친 종료 방의 다시보기를 READY 로 올렸다(SPR-159). 웹훅 핸들러는 실패해도 200 을 주고
+     * createdAt 창이 있어 같은 알림이 다시 처리되지 않으므로, <b>0 이 아니면 대개 egress 웹훅이 유실된 것이다</b>.
+     * 예외: 종료 뒤 egress 중단이 실패해 녹화가 덜 끝난 방도 여기서 올라간다(ENDLIST 없는 아카이브).
+     */
+    REPLAY_RECOVERED,
+    /**
+     * 다시보기 복구 단계가 실패했다(회차당 1). {@code reconcileRoundFailed(END_STALE_LIVE)} 와 따로 둔다 — 그쪽은
+     * 방치 방 정리의 실패라, 섞으면 "복구가 매번 죽는다" 가 "{@link #REPLAY_RECOVERED} 0건" 과 구분되지 않는다.
+     */
+    REPLAY_RECOVERY_FAILED,
     /** 송출이 살아 있어 손대지 않음(정상 방송) */
     SPARED,
     /** 이미 처리됐거나 판정 불가라 건너뜀 */

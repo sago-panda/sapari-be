@@ -67,7 +67,8 @@ Remove it only after verified backfill of those rows (including rows ended by ol
 retirement of pre-SPR-148 writers. Do not auto-replace filenames or invent URLs for pre-upgrade live rooms.
 Non-Ended rooms and Ended rooms without an archive return **404 LIVE-007**: the replay resource does not
 exist, even if the room does. Ended is a DB state, not an egress completion guarantee; the last segments
-and ENDLIST may still be finalizing immediately after end. S3 retention must keep the EVENT playlist
+and ENDLIST may still be finalizing immediately after end — so replay (single **and** the public list
+`GET /api/v1/lives/replays`) also requires **`vod_status = READY`** (SPR-159). S3 retention must keep the EVENT playlist
 at least as long as its segments — see `infra/AGENTS.md`.
 
 **Start-side media calls sit inside `@Transactional` on purpose** — reviewers must not flag them; `egressId`
@@ -79,6 +80,18 @@ exists today. Two sequential master publishes can consume up to 30s; 15s is not 
 reclaims crash leftovers.
 
 Starting requires **exactly one** pinned product, both modes.
+
+**`vod_status` follows the egress, not the room** (`EgressWebhookHandler`) — a recording that ends before the
+room is still a valid replay.
+
+- **Two writers, both conditional UPDATEs that move only from NONE/PROCESSING**: the webhook's `advanceVodStatus`
+  (`UpdateVodStatusService`) and the recovery's `recoverStuckReplays` (`RecoverStuckReplaysService`). Never write
+  vod columns through the entity — `LiveRoomEntity` maps them read-only on purpose.
+- **FAILED is terminal**; a partial playlist may be playable but stays hidden. Recovery is manual SQL.
+- **A lost egress webhook is backfilled from the DB, not from LiveKit** (`RecoverStuckReplaysService`, run by
+  the end-stale-live job; disabling that job stops it). Accepted risk: a failed or unfinished recording whose
+  files remain also becomes READY, so `reconcile.acted{action=replay_recovered}` > 0 usually — not only — means
+  lost webhooks.
 
 ## RTMP (OBS input)
 
@@ -292,7 +305,8 @@ through a bounded stream, not `@RequestBody byte[]`.
 - **Signature alone does not stop replay** (the SDK accepts a missing `exp`). `createdAt` gates it: past 15m,
   future 60s — asymmetric because retries keep the original `createdAt` and must survive a rolling deploy.
 - **A destructive handler (`egress_ended`, `room_finished`, …) requires event-id dedup in the same change.**
-  Today's only handler is a no-op unless the room is `Ready+RTMP`, and that is what caps replay damage.
+  `ingress_started` is a no-op unless the room is `Ready+RTMP`, and that is what caps replay damage; the egress
+  handler only moves `vod_status` forward (see Media ports), so a replay cannot regress it.
 - Handlers belong to each feature, not the webhook package. **Must be idempotent.** Exceptions are logged and
   still return 200 — a throw does not trigger re-send.
 - The rate limit is a **CPU ceiling, not availability protection** — nothing tells a forged request from a

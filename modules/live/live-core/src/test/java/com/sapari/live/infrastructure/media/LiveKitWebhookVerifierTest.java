@@ -72,6 +72,41 @@ class LiveKitWebhookVerifierTest {
     }
 
     @Test
+    @DisplayName("egress 이벤트는 상태 이름과 오류를 싣는다 — 빈 오류는 null")
+    void mapsEgressStatusAndError() {
+        WebhookEvent failed = freshEvent("egress_ended")
+                .setEgressInfo(EgressInfo.newBuilder().setEgressId("eg-1")
+                        .setStatus(livekit.LivekitEgress.EgressStatus.EGRESS_FAILED).setError("pipeline crashed").build())
+                .build();
+        WebhookEvent complete = freshEvent("egress_ended")
+                .setEgressInfo(EgressInfo.newBuilder().setEgressId("eg-2")
+                        .setStatus(livekit.LivekitEgress.EgressStatus.EGRESS_COMPLETE).build())
+                .build();
+        given(receiver.receive("failed", "Bearer sig")).willReturn(failed);
+        given(receiver.receive("complete", "Bearer sig")).willReturn(complete);
+
+        LiveWebhookEvent f = verifier.verify(bytes("failed"), "Bearer sig");
+        LiveWebhookEvent c = verifier.verify(bytes("complete"), "Bearer sig");
+
+        assertThat(f.egressStatus()).isEqualTo("EGRESS_FAILED");
+        assertThat(f.egressError()).isEqualTo("pipeline crashed");
+        assertThat(c.egressStatus()).isEqualTo("EGRESS_COMPLETE");
+        assertThat(c.egressError()).isNull();
+    }
+
+    @Test
+    @DisplayName("egress 정보가 없는 이벤트는 egress 상태·오류가 null")
+    void nonEgressHasNoEgressStatus() {
+        WebhookEvent event = freshEvent("room_finished").setRoom(Room.newBuilder().setName("room-42").build()).build();
+        given(receiver.receive("body", "Bearer sig")).willReturn(event);
+
+        LiveWebhookEvent result = verifier.verify(bytes("body"), "Bearer sig");
+
+        assertThat(result.egressStatus()).isNull();
+        assertThat(result.egressError()).isNull();
+    }
+
+    @Test
     @DisplayName("ingress 이벤트는 room 이 비어도 ingressInfo.roomName 으로 roomName·ingressId 를 채운다")
     void mapsIngressEventFromIngressInfo() {
         WebhookEvent event = freshEvent("ingress_started")

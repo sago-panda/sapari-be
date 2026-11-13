@@ -349,6 +349,7 @@ public class LiveSecurityConfig {
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/lives/rooms",
                                 "/api/v1/lives/upcoming",
+                                "/api/v1/lives/replays",
                                 "/api/v1/lives/rooms/{roomId}",
                                 "/api/v1/lives/rooms/{roomId}/replay",
                                 "/api/v1/lives/rooms/{roomId}/detail",

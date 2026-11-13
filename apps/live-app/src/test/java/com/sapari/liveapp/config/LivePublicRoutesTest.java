@@ -46,6 +46,7 @@ class LivePublicRoutesTest {
                     .addFilters(context.getBean(FilterChainProxy.class)).build();
             mvc.perform(get("/api/v1/lives/rooms")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/upcoming")).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/lives/replays")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/replay")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/detail")).andExpect(status().isOk());

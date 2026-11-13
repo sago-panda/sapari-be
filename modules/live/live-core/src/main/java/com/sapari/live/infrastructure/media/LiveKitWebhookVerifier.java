@@ -78,7 +78,10 @@ public class LiveKitWebhookVerifier implements WebhookVerifier {
                 event.getEvent(),
                 resolveRoomName(event),
                 event.hasIngressInfo() ? event.getIngressInfo().getIngressId() : null,
-                event.hasEgressInfo() ? event.getEgressInfo().getEgressId() : null
+                event.hasEgressInfo() ? event.getEgressInfo().getEgressId() : null,
+                event.hasEgressInfo() ? event.getEgressInfo().getStatus().name() : null,
+                event.hasEgressInfo() && !event.getEgressInfo().getError().isEmpty()
+                        ? event.getEgressInfo().getError() : null
         );
     }
 

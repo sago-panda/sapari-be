@@ -640,5 +640,21 @@ class ReconcileSchedulerLockTest {
         public List<LiveRoom> findUpcoming(Instant afterScheduledAt, UUID afterId, int limit) {
             throw new UnsupportedOperationException();
         }
+
+        @Override
+        public boolean advanceVodStatus(String egressId, com.sapari.live.domain.model.VodStatus target,
+                                        String failedReason) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findReplays(Instant afterEndedAt, UUID afterId, int limit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public int recoverStuckReplays(Instant endedBefore) {
+            throw new UnsupportedOperationException();
+        }
     }
 }

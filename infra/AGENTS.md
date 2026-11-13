@@ -229,6 +229,8 @@ An egress writes two manifests per rendition and they are **not** interchangeabl
   serves those unchecked bytes from our domain. Grant public read to the HLS prefixes and `thumbnails/`
   only and explicitly deny `uploads/*` — or move uploads to their own bucket. Give `uploads/` its own short
   lifecycle (rejected/abandoned uploads otherwise stay forever); keep it off the HLS prefixes.
+- **Since SPR-159 replay also needs `vod_status = READY`**: rows this backfill fixes become visible only after
+  the end-stale-live job's replay recovery (`RecoverStuckReplaysService`) runs — keep that job enabled.
 - **SPR-148 replay backfill is re-run until it reports completion; one pass is never enough.** Rooms live
   across the deploy only become ENDED after `max_duration_seconds` (default 7200), so a single pass
   misses them. `infra/replay-backfill/backfill-archive-url.sh` reads only — it verifies EVENT/ENDLIST and
