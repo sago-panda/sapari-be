@@ -36,6 +36,8 @@ here is written once; the named class holds the reasoning.
 - **`playlist_name` and `live_playlist_name` must differ** — LiveKit rejects the request, so every start fails (`LiveKitMediaManager`).
 - **`Ended` is a DB state, not egress completion** — the last segments and ENDLIST may still be finalizing; S3
   retention must keep the EVENT playlist as long as its segments (`infra/AGENTS.md`).
+- **Replay is shown only at `vod_status = READY`; only two conditional UPDATEs write it — never the entity**
+  (`EgressWebhookHandler`, `RecoverStuckReplaysService`; detail: replay-egress rules).
 - **Legacy archive rows stay** — remove the legacy-hiding mapping (`LiveRoomMapper.archiveUrl`) only after a verified
   backfill (incl. rows ended by old replicas) and full retirement of pre-SPR-148 writers; never auto-replace
   filenames or invent replay URLs for pre-upgrade rooms.

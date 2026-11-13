@@ -26,7 +26,8 @@ lock result tags, `finally` unlock, no release on shutdown (lease expiry hands o
 caught → `MeteredLiveMediaManager.timed`, `ReconcileLockConfig`. ·
 `live.list.*` (cache write, viewer count, saturated, refresh failed) as the only signal of a swallowed
 post-commit write → `LiveMetrics`, `LiveListCacheSync`, `RefreshLiveListService` · `live.recent_view.dropped{reason}`
-→ `RecentViewRecorder`, `RecentViewConfig`.
+→ `RecentViewRecorder`, `RecentViewConfig` · `REPLAY_RECOVERED` (> 0 usually means lost egress webhooks) and
+`REPLAY_RECOVERY_FAILED` kept apart from the round's `failed` → `ReconcileAction`, `RecoverStuckReplaysService`.
 
 ## Observability — `LiveMetrics`
 
