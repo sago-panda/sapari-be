@@ -990,14 +990,6 @@ one half. Both were investigated; the reasons differ.
   → `SystemMessageCode.TOO_MANY_SESSIONS` + close 1008, counted by `chat.sessions.admission_capped`. The
   unit is `(user, room)` because a room token is scoped to one room and is **replayable within its ~90s
   TTL** (`modules/live/AGENTS.md`), so that pair is the narrowest thing that closes the replay window.
-  ⚠️ **Three live-owned references still name the old symbol** and this side cannot fix them:
-  `modules/live/AGENTS.md` cites `MAX_SESSIONS_PER_USER_PER_ROOM` twice (the last bullet of "Enter rate
-  limit — the signing ceiling" and the token-cache paragraph of "Room token — chat entry auth"), and
-  `apps/live-app/src/main/resources/application.yaml.example:279` states
-  `"streaming-app 의 MAX_SESSIONS_PER_USER_PER_ROOM=5 는 …"` — a value that is no longer a constant.
-  Neither prose statement depends on the number (one says the issuance cap does not bound it, the other
-  that it is keyed by user), so both stay true; the yaml comment's `=5` does not. It is recorded here
-  rather than edited, because live is not this side's to change.
   Three things it does **not** do, all deliberate and all recorded at the constant:
   - **It does not cover guests.** Unauthenticated entry mints a **fresh random `userId` per entry**
     (`EnterLiveService`), so guest connections never collide on the key. That branch is an issuing-side

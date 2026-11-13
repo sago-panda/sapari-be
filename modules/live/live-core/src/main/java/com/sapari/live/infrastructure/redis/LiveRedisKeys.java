@@ -18,8 +18,8 @@ final class LiveRedisKeys {
     /**
      * 방 종료 키 — Pub/Sub 을 놓친 쪽(chat)이 종료를 확인하기 위한 자리다(SPR-185).
      *
-     * <p>⚠️ <b>지금은 쓰기만 있다.</b> 이 키를 읽는 코드는 아직 없다 — chat 은 채널 구독과 자기 마커
-     * ({@code chat:room:{id}:ended})만 본다. 읽기는 chat 담당의 후속 작업이고, 그 전까지 이 키는 효과가 없다.
+     * <p>chat 은 SPR-184 부터 자기 마커({@code chat:room:{id}:ended})와 이 키를 함께 읽는다
+     * ({@code ChatRoomEndedRedisRepository.isEnded}).
      *
      * <p><b>chat 과의 계약:</b>
      * <ul>

@@ -276,6 +276,11 @@ public class LiveKitMediaManager implements LiveMediaManager {
      * 업로더가 있으면 master.m3u8을 게시하고 master URL을 반환한다.
      * 업로더 미등록(링크 전)이거나 업로드 실패 시 기본 화질 variant URL로 강등한다(방송은 정상, ABR만 비활성).
      * 업로드 실패 시에는 어차피 참조되지 않을 비기본 화질 egress를 중단해 잔여 비용(3배 인코딩)을 막는다.
+     *
+     * <p>다시보기는 {@code archive-master.m3u8}({@link MasterPlaylistGenerator#generateArchive()} — variant 가
+     * EVENT 플레이리스트)을 쓴다. 두 master 를 순차로 게시하므로 둘 다 성공해야 ABR 이고, 하나라도 실패하면
+     * 두 URL 모두 720p 로 강등한다. 게시 1회의 15초 상한({@link MasterPlaylistPublisher})이 두 번이라 최대
+     * 30초다 — 시작 전체의 예산이 아니다.
      */
     private HlsEgressResult publishMaster(MasterPlaylistPublisher publisher, LiveKitProperties.Hls hls, String basePath,
                                  UUID roomId, List<String> startedEgressIds, String defaultEgressId) {

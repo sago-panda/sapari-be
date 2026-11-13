@@ -24,8 +24,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *
  * <p><b>걷히는 몫은 절반이다.</b> {@code EnterLiveService.issueGuestToken} 이 호출마다 새 임의
  * UUID 를 {@code sub} 로 박아(게스트 세션을 구분해야 하므로 그래야 한다) 게스트 키는 절대 반복되지
- * 않는다. 게스트 버킷이 1,000/s 중 500/s 라 상한이 절반이다. 덮는 절반이 {@code modules/live/AGENTS.md}
- * 가 이 경로의 최악 수요로 직접 이름 붙인 <b>"1,000-member reconnect storm"</b> 과 겹친다 —
+ * 않는다. 게스트 버킷이 1,000/s 중 500/s 라 상한이 절반이다. 덮는 절반이
+ * {@code EnterRateLimiter} 의 샤드 버스트 배수 주석이 실측한 <b>회원 1,000명 동시 재입장</b>과 겹친다 —
  * 그게 회원이다.
  *
  * @param enabled    기본 켜짐. 끄면 데코레이터를 <b>아예 끼우지 않는다</b>(호출 경로에 0줄 남는다)
