@@ -81,9 +81,12 @@ class ConfigTemplateTest {
     @Test
     @DisplayName("⭐ 코드 기본값이 있는 키에 빈 기본값(${VAR:})을 두지 않는다 — 빈 문자열이 코드 기본값을 밀어낸다")
     void code_default_keys_are_not_given_an_empty_placeholder_default() throws IOException {
-        // given: 주석을 뺀 실제 설정을 전체 경로로 편다 — 중첩 모양과 점 표기 평면 키가 같은 경로가 된다
+        // given: 주석을 뺀 실제 설정을 전체 경로로 편다 — 중첩 모양과 점 표기 평면 키가 같은 경로가 된다.
+        // ⚠️ 오늘 이 칸의 분모는 0이다 — 코드 기본값이 있는 키는 템플릿에서 전부 주석이라 active 와
+        // 겹치는 키가 없다. 그 키를 주석에서 꺼내 ${VAR:} 로 적는 순간 빨강이 된다(역변이로 확인).
+        // 아래 단언은 템플릿 파싱이 죽지 않았다는 것만 본다.
         Map<String, String> active = activeChatEntries();
-        assertThat(active).as("템플릿의 chat: 절을 못 읽었다 — 비면 아래가 공허하게 통과한다").isNotEmpty();
+        assertThat(active).as("템플릿의 chat: 절을 못 읽었다").isNotEmpty();
 
         // when
         List<String> offending = active.entrySet().stream()

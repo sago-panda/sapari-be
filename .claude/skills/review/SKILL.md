@@ -20,8 +20,8 @@ description: sapari-be 코드 리뷰를 돌린다 — 변경 경로를 .claude/a
    **2.9초**다(2026-11-05 실측, 빌드 직후 up-to-date 상태. `--rerun-tasks` 로 강제하면 11.9초 —
    리뷰 전에 빌드를 한 번 돌렸다면 앞의 수가 실제값이다).
    ```
-   ./gradlew :architecture-test:test        # ArchUnit 21규칙
-   sh .claude/scripts/check-archunit-sync.sh # 공통 방법론의 21규칙 목록이 실제와 맞는가
+   ./gradlew :architecture-test:test        # ArchUnit 22규칙
+   sh .claude/scripts/check-archunit-sync.sh # 공통 방법론의 22규칙 목록이 실제와 맞는가
    sh .claude/scripts/check-item-ids.sh      # anchors.yml 이 켜는 ID 가 실재하는가
    sh .claude/scripts/check-anchor-globs.sh  # 글롭이 실재 파일을 잡는가
    ```
@@ -32,14 +32,14 @@ description: sapari-be 코드 리뷰를 돌린다 — 변경 경로를 .claude/a
    `modules/chat/**/resources/chat/*.txt` 또는 사전 항목 집합을 건드렸으면 **넷을 돌리고 4/4 로
    싣는다**. 이 줄이 없을 때 넷 중 셋만 도는 상태였다 — 템플릿이 셋이고 `check-archunit-sync.sh`
    는 이름 집합만 보므로 "sync 통과" 가 이것을 덮지 못한다.
-   결과를 보고서 맨 위에 **한 줄로** 싣는다(`결정론 게이트: ArchUnit 21/21 · 하네스 3/3 통과` — 사전을 손댔으면 `하네스 4/4`).
+   결과를 보고서 맨 위에 **한 줄로** 싣는다(`결정론 게이트: ArchUnit 22/22 · 하네스 3/3 통과` — 사전을 손댔으면 `하네스 4/4`).
    하나라도 실패하면 그 실패가 최상위 발견이다 — 규칙·스크립트 이름을 그대로 적고, LLM 리뷰어에게
    재도출시키지 않는다.
 
    이 단계가 스킬에 있는 이유: 이 게이트는 CI 에서 돌지 않는다. 공유 러너의 CI 분이 소진돼
    `build`·`harness-check` 가 실행되지 못하고(`.gitlab/ci/build.yml` 머리글), MR 봇 리뷰도
-   `.gitlab-ci.yml` 에서 주석 처리돼 있다. 그런데 `.claude/review/common.md` 는 "빌드가 21규칙을
-   막는다" 를 전제로 **모든 리뷰어에게 그 21건을 보고하지 말라고** 지시한다. 둘을 합치면 그 21건의
+   `.gitlab-ci.yml` 에서 주석 처리돼 있다. 그런데 `.claude/review/common.md` 는 "빌드가 22규칙을
+   막는다" 를 전제로 **모든 리뷰어에게 그 22건을 보고하지 말라고** 지시한다. 둘을 합치면 그 22건의
    커버리지가 0 이 된다 — CI 도 안 보고 리뷰어도 안 본다. 그 구멍을 여기서 막는다.
    돌리지 못했으면 보고서에 그렇게 적는다. 침묵은 "봤고 괜찮다" 로 읽힌다.
    (CI 를 다시 켜는 쪽으로 고치지 말 것 — 분이 없고, `build.yml` 이 로컬 러너를 다시 붙일 때
