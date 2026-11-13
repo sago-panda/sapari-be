@@ -200,11 +200,11 @@ so the port split is the only thing standing between an anonymous scraper and th
   so a config slip fails loudly instead of quietly publishing metrics on the user port.
 - ⚠️ **"Manifests still have to *set* the management port" is weaker than it reads.** The guard rejects an
   *absent* key, and the shipped template is `port: ${MANAGEMENT_PORT:8091}`
-  (`application.yaml.example:239`) — copy that and leave the env var unset and the placeholder resolves to
+  (`management.server.port` in live-app `application.yaml.example`) — copy that and leave the env var unset and the placeholder resolves to
   8091, so the app **boots normally**. A manifest whose scrape target was pointed at the env value then
   gets silently empty metrics. If you want the env var to be load-bearing, drop the `:8091` default from
   the template; today it is a convenience, not a gate. (streaming-app: same shape,
-  `${MANAGEMENT_PORT:8092}` at `application.yml.example:167`.)
+  `${MANAGEMENT_PORT:8092}` at `management.server.port` in `application.yml.example`.)
 - **It also refuses to start unless `health` and `prometheus` are *actually exposed*** (added 2026-10-31,
   widened 2026-11-01). The guard does **not** read `exposure.include`/`exclude` any more — it asks
   `WebEndpointsSupplier.getEndpoints()`, because six config axes can remove an endpoint and a key-reading
@@ -227,7 +227,7 @@ so the port split is the only thing standing between an anonymous scraper and th
   app refuses to start by design.
   - ⚠️ **`MANAGEMENT_PORT` itself is not load-bearing today**, and an earlier version of this bullet said
     it was. The guard rejects an *absent* key, and the shipped template is `${MANAGEMENT_PORT:8091}`
-    (`application.yaml.example:239`) — copy that, leave the env var unset, and the placeholder resolves to
+    (`management.server.port` in live-app `application.yaml.example`) — copy that, leave the env var unset, and the placeholder resolves to
     8091 and the app **boots**. A manifest that points its scrape target at the env value then gets
     silently empty metrics. To make the env var a real gate, drop the `:8091` default from the template.
   - Developers running locally need the same keys; copy the `management` block from
