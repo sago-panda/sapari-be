@@ -38,8 +38,11 @@ ban release, kick-list reconcile, ban-mirror reconcile, end-marker clear, dictio
   `MongoTemplate` without it, and promoting it would hand the reactive app a sync driver.
 
 ArchUnit enforces the calling direction: streaming-app must not touch blocking Redis/Mongo templates or
-blocking chat use cases; live-app (MVC) must not touch reactive ones. **Rule ② matches class names by regex** —
-name a service something other than `KickUserService` and it silently guards nothing.
+blocking chat use cases; live-app (MVC) must not touch reactive ones. Which side a type is on comes from
+`@BlockingChat` / `@ReactiveChat` (chat-api `port`); the rules also catch implementations of a marked interface.
+Every chat-api port must carry exactly one, matching its return types (`every_chat_port_declares_whether_it_blocks`).
+chat-core-only types (`ChatKickRecorder`, `ChatAccountEventPublisher`, `ChatAccountEventSource`,
+`ChatAccountEventHandler`) are marked by hand — nothing counts them.
 
 ## Failure policy — entry reads open, send reads refuse, the rate limit degrades
 

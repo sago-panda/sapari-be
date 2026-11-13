@@ -11,6 +11,7 @@ import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.ChatAccountEvent;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
+import com.sapari.chat.port.ReactiveChat;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -31,6 +32,7 @@ import reactor.core.publisher.Mono;
  * 평가되기 때문이다 — 그중 하나가 동기 throw하면 {@code Mono}를 돌려주기 전에 터져 아래
  * {@code onErrorResume}이 잡지 못한다.
  */
+@ReactiveChat
 @Slf4j
 @Component
 @RequiredArgsConstructor
