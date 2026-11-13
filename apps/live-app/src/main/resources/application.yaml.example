@@ -85,6 +85,11 @@ jwt:
   access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:3600}
   refresh-token-expiration-seconds: ${JWT_REFRESH_TOKEN_EXPIRATION_SECONDS:1209600}
 
+# 브라우저 호출을 허용할 프론트 오리진(쉼표 구분, scheme://host[:port]). 비우면 CORS 끔 — 교차 출처 호출이 막힌다.
+# 모양이 틀리면 기동 실패. 규칙: LiveCorsConfig.
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+
 live:
   # -------------------------------------------------------------------------
   # 채팅 입장용 룸 토큰(RS256) — live 가 개인키로 서명, chat 이 공개키로 검증.
@@ -271,8 +276,8 @@ live:
   # 전역을 넘으므로 분산 과부하에서는 대다수가 global 이다. 태그 값은 전부 소문자다.
   #
   # ⚠️ 이 429 는 본문이 없어 error.code 가 없다 — 같은 엔드포인트의 다른 에러는 봉투로 나간다.
-  # 교차 출처 SPA 는 Retry-After 도 못 읽을 수 있다(이 저장소에 CORS 노출 헤더 설정이 0건이라
-  # 게이트웨이가 보태지 않으면 브라우저에 그 헤더가 없다).
+  # 교차 출처 SPA 는 위 cors.allowed-origins 에 있는 오리진에서만 Retry-After 를 읽는다
+  # (LiveCorsConfig 가 노출 헤더로 연다).
   #
   # ⚠️ 이 상한은 <발급> 측이다. WS 세션 수를 묶지 않는다 — 룸 토큰은 TTL 안에서 재사용 가능하고
   # streaming-app 의 chat.session.max-per-room(기본 5)은 게스트의 임의 userId 때문에 토큰당 5로
