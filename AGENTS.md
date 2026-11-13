@@ -70,7 +70,8 @@ All code work follows **[.claude/rules/karpathy-guidelines.md](./.claude/rules/k
 - `AGENTS.md` and path-scoped `.claude/rules/`: **what and why** — invariants, prohibitions, irreversible decisions, accepted risks, cross-file contracts — one line each, with the implementing class name.
 - Code comments: **how**, and the why that belongs to that class alone.
 - Never write the same fact twice: if a comment has it, `AGENTS.md` only names the class. Cite by section name, never by line number.
-- Spec/plan reads `AGENTS.md`; implementation reads the code.
+- Spec/plan reads the root `AGENTS.md` **and `modules/<domain>/AGENTS.md` of every domain it touches** — a nested
+  file loads only once a file under it is opened, so open it explicitly. Implementation reads the code.
 
 ## Task-Based References (JIT index)
 
@@ -78,7 +79,7 @@ Create a missing referenced file only when starting work in that area.
 
 | Task | Reference |
 |---|---|
-| Live broadcast domain | `modules/live/AGENTS.md` — **read before planning or writing a spec**; detail in `.claude/rules/live/` |
+| Live broadcast domain | `modules/live/AGENTS.md` — signpost + Design-time invariants, **read in full before a spec/plan**; area rules in `.claude/rules/live/` (open every area the spec touches; if unsure, all) |
 | New domain module layout | `modules/AGENTS.md` |
 | Order / payment domain | `modules/order/AGENTS.md` |
 | Controllers / response envelope | `apps/AGENTS.md` |
