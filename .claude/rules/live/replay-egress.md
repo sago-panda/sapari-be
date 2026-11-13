@@ -5,6 +5,7 @@ paths:
   - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{GetLiveReplayService,StartLiveService,GoLiveByRtmpService,EndLiveService}.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/infrastructure/persistence/**"
   - "modules/live/live-core/src/main/java/com/sapari/live/domain/model/**"
+  - "{modules/live/live-core,apps/live-app}/src/test/java/**/{GetLiveReplayService,MasterPlaylist,LiveRoomMapper}*Test.java"
 ---
 
 # live — HLS egress artifacts & replay (detail)
