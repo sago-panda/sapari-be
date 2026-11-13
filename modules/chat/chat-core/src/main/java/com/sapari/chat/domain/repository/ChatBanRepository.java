@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -22,6 +24,7 @@ import reactor.core.publisher.Mono;
  * {@code false}(=정상 유저)로 삼키면 소비처가 "확실히 정상"과 "조회 불가"를 구분할 수 없다.
  * 소비처 정책은 종료 마커·강퇴 조회와 같다 — 입장 게이트는 <b>fail-open</b>, 전송 경로는 그 전송의 거절이다.
  */
+@ReactiveChat
 public interface ChatBanRepository {
 
     Mono<Boolean> isBanned(UUID userId);

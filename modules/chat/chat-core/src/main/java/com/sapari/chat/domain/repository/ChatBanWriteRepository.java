@@ -3,6 +3,8 @@ package com.sapari.chat.domain.repository;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.sapari.chat.port.BlockingChat;
+
 /**
  * 밴 미러 쓰기({@code chat:banned:{userId}}). <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
@@ -18,6 +20,7 @@ import java.util.UUID;
  * <p>실패는 삼키지 않고 던진다. 미러에 못 쓴 밴은 아무도 막지 못하는 밴이라, 호출자가 실패로 처리하고
  * 재시도할 수 있어야 한다.
  */
+@BlockingChat
 public interface ChatBanWriteRepository {
 
     /**

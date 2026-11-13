@@ -1,6 +1,7 @@
 package com.sapari.chat.application.port;
 
 import com.sapari.chat.application.protocol.ChatAccountEvent;
+import com.sapari.chat.port.ReactiveChat;
 
 import reactor.core.publisher.Flux;
 
@@ -10,6 +11,7 @@ import reactor.core.publisher.Flux;
  * <p>Pod당 하나이고 <b>상시 가동</b>이다. 방 구독처럼 입장/퇴장에 붙였다 떼면 그 사이에 발행된 이벤트를
  * 놓치는데, 이 이벤트는 놓치면 다시 오지 않는다(Pub/Sub은 영속이 아니다). 끊기면 스스로 다시 붙는다.
  */
+@ReactiveChat
 public interface ChatAccountEventSource {
 
     Flux<ChatAccountEvent> events();

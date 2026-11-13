@@ -17,6 +17,7 @@ import com.sapari.chat.view.FilterWordsView;
  * (주기 확인이 버전을 보므로, 버전이 안 오르면 아무 일도 일어나지 않는다). 그래서 두 쓰기 메서드가
  * 버전을 돌려준다 — 운영자가 자기 변경이 함대에 깔릴 번호를 그 자리에서 받는다.
  */
+@BlockingChat
 public interface ManageFilterWordsUseCase {
 
     /**

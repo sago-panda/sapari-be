@@ -1,6 +1,6 @@
 package com.sapari.architecture;
 
-import java.util.List;
+import java.lang.annotation.Annotation;
 import com.tngtech.archunit.core.domain.Dependency;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
@@ -12,9 +12,15 @@ import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
+import com.tngtech.archunit.lang.conditions.ArchConditions;
 import com.tngtech.archunit.library.dependencies.SlicesRuleDefinition;
 
 import org.junit.jupiter.api.Test;
+import org.reactivestreams.Publisher;
+
+import com.sapari.chat.port.BlockingChat;
+import com.sapari.chat.port.InMemoryChat;
+import com.sapari.chat.port.ReactiveChat;
 
 import java.util.Set;
 
@@ -230,34 +236,15 @@ class ArchitectureTest {
     // 두 앱이 chat-core를 의존하므로 양쪽 스택이 전이로 클래스패스에 올라오는데, 그 전이를 막으면 모듈 구조가
     // 깨지므로 허용하고 '호출'만 막는다 — 블로킹 Redis 금지와 같은 계열이다.
     //
-    // 아래 두 규칙은 지금 검사 대상 클래스가 없어도(강퇴·이력은 미구현) 그대로 둔다. 잘못 배선하는 순간
-    // 실패하는 게 목적이지, 지금 뭔가를 잡는 게 목적이 아니다.
+    // 어느 쪽인지는 타입에 단 표시(@BlockingChat · @ReactiveChat)로 가른다. 전에는 단순 이름 목록이었는데,
+    // 목록에 없는 이름은 아무것도 안 잡았다 — chat-api 포트 9개 중 3개만 들어 있었다(SPR-191 실측).
+    // 표시는 구현체로 이어진다: 표시된 인터페이스를 구현한 클래스도 같은 쪽으로 본다.
 
-    /**
-     * streaming-app이 닿으면 안 되는 블로킹 chat 타입들. <b>한 줄에 하나씩 둔다.</b>
-     *
-     * <p>정규식 한 줄에 파이프로 늘어놓으면 두 브랜치가 각각 이름을 더할 때 반드시 같은 줄에서 충돌한다.
-     * 이 목록은 chat이 블로킹 경로를 하나 만들 때마다 늘어나는 것이 정상이라, 그 비용이 계속 든다.
-     * 줄을 나누면 추가가 append가 되어 서로 다른 브랜치의 추가가 자동으로 합쳐진다.
-     */
-    private static final List<String> BLOCKING_CHAT_TYPES = List.of(
-            "KickUserUseCase",
-            "KickUserService",
-            "ChatKickRecorder",
-            "ChatAccountEventPublisher",
-            "GetChatHistoryUseCase",
-            "GetChatHistoryService");
-
-    /** reactive chat 타입들 — MVC 앱(live-app)이 닿으면 결국 {@code .block()}을 강요당한다. 위와 같은 이유로 한 줄에 하나씩. */
-    private static final List<String> REACTIVE_CHAT_TYPES = List.of(
-            "SendChatUseCase",
-            "SendChatService",
-            "ChatAccountEventSource",
-            "ChatAccountEventHandler");
-
-    /** 단순 이름 목록을 FQN 매칭 정규식으로. 이름에 정규식 메타문자가 없다는 전제이고, 실제로 자바 식별자뿐이다. */
-    private static String endingWithAnyOf(List<String> simpleNames) {
-        return ".*\\.(" + String.join("|", simpleNames) + ")";
+    /** 그 표시가 붙었거나, 그 표시가 붙은 인터페이스를 구현한 타입. */
+    private static DescribedPredicate<JavaClass> markedWith(Class<? extends Annotation> marker) {
+        return DescribedPredicate.describe("@" + marker.getSimpleName() + " 이 붙었거나 그런 인터페이스를 구현한",
+                javaClass -> javaClass.isAnnotatedWith(marker)
+                        || javaClass.getAllRawInterfaces().stream().anyMatch(type -> type.isAnnotatedWith(marker)));
     }
 
     // WebFlux 앱이 blocking 유스케이스를 호출하면 Netty 이벤트루프가 그 시간만큼 멈춘다.
@@ -265,11 +252,9 @@ class ArchitectureTest {
     void streaming_app_must_not_call_blocking_chat_use_cases() {
         ArchRule rule = noClasses()
                 .that().resideInAPackage("com.sapari.streamingapp..")
-                .should().dependOnClassesThat()
-                        .haveNameMatching(endingWithAnyOf(BLOCKING_CHAT_TYPES))
-                .orShould().dependOnClassesThat()
-                        .haveFullyQualifiedName("org.springframework.data.mongodb.core.MongoTemplate")
-                .as("streaming-app(WebFlux)은 블로킹 chat 유스케이스·블로킹 MongoTemplate을 호출하면 안 된다");
+                .should().dependOnClassesThat(markedWith(BlockingChat.class))
+                .orShould().dependOnClassesThat(BLOCKING_INFRASTRUCTURE)
+                .as("streaming-app(WebFlux)은 블로킹 chat 타입·블로킹 인프라(MongoTemplate · JPA 저장소)를 호출하면 안 된다");
 
         rule.check(SAPARI);
     }
@@ -281,9 +266,81 @@ class ArchitectureTest {
     void live_app_must_not_call_reactive_chat_use_cases() {
         ArchRule rule = noClasses()
                 .that().resideInAPackage("com.sapari.liveapp..")
-                .should().dependOnClassesThat()
-                        .haveNameMatching(endingWithAnyOf(REACTIVE_CHAT_TYPES))
+                .should().dependOnClassesThat(markedWith(ReactiveChat.class))
                 .as("live-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // 위 두 규칙은 표시가 붙은 타입만 본다. 그래서 표시를 빠뜨리면 이름 목록과 같은 구멍이 다시 열린다.
+    // 포트에서 그 구멍을 닫는다 — chat-api 포트와 chat-core 의 저장소·출력 포트는 세 표시 중 정확히 하나를
+    // 달아야 하고, 그 표시가 반환형과 맞아야 한다. 어댑터는 포트를 구현하므로 위 두 규칙에 따라 들어온다.
+    //
+    // 반환형 대조의 한계: @ReactiveChat 은 Publisher 를 돌려주는 메서드가 "하나 이상" 이면 통과한다. 그래서
+    // 리액티브 포트의 Publisher 아닌 메서드는 기계가 검증하지 않는 선언이다 — 동기 설정 getter 와 동기 블로킹
+    // 호출은 시그니처가 같다. 오늘 그런 메서드는 ChatSessionRepository.heartbeatInterval() 하나이고, 그 포트를
+    // streaming-app 이 쥔다. 하나 더 달려면 그 포트를 쥔 앱이 어디인지 보고 판단한다. @BlockingChat 과
+    // @InMemoryChat 은 시그니처로 구별되지 않으므로, 저장소 포트를 @InMemoryChat 으로 다는 거짓은 여기서
+    // 안 잡히고 아래 chat_types_holding_blocking_infrastructure_are_marked_blocking 이 어댑터 쪽에서 잡는다.
+    @Test
+    void every_chat_port_declares_whether_it_blocks() {
+        ArchRule rule = classes()
+                .that().resideInAnyPackage(
+                        "com.sapari.chat.port", "com.sapari.chat.domain.repository", "com.sapari.chat.application.port")
+                .and().areInterfaces()
+                .and(DescribedPredicate.describe("애너테이션 타입이 아닌", javaClass -> !javaClass.isAnnotation()))
+                .should(new ArchCondition<JavaClass>(
+                        "@BlockingChat · @ReactiveChat · @InMemoryChat 중 정확히 하나를 달고, 그것이 반환형과 맞는다") {
+                    @Override
+                    public void check(JavaClass port, ConditionEvents events) {
+                        boolean blocking = port.isAnnotatedWith(BlockingChat.class);
+                        boolean reactive = port.isAnnotatedWith(ReactiveChat.class);
+                        boolean inMemory = port.isAnnotatedWith(InMemoryChat.class);
+                        if ((blocking ? 1 : 0) + (reactive ? 1 : 0) + (inMemory ? 1 : 0) != 1) {
+                            events.add(SimpleConditionEvent.violated(port, port.getName()
+                                    + " 은 @BlockingChat · @ReactiveChat · @InMemoryChat 중 정확히 하나를 달아야 한다"));
+                            return;
+                        }
+                        long publishers = port.getMethods().stream()
+                                .filter(method -> method.getRawReturnType().isAssignableTo(Publisher.class))
+                                .count();
+                        if (reactive && publishers == 0) {
+                            events.add(SimpleConditionEvent.violated(port,
+                                    port.getName() + " 은 @ReactiveChat 인데 Publisher 를 반환하는 메서드가 없다"));
+                        }
+                        if (!reactive && publishers > 0) {
+                            events.add(SimpleConditionEvent.violated(port,
+                                    port.getName() + " 은 Publisher 를 반환하는 메서드가 있는데 @ReactiveChat 이 아니다"));
+                        }
+                    }
+                });
+
+        rule.check(SAPARI);
+    }
+
+    /** 블로킹 인프라 — 이 타입을 직접 쥐면 호출 스레드를 붙잡는다. JPA 저장소는 하위 인터페이스로 쥐므로 대입 가능성으로 본다. */
+    private static final DescribedPredicate<JavaClass> BLOCKING_INFRASTRUCTURE = DescribedPredicate.describe(
+            "블로킹 인프라(StringRedisTemplate · RedisTemplate · MongoTemplate · JpaRepository)",
+            javaClass -> javaClass.getName().equals("org.springframework.data.redis.core.StringRedisTemplate")
+                    || javaClass.getName().equals("org.springframework.data.redis.core.RedisTemplate")
+                    || javaClass.getName().equals("org.springframework.data.mongodb.core.MongoTemplate")
+                    || javaClass.isAssignableTo("org.springframework.data.jpa.repository.JpaRepository"));
+
+    // 포트 쪽 완전성이 닿지 않는 자리를 어댑터 쪽에서 센다 — 블로킹 인프라를 직접 쥔 chat 타입은 블로킹으로
+    // 표시돼 있어야 한다(자기 자신이나 구현한 인터페이스로). 포트를 @InMemoryChat 으로 잘못 달거나, 포트 없이
+    // 템플릿을 쥔 타입을 새로 만들면 여기서 빨강이다. JPA 저장소 인터페이스 자신은 인프라 쪽으로 본다.
+    @Test
+    void chat_types_holding_blocking_infrastructure_are_marked_blocking() {
+        ArchRule rule = classes()
+                .that().resideInAPackage("com.sapari.chat..")
+                .and(DescribedPredicate.describe("블로킹 인프라를 직접 쥔", javaClass -> javaClass
+                        .getDirectDependenciesFromSelf().stream()
+                        .map(Dependency::getTargetClass)
+                        .filter(target -> !target.equals(javaClass))
+                        .anyMatch(BLOCKING_INFRASTRUCTURE)))
+                .and(DescribedPredicate.not(BLOCKING_INFRASTRUCTURE))
+                .should(ArchConditions.be(markedWith(BlockingChat.class)))
+                .as("블로킹 인프라를 직접 쥔 chat 타입은 @BlockingChat 이거나 그런 인터페이스를 구현해야 한다");
 
         rule.check(SAPARI);
     }

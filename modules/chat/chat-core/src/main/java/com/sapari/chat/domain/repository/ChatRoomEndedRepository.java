@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -17,6 +19,7 @@ import reactor.core.publisher.Mono;
  * "확실히 살아있음"과 "조회 불가"를 소비처가 구분할 수 있어야 한다. 소비처 정책은 강퇴 조회와 같다 —
  * 입장 게이트는 통과, 전송 재확인은 그 전송의 거절이다.
  */
+@ReactiveChat
 public interface ChatRoomEndedRepository {
 
     /** 종료 사실을 남긴다. 같은 방에 여러 Pod가 동시에 불러도 안전하다(덮어쓰기). */

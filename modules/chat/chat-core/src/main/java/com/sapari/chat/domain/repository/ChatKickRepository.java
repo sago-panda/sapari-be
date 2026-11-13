@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -21,6 +23,7 @@ import reactor.core.publisher.Mono;
  * <b>일시 장애와 같은 통에 담아 로그하지 말 것</b>. 같이 담으면 "그 방의 강퇴가
  * 사람이 오기 전까지 계속 꺼져 있다"는 사실이 곧 복구될 장애의 로그에 묻힌다.
  */
+@ReactiveChat
 public interface ChatKickRepository {
 
     Mono<Boolean> isKicked(UUID roomId, UUID userId);

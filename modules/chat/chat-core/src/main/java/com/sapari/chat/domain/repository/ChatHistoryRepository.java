@@ -7,6 +7,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatMessage;
+import com.sapari.chat.port.BlockingChat;
 
 /**
  * 채팅 이력 읽기 포트 — <b>블로킹</b>(live-app MVC 에서 호출).
@@ -20,6 +21,7 @@ import com.sapari.chat.domain.model.ChatMessage;
  * {@code hasNext} 가 없어 프론트가 {@code messages.length === size} 로 다음 페이지를 판단하므로,
  * 뒤에서 걸러내면 아직 남았는데도 길이가 모자라 <b>스크롤이 조용히 끝난다</b>.
  */
+@BlockingChat
 public interface ChatHistoryRepository {
 
     /**

@@ -1,5 +1,7 @@
 package com.sapari.chat.application.port;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Flux;
 
 /**
@@ -14,6 +16,7 @@ import reactor.core.publisher.Flux;
  * <b>기다리지 않게</b> 해 주는 것뿐이다. 이 스트림이 통째로 죽어도 전파는 주기 간격만큼
  * 늦어질 뿐 멈추지 않는다 — 그것이 설계의 요점이다.
  */
+@ReactiveChat
 public interface ProfanityDictionaryChangedSource {
 
     /**

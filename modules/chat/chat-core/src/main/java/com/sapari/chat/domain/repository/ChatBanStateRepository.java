@@ -6,6 +6,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.port.BlockingChat;
 
 /**
  * 밴의 정본(Postgres). <b>블로킹</b> — 호출자가 live-app(MVC)이다.
@@ -13,6 +14,7 @@ import com.sapari.chat.domain.model.ChatBan;
  * <p>Redis의 {@code chat:banned:} 키는 이 테이블의 미러다({@link ChatBanWriteRepository}). 판정은 미러가
  * 하지만 근거는 여기 있고, 미러가 날아가도 여기서 다시 만들 수 있다.
  */
+@BlockingChat
 public interface ChatBanStateRepository {
 
     /**

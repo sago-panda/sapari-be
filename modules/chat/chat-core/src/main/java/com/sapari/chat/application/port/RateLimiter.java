@@ -2,6 +2,8 @@ package com.sapari.chat.application.port;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -9,6 +11,7 @@ import reactor.core.publisher.Mono;
  * 남의 방에 시청자로 들어온 판매자는 구매자와 동일하게 적용된다 — 면제 근거가 진행자에게만 해당한다.
  * userId 기준 글로벌 — 한 유저가 여러 방을 동시 시청해도 공유한다.
  */
+@ReactiveChat
 public interface RateLimiter {
 
     Mono<RateLimitResult> tryAcquire(UUID userId);

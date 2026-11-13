@@ -61,17 +61,6 @@ spring:
       # 더 자주 기운다.
       # timeout: 1s
 
-  # ── chat 쪽 Mongo 연산 상한 ──────────────────────────────────────────────────
-  # mongo:
-  #   operation-timeout: 2s      # 코드 기본값 (env: CHAT_MONGO_OPERATION_TIMEOUT)
-  #                              # 드라이버 CSOT. 전송 경로의 save 가 멈추면 이게 끊는다 —
-  #                              # 드라이버 기본값은 무한(socketReadTimeoutMs=0, timeoutMs=null, 실측).
-  #                              # 호출부 .timeout() 으로는 안 된다: 끊어도 커넥션을 반납하지 않아
-  #                              # 다음 메시지가 남은 차단 시간을 기다린다(실측 2,521ms vs 22ms).
-  #                              # 부팅 인덱스 생성은 이 값에 걸리지 않는다 — 그 경로만 10분으로
-  #                              # 되올려 받는다(ChatMongoConfig.indexTimeoutFactory).
-  #                              # 1 미만이면 기동 실패.
-  #
   # ⚠️ 접두가 spring.data.mongodb 가 아니라 spring.mongodb 다.
   #    Boot 4.0.0에서 spring.data.mongodb.* 가 제거됐고(replacement: spring.mongodb.*),
   #    옛 이름으로 적으면 값이 바인딩되지 않아 MONGODB_URI를 넣어도 조용히 무시되고
@@ -274,6 +263,16 @@ chat:
   #                              # (유저, 방) 동시 세션 상한. 1 미만이면 기동 실패.
   #                              # 올릴 판단: chat.sessions.admission_capped 는 오르는데
   #                              # chat.sessions.reaped 가 평평하면 어뷰즈가 아니라 상한이 낮은 쪽이다.
+  #
+  # mongo:
+  #   operation-timeout: 2s      # 코드 기본값 (env: CHAT_MONGO_OPERATION_TIMEOUT)
+  #                              # 드라이버 CSOT. 전송 경로의 save 가 멈추면 이게 끊는다 —
+  #                              # 드라이버 기본값은 무한(socketReadTimeoutMs=0, timeoutMs=null, 실측).
+  #                              # 호출부 .timeout() 으로는 안 된다: 끊어도 커넥션을 반납하지 않아
+  #                              # 다음 메시지가 남은 차단 시간을 기다린다(실측 2,521ms vs 22ms).
+  #                              # 부팅 인덱스 생성은 이 값에 걸리지 않는다 — 그 경로만 10분으로
+  #                              # 되올려 받는다(ChatMongoConfig.indexTimeoutFactory).
+  #                              # 1 미만이면 기동 실패.
   #
   # 탈퇴 신청 기록의 수명. 탈퇴 전에 받아 둔 룸 토큰으로 재입장하는 것을 이 기록이 막으므로,
   # 그 토큰의 남은 수명(live 의 live.room-token.expiration-seconds, 기본 90s)보다 짧으면 안 된다.

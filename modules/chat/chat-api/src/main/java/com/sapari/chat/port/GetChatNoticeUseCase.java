@@ -13,6 +13,7 @@ import com.sapari.chat.view.ChatMessageView;
  * 두면 소비자가 먼저 생성되는 순서에서 주입이 실패한다(실측: {@code AnnotationConfigApplicationContext},
  * 인터페이스 반환형은 생성 순서에 따라 성공·실패가 갈리고 구현 클래스 반환형은 두 순서 모두 성공).
  */
+@BlockingChat
 public interface GetChatNoticeUseCase {
 
     /** 방의 가장 최근 공지 한 건(강퇴자 제외 + 이메일 게이팅). 없으면 빈 값. blocking — live-app(MVC)에서 호출. */

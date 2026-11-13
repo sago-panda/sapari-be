@@ -5,26 +5,26 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.Parameter;
+import java.lang.reflect.AnnotatedElement;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.convert.DurationStyle;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.yaml.snakeyaml.Yaml;
 
-import com.sapari.chat.infrastructure.config.ChatMongoConfig;
-import com.sapari.streamingapp.websocket.ChatSessionRegistry;
 import com.sapari.streamingapp.websocket.SessionTimeouts;
 
 /**
@@ -33,49 +33,18 @@ import com.sapari.streamingapp.websocket.SessionTimeouts;
  * <p>이 파일은 스스로 {@code cp application.yml.example application.yml} 을 지시한다. 그래서 여기
  * 적힌 모양이 곧 다음 사람의 부팅이고, 틀리면 그 사람에게만 터진다 — 이 저장소에서 돌아가는 테스트는
  * 추적되지 않는 각자의 {@code application.yml} 을 쓰므로 아무것도 알려주지 않는다.
+ *
+ * <p><b>대조 대상을 손으로 적지 않는다.</b> 코드 쪽은 이 클래스패스의 {@code com.sapari} 전체에서
+ * 기본값이 있는 {@code chat.*} {@code @Value} 를 모으고, 템플릿 쪽은 {@code chat:} 절의
+ * "코드 기본값" 주석을 모아 <b>전체 경로</b>로 집합째 맞춘다. 전에는 키·접두·클래스 목록이 수기였고,
+ * 목록 밖의 {@code chat.withdrawal.record-ttl} 은 템플릿이 12h · 코드가 24h 여도 이 파일 전체가
+ * 초록이었다(SPR-191 실측).
  */
 @DisplayName("application.yml.example — 그대로 복사해도 부팅을 막지 않는다")
 class ConfigTemplateTest {
 
-    /**
-     * {@code Duration} 으로 바인딩되는 chat 키들.
-     *
-     * <p>⚠️ 접두를 섞어 담는다({@code chat.session.*} 셋 + {@code chat.mongo.operation-timeout}).
-     * 한때 mongo 키를 별도 목록에 뒀는데 그러면 <b>Duration 전용 검사 둘을 빠져나간다</b> —
-     * 빈 기본값 플레이스홀더 검사와 "템플릿이 그 키를 여전히 다룬다" 검사가 이 목록만 본다.
-     * 이 목록의 기준은 키의 접두가 아니라 <b>바인딩 타입</b>이다.
-     */
-    private static final List<String> DURATION_KEYS =
-            List.of("max-lifetime", "ping-interval", "liveness-deadline", "operation-timeout");
-
-    /** {@code int} 로 바인딩되는 {@code chat.session.*} 키들. */
-    private static final List<String> INT_KEYS = List.of("max-per-room");
-
-    /**
-     * 템플릿과 대조하는 {@code chat.session.*} 키 전부.
-     *
-     * <p>⚠️ <b>수기 목록이고, 한때 이 자리에 "오늘은 완전하다 … 네 번째가 생기면 크기 불일치로
-     * 실패해 여기를 가리킨다" 가 적혀 있었는데 거짓이었다.</b> 실측: 템플릿에
-     * {@code max-per-room} 을 넣고 값을 코드와 <b>다르게</b>(7 vs 5) 둬도 이 파일 전체가 초록이었다.
-     * {@code documentedDefaults()} 가 이 목록으로 <b>걸러 내고</b> 있어서, 목록에 없는 키는
-     * 크기에도 안 세어지기 때문이다. 즉 이 기계는 스스로를 가리키지 못한다 — 새 키를 여기에
-     * <b>손으로</b> 더해야 비로소 묶인다.
-     *
-     * <p>그래서 완전성을 주장하지 않고 <b>범위</b>를 적는다: 아래 {@link #CHAT_VALUE_SOURCES} 의
-     * 클래스들에 선언된 {@code chat.session.*} {@code @Value} 만 본다. 제3의 클래스에 같은 접두의
-     * 키가 생기면 이 검사는 그것을 보지 못한다.
-     */
-    private static final List<String> CHAT_KEYS =
-            Stream.concat(DURATION_KEYS.stream(), INT_KEYS.stream()).toList();
-
-    /**
-     * {@code chat.session.*} {@code @Value} 가 선언된 클래스들.
-     *
-     * <p>{@code WebSocketConfig} 는 수명 셋을 {@code @Bean} 파라미터로, {@code ChatSessionRegistry} 는
-     * 상한을 <b>생성자</b> 파라미터로 받는다. 그래서 메서드만 훑으면 상한이 안 보인다.
-     */
-    private static final List<Class<?>> CHAT_VALUE_SOURCES =
-            List.of(WebSocketConfig.class, ChatSessionRegistry.class, ChatMongoConfig.class);
+    /** {@code chat.*} {@code @Value} 한 개 — 키 전체 경로와 기본값. 기본값이 없으면(:} 로 끝나면) 빈 문자열. */
+    private static final Pattern CHAT_VALUE = Pattern.compile("\\$\\{(chat\\.[a-z.-]+):([^}]*)}");
 
     /**
      * 빈 기본값을 가진 플레이스홀더.
@@ -85,18 +54,11 @@ class ConfigTemplateTest {
      */
     private static final Pattern EMPTY_PLACEHOLDER_DEFAULT = Pattern.compile("\\$\\{[^}]*:\\s*}");
 
-    /**
-     * 이 파일이 덮는다고 선언한 접두의 {@code @Value} 모양.
-     *
-     * <p>{@code documentedDefaults()} 와 완전성 검사가 <b>같은</b> 패턴을 봐야 한다 — 서로 다른 집합을
-     * 보면 둘 다 초록인 채로 어긋난다.
-     */
-    private static final Pattern COVERED_PREFIX_VALUE =
-            Pattern.compile("\\$\\{chat\\.(?:session|mongo)\\.([a-z-]+):([^}]+)}");
+    /** 주석 안의 키 한 줄 — `#   max-lifetime: 60m   # 코드 기본값 …` 또는 `# session:`. 들여쓰기가 깊이다. */
+    private static final Pattern COMMENTED_KEY = Pattern.compile("^( *)([a-z-]+):\\s*(\\S*)");
 
-    /** 주석 안에 적어 둔 코드 기본값 한 줄 — `#   max-lifetime: 60m   # …` 모양. */
-    private static final Pattern DOCUMENTED_DEFAULT =
-            Pattern.compile("^#\\s*([a-z-]+):\\s*(\\S+)");
+    /** 템플릿 범례가 "그 코드 기본값이다" 라고 약속하는 줄의 표지. */
+    private static final String CODE_DEFAULT_MARK = "코드 기본값";
 
     /**
      * 산문에 적어 둔 <b>탈출로 트리오</b> — `(max-lifetime 2m, ping-interval 20s, liveness-deadline 60s)`.
@@ -108,41 +70,51 @@ class ConfigTemplateTest {
     private static final Pattern ESCAPE_TRIO = Pattern.compile(
             "\\(max-lifetime (\\S+), ping-interval (\\S+), liveness-deadline (\\S+)\\)");
 
-    @Test
-    @DisplayName("⭐ Duration 키에 빈 기본값(${VAR:})을 두지 않는다 — 빈 문자열이 코드 기본값을 밀어낸다")
-    void duration_keys_are_not_given_an_empty_placeholder_default() throws IOException {
-        // given
-        String template = template();
+    /** 코드의 {@code chat.*} 기본값 — 키 전체 경로 → 값. 클래스패스 전수 스캔이라 한 번만 짓는다. */
+    private static Map<String, String> codeDefaults;
 
-        // when: 주석이 아닌 줄 중 Duration 키에 빈 기본값 플레이스홀더를 대입한 것
-        List<String> offending = template.lines()
-                .map(String::strip)
-                .filter(line -> !line.startsWith("#"))
-                .filter(ConfigTemplateTest::assignsADurationKey)
-                .filter(line -> EMPTY_PLACEHOLDER_DEFAULT.matcher(withoutTrailingComment(line)).find())
+    @BeforeAll
+    static void scanCodeDefaults() {
+        codeDefaults = codeDefaultsOnClasspath();
+    }
+
+    @Test
+    @DisplayName("⭐ 코드 기본값이 있는 키에 빈 기본값(${VAR:})을 두지 않는다 — 빈 문자열이 코드 기본값을 밀어낸다")
+    void code_default_keys_are_not_given_an_empty_placeholder_default() throws IOException {
+        // given: 주석을 뺀 실제 설정을 전체 경로로 편다 — 중첩 모양과 점 표기 평면 키가 같은 경로가 된다.
+        // ⚠️ 오늘 이 칸의 분모는 0이다 — 코드 기본값이 있는 키는 템플릿에서 전부 주석이라 active 와
+        // 겹치는 키가 없다. 그 키를 주석에서 꺼내 ${VAR:} 로 적는 순간 빨강이 된다(역변이로 확인).
+        // 아래 단언은 템플릿 파싱이 죽지 않았다는 것만 본다.
+        Map<String, String> active = activeChatEntries();
+        assertThat(active).as("템플릿의 chat: 절을 못 읽었다").isNotEmpty();
+
+        // when
+        List<String> offending = active.entrySet().stream()
+                .filter(entry -> codeDefaults.containsKey(entry.getKey()))
+                .filter(entry -> EMPTY_PLACEHOLDER_DEFAULT.matcher(entry.getValue()).find())
+                .map(Map.Entry::getKey)
                 .toList();
 
         // then: env 가 없으면 ${VAR:} 는 "미설정"이 아니라 빈 문자열이고, 그러면 @Value 의 기본값이
-        // 쓰이지 않아 Duration 이 null 이 된다(실측 — 키 부재면 60m). SessionTimeouts 가 null 을
-        // 거부하므로 템플릿을 지시대로 복사한 사람은 부팅이 막힌다.
+        // 쓰이지 않는다 — Duration 은 null 이 되어(실측 — 키 부재면 60m) SessionTimeouts 가 거부하고,
+        // int 는 변환에 실패한다. 템플릿을 지시대로 복사한 사람은 부팅이 막힌다.
         assertThat(offending)
-                .as("빈 기본값을 가진 Duration 키 — 주석 처리하거나 ${VAR:60m} 처럼 기본값을 안에 둘 것")
+                .as("빈 기본값을 가진 키 — 주석 처리하거나 ${VAR:60m} 처럼 기본값을 안에 둘 것")
                 .isEmpty();
     }
 
     @Test
-    @DisplayName("⭐ 템플릿에 적힌 코드 기본값이 실제 @Value 기본값과 같다 — 이 파일이 그렇게 약속한다")
+    @DisplayName("⭐ 템플릿에 적힌 코드 기본값이 실제 @Value 기본값과 같다 — 키 집합째, 전체 경로로")
     void documented_defaults_match_the_code_defaults() throws IOException {
         // given: 범례가 "optional — 여기 적힌 건 그 코드 기본값이다" 라고 약속한다. 운영자가 특히
         // max-lifetime 을 그 주석으로 판단한다("접속 후 바뀐 권위가 반영되기까지의 상한").
         Map<String, String> documented = documentedDefaults();
-        Map<String, String> fromCode = codeDefaults();
 
-        // when & then: 둘이 갈리면 약속이 거짓이 된다. 크기를 먼저 본다 — 한쪽을 못 읽으면
-        // 비교가 공허하게 통과한다(양쪽 다 비면 isEqualTo 가 성립한다).
-        assertThat(documented).as("템플릿에서 코드 기본값 주석을 못 읽었다").hasSize(CHAT_KEYS.size());
-        assertThat(fromCode).as("소스 클래스들에서 @Value 기본값을 못 읽었다").hasSize(CHAT_KEYS.size());
-        assertThat(documented).as("템플릿 주석과 코드 기본값이 갈렸다").isEqualTo(fromCode);
+        // when & then: 한쪽을 못 읽으면 비교가 공허하게 통과한다(양쪽 다 비면 isEqualTo 가 성립한다).
+        // 키가 한쪽에만 있어도 깨진다 — 코드에 기본값 키를 더하면 템플릿에도 적어야 한다.
+        assertThat(documented).as("템플릿에서 코드 기본값 주석을 못 읽었다").isNotEmpty();
+        assertThat(codeDefaults).as("클래스패스에서 chat.* @Value 기본값을 못 읽었다").isNotEmpty();
+        assertThat(documented).as("템플릿 주석과 코드 기본값이 갈렸다").isEqualTo(codeDefaults);
     }
 
     /**
@@ -160,9 +132,9 @@ class ConfigTemplateTest {
 
         // when & then
         assertThatCode(() -> new SessionTimeouts(
-                DurationStyle.detectAndParse(documented.get("max-lifetime")),
-                DurationStyle.detectAndParse(documented.get("ping-interval")),
-                DurationStyle.detectAndParse(documented.get("liveness-deadline"))))
+                DurationStyle.detectAndParse(documented.get("chat.session.max-lifetime")),
+                DurationStyle.detectAndParse(documented.get("chat.session.ping-interval")),
+                DurationStyle.detectAndParse(documented.get("chat.session.liveness-deadline"))))
                 .as("템플릿이 적은 세 값이 SessionTimeouts 에서 거부된다 — 그대로 쓰면 부팅이 막힌다")
                 .doesNotThrowAnyException();
     }
@@ -181,12 +153,9 @@ class ConfigTemplateTest {
     @Test
     @DisplayName("⭐ 코드 기본값도 기한/간격 3배를 유지한다 — 2배 가드만으로는 내성이 깎인 채 초록이다")
     void code_defaults_keep_the_three_times_ratio() {
-        // given
-        Map<String, String> fromCode = codeDefaults();
-
         // when
-        Duration interval = DurationStyle.detectAndParse(fromCode.get("ping-interval"));
-        Duration deadline = DurationStyle.detectAndParse(fromCode.get("liveness-deadline"));
+        Duration interval = DurationStyle.detectAndParse(codeDefaults.get("chat.session.ping-interval"));
+        Duration deadline = DurationStyle.detectAndParse(codeDefaults.get("chat.session.liveness-deadline"));
 
         // then
         assertThat(deadline)
@@ -226,61 +195,103 @@ class ConfigTemplateTest {
     }
 
     @Test
-    @DisplayName("템플릿이 실제로 읽히고 Duration 키 전부를 여전히 다룬다 — 파일이 사라져도 위 검사가 통과하지 않게")
+    @DisplayName("템플릿이 실제로 읽힌다 — 파일이 사라져도 위 검사가 통과하지 않게")
     void template_is_actually_read() throws IOException {
-        // given
-        String template = template();
-
-        // when & then: 파일이 비거나 키 이름이 바뀌면 위 검사는 "위반 0건"으로 조용히 통과한다.
-        // 그 공허한 초록을 막는 것이 이 테스트의 전부다.
-        assertThat(template).contains("cp application.yml.example");
-        assertThat(DURATION_KEYS).allSatisfy(key -> assertThat(template).contains(key));
-    }
-
-    /** 템플릿 주석에 적힌 기본값 — 키 → 값. */
-    private Map<String, String> documentedDefaults() throws IOException {
-        Map<String, String> defaults = new LinkedHashMap<>();
-        template().lines().map(String::strip).filter(line -> line.startsWith("#")).forEach(line -> {
-            Matcher matcher = DOCUMENTED_DEFAULT.matcher(line.substring(1).strip().startsWith("#")
-                    ? line.substring(1).strip() : line);
-            // ⚠️ 키를 **잎 세그먼트**로만 잡는다 — chat.session.X 와 chat.mongo.X 가 같은 잎이면
-            // 뒤에 읽은 쪽이 앞을 덮어쓰고 크기 검사도 통과한다. 오늘 겹치는 잎이 없어서
-            // 분모가 비어 있을 뿐이고, 접두를 키에 넣는 쪽이 그걸 닫는다(이 티켓 밖).
-            if (matcher.find() && CHAT_KEYS.contains(matcher.group(1))) {
-                defaults.put(matcher.group(1), matcher.group(2));
-            }
-        });
-        return defaults;
+        // when & then: 파일이 비면 위 검사는 "위반 0건"으로 조용히 통과한다. 그 공허한 초록을 막는다.
+        assertThat(template()).contains("cp application.yml.example");
     }
 
     /**
-     * {@code WebSocketConfig} 의 {@code @Value} 기본값 — 키 → 값.
+     * 템플릿 {@code chat:} 절의 "코드 기본값" 주석 — 키 전체 경로 → 값.
      *
-     * <p>자바 소스를 읽지 않고 리플렉션으로 가져온다. {@code @Value} 는 {@code RetentionPolicy.RUNTIME}
-     * 이고, 소스 파일을 경로로 읽으면 테스트 작업 디렉터리에 묶인다.
+     * <p>주석 블록({@code # session:} 아래 {@code #   max-lifetime: 60m}) 의 들여쓰기로 경로를 짓는다.
+     * 전에는 잎 이름만 키로 써서 {@code chat.session.X} 와 {@code chat.mongo.X} 가 같은 잎이면 뒤가
+     * 앞을 덮을 수 있었다. 주석이 아닌 줄을 만나면 블록이 끝난 것으로 본다.
      */
-    private Map<String, String> codeDefaults() {
+    private Map<String, String> documentedDefaults() throws IOException {
         Map<String, String> defaults = new LinkedHashMap<>();
-        // 반환형으로 거르지 않는다 — 한때 ChatWebSocketHandler 를 돌려주는 메서드만 봤는데, 그러면
-        // 같은 클래스의 다른 메서드에 Duration @Value 를 더했을 때 이 검사에 안 보이고
-        // DURATION_KEYS 가 조용히 낡는다(실측으로 그 뮤턴트가 생존했다).
-        for (Class<?> source : CHAT_VALUE_SOURCES) {
-            // 메서드와 생성자를 둘 다 본다 — 상한은 생성자 파라미터에 붙어 있어서,
-            // 메서드만 훑던 때는 코드 쪽에서 그 키가 아예 나오지 않았다(실측: 분모 0).
-            Stream.concat(Stream.of(source.getDeclaredMethods()), Stream.of(source.getDeclaredConstructors()))
-                    .flatMap(executable -> Stream.of(executable.getParameters()))
-                    .forEach(parameter -> {
-                        Value value = parameter.getAnnotation(Value.class);
-                        if (value == null) {
-                            return;
-                        }
-                        // 접두를 session 하나로 못 박지 않는다 — 그랬으면 chat.mongo.* 키가 코드 쪽에서
-                        // 아예 나오지 않아 크기 비교가 공허하게 통과한다(SPR-176 의 그 모양).
-                        Matcher matcher = COVERED_PREFIX_VALUE.matcher(value.value());
-                        if (matcher.matches()) {
-                            defaults.put(matcher.group(1), matcher.group(2));
-                        }
-                    });
+        Deque<Map.Entry<Integer, String>> parents = new ArrayDeque<>();
+        boolean inChat = false;
+        for (String line : template().lines().toList()) {
+            if (!line.isBlank() && !Character.isWhitespace(line.charAt(0)) && !line.startsWith("#")) {
+                inChat = line.startsWith("chat:");
+                parents.clear();
+                continue;
+            }
+            String stripped = line.strip();
+            if (!inChat || stripped.isEmpty()) {
+                continue;
+            }
+            if (!stripped.startsWith("#")) {
+                parents.clear();
+                continue;
+            }
+            Matcher matcher = COMMENTED_KEY.matcher(stripped.substring(1));
+            if (!matcher.find()) {
+                continue;
+            }
+            int depth = matcher.group(1).length();
+            while (!parents.isEmpty() && parents.peek().getKey() >= depth) {
+                parents.pop();
+            }
+            String value = matcher.group(3);
+            if (value.isEmpty() || value.startsWith("#")) {
+                parents.push(Map.entry(depth, matcher.group(2)));
+            } else if (line.contains(CODE_DEFAULT_MARK)) {
+                StringBuilder path = new StringBuilder("chat");
+                parents.descendingIterator().forEachRemaining(parent -> path.append('.').append(parent.getValue()));
+                defaults.put(path.append('.').append(matcher.group(2)).toString(), value);
+            }
+        }
+        return defaults;
+    }
+
+    /** 템플릿의 실제(주석 아닌) 설정을 전체 경로로 편 것 중 {@code chat.} 으로 시작하는 것. */
+    private Map<String, String> activeChatEntries() throws IOException {
+        Map<String, String> flat = new LinkedHashMap<>();
+        flatten("", new Yaml().load(template()), flat);
+        flat.keySet().removeIf(key -> !key.startsWith("chat."));
+        return flat;
+    }
+
+    private static void flatten(String prefix, Object node, Map<String, String> into) {
+        if (node instanceof Map<?, ?> map) {
+            map.forEach((key, child) -> flatten(prefix.isEmpty() ? String.valueOf(key) : prefix + "." + key, child, into));
+        } else {
+            into.put(prefix, String.valueOf(node));
+        }
+    }
+
+    /**
+     * 이 클래스패스의 {@code com.sapari} 전체에서 기본값이 있는 {@code chat.*} {@code @Value} — 키 → 값.
+     *
+     * <p>메서드·생성자 파라미터와 필드를 다 본다. 상한({@code max-per-room})은 생성자 파라미터에 붙어
+     * 있어서, 메서드만 훑던 때는 코드 쪽에서 그 키가 아예 나오지 않았다(실측: 분모 0).
+     * 기본값이 없는 키({@code chat.room-token.public-key} 등)는 "코드 기본값" 이 없으므로 뺀다.
+     */
+    private static Map<String, String> codeDefaultsOnClasspath() {
+        ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter((metadataReader, factory) -> true);
+
+        Map<String, String> defaults = new LinkedHashMap<>();
+        for (var candidate : scanner.findCandidateComponents("com.sapari")) {
+            Class<?> type;
+            try {
+                type = Class.forName(candidate.getBeanClassName());
+            } catch (Throwable notOnThisClasspath) {
+                continue;
+            }
+            Stream.of(
+                            Stream.of(type.getDeclaredMethods()).flatMap(method -> Stream.of(method.getParameters())),
+                            Stream.of(type.getDeclaredConstructors()).flatMap(ctor -> Stream.of(ctor.getParameters())),
+                            Stream.of(type.getDeclaredFields()))
+                    .flatMap(stream -> stream.map(AnnotatedElement.class::cast))
+                    .map(element -> element.getAnnotation(Value.class))
+                    .filter(value -> value != null)
+                    .map(value -> CHAT_VALUE.matcher(value.value()))
+                    .filter(Matcher::matches)
+                    .filter(matcher -> !matcher.group(2).isBlank())
+                    .forEach(matcher -> defaults.put(matcher.group(1), matcher.group(2)));
         }
         return defaults;
     }
@@ -290,78 +301,5 @@ class ConfigTemplateTest {
             assertThat(stream).as("/application.yml.example 를 클래스패스에서 찾지 못했다").isNotNull();
             return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
         }
-    }
-
-    /**
-     * 그 줄이 Duration 키에 값을 대입하는지.
-     *
-     * <p>점 표기 평면 키({@code chat.session.max-lifetime: …})도 받는다 — 마지막 세그먼트만 보면
-     * 그 모양이 검사를 통째로 비껴간다.
-     */
-    private static boolean assignsADurationKey(String line) {
-        int colon = line.indexOf(':');
-        if (colon < 0) {
-            return false;
-        }
-        String key = line.substring(0, colon).strip();
-        return DURATION_KEYS.stream().anyMatch(known -> key.equals(known) || key.endsWith("." + known));
-    }
-
-
-    /**
-     * {@link #CHAT_VALUE_SOURCES} 의 <b>완전성</b>을 코드가 센다 — 명단이 수기라서 생긴 구멍을 닫는다.
-     *
-     * <p>위 {@code CHAT_KEYS} javadoc 이 적는 구멍이 이것이다 — *"제3의 클래스에 같은 접두의 키가
-     * 생기면 이 검사는 그것을 보지 못한다."* 그 문장은 참이고, 이 칸이 그걸 거짓으로 만든다.
-     *
-     * <p>⚠️ <b>덮는 접두를 넓히지 않는다.</b> 오늘 {@code chat.*} 키는 여덟이고 다섯 클래스가 읽는데,
-     * 그중 이 파일이 덮는다고 선언한 접두({@code chat.session.*} · {@code chat.mongo.*})는
-     * <b>다섯 키 / 세 클래스이고 그 셋이 이미 명단에 있다</b>(실측, SPR-179). 나머지 셋은
-     * {@code chat.profanity.*}(List 바인딩) · {@code chat.room-token.*}(필수 비밀키)로 <b>접두가
-     * 다르다</b> — 명단에 넣으면 구멍이 닫히는 것이 아니라 이 파일의 주제가 바뀌고, Duration/int
-     * 전용 검사 둘에 바인딩 타입이 다른 키가 끌려 들어온다. 그래서 주제는 그대로 두고 완전성만 닫는다.
-     *
-     * <p>⚠️ 이 칸은 오늘 초록이다(분모 0). 근거는 역변이다 — {@code chat.session.*} {@code @Value} 를
-     * 가진 네 번째 클래스를 만들면 빨강이다.
-     */
-    @Test
-    @DisplayName("⭐ 덮는 접두를 읽는 클래스가 명단 밖에 생기면 빨강 — 수기 명단의 완전성을 코드가 센다")
-    void everyClassReadingTheCoveredPrefixesIsListed() {
-        // given: com.sapari 전수를 훑는다. 범위를 패키지 하나로 두는 이유는 이 접두가 우리 코드에서만
-        // 나오기 때문이고, 전수가 아니면 "못 봤다" 와 "없다" 의 출력이 같아진다.
-        ClassPathScanningCandidateComponentProvider scanner =
-                new ClassPathScanningCandidateComponentProvider(false);
-        scanner.addIncludeFilter((metadataReader, factory) -> true);
-
-        // when: 덮는 접두의 @Value 를 파라미터에 가진 클래스를 모은다. 추출 패턴은 documentedDefaults()
-        // 가 쓰는 것과 같은 것이어야 한다 — 다르면 두 기계가 서로 다른 집합을 보고도 둘 다 초록이다.
-        Set<Class<?>> declaring = new LinkedHashSet<>();
-        for (var candidate : scanner.findCandidateComponents("com.sapari")) {
-            Class<?> type;
-            try {
-                type = Class.forName(candidate.getBeanClassName());
-            } catch (Throwable notOnThisClasspath) {
-                continue;
-            }
-            boolean reads = Stream
-                    .concat(Stream.of(type.getDeclaredMethods()), Stream.of(type.getDeclaredConstructors()))
-                    .flatMap(executable -> Stream.of(executable.getParameters()))
-                    .map(parameter -> parameter.getAnnotation(Value.class))
-                    .anyMatch(value -> value != null && COVERED_PREFIX_VALUE.matcher(value.value()).matches());
-            if (reads) {
-                declaring.add(type);
-            }
-        }
-
-        // then: 스캐너가 아무것도 못 찾았으면 이 단언이 먼저 깨진다 — 0건과 "못 봤다" 를 가른다.
-        assertThat(declaring)
-                .as("덮는 접두를 읽는 클래스 집합이 수기 명단과 다르다 — 명단에 더하거나, 접두를 안 쓰게 바꾼다")
-                .containsExactlyInAnyOrderElementsOf(CHAT_VALUE_SOURCES);
-    }
-
-    /** 줄 끝 주석을 떼어 값만 남긴다 — `max-lifetime: ${X:}  # optional` 의 판정이 주석에 가리지 않게. */
-    private static String withoutTrailingComment(String line) {
-        int hash = line.indexOf('#');
-        return (hash < 0 ? line : line.substring(0, hash)).strip();
     }
 }

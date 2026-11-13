@@ -2,6 +2,8 @@ package com.sapari.chat.application.port;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Flux;
 
 /**
@@ -19,6 +21,7 @@ import reactor.core.publisher.Flux;
  * 즉시)과 하드 삭제(배치, 유예 뒤). 신청 순간부터 계정이 활성이 아니므로 세션을 끊을 때도 그때다.
  * 삭제까지 기다리면 유예 기간 전체가 구멍으로 남는다.
  */
+@ReactiveChat
 public interface AccountWithdrawingSource {
 
     Flux<UUID> withdrawing();

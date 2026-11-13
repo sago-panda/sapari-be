@@ -2,6 +2,8 @@ package com.sapari.chat.application.port;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Flux;
 
 /**
@@ -10,6 +12,7 @@ import reactor.core.publisher.Flux;
  * <p>payload는 JSON {@code {"roomId":"<uuid>","endedAt":"<iso8601>"}}. chat이 실제 쓰는 건 roomId뿐이라
  * 어댑터가 roomId만 뽑아 흘려보낸다. {@code ChatBroadcaster}(chat:pubsub)와는 다른 채널·목적이라 분리한다.
  */
+@ReactiveChat
 public interface LiveRoomEndedSource {
 
     Flux<UUID> ended();
