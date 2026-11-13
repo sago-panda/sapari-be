@@ -1,6 +1,7 @@
 package com.sapari.chat.application.port;
 
 import com.sapari.chat.domain.rule.ProfanityFilter;
+import com.sapari.chat.port.InMemoryChat;
 
 /**
  * 지금 유효한 필터를 <b>갈아 끼우는</b> 포트 — {@link ProfanityFilterSource} 의 반대 역할이다.
@@ -15,6 +16,7 @@ import com.sapari.chat.domain.rule.ProfanityFilter;
  * 아니다 — 그래서 처리 중인 메시지는 자기가 집어 든 필터로 끝까지 가고, 두 사전이 섞인 상태를
  * 보는 경로가 없다.
  */
+@InMemoryChat
 public interface ProfanityFilterInstaller {
 
     /** 다음 메시지부터 쓰일 필터. {@code null} 은 마스킹을 꺼뜨리므로 구현이 거부한다. */

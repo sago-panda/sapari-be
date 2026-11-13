@@ -2,6 +2,12 @@ package com.sapari.chat.infrastructure.metrics;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,6 +17,7 @@ import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
 import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.port.PolicyReadFailure;
+import com.sapari.chat.application.port.PersistStage;
 import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
@@ -41,9 +48,10 @@ class ChatMetricsPrometheusScrapeTest {
     }
 
     @Test
-    @DisplayName("판정 통과 여섯 조합이 모두 스크레이프에 나온다")
+    @DisplayName("판정 통과 여덟 조합이 모두 스크레이프에 나온다")
     void everyPolicyOpenCombinationSurvivesScrape() {
-        // when: 실제로 쓰이는 조합 전부
+        // when: 정책 × 지점 전부. (WITHDRAWING, SEND) 는 오늘 발화하는 자리가 없다 — 탈퇴는 입장에서만
+        // 본다 — 그래도 등록이 거부되지 않는지는 같은 축이라 함께 센다.
         for (ChatPolicy policy : ChatPolicy.values()) {
             for (ChatCheckpoint checkpoint : ChatCheckpoint.values()) {
                 metrics.policyNotEnforced(policy, checkpoint, PolicyReadFailure.UNAVAILABLE);
@@ -54,14 +62,15 @@ class ChatMetricsPrometheusScrapeTest {
         // then: 하나라도 거부됐으면 미터 수가 모자란다
         String scrape = registry.scrape();
         assertThat(registry.find("chat.policy.open").counters())
-                .as("등록이 조용히 거부되면 개수가 줄어든다").hasSize(7);
-        assertThat(scrape).contains("policy=\"room_ended\"", "policy=\"kick\"", "policy=\"ban\"");
+                .as("등록이 조용히 거부되면 개수가 줄어든다").hasSize(9);
+        assertThat(scrape).contains("policy=\"room_ended\"", "policy=\"kick\"", "policy=\"ban\"",
+                "policy=\"withdrawing\"");
         assertThat(scrape).contains("checkpoint=\"entry\"", "checkpoint=\"send\"");
         assertThat(scrape).contains("failure=\"unavailable\"", "failure=\"store_corrupted\"");
     }
 
     @Test
-    @DisplayName("나머지 세 지표의 모든 열거 값이 스크레이프에 나온다")
+    @DisplayName("나머지 지표의 모든 열거 값이 스크레이프에 나온다")
     void everyEnumValueSurvivesScrape() {
         // when
         for (RateLimitDegradation mode : RateLimitDegradation.values()) {
@@ -73,6 +82,17 @@ class ChatMetricsPrometheusScrapeTest {
         for (SessionCutReason reason : SessionCutReason.values()) {
             metrics.sessionCut(reason);
         }
+        for (PersistStage stage : PersistStage.values()) {
+            metrics.persistTimedOut(stage);
+        }
+        for (ChatPolicy policy : ChatPolicy.values()) {
+            metrics.sendRefused(policy);
+        }
+        // 태그 없는 셋 — 조합은 없지만 **등록 자체**가 스크레이프에 나오는지는 같은 축이다.
+        // 이 열거가 미터와 함께 늘지 않으면 "지표를 늘릴 때 여기에 한 줄" 규율이 깨진 채 초록이다.
+        metrics.dictionaryFastPathLost();
+        metrics.withdrawalRecordFailed();
+        metrics.inboundFrameDropped();
 
         // then
         assertThat(registry.find("chat.ratelimit.degraded").counters())
@@ -81,10 +101,106 @@ class ChatMetricsPrometheusScrapeTest {
                 .hasSize(DeliveryStage.values().length);
         assertThat(registry.find("chat.session.cut").counters())
                 .hasSize(SessionCutReason.values().length);
+        assertThat(registry.find("chat.persist.timeout").counters())
+                .hasSize(PersistStage.values().length);
+        assertThat(registry.find("chat.send.refused").counters())
+                .hasSize(ChatPolicy.values().length);
 
         String scrape = registry.scrape();
         assertThat(scrape).contains("chat_ratelimit_degraded_total");
         assertThat(scrape).contains("chat_delivery_dropped_total");
         assertThat(scrape).contains("chat_session_cut_total");
+        assertThat(scrape).contains("chat_dictionary_fastpath_lost_total");
+        assertThat(scrape).contains("chat_withdrawal_record_failed_total");
+        assertThat(scrape).contains("chat_inbound_dropped_total");
+        assertThat(scrape).contains("chat_persist_timeout_total");
+        assertThat(scrape).contains("chat_send_refused_total");
+    }
+
+    /**
+     * 손열거의 분모를 닫는다 — <b>권위 집합을 코드가 훑는다.</b>
+     *
+     * <p>이 파일의 머리 javadoc 이 적는 규율이 *"지표를 늘릴 때 여기에 한 줄씩 늘릴 것"* 이고
+     * {@code modules/chat/AGENTS.md} 가 그 결함을 이미 진단했다 — 손열거는 마지막으로 기억한
+     * 사람만큼만 완전하다. SPR-177 은 <b>빠진 줄을 더했고 손열거 자체는 남겼다.</b>
+     *
+     * <p>⚠️ <b>이 칸은 처음부터 초록이다</b> — 그래서 초록인 것이 근거가 될 수 없다. 근거는
+     * 역변이다: {@code ChatMeterNames} 에 7번째 상수를 더하고 테스트를 한 줄도 안 건드렸을 때
+     * <b>이 칸이 없으면</b> 두 계기 클래스 6칸이 전부 초록이고(실측: SPR-179 설계,
+     * {@code GRADLE_EXIT=0}), <b>이 칸이 있으면</b> 빨강이다. 분모가 0 에서 1 로 간다.
+     *
+     * <p>태그 축은 이미 구조적이다(위 두 칸이 {@code values()} 를 돈다). 비어 있던 것은 이름 축뿐이다.
+     */
+    @Test
+    @DisplayName("선언된 미터 이름 전수가 스크레이프에 나온다 — 7번째를 더하면 빨강")
+    void everyDeclaredMeterNameSurvivesScrape() throws Exception {
+        // given: 권위 집합 = ChatMeterNames 의 "chat." 으로 시작하는 String 상수.
+        // 태그 키(policy·checkpoint…)는 접두가 달라 값으로 갈린다 — 필드명 규칙(TAG_)에 기대지 않는다.
+        List<String> declared = declaredMeterNames();
+        assertThat(declared)
+                .as("권위 집합이 비면 이 칸은 아무것도 보증하지 않는다 — 분모가 0 이 된다")
+                .isNotEmpty();
+
+        // 이름 축을 **한 자리에서** 강제한다. 리플렉션만으로는 완전성만 닫히고, 오늘 일곱이 각각
+        // 리터럴에 묶인 것은 맞지만 그 리터럴이 세 파일에 흩어져 있어 **여덟 번째 이름이 리터럴을
+        // 얻도록 강제하는 것이 없다**. 집합 동일성이라 한쪽에만 생기면 깨진다.
+        assertThat(declared)
+                .as("선언 집합이 아래 스냅샷과 다르다 — 이름을 바꿨거나 새 이름에 리터럴을 안 줬다")
+                .containsExactlyInAnyOrder(
+                        "chat.policy.open",
+                        "chat.ratelimit.degraded",
+                        "chat.delivery.dropped",
+                        "chat.session.cut",
+                        "chat.dictionary.fastpath.lost",
+                        "chat.persist.timeout",
+                        "chat.subscription.resubscribed",
+                        "chat.withdrawal.record.failed",
+                        "chat.inbound.dropped",
+                        "chat.send.refused");
+
+        // when: ChatMetrics 의 모든 메서드를 한 번씩 호출한다. 열거 인자는 첫 값으로 채운다 —
+        // 조합은 위 두 칸이 보고, 여기서는 "그 이름의 미터가 등록되는가" 만 본다.
+        for (Method method : ChatMetrics.class.getDeclaredMethods()) {
+            if (method.isSynthetic() || method.isBridge()) {
+                continue;
+            }
+            Object[] args = new Object[method.getParameterCount()];
+            Class<?>[] types = method.getParameterTypes();
+            for (int i = 0; i < args.length; i++) {
+                assertThat(types[i].isEnum())
+                        .as("열거가 아닌 인자가 생겼다 — 이 칸을 넓혀야 한다: %s", method.getName())
+                        .isTrue();
+                args[i] = types[i].getEnumConstants()[0];
+            }
+            method.invoke(metrics, args);
+        }
+
+        // then: 선언된 이름마다 미터가 실재하고, <b>실제 스크레이프 텍스트</b>에 나온다.
+        // 등록만 보면 이 클래스의 축(스크레이프)을 안 보는 것이고, 리플렉션은 상수를 따라가므로
+        // 이름 변경도 못 잡는다 — 그래서 변환된 이름을 스크레이프에서 찾는다(점 → 밑줄).
+        String scrape = registry.scrape();
+        for (String name : declared) {
+            assertThat(registry.find(name).meters())
+                    .as("선언만 있고 등록이 없다 — 또는 이 칸을 안 늘렸다: %s", name)
+                    .isNotEmpty();
+            assertThat(scrape)
+                    .as("등록은 됐는데 스크레이프에 안 나온다(태그 키 집합 충돌이 그 모양이다): %s", name)
+                    .contains(name.replace('.', '_'));
+        }
+    }
+
+    /** {@code ChatMeterNames} 는 패키지 전용이고 이 테스트가 같은 패키지라 리플렉션으로 읽힌다. */
+    private static List<String> declaredMeterNames() throws Exception {
+        List<String> names = new ArrayList<>();
+        for (Field field : ChatMeterNames.class.getDeclaredFields()) {
+            if (!Modifier.isStatic(field.getModifiers()) || field.getType() != String.class) {
+                continue;
+            }
+            String value = (String) field.get(null);
+            if (value != null && value.startsWith("chat.")) {
+                names.add(value);
+            }
+        }
+        return names;
     }
 }

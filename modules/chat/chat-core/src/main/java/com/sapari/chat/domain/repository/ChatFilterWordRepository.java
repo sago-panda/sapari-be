@@ -4,6 +4,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.FilterWordKind;
+import com.sapari.chat.port.BlockingChat;
 
 /**
  * 욕설 사전의 <b>정본</b> — {@code live_schema.chat_filter_word}.
@@ -21,7 +22,17 @@ import com.sapari.chat.domain.model.FilterWordKind;
  * 무동작이다. 관리자가 같은 단어를 두 번 누르는 것은 평범한 일이고, 그것이 500 이 되면 운영자는
  * "이미 막혀 있다" 와 "쓰기가 실패했다" 를 구분할 수 없다. 반환값이 그 구분을 준다.
  */
+@BlockingChat
 public interface ChatFilterWordRepository {
+
+    /**
+     * 사전 쓰기를 이 트랜잭션이 끝날 때까지 직렬화한다. 트랜잭션 안에서만 부른다.
+     *
+     * <p>검사가 두 집합 전체를 보므로(제거는 "욕설이 남는가", 추가는 두 kind 를 가로지르는 규칙)
+     * 동시 쓰기 둘이 각자 통과하고 합친 결과만 어길 수 있다. 읽기 전에 이것을 잡으면 뒤쪽은 앞쪽의
+     * 커밋을 보고 검사한다.
+     */
+    void lockForWrite();
 
     /** 그 종류의 항목 전체. 스냅샷 발행과 시드 판정이 쓴다. */
     Set<String> findWords(FilterWordKind kind);

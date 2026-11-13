@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -98,6 +99,16 @@ public class ChatBanStateRepositoryImpl implements ChatBanStateRepository {
         jpaRepository.appendRelease(userId, releasedById, now,
                 snapshot.banExisted(), snapshot.expiresAt(), snapshot.bannedById());
         return snapshot;
+    }
+
+    @Override
+    public long nextChangeVersion() {
+        return jpaRepository.nextChangeVersion();
+    }
+
+    @Override
+    public List<UUID> findActiveUserIds(Instant now) {
+        return jpaRepository.findActiveUserIds(now);
     }
 
     private static ChatBan toDomain(ChatBanEntity entity) {

@@ -12,6 +12,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.ChatSubscription;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.protocol.ChatEnvelope;
 import com.sapari.chat.application.protocol.ChatMessageTypeMixin;
@@ -52,7 +54,7 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
     private record RawMessage(UUID roomId, String body) {
     }
 
-    public RedisChatBroadcaster(ReactiveStringRedisTemplate redis) {
+    public RedisChatBroadcaster(ReactiveStringRedisTemplate redis, ChatMetrics metrics) {
         this.redis = redis;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
@@ -73,7 +75,10 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         this.shared = redis.listenToPattern(ChatRedisKeys.pubsubPattern())
                 .mapNotNull(msg -> toRaw(msg.getChannel(), msg.getMessage()))
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(30))
-                        .doBeforeRetry(s -> log.warn("chat:pubsub 패턴 구독 재시도 — 끊김 후 자가복구", s.failure())))
+                        .doBeforeRetry(s -> {
+                            metrics.subscriptionResubscribed(ChatSubscription.CHAT_PUBSUB);
+                            log.warn("chat:pubsub 패턴 구독 재시도 — 끊김 후 자가복구", s.failure());
+                        }))
                 .publish()
                 .autoConnect(0);
     }

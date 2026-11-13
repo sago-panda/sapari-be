@@ -17,6 +17,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.CloseStatus;
 
@@ -72,6 +73,25 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 첫 거부는 반드시 답한다 — 클라가 무엇이 틀렸는지 알아야 고친다.
      */
     private static final long REJECTION_REPLY_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos();
+
+    /**
+     * 세션당 인바운드 프레임 상한 — 간격 하나에 한 프레임, 연달아서는 {@link #INBOUND_FRAME_BURST} 까지.
+     *
+     * <p><b>막으려는 것은 이벤트 루프에서 드는 프레임당 비용이다</b> — UTF-8 디코드와 JSON 파싱. 레이트리밋과
+     * 거부 응답 솎기는 둘 다 그 뒤에 있어서, 이것이 없으면 회선 속도로 미는 클라 하나가 프레임마다 그 비용을
+     * 이벤트 루프에 얹는다. 4KiB 프레임의 파싱은 모양에 따라 2.5µs(정상)~약 29µs(모르는 키의 값이 중첩 객체,
+     * 파싱은 성공)였고, 디코드는 한글 4KiB 에 약 2.3µs 였다(실측: 운영 ObjectMapper 설정, openjdk 21, 15배치
+     * 중앙값). 상한은 디코드 앞에 있으므로(ChatWebSocketHandler.runInbound) 받아들인 프레임의 지속 비용은
+     * 최악 모양으로 초당 약 0.31ms((29 + 2.3)µs × 10)이고, 버린 프레임에는 맵 조회 하나만 남는다.
+     * 이 상한이 묶지 않는 것은 그 앞의 수신·프레이밍이다 — 그쪽은 프레임 크기 상한과 회선이 정한다.
+     *
+     * <p><b>정상 클라는 닿지 않는다.</b> 회원은 레이트리밋이 평균 3초에 한 건(연속 3건)이고, 레이트리밋이 면제되는 방주인도
+     * 사람이 치는 속도다. 이 값은 정상 사용량을 재서 정한 것이 아니라 그보다 넉넉히 둔 것이다.
+     */
+    static final long INBOUND_FRAME_INTERVAL_NANOS = Duration.ofMillis(100).toNanos();
+
+    /** 쉬다가 연달아 받을 수 있는 프레임 수. */
+    static final int INBOUND_FRAME_BURST = 20;
 
     /**
      * 동시 emit 경합 재시도 상한(벽시계 아님 — 스핀 시간 측정이라 TimeProvider 대상이 아니다).
@@ -143,11 +163,38 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 종료 신호 재시도 상한. 운영은 {@link #DEFAULT_COMPLETE_SPIN_NANOS}. 위와 같은 이유로 필드다. */
     private final long completeSpinNanos;
 
+    /**
+     * 운영 생성자. 상한만 외부에서 받는다 — 나머지 예산은 운영값이 하나뿐이라 상수로 둔다.
+     *
+     * <p>⚠️ <b>Spring 이 고르는 생성자는 이것이다.</b> 아래 좁은 생성자들은 기본 상한으로 위임하는
+     * 테스트 진입점이고, 그래서 "운영이 무엇을 받는가" 를 묻는 칸은 반드시 <b>이</b> 생성자를 불러야
+     * 한다({@code ChatSessionRegistryTest.production_constructor_uses_the_production_budgets}).
+     *
+     * <p><b>{@code @Value} 를 여기 직접 두는 이유.</b> 형제 {@code WebSocketConfig} 는 수명 셋을
+     * 빈으로 모아 두고 그 이유를 "각자 {@code @Value} 로 받으면 기본값이 두 벌이 된다" 로 적었다 —
+     * 그 값은 <b>소비자가 둘</b>(핸들러와 {@code RoomTokenVerifier})이기 때문이다. 상한은 소비자가
+     * 이 클래스 하나뿐이라 그 중복이 생기지 않는다.
+     *
+     * <p><b>기본값은 한 벌이다.</b> 플레이스홀더의 기본값을
+     * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM} 연결로 적는다 — 문자열 리터럴과
+     * {@code static final int} 의 연결은 자바 <b>상수식</b>이라 어노테이션 값으로 적법하다(실측).
+     * 그래서 숫자를 두 자리에 적고 기계로 묶을 필요가 없다. 템플릿 주석과의 일치는 별개 면이라
+     * {@code ConfigTemplateTest} 가 따로 잰다.
+     */
     @Autowired
     public ChatSessionRegistry(ChatSessionRepository sessionRepository,
                                ChatPermissionPolicy permissionPolicy,
-                               ChatMetrics metrics) {
-        this(sessionRepository, permissionPolicy, metrics,
+                               ChatMetrics metrics,
+                               @Value("${chat.session.max-per-room:" + DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM + "}") int maxSessionsPerUserPerRoom) {
+        this(sessionRepository, permissionPolicy, metrics, maxSessionsPerUserPerRoom,
+                DEFAULT_CONTENTION_SPIN_NANOS, DEFAULT_COMPLETE_SPIN_NANOS);
+    }
+
+    /** 기본 상한으로 위임하는 테스트 진입점 — 상한이 축이 아닌 칸들이 쓴다. */
+    ChatSessionRegistry(ChatSessionRepository sessionRepository,
+                        ChatPermissionPolicy permissionPolicy,
+                        ChatMetrics metrics) {
+        this(sessionRepository, permissionPolicy, metrics, DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM,
                 DEFAULT_CONTENTION_SPIN_NANOS, DEFAULT_COMPLETE_SPIN_NANOS);
     }
 
@@ -164,11 +211,57 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 예산을 넓혀 받는다 (테스트 진입점 — 위 {@link #contentionSpinNanos} 참고). */
     ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
                         ChatMetrics metrics, long contentionSpinNanos, long completeSpinNanos) {
+        this(sessionRepository, permissionPolicy, metrics, DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM,
+                contentionSpinNanos, completeSpinNanos);
+    }
+
+    /**
+     * 정규 생성자 — 위 셋이 모두 여기로 모인다.
+     *
+     * <p>상한이 1 미만이면 <b>기동을 실패시킨다.</b> 조용히 기본값으로 떠서는 안 되는 이유는 0 과
+     * "상한 없음" 이 운영에서 같은 모양이기 때문이다 — 오타 하나로 상한 없이 도는 파드가 생기고,
+     * 그 파드만 토큰 재사용을 못 막는다. 저장소가 같은 자리에서 고른 쪽이기도 하다
+     * ({@code LiveSecurityConfig.managementPortMustDiffer}, {@code ShedLockTableGuard}).
+     *
+     * <p><b>상한은 두지 않는다.</b> 아주 큰 값은 "상한 없음" 이고 그건 운영이 고를 수 있는 상태다
+     * (SPR-152 전의 상태가 그것이다). 문서의 "2× 상한" 유도는 상한에 비례하므로 값이 커져도 참이다.
+     *
+     * <p>크기에 매달린 경로가 하나 있는데 <b>방향이 직관과 반대다</b>(한때 이 자리에 "큰 값이 조용히
+     * 깨뜨리는 불변식도 없다" 고 안 재고 적었고, 그 다음엔 "상한만큼 훑는다" 로 반대로 적었다).
+     * {@link #reapUnresponsiveIfFull} 은 <b>점유가 상한에 닿았을 때만</b> 돈다 —
+     * {@code size() < 상한} 에서 즉시 돌아오기 때문이다. 닿으면 {@code computeIfPresent} 안에서
+     * 점유 집합을 전부 훑고, 그 스캔은 <b>상한이 아니라 점유 크기</b>에 비례한다. 그래서
+     * <b>상한을 올리면 이 경로는 덜 돈다</b>(닿기가 어려워진다). 상한만큼의 스캔은 한 (유저, 방)이
+     * 실제로 그만큼의 <b>산</b> 세션을 들고 있을 때만 생기고, 그 상태를 떠받치는 비용(싱크·버퍼·팬아웃)이
+     * 스캔보다 크다. 절대 비용은 이쪽에서 재지 않았다.
+     */
+    private ChatSessionRegistry(ChatSessionRepository sessionRepository, ChatPermissionPolicy permissionPolicy,
+                                ChatMetrics metrics, int maxSessionsPerUserPerRoom,
+                                long contentionSpinNanos, long completeSpinNanos) {
+        if (maxSessionsPerUserPerRoom < 1) {
+            // 프로퍼티 이름을 메시지에 싣는다 — 기동 로그만 보고 어느 키를 고칠지 알 수 있어야 한다.
+            throw new IllegalArgumentException(
+                    "chat.session.max-per-room 은 1 이상이어야 합니다: " + maxSessionsPerUserPerRoom);
+        }
         this.sessionRepository = sessionRepository;
         this.permissionPolicy = permissionPolicy;
         this.metrics = metrics;
+        this.maxSessionsPerUserPerRoom = maxSessionsPerUserPerRoom;
         this.contentionSpinNanos = contentionSpinNanos;
         this.completeSpinNanos = completeSpinNanos;
+    }
+
+    /**
+     * 이 파드가 집행하는 (유저, 방) 상한. 운영 설정으로 바뀐다 — 기본은
+     * {@link #DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM}.
+     *
+     * <p>{@code public} 인 이유는 다른 패키지의 게이지 설정이 읽기 때문이다
+     * ({@code ChatSessionGaugeConfig} → {@code chat.sessions.max_per_room}). 같은 자리의
+     * {@code localSessionCount}·{@code localRoomCount}·{@code admissionCapped}·{@code slotsReaped}
+     * 넷이 모두 같은 이유로 {@code public} 이다.
+     */
+    public int maxSessionsPerUserPerRoom() {
+        return maxSessionsPerUserPerRoom;
     }
 
     /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
@@ -291,7 +384,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 })
                 .onErrorResume(e -> {
                     long failures = heartbeatFailures.incrementAndGet();
-                    if (shouldLogDrop()) {
+                    if (shouldLogReregisterFail()) {
                         log.warn("세션 명부 재등록 실패 — 다음 주기가 받는다(누적 {}건) 표본 sessionId={} "
                                         + "표본 roomId={} cause={}", failures, ls.sessionId(),
                                 ls.session().roomId(), e.getClass().getSimpleName());
@@ -300,9 +393,35 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 });
     }
 
-    /** 재등록 실패 누적 — 테스트 진입점. */
-    long heartbeatFailures() {
+    /**
+     * 재등록 실패 누적.
+     *
+     * <p>{@code public} 인 이유는 {@code ChatSessionGaugeConfig}(다른 패키지)가
+     * {@code chat.sessions.heartbeat_failures} 를 이 접근자에 배선하기 때문이다.
+     *
+     * <p>⚠️ <b>0 이 "건강하다" 를 뜻하지 않는다.</b> 회차가 <b>실패</b>하면 늘지만 아예
+     * <b>안 끝나면</b> 늘지 않는다 — 위 주기 javadoc 이 그 갈래를 적는다. 회차 길이를 재는 신호는
+     * 아직 없으므로, 이 수로 "재등록이 돌고 있다" 를 결론 내리면 침묵이 안전으로 읽힌다.
+     */
+    public long heartbeatFailures() {
         return heartbeatFailures.get();
+    }
+
+    /**
+     * 입장 ROOM_INFO 를 보낸 <b>뒤</b> 부른다 — 그 방의 마지막으로 보낸 수를 지워 다음 회차가 수가 같아도
+     * 한 번 보내게 한다. 입장 때 받은 수는 캐시를 거친 값이라 지금 방의 수와 다를 수 있다.
+     *
+     * <p>등록 안에서 지우면 안 되는 이유: 등록과 입장 ROOM_INFO 사이에 회차가 끼면 그 회차가 맞는 수를
+     * 보내고 기록한 뒤 캐시의 수가 <b>나중에</b> 도착한다. 다음 회차는 기록과 같은 수라 건너뛰고, 틀린 수가
+     * 인원이 다시 변할 때까지 남는다. 보낸 뒤에 지우면 그 사이에 낀 회차의 기록도 함께 지워진다.
+     *
+     * <p>순서를 닫는 것은 둘이다. 회차가 기록({@code lastPushedCount.put})을 보내기 <b>전에</b> 하므로, 낀 회차가
+     * 있었다면 이 지우기 전에 이미 기록이 있다. 그리고 같은 세션으로의 전송은 {@code emitSerially} 로 직렬이라
+     * 입장 프레임 뒤에 쌓인 회차 프레임이 앞지르지 못한다. 입장 프레임이 경합으로 버려져도 지우기는 돌아
+     * 다음 회차가 보낸다 — 실패가 안전한 쪽으로 난다.
+     */
+    void forgetLastPushedCount(UUID roomId) {
+        lastPushedCount.remove(roomId);
     }
 
     /**
@@ -317,7 +436,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * ⚠️ 그래도 <b>프론트 계약 추가</b>다 — "입장 시 1회만" 이 그 문서에 명시돼 있으니 함께 고쳐야 한다.
      *
      * <p><b>변했을 때만 보낸다.</b> 매 회차 뿌리면 조용한 방도 세션 수만큼의 프레임을 계속 쓴다 —
-     * 큰 방에서는 그게 이 기능의 비용 전부가 된다.
+     * 큰 방에서는 그게 이 기능의 비용 전부가 된다. 예외는 마지막으로 보낸 수가 없을 때(이 Pod 의 첫
+     * 회차, 또는 그 뒤 누가 들어와 {@code register} 가 지운 뒤)이고 그때는 수가 같아도 한 번 보낸다.
+     * 입장이 잦은 방은 대개 인원도 같이 변해 어차피 보내므로, 이 예외가 더하는 비용은 작다.
      *
      * <p><b>수를 모를 때는 보내지 않는다.</b> {@code activeCount} 는 null 로 "모른다" 를 뜻할 수 있는데
      * (조회 실패), 그걸 갱신으로 보내면 <b>보이던 숫자가 사라진다</b>. 입장 시의 "모름" 과 다른 상황이다.
@@ -349,10 +470,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
                         lastPushedCount.remove(roomId);
                         return Mono.<Void>empty();
                     }
-                    if (previous == null || previous.equals(count)) {
-                        // previous == null 은 이 Pod 가 그 방을 처음 보는 회차다. 보내지 않는다 —
-                        // 입장 시 핸들러가 이미 ROOM_INFO 를 보냈고 그것이 기준선이다. 여기서 또
-                        // 보내면 방마다 한 번씩 전원에게 같은 숫자가 중복으로 간다.
+                    if (count.equals(previous)) {
+                        // previous == null 은 보낸다 — 이 Pod 가 그 방을 처음 보는 회차이거나, 그 뒤에 누가
+                        // 들어와 입장 ROOM_INFO 를 받은 뒤 값이 지워진 회차다(forgetLastPushedCount). 입장 ROOM_INFO 는 기준선이 못 된다: 캐시를
+                        // 거친 값이라 이 회차의 수와 다를 수 있고, 세션마다 들어온 시각이 달라 방 하나에
+                        // 기준선이 하나로 정해지지도 않는다. 한때 null 을 건너뛰었는데, 그러면 입장 때 받은
+                        // 수가 틀렸을 때 인원이 다시 변할 때까지 그 숫자가 화면에 남았다.
                         return Mono.empty();
                     }
                     // 뷰 둘을 미리 만들어 세션마다 고르기만 한다. 세션마다 새로 만들면 같은 내용인
@@ -366,7 +489,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 .onErrorResume(e -> {
                     // 수를 모르면 보내지 않는다 — 다음 회차가 받는다. 여기서 터뜨리면 그 뒤로 이 Pod 의
                     // 모든 방 갱신이 멈춘다(concatMap 상류가 끝난다).
-                    if (shouldLogDrop()) {
+                    if (shouldLogViewerPushFail()) {
                         log.warn("시청자 수 갱신 실패 — 이번 회차 skip(다음 회차가 받는다) roomId={} cause={}",
                                 roomId, e.getClass().getSimpleName());
                     }
@@ -416,12 +539,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 읽히면 안 되는 이유다.
      *
      * <p>⚠️ <b>파드 로컬이다 — 전역 상한이 아니다.</b> {@link #userRoomSessions} 는 이 싱글톤의
-     * 인스턴스 필드라 실효 상한은 <b>5 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
+     * 인스턴스 필드라 실효 상한은 <b>상한 × 레플리카 수</b>다. 공격자가 LB 라우팅을 통제할 필요도 없다 —
      * 핸드셰이크가 흩어지면 각 파드의 {@code compute} 가 서로 다른 맵을 봐서 전부 통과한다. 이 파일은
      * 다중 파드를 설계 전제로 못 박고 있고(아래 계정 팬아웃 비용이 "파드 6개" 기준이다), 크로스 파드
      * 데이터도 이미 있다({@code ChatSessionRepository.add} 가 Redis HASH 에 userId 를 적는다).
      * 즉 파드 로컬은 <b>제약이 아니라 선택</b>이다 — 전역으로 올리면 입장마다 Redis 왕복이 하나 붙고,
-     * 남용 한도를 5 에서 5×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
+     * 남용 한도를 상한에서 상한×N 으로 두는 대가가 그 왕복보다 싸다고 봤다. 선택이므로 적어 둔다.
      *
      * <p>⚠️ <b>이 상한이 "피해자 입장 차단" 이라는 능력을 새로 만들었다.</b> 상한 키가 토큰에서만
      * 오고({@code RoomTokenVerifier} 의 {@code claims.getSubject()} 하나), 토큰이 TTL 안에서 재사용
@@ -439,7 +562,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 지속             51~60분 (세션 수명, 지터 −15%)      ≤90초 (재점유마다 유효 토큰이 필요)
      * 피해자 수단      없음* — 자리가 빌 때까지 전부 1008   항상 — 재접속하면 최신 자리를 되찾음
      * </pre>
-     * (*"없음" 은 <b>공격자가 5 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
+     * (*"없음" 은 <b>공격자가 상한 × 레플리카를 완주한 뒤</b>의 값이다 — 이 상한이 파드 로컬이라
      * 완주 전에는 피해자의 재접속도 흩어져 남은 파드에 붙는다. 핸드셰이크에 레이트리밋이 없어 토큰
      * TTL 안에 완주가 가능하므로 표에는 완주 후 값을 적는다. LB 어피니티가 그걸 막는지는 <b>이
      * 저장소에서 확인할 수 없다</b> — 매니페스트가 여기 없다. 표의 "≤90초" 는 <b>불변식이 아니라
@@ -473,7 +596,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 넓힌 변형의 것이고, {@code SessionAdmissionCapTest} 가 그 숫자를 철회했다). 아끼는 것은 왕복 셋이고
      * 잃는 것은 상한 자체다.
      */
-    static final int MAX_SESSIONS_PER_USER_PER_ROOM = 5;
+    public static final int DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM = 5;
+
+    /** 이 파드가 실제로 집행하는 값. 상수가 아니라 필드인 이유는 운영이 바꿀 수 있어야 해서다. */
+    private final int maxSessionsPerUserPerRoom;
 
     /** 상한을 세는 키. (유저, 방) 쌍이다 — 상한의 단위가 그것이라는 사실을 타입으로 남긴다. */
     private record UserInRoom(UUID userId, UUID roomId) {
@@ -535,8 +661,26 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 시청자 수 캐시 수명. 짧게 잡아도 몰리는 순간의 중복 조회는 대부분 걷힌다. */
     private static final long ACTIVE_COUNT_CACHE_NANOS = Duration.ofSeconds(3).toNanos();
 
-    /** 마지막 드롭 로그 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
-    private final AtomicLong lastDropLogNanos = new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+    /**
+     * emit 경합 드롭 로그를 마지막으로 남긴 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다.
+     *
+     * <p>⚠️ <b>사유마다 따로다.</b> 한때 이 래치 하나를 세 실패 모드가 공유했고(경합 드롭 · 재등록
+     * 실패 · 시청자 수 갱신 실패), 그러면 먼저 찍은 쪽이 다른 사유의 <b>첫 발생</b>을 통째로 덮는다.
+     * 재등록 실패와 시청자 수 갱신 실패는 같은 타이머 회차에서 연달아 나므로 10초 창이 아니라
+     * <b>한 회차</b> 안에서 서로를 가렸다. 이 저장소가 같은 결함을 이미 두 번 이름 붙여 고쳤다
+     * ({@code EntryGate} · {@code SendChatService}) — 형제 둘({@link #lastAdmissionCapLogNanos} ·
+     * {@link #lastLifetimeExpiryLogNanos})이 그 결론이고 이 셋이 마지막으로 남은 공유였다.
+     */
+    private final AtomicLong lastContentionDropLogNanos =
+            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+
+    /** 재등록 실패 로그를 마지막으로 남긴 시각. {@link #lastContentionDropLogNanos} 의 사유별 짝이다. */
+    private final AtomicLong lastReregisterFailLogNanos =
+            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+
+    /** 시청자 수 갱신 실패 로그를 마지막으로 남긴 시각. {@link #lastContentionDropLogNanos} 의 사유별 짝이다. */
+    private final AtomicLong lastViewerPushFailLogNanos =
+            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
 
     /**
      * 한 커넥션의 채널 묶음.
@@ -552,14 +696,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
             Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
             AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
             AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded,
-            AtomicLong lastInboundNanos) {
+            AtomicLong lastInboundNanos, AtomicLong inboundAllowedAtNanos) {
     }
 
     /**
      * transport 전용: 레이트리밋에 걸렸다는 사실과 해제 시각을 이 세션에 적어둔다.
      *
      * <p>거부 자체는 레이트리밋이 하지만, <b>거부하는 비용</b>은 제한하지 못한다 — 거부 한 번에 Redis 왕복이
-     * 세 번(강퇴 조회·SET NX·잔여 TTL 조회) 든다. 회선 속도로 밀면 그 비용이 그대로 반복된다.
+     * 세 번(강퇴·밴 조회·레이트리밋 스크립트) 든다. 회선 속도로 밀면 그 비용이 그대로 반복된다.
      * 해제 시각을 알고 있는 동안은 같은 답을 다시 물을 이유가 없으므로 여기에 적어두고 로컬에서 끊는다.
      */
     public void recordRateLimited(String sessionId, long retryAfterSeconds) {
@@ -567,9 +711,19 @@ public class ChatSessionRegistry implements ChatSessionManager {
         if (ls == null) {
             return;
         }
-        // 상한을 둔다 — 값 출처가 바뀌어 큰 수가 들어오면 Duration 환산이 ArithmeticException을 던져
-        // 인바운드 스트림을 죽인다. 레이트리밋 창은 분 단위를 넘길 이유가 없다.
-        long clamped = Math.max(0, Math.min(retryAfterSeconds, MAX_RATE_LIMIT_WINDOW_SECONDS));
+        // 상한을 둔다 — 값 출처가 바뀌어 큰 수가 들어오면 Duration 환산이 ArithmeticException 을
+        // 던지고, 이 메서드는 onInbound 의 onErrorResume 람다에서 불리므로 그 던짐이 인바운드
+        // Flux 의 onError 가 되어 연결을 끊는다. 실측: ofSeconds(Long.MAX_VALUE).toNanos() 가
+        // 던진다(경계는 9_223_372_036 초 — 그 값은 안 던진다). 레이트리밋 창은 분 단위를 넘길
+        // 이유가 없다.
+        //
+        // 음수는 여기서 접지 않는다. 한때 Math.max(0, ..) 가 있었고 그 자리 주석이 그것도 예외를
+        // 막는 것처럼 적었는데 거짓이었다 — 음수는 던지지 않는다(실측:
+        // ofSeconds(-5).toNanos() = -5_000_000_000). 그리고 이 필드의 독자는
+        // rateLimitRetryAfterSeconds 하나뿐이고(전수: 쓰는 곳 1 · 읽는 곳 1) 그쪽이 이미
+        // remaining <= 0 을 0 으로 접는다. 즉 그 가드는 도달 불가였고, 두 겹이 남아 있는 동안은
+        // 어느 쪽을 지워도 테스트가 초록이라 둘 다 묶이지 않았다. 지우니 남은 한 겹이 묶인다.
+        long clamped = Math.min(retryAfterSeconds, MAX_RATE_LIMIT_WINDOW_SECONDS);
         ls.rateLimitedUntilNanos().set(System.nanoTime() + Duration.ofSeconds(clamped).toNanos());
     }
 
@@ -629,7 +783,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ local.put 사이에
         // 할당이 없다. 대가는 거부 1건마다 버려지는 아웃바운드 큐 하나(256슬롯, 약 2.3KB)이고,
         // 거부 경로가 남용 경로라 공짜가 아니다 — 다만 그 1건은 이미 WS 핸드셰이크와 토큰 검증과
-        // 입장 게이트의 Redis 왕복 셋을 쓴 뒤다.
+        // 입장 게이트의 Redis 왕복 넷을 쓴 뒤다.
         LocalSession pending = new LocalSession(sessionId, session,
                 Sinks.many().unicast().onBackpressureBuffer(
                         Queues.<OutboundFrame>get(OUTBOUND_BUFFER_SIZE).get()),
@@ -642,12 +796,14 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 new AtomicLong(System.nanoTime()),
                 new AtomicBoolean(),
                 // 생존 시계도 지금부터 — 방금 핸드셰이크를 마쳤으므로 응답이 없는 상태가 아니다.
+                new AtomicLong(System.nanoTime()),
+                // 인바운드 상한도 지금부터 — 버스트 전부를 쥐고 시작한다.
                 new AtomicLong(System.nanoTime()));
 
         boolean[] admitted = {false};
         userRoomSessions.compute(new UserInRoom(session.userId(), session.roomId()), (key, sessionIds) -> {
             Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
-            if (ids.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+            if (ids.size() < maxSessionsPerUserPerRoom) {
                 ids.add(sessionId);
                 admitted[0] = true;
             }
@@ -688,7 +844,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                     // 표본 하나와 Pod 누적을 함께 적는다 — 드롭 로그와 같은 표기다. 이 줄이 늘어나면
                     // 공격이 아니라 상한이 낮은 것일 수 있으니, 사람이 그 둘을 가를 수 있게 둘 다 남긴다.
                     log.warn("동시 세션 상한 초과로 입장 거부 — 표본 userId={} 표본 roomId={} 상한={} 누적거부={}",
-                            session.userId(), session.roomId(), MAX_SESSIONS_PER_USER_PER_ROOM, capped);
+                            session.userId(), session.roomId(), maxSessionsPerUserPerRoom, capped);
                 }
                 // 던지지 않고 Mono.error 로 돌려준다 — 핸들러의 onErrorResume(EntryDeniedException) 이
                 // SYSTEM code 를 실어 1008 로 닫는 경로를 이미 갖고 있고, 거부는 그 모양이 맞다.
@@ -735,10 +891,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
             //
             // 다만 이 관용이 실제로 값을 내는 건 <b>일시적·부분적</b> 실패일 때다. Redis가 통째로 죽으면 전달
-            // 자체가 Pub/Sub이라 아무도 못 받고, 그때 남는 건 "저장은 되고 발신자만 ack 받는" 상태다 —
-            // 강퇴·밴·종료 마커가 같이 열려 있어 그 창의 전송이 이력에 그대로 쌓인다(레이트리밋은
-            // 아니다 — 그쪽은 Pod 로컬 창으로 강등해 상한이 남는다). 그 구간을 막을지는
-            // 전송 경로(publish 실패 처리)의 정책 문제라 여기서 결정하지 않는다.
+            // 자체가 Pub/Sub이라 아무도 못 받는다. 그 구간의 전송은 강퇴·밴·종료 판정을 못 읽어 거절되므로
+            // (SendChatService·EntryGate.isRoomAlive) 검사 없이 이력에 쌓이지 않는다.
             Mono<Void> registration = sessionRepository.add(session.roomId(), sessionId, session.userId())
                     .onErrorResume(e -> {
                         log.warn("세션 명부 등재 실패 — 접속은 진행(시청자 수만 부정확) roomId={} cause={}",
@@ -851,8 +1005,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>그 N 배가 레이트리밋까지 끌어내린다.</b> 이 조회는 {@code HVALS} 로 방 해시 전체를
      * O(N) 으로 당겨오고 입장마다 불리는데 입장 엔드포인트에는 레이트리밋이 없다. 그만큼 느려지면
-     * {@code RedisRateLimiter} 의 200ms 상한에 걸려 <b>그 Pod 의 레이트리밋 집행이 로컬 창으로
-     * 강등</b>된다. 실측으로 재 봤다 — 12,000 엔트리 해시에 동시 100건을 걸면 그 순간의 SETNX 가
+     * {@code RedisRateLimiter} 의 200ms 상한에 걸려 <b>그 Pod 의 레이트리밋 집행이 로컬 판정으로
+     * 강등</b>된다. 실측으로 재 봤다 — 12,000 엔트리 해시에 동시 100건을 걸면 그 순간의 SETNX(당시 레이트리밋 호출)가
      * 211ms 로 상한을 넘는다. 그래서 이 병합은 "표시용 숫자 하나" 를 아끼는 것이 아니다.
      *
      * <p><b>그리고 병합이 그 경로를 닫는다 — 부분 완화가 아니다</b>(실측). 병합 뒤의 모양은 방마다
@@ -1002,12 +1156,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     @Override
-    public Mono<Void> closeUserEverywhere(UUID userId) {
-        // 밴도 정책상 종료라 1008 — 강퇴와 같은 코드다. 프론트가 "재접속하지 말 것"으로 읽는다.
+    public Mono<Void> closeUserEverywhere(UUID userId, SessionCutReason reason) {
+        // 밴도 탈퇴도 1008 이다 — 프론트가 "재접속하지 말 것"으로 읽는다. 와이어가 같으니 둘을
+        // 가르는 것은 사유 태그뿐이고, 그래서 호출자가 그것을 넘긴다(제재율과 탈퇴율은 다른 수다).
         return Mono.fromRunnable(() -> {
             FanOutBudget budget = newSharedBudget();
             forEachSessionOf(userId, ls -> {
-                metrics.sessionCut(SessionCutReason.MODERATION);
+                metrics.sessionCut(reason);
                 terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
             });
         });
@@ -1134,6 +1289,18 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
+     * transport 전용: 다음 프레임이 방 종료를 <b>다시 묻게</b> 한다. 확인이 실패했을 때 쓴다 —
+     * {@link #shouldRecheckRoomAlive} 가 통과시킨 순간 창을 소비하므로, 되돌리지 않으면 실패한 확인이
+     * 다음 창 길이만큼 확인한 것으로 남는다.
+     */
+    public void requireRoomAliveRecheck(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        if (ls != null) {
+            ls.lastRoomAliveCheckNanos().set(System.nanoTime() - ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
+        }
+    }
+
+    /**
      * transport 전용: 이 세션에서 프레임이 올라왔다는 사실을 적어 둔다 — 종류는 묻지 않는다.
      *
      * <p><b>왜 종류를 묻지 않는가.</b> 재려는 것은 "클라가 말을 하는가"가 아니라 <b>소켓이 아직 살아
@@ -1201,6 +1368,39 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
+     * transport 전용: 이 프레임을 읽지 않고 버려야 하는가 — 세션당 인바운드 상한을 넘었으면 true.
+     *
+     * <p>버린 프레임에는 아무것도 답하지 않는다. 답하면 그 응답이 다시 비용이 되고, 상한을 넘는 속도는
+     * 정상 클라가 내지 않으므로 알려 줄 상대도 없다. 연결은 끊지 않는다.
+     *
+     * <p>모르는 세션은 버리지 않는다 — 상한은 등록된 세션의 상태라 셀 것이 없다.
+     */
+    public boolean shouldDropInbound(String sessionId) {
+        LocalSession ls = local.get(sessionId);
+        return ls != null && !admitInbound(ls.inboundAllowedAtNanos(), System.nanoTime());
+    }
+
+    /**
+     * GCRA — {@code allowedAt} 은 받은 프레임을 간격 하나씩 줄 세웠을 때 그 줄이 끝나는 시각이다. 받을 때마다
+     * 간격 하나씩 민다. 줄 끝이 지금보다 {@code (버스트 - 1) × 간격} 넘게 앞서 있으면 버스트를 다 쓴 것이다.
+     * 줄 끝이 지나간 과거면 지금부터 다시 세운다 — 쉬는 동안 몫이 버스트보다 많이 쌓이지 않는 이유다.
+     *
+     * <p>읽고 쓰기가 원자적이지 않다. 호출자는 한 세션의 수신 {@code Flux} 위의 {@code filter} 하나라
+     * ({@code ChatWebSocketHandler.runInbound}) 같은 세션에서 겹쳐 불리지 않는다 — Reactive Streams 는
+     * {@code onNext} 를 직렬로 부른다.
+     * nanoTime 은 원점이 임의라 크기 비교 대신 차이의 부호로 비교한다.
+     */
+    static boolean admitInbound(AtomicLong allowedAt, long now) {
+        long at = allowedAt.get();
+        long base = at - now > 0 ? at : now;
+        if (base - now > (INBOUND_FRAME_BURST - 1) * INBOUND_FRAME_INTERVAL_NANOS) {
+            return false;
+        }
+        allowedAt.set(base + INBOUND_FRAME_INTERVAL_NANOS);
+        return true;
+    }
+
+    /**
      * transport 전용: 강퇴가 확인된 세션을 끊는다.
      *
      * <p>전송 경로에서 강퇴가 확인됐다는 건 <b>이 Pod가 강퇴 신호를 못 받았다</b>는 뜻이다 — 받았다면
@@ -1251,9 +1451,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *
      * <p><b>계정 상태는 축이 갈린다.</b> 역할은 live DB 가 아니라 <b>access 토큰 claims</b> 에서 온다.
      * 탈퇴·로그아웃은 세션을 폐기하고({@code JwtTokenLifecycle.revoke}/{@code revokeAll}) live-app 의
-     * {@code TokenRevocationFilter} 가 그것을 조회하므로, 그 사람은 <b>재접속에서 토큰을 받지 못한다</b>
-     * — 즉 반영 상한이 이 수명 하나로 줄었다(한때 여기에 "이 수명 + access 잔여 TTL" 이라 적혀 있었는데,
-     * 그건 live-app 이 폐기를 보지 않던 때의 값이다).
+     * {@code TokenRevocationFilter} 가 그것을 조회하므로, 그 사람은 재접속에서 <b>새</b> 토큰을 받지 못한다.
+     * 다만 <b>이미 받아 둔</b> 룸 토큰은 만료까지 핸드셰이크를 지나므로, 로그아웃의 반영 상한은 "그 토큰의 잔여
+     * TTL 안에 다시 들어온 세션의 수명" 까지다. 한때 여기에 "반영 상한이 이 수명 하나로 줄었다" 고 적혀 있었는데 받아 둔 토큰을
+     * 빠뜨린 문장이었고, 그 전에는 "이 수명 + access 잔여 TTL" 이었다(live-app 이 폐기를 보지 않던 때).
      *
      * <p>⚠️ <b>역할 강등은 다르다.</b> 그 경로가 토큰을 폐기하지 않으면 폐기 조회가 집지 못한다 —
      * 지금은 역할을 바꾸는 쓰기 경로가 이 저장소에 아예 없다({@code UserEntity} 정적 팩터리 둘뿐).
@@ -1373,7 +1574,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>{@code public} 인 이유는 게이지 배선이 쓰기 때문이다({@code ChatSessionGaugeConfig}).
      * 이 수가 보이지 않으면 "파드 하나가 몇 세션까지 버티는가" 를 물을 수 없고, 그러면 <b>파드 용량
      * 상한</b>을 고를 근거가 없다 — 그래서 그 상한보다 이 게이지가 먼저다. 남용 상한
-     * ({@link #MAX_SESSIONS_PER_USER_PER_ROOM})은 이 수를 기다리지 않았다: 그쪽 값은 용량이 아니라
+     * ({@link #maxSessionsPerUserPerRoom()})은 이 수를 기다리지 않았다: 그쪽 값은 용량이 아니라
      * "정상 사용자가 동시에 몇 개를 여는가" 에서 나온다. 한때 이 문장이 "연결 수 상한" 으로 적혀
      * 그 둘을 한 덩이로 묶었다.
      */
@@ -1420,7 +1621,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
             metrics.deliveryDropped(DeliveryStage.SESSION_EMIT_CONTENTION);
             long dropped = droppedOnContention.incrementAndGet();
-            if (shouldLogDrop()) {
+            if (shouldLogContentionDrop()) {
                 // id는 이 창을 연 한 건의 것이고 누적은 Pod 전역이다 — "이 세션이 N건"으로 읽히지 않게 표기한다
                 log.warn("경합 재시도 소진 — 메시지 드롭(세션 유지) 표본 sessionId={} 표본 roomId={} 누적드롭={}",
                         ls.sessionId(), ls.session().roomId(), dropped);
@@ -1585,7 +1786,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
     public int reapUnresponsiveIfFull(UUID userId, UUID roomId, Duration livenessDeadline) {
         UserInRoom key = new UserInRoom(userId, roomId);
         Set<String> occupied = userRoomSessions.get(key);
-        if (occupied == null || occupied.size() < MAX_SESSIONS_PER_USER_PER_ROOM) {
+        if (occupied == null || occupied.size() < maxSessionsPerUserPerRoom) {
             return 0;
         }
         List<String> dead = new ArrayList<>();
@@ -1620,7 +1821,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return slotsReaped.get();
     }
 
-    /** 마지막 상한 거부 로그로부터 간격이 지났으면 true. {@link #shouldLogDrop()} 과 같은 꼴이다. */
+    /** 마지막 상한 거부 로그로부터 간격이 지났으면 true. {@link #shouldLogContentionDrop()} 과 같은 꼴이다. */
     private boolean shouldLogAdmissionCap() {
         long now = System.nanoTime();
         long last = lastAdmissionCapLogNanos.get();
@@ -1640,10 +1841,24 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /** 마지막 드롭 로그로부터 간격이 지났으면 true. 경쟁 시 CAS로 한 스레드만 통과한다. */
-    private boolean shouldLogDrop() {
+    private boolean shouldLogContentionDrop() {
+        return shouldLog(lastContentionDropLogNanos);
+    }
+
+    /** 재등록 실패 로그 간격. 경합 드롭과 <b>따로</b> 센다 — 공유하면 한 회차가 서로를 가린다. */
+    private boolean shouldLogReregisterFail() {
+        return shouldLog(lastReregisterFailLogNanos);
+    }
+
+    /** 시청자 수 갱신 실패 로그 간격. 재등록 실패와 같은 회차에 나므로 반드시 따로다. */
+    private boolean shouldLogViewerPushFail() {
+        return shouldLog(lastViewerPushFailLogNanos);
+    }
+
+    private static boolean shouldLog(AtomicLong latch) {
         long now = System.nanoTime();
-        long last = lastDropLogNanos.get();
-        return now - last >= DROP_LOG_INTERVAL_NANOS && lastDropLogNanos.compareAndSet(last, now);
+        long last = latch.get();
+        return now - last >= DROP_LOG_INTERVAL_NANOS && latch.compareAndSet(last, now);
     }
 
     /** 세션 하나를 위한 예산 — 단건 전송과 단건 종료가 쓴다. 세지 않는다({@link #newSharedBudget} 참고). */

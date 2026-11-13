@@ -3,9 +3,13 @@ package com.sapari.chat.application.service;
 import com.sapari.chat.command.ClearRoomEndedMarkerCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
 import com.sapari.live.view.LiveRoomView;
 
@@ -32,7 +36,7 @@ import lombok.extern.slf4j.Slf4j;
  * </pre>
  * 즉 <b>마커가 존재하는 모든 순간 그 방은 DB 에서 이미 {@code Ended}</b> 다 — 앱 경로로는
  * "진행 중인데 마커가 있는" 상태가 만들어지지 않는다. 배치 오판도 그 방을 <i>먼저 커밋하고</i>
- * 발행하므로, 그 사고에서 이 엔드포인트는 400 을 돌려주고 TTL 30분은 그대로 남는다.
+ * 발행하므로, 그 사고에서 이 엔드포인트는 400 을 돌려주고 마커는 보관 기간을 다 채운다.
  *
  * <p>그래서 정본 L20 은 <b>부분적으로만</b> 닫혔다. 실제로 지울 수 있는 것은 앱 밖에서 들어온
  * 발행(운영자의 {@code redis-cli PUBLISH}, 잘못 설정된 도구, 재생된 메시지)이고 그 역경로는
@@ -64,6 +68,9 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
 
     private final GetLiveRoomUseCase liveRoomReader;
     private final ChatRoomEndedWriteRepository roomEndedWriteRepository;
+    private final ChatAuditRecorder auditRecorder;
+    private final ChatPermissionPolicy permissionPolicy;
+    private final TimeProvider timeProvider;
 
     @Override
     public void clear(ClearRoomEndedMarkerCommand command) {
@@ -77,7 +84,9 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
                 .orElseThrow(() -> new ChatPermissionDeniedException(
                         "종료 마커를 해제할 수 없는 방이다 — roomId=" + command.roomId()));
 
-        if (!room.sellerId().equals(command.actorId()) && actorRole != ChatRole.ADMIN) {
+        // 판정은 정책이 한다 — chat 서비스 일곱이 쓰는 그 창구다. 여기서 손으로 적으면 특권 역할이
+        // 하나 늘 때 정책 테스트의 전수가 이 자리를 보지 못한다.
+        if (!permissionPolicy.canClearRoomEndedMarker(actorRole, room.sellerId().equals(command.actorId()))) {
             throw new ChatPermissionDeniedException(
                     "종료 마커 해제 권한이 없다 — actor=" + command.actorId() + " room=" + command.roomId());
         }
@@ -102,9 +111,10 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
         // 반환과 함께 닫힌다. 그 사이에 endLive 가 커밋되면 발행 → 어느 pod 가 마커를 다시
         // 쓰는데, 이 삭제가 그 <맞는 마커>를 지운다.
         //
-        // 그 잔여 상태가 나쁜 쪽은 종료 신호를 놓친 pod 다. 그 pod 의 유일한 백스톱이 전송
-        // 경로의 마커 재검사인데, 마커가 사라지면 그게 <영구히> 없어진다 — 다시 세워 주는
-        // 경로가 없다(RoomEnded 는 Ended 가 terminal 이라 다시 오지 않는다).
+        // 그 잔여 상태가 나쁜 쪽은 종료 신호를 놓친 pod 다. 그 pod 의 백스톱은 전송 경로의 종료
+        // 재검사이고, 그 재검사가 읽는 것은 이 마커와 live 의 종료 키 둘이다. live 키는 쓰기를
+        // 재시도하지 않아 없을 수 있고, 그때 마커까지 사라지면 백스톱이 <영구히> 없어진다 — 다시
+        // 세워 주는 경로가 없다(RoomEnded 는 Ended 가 terminal 이라 다시 오지 않는다).
         //
         // 읽기 하나로 닫는다. 지운 뒤에 끝난 것으로 보이면 마커를 되돌려 놓고 거부한다 —
         // 이 조치는 "진행 중인 방의 거짓 마커를 지운다" 이지 "끝난 방을 열어 준다" 가 아니다.
@@ -123,5 +133,18 @@ public class ClearRoomEndedMarkerService implements ClearRoomEndedMarkerUseCase 
         log.info("방 종료 마커 해제 — 앱 밖에서 들어온 발행이었다. roomId={} actor={} "
                         + "(세션은 되살지 않는다, 재입장 필요)",
                 command.roomId(), command.actorId());
+
+        // 감사는 <되돌림 분기 뒤>에 적는다. 위에서 마커를 되세우고 거부한 요청은 해제가
+        // 아니었으므로 감사 행도 없어야 한다 — 삭제 직후에 적으면 되돌려진 조치가 "수행됨" 으로 남는다.
+        //
+        // ⚠️ <로그보다도 뒤>다. 감사 쓰기는 예외를 삼키지 않으므로 그것이 실패하면 요청이 500 이
+        // 되는데, 위에 두면 그 분기에서 로그까지 함께 사라져 "조치는 됐고 아무 흔적도 없다" 가 된다.
+        // 뒤에 두면 같은 실패에서 로그는 남는다 — 감사 행의 폴백이 그 로그다.
+        //
+        // detail 이 비어 있다. 이 조치는 한 방의 마커 하나를 지우는 것이고 그 방은 targetId 가
+        // 가리키므로, 더 실을 것이 없다(행위마다 detail 이 필요한지는 ChatAuditAction 이 들고 있다).
+        auditRecorder.record(new ChatAuditEntry(
+                command.actorId(), actorRole, ChatAuditAction.CHAT_CLEAR_ROOM_ENDED_MARKER,
+                command.roomId(), null, timeProvider.now()));
     }
 }

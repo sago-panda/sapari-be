@@ -42,15 +42,12 @@ import lombok.extern.slf4j.Slf4j;
  * 반환에서 활성 밴으로 잡혀 미러에 다시 써지고, 운영자는 "풀었는데 다시 막혔다" 를 본다. 이 순서의
  * 잔여 상태(미러만 남은 과다 차단)에는 그런 자기 복원 경로가 없고, 해제를 다시 눌러 수렴한다.
  *
- * <p>⚠️ <b>어긋남은 두 축인데 하나만 닫힌다.</b> Postgres 축은
- * {@code ChatBanReleaseRecorder}가 밴 판단 잠금을 잡아 닫았다 — 안 잡으면 강퇴가 세기와 쓰기
- * 사이에 해제를 끼워 "방금 접은 누적으로 해제 직후 1년 밴" 을 만든다. <b>미러 축은 열려 있다</b>:
- * 강퇴가 <i>커밋 뒤에</i> 미러를 쓰므로(조기 반환만이 아니다 — {@code record()} 가 어느
- * 갈래로 반환해도 그 쓰기는 커밋 밖이다) 그 사이(밀리초)에 해제가 끼면 지운
- * 밴이 미러에만 되살아난다. 그 쓰기는 설계상 잠금 밖이라 잠금으로 막히지 않고, 막으려면 미러
- * 쓰기를 트랜잭션 안으로 들여야 하는데 그러면 강퇴의 자가 치유(미러가 날아간 밴을 다음 강퇴에서
- * 되찾는 것)를 잃는다. <b>집행 안 되는 밴</b>이 <b>복구 가능한 과다 차단</b>보다 나쁘다고 보고
- * 둔 것이고, 복구 수단은 해제를 다시 누르는 것이다.
+ * <p><b>어긋남은 두 축이고, 닫는 장치가 다르다.</b> Postgres 축은 {@code ChatBanReleaseRecorder}가
+ * 밴 판단 잠금을 잡아 닫았다 — 안 잡으면 강퇴가 세기와 쓰기 사이에 해제를 끼워 "방금 접은 누적으로
+ * 해제 직후 1년 밴" 을 만든다. 미러 축은 잠금으로 못 닫는다 — 강퇴가 <i>커밋 뒤에</i> 미러를 쓰므로
+ * 그 사이에 해제가 끼면 지운 밴이 미러에만 되살아난다. 미러 쓰기를 트랜잭션 안으로 들이면 강퇴의
+ * 자가 치유(미러가 날아간 밴을 다음 강퇴에서 되찾는 것)를 잃는다. 그래서 <b>변경 번호</b>로 닫는다:
+ * 양쪽이 잠금 안에서 번호를 집고, 미러는 본 것보다 작은 번호의 쓰기를 거절한다.
  *
  * <p><b>해제가 누적까지 접지는 않는다는 오해를 막아 둔다.</b> 접는다. 기준선이 그 일을 하고,
  * 그래서 이 명령은 <b>풀 밴이 없어도</b> 기준선을 남긴다 — 만료가 이미 지난 사람에게 누르는 것도
@@ -78,10 +75,11 @@ public class ReleaseBanService implements ReleaseBanUseCase {
         }
 
         Instant now = timeProvider.now();
-        Released released;
+        ChatBanReleaseRecorder.Recorded recorded;
         try {
             // DB 쓰기는 여기서 끝난다. 반환됐다는 것은 커밋이 확정됐다는 뜻이고, 그 다음에야 미러로 간다.
-            released = releaseRecorder.release(command.targetUserId(), command.actorId(), now);
+            recorded = releaseRecorder.release(
+                    command.targetUserId(), command.actorId(), actorRole, now);
         } catch (PessimisticLockingFailureException | QueryTimeoutException
                  | TransactionTimedOutException e) {
             // 경합을 5xx 로 흘리지 않는다. 이 경로의 복구 수단이 <멱등 재시도>인데, 500 은
@@ -95,7 +93,11 @@ public class ReleaseBanService implements ReleaseBanUseCase {
                             + command.targetUserId(), e);
         }
 
-        // 조건 없이 지운다 — banExisted 로 게이팅하면 위 재시도 경로에서 미러에 도달할 코드가 안 남는다.
+        Released released = recorded.released();
+
+        // banExisted 로 게이팅하지 않는다 — 그러면 위 재시도 경로에서 미러에 도달할 코드가 안 남는다.
+        // 묻는 것은 번호뿐이다. 잠금 안에서 집은 번호라, 이 해제보다 먼저 커밋된 강퇴가 늦게 미러에
+        // 닿아도 그 쓰기가 거절되고, 이 해제보다 나중에 걸린 밴이 먼저 닿았으면 이 삭제가 거절된다.
         //
         // ⚠️ 여기서 실패하면 <정본 행은 지워지고 기준선은 남았는데 미러는 그대로> 다. 그 상태의
         // 피해가 크다: 영구 밴의 미러에는 TTL 이 없어 사람이 다시 누르지 않으면 영원히 과다
@@ -113,8 +115,10 @@ public class ReleaseBanService implements ReleaseBanUseCase {
         // 나오므로 여기서는 <도달 불가>였다. 남은 하나는 도달한다 — 실측(spring-data-redis 4.0.5
         // 바이트코드): LettuceExceptionConverter 가 TimeoutException·RedisCommandTimeoutException 을
         // QueryTimeoutException 으로 번역한다. 나머지 Redis 실패는 아래 일반 갈래가 받는다.
+        boolean mirrorCleared;
         try {
-            banWriteRepository.releaseMirror(command.targetUserId());
+            mirrorCleared = banWriteRepository.releaseMirror(
+                    command.targetUserId(), recorded.mirrorVersion());
         } catch (QueryTimeoutException e) {
             log.error("밴 해제 — 미러 삭제가 경합으로 실패했다. 정본 행은 지워졌고 기준선도 남았는데 "
                             + "미러가 남아 그 사용자는 계속 막힌다(영구 밴은 TTL 이 없어 스스로 "
@@ -129,6 +133,12 @@ public class ReleaseBanService implements ReleaseBanUseCase {
                             + "같은 요청을 다시 보내면 된다 — 해제는 멱등이다. targetUserId={} actor={}",
                     command.targetUserId(), command.actorId(), e);
             throw e;
+        }
+
+        if (!mirrorCleared) {
+            // 실패가 아니다 — 이 해제보다 뒤에 커밋된 변경(새 밴이거나 다음 해제)이 미러에 먼저 닿았다.
+            log.info("밴 해제 — 미러에 이 해제보다 새 변경이 이미 있어 지우지 않았다 targetUserId={} actor={}",
+                    command.targetUserId(), command.actorId());
         }
 
         // 사람이 누른 제재 변경이라 흔적이 chat_ban_release 행과 이 줄뿐이다. 자동 승격이 같은 이유로

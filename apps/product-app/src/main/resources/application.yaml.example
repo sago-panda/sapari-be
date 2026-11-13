@@ -1,0 +1,74 @@
+# product-app 설정 템플릿.
+#
+# application*.yaml 은 .gitignore 대상이라 저장소에 없다 — 그래서 "어떤 키가 필요한지"를 아는 방법이
+# 이 파일뿐이다. 키를 추가·삭제하면 여기도 같이 고칠 것.
+#
+# 사용법: cp application.yaml.example application.yaml 후 아래 값을 채운다.
+#
+# ⚠️ 표기 규칙
+#   REQUIRED  운영에서 반드시 주입. 기본값을 두면 그 값으로 조용히 뜬다.
+#   optional  코드에 기본값이 있어 미설정이 정상. 여기 적힌 건 그 코드 기본값이다.
+#
+# ⚠️ 이 파일에 실제 자격증명을 넣지 말 것. 전부 자리표시자다.
+
+spring:
+  application:
+    name: product-app
+
+  # product 스키마 + JWT UserDetailsService 용 user 스키마를 같은 DB 에서 읽는다.
+  datasource:
+    url: ${PRODUCT_DB_URL:jdbc:postgresql://localhost:5432/sapari}
+    username: ${POSTGRES_USER:sapari}
+    password: ${POSTGRES_PASSWORD:}          # REQUIRED (운영)
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    # 지연 로딩을 뷰 렌더링까지 끌고 가지 않는다 — 조회는 서비스 트랜잭션 안에서 끝낸다.
+    open-in-view: false
+    hibernate:
+      # 스키마는 마이그레이션 Job(infra/migration)이 만든다. 앱은 절대 DDL 을 만들거나 고치지 않는다.
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 50                     # 조합 등 다건 INSERT/UPDATE를 JDBC 배치로 묶음
+        order_inserts: true
+        order_updates: true
+
+  # 액세스 토큰 폐기 목록(로그아웃·세션 종료)을 읽는다. api-app 과 같은 인스턴스여야 폐기가 반영된다.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+# /swagger-ui.html 과 /v3/api-docs/** 는 SecurityConfig 에서 permitAll 이다 — 켜져 있으면 인증 없이
+# 판매자 API 전체 스펙(경로·필드·검증 규칙)이 나간다. 그래서 기본값을 false 로 둔다: 이 템플릿을 그대로
+# 복사해 배포해도 열리지 않아야 한다(꺼지면 두 경로는 404 라 permitAll 은 무해하다).
+# 로컬·dev·staging 에서는 SPRINGDOC_ENABLED=true 로 켤 것.
+# 두 키를 함께 걸어야 한다 — api-docs 만 끄면 UI 는 뜨는데 스펙을 못 불러와 빈 화면이 된다.
+springdoc:
+  swagger-ui:
+    enabled: ${SPRINGDOC_ENABLED:false}
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    enabled: ${SPRINGDOC_ENABLED:false}
+    path: /v3/api-docs
+  packages-to-scan: com.sapari
+
+# ---------------------------------------------------------------------------
+# 인증 토큰(HMAC) — product-app 은 발급하지 않고 검증만 한다.
+# secret 은 api-app 과 같은 값이어야 서명 검증이 통과한다.
+# refresh-token-expiration-seconds 는 JwtProperties 의 @NotNull 충족용(여기서는 미사용).
+# ---------------------------------------------------------------------------
+jwt:
+  issuer: ${JWT_ISSUER:sapari-api}
+  secret: ${JWT_SECRET:}                     # REQUIRED — 이 키로 임의의 access 토큰을 만들 수 있다
+  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:3600}
+  refresh-token-expiration-seconds: ${JWT_REFRESH_TOKEN_EXPIRATION_SECONDS:1209600}
+
+logging:
+  level:
+    com.sapari.productapp: INFO

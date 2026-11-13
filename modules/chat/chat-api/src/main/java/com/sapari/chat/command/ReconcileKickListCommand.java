@@ -17,4 +17,28 @@ public record ReconcileKickListCommand(
         UUID actorId,
         String actorRole
 ) {
+
+    /**
+     * 형제 {@code ReleaseBanCommand} 가 적어 둔 것과 같은 이유로 채운다 — 오늘 벡터는 없지만
+     * (유일한 생성자가 컨트롤러이고 세 값이 전부 프레임워크에서 온다) <b>같은 불변식이 두 레이어에
+     * 갈려 있었다</b>: {@code actorRole == null} 거부가 커맨드가 아니라 서비스에만 있었다.
+     *
+     * <p>이 경로에서 그 갈림이 한 칸 더 무겁다. 감사 기록이 {@code actorId}·{@code actorRole} 을
+     * 싣는데, 이 둘은 <b>DB 트랜잭션이 없는 경로</b>라 그 기록을 조치 뒤에 만든다 — 커맨드가
+     * 비어 있으면 거기서야 터지고, 그때는 조치가 이미 수행된 뒤다.
+     *
+     * <p>{@code actorRole} 의 <i>값</i>은 보지 않는다 — 모르는 이름의 판정은
+     * {@code ChatRole.fromPlatformRole} 하나가 쥔다. 여기서 또 보면 역할 목록이 두 곳에 생긴다.
+     */
+    public ReconcileKickListCommand {
+        if (roomId == null) {
+            throw new IllegalArgumentException("roomId는 필수입니다.");
+        }
+        if (actorId == null) {
+            throw new IllegalArgumentException("actorId는 필수입니다.");
+        }
+        if (actorRole == null || actorRole.isBlank()) {
+            throw new IllegalArgumentException("actorRole은 필수입니다.");
+        }
+    }
 }

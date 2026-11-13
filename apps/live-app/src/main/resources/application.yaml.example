@@ -94,10 +94,33 @@ live:
     issuer: ${LIVE_ROOM_TOKEN_ISSUER:live}
     audience: ${LIVE_ROOM_TOKEN_AUDIENCE:chat}
     # 짧게 유지(60~120s). jti 가 없어 창 안에서는 재사용이 가능하므로 창 자체가 방어다.
-    expiration-seconds: ${LIVE_ROOM_TOKEN_EXPIRATION_SECONDS:90}
+    expiration-seconds: ${LIVE_ROOM_TOKEN_EXPIRATION_SECONDS:90}   # 300 이하여야 부팅된다(chat 이 이 상한에 맞춰 TTL 을 정한다)
     # REQUIRED — Base64(PKCS#8 DER), PEM 헤더·개행 제외.
     # 기본값을 두지 말 것: resources 에 들어간 값은 jar 에 실려 배포된다(운영에서 env 로 덮어써도 남는다).
     private-key: ${LIVE_ROOM_TOKEN_PRIVATE_KEY:}
+    # 서명 캐시 — 같은 claim 으로 또 서명하지 않는다. 걷어내는 비용이 RS256 서명 688µs(실측,
+    # RSA-2048 · aarch64 · n=20,000 · p99 735.8µs) = 코어당 1,453건/s 다.
+    #
+    # 세 키 모두 비워도 된다 — 코드가 기본값을 채운다(enabled=true / slots=16384 / ttl=30s).
+    #
+    # ⚠️ 걷히는 몫은 절반이다. 게스트 토큰은 sub 가 호출마다 새 임의 UUID 라(게스트 세션을 구분해야
+    # 하므로 그래야 한다) 캐시 적중이 구조적으로 0 이고, 게스트가 입장 상한 1,000/s 중 500/s 다.
+    # 덮는 절반이 EnterRateLimiter 의 샤드 버스트 배수 주석이 실측한 회원 1,000명 동시 재입장이다.
+    #
+    # ⚠️ HMAC 으로 바꾸는 쪽은 기각했다. 실측 HS256 6.4µs = 코어당 156,680건/s 로 108배 싸지만,
+    # RS256 을 고른 근거가 비용이 아니라 비대칭이다 — chat 은 공개키로 검증만 하고 발급은 못 해야
+    # 한다. 대칭키면 chat 이 룸 토큰을 위조할 수 있고, owner claim 이 chat 의 강퇴·원문 노출 게이트
+    # 근거라는 구조가 무너진다.
+    cache:
+      enabled: ${LIVE_ROOM_TOKEN_CACHE_ENABLED:true}
+      # 2의 거듭제곱이어야 한다 — 아니면 기동이 멈춘다(올려 맞추지 않는다: 설정에 적힌 수가 실제
+      # 수여야 한다. 형제 member-shards 가 내림 나눗셈으로 500/s 를 448/s 로 만든 실측이 있다).
+      # 기본 16384 = 회원 500/s × TTL 30s = 작업집합 15,000 위의 거듭제곱. 상한 65536(토큰 문자열 45MB,
+      # 토큰 730자 실측 기준).
+      slots: ${LIVE_ROOM_TOKEN_CACHE_SLOTS:16384}
+      # expiration-seconds 의 절반 이하여야 한다 — 아니면 기동이 멈춘다. 캐시된 토큰의 exp 는 처음
+      # 서명한 시각에 고정돼 있어서, 적중의 잔여 수명 하한이 (발급 - 캐시)다. 기본 90s/30s → 최악 60s.
+      ttl-seconds: ${LIVE_ROOM_TOKEN_CACHE_TTL_SECONDS:30}
 
   # -------------------------------------------------------------------------
   # 방 썸네일 업로드 허가(presigned POST, SPR-156). 서버는 서명만 하고 바이트는 받지 않는다.
@@ -222,11 +245,17 @@ live:
   #
   # 버킷이 둘인 이유: 하나면 둘 중 하나가 거짓이 된다. 전역 하나면 공격자가 한도를 선점해 로그인
   # 회원의 입장까지 막고, 게스트에만 걸면 인증 쪽 CPU 가 열린 채 남는다 — 가입이 셀프서비스고
-  # 이 경로의 JWT 필터는 폐기 저장소를 안 봐서 토큰 하나로 TTL 동안 무제한 호출이 된다.
+  # 갓 가입한 계정의 토큰은 폐기 대상이 아니라 가입 1회로 TTL 동안 무제한 호출이 된다.
   #
-  # ⚠️ 두 버킷 합 1,000/s 는 서명 천장의 69%다. 그 위는 숫자로 못 올린다 — 더 올리면 RS256
-  # 서명이 이 엔드포인트의 용량 벽이 되고, 그때 필요한 건 큰 한도가 아니라 서명을 줄이는
-  # 설계다(캐시·HMAC 분리). 지금 한도는 그 벽을 가리고 있을 뿐이다.
+  # ⚠️ "두 버킷 합 1,000/s 는 천장의 69%" 는 <코어가 1개일 때만> 참이다. 위 1,458건/s 는 코어당이고
+  # 처리량은 코어에 거의 선형이다(실측, 같은 실행: 1스레드 1,436 / 2 → 2,777 / 4 → 5,450건/s).
+  # 같은 1,000/s 가 1코어면 69.6% · 2코어면 36.0% · 4코어면 18.3% 이고(세 셀 전부 위 한 표에서 읽는다 — 지연
+  # 실측 쪽은 1,453건/s 라 1코어가 68.8% 인데, 한 수열에 두 측정을 섞지 않는다), 이 저장소에는 배포 코어 수가
+  # 적힌 곳이 없다. 코어당 수를 함대 수요에 바로 대지 말 것.
+  #
+  # 그 분모를 모르는 채 한도를 올리는 대신 서명 쪽을 줄였다 — live.room-token.cache 참조(위, room-token 블록 안).
+  # 걷히는 몫은 절반이다: 게스트 토큰은 sub 가 호출마다 새 임의 UUID 라 캐시가 불가능하고 그쪽이
+  # 500/s 다. HMAC 분리는 기각 — 108배 싸지만 chat 이 룸 토큰을 위조할 수 있게 된다.
   #
   # ⚠️ 정상 트래픽은 측정되지 않았다. 구체적 수요 벡터 하나는 선다 — 재접속 폭풍: 룸 토큰 TTL
   # 이 ~90s 이고 단일 사용이 아니라서 streaming-app 롤링 재시작이면 전 게스트가 새 입장을
@@ -259,7 +288,7 @@ live:
   # 게이트웨이가 보태지 않으면 브라우저에 그 헤더가 없다).
   #
   # ⚠️ 이 상한은 <발급> 측이다. WS 세션 수를 묶지 않는다 — 룸 토큰은 TTL 안에서 재사용 가능하고
-  # streaming-app 의 MAX_SESSIONS_PER_USER_PER_ROOM=5 는 게스트의 임의 userId 때문에 토큰당 5로
+  # streaming-app 의 chat.session.max-per-room(기본 5)은 게스트의 임의 userId 때문에 토큰당 5로
   # 동작한다. 즉 500/s × 5 = 파드당 2,500 신규 세션/s 가 이 상한을 전혀 위반하지 않고 가능하다.
   # 세션 쪽 예산은 별 축이고, 한도를 고를 때 같이 봐야 한다.
   #
@@ -276,6 +305,11 @@ live:
       member-burst: ${LIVE_ENTER_MEMBER_BURST:1000}     # permits 이상이어야 부팅된다
       member-shards: ${LIVE_ENTER_MEMBER_SHARDS:64}     # 1~4096 이고 member-permits 이하여야 부팅된다
                                                         # (상한이 없으면 오타가 거대한 배열을 만든다)
+      # 판매자 전용 통로 — 회원 샤드·전역을 건너뛴다(재접속으로 owner 클레임을 복구해야 해서).
+      seller-permits-per-second: ${LIVE_ENTER_SELLER_PERMITS:8}
+      seller-burst: ${LIVE_ENTER_SELLER_BURST:32}       # permits 이상이어야 부팅된다
+      seller-shards: ${LIVE_ENTER_SELLER_SHARDS:8}     # 1~4096 이고 seller-permits 이하여야 부팅된다
+
   # 최근 본 라이브 기록 실행기(SPR-172). 회원 입장마다 비동기 upsert 를 하나 넣는다.
   # 넘치거나 실패한 기록은 버리고 live.recent_view.dropped{reason=rejected|failed} 로 센다 — 입장은 영향 없다.
   # 큐 기본값이 위 member-burst 와 같아서, 큰 방송 시작에 rejected 가 이어지면 queue-capacity 를 먼저 올린다.
@@ -284,6 +318,43 @@ live:
   recent-view:
     threads: ${LIVE_RECENT_VIEW_THREADS:2}
     queue-capacity: ${LIVE_RECENT_VIEW_QUEUE_CAPACITY:1000}
+
+  # -------------------------------------------------------------------------
+  # 공개 채팅 이력 조회 상한 (SPR-179)
+  #
+  # 미설정은 기본값으로 뜨고 잘못된 값은 부팅을 막는다 — 위 enter 와 같은 규율이다.
+  # ⚠️ 버킷이 <전역 하나>다. 이 엔드포인트는 permitAll 이라 익명 호출자에게 샤드 키로 쓸 신원이
+  # 없다. 대가는 한 호출자가 예산을 다 먹으면 나머지도 429 를 받는 것이고, 그래도 두는 이유는
+  # 없을 때 막히는 것이 이 엔드포인트가 아니라 요청마다 Postgres 1 + Mongo 1 을 쓰는 저장소이며
+  # 그러면 같은 파드의 채팅·WS 까지 함께 죽기 때문이다. 호출자별로 가르려면 IP 가 필요하고
+  # 그것은 신뢰 프록시(XFF) 결정이다.
+  # ⚠️ GET 과 HEAD 를 같은 버킷으로 센다 — 본문을 안 보내도 조회 비용은 같다.
+  # ⚠️ 복구 = 롤링 재시작(위 enter 와 같은 이유).
+  # -------------------------------------------------------------------------
+  chat:
+    # -------------------------------------------------------------------------
+    # live-app 의 Mongo 연산 상한 (SPR-180)
+    #
+    # streaming-app 의 chat.mongo.operation-timeout 은 이 앱에 적용되지 않는다 — 그쪽 설정을
+    # 들이지 않기 때문이다. 드라이버 기본값은 전체 연산 상한 미설정 · socket read timeout 0 이라
+    # 멈춘 Mongo 아래에서 HTTP 워커가 무한정 점유된다.
+    # ⚠️ 축이 streaming-app 과 다르다: 그쪽은 메시지마다 걸려서 "(세션 허용 시간 ÷ 대기 프레임)"
+    # 이고, 이쪽은 요청당 조회 하나라 "HTTP 워커를 몇 초까지 점유해도 되는가" 다.
+    # ⚠️ 3s 는 재지 않은 값이다. 운영에서 올리는 것이 복구 수단이고 1ms 미만만 부팅을 막는다.
+    # -------------------------------------------------------------------------
+    mongo:
+      operation-timeout: ${LIVE_CHAT_MONGO_OPERATION_TIMEOUT:3s}
+
+    history:
+      rate-limit:
+        permits-per-second: ${LIVE_CHAT_HISTORY_PERMITS:20}
+        burst: ${LIVE_CHAT_HISTORY_BURST:40}            # permits 이상이어야 부팅된다
+
+    # 현재 공지 — 입장마다 1회 불려 이력과 버킷을 가른다. 기본값은 잰 값이 아니다(입장 상한과 같은 자릿수).
+    notice:
+      rate-limit:
+        permits-per-second: ${LIVE_CHAT_NOTICE_PERMITS:500}
+        burst: ${LIVE_CHAT_NOTICE_BURST:1000}           # permits 이상이어야 부팅된다
 
 # ---------------------------------------------------------------------------
 # LiveKit

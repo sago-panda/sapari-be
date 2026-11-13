@@ -48,7 +48,7 @@ class SessionAdmissionCapTest {
     /** 반응형 종결자 상한 — 없으면 회귀가 테스트를 실패시키는 대신 멈추게 한다. */
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
 
-    private static final int CAP = ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM;
+    private static final int CAP = ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM;
 
     /**
      * reap 에 넘기는 기한 — 운영 기본값의 <b>기한 + 간격</b>(90s + 30s)이다.
@@ -89,6 +89,34 @@ class SessionAdmissionCapTest {
         for (int i = 0; i < CAP; i++) {
             admit("s" + i, roomId, userId);
         }
+    }
+
+    @Test
+    @DisplayName("⭐ 설정한 상한이 집행된다 — 코드 상수가 아니라 운영이 준 수를 센다")
+    void theConfiguredCapIsTheOneEnforced() {
+        // given: 운영이 2 로 낮춰 둔 파드. 기본값 5 로는 이 칸이 통과해 버리므로 기본과 다른 수를 쓴다.
+        ChatSessionRegistry tightened =
+                new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), metrics, 2);
+
+        tightened.register("c0", session(roomId, userId)).block(VERIFY_CEILING);
+        tightened.register("c1", session(roomId, userId)).block(VERIFY_CEILING);
+
+        // when & then: 세 번째가 거부되어야 한다. 사유까지 보는 이유는 close 코드가 강퇴·밴과 같은
+        // 1008 이라, 사유가 틀리면 클라가 "접속이 너무 많다" 대신 "강퇴됐다" 를 띄운다.
+        assertThatThrownBy(() -> tightened.register("c2", session(roomId, userId)).block(VERIFY_CEILING))
+                .isInstanceOf(EntryDeniedException.class)
+                .extracting(e -> ((EntryDeniedException) e).reason())
+                .isEqualTo(EntryDeniedException.Reason.TOO_MANY_SESSIONS);
+        assertThat(tightened.localSessionCount())
+                .as("거부된 세션이 local 에 들어갔다 — 게이지와 시청자 수가 그만큼 틀린다")
+                .isEqualTo(2);
+
+        // 그리고 기본값 5 를 쓰는 레지스트리는 같은 세 번째를 받아들여야 한다 — 위 거부가 "상한이
+        // 집행됐다" 가 아니라 "원래 세 개를 못 받는다" 였을 가능성을 지운다(대조군).
+        registry.register("d0", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("d1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("d2", session(roomId, userId)).block(VERIFY_CEILING);
+        assertThat(registry.localSessionCount()).isEqualTo(3);
     }
 
     @Test

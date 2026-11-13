@@ -34,12 +34,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * 응답은 빈칸이다. 그 대가를 받는 이유는 위의 로그 증식이고, 형제도 같은 선택을 했다
  * (그쪽은 호출자가 기계라는 추가 근거가 있다). 상태코드와 {@code Retry-After} 가 전부다.
  *
+ * <p>거부된 호출은 유스케이스에 닿지 않는다 — {@code findById} 도 RS256 서명도 치르지 않는다.
+ *
  * <p><b>시큐리티 체인 안, JWT 필터 <i>뒤</i>에 선다.</b> 인증 여부로 버킷을 가르므로
  * {@code SecurityContextHolder} 가 채워진 뒤여야 한다. 체인 밖 최상위 필터로 두면 그 순서가
  * 보장되지 않는다({@code springSecurityFilterChain} 자체가 하나의 필터다).
  */
 @RequiredArgsConstructor
 public class EnterRateLimitFilter extends OncePerRequestFilter {
+
+    /** access JWT 의 role claim 원문 — {@code LiveSecurityConfig} 의 {@code hasRole("SELLER")} 와 같은 값. */
+    private static final String SELLER_ROLE = "SELLER";
 
     private final EnterRateLimiter rateLimiter;
 
@@ -54,9 +59,14 @@ public class EnterRateLimitFilter extends OncePerRequestFilter {
             return;
         }
         LiveUserPrincipal member = member();
-        boolean allowed = member != null
-                ? rateLimiter.tryMemberEntry(member.userId().toString())
-                : rateLimiter.tryGuestEntry();
+        boolean allowed;
+        if (member == null) {
+            allowed = rateLimiter.tryGuestEntry();
+        } else if (SELLER_ROLE.equals(member.role())) {
+            allowed = rateLimiter.trySellerEntry(member.userId().toString());
+        } else {
+            allowed = rateLimiter.tryMemberEntry(member.userId().toString());
+        }
         if (allowed) {
             filterChain.doFilter(request, response);
             return;

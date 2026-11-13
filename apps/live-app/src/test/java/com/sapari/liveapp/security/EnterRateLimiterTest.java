@@ -32,7 +32,7 @@ class EnterRateLimiterTest {
     void nullSubjectStillHitsTheGlobalCeiling() {
         CountingLiveMetrics metrics = new CountingLiveMetrics();
         EnterRateLimiter limiter = new EnterRateLimiter(
-                new EnterRateLimitProperties(1, 1, 2, 2, 2), metrics, () -> 0L);
+                new EnterRateLimitProperties(1, 1, 2, 2, 2, null, null, null), metrics, () -> 0L);
 
         assertThat(limiter.tryMemberEntry(null)).isTrue();
         assertThat(limiter.tryMemberEntry(null)).isTrue();
@@ -57,8 +57,15 @@ class EnterRateLimiterTest {
      * 비밀이라는 것도, 해시가 역산 불가라는 것도 재지 않는다 — 후자는 거짓이다
      * ({@code String.hashCode} 는 역산된다). 막는 것은 <b>오프라인 계산</b>이다.
      *
-     * <p>표본 1이면 우연히 같은 샤드일 수 있어(64샤드에서 1/64) 주체를 24개 쓴다. 전부
-     * 일치할 확률은 64^-24 다.
+     * <p>표본 1이면 우연히 같은 샤드일 수 있어(64샤드에서 1/64) 주체를 24개 쓴다.
+     *
+     * <p>⚠️ <b>이 줄은 한때 "전부 일치할 확률은 64^-24 다" 였고 그때는 거짓이었다 — 실제는
+     * 1/64 였다(42자리 차이).</b> 당시 배치가 문자열 솔트를 <b>이어 붙이는</b> 방식이어서
+     * 솔트가 샤드 인덱스에 <b>상수 회전</b>으로만 들어갔고({@code 31^36 ≡ 1 (mod 64)}),
+     * 그래서 24개 주체의 일치가 서로 독립이 아니라 <b>완전상관</b>이었다 — 회전이 0이면
+     * 24개가 모두 일치하고 아니면 하나도 일치하지 않는다. 즉 이 칸은 1/64 로 빨강이었다
+     * (실측: 회전 0 비율 1.435%, 그리고 전수 8회 중 1회 관측 — 관측은 근거가 아니고 계산이 근거다).
+     * {@code shardKey} 가 MAC 이 된 뒤로 주체별 배치가 독립이므로 <b>이제 64^-24 가 참이다.</b>
      */
     @Test
     @DisplayName("⭐ 같은 주체가 인스턴스마다 다른 샤드에 떨어진다 — 조준 불가")
@@ -78,6 +85,80 @@ class EnterRateLimiterTest {
         assertThat(agreements)
                 .as("주체 %d개 전부에서 배치가 같다면 솔트가 섞이지 않은 것이다".formatted(subjects))
                 .isLessThan(subjects);
+    }
+
+    /**
+     * ⭐ <b>배치 차이가 주체마다 달라야 한다 — 상수 회전이면 솔트가 소거된다.</b>
+     *
+     * <p>위 칸({@link #theShardOfASubjectDiffersBetweenInstances()})은 "적어도 하나는 다르다" 만
+     * 본다. 그것만으로는 <b>깨진 성질</b>을 못 잡는다 — 이어 붙이는 솔트는 모든 주체에 <b>같은
+     * 회전</b>을 더하므로 "하나는 다르다" 를 (회전 ≠ 0 인 63/64 의 경우) 만족시키면서도 공격자에게
+     * 필요한 관계를 그대로 남긴다. 공격자가 원하는 것은 절대 번호가 아니라 "내 계정이 타깃과 같은
+     * 샤드인가" 이고, 회전은 양쪽에 똑같이 더해져 그 관계에서 소거된다.
+     *
+     * <p>그래서 차이 집합을 직접 본다. 실측(SPR-179): 이어 붙이던 때 주체 24개의 차이가
+     * <b>20,000/20,000 쌍에서 상수</b>였다.
+     */
+    @Test
+    @DisplayName("⭐ 인스턴스 간 배치 차이가 주체마다 다르다 — 상수 회전이면 충돌 관계가 그대로 남는다")
+    void theShardDifferenceIsNotAConstantRotation() {
+        EnterRateLimiter first = limiter(64, 1_000, 1_000);
+        EnterRateLimiter second = limiter(64, 1_000, 1_000);
+
+        java.util.Set<Integer> deltas = new java.util.HashSet<>();
+        for (int i = 0; i < 24; i++) {
+            String subject = "33333333-0000-0000-0000-%012d".formatted(i);
+            deltas.add(Math.floorMod(first.shardIndexFor(subject) - second.shardIndexFor(subject), 64));
+        }
+
+        assertThat(deltas)
+                .as("차이가 하나뿐이다 — 솔트가 상수 회전으로만 들어가 충돌 관계에서 소거된다")
+                .hasSizeGreaterThan(1);
+    }
+
+    /**
+     * ⭐ <b>한 인스턴스에서 알아낸 충돌이 다른 인스턴스로 옮겨지지 않는다.</b>
+     *
+     * <p>이것이 이 방어가 실제로 막아야 하는 것이다. 공격자는 샤드 번호를 모르고도 "내 계정이
+     * 타깃과 같은 샤드" 인 계정을 고를 수 있으면 충분하다 — 가입 스로틀이 없으므로 그 계정이
+     * 나올 때까지 가입하면 된다.
+     *
+     * <p>⚠️ <b>이어 붙이던 때 이 비율이 100% 였다</b>(실측 2000/2000, 대조군 1.25%, 우연 기대
+     * 1.5625%). 즉 솔트는 막으려던 공격을 막지 못했다. MAC 은 키 없이 충돌 관계를 계산할 수
+     * 없으므로 그 전이가 우연 수준으로 내려간다.
+     *
+     * <p>상한만 단언한다 — 하한을 걸면 1/64 의 요동으로 플레이크가 된다. 여기서 가르려는 것은
+     * "우연 수준" 과 "100%" 이고 그 둘은 자릿수가 다르다.
+     */
+    @Test
+    @DisplayName("⭐ 한 인스턴스에서 찾은 충돌이 다른 인스턴스로 옮겨지지 않는다 — 조준의 본체다")
+    void collisionsDoNotTransferBetweenInstances() {
+        EnterRateLimiter attacker = limiter(64, 1_000, 1_000);
+        EnterRateLimiter victim = limiter(64, 1_000, 1_000);
+
+        int trials = 500;
+        int transferred = 0;
+        for (int t = 0; t < trials; t++) {
+            String target = java.util.UUID.randomUUID().toString();
+            int want = attacker.shardIndexFor(target);
+            // 공격자 인스턴스에서 타깃과 같은 샤드인 후보를 찾는다(기대 64회 시행)
+            String candidate;
+            do {
+                candidate = java.util.UUID.randomUUID().toString();
+            } while (attacker.shardIndexFor(candidate) != want);
+
+            if (victim.shardIndexFor(candidate) == victim.shardIndexFor(target)) {
+                transferred++;
+            }
+        }
+
+        assertThat(transferred)
+                // ⚠️ AssertJ 의 as(fmt, args) 로 넘긴다. "..%d.." + "..".formatted(a, b) 로 쓰면
+                // formatted 가 **뒤쪽 리터럴에만** 붙어(연산자 우선순위) 앞쪽 %d 가 그대로 찍힌다 —
+                // 실측으로 그렇게 나왔고, 빨강을 보는 사람에게 정작 그 수가 안 보였다.
+                .as("충돌이 인스턴스 간에 옮겨진다(%d/%d) — 우연 기대는 1/64 다. 배치가 키 혼합이"
+                        + " 아니라 상수 변환이면 이 수가 분모에 붙는다", transferred, trials)
+                .isLessThan(trials / 4);
     }
 
     /**
@@ -160,7 +241,7 @@ class EnterRateLimiterTest {
 
     private static EnterRateLimiter limiter(int shards, int burst, int permits) {
         return new EnterRateLimiter(
-                new EnterRateLimitProperties(permits, burst, permits, burst, shards),
+                new EnterRateLimitProperties(permits, burst, permits, burst, shards, null, null, null),
                 LiveMetrics.NOOP, () -> 0L);
     }
 
@@ -177,7 +258,7 @@ class EnterRateLimiterTest {
     void theGlobalBucketEnforcesTheSustainedCeiling() {
         java.util.concurrent.atomic.AtomicLong nanos = new java.util.concurrent.atomic.AtomicLong();
         EnterRateLimiter limiter = new EnterRateLimiter(
-                new EnterRateLimitProperties(1_000, 1_000, 1_000, 1_000, 64),
+                new EnterRateLimitProperties(1_000, 1_000, 1_000, 1_000, 64, null, null, null),
                 LiveMetrics.NOOP, nanos::get);
 
         // 전역·샤드를 <전부> 비운다. 4,000 으로는 샤드마다 잔여가 남아 1초 뒤 (잔여 + 리필)이

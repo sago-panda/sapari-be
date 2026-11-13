@@ -2,6 +2,8 @@ package com.sapari.chat.application.port;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.BlockingChat;
+
 /**
  * 계정 조치를 전 Pod에 알린다. <b>블로킹</b> — 강퇴 REST를 받는 앱(live-app)에서 불린다.
  *
@@ -12,6 +14,7 @@ import java.util.UUID;
  * 성공이라 부르면 그 사람은 밴이 걸린 뒤에도 계속 말한다. 다만 전송 경로가 메시지마다 밴을 다시 보므로
  * 발행이 빠져도 <b>첫 발화에서</b> 막힌다 — 이 발행이 닫는 것은 "조용히 앉아 있는 세션"이다.
  */
+@BlockingChat
 public interface ChatAccountEventPublisher {
 
     void publishBanned(UUID userId);

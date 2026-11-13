@@ -16,7 +16,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <p><b>왜 지금 필요한가.</b> 이 앱에는 <b>용량</b> 상한이 없다 — 프레임 크기
  * ({@code maxFramePayloadLength}), 아웃바운드 버퍼(256), 느린 클라(1013 종료)는 모두 막혀 있는데
  * "이 파드가 몇 세션까지" 는 무제한이다. 남용 쪽은 그 뒤에
- * {@code ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM} 이 (유저, 방) 단위로 막았다 — 이 문단이
+ * {@code chat.session.max-per-room} 상한이 (유저, 방) 단위로 막았다 — 이 문단이
  * 한때 "연결 개수만 무제한이다" 라고만 적었고, 상한이 들어온 커밋에서 그 단정을 안 고쳐 아래
  * 문단이 뒤늦게 철회하는 모양이 됐다. 그 상한을 정하려면 "파드 하나가 몇 세션을 들고 있는가" 를 알아야
  * 하는데, 지금 그 수를 <b>어디에서도 볼 수 없었다</b>(기존 chat 지표는 전부 카운터다 — 끊긴 건수,
@@ -53,13 +53,13 @@ import io.micrometer.core.instrument.MeterRegistry;
  * 토큰 한 장으로 한 파드에 세션을 계속 열 수 있고, 그걸 막는 값은 "정상 사용자가 동시에 몇 개를
  * 여는가"(탭·기기 수)에서 나와 부하 측정이 필요 없다. 이 게이지가 그 숫자를 대신 주지도 않는다 —
  * 파드 합계라서 유저당 분포가 보이지 않는다. 즉 남용 상한은 이 순서를 기다릴 이유가 없고, 실제로
- * 기다리지 않았다 — {@code ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM} 이 (유저, 방) 단위로
+ * 기다리지 않았다 — {@code chat.session.max-per-room} 상한이 (유저, 방) 단위로
  * 집행하고, 아래 {@code chat.sessions.admission_capped} 가 그 집행을 센다.
  *
  * <p>⚠️ 다만 <b>"남은 것은 용량뿐" 이 아니다.</b> 남용 축에도 닫히지 않은 갈래가 있다 — 게스트는
  * 입장마다 새 임의 userId 를 받아 그 상한에 닿지 않고, 그 갈래는 발급 측(live {@code enter})의
  * 레이트리밋 문제다({@code ChatSessionRegistry} 의 상한 javadoc 에 적혀 있다). 그리고 그 상한은
- * 파드 로컬이라 실효치가 <b>5 × 레플리카</b>다. 즉 남은 축은 <b>발급 측 레이트리밋 + 용량</b> 둘이다.
+ * 파드 로컬이라 실효치가 <b>상한 × 레플리카</b>다. 즉 남은 축은 <b>발급 측 레이트리밋 + 용량</b> 둘이다.
  * 이 줄이 "용량뿐" 이라고만 적혀 있던 동안 같은 커밋의 레지스트리 javadoc 과 정면으로 모순이었고,
  * 그쪽이 사실이다.
  *
@@ -103,6 +103,36 @@ public class ChatSessionGaugeConfig {
     static final String SLOTS_REAPED_COUNTER = "chat.sessions.reaped";
 
     /**
+     * 이 파드가 집행하는 (유저, 방) 상한 — <b>설정값 자체</b>를 낸다.
+     *
+     * <p>왜 설정값에 게이지가 필요한가. 위 두 카운터의 판정 규칙이
+     * ("{@code admission_capped} 는 오르는데 {@code reaped} 가 평평하면 어뷰즈 <b>또는 상한이 낮다</b>")
+     * <b>상한이 커지면 판정 불가가 된다</b> — 아주 큰 상한에서는 둘 다 0으로 평평해지고, 그 그림이
+     * "건강하다" 와 구분되지 않는다. 상한이 코드 상수일 때는 분모를 사람이 알고 있었지만
+     * SPR-176 이 그걸 설정으로 옮겼으니 분모도 같이 나와야 한다.
+     *
+     * <p>롤링 중에는 파드마다 값이 다를 수 있다 — 그게 이 게이지로 보이는 것이고, 보이지 않으면
+     * 서로 다른 분모의 지표가 한 그래프에 합쳐진다.
+     */
+    static final String MAX_PER_ROOM_GAUGE = "chat.sessions.max_per_room";
+
+    /**
+     * 세션 명부 재등록이 실패한 누적 수.
+     *
+     * <p>이 값은 전부터 {@code AtomicLong} 으로 쌓였고 미터만 없었다 — 접근자를 읽는 곳이 테스트
+     * 하나뿐이어서, 운영에서는 10초로 솎아낸 WARN 한 줄이 유일한 신호였다. 재등록이 멈추면
+     * <b>살아 있는 시청자 전원이 상한 뒤에 집계에서 사라진다</b>(레지스트리 자기 javadoc).
+     *
+     * <p>⚠️ <b>이 수가 0 이어도 재등록이 멈춰 있을 수 있다.</b> 회차가 실패하면 세어지지만 아예
+     * 안 끝나면 세어지지 않는다 — 회차 길이를 재는 신호는 아직 없다. 그러니 이것은 "재등록이
+     * 실패하고 있다" 의 증거이고 "재등록이 건강하다" 의 증거가 아니다.
+     *
+     * <p>이 파일이 이미 그 거울 상을 겪었다 — {@code chat.sessions.reaped} 는 문서가 약속하는데
+     * 등록이 없었다. 이쪽은 반대로 실재하는 열화에 카운터는 있고 미터가 없던 경우다.
+     */
+    static final String HEARTBEAT_FAILURES_COUNTER = "chat.sessions.heartbeat_failures";
+
+    /**
      * 게이지를 등록하고 그 사실을 빈으로 남긴다.
      *
      * <p>표식 빈을 돌려주는 이유는 등록이 <b>부수효과</b>라서다 — 반환값이 없으면 이 메서드가
@@ -139,8 +169,18 @@ public class ChatSessionGaugeConfig {
         FunctionCounter.builder(ADMISSION_CAPPED_COUNTER, registry, ChatSessionRegistry::admissionCapped)
                 .description("동시 세션 상한으로 입장을 거부한 누적 수")
                 .register(meters);
+        // 설정값이라 단조 증가가 아니고 재기동으로만 바뀐다 — 그래서 FunctionCounter 가 아니라 Gauge 다.
+        Gauge.builder(MAX_PER_ROOM_GAUGE, registry, ChatSessionRegistry::maxSessionsPerUserPerRoom)
+                .description("이 파드가 집행하는 (유저, 방) 동시 세션 상한 (chat.session.max-per-room)")
+                .register(meters);
         FunctionCounter.builder(SLOTS_REAPED_COUNTER, registry, ChatSessionRegistry::slotsReaped)
                 .description("죽은 소켓이 들고 있던 동시 세션 자리를 거둔 누적 수")
+                .register(meters);
+        // 단조 증가라 FunctionCounter 다. 게이지로 내면 rate() 를 못 쓰고 "지금 몇 개" 로 오독된다 —
+        // 위 거부 카운터와 같은 이유다.
+        FunctionCounter.builder(HEARTBEAT_FAILURES_COUNTER, registry,
+                        ChatSessionRegistry::heartbeatFailures)
+                .description("세션 명부 재등록이 실패한 누적 수 (0 이어도 멈춤일 수 있다 — 미완료는 안 세어진다)")
                 .register(meters);
         return new SessionGauges(true);
     }

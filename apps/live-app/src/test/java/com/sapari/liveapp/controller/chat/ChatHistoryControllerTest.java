@@ -6,11 +6,13 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
@@ -27,8 +29,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
+import com.sapari.chat.command.GetChatNoticeCommand;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.port.GetChatHistoryUseCase;
+import com.sapari.chat.port.GetChatNoticeUseCase;
 import com.sapari.chat.view.ChatMessageView;
 import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
@@ -65,6 +69,11 @@ import org.mockito.ArgumentCaptor;
 // GlobalExceptionHandler 를 명시로 올린다 — 이 슬라이스에는 컴포넌트 스캔이 없어서
 // @RestControllerAdvice 가 자동으로 잡히지 않는다. 없으면 도메인 예외가 매핑되지 않고
 // ServletException 으로 터져 "400 이 아니다" 가 아니라 "테스트가 못 돈다" 가 된다.
+//
+// SPR-178 전에는 chat 컨트롤러 테스트 넷 중 **이 파일만** 이것을 올렸고(실측), 그래서
+// CHAT-001/004/006/008/010/011 이 선언한 상태로 HTTP 를 떠나는지가 live-app 에서 단언되지
+// 않았다 — 역변이로 확인했다: CHAT-011 을 409 → 400 으로 뒤집어도 아무것도 깨지지 않았다.
+// 형제 셋이 이 주석을 가리키므로, 지우려면 그 셋을 먼저 볼 것.
 @Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, GlobalExceptionHandler.class})
 @DisplayName("이력 엔드포인트 — 비회원도 지나고, 신원은 인증 주체에서만 온다")
 class ChatHistoryControllerTest {
@@ -77,6 +86,9 @@ class ChatHistoryControllerTest {
 
     @MockitoBean
     private GetChatHistoryUseCase getChatHistoryUseCase;
+
+    @MockitoBean
+    private GetChatNoticeUseCase getChatNoticeUseCase;
 
     @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
@@ -184,6 +196,24 @@ class ChatHistoryControllerTest {
     }
 
     @Test
+    @DisplayName("⭐ 모르는 플랫폼 역할은 chat 에러코드의 4xx 다 — 500 으로 새면 고칠 쪽이 서버라는 사실이 묻힌다")
+    void anUnknownPlatformRoleIsRejectedWithAChatErrorCode() throws Exception {
+        // given: 오늘 UserRole = {USER, SELLER, ADMIN} 이라 **빠진 멤버는 0** 이다. 이 칸이 재는 것은
+        // 지금 깨진 것이 아니라 **네 번째 역할이 생겼을 때 어디로 나가는가** 다. 그쪽에 가드가 없으면
+        // 그 역할 사용자만 500 을 받고, 드리프트 가드(PlatformRoleNamesTest)는 컨트롤러를 못 본다.
+        stubEmpty();
+
+        // when & then: 실측(SPR-178 전)으로 이 요청은 500 · COMMON-004 였다 —
+        // 컨트롤러의 catch 가 IllegalArgumentException 만 잡아 IllegalStateException 을 지나쳤다.
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID).with(as("PARTNER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("CHAT-001"));
+
+        // 그리고 그 요청은 서비스까지 가지 않는다 — 해석 못 하는 역할을 실어 보내면 소비자가 터진다.
+        then(getChatHistoryUseCase).shouldHaveNoInteractions();
+    }
+
+    @Test
     @DisplayName("⭐ 응답이 공통 봉투에 담겨 나간다 — messages 가 한 단 깊어진 것이 프론트 계약이다")
     void theResponseIsWrappedInTheCommonEnvelope() throws Exception {
         // given: 비어 있지 않은 뷰 — 빈 목록은 봉투를 벗겨도 모양 차이가 눈에 띄지 않는다
@@ -247,6 +277,69 @@ class ChatHistoryControllerTest {
         return captor.getValue();
     }
 
+
+    @Test
+    @DisplayName("⭐ 현재 공지 — 비인증도 지나고 신원이 비어 간다(GET · HEAD)")
+    void noticeIsPublicAndAnonymousCarriesNoIdentity() throws Exception {
+        // given
+        given(getChatNoticeUseCase.findLatestNotice(any())).willReturn(Optional.empty());
+
+        // when & then: 입장 때마다 부르는 공개 조회다. HEAD 도 열려 있어야 같은 핸들러가 401 이 되지 않는다.
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/notice", ROOM_ID)).andExpect(status().isOk());
+        mockMvc.perform(head("/api/v1/lives/{roomId}/chat/notice", ROOM_ID)).andExpect(status().isOk());
+
+        // then
+        GetChatNoticeCommand command = capturedNotice();
+        assertThat(command.roomId()).isEqualTo(ROOM_ID);
+        assertThat(command.requesterId()).isNull();
+        assertThat(command.requesterRole()).isNull();
+    }
+
+    @Test
+    @DisplayName("⭐ 현재 공지 — 신원은 인증 주체에서 오고 플랫폼 역할은 chat 역할로 번역된다")
+    void noticeCarriesThePrincipalWithTranslatedRole() throws Exception {
+        // given
+        given(getChatNoticeUseCase.findLatestNotice(any())).willReturn(Optional.empty());
+
+        // when
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/notice", ROOM_ID).with(as("USER")))
+                .andExpect(status().isOk());
+
+        // then: 번역 없이 넘기면 구매자(USER)는 소비자의 ChatRole.valueOf 에서 실패한다
+        GetChatNoticeCommand command = capturedNotice();
+        assertThat(command.requesterId()).isEqualTo(REQUESTER_ID);
+        assertThat(command.requesterRole()).isEqualTo(ChatRole.BUYER.name());
+    }
+
+    @Test
+    @DisplayName("⭐ 현재 공지 — 있으면 봉투의 data 에 한 건, 없으면 data 가 null 이다")
+    void noticeIsEnvelopedAndNullWhenAbsent() throws Exception {
+        // given: 공지 한 건
+        given(getChatNoticeUseCase.findLatestNotice(any())).willReturn(Optional.of(
+                new ChatMessageView("n-1", ROOM_ID, REQUESTER_ID, "닉", null, "SELLER",
+                        "NOTICE", "공지", null, "c-1", Instant.parse("2026-06-18T00:00:00Z"))));
+
+        // when & then
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/notice", ROOM_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.id").value("n-1"));
+
+        // given: 공지 없음
+        given(getChatNoticeUseCase.findLatestNotice(any())).willReturn(Optional.empty());
+
+        // when & then: 404 가 아니라 200 + data null 이 프론트 계약이다
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/notice", ROOM_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    private GetChatNoticeCommand capturedNotice() {
+        ArgumentCaptor<GetChatNoticeCommand> captor = ArgumentCaptor.captor();
+        then(getChatNoticeUseCase).should(org.mockito.Mockito.atLeastOnce()).findLatestNotice(captor.capture());
+        return captor.getValue();
+    }
 
     /** {@code @WebMvcTest} 가 앱 클래스까지 거슬러 올라가 JPA 를 켜는 것을 막는다. */
     @SpringBootConfiguration

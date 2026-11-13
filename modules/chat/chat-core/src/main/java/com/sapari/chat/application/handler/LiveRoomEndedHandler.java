@@ -57,9 +57,9 @@ public class LiveRoomEndedHandler {
         subscription = source.ended()
                 // defer로 감싼다 — onRoomEnded 안의 각 단계 표현식은 조립 시점에 즉시 평가되므로, 그중 하나가
                 // 동기 throw하면 Mono를 돌려주기 전에 터져 아래 onErrorResume이 못 잡는다. 그러면 이 Pod의
-                // 구독이 죽어 이후 모든 방 종료를 영구히 놓친다(재시작 전까지 세션도 안 닫힌다).
+                // 구독이 죽어 이후 모든 방 종료를 영구히 놓친다(그 Pod 의 수신 전용 세션은 수명 상한까지 남는다).
                 // 이 체인은 Redis 구독 스레드에서 돈다 — 세션 컨텍스트가 없으므로 room_id 를 여기서 싣는다.
-                // 그래야 아래 열화 로그들이 메시지 안 문자열이 아니라 <b>필드</b>로 방을 들고 나가고,
+                // 그래야 아래 열화 로그들이 메시지 안 문자열이 아니라 필드로 방을 들고 나가고,
                 // "그 방의 모든 줄" 로 묶는 쿼리가 성립한다. 종료 처리는 단계가 여럿이라 그 묶음이 특히 필요하다.
                 .flatMap(roomId -> Mono.defer(() -> onRoomEnded(roomId))
                         .onErrorResume(e -> {
@@ -89,7 +89,7 @@ public class LiveRoomEndedHandler {
      */
     Mono<Void> onRoomEnded(UUID roomId) {
         return keepGoing(roomEndedRepository.markEnded(roomId), roomId,
-                        "종료 마커 기록 실패 — 이 방의 종료 판정이 전 세션에서 무력화된다(재입장·전송 모두)", true)
+                        "종료 마커 기록 실패 — live 종료 키마저 없으면 이 방의 종료 판정이 전 세션에서 무력화된다(재입장·전송 모두)", true)
                 .then(keepGoing(systemMessageService.renderToRoom(roomId, SystemMessageCode.ROOM_ENDED), roomId,
                         "종료 알림 전송 실패 — 클라는 사유 없이 끊긴다", true))
                 .then(keepGoing(sessionManager.closeAll(roomId), roomId,

@@ -186,7 +186,7 @@ class TokenRevocationFilterTest {
     }
 
     /**
-     * 통과분은 왕복 <b>2회</b>다. 비용 서술이 javadoc 과 AGENTS.md 양쪽에 있으므로 수를 여기 박는다 —
+     * 통과분은 왕복 <b>2회</b>다. 비용 서술이 {@code TokenRevocationFilter} javadoc 에 있으므로 수를 여기 박는다 —
      * 단축 평가가 아끼는 것은 <b>이미 폐기된</b> 경우뿐이라는 사실이 그 서술의 핵심이다.
      */
     @Test
@@ -331,7 +331,7 @@ class TokenRevocationFilterTest {
         TokenRevocationFilter revocation =
                 filter(token, CountingChecker.active(), new CountingLiveMetrics());
         EnterRateLimitFilter rateLimit = new EnterRateLimitFilter(new EnterRateLimiter(
-                new EnterRateLimitProperties(1, 1, 1, 1, 1), LiveMetrics.NOOP, () -> 0L));
+                new EnterRateLimitProperties(1, 1, 1, 1, 1, 1, 1, 1), LiveMetrics.NOOP, () -> 0L));
         CountingChain tail = new CountingChain();
         authenticate();
 

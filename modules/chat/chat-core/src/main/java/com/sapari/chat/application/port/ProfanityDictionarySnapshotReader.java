@@ -1,5 +1,7 @@
 package com.sapari.chat.application.port;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -9,6 +11,7 @@ import reactor.core.publisher.Mono;
  * 스냅샷뿐이고, 그래서 이 포트가 보는 값은 정본의 <b>복사본</b>이다 — 그 사실이 아래 두 메서드가
  * 따로 있는 이유다.
  */
+@ReactiveChat
 public interface ProfanityDictionarySnapshotReader {
 
     /**
@@ -25,7 +28,7 @@ public interface ProfanityDictionarySnapshotReader {
      * 지금 발행돼 있는 버전만 읽는다 — <b>주기 자가치유</b>가 쓴다.
      *
      * <p>Redis Pub/Sub 은 비영속이라 구독이 끊긴 사이에 나간 알림은 재연결해도 오지 않는다.
-     * 그 알림을 놓친 Pod 은 <b>재시작할 때까지</b> 옛 사전으로 집행하고, 증상이 "어떤 Pod 은
+     * 그 알림을 놓친 Pod 은 알림에만 기대면 <b>재시작할 때까지</b> 옛 사전으로 집행하고, 증상이 "어떤 Pod 은
      * 막고 어떤 Pod 은 안 막는다" 라 원인이 사전 쪽으로 수렴하지 않는다. 그래서 알림에만
      * 기대지 않고 주기로 이 값을 보고, 로컬과 다를 때만 {@link #read()} 로 내려간다.
      *

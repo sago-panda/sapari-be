@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.BlockingChat;
+
 /**
  * 종료 마커({@code chat:room:{roomId}:ended}) <b>해제</b> 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
@@ -9,7 +11,7 @@ import java.util.UUID;
  * 해제만 이쪽에 있는 이유는 <b>해제에 필요한 판단이 그 앱에 없기 때문</b>이다 — 아래.
  *
  * <p><b>이 마커의 결함이 정본 L20 이다</b>: 진위 검증도 해제 경로도 없어서, 오발행 한 건이 진행 중인
- * 방을 TTL(30분)만큼 채팅 불능으로 만든다. 다만 이 삭제로 닫히는 것은 <b>앱 밖에서 들어온
+ * 방을 마커 보관 기간만큼 채팅 불능으로 만든다. 다만 이 삭제로 닫히는 것은 <b>앱 밖에서 들어온
  * 발행</b>뿐이다 — 앱 경로의 오발행(배치의 방 단위 오판 포함)은 방을 먼저 {@code Ended} 로
  * 커밋하고 발행하므로 유스케이스의 LIVE 검증에 거부된다. 그 사실과 근거는
  * {@code ClearRoomEndedMarkerService} javadoc 에 있다. 기록 어댑터의 로그가
@@ -22,6 +24,7 @@ import java.util.UUID;
  *
  * <p>실패는 그대로 던진다 — 못 지운 마커는 그 방이 계속 막혀 있다는 뜻이다.
  */
+@BlockingChat
 public interface ChatRoomEndedWriteRepository {
 
     /**
@@ -41,8 +44,9 @@ public interface ChatRoomEndedWriteRepository {
      *
      * <p>이것이 필요한 이유는 검증과 삭제 사이의 창이다. 방 조회에 행 잠금이 없어 그 사이에
      * {@code endLive} 가 커밋될 수 있고, 그러면 이 삭제가 <b>맞는 마커</b>를 지운다. 그 잔여
-     * 상태가 특히 나쁜 것은 종료 신호를 놓친 pod 에게 유일한 백스톱이 그 마커이고, 사라지면
-     * 다시 세워 주는 경로가 없기 때문이다({@code Ended} 는 terminal 이라 신호가 다시 오지 않는다).
+     * 상태가 특히 나쁜 것은 종료 신호를 놓친 pod 의 백스톱이 그 마커와 live 의 종료 키뿐이고(live
+     * 키는 쓰기를 재시도하지 않아 없을 수 있다), 둘 다 비면 다시 세워 주는 경로가 없기 때문이다
+     * ({@code Ended} 는 terminal 이라 신호가 다시 오지 않는다).
      *
      * <p>실패는 던진다 — 되돌리지 못한 상태가 이 분기가 막으려던 바로 그 상태다.
      */

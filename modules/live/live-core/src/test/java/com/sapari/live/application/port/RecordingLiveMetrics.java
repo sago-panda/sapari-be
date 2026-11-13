@@ -31,6 +31,7 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public int listRefreshSaturated;
     public int listRefreshFailed;
     public final List<RecentViewDropReason> recentViewDrops = new ArrayList<>();
+    public final List<RoomTokenSignatureSource> roomTokensIssued = new ArrayList<>();
 
     @Override
     public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
@@ -71,6 +72,15 @@ public class RecordingLiveMetrics implements LiveMetrics {
     @Override
     public void recentViewDropped(RecentViewDropReason reason) {
         recentViewDrops.add(reason);
+    }
+
+    @Override
+    public void roomTokenIssued(RoomTokenSignatureSource source) {
+        roomTokensIssued.add(source);
+    }
+
+    @Override
+    public void roomEndedSignalFailed(RoomEndedSignal signal) {
     }
 
     @Override

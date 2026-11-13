@@ -46,6 +46,19 @@ final class ChatRedisKeys {
     }
 
     /**
+     * 그 사용자의 밴 미러에 닿은 가장 큰 변경 번호. 늦게 도착한 적용·해제를 거절하는 데 쓴다.
+     * {@code chat:banned:} 아래에 두지 않는 것은 그 접두가 "키가 있으면 밴" 이라는 뜻을 갖기 때문이다.
+     */
+    static String banVersion(UUID userId) {
+        return "chat:ban:ver:" + userId;
+    }
+
+    /** 탈퇴 신청 기록. <b>키가 있으면 입장 거부</b>이고 값은 보지 않는다. 수명은 어댑터가 설정에서 받는다. */
+    static String withdrawing(UUID userId) {
+        return "chat:withdrawing:" + userId;
+    }
+
+    /**
      * 전파된 욕설 사전 스냅샷 — <b>버전과 두 집합이 이 키 하나에 함께</b> 들어 있다.
      *
      * <p>방이 아니라 플랫폼에 붙는다(사전은 글로벌 1개다). 집합 둘을 키 둘로 가르지 않은 것이
@@ -90,7 +103,10 @@ final class ChatRedisKeys {
         return "chat:dict:changed";
     }
 
-    /** 전송 레이트리밋 키 (3초 TTL). 면제는 운영자와 이 방을 진행하는 판매자뿐 — 남의 방 판매자도 대상이다. */
+    /**
+     * 전송 레이트리밋 키 — 값은 다음 허용 시각(ms), 수명은 그 시각까지다({@code RedisRateLimiter}).
+     * 면제는 운영자와 이 방을 진행하는 판매자뿐 — 남의 방 판매자도 대상이다.
+     */
     static String rateLimit(UUID userId) {
         return "ratelimit:chat:" + userId;
     }

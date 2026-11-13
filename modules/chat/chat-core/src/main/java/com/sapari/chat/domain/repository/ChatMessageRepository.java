@@ -3,6 +3,7 @@ package com.sapari.chat.domain.repository;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatMessage;
+import com.sapari.chat.port.ReactiveChat;
 
 import reactor.core.publisher.Mono;
 
@@ -10,6 +11,7 @@ import reactor.core.publisher.Mono;
  * 채팅 메시지 영속 포트 (reactive — streaming-app 이벤트루프에서 호출).
  * 이력 조회(강퇴자 제외·VOD 창)는 블로킹이라 {@code ChatHistoryRepository} 가 따로 맡는다.
  */
+@ReactiveChat
 public interface ChatMessageRepository {
 
     Mono<ChatMessage> save(ChatMessage message);

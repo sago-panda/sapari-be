@@ -35,8 +35,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.sapari.chat.domain.model.ChatKickLog;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogJpaRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanStateRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogJpaRepository;
@@ -177,8 +180,14 @@ class ChatKickRecorderConcurrencyTest {
         }
 
         @Bean
-        ChatKickRecorder chatKickRecorder(ChatKickLogRepository logs, ChatBanStateRepository bans) {
-            return new ChatKickRecorder(logs, bans);
+        ChatKickRecorder chatKickRecorder(ChatKickLogRepository logs, ChatBanStateRepository bans,
+                                         ChatAuditLogRepository audits) {
+            return new ChatKickRecorder(logs, bans, audits);
+        }
+
+        @Bean
+        ChatAuditLogRepository chatAuditLogRepository(ChatAuditLogJpaRepository jpa) {
+            return new ChatAuditLogRepositoryImpl(jpa);
         }
     }
 

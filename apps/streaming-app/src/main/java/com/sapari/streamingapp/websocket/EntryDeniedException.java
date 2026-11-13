@@ -18,9 +18,14 @@ public class EntryDeniedException extends RuntimeException {
         BANNED,
         ROOM_ENDED,
 
+        /** 탈퇴를 신청했다 — 이미 받아 둔 룸 토큰으로 다시 들어오려 했다. 영구다(재접속하지 않는다). */
+        WITHDRAWING,
+
         /**
          * 같은 (유저, 방)의 동시 세션 상한 초과. 모더레이션이 아니라 남용 상한이다 —
-         * {@code ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM} 에 근거가 적혀 있다.
+         * {@code ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM} 필드에 근거가 적혀 있다
+         * (왜 (유저, 방) 단위인가 · evict-oldest 를 기각한 이유). 집행하는 값은 설정이고
+         * 접근자는 {@code maxSessionsPerUserPerRoom()} 이지만, 근거는 그 필드에 있다.
          */
         TOO_MANY_SESSIONS
     }

@@ -10,6 +10,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
+import com.sapari.global.time.TimeProvider;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -61,16 +62,18 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      * 있다</b>: 두 키가 <i>함께</i> 사라지면 기준이 0 으로 돌아가므로 그때 낡은 발행자가 통과한다.
      * 그 상태에서는 덮을 새 본문도 이미 없어서 피해가 "v1 을 들고 있던 Pod 이 다시 읽지 않는다"
      * 로 좁아지지만, <b>영구 저장이 아닌 곳에서는 "한 번도 없었다" 와 "있었는데 사라졌다" 를
-     * 구분할 수 없어</b> 이 축은 Redis 만으로 닫히지 않는다. 완전히 닫으려면 버전이 정본(DB)에서
-     * 와야 한다 — 그쪽은 삭제돼도 번호가 재사용되지 않는다.
+     * 구분할 수 없어</b> 이 축은 Redis 만으로 닫히지 않는다.
      *
-     * <p>⚠️ <b>그 잔차의 피해를 좁게 적었던 것을 고친다.</b> 한때 "그 상태에서는 덮을 새 본문도
-     * 이미 없어서 피해가 'v1 을 들고 있던 Pod 이 다시 읽지 않는다' 로 좁아진다" 고 적었다.
-     * <b>축출 도달에는 참이고 오염 도달에는 거짓이다</b> — 두 키에 큰 수가 손으로 들어온 뒤
-     * 긴급 ADMIN 쓰기가 오면 그때 v1 로 나가는 본문이 <b>긴급 사전 자신</b>이다. 즉 "덮을 새
-     * 본문이 없다" 가 아니라 <b>가장 급한 새 본문이 버려진다</b>. 실측으로 확인했다(두 키 오염 →
-     * 긴급 쓰기 → 반환 1 · 본문이 새 사전). 환원 불가 판정은 그대로이고 적어야 할 것은 피해다 —
-     * 그래서 {@link #currentVersion()} 이 그 재시작을 WARN 으로 남긴다.
+     * <p><b>그 축을 발행 시각 하한으로 닫는다.</b> 새 번호는 {@code max(기준 + 1, 발행 시각 ms)}
+     * 다(ARGV[4]). 두 키가 함께 사라져 기준이 0 으로 돌아가도 번호는 지금 시각에서 시작하므로,
+     * 이전에 나간 어떤 번호와도 겹치지 않는다 — 이전 번호도 그 발행 시각 이하에서 나왔기 때문이다
+     * (같은 밀리초 안의 연속 발행만 시각을 몇 칸 앞지른다). 받는 쪽은 번호가 <b>같으면</b>
+     * 건너뛰므로({@code ProfanityDictionaryRefreshHandler}) 재사용이 곧 "내용이 달라도 안 받는다"
+     * 였다. 남는 것은 시계가 그 이전 발행 시각보다 뒤로 간 상태에서 두 키를 잃는 경우뿐이다.
+     * 정본(DB)에서 번호를 받는 안은 스키마가 늘어서 택하지 않았다.
+     *
+     * <p>기준이 0 으로 돌아간 재시작은 여전히 {@link #currentVersion()} 이 WARN 으로 남긴다 —
+     * 번호는 재사용되지 않지만, 키가 사라졌거나 오염됐다는 사실은 운영자가 알아야 한다.
      *
      * <p>⚠️ 알림 본문은 <b>버전 하나</b>다. 사전 내용을 실으면 Pub/Sub 이 비영속이라 놓친 Pod 이
      * 영구히 다른 사전으로 집행한다. 버전만 실으면 그 Pod 이 주기 확인에서 스스로 복구한다 —
@@ -138,7 +141,7 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             end
             -- 기준은 <자격을 통과한> 키들의 큰 쪽이다. 자격이 문법보다 한 칸 좁은 이유:
             -- 여기에 +1 을 쌓은 결과도 읽혀야 한다. 둘 다 자격이 없으면 0 에서 다시 시작하고,
-            -- 그것이 쓰는 v1 은 <읽히는> 번호다 — 읽을 수 없는 번호를 쓰는 것보다 낫다.
+            -- 그것이 쓰는 번호(아래 시각 하한)는 <읽히는> 번호다 — 읽을 수 없는 번호를 쓰는 것보다 낫다.
             -- 그 재시작을 자바 쪽이 WARN 으로 남긴다(무음이 이 칸의 결함이었다).
             local current = 0
             if eligible(counter) then current = counter end
@@ -148,6 +151,10 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
             end
             -- 기준이 자격을 통과했으므로 이 수는 <문법 안>이다 = 함대가 읽을 수 있다.
             local version = current + 1
+            -- 발행 시각(ms) 하한 — 두 키를 함께 잃어도 번호가 재사용되지 않게 한다(위 javadoc).
+            -- 지금 시각은 13자리라 문법 상한 안이다.
+            local floor = tonumber(ARGV[4])
+            if floor > version then version = floor end
             -- ⚠️ 쓰는 포맷도 하나여야 한다. KEYS[2] 는 Redis 의 숫자 인자 변환(정확)을 타는데
             -- KEYS[1] 은 '..' 를 타고 그것은 %%.14g 다 — 값이 15자리가 되면 1e+14 가 키에 써지고
             -- 매 발행이 같은 머리를 다시 쓰니 자기치유가 없다(실측 3회차까지 1e+14 고정).
@@ -173,6 +180,7 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
 
 
     private final StringRedisTemplate redisTemplate;
+    private final TimeProvider timeProvider;
 
     /**
      * 조건 비교의 기준 — <b>스크립트와 같은 문법</b>으로 두 키를 읽어 큰 쪽을 집는다.
@@ -185,7 +193,7 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
      * <p><b>못 읽은 키는 던지지 않고 기여하지 않는다(0).</b> 한때 버전 키에서 던졌는데, 그러면
      * 스크립트가 그 키를 덮어 고칠 수 있는데도 <b>그 스크립트가 돌지 못했다</b> — 숫자 아닌 값
      * 하나 또는 {@code LPUSH} 한 줄로 모든 발행이 500 이고 복구가 수동 {@code DEL} 뿐이었다.
-     * 두 키가 다 안 읽히면 토큰이 0 이고, 그때 발행이 v1 을 세워 양쪽을 다시 쓴다.
+     * 두 키가 다 안 읽히면 토큰이 0 이고, 그때 발행이 시각 하한의 번호를 세워 양쪽을 다시 쓴다.
      *
      * <p>못 읽었다는 사실은 WARN 으로 남긴다 — 조용하면 ABA 가 다시 열린 것(토큰이 한 키로
      * 떨어진 상태)을 아무도 모른다. <b>값은 싣지 않는다</b>: 신뢰경계 밖 문자열이라 개행 삽입으로
@@ -202,8 +210,8 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                 versionPresent, reasons);
         long base = Math.max(head.orElse(0L), counter.orElse(0L));
         // 게이트는 base == 0 이다 — `head.isEmpty() && counter.isEmpty()` 가 아니다. 두
-        // 조건의 차이는 "읽히고 자격도 통과하는 값 0 을 든 키" 한 칸인데, 그 칸도 다음 발행이
-        // v1 이라 함대가 1 을 들고 있으면 조용히 건너뛴다 — 경계 칸과 같은 피해다.
+        // 조건의 차이는 "읽히고 자격도 통과하는 값 0 을 든 키" 한 칸인데, 그 칸도 키가 사라졌거나
+        // 오염됐다는 같은 신호다.
         //
         // reasons 는 여기서 보충하지 않는다. 각 축은 tokenOf 가 무조건 쌓고, 사유 다섯 종
         // (타입·사라짐·문법·자격·값 0)이 전부 자기 log.warn 도 갖는다. 그 분업이 필요한
@@ -211,37 +219,22 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
         // 한 키가 사유를 받았는데 다른 키가 자격 있는 토큰 ≥1 을 들면 base ≥ 1 이라 한 줄도
         // 안 나간다.
         if (base == 0L && (snapshotPresent || versionPresent)) {
-            // v1 은 <읽히는> 번호다(읽을 수 없는 번호를 쓰는 것보다 낫다). 남는 위험은 함대가
-            // 이미 1 을 들고 있어 그 발행을 건너뛰는 경우이고, 그 잔차는 <버전만 비교한다> 는
-            // 선택에서 온다(받는 쪽은 본문을 손에 들고 있다) — modules/chat/AGENTS.md 가 그
-            // 축과 가격을 적는다. 그래서 적어도 <보이게> 만든다.
-            // ⚠️ 이 한 줄이 사유·확인·복구 셋을 말하는데 <셋 다 틀렸던> 자리다. 각각 고친 근거:
+            // 다음 발행의 번호는 시각 하한이라 이전 번호와 겹치지 않는다(PUBLISH_SCRIPT javadoc).
+            // 그래도 알린다 — 키가 사라졌거나 오염됐다는 것 자체가 운영자가 알아야 할 사실이다.
             //
             // 사유 — "기여 없음" 과 "값 0" 을 같은 0L 로 뭉개면 정상 값 "0" 에도 "문법 밖이다" 가
             //   붙는다. tokenOf 가 OptionalLong 을 돌려주게 해서 그 둘을 가른다.
             //
-            // 확인 — "받는 쪽에 흔적이 없으니 기능 확인이 유일하다" 가 거짓이었다. 적용 <성공>은
-            //   RefreshHandler 가 "갈아 끼웠다 … version=" INFO 로 남기므로 <기대 version 의 그
-            //   INFO 가 없음>이 그대로 판정이다. 그리고 그 방법이 이미 운영자에게 지시돼 있다
-            //   (ManageFilterWordsUseCase.FilterWordChange 의 version javadoc ·
-            //   ChatFilterWordController). 새 WARN 이 같은 저장소의 기존 안내와 반대를 말했다.
-            //   기능 확인은 보조로 둔다 — 전용 dry-run 경로가 0건이라 살아 있는 방과 WS 세션이
-            //   있어야만 되고, 사고 중에 그것이 보장되지 않는다.
-            //
-            // 복구 — "두 키를 지워 v1 을 다시 세울 것" 이 <교착을 재생산>했다. 실측:
-            //   두 키 자격 없음 + 긴급 쓰기 → v1(함대가 1 이면 건너뛴다)
-            //   그 뒤 두 키 DEL → 기준 0 → 또 v1 → 또 건너뛴다
-            //   그 뒤 지우지 않고 같은 요청 한 번 더 → 기준 1 → v2 → 함대가 적용
-            //   v1 발행이 두 키에 1 을 이미 써 놨으므로 다음 발행의 기준이 1 이고 그것은 자격을
-            //   통과한다. ADMIN 추가는 멱등 호출에도 발행하므로 "한 번 더" 로 끝난다.
+            // 확인 — 적용 <성공>은 RefreshHandler 가 "갈아 끼웠다 … version=" INFO 로 남기므로
+            //   <기대 version 의 그 INFO 가 없음>이 그대로 판정이다. 같은 방법이 운영자에게 이미
+            //   지시돼 있다(ManageFilterWordsUseCase.FilterWordChange 의 version javadoc ·
+            //   ChatFilterWordController).
             log.warn("사전 버전 기준이 0 으로 떨어졌다 — 키가 있는데 어느 쪽도 다음 번호의 기준이 "
-                            + "못 된다({}). 다음 발행이 v1 에서 다시 시작하고, 함대가 이미 1 을 "
-                            + "들고 있으면 그 발행을 조용히 건너뛴다. "
+                            + "못 된다({}). 다음 발행은 발행 시각(ms)을 번호로 쓰므로 이전 번호와 겹치지 "
+                            + "않는다. "
                             + "확인: 받는 쪽 Pod 로그에서 \"갈아 끼웠다 … version=<응답의 version>\" "
-                            + "줄이 나왔는지 본다(없으면 안 깔린 것이다). "
-                            + "복구: 같은 ADMIN 쓰기를 한 번 더 보낸다 — 이 발행이 성공하면 두 키를 1 로 "
-                            + "세웠으므로 다음 발행은 v2 가 되고 함대가 적용한다. 그래도 아니면 "
-                            + "수신 Pod 을 재시작한다. snapshot={} version={}",
+                            + "줄이 나왔는지 본다(없으면 안 깔린 것이다). 그래도 아니면 수신 Pod 을 "
+                            + "재시작한다. snapshot={} version={}",
                     reasons, snapshotPresent, versionPresent);
         }
         return base;
@@ -477,7 +470,8 @@ public class ProfanityDictionarySnapshotRedisPublisher implements ProfanityDicti
                 List.of(ChatRedisKeys.dictSnapshot(), ChatRedisKeys.dictVersion()),
                 String.valueOf(expectedVersion),
                 ProfanityDictionarySnapshotCodec.encodeBody(words, whitelist),
-                ChatRedisKeys.dictChanged());
+                ChatRedisKeys.dictChanged(),
+                String.valueOf(timeProvider.now().toEpochMilli()));
         return readReturn(version);
     }
 }

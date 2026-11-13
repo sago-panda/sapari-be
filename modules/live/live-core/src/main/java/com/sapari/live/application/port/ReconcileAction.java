@@ -63,7 +63,7 @@ public enum ReconcileAction {
      * 실제로 요청한 건수는 종류별 {@code *_REQUESTED} 가 계속 나눠서 센다.
      */
     ORPHAN_ROOM_CANDIDATE,
-    /** end-stale-live 조회에서 관측한 후보 수(포화 판정용으로 batch-size+1까지). */
+    /** end-stale-live 조회에서 관측한 후보 수(포화 판정용으로 batch-size+1까지). 백로그 게이지가 아니다. */
     STALE_LIVE_CANDIDATE,
     /** end-stale-live 후보가 이번 회차 상한을 넘었다. */
     STALE_LIVE_BATCH_SATURATED,

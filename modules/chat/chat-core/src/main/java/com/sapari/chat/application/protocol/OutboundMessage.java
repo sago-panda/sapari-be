@@ -32,7 +32,7 @@ import com.sapari.chat.domain.model.ChatRole;
 @Builder(access = AccessLevel.PACKAGE)
 public record OutboundMessage(
         String type,             // NORMAL | NOTICE | SYSTEM | KICK | ROOM_INFO | RATE_LIMIT | ERROR | ACK
-        String code,             // SYSTEM: KICKED|ROOM_ENDED|BANNED / ERROR: VALIDATION|PERMISSION|KICKED|NOT_ACTIVE|INTERNAL (그 외 null)
+        String code,             // SYSTEM: SystemMessageCode 전수 / ERROR: ChatWebSocketHandler.errorCode 전수 (그 외 null)
         String id,               // NORMAL/NOTICE: MongoDB ObjectId / ACK: 저장된 serverId (그 외 null)
         UUID senderId,           // NORMAL/NOTICE: 실제 발신자 / SYSTEM: 고정 시스템 UUID / 그 외 null
         String senderNickname,   // NORMAL/NOTICE; SYSTEM은 "SYSTEM" 고정
@@ -106,7 +106,16 @@ public record OutboundMessage(
                 .build();
     }
 
-    /** 입장 시 1회. {@code activeCount}가 null이면 "모른다"다 — 조회 실패에 0을 보내지 않는다. */
+    /**
+     * 입장 시 1회, 그리고 <b>수가 변할 때마다</b> 다시 나간다
+     * ({@code ChatSessionRegistry.pushViewerCounts} 가 재등록 타이머를 탄다).
+     *
+     * <p>{@code activeCount} 가 null 이면 "모른다" 다 — 조회 실패에 0 을 보내지 않는다.
+     *
+     * <p>⚠️ 앞 절이 "입장 시 1회" 로만 적혀 있었고 하트비트 push 가 들어온 뒤로 거짓이었다.
+     * 계약 문서 쪽은 이미 "입장 시 + 변할 때마다" 로 갱신돼 있었다 — 코드 주석만 낡은,
+     * 문서가 코드를 앞선 드문 방향이다.
+     */
     public static OutboundMessage roomInfo(Long activeCount, boolean isRoomOwner) {
         return OutboundMessage.builder()
                 .type("ROOM_INFO")
@@ -115,7 +124,7 @@ public record OutboundMessage(
                 .build();
     }
 
-    /** 레이트리밋 거부. 서버가 준 값이든 로컬 창에서 만든 값이든 같은 모양이어야 한다. */
+    /** 레이트리밋 거부. 서버가 준 값이든 로컬 판정에서 만든 값이든 같은 모양이어야 한다. */
     public static OutboundMessage rateLimit(long retryAfterSeconds, String clientMsgId) {
         return OutboundMessage.builder()
                 .type("RATE_LIMIT")

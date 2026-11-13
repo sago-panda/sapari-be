@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -183,7 +184,7 @@ class ChatSessionRegistryTest {
         // 상한을 준다. 안 주면 닫히지 않은 세션에서 이 테스트가 <b>영원히 기다린다</b> — 회귀가 빨간불이
         // 아니라 멈춤으로 나타나고, 그건 회귀를 알려 주지 않는 것과 같다(되돌림 확인에서 실제로 겪었다).
         StepVerifier.create(registry.outbound("s2"))
-                .then(() -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING))
+                .then(() -> registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING))
                 .expectComplete()
                 .verify(java.time.Duration.ofSeconds(5));
         StepVerifier.create(registry.outbound("s1"))
@@ -200,7 +201,7 @@ class ChatSessionRegistryTest {
         registry.register("s2", session(roomId, bystander)).block(VERIFY_CEILING);
 
         // when
-        registry.closeUserEverywhere(userId).block(VERIFY_CEILING);
+        registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING);
 
         // then: 옆 사람의 채널은 살아 있다 — 완료됐다면 방 전체를 끊은 것이다
         StepVerifier.create(registry.outbound("s2"))
@@ -546,13 +547,20 @@ class ChatSessionRegistryTest {
         // given: 이 파일의 다른 테스트들이 쓰는 생성자는 예산을 넓혀 받는다. 그 진입점이 생긴 순간
         // "운영은 무엇을 받는가"를 아무도 묻지 않는 자리가 생겼다 — 위임에서 값을 뒤바꾸거나 넓힌
         // 값을 그대로 넘겨도 다른 테스트는 전부 초록이다(자기 예산을 직접 주므로).
-        ChatSessionRegistry production = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        // ⚠️ **Spring 이 고르는 생성자**를 불러야 한다. 상한이 설정으로 열린 뒤로 이 클래스에는
+        // 좁은 생성자(기본 상한으로 위임하는 테스트 진입점)가 따로 있고, 그걸 부르면 "운영이
+        // 무엇을 받는가" 를 묻는 이 칸이 운영 경로를 안 지나간다. 상한 인자가 있는 쪽이 @Autowired 다.
+        ChatSessionRegistry production = new ChatSessionRegistry(
+                sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP, 3);
 
-        // when & then: 둘을 따로 본다. 뒤바꿔 넘기면 한 값만 보는 단언으로는 드러나지 않는다.
+        // when & then: 셋을 따로 본다. 뒤바꿔 넘기면 한 값만 보는 단언으로는 드러나지 않는다.
         assertThat(Duration.ofNanos(production.contentionSpinNanos()))
                 .as("emit 경합 예산").isEqualTo(Duration.ofMillis(5));
         assertThat(Duration.ofNanos(production.completeSpinNanos()))
                 .as("종료 신호 예산").isEqualTo(Duration.ofMillis(50));
+        // 상한은 위임에서 자리를 잃거나 기본값으로 덮이기 쉬운 인자다 — 기본(5)과 다른 수로 본다.
+        assertThat(production.maxSessionsPerUserPerRoom())
+                .as("(유저, 방) 상한").isEqualTo(3);
     }
 
     @Test
@@ -729,7 +737,7 @@ class ChatSessionRegistryTest {
     @DisplayName("밴 팬아웃 종료도 emit보다 넉넉한 예산을 쓴다")
     void close_user_everywhere_outlasts_the_emit_budget() throws Exception {
         registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
-        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING),
+        assertCloseOutlastsTheEmitBudget("s1", () -> registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING),
                 CloseStatus.POLICY_VIOLATION);
     }
 
@@ -747,14 +755,14 @@ class ChatSessionRegistryTest {
         // given: 한 유저의 세션 여럿. 전원 같은 userId 라 계정 단위 팬아웃도 이 세션들을 훑는다.
         //
         // 한때 <b>한 방에</b> 40 세션을 같은 userId 로 넣었는데, 동시 세션 상한
-        // (MAX_SESSIONS_PER_USER_PER_ROOM)이 생긴 뒤로 그 모양은 운영에서 성립하지 않는다. 그래서
+        // (maxSessionsPerUserPerRoom)이 생긴 뒤로 그 모양은 운영에서 성립하지 않는다. 그래서
         // 같은 유저를 여러 방에 퍼뜨린다 — 계정 단위 팬아웃(sendToUserEverywhere·closeUserEverywhere)은
         // 방을 가리지 않아 여전히 40 을 전부 훑고, 방 단위 팬아웃은 그 방의 상한만큼을 훑는다.
         // 세는 것이 예산 <b>개수</b>라 두 축 다 세션이 복수이면 회귀가 잡힌다(호출당 1 vs 세션 수).
         int rooms = 8;
         // 상한을 1 로 내리면 방 축 순회가 1 이 되어 "호출당 예산 1개" 되돌림이 1==1 로
         // 조용히 통과한다 — 이빨이 사라지는 것을 상수 변경이 결정하지 않게 바닥을 둔다.
-        int perRoom = Math.max(2, ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM);
+        int perRoom = Math.max(2, ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM);
         for (int r = 0; r < rooms; r++) {
             UUID room = r == 0 ? roomId : UUID.randomUUID();
             for (int i = 0; i < perRoom; i++) {
@@ -777,7 +785,7 @@ class ChatSessionRegistryTest {
         assertOneBudgetPerCall("sendToRoomGated", () -> registry.sendToRoomGated(roomId, s -> out("SYSTEM")).block(VERIFY_CEILING));
         assertOneBudgetPerCall("sendToUserEverywhere", () -> registry.sendToUserEverywhere(userId, out("SYSTEM")).block(VERIFY_CEILING));
         assertOneBudgetPerCall("closeUser", () -> registry.closeUser(roomId, userId).block(VERIFY_CEILING));
-        assertOneBudgetPerCall("closeUserEverywhere", () -> registry.closeUserEverywhere(userId).block(VERIFY_CEILING));
+        assertOneBudgetPerCall("closeUserEverywhere", () -> registry.closeUserEverywhere(userId, SessionCutReason.MODERATION).block(VERIFY_CEILING));
         assertOneBudgetPerCall("closeAll", () -> registry.closeAll(roomId).block(VERIFY_CEILING));
     }
 
@@ -974,6 +982,70 @@ class ChatSessionRegistryTest {
         assertThat(registry.rateLimitRetryAfterSeconds("s1")).isZero();
     }
 
+    /**
+     * 클램프의 <b>위쪽</b> 가드 — 지우면 던진다. 그 던짐이 인바운드 스트림을 죽인다.
+     *
+     * <p>{@code recordRateLimited} 는 {@code onInbound} 의 {@code onErrorResume} 람다에서 불린다.
+     * 거기서 던지면 인바운드 {@code Flux} 의 {@code onError} 가 되어 연결이 끊긴다 — 이 파일과
+     * {@code SendChatService} 가 반복해서 "절대 던지면 안 된다" 고 경고하는 그 자리다.
+     *
+     * <p><b>분모</b>: 테스트 트리 전수에서 {@code recordRateLimited} 의 인자가 전부 {@code 3}
+     * 또는 {@code 0} 이었다(호출지 5건). 60 초과도 음수도 한 번도 건너지 않아 클램프를 지워도
+     * 스위트가 초록이었다. 지금은 {@code Math.min} 만 지워도 이 칸이 빨강이다(단일 변이).
+     *
+     * <p>실측: {@code Duration.ofSeconds(Long.MAX_VALUE).toNanos()} 는
+     * {@code ArithmeticException: long overflow} 를 던지고, {@code ofSeconds(9_223_372_036)} 은
+     * 던지지 않는다(경계가 거기다).
+     */
+    @Test
+    @DisplayName("⭐ 레이트리밋 창 상한 — 큰 수가 와도 던지지 않는다(던지면 인바운드가 죽는다)")
+    void rate_limit_window_is_clamped_above() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+
+        // when & then: Math.min 을 지우면 여기서 ArithmeticException 이 샌다
+        assertThatCode(() -> registry.recordRateLimited("s1", Long.MAX_VALUE))
+                .as("상한이 없으면 Duration 환산이 던지고, 그 던짐이 onErrorResume 람다에서 연결을 끊는다")
+                .doesNotThrowAnyException();
+        assertThat(registry.rateLimitRetryAfterSeconds("s1"))
+                .as("상한 60초를 넘겨 적혔다 — 해제까지 로컬에서 끊는 구간이 그만큼 길어진다")
+                .isBetween(1L, 60L);
+    }
+
+    /**
+     * 음수가 들어와도 "제한 없음" 으로 읽히는지. <b>가드는 한 겹이고 그 한 겹이 이 칸에 묶인다.</b>
+     *
+     * <p>접는 자리는 읽는 쪽 {@code rateLimitRetryAfterSeconds} 의 {@code remaining <= 0} 하나다.
+     * 실측: 그것만 지우면 이 칸이 빨강이다({@code expected: 0L but was: -4L}) — <b>단일 변이</b>다.
+     *
+     * <p>⚠️ <b>여기 오는 데 분모를 두 번 틀렸고, 그 경위는 커밋 메시지가 보관한다.</b> 요약하면
+     * 한때 쓰는 쪽에 가드가 하나 더 있었고 두 겹이 서로를 가려서 어느 쪽을 지워도 이 칸이
+     * 초록이었다. 그 가드는 <b>도달 불가</b>였으므로(이 필드의 독자가 읽는 쪽 하나뿐이다 —
+     * 전수: 쓰는 곳 1 · 읽는 곳 1) 지웠고, 그래서 남은 한 겹이 처음으로 묶였다.
+     *
+     * <p>곁가지 사실: 음수에서 {@code Duration} 환산은 <b>던지지 않는다</b>
+     * ({@code ofSeconds(-5).toNanos() = -5_000_000_000}). 던지는 것은 위쪽 경계뿐이고 그 칸은
+     * {@link #rate_limit_window_is_clamped_above()} 가 따로 묶는다(그쪽도 단일 변이로 빨강이다).
+     */
+    @Test
+    @DisplayName("⭐ 레이트리밋 창 — 음수는 제한 없음으로 읽힌다(접는 가드 한 겹이 이 칸에 묶인다)")
+    void rate_limit_window_folds_negatives() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.recordRateLimited("s1", 3);
+        assertThat(registry.rateLimitRetryAfterSeconds("s1")).isBetween(1L, 3L);
+
+        // when: 음수가 들어온다 — 던지지 않는다
+        assertThatCode(() -> registry.recordRateLimited("s1", -5))
+                .as("음수에서 Duration 환산은 던지지 않는다 — 여기서 빨강이면 전제가 바뀐 것이다")
+                .doesNotThrowAnyException();
+
+        // then: 음수 초가 새어 나가면 클라 카운트다운이 음수를 받는다
+        assertThat(registry.rateLimitRetryAfterSeconds("s1"))
+                .as("남은 초가 음수로 나왔다 — '제한 없음'과 구분되지 않아야 할 값이 음수가 됐다")
+                .isZero();
+    }
+
     @Test
     @DisplayName("레이트리밋 창 — 모르는 세션은 제한 없음으로 답한다(막는 데만 쓰는 값)")
     void rate_limit_window_unknown_session_is_not_limited() {
@@ -994,6 +1066,62 @@ class ChatSessionRegistryTest {
         assertThat(registry.shouldReplyToRejection("s1")).isFalse();
         // 솎아낼 뿐 끊지는 않는다 — 200자 초과를 반복하는 정상 사용자를 잃으면 안 된다
         assertThat(registry.isTerminating("s1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("인바운드 상한 — 버스트까지 받고 그 다음 프레임부터 버린다(연결은 유지)")
+    void inbound_cap_drops_after_burst() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+
+        // when: 시간이 거의 흐르지 않는 사이 버스트만큼 보낸다
+        for (int i = 0; i < ChatSessionRegistry.INBOUND_FRAME_BURST; i++) {
+            assertThat(registry.shouldDropInbound("s1")).as("%d번째 프레임", i + 1).isFalse();
+        }
+
+        // then
+        assertThat(registry.shouldDropInbound("s1")).isTrue();
+        assertThat(registry.isTerminating("s1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("인바운드 상한 — 간격 하나가 지나면 한 칸이 돌아온다")
+    void inbound_cap_refills_one_frame_per_interval() {
+        // given: 버스트를 다 쓴 상태
+        long interval = ChatSessionRegistry.INBOUND_FRAME_INTERVAL_NANOS;
+        long t0 = 1_000_000_000L;
+        java.util.concurrent.atomic.AtomicLong allowedAt = new java.util.concurrent.atomic.AtomicLong(t0);
+        for (int i = 0; i < ChatSessionRegistry.INBOUND_FRAME_BURST; i++) {
+            assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0)).isTrue();
+        }
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0)).isFalse();
+
+        // when & then: 간격 직전엔 아직 없고, 간격이 지나면 정확히 한 칸
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0 + interval - 1)).isFalse();
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0 + interval)).isTrue();
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, t0 + interval)).isFalse();
+    }
+
+    @Test
+    @DisplayName("인바운드 상한 — 오래 쉬어도 몫은 버스트까지만 쌓인다")
+    void inbound_cap_idle_credit_is_capped_at_burst() {
+        // given: 등록 직후 아무것도 안 보내고 한참(버스트를 채우고도 남는 시간) 지났다
+        long t0 = 1_000_000_000L;
+        java.util.concurrent.atomic.AtomicLong allowedAt = new java.util.concurrent.atomic.AtomicLong(t0);
+        long later = t0 + Duration.ofMinutes(10).toNanos();
+
+        // when & then
+        for (int i = 0; i < ChatSessionRegistry.INBOUND_FRAME_BURST; i++) {
+            assertThat(ChatSessionRegistry.admitInbound(allowedAt, later)).as("%d번째 프레임", i + 1).isTrue();
+        }
+        assertThat(ChatSessionRegistry.admitInbound(allowedAt, later)).isFalse();
+    }
+
+    @Test
+    @DisplayName("인바운드 상한 — 모르는 세션은 버리지 않는다(상한은 등록된 세션의 상태다)")
+    void inbound_cap_unknown_session_is_not_dropped() {
+        // when & then
+        assertThat(registry.shouldDropInbound("없는세션")).isFalse();
     }
 
     @Test
@@ -1199,6 +1327,22 @@ class ChatSessionRegistryTest {
         assertThat(registry.shouldRecheckRoomAlive("s1")).isTrue();
         // 한 번 통과하면 그 시각으로 갱신되므로 바로 다음 호출은 막힌다(중복 조회 방지)
         assertThat(registry.shouldRecheckRoomAlive("s1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("방 종료 재확인 창 — 확인이 실패하면 되돌려 다음 프레임이 다시 묻는다")
+    void roomAliveRecheck_isRequiredAgainAfterAFailedCheck() {
+        // given: 창이 열려 이번 프레임이 확인을 맡았다(창을 소비했다)
+        UUID room = UUID.randomUUID();
+        registry.register("s1", session(room, UUID.randomUUID())).block(VERIFY_CEILING);
+        registry.expireRoomAliveWindow("s1");
+        assertThat(registry.shouldRecheckRoomAlive("s1")).isTrue();
+
+        // when: 그 확인이 실패했다
+        registry.requireRoomAliveRecheck("s1");
+
+        // then: 되돌리지 않으면 30초 동안 확인 없이 통과한다
+        assertThat(registry.shouldRecheckRoomAlive("s1")).isTrue();
     }
 
     @Test

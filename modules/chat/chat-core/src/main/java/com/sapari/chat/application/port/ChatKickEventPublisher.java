@@ -2,6 +2,8 @@ package com.sapari.chat.application.port;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.BlockingChat;
+
 /**
  * 강퇴 사실을 모든 Pod에 알리는 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
@@ -14,6 +16,7 @@ import java.util.UUID;
  * 그래서 실패를 성공이라 부르지 않고 전파한다. 재시도는 안전하다: 명단 추가도 발행도 멱등이고,
  * 받는 쪽은 이미 숨긴 사람을 다시 숨기거나 이미 닫힌 세션을 또 닫아도 아무 일이 없다.
  */
+@BlockingChat
 public interface ChatKickEventPublisher {
 
     void publishKicked(UUID roomId, UUID kickedUserId);

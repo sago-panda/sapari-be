@@ -1,6 +1,7 @@
 package com.sapari.streamingapp.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
@@ -11,10 +12,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatBanRepository;
+import com.sapari.chat.domain.repository.ChatWithdrawalRepository;
 import com.sapari.chat.domain.repository.ChatKickRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedRepository;
 import com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics;
@@ -44,6 +47,7 @@ class EntryGateMetricsTest {
     private ChatKickRepository kickRepository;
     private ChatRoomEndedRepository roomEndedRepository;
     private ChatBanRepository banRepository;
+    private ChatWithdrawalRepository withdrawalRepository;
     private MeterRegistry registry;
     private EntryGate gate;
 
@@ -55,8 +59,10 @@ class EntryGateMetricsTest {
         kickRepository = mock(ChatKickRepository.class);
         roomEndedRepository = mock(ChatRoomEndedRepository.class);
         banRepository = mock(ChatBanRepository.class);
+        withdrawalRepository = mock(ChatWithdrawalRepository.class);
+        given(withdrawalRepository.isWithdrawing(any())).willReturn(Mono.just(false));
         registry = new SimpleMeterRegistry();
-        gate = new EntryGate(kickRepository, roomEndedRepository, banRepository,
+        gate = new EntryGate(kickRepository, roomEndedRepository, banRepository, withdrawalRepository,
                 new MicrometerChatMetrics(registry), mock(ChatSessionRegistry.class));
     }
 
@@ -135,23 +141,41 @@ class EntryGateMetricsTest {
     }
 
     @Test
-    @DisplayName("⭐ 전송 재확인이 열리면 checkpoint=send 다 — 입장과 합치면 끝난 방에 글이 들어온 사실이 묻힌다")
-    void theSendPathRecheckIsASeparateCheckpoint() {
+    @DisplayName("⭐ 탈퇴 기록 조회가 실패해 입장시키면 policy=withdrawing 이 오른다")
+    void withdrawalReadFailureIsReported() {
+        // given
+        given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.just(false));
+        given(kickRepository.isKicked(roomId, userId)).willReturn(Mono.just(false));
+        given(banRepository.isBanned(userId)).willReturn(Mono.just(false));
+        given(withdrawalRepository.isWithdrawing(userId)).willReturn(Mono.error(new IllegalStateException("Redis down")));
+
+        // when
+        StepVerifier.create(gate.verify(session())).expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        assertThat(open("withdrawing", "entry", "unavailable")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("⭐ 전송 재확인을 못 읽으면 chat.send.refused{policy=room_ended} 다 — 통과가 아니라 open 에 담지 않는다")
+    void anUnreadableSendRecheckIsCountedAsRefused() {
         // given: 재확인 창이 열려 있고 그 조회가 실패한다
         ChatSessionRegistry registry = mock(ChatSessionRegistry.class);
         given(registry.isRoomKnownEnded("s1")).willReturn(false);
         given(registry.shouldRecheckRoomAlive("s1")).willReturn(true);
         given(roomEndedRepository.isEnded(roomId)).willReturn(Mono.error(new IllegalStateException("Redis down")));
         EntryGate sendGate = new EntryGate(kickRepository, roomEndedRepository, banRepository,
-                new MicrometerChatMetrics(this.registry), registry);
+                withdrawalRepository, new MicrometerChatMetrics(this.registry), registry);
 
-        // when: fail-open 이라 전송은 통과한다
-        StepVerifier.create(sendGate.isRoomAlive("s1", session())).expectNext(true).expectComplete().verify(VERIFY_CEILING);
+        // when: 전송은 거절된다
+        StepVerifier.create(sendGate.isRoomAlive("s1", session()))
+                .expectError(ChatSendUnavailableException.class).verify(VERIFY_CEILING);
 
-        // then: 입장 쪽이 아니라 전송 쪽으로 세어진다
-        assertThat(open("room_ended", "send", "unavailable")).isEqualTo(1);
-        assertThat(open("room_ended", "entry", "unavailable"))
-                .as("두 자리는 잃는 것이 다르다 — 입장만 열렸다면 그 사람은 보고만 있다").isZero();
+        // then
+        assertThat(this.registry.get("chat.send.refused").tags("policy", "room_ended").counter().count())
+                .isEqualTo(1);
+        assertThat(this.registry.find("chat.policy.open").counters())
+                .as("통과시킨 것이 아니다 — open 에 담기면 집행이 쉰 것으로 읽힌다").isEmpty();
     }
 
     @Test

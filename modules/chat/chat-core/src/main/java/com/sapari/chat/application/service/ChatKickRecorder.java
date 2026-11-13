@@ -2,17 +2,23 @@ package com.sapari.chat.application.service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
 import com.sapari.chat.domain.model.ChatBan;
 import com.sapari.chat.domain.model.ChatBanTier;
 import com.sapari.chat.domain.model.ChatKickLog;
+import com.sapari.chat.domain.model.VersionedBan;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.BanWrite;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
+import com.sapari.chat.port.BlockingChat;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +42,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @RequiredArgsConstructor
+@BlockingChat
 public class ChatKickRecorder {
 
     /**
@@ -53,8 +60,15 @@ public class ChatKickRecorder {
      * 그 걱정은 이제 대기 상한이 받는다.
      *
      * <p>남은 역할은 <b>트랜잭션 전체가 무한히 돌지 않게</b> 하는 것이다. 정상 경로는 밀리초라
-     * (임계구역 실측 avg 0.186ms / max 2.262ms) 이 값에 닿지 않는다. 5초는 고른 값이지 측정된
-     * 값이 아니다.
+     * 이 값에 닿지 않는다 — 실측(Postgres 컨테이너, 순차 n=500, 대상·방·강퇴자를 매번 새로):
+     * <b>avg 1.693ms · p50 1.577ms · p99 3.573ms</b>. 5초는 고른 값이지 측정된 값이 아니다.
+     *
+     * <p>⚠️ <b>감사 쓰기가 이 구간 안에 들어왔으므로 그 전의 수와 비교하지 말 것.</b> 전에 이
+     * 자리에 avg 0.186ms / max 2.262ms 가 적혀 있었는데, 같은 실행에서 감사 INSERT 만 뺀
+     * <b>대조군이 avg 1.406ms · p99 2.571ms</b> 였다 — 즉 그 7.5배 차이는 이 커밋이 아니라
+     * 측정 환경이 만든 것이고, 이 커밋이 더한 몫은 <b>avg 0.287ms</b> 다. 환경이 이 수를 지배하므로
+     * 절대값을 다른 날의 값과 견주면 안 된다. 견줄 수 있는 것은 <b>같은 실행의 대조군</b>과
+     * 대기 상한({@code ChatBanJpaRepository.LOCK_WAIT_LIMIT} = 1s)에 대한 여유다(p99 의 280배).
      *
      * <p>package-private 인 것은 테스트가 읽기 때문이다. 손으로 복사해 두면 이 값을 줄일 때
      * "대기가 유계다"를 지키는 단언이 <b>조용히 죽는다</b>(실측: 2초로 줄이면 상한 제거 뮤턴트의
@@ -64,6 +78,7 @@ public class ChatKickRecorder {
 
     private final ChatKickLogRepository kickLogRepository;
     private final ChatBanStateRepository banStateRepository;
+    private final ChatAuditLogRepository auditLogRepository;
 
     /**
      * 강퇴를 기록하고, 필요하면 밴으로 올린다. <b>Redis는 건드리지 않는다.</b>
@@ -72,6 +87,10 @@ public class ChatKickRecorder {
      *
      * <p><b>미러에 반영할 밴을 돌려준다</b> — 새로 건 것이든 이미 있던 것이든. 후자도 돌려주는 이유는
      * 미러 키가 사라졌던 사용자가 다음 강퇴에서 되찾을 수 있어야 해서다.
+     *
+     * <p><b>미러 변경 번호가 함께 온다.</b> 잠금 안에서 집으므로 같은 사용자의 해제와 견준 순서가 커밋
+     * 순서와 같다 — 호출자가 커밋 뒤에 미러를 쓰는 동안 해제가 끼어들어도, 늦게 도착한 이 쓰기를 미러가
+     * 번호로 거절한다.
      *
      * <p>동시 강퇴에서 이 값이 <b>가장 긴 밴이 아닐 수 있다</b>. 그래도 해롭지 않은 것은 미러 쓰기가
      * 늘리기 전용이어서다 — 짧은 쪽이 나중에 도착해도 긴 것을 덮지 못한다. 그 보장이 없다면 여기서
@@ -102,10 +121,24 @@ public class ChatKickRecorder {
      * <p>자원이 하나 더 늘면 그 순서를 지키거나 사이클이 없음을 따로 보여야 한다 — 어긴 것을 알아채는
      * 시점은 운영에서 {@code 40P01}이 뜰 때다.
      *
+     * <p><b>감사 테이블이 네 번째 자원으로 들어왔다</b>({@code live_schema.audit_logs}). 그 요구를
+     * 여기서 치른다 — 순서를 지키는 쪽이 아니라 <b>사이클에 들어갈 수 없음</b>을 보이는 쪽이다.
+     * 유니크 인덱스는 <b>있다</b>({@code pk_live_audit_logs}) — 근거는
+     * 제약의 부재가 아니라 <b>그 키 값이 {@code gen_random_uuid()} 라 겨룰 키가 생기지 않는다</b>는
+     * 것이다. 평범한 INSERT 가 잡는 테이블 잠금은 자기 자신과 충돌하지 않고, 행 수준 대기는 미커밋
+     * 중복 키가 있어야 생기며 v4 는 그것을 만들지 않는다. 이 테이블을 참조하는 외래키도 0건이다.
+     * 그래서 다른 트랜잭션이 이 쓰기를 <b>기다리는 자리</b>가 없고 사이클의 변이 생기지 않는다.
+     *
+     * <p>이 근거를 깨는 변경은 "유니크 제약이 붙는 것" 이 아니라 <b>키가 결정적이 되는 것</b>이다
+     * (자연키 유니크·업서트). 그러면 같은 키를 쓰는 둘이 서로를 기다리게 되고, 그때는 순서를 지키는
+     * 쪽으로 돌아와야 한다. 그리고 앱 트랜잭션 밖에 대기 자리가 하나 있다 — <b>DDL</b>(마이그레이션의
+     * {@code CREATE INDEX}·{@code ALTER TABLE})은 이 INSERT 와 충돌해 기다리게 만든다. 앱 사이의
+     * 사이클은 아니지만 "기다리는 자리가 없다" 는 앱 트랜잭션 사이에서만 참이다.
+     *
      * @param kickLog 기록할 강퇴(파라미터 이름이 {@code log}가 아닌 것은 로거 필드와 겹치기 때문이다)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = TRANSACTION_TIMEOUT_SECONDS)
-    public Optional<ChatBan> record(ChatKickLog kickLog) {
+    public Optional<VersionedBan> record(ChatKickLog kickLog) {
         Instant now = kickLog.kickedAt();
         // 승격 판단 전체를 사용자 단위로 줄 세운다. 세기·견주기·쓰기가 세 걸음이고 그 사이에 남의
         // 미커밋 강퇴가 보이지 않으므로(READ COMMITTED), 직렬화하지 않으면 서로 다른 방의 두 강퇴가
@@ -136,9 +169,16 @@ public class ChatKickRecorder {
         // 있어야 실패가 '대기'가 아니라 '재시도할 수 있는 예외'가 된다.
         boolean firstKickInThisRoom = kickLogRepository.appendIfAbsent(kickLog);
 
+        // 감사 한 줄을 같은 트랜잭션에 적는다 — 커밋된 조치에 흔적이 없으면 안 된다.
+        //
+        // 아래 조기 반환보다 앞에 둔다. 그 둘은 "쓸 행이 없다"로 빠지는 길이지만 조치는 수행됐고,
+        // 특히 같은 방 중복 강퇴는 (user, room) 유니크에 막혀 정본에 아무 흔적을 남기지 않는다 —
+        // 두 번째로 누른 사실이 남는 자리가 이 행뿐이다.
+        auditLogRepository.append(auditEntry(kickLog, firstKickInThisRoom));
+
         Optional<ChatBan> active = banStateRepository.findActive(kickLog.targetUserId(), now);
         if (active.isPresent()) {
-            return active;
+            return active.map(this::versioned);
         }
         if (!firstKickInThisRoom) {
             return Optional.empty();
@@ -172,7 +212,38 @@ public class ChatKickRecorder {
                         log.info("자동 밴 승격 생략 — 이미 더 긴 밴이 있다 userId={} 확증={}명 이 단계={} 남은 만료={}",
                                 kickLog.targetUserId(), kickers, tier, write.effective().expiresAt());
                     }
-                    return write.effective();
+                    return versioned(write.effective());
                 });
+    }
+
+    /**
+     * 미러에 실을 번호를 <b>이 트랜잭션 안에서</b> 집는다 — 위 어드바이저리 잠금이 같은 사용자의 해제와
+     * 이 강퇴를 줄 세우므로, 여기서 집은 번호의 순서가 곧 커밋 순서다. 미러 쓰기는 커밋 뒤라 도착이
+     * 뒤집힐 수 있고, 미러가 이 번호로 늦은 쪽을 거절한다.
+     */
+    private VersionedBan versioned(ChatBan ban) {
+        return new VersionedBan(ban, banStateRepository.nextChangeVersion());
+    }
+
+    /**
+     * 감사 한 줄을 <b>강퇴 로그에서만</b> 만든다 — 행위자·역할·대상·방·시각이 모두 거기 있으므로
+     * 인자를 따로 받지 않는다. 같은 값을 두 번 받으면 갈릴 수 있다는 판단은 이 클래스가
+     * {@code kickedAt} 에 대해 이미 적어 둔 것과 같다.
+     *
+     * <p>{@code detail} 에 두 가지가 들어간다. <b>방</b>은 감사 행의 다른 칸이 말하지 않는다 —
+     * {@code target_id} 는 강퇴당한 사람이고, 어느 방에서 벌어졌는지는 이 칸이 유일하다.
+     * <b>{@code kickLogWritten}</b> 은 정본에 행이 생겼는지다 — {@code false} 면 같은 방에서 이미
+     * 강퇴당한 사람을 다시 누른 것이라 {@code chat_kick_log} 에 아무것도 늘지 않았고, 그 행과
+     * 이 감사 행의 개수가 어긋나는 이유가 여기 적혀 있어야 "기록이 빠졌다"로 읽히지 않는다.
+     */
+    private static ChatAuditEntry auditEntry(ChatKickLog kickLog, boolean kickLogWritten) {
+        return new ChatAuditEntry(
+                kickLog.kickedById(),
+                kickLog.kickedByRole(),
+                ChatAuditAction.CHAT_KICK_USER,
+                kickLog.targetUserId(),
+                Map.of("roomId", kickLog.roomId().toString(),
+                        "kickLogWritten", Boolean.toString(kickLogWritten)),
+                kickLog.kickedAt());
     }
 }

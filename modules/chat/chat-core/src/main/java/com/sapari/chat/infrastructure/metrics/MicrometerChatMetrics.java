@@ -3,7 +3,9 @@ package com.sapari.chat.infrastructure.metrics;
 import com.sapari.chat.application.port.ChatCheckpoint;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
+import com.sapari.chat.application.port.ChatSubscription;
 import com.sapari.chat.application.port.DeliveryStage;
+import com.sapari.chat.application.port.PersistStage;
 import com.sapari.chat.application.port.PolicyReadFailure;
 import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
@@ -35,6 +37,12 @@ public class MicrometerChatMetrics implements ChatMetrics {
     }
 
     @Override
+    public void sendRefused(ChatPolicy policy) {
+        safe(() -> registry.counter(ChatMeterNames.SEND_REFUSED,
+                ChatMeterNames.TAG_POLICY, tag(policy)).increment());
+    }
+
+    @Override
     public void rateLimitDegraded(RateLimitDegradation mode) {
         safe(() -> registry.counter(ChatMeterNames.RATE_LIMIT_DEGRADED,
                 ChatMeterNames.TAG_MODE, tag(mode)).increment());
@@ -55,6 +63,28 @@ public class MicrometerChatMetrics implements ChatMetrics {
     @Override
     public void dictionaryFastPathLost() {
         safe(() -> registry.counter(ChatMeterNames.DICTIONARY_FAST_PATH_LOST).increment());
+    }
+
+    @Override
+    public void withdrawalRecordFailed() {
+        safe(() -> registry.counter(ChatMeterNames.WITHDRAWAL_RECORD_FAILED).increment());
+    }
+
+    @Override
+    public void inboundFrameDropped() {
+        safe(() -> registry.counter(ChatMeterNames.INBOUND_DROPPED).increment());
+    }
+
+    @Override
+    public void persistTimedOut(PersistStage stage) {
+        safe(() -> registry.counter(ChatMeterNames.PERSIST_TIMEOUT,
+                ChatMeterNames.TAG_STAGE, tag(stage)).increment());
+    }
+
+    @Override
+    public void subscriptionResubscribed(ChatSubscription subscription) {
+        safe(() -> registry.counter(ChatMeterNames.SUBSCRIPTION_RESUBSCRIBED,
+                ChatMeterNames.TAG_SUBSCRIPTION, tag(subscription)).increment());
     }
 
     /**

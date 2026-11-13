@@ -132,6 +132,32 @@ public interface LiveMetrics {
     void recentViewDropped(RecentViewDropReason reason);
 
     /**
+     * 룸 토큰 한 장을 발급했다 — <b>서명을 쳤는지 캐시에서 나왔는지</b>를 함께 적는다.
+     *
+     * <p>이 수가 필요한 이유는 캐시가 <b>헛돌 때 아무 신호가 없다</b>는 것이다. 적중률이 0 이어도
+     * 응답·처리량·로그가 전부 같고 차이는 CPU 에만 난다. 그 상태는 "서명 비용을 걷어냈다" 는
+     * 문장만 남기고 비용은 그대로인 모양이라, 다음 사람이 그 문장을 근거로 상한을 올린다.
+     *
+     * <p>두 값을 <b>한 카운터의 태그</b>로 둔 것은 {@link #tokenRevocationHit}/
+     * {@link #tokenRevocationLookupFailed} 를 갈라 둔 것과 반대 판단이고, 근거는 둘의 관계다 —
+     * 여기선 합이 <b>회원 발급 전수</b>이고 구하려는 값이 비율이라 같은 이름이어야 나눌 수 있다.
+     * 저쪽은 합에 의미가 없고(보안 사건 + 인프라 사건) 대응이 정반대라 갈랐다.
+     *
+     * <p>게스트 발급은 <b>세지 않는다</b> — 캐시를 타지 않으므로 분모에 넣으면 적중률이 구조적으로
+     * 눌려 "슬롯이 작다" 와 구분되지 않는다({@link RoomTokenSignatureSource}).
+     */
+    void roomTokenIssued(RoomTokenSignatureSource source);
+
+    /**
+     * 방 종료 신호 하나를 내보내지 못했다(SPR-185).
+     *
+     * <p>발행 어댑터는 커밋 뒤에 돌아서 실패를 던질 수 없다 — 던져도 되돌릴 것이 없고 판매자에게
+     * 종료 실패만 보인다. 그래서 로그 외에 이 수가 <b>chat 이 종료를 모를 수 있는 방</b>의 유일한
+     * 집계 신호다. 어느 신호인지는 {@link RoomEndedSignal} 이 가른다.
+     */
+    void roomEndedSignalFailed(RoomEndedSignal signal);
+
+    /**
      * 아무것도 하지 않는 구현. <b>단위 테스트가 registry 없이 돌게 하는 것</b>이 실제 용도다.
      *
      * <p>(오해 주의: 지금 {@code live-core} 를 의존하는 앱은 {@code live-app} 하나뿐이다 — 확인함:
@@ -156,5 +182,7 @@ public interface LiveMetrics {
         @Override public void listRefreshSaturated() { }
         @Override public void listRefreshFailed() { }
         @Override public void recentViewDropped(RecentViewDropReason reason) { }
+        @Override public void roomTokenIssued(RoomTokenSignatureSource source) { }
+        @Override public void roomEndedSignalFailed(RoomEndedSignal signal) { }
     };
 }

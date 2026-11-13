@@ -104,14 +104,14 @@ class ChatMongoIndexCeilingTest {
     }
 
     @Test
-    @DisplayName("⭐ 상한은 네 인덱스 전체에 걸린다 — 건당이면 최악이 건수에 비례한다")
+    @DisplayName("⭐ 상한은 인덱스 전체에 걸린다 — 건당이면 최악이 건수에 비례한다")
     void theCeilingBoundsTheWholeMethodNotEachCall() {
-        // 네 호출이 각각 상한 바로 아래로 끝나면 아무것도 던지지 않고 누적된다 — 그게 건당 상한의
+        // 호출들이 각각 상한 바로 아래로 끝나면 아무것도 던지지 않고 누적된다 — 그게 건당 상한의
         // 함정이다(실측: 상한 400ms × 4건, 각 300ms → 총 1,279ms, 던짐 0). 데드라인을 한 번 잡으면
         // 총 경과가 상한에 묶인다.
         //
         // ⚠️ 건당으로 되돌렸을 때 실제로 잡는 자리는 아래 경과 단언이 아니라 failureOf 의
-        // "안 던졌다" 가드다 — 넷 다 상한 아래라 정상 반환하므로 경과 단언에는 도달하지 않는다.
+        // "안 던졌다" 가드다 — 전부 상한 아래라 정상 반환하므로 경과 단언에는 도달하지 않는다.
         // 경과 단언이 막는 것은 다른 변형이다: 던지기는 하는데 데드라인이 공유되지 않아 늦게 던지는 꼴.
         ReactiveIndexOperations ops = mock(ReactiveIndexOperations.class);
         given(ops.createIndex(any()))
@@ -140,7 +140,7 @@ class ChatMongoIndexCeilingTest {
                 .hasMessageContaining("0.0057ms")
                 .hasMessageContaining("INDEX_CREATE_CEILING")
                 .hasMessageContaining("CrashLoopBackOff")
-                // 어느 인덱스였는지 — 넷 중 첫 번째에서 걸린다
+                // 어느 인덱스였는지 — 첫 번째에서 걸린다
                 .hasMessageContaining("roomId+_id");
     }
 

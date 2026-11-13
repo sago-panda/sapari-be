@@ -1,7 +1,7 @@
 # live 도메인 체크리스트 (`LIVE-*`)
 
-`domain-reviewer` 가 `domain=live` 로 읽는다. 각 항목은 `modules/live/AGENTS.md` 의 절을 근거로 하며,
-그 파일이 바뀌면 여기도 같이 본다 — 근거가 사라진 항목은 `CONV-10` 감이다.
+`domain-reviewer` 가 `domain=live` 로 읽는다. 각 항목은 `modules/live/AGENTS.md` 의 절을 근거로 하며
+(세부 근거는 그 파일이 가리키는 `.claude/rules/live/*.md` 로 분리됨, SPR-182), 그 파일들이 바뀌면 여기도 같이 본다 — 근거가 사라진 항목은 `CONV-10` 감이다.
 
 ---
 
@@ -26,8 +26,8 @@
 - `LIVE-05` **Reconciliation decides per room, on DB status, right before acting** (§Orphan
   reconciliation) — a once-per-round snapshot; staleness from `updated_at` or viewer count instead of
   `started_at`; gating a room sweep on participant count; **dropping the "global zero is not evidence"
-  abort** in `end-stale-live`; adding grace to the `Ended` room/ingress sweeps (the file explains why
-  grace there opens the hole it would seem to close); deleting where "no DB row → log only" applies.
+  abort** in `end-stale-live`; adding grace to the `Ended` room/ingress sweeps (why grace there opens the
+  hole it would seem to close: `ReconcileOrphanMediaService` — room sweep and `ingressGraceElapsed`); deleting where "no DB row → log only" applies.
   Threshold/cron/batch-size changes: is the stagger (`0/10`, `3/10`, `6/10`) kept, and does the new
   blast radius stay reversible?
 - `LIVE-06` **Webhook handlers are idempotent and dedup'd before they destroy** (§LiveKit webhooks) — a
@@ -49,8 +49,7 @@
   or `hlsArchiveUrl` pointing at the live sliding window instead of the EVENT playlist, is the finding.
   Archive URL must survive `HlsEgressResult` → `StreamInfo` → persistence reload → `endLive`, and be
   exposed through a separate replay use-case, never the authorization-only `GetLiveRoomUseCase` view.
-  Replay is public: an unsigned shared prefix is intentional; signing, ownership checks and prefix
-  separation are not required. Retained: an S3 lifecycle rule expiring `playlist.m3u8` before its
+  Replay is public — see `modules/live/AGENTS.md` §Design-time invariants. Retained: an S3 lifecycle rule expiring `playlist.m3u8` before its
   segments makes replay permanently unavailable. Check the constraint in `infra/AGENTS.md` by hand.
 
 Catch-all: none. A live-specific problem no item covers is reported under the closest item with a note

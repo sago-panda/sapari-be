@@ -379,9 +379,9 @@ class ProfanityDictionaryRefreshHandlerTest {
      * ⭐ <b>버전이 뒤로 가도 적용한다</b> — 한때 조용히 버렸다.
      *
      * <p>단조 비교가 {@code <=} 였을 때 이 경우가 <b>아무 로그도 없이</b> 버려졌다: 매 분 수십
-     * KB 를 읽고 아무것도 교체하지 않는다. 도달 경로가 있다 — {@code FLUSHDB} · 옛 RDB 복원 ·
-     * 낡은 레플리카 페일오버(버전이 1 부터 다시 시작). 그때 버리면 이 Pod 이 함대와 <b>영구히</b>
-     * 갈린다.
+     * KB 를 읽고 아무것도 교체하지 않는다. 도달 경로가 있다 — 키에 큰 수가 손으로 들어간 뒤
+     * 두 키를 잃거나, 시계가 뒤로 간 뒤 두 키를 잃는 경우(발행 번호의 하한이 발행 시각이다).
+     * 그때 버리면 이 Pod 이 함대와 <b>영구히</b> 갈린다.
      *
      * <p>적용이 맞는 이유: 이 Pod 이 가진 유일한 정본 사본이 발행된 스냅샷이고(정본은 테이블인데
      * streaming-app 에는 DataSource 가 없다), 새로고침이 직렬화돼 있어(triggers →
@@ -394,7 +394,7 @@ class ProfanityDictionaryRefreshHandlerTest {
         given(snapshotReader.read()).willReturn(Mono.just(snapshot(4, "정본욕설")));
         refresh("boot");
 
-        // Redis 가 상태를 잃었다 — 버전이 1 부터 다시 시작한다
+        // Redis 가 상태를 잃었고 새 번호가 이 Pod 이 든 수보다 작다
         given(snapshotReader.readVersion()).willReturn(Mono.just(2L));
         given(snapshotReader.read()).willReturn(Mono.just(snapshot(2, "복원된욕설")));
         ListAppender<ILoggingEvent> appender = attachAppender();

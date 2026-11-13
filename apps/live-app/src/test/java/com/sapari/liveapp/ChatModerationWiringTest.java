@@ -24,11 +24,15 @@ import org.springframework.util.ClassUtils;
 
 import com.mongodb.MongoClientSettings;
 import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
+import com.sapari.chat.application.service.ChatBanMirrorSnapshotter;
 import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
 import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
+import com.sapari.chat.port.GetChatHistoryUseCase;
+import com.sapari.chat.port.GetChatNoticeUseCase;
 import com.sapari.chat.port.KickUserUseCase;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 강퇴 경로가 <b>이 앱에서 실제로 조립되는지</b>를 컨텍스트를 띄워 확인한다.
@@ -129,6 +133,14 @@ class ChatModerationWiringTest {
     }
 
     @Test
+    @DisplayName("⭐ 이력·공지 두 포트가 같은 빈 하나로 주입된다 — 반환 타입이 한쪽 인터페이스면 생성 순서에 따라 갈린다")
+    void historyAndNoticePortsResolveToTheSameBean() {
+        // 빈이 하나 더 등록되면 getBean 이 NoUniqueBeanDefinitionException 으로 실패한다
+        assertThat(context.getBean(GetChatNoticeUseCase.class))
+                .isSameAs(context.getBean(GetChatHistoryUseCase.class));
+    }
+
+    @Test
     @DisplayName("⭐ 기록 빈이 프록시다 — 프록시가 아니면 @Transactional이 안 걸리고 모든 강퇴가 500이 된다")
     void recorderIsATransactionalProxy() {
         // given: @Transactional은 프록시를 통해서만 걸린다. 같은 클래스 안의 메서드로 옮기거나
@@ -160,6 +172,15 @@ class ChatModerationWiringTest {
         // when & then
         assertThat(AopUtils.isAopProxy(recorder))
                 .as("ChatBanReleaseRecorder가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /** 재적재의 잠금 읽기도 같은 축이다 — 프록시가 아니면 잠금이 즉시 풀려 번호 순서가 커밋 순서와 갈린다. */
+    @Test
+    @DisplayName("⭐ 밴 미러 스냅샷도 트랜잭션 프록시다 — 잠금과 번호가 한 트랜잭션이어야 한다")
+    void banMirrorSnapshotterIsATransactionalProxy() {
+        assertThat(AopUtils.isAopProxy(context.getBean(ChatBanMirrorSnapshotter.class)))
+                .as("ChatBanMirrorSnapshotter가 프록시가 아니다 — @Transactional이 걸리지 않는다")
                 .isTrue();
     }
 
@@ -213,15 +234,50 @@ class ChatModerationWiringTest {
         // ⚠️ 순서가 중요하다. Boot 자신의 커스터마이저(@Order(0))가 프로퍼티 값으로 이 필드를 덮으므로,
         //    정렬하지 않고 적용하면 우리 값이 지워진 결과가 나온다(실측: UNSPECIFIED). 실제 조립과 같게
         //    @Order로 정렬해야 우리 커스터마이저가 마지막에 온다.
+        // when & then
+        assertThat(appliedMongoSettings().getUuidRepresentation()).isEqualTo(UuidRepresentation.STANDARD);
+    }
+
+    /**
+     * 연산 상한이 <b>앱 배선을 통해</b> 걸리는지.
+     *
+     * <p>⚠️ <b>이 칸이 없으면 축 하나가 통째로 빈다.</b> {@code LiveAppChatMongoTimeoutTest} 는
+     * {@code new ChatModerationBeansConfig()} 로 빈 메서드를 직접 불러 값·분모·부팅가드를 재는데,
+     * 그러면 <b>그 빈이 앱에 등록되는지</b>는 아무도 안 잰다. 실측: 커스터마이저의 {@code @Bean} 만
+     * 떼고 live-app 전수를 돌리면 <b>초록이다</b>(34클래스 183칸 실패 0) — 이 티켓이 고치려는 결함이
+     * 그대로 돌아와도 게이트가 통과한다.
+     *
+     * <p>이 클래스에서 <b>이미 한 번 터진 모양</b>이다 —
+     * {@code ChatMessageEvidenceMongoRepositoryTest} 가 적어 두었다: *"앱이 해야 할 배선을 테스트가
+     * 대신 해 주면 앱에서 그게 빠져도 이 테스트는 초록이다 — 실제로 그렇게 빠진 적이 있고, 그때 이
+     * 테스트는 통과했다."*
+     *
+     * <p>그래서 형제 칸과 같은 자리에서 잰다 — 실제 컨텍스트의 커스터마이저 빈을 <b>전부 모아</b>
+     * {@code @Order} 로 정렬해 적용한 결과를 본다(손열거가 아니라 구조적 수집이라 새 빈이 그냥 실린다).
+     */
+    @Test
+    @DisplayName("⭐ Mongo 연산 상한이 앱 배선으로 걸린다 — 빈이 빠지면 상한 없는 파드가 뜬다")
+    void mongoOperationTimeoutIsWiredIntoTheApp() {
+        assertThat(appliedMongoSettings().getTimeout(TimeUnit.MILLISECONDS))
+                .as("연산 상한이 조립된 설정에 없다 — 드라이버 기본값은 '무제한' 이고, 멈춘 Mongo "
+                        + "아래에서 HTTP 워커가 무한정 점유된다")
+                .isEqualTo(3_000L);
+    }
+
+    /**
+     * 실제 조립을 재현한다 — 등록된 커스터마이저 전부를 {@code @Order} 로 정렬해 빌더에 얹는다.
+     *
+     * <p>⚠️ 순서가 하중이다. Boot 자신의 커스터마이저({@code @Order(0)})가 프로퍼티 값으로 필드를
+     * 덮으므로 정렬하지 않으면 우리 값이 지워진 결과가 나온다(실측: UUID 가 UNSPECIFIED).
+     */
+    private MongoClientSettings appliedMongoSettings() {
         List<MongoClientSettingsBuilderCustomizer> customizers =
                 new ArrayList<>(context.getBeansOfType(MongoClientSettingsBuilderCustomizer.class).values());
         AnnotationAwareOrderComparator.sort(customizers);
 
         MongoClientSettings.Builder builder = MongoClientSettings.builder();
         customizers.forEach(customizer -> customizer.customize(builder));
-
-        // when & then
-        assertThat(builder.build().getUuidRepresentation()).isEqualTo(UuidRepresentation.STANDARD);
+        return builder.build();
     }
 
     /**
@@ -246,6 +302,9 @@ class ChatModerationWiringTest {
                 "ChatBanReleaseRecorder", "ReleaseBanService",
                 // 강퇴 집행 캐시의 역경로 — 정본을 읽어 Redis SET 을 다시 세운다.
                 "ReconcileKickListService",
+                // 밴 미러의 역경로 — 유효한 밴 전부를 정본에서 미러로 다시 깐다. 사용자마다 잠금 안에서 읽는
+                // 트랜잭션 빈이 함께 온다(미러 변경 번호가 해제와 같은 순서여야 한다).
+                "ChatBanMirrorSnapshotter", "ReconcileBanMirrorService",
                 // 종료 마커 해제 — 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 해서
                 // 이 앱에 있다. 기록·조회는 리액티브 쪽이고 streaming-app 이 쓴다.
                 "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",
@@ -268,7 +327,12 @@ class ChatModerationWiringTest {
                 // 사전 관리(ADMIN). 쓰기 선검사가 사전의 <문>을 쓰므로 그 구현도 이 앱에 있다 —
                 // 번들·설정·전파가 지나는 문과 같아야 하기 때문이다.
                 "DictionaryProfanityFilterFactory", "ChatFilterWordWriteRecorder",
-                "ManageFilterWordsService");
+                "ManageFilterWordsService",
+                // 감사 기록. 들어가는 테이블(live_schema.audit_logs)은 도메인 공용인데 쓰는 코드는
+                // chat 뿐이다 — 그래서 action 값에 CHAT_ 접두가 붙는다. 경계 빈이 따로 있는 것은
+                // DB 트랜잭션이 없는 조치 둘(명단 재적재·종료 마커 해제) 때문이고, 나머지 셋은
+                // 자기 recorder 의 트랜잭션 안에서 저장소를 직접 부른다.
+                "ChatAuditLogRepositoryImpl", "ChatAuditRecorder");
 
         // when
         Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())

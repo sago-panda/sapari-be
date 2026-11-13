@@ -14,6 +14,7 @@ import com.sapari.chat.exception.ChatViewerCountUnavailableException;
  * <p>값은 <b>고유 사용자 수</b>다. 한 사람이 창을 여러 개 열어도 1명이고, 재등록이 끊긴 세션을 빼는 판정은
  * 채팅 접속 화면의 집계와 같다.
  */
+@BlockingChat
 public interface GetChatViewerCountsUseCase {
 
     /**

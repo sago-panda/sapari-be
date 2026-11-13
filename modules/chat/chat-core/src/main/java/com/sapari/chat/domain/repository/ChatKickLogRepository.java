@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatKickLog;
+import com.sapari.chat.port.BlockingChat;
 
 /**
  * 강퇴 증거 로그(Postgres) 포트 — 강퇴 흐름의 <b>정본</b>이다.
@@ -13,6 +14,7 @@ import com.sapari.chat.domain.model.ChatKickLog;
  * 반대로 여기에 못 남기면 그 강퇴는 일어나지 않은 것으로 친다 — 그래서 이 쓰기가 실패하면
  * 뒤따르는 Redis·발행 단계를 <b>실행하지 않는다</b>.
  */
+@BlockingChat
 public interface ChatKickLogRepository {
 
     /**

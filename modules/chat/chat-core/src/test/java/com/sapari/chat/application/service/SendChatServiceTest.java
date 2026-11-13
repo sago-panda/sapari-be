@@ -1,6 +1,8 @@
 package com.sapari.chat.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.BDDMockito.willReturn;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -37,8 +39,11 @@ import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.RateLimitResult;
 import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
+import com.sapari.chat.domain.exception.ChatPersistTimeoutException;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
+import com.sapari.chat.domain.exception.ClientMsgIdReusedException;
 import com.sapari.chat.domain.exception.KickStoreCorruptedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserBannedException;
@@ -78,6 +83,10 @@ class SendChatServiceTest {
     @Mock
     private ChatBroadcaster broadcaster;
 
+    /** 상한 발동을 관측하려면 포트가 목이어야 한다 — NOOP 은 호출을 기록하지 않는다. */
+    @Mock
+    private ChatMetrics metrics;
+
     // @InjectMocks를 쓰지 않는다 — 정책·필터는 가짜로 바꾸면 검증 대상이 사라지는 순수 로직이라
     // 실제 인스턴스로 조립한다. 포트만 @Mock이다.
     private SendChatService service;
@@ -96,7 +105,7 @@ class SendChatServiceTest {
                 filterCell,
                 kickRepository, banRepository, rateLimiter, chatMessageRepository, broadcaster,
                 new TimeProvider(Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC)),
-                ChatMetrics.NOOP);
+                metrics);
         // 기본은 "밴 아님". 강퇴와 밴 조회는 zip으로 함께 뜨므로 강퇴 검사에 닿는 모든 테스트가 이걸
         // 부르지만, 그 앞(권한·검증)에서 끝나는 테스트는 부르지 않는다 — 그래서 lenient다.
         lenient().when(banRepository.isBanned(any())).thenReturn(Mono.just(false));
@@ -315,42 +324,40 @@ class SendChatServiceTest {
     }
 
     @Test
-    @DisplayName("밴 조회 Redis 에러 → fail-open(전송 허용) — 강퇴 조회와 같은 가용성 정책")
-    void banned_redis_error_fails_open() {
+    @DisplayName("밴 조회 Redis 에러 → 전송 거절(UNAVAILABLE), 저장하지 않는다 — 같은 키로 다시 보내면 된다")
+    void banned_redis_error_refuses_send() {
         // given
         given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
         given(banRepository.isBanned(senderId)).willReturn(Mono.error(new RuntimeException("redis down")));
-        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
-        given(chatMessageRepository.save(any())).willAnswer(inv -> Mono.just(inv.getArgument(0)));
-        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
-
-        // when & then: 밴 조회가 죽었다고 채팅 전체가 멈추지는 않는다
-        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
-                .expectNextCount(1)
-                .expectComplete().verify(VERIFY_CEILING);
-    }
-
-    @Test
-    @DisplayName("kicked 조회 Redis 에러 → fail-open(전송 허용, L13)")
-    void kicked_redis_error_fails_open() {
-        // given
-        given(kickRepository.isKicked(any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
-        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
-        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
-                .given(chatMessageRepository).save(any());
-        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
 
         // when
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
-                .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
-                .expectComplete().verify(VERIFY_CEILING);
+                .expectError(ChatSendUnavailableException.class)
+                .verify(VERIFY_CEILING);
 
         // then
-        then(chatMessageRepository).should(times(1)).save(any());
+        then(rateLimiter).should(never()).tryAcquire(any());
+        then(chatMessageRepository).should(never()).save(any());
     }
 
     @Test
-    @DisplayName("키 타입 충돌도 fail-open이지만 로그는 갈라진다 — 재시도로 낫지 않는다는 사실이 남아야 한다")
+    @DisplayName("kicked 조회 Redis 에러 → 전송 거절(UNAVAILABLE), 저장하지 않는다")
+    void kicked_redis_error_refuses_send() {
+        // given
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.error(new RuntimeException("redis down")));
+
+        // when
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .expectError(ChatSendUnavailableException.class)
+                .verify(VERIFY_CEILING);
+
+        // then
+        then(rateLimiter).should(never()).tryAcquire(any());
+        then(chatMessageRepository).should(never()).save(any());
+    }
+
+    @Test
+    @DisplayName("키 타입 충돌만은 전송을 통과시키고 ERROR 로 남긴다 — 막으면 사람이 올 때까지 그 방 채팅이 멈춘다")
     void kickStoreCorrupted_failsOpenButLogsSeparately() {
         // given: 조회가 Redis 복구와 무관하게 계속 실패하는 상태
         String key = "chat:kicked:" + roomId;
@@ -366,7 +373,7 @@ class SendChatServiceTest {
         appender.start();
         logger.addAppender(appender);
 
-        // when: 가용성 우선 정책은 그대로 — 전송은 통과해야 한다
+        // when: Redis 는 살아 있고 재시도로 낫지 않는 경우라 전송은 통과해야 한다
         try {
             StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                     .assertNext(view -> assertThat(view.id()).isEqualTo("genId"))
@@ -403,17 +410,13 @@ class SendChatServiceTest {
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
         logger.addAppender(appender);
-        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder().id("genId").build()))
-                .given(chatMessageRepository).save(any());
-        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
-        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
         given(kickRepository.isKicked(any(), any()))
                 .willReturn(Mono.error(new IllegalStateException("Redis down")));
 
         // when
         try {
             StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
-                    .expectNextCount(1).expectComplete().verify(VERIFY_CEILING);
+                    .expectError(ChatSendUnavailableException.class).verify(VERIFY_CEILING);
         } finally {
             logger.detachAppender(appender);
         }
@@ -511,6 +514,59 @@ class SendChatServiceTest {
     }
 
     @Test
+    @DisplayName("⭐ 같은 키에 다른 본문 → CLIENT_MSG_ID_REUSED. 먼저 저장된 메시지를 ACK 로 돌려주면 이번 본문이 성공으로 사라진다")
+    void duplicate_key_with_different_body_is_refused() {
+        // given: 같은 clientMsgId 로 "안녕" 이 이미 저장돼 있다
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        given(chatMessageRepository.save(any())).willReturn(Mono.error(new DuplicateKeyException("dup")));
+        ChatMessage existing = ChatMessage.builder()
+                .id("existingId").roomId(roomId).senderId(senderId)
+                .senderNickname("닉네임").senderRole(ChatRole.BUYER)
+                .type(new ChatMessageType.Normal())
+                .originalMessage("안녕").displayMessage("안녕")
+                .clientMsgId("c1").createdAt(Instant.parse("2026-06-18T00:00:00Z"))
+                .build();
+        given(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
+                .willReturn(Mono.just(existing));
+
+        // when
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "다른 말", "c1")))
+                .expectError(ClientMsgIdReusedException.class)
+                .verify(VERIFY_CEILING);
+
+        // then
+        then(broadcaster).should(never()).publish(any(), any());
+    }
+
+    /**
+     * 비교 축이 원문인지 — 표시문은 사전이 바뀌면 같은 원문에서도 달라진다. 저장된 표시문을 이번 원문과
+     * 다르게 두고 재전송이 통과하는지 본다. 표시문을 비교하면 이 칸이 깨진다.
+     */
+    @Test
+    @DisplayName("같은 원문의 재전송은 저장된 표시문이 달라도 기존 메시지를 돌려준다 — 비교 축은 원문이다")
+    void duplicate_key_compares_original_not_display() {
+        // given: 그 사이 사전이 바뀌어 저장된 표시문이 이번 원문과 다르다
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        given(chatMessageRepository.save(any())).willReturn(Mono.error(new DuplicateKeyException("dup")));
+        ChatMessage existing = ChatMessage.builder()
+                .id("existingId").roomId(roomId).senderId(senderId)
+                .senderNickname("닉네임").senderRole(ChatRole.BUYER)
+                .type(new ChatMessageType.Normal())
+                .originalMessage("안녕").displayMessage("**")
+                .clientMsgId("c1").createdAt(Instant.parse("2026-06-18T00:00:00Z"))
+                .build();
+        given(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
+                .willReturn(Mono.just(existing));
+
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .assertNext(view -> assertThat(view.id()).isEqualTo("existingId"))
+                .expectComplete().verify(VERIFY_CEILING);
+    }
+
+    @Test
     @DisplayName("publish 실패(비-Duplicate) → 에러 흡수, 저장 메시지 view 반환 (TC#22 — 발신자에겐 성공)")
     void publish_failure_absorbed_returns_saved_view() {
         // given
@@ -540,6 +596,37 @@ class SendChatServiceTest {
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
                 .expectError(IllegalStateException.class)
                 .verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("⭐ 저장 상한은 발신자에게 에러로 가고 delivery.dropped 는 오르지 않는다")
+    void aPersistTimeoutIsCountedOnItsOwnAxis() {
+        // given: 어댑터가 드라이버 예외를 이 도메인 타입으로 **번역해서** 올린다 — 서비스는 드라이버
+        // 타입을 보지 않는다(루트 AGENTS.md: 서비스에서 SDK 직접 호출 금지 / ArchUnit:
+        // application → infrastructure 금지). 드라이버 체인에서 이 타입이 나오는지는
+        // ChatMessageRepositoryImplTest 가 실제 Mongo 로 본다.
+        RuntimeException wrapped = new ChatPersistTimeoutException(new RuntimeException("timeout"));
+        // 선행 단계만 통과시킨다(강퇴·레이트리밋 — 밴은 setUp 이 lenient 로 세운다). 안 세우면
+        // 그 앞에서 끝나 이 칸이 "목 상호작용 0" 으로 실패한다(실측). stubAllowedAndSaved 를
+        // 쓰지 않는 이유는 그게 save·publish 도 세워서 엄격 스텁이 "안 쓰인 스텁" 으로 잡기
+        // 때문이다 — publish 는 이 칸에서 도달하지 않는다(저장이 먼저 끊긴다).
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        // ⚠️ given(mock.save(any())) 형태를 쓰면 안 된다 — 그 호출이 목을 **실제로 돌려**
+        // 앞서 stubAllowedAndSaved 가 걸어 둔 answer 가 null 인자로 실행돼 NPE 가 난다(실측).
+        willReturn(Mono.error(wrapped)).given(chatMessageRepository).save(any());
+
+        // when & then: 발신자에게는 에러가 간다 — 결과를 모르는데 ack 를 주면 "확인 못 한 것이 성공" 이 된다.
+        assertThatThrownBy(() -> service.send(command("BUYER", false, true, "NORMAL", "안녕", "t1"))
+                .block(VERIFY_CEILING)).isNotNull();
+
+        // ⚠️ 상한 수를 세는 자리는 **영속 어댑터**다 — 쓰기와 중복복구 재조회를 가르는 수가 드라이버
+        // 예외이고 이 계층은 그것을 보지 않는다. 그 갈래별 계수는
+        // ChatMessagePersistTimeoutTranslationTest 가 단언한다.
+        //
+        // 여기서 재는 것은 delivery.dropped 가 **오르지 않는다**는 쪽이다. 그 미터의 문서상 의미가
+        // "메시지는 영속됐고 실시간 전달만 잃었다" 라, 저장 실패를 거기 태우면 그 정의가 거짓이 된다.
+        then(metrics).should(never()).deliveryDropped(any());
     }
 
     @Test

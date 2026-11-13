@@ -2,6 +2,7 @@ package com.sapari.liveapp.controller.chat;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
@@ -39,6 +40,9 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import com.sapari.chat.port.ManageFilterWordsUseCase;
 import com.sapari.chat.view.FilterWordsView;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.chat.domain.exception.FilterWordRejectedException;
+import com.sapari.chat.domain.exception.FilterWordSourceInvalidException;
+import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.global.time.TimeProvider;
@@ -64,8 +68,10 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 @WebMvcTest(controllers = ChatFilterWordController.class,
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
+// GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
+// (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
 @Import({ChatFilterWordController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
-        ChatFilterWordAuthorizationTest.FixedClockConfig.class})
+        ChatFilterWordAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("사전 관리 엔드포인트 — 세 메서드 전부 관리자만 지난다")
 class ChatFilterWordAuthorizationTest {
 
@@ -96,6 +102,32 @@ class ChatFilterWordAuthorizationTest {
         Authentication auth = new UsernamePasswordAuthenticationToken(
                 principal, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
         return authentication(auth);
+    }
+
+    @Test
+    @DisplayName("⭐ 사전 에러코드가 선언한 상태코드로 HTTP 를 떠난다 — 409 를 400 으로 뒤집어도 여태 아무것도 깨지지 않았다")
+    void filterWordErrorCodesLeaveAsTheirDeclaredStatus() throws Exception {
+        // given: 409 와 400 을 같이 본다 — 하나만 보면 "전부 400" 회귀가 통과한다
+        willThrow(new FilterWordSourceInvalidException("출처가 다르다", null))
+                .given(manageFilterWordsUseCase).add(any());
+
+        // when & then
+        mockMvc.perform(post("/api/v1/chat/filter-words")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"PROFANITY\",\"word\":\"지랄\"}")
+                        .with(as("ADMIN")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("CHAT-011"));
+
+        willThrow(new FilterWordRejectedException("형식이 아니다"))
+                .given(manageFilterWordsUseCase).add(any());
+
+        mockMvc.perform(post("/api/v1/chat/filter-words")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"PROFANITY\",\"word\":\"지랄\"}")
+                        .with(as("ADMIN")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("CHAT-010"));
     }
 
     @Test
