@@ -5,6 +5,7 @@ import java.util.function.Function;
 
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.domain.model.ChatSession;
+import com.sapari.chat.port.ReactiveChat;
 
 import reactor.core.publisher.Mono;
 
@@ -12,6 +13,7 @@ import reactor.core.publisher.Mono;
  * 세션 관리 추상화 — 각 Pod 로컬 메모리 레지스트리 + Redis HASH를 함께 조율한다.
  * 구현체 ChatSessionRegistry는 실제 WS 채널을 쥐고 있어 transport(streaming-app)에 둔다.
  */
+@ReactiveChat
 public interface ChatSessionManager {
 
     /**

@@ -3,6 +3,8 @@ package com.sapari.chat.application.port;
 import java.util.OptionalLong;
 import java.util.Set;
 
+import com.sapari.chat.port.BlockingChat;
+
 /**
  * 정본에서 읽은 사전을 전파용 스냅샷으로 내보낸다 — <b>live-app 쪽 포트</b>다.
  *
@@ -18,6 +20,7 @@ import java.util.Set;
  * 정하면 live-app Pod 가 둘일 때 같은 번호를 두 번 쓰거나 번호가 뒤로 갈 수 있고, 그러면
  * 받는 쪽의 단조 비교가 거짓을 지킨다.
  */
+@BlockingChat
 public interface ProfanityDictionarySnapshotPublisher {
 
     /**

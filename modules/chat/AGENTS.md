@@ -39,13 +39,14 @@ ban release, kick-list reconcile, ban-mirror reconcile, end-marker clear, dictio
 
 ArchUnit enforces the calling direction: streaming-app must not touch blocking Redis/Mongo templates or
 blocking chat use cases; live-app (MVC) must not touch reactive ones. Which side a type is on comes from
-`@BlockingChat` / `@ReactiveChat` (chat-api `port`); the rules also catch implementations of a marked interface.
-Every chat-api port must carry exactly one, matching its return types (`every_chat_port_declares_whether_it_blocks`).
-chat-core-only types are marked by hand and nothing counts them: four are marked (`ChatKickRecorder`,
-`ChatAccountEventPublisher`, `ChatAccountEventSource`, `ChatAccountEventHandler`). Of the 12 chat-core types
-that hold blocking infrastructure directly (`StringRedisTemplate` · `MongoTemplate` · `JpaRepository`, counted
-2026-11-13), only `ChatAccountEventRedisPublisher` is reached through a marker; the other 11 storage adapters
-are outside every rule, so streaming-app could depend on them without a red build.
+`@BlockingChat` / `@ReactiveChat` / `@InMemoryChat` (chat-api `port`); the rules also catch implementations of
+a marked interface. Every chat port — chat-api `port`, chat-core `domain.repository` and `application.port` —
+must carry exactly one, matching its return types (`every_chat_port_declares_whether_it_blocks`). Blocking and
+in-memory look the same in a signature, so a second rule counts from the adapter side: any chat type holding
+`StringRedisTemplate` / `RedisTemplate` / `MongoTemplate` / a JPA repository must be `@BlockingChat`, itself or
+through an interface (`chat_types_holding_blocking_infrastructure_are_marked_blocking`; 12 such types on
+2026-11-13, all reached through their port). `ChatKickRecorder` and `ChatAccountEventHandler` are neither ports
+nor infrastructure holders, so their markers are by hand and neither rule counts them.
 
 ## Failure policy — entry reads open, send reads refuse, the rate limit degrades
 

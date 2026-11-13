@@ -4,6 +4,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.FilterWordKind;
+import com.sapari.chat.port.BlockingChat;
 
 /**
  * 욕설 사전의 <b>정본</b> — {@code live_schema.chat_filter_word}.
@@ -21,6 +22,7 @@ import com.sapari.chat.domain.model.FilterWordKind;
  * 무동작이다. 관리자가 같은 단어를 두 번 누르는 것은 평범한 일이고, 그것이 500 이 되면 운영자는
  * "이미 막혀 있다" 와 "쓰기가 실패했다" 를 구분할 수 없다. 반환값이 그 구분을 준다.
  */
+@BlockingChat
 public interface ChatFilterWordRepository {
 
     /**

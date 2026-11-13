@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -15,6 +17,7 @@ import reactor.core.publisher.Mono;
  * <p><b>어댑터 계약</b>: Redis 장애 시 {@code false}로 흡수하지 말고 error를 전파한다. 소비처 정책은
  * 입장 게이트에서만 읽고, 그 자리의 다른 조회와 같은 fail-open 이다({@link ChatBanRepository}).
  */
+@ReactiveChat
 public interface ChatWithdrawalRepository {
 
     Mono<Boolean> isWithdrawing(UUID userId);

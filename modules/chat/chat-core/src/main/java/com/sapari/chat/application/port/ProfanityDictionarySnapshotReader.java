@@ -1,5 +1,7 @@
 package com.sapari.chat.application.port;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -9,6 +11,7 @@ import reactor.core.publisher.Mono;
  * 스냅샷뿐이고, 그래서 이 포트가 보는 값은 정본의 <b>복사본</b>이다 — 그 사실이 아래 두 메서드가
  * 따로 있는 이유다.
  */
+@ReactiveChat
 public interface ProfanityDictionarySnapshotReader {
 
     /**

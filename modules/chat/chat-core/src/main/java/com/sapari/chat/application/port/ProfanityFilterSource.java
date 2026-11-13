@@ -1,6 +1,7 @@
 package com.sapari.chat.application.port;
 
 import com.sapari.chat.domain.rule.ProfanityFilter;
+import com.sapari.chat.port.InMemoryChat;
 
 /**
  * 지금 유효한 욕설 필터를 내주는 포트 — <b>사전이 런타임에 바뀔 수 있기 때문에 있다.</b>
@@ -21,6 +22,7 @@ import com.sapari.chat.domain.rule.ProfanityFilter;
  * <p><b>구현은 호출마다 멀쩡한 필터를 내줘야 한다.</b> {@code null} 을 내주면 마스킹이 그 순간
  * 조용히 꺼지고, 그건 이 도메인이 부팅 실패를 택해 막아 둔 상태다.
  */
+@InMemoryChat
 public interface ProfanityFilterSource {
 
     /** 지금 유효한 필터. 매 메시지마다 불린다 — 구현이 무거우면 그게 그대로 전송 지연이 된다. */

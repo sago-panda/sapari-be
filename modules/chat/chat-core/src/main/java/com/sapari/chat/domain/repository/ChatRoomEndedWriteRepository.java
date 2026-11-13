@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.BlockingChat;
+
 /**
  * 종료 마커({@code chat:room:{roomId}:ended}) <b>해제</b> 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
@@ -22,6 +24,7 @@ import java.util.UUID;
  *
  * <p>실패는 그대로 던진다 — 못 지운 마커는 그 방이 계속 막혀 있다는 뜻이다.
  */
+@BlockingChat
 public interface ChatRoomEndedWriteRepository {
 
     /**

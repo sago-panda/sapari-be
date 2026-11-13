@@ -1,5 +1,7 @@
 package com.sapari.chat.application.port;
 
+import com.sapari.chat.port.InMemoryChat;
+
 /**
  * chat 도메인 관측 포트. <b>구현 기술(micrometer)을 이 계층에 들이지 않기 위한 경계다.</b>
  *
@@ -18,6 +20,7 @@ package com.sapari.chat.application.port;
  * 전파해 <b>통과시키기로 한 요청이 거부된다</b> — 가용성 우선 정책이 관측 때문에 정반대로 뒤집힌다.
  * 그 불변식은 {@code SendChatService} 가 이미 주석으로 경고해 둔 것이고, 테스트가 고정한다.
  */
+@InMemoryChat
 public interface ChatMetrics {
 
     /**

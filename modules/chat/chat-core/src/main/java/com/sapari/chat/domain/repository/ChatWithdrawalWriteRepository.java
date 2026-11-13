@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.ReactiveChat;
+
 import reactor.core.publisher.Mono;
 
 /**
@@ -13,6 +15,7 @@ import reactor.core.publisher.Mono;
  * <p>모든 Pod 가 같은 이벤트를 받으므로 같은 기록을 여러 번 쓴다. 같은 값과 같은 수명이라 해롭지 않고,
  * 한 Pod 가 이벤트를 놓쳐도 다른 Pod 의 쓰기가 남는다.
  */
+@ReactiveChat
 public interface ChatWithdrawalWriteRepository {
 
     Mono<Void> markWithdrawing(UUID userId);
