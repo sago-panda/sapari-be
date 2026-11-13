@@ -8,8 +8,9 @@
 # 규칙:
 #   - 모든 항목 ID 는 정확히 한 리뷰어가 소유한다. 접두사가 소유권이다.
 #   - 에이전트 정의는 .claude/agents/<name>.md (로컬, Bash 있음) 와 <name>-ci.md (CI, Bash 없음) 한 쌍.
-#   - 방법론 md 는 .claude/rules/ 에 두지 않는다 — 그 디렉터리는 모든 세션에 자동 로드된다.
-#     리뷰어만 Read 하도록 .claude/review/ 에 둔다. 공통 규칙은 .claude/review/common.md.
+#   - 방법론 md 는 .claude/review/ 에 둔다(리뷰어만 Read). 공통 규칙은 .claude/review/common.md.
+#   - .claude/rules/ 에는 paths: 프런트매터로 범위를 좁힌 파일만 새로 둔다 — 그 경로를 다룰 때만 로드된다.
+#     paths 없는 파일은 모든 세션에 자동 로드되므로 금지한다(기존 karpathy-guidelines.md 는 예외, 의도적 전역).
 #   - domains: 를 가진 리뷰어는 도메인 인자로 파라미터화된다. 접두사 = 도메인명 대문자,
 #     체크리스트 = .claude/review/domains/<domain>.md. 도메인 추가 = 이 목록 + 그 파일 하나.
 #

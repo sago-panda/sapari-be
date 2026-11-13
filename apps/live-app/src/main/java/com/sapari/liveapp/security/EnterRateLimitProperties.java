@@ -73,8 +73,7 @@ public record EnterRateLimitProperties(
      * <p>이 경로의 요청 하나는 {@code RoomTokenProvider} 의 <b>RS256 서명</b>을 한 번 치른다.
      * 실측(RSA-2048): 서명 685µs = <b>코어당 1,458건/s</b>. (SPR-173 에서 <b>재측정</b>한 값은
      * 688µs = 코어당 1,453건/s 로, 같은 것의 두 값이 아니라 <b>다른 날의 두 측정</b>이다.)
-     * 형제 webhook 이 치르는 서명
-     * <b>검증</b>은 31µs = 코어당 32,498건/s 로 22배 싸다 — 그래서 비용 등급이 다르다.
+     * 형제 webhook 과는 비교하지 않는다 — 그쪽은 RSA 검증을 하지 않는다({@code EnterRateLimiter}).
      *
      * <p>⚠️ <b>이 값이 "정상 트래픽보다 한참 위" 라는 근거는 없다.</b>
      * {@code modules/live/AGENTS.md} 가 형제 상한에 대해 요구하는 것이 정확히 그것인데

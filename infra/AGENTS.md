@@ -74,6 +74,10 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
   `contextLoads` stays green on a local database that predates the migration. The guard fires on a real
   run (`bootRun` / deployed pod), which is where it matters; locally, run `migrate.sh` against your DB, or
   set `live.reconcile.enabled=false` to take the jobs down with it.
+- **Removed live-app config keys must leave every deployed yaml/env before the upgrade**, or the app refuses
+  to boot → `.claude/rules/live/reconcile.md`.
+- **Before a bulk UPDATE of `live_schema.live_room.status`, disable the orphan-media job and rolling-restart
+  first** → `modules/live/AGENTS.md` §Design-time invariants.
 
 How it runs:
 - **local:** `DB_URL=… DB_USER=… DB_PASSWORD=… ./infra/migration/migrate.sh` (needs Flyway CLI;
@@ -374,7 +378,8 @@ An egress writes two manifests per rendition and they are **not** interchangeabl
   explicitly account for every report-only population (suspended, no live URL, no ended_at); a suspended
   legacy room may end later. Only after that review, a `0` exit **and** complete retirement of pre-SPR-148 writers may the legacy-hiding
   mapping (`LiveRoomMapper.archiveUrl`, the Ended branch of `applyStatusFields`) be removed, and that
-  removal must update `modules/live/AGENTS.md`, the mapper comment, the
+  removal must update `modules/live/AGENTS.md` §Design-time invariants (the legacy-rows line), the mapper
+  comment, the
   `copiedLiveUrlIsUnavailableUntilBackfilled` test name and `.claude/review/domains/live.md` LIVE-08 in the
   same commit.
 

@@ -145,15 +145,22 @@ rules:
               # 스레드 조율 구문. 경합을 재현하는 테스트가 전부 여기를 지난다.
               "CountDownLatch", "CyclicBarrier", "LockSupport", "onSpinWait",
               "\w*(Kafka|Rabbit|Sqs|Jms|Sns)Template\b", "ApplicationEventPublisher", "convertAndSend", "publishEvent\(", "@Modifying", "@Retryable", "ShedLock"]
-    anchors: ["modules/live/AGENTS.md", "**/infrastructure/persistence/**/*Repository*.java"]
+    anchors: ["modules/live/AGENTS.md", ".claude/rules/live/*.md", "**/infrastructure/persistence/**/*Repository*.java"]
     activate: [CONC-01, CONC-02, CONC-03, CONC-04, CONC-05, CONC-06, CONC-07]
 
   - trigger: ["modules/live/**/*.java", "apps/live-app/**/*.java", "db/migration/live/*.sql"]
-    # 도메인 리뷰어(domain=live). 판정 근거를 동봉한다 — 대부분은 modules/live/AGENTS.md 에 있고,
+    # 도메인 리뷰어(domain=live). 판정 근거를 동봉한다 — 대부분은 modules/live/AGENTS.md 와 그 세부인
+    # .claude/rules/live/*.md 에 있고,
     # LIVE-08 의 인프라 측(playlist.m3u8 라이프사이클, egress 산출물 URL 계약, 백필 절차)만 infra/AGENTS.md 에 있다.
     # (SPR-148 이 다시보기를 전면 공개로 정하면서 "CDN 선행" 조건은 LIVE-08 에서 빠졌다.)
-    anchors: ["modules/live/AGENTS.md", "infra/AGENTS.md"]
+    anchors: ["modules/live/AGENTS.md", ".claude/rules/live/*.md", "infra/AGENTS.md"]
     activate: [LIVE-01, LIVE-02, LIVE-03, LIVE-04, LIVE-05, LIVE-06, LIVE-07, LIVE-08]
+
+  - trigger: ["**/AGENTS.md", ".claude/rules/*.md", "**/src/main/java/**/*.java"]
+    # 문서 배치 규칙(루트 AGENTS.md §Where knowledge lives). 문서 쪽은 "어떻게" 가 들어오는지,
+    # 코드 쪽은 여러 파일에 걸친 불변식이 주석에만 남는지를 본다.
+    anchors: ["AGENTS.md"]
+    activate: [CONV-14]
 
   - trigger: ["**/src/test/**/*.java"]
     # 프로덕션 코드를 겨냥한 항목은 켜지 않는다. 테스트에 걸면 픽스처와

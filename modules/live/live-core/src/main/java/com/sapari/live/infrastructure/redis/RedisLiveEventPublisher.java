@@ -21,11 +21,11 @@ import com.sapari.live.application.port.RoomEndedSignal;
  *
  * <p><b>종료 키를 먼저 남기고 발행한다</b>({@link LiveRedisKeys#roomEnded}, SPR-185). Pub/Sub 은 그 순간
  * 구독하지 않던 쪽에 영영 오지 않으므로, 이벤트를 놓친 쪽이 키로 종료를 확인하게 하려는 것이다 —
- * ⚠️ 키를 읽는 쪽은 아직 없다(chat 후속 작업). 그 전까지는 이벤트 실패가 곧 종료 신호 유실이다.
+ * chat 은 SPR-184 부터 자기 마커와 함께 이 키를 읽는다({@code ChatRoomEndedRedisRepository.isEnded}).
  *
  * <p><b>두 신호는 따로 시도하고, 실패는 던지지 않는다.</b> 호출자는 종료 커밋 뒤의 {@code afterCommit}
  * 이라 던져도 되돌릴 것이 없고 판매자에게 종료 실패만 보인다. 한쪽 실패가 다른 쪽을 막지 않게 하는
- * 것은 키를 읽는 쪽이 생기면 둘이 서로의 백스톱이 되기 때문이다. 실패는 ERROR 로그와 {@link LiveMetrics#roomEndedSignalFailed}
+ * 것은 둘이 서로의 백스톱이기 때문이다. 실패는 ERROR 로그와 {@link LiveMetrics#roomEndedSignalFailed}
  * 로 남긴다 — 재시도·아웃박스는 없다(at-most-once).
  */
 @Slf4j

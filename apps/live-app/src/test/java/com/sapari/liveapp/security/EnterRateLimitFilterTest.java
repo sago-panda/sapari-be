@@ -222,7 +222,7 @@ class EnterRateLimitFilterTest {
     void defaultsAreFixedAndInvalidLimitsRefuseToBoot() {
         EnterRateLimitProperties defaults =
                 new EnterRateLimitProperties(null, null, null, null, null, null, null, null);
-        // 세 면(코드·yaml·AGENTS.md)에 같은 수가 적혀 있다 — 한 면만 고치면 여기서 깨진다.
+        // 코드 기본값을 고정한다. application.yaml.example 의 같은 수는 손으로 맞춘다.
         assertThat(defaults.guestPermitsPerSecond()).isEqualTo(500);
         assertThat(defaults.guestBurst()).isEqualTo(1_000);
         assertThat(defaults.memberPermitsPerSecond()).isEqualTo(500);

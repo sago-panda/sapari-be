@@ -3,6 +3,47 @@
 Reference implementation for a new domain. Root `AGENTS.md` owns the cross-cutting rules; this file is
 live-specific only. ✅ create / start (WebRTC·RTMP) / enter / end / list / reconciliation. 🚧 chat.
 
+**Where the rest lives.** How, and why that belongs to one class, is in that class's comment and is not
+repeated here. `.claude/rules/live/` holds, per area, a map of which class comments cover what (Claude Code
+loads each only when a matching file is touched; other agents: read it before changing that area) plus the
+few facts that fit neither here nor a comment.
+
+| Area | Rules file |
+|---|---|
+| Orphan reconciliation — upgrade order, unregistered alert | `.claude/rules/live/reconcile.md` |
+| Observability — metric semantics map | `.claude/rules/live/observability.md` |
+| HLS egress artifacts & replay (`LIVE-08`) | `.claude/rules/live/replay-egress.md` |
+| Enter rate limit & room token | `.claude/rules/live/enter.md` |
+
+## Design-time invariants (check before spec/plan)
+
+Path-scoped rules load only when a matching file is touched, so a spec or plan never sees them. Each fact
+here is written once; the named class holds the reasoning.
+
+- **Replay is public** — no signature, ownership check or separate prefix — and served by its own use case, never
+  the authorization-only `GetLiveRoomUseCase` view (`GetLiveReplayUseCase`).
+- **`MasterPlaylistPublisher` runs under the start row lock and is not bounded by `callTimeout`**; an adapter must
+  cap the whole call, retries included, at 15s (`MasterPlaylistPublisher`).
+- **ABR replay needs both masters published, or both URLs fall back to 720p** (`LiveKitMediaManager.publishMaster`).
+- **`playlist_name` and `live_playlist_name` must differ** — LiveKit rejects the request, so every start fails (`LiveKitMediaManager`).
+- **`Ended` is a DB state, not egress completion** — the last segments and ENDLIST may still be finalizing; S3
+  retention must keep the EVENT playlist as long as its segments (`infra/AGENTS.md`).
+- **Legacy archive rows stay** — remove the legacy-hiding mapping (`LiveRoomMapper.archiveUrl`) only after a verified
+  backfill (incl. rows ended by old replicas) and full retirement of pre-SPR-148 writers; never auto-replace
+  filenames or invent replay URLs for pre-upgrade rooms.
+- **Before a bulk UPDATE of `live_room.status`, set `LIVE_RECONCILE_ORPHAN_MEDIA_ENABLED=false` and rolling-restart
+  first** — it gates bean registration, so it neither applies without a restart nor stops a running round.
+- **A round's `aborted` and `failed` outcomes never merge** (`live.reconcile.round{outcome}`; why: `LiveMetrics`).
+- **Any role-demotion path must revoke tokens** (`JwtTokenLifecycle.revokeSession`/`revokeAllSessions`). None
+  exists today — a role is fixed at creation (`UserEntity`).
+- **Revocation gates issuance only** — an issued room token lives until `exp`, and its WS session as long as
+  `ChatSessionRegistry` allows.
+- **Inside the cache TTL a member gets the same room token; there is no `jti`** — the exposure window is unchanged,
+  since the token was already replayable and the chat session cap (`chat.session.max-per-room`) is per user.
+- **The enter cap is a CPU ceiling** — supply is per core, demand is fleet-wide; never compare them without a core count (`EnterRateLimitProperties`).
+- **The seller enter lane's multi-account risk is accepted only because seller signup rejects duplicate business numbers** (`SellerAuthService`; why: `EnterRateLimitProperties`).
+- **Accepted: one room can outlive its reconcile lease → duplicate cleanup** (`LiveReconcileProperties.roundBudget`).
+
 ## State machine — `LiveStatus` (sealed)
 
 State lives in the record; transitions return a new `LiveRoom`; a guard gates every one.
@@ -18,11 +59,9 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 | `Live`/`Suspended` | `endLive()` | `Ended` | `canEndLive()` |
 
 - `Ended` is terminal. `expire()` publishes no `RoomEnded` — the room was never `Live`, so chat has no session.
-- On end, `afterCommit` (after media cleanup) writes `live:room:ended:{roomId}` (endedAt, TTL 70m) and then
-  publishes `RoomEnded`. Both are **at-most-once** — no retry, no outbox; a crash between commit and
-  `afterCommit` loses both, and a failure is only an ERROR log + `live.room.ended.signal.failed{signal}`.
-  Accepted: the room is already `Ended` in the DB. The key has **no reader yet** (chat follow-up), and its
-  70m TTL is a hand copy of chat's `ENDED_TTL` (session max-lifetime 60m + margin) with no cross-check.
+- On end, `afterCommit` writes the ended key `live:room:ended:{roomId}` (TTL 70m) and publishes `RoomEnded` —
+  both **at-most-once** (no retry, no outbox); accepted because the room is already `Ended` in the DB. Chat
+  reads both. Why and the TTL's hand-copied lower bound → `RedisLiveEventPublisher`, `LiveRedisKeys`.
 - No transition INTO `Suspended` exists yet (record + exit only).
 - `Suspended` counts as **not live** for external readers (`GetLiveRoomUseCase.live=false`) — 송출이 멈춘 방이므로 진행 중 통제(강퇴 등)의 판정 근거를 그렇게 제공한다. 거부 여부는 소비 도메인이 정한다. `startedAt` 은 다시보기 싱크용으로 보존한다. 뷰에서 `Ended` 와 구분되지 않으므로, `Suspended` 로 들어가는 전이를 만들 때 구분이 필요하면 그때 필드를 추가할 것.
 - Adding a state = `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum, together.
@@ -36,42 +75,13 @@ All LiveKit through `LiveMediaManager`. Never touch the SDK from a service.
 - Cleanup swallows (`deleteIngress`, `stopHlsEgress`, `stopEgress`, `closeRoom`) — leftovers are reconciliation's job.
 - Global sweeps throw (`listAllIngress`, `listAllEgress`, `listAllRooms`); a misconfigured client answers
   `200 + []`, so **null body = failure** here.
-- Per-room: `listRoomIngress` and `listRoomEgress` throw on HTTP/transport failure (feed destructive decisions);
-  `publishingIngressIdsOrEmpty` returns empty on failure (feeds go-live only). A null ingress body is empty,
-  but a null egress body is failure — no egress is represented by `[]`, and this answer can end a broadcast.
-  `listRoomEgress` exists because the round-start `listAllEgress` snapshot is up to a whole round budget
-  stale; judging a live broadcast on it kills rooms that reconnected mid-round.
-
-**`playlist_name` and `live_playlist_name` must differ.** LiveKit rejects the egress request outright
-(`invalid_argument: live_playlist_name cannot be identical to playlist_name`), so making them equal stops
-every broadcast from starting — not just replay. They are also not interchangeable: `index.m3u8`
-(live) is a sliding window that holds only the last few segments once the broadcast ends, while
-`playlist.m3u8` (`EXT-X-PLAYLIST-TYPE:EVENT`) lists the whole broadcast and is what replay needs.
-`HlsRendition.variantPlaylistPath()` and `MasterPlaylistGenerator.generate()` keep pointing at the live one.
-The separate archive path travels via `HlsEgressResult` → `StreamInfo` → `LiveRoom.endLive`;
-`hls_archive_url` preserves it from start through DB reload. ABR uses `archive-master.m3u8`, generated
-with `generateArchive()`, whose variants are EVENT playlists. No publisher bean exists yet, so production
-uses the 720p `playlist.m3u8` directly. Both masters must publish successfully or both URLs fall back to 720p.
-
-**Replay is public**, with no signature, ownership check, or separate prefix. `GetLiveReplayUseCase`
-serves `GET /api/v1/lives/rooms/{roomId}/replay`, separately from the authorization-only `GetLiveRoomUseCase`.
-Persistence presents Ended legacy rows with `hls_archive_url = hls_url` as having no replay: the old end
-path copied that exact value. `StreamInfo` retains the raw value for transitions; saving an Ended row
-must preserve an existing equal-column value when the mapped archive is null. This exception is only
-for legacy copies, not a general ban on writing null. This mapping uses no filename allowlist and preserves distinct
-archive URLs verbatim, including query strings. It does not prove an arbitrary stored URL's media contents.
-Remove it only after verified backfill of those rows (including rows ended by old app replicas) and complete
-retirement of pre-SPR-148 writers. Do not auto-replace filenames or invent URLs for pre-upgrade live rooms.
-Non-Ended rooms and Ended rooms without an archive return **404 LIVE-007**: the replay resource does not
-exist, even if the room does. Ended is a DB state, not an egress completion guarantee; the last segments
-and ENDLIST may still be finalizing immediately after end. S3 retention must keep the EVENT playlist
-at least as long as its segments — see `infra/AGENTS.md`.
+- Per-room: `listRoomIngress` / `listRoomEgress` throw (they feed destructive decisions);
+  `publishingIngressIdsOrEmpty` returns empty (go-live only). Null-body handling per method and why
+  `listRoomEgress` exists → `LiveMediaManager` Javadoc.
+- HLS artifact names, archive URL and the public replay contract (`LIVE-08`) → `.claude/rules/live/replay-egress.md`.
 
 **Start-side media calls sit inside `@Transactional` on purpose** — reviewers must not flag them; `egressId`
-has to commit with the room. LiveKit I/O is bounded by its client's `callTimeout` 15s per call.
-That client does not bound `MasterPlaylistPublisher`: its future adapter must enforce a 15s total-call
-timeout including retries and prove it with delayed-storage tests before registration. No publisher bean
-exists today. Two sequential master publishes can consume up to 30s; 15s is not a whole-start budget.
+has to commit with the room. LiveKit I/O is bounded by the client's `callTimeout` (`LiveKitConfig`).
 **End-side cleanup runs after commit** (`PostCommitMediaCleanup`), safe only because the orphan-media job
 reclaims crash leftovers.
 
@@ -96,21 +106,8 @@ so both sides must reach the same outcome — if they diverge, the room's fate d
 
 Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. Two of them move broadcasts:
 `expire-ready` can **start** one, `end-stale-live` can **end** one that is still on air.
-
-| Key (`live.reconcile`) | Default |
-|---|---|
-| `enabled` | on — master switch; drops `@EnableScheduling`, the job beans and the lock config |
-| `<job>.enabled` · `<job>.cron` | on · staggered 10-min (`0/10`, `3/10`, `6/10` — keep them apart) |
-| | the 3-min stagger only separates *short* rounds; budgets are 40m/20m/16m, so a backlogged round overlaps the other jobs and the pool has 3 threads on purpose |
-| `expire-ready.threshold` · `end-stale-live.threshold` · `orphan-media.grace` | 60m · 60m · 15m |
-| `<job>.batch-size` | 20 / 10 · **orphan-media has none** (removed key; refuses to boot) |
-| `<job>.lock-at-most-for` · `lock-at-least-for` | 50m / 25m / 20m · 1m (ShedLock; see the lock bullet) |
-
-| Job | Candidate | Decides by | Acts via |
-|---|---|---|---|
-| `ReconcileExpiredReadyService` | `READY`, old `updated_at` | is **this room's** ingress publishing? | `goLiveByRtmp`, else `ExpireOrphanLiveUseCase` |
-| `ReconcileStaleLiveService` | `LIVE`, old **`started_at`** | no active egress in LiveKit | `EndStaleLiveUseCase` (publishes `RoomEnded`) |
-| `ReconcileOrphanMediaService` | every LiveKit room (its ingress/egress/SFU room) | mismatch against DB | delete by id / stop / `closeRoom` |
+Config keys, ShedLock lease and round budget, boot guards, removed keys and the bulk-UPDATE procedure →
+`.claude/rules/live/reconcile.md`.
 
 - Judge **per room, right before touching it** — a once-per-round snapshot expires rooms that reconnected.
 - Expire-ready has **three** outcomes: promote / expire / **leave alone** (publishing, but not this room's).
@@ -127,152 +124,27 @@ Triggers in `liveapp/scheduler` are thin; policy and loops live in `live-core`. 
   case this targets. A shorter TTL is not a substitute; it needs a refresh endpoint first.
 - **Never judge staleness by viewer count** — HLS viewers are not SFU participants. `started_at`, not `updated_at`.
 - **When in doubt, don't delete.** No DB row → log only; grace covers the create-then-save window.
-- Per-room work is a separate bean so `@Transactional` + row lock apply. **Multi-replica safe**: each job
-  holds its own ShedLock lock (`live-reconcile-<job>`, JDBC provider on `live_schema.shedlock`,
-  `ReconcileLockConfig`; `ShedLockTableGuard` refuses to boot unless it can write to that table).
-  A loser skips silently and retries next cycle. **Four boot guards refuse to start the app**, all
-  fail-closed like `managementPortMustDiffer`: `ShedLockTableGuard` (can it actually write to the lock
-  table), `legacyBatchSizeMustNotBeConfigured` (removed keys — `live.reconcile.batch-size` and
-  `live.reconcile.orphan-media.batch-size` — must be gone from every deployed yaml/env before upgrading,
-  or the app will not start), `leasesMustOutlastTheirCronPeriod` (a lease shorter than the tick interval
-  means every tick finds it expired) and `lockIntervalsMustFitInCron` (`lock-at-least-for` must stay within half the shortest cron
-  period of an enabled job — measured by expanding the cron over a day, since `0/N` gaps shrink at the
-  hour boundary; over that, a round is skipped with no log and no counter). `<job>.lock-at-most-for` is the
-  takeover delay after a holder dies, so it must exceed the job's worst round — ShedLock neither aborts nor
-  extends a running round, so too short a lease means a slow round keeps going unlocked while the next tick
-  starts a second one. Bounding a round by **candidate count** only works while the per-candidate
-  fan-out is fixed, and it is fixed for none of the three: two go through `PostCommitMediaCleanup`, whose
-  `stopHlsEgress`/`deleteIngress` fan out over the room's renditions and ingresses, and orphan-media stops
-  *every* orphan egress of a room it selects. All three therefore bound the round by the **clock**:
-  `roundBudget` = 4/5 of that job's own `lock-at-most-for` (25m→20m, 50m→40m, 20m→16m), and the candidate
-  loop stops there, deferring the rest. It reports `ROUND_BUDGET_EXHAUSTED` (job tag says which), deliberately **not** folded
-  into `*_BATCH_SATURATED` — one says *slow*, the other says *many*, and the fixes are opposite. The deadline
-  is only checked *between* candidates (a synchronous OkHttp call can't be cancelled), so it limits new
-  candidates but does **not** prove `lease ≥ budget + one candidate's fan-out`: a room's resource count has no
-  code-level upper bound. A pathological room can therefore outlive its lease after the deadline; this design
-  accepts that residual duplicate-cleanup risk to finish normal cleanup rather than leaving cost-bearing media
-  behind. The lease default lives in **one** place per job (`LiveReconcileProperties.<Job>.DEFAULT_LOCK_AT_MOST_FOR`,
-  concatenated into the `@SchedulerLock` placeholder) because the budget is derived from it: re-inline the
-  literal in the scheduler and a lowered lease leaves the budget longer than the lease it was meant to fit
-  inside. For orphan-media,
-  `ORPHAN_ROOM_CANDIDATE` exposes the true backlog in **rooms** (it judges against the full LiveKit lists)
-  and there is no saturation counter — the round has no count cap. `STALE_LIVE_CANDIDATE` is capped at
-  `batch-size + 1`: enough to decide saturation, not a backlog gauge, and `STALE_LIVE_BATCH_SATURATED` is 1
-  only when candidates remain after that cap.
-  **`orphan-media` iterates by room, not by resource kind.** One room's ingress deletes → egress stops →
-  `closeRoom` happen together, in that order, so AGENTS' "delete ingress room-wide before `closeRoom`" is
-  structurally guaranteed instead of hoped for; a room whose cleanup the deadline cut short is left **open**
-  for the next round. Per-kind `batch-size` and window rotation are gone with that split — they were what
-  made "this room's ingress deferred, this room closed" expressible, and every window-starvation bug came
-  from layering a window over the candidate ordering. The only stopping rule is `roundBudget` — which **does** cap
-  the round, so tail starvation is still possible while the backlog exceeds what one round's budget gets
-  through, and the candidate order is deterministic (`Ended` → `updated_at` → roomId). Rotation was dropped
-  anyway because it cannot fix that: it reorders who waits, it does not raise throughput, and layering a
-  window over the ordering is where every window-starvation bug came from. The signal to act on is
-  `ORPHAN_ROOM_CANDIDATE` not falling across rounds — a persistently failing cleanup, or a budget too small
-  for the backlog. Raise `lock-at-most-for` (the budget is 4/5 of it) rather than reintroducing a window.
-  `live.reconcile.orphan-media.batch-size` is a **removed key that refuses to boot**, like
-  `live.reconcile.batch-size`. Dropping the count cap also means the round's blast radius is bounded by the
-  clock alone: a bad bulk UPDATE that marks many rooms `Ended` would have ~16 minutes of unrestricted
-  deletion. That is accepted — a count cap could not tell a real backlog from a bad UPDATE either, and it
-  cost the ordering invariant — so the compensating control is meant to be an alert on a
-  spike in `SFU_ROOM_CLOSE_REQUESTED` / `INGRESS_DELETE_REQUESTED` rather than a cap. **That alert is not
-  registered yet** — only the metrics exist (`reconcile.acted{job,action}`), and this repo holds no alert
-  rules, so the rule lives wherever monitoring is configured. Until it does, the only real control is
-  operational: before touching `live_room.status` in bulk, disable the job
-  (`LIVE_RECONCILE_ORPHAN_MEDIA_ENABLED=false`). **That switch is `@ConditionalOnProperty`, i.e. bean
-  registration — it needs a rolling restart and does not stop a round already running.** Plan the restart
-  before the UPDATE, not after noticing one. End-stale-live remains FIFO and exposes `STALE_LIVE_CANDIDATE` plus
-  `STALE_LIVE_BATCH_SATURATED`; it does not inherit the orphan rotation guarantee. Lease
-  extension is avoided because it postpones takeover from a dead holder. **Only `orphan-media`
-  actually needs it** — the other two decide, lock the row, and register cleanup inside the winning
-  transaction, so the *destructive* calls happen once regardless (the read sweeps still duplicate per
-  replica). `orphan-media` has no DB gate at all, and cleanup
-  ports swallow, so a duplicate round is invisible except as doubled `reconcileActed` counts — which
-  breaks the "same numbers repeating = nothing is being cleaned" reading.
-- **The lock table's time columns are `timestamp`, not `timestamptz`** — ShedLock writes *and* compares
-  `timezone('utc', CURRENT_TIMESTAMP)`, a zone-less value. In a `timestamptz` column that is resolved
-  against the session zone, which pgjdbc takes from each JVM's default — measured, the same instant lands
-  32400s apart from a UTC vs. a KST session, so replicas in different zones stop excluding each other.
-  `timestamp` has no such path. Don't "fix" it to match the rest of the schema.
-- **The room sweep applies no grace.** Only `Ended` rooms reach that point, and an `Ended` room can never
-  have a legitimate SFU room (starting requires `Scheduled`). Grace would protect nothing while opening a
-  hole: a seller re-joining recreates the room with a **fresh creation time**, so anyone reconnecting more
-  often than the grace window would never be swept — which is the exact scenario this sweep exists for.
-- **`Ended` rooms skip the ingress grace too.** The end transaction refreshes `updated_at`, so applying it
-  would blind the job for a full grace window right after a crash between commit and cleanup — precisely
-  when a surviving ingress lets the seller keep pushing.
+- **Don't change the ShedLock table's time columns to `timestamptz`** — why: `V202609051200__shedlock.sql`.
+- **`Ended` rooms get no grace — neither the room sweep nor ingress deletion** — why: `ReconcileOrphanMediaService`.
 
 ## Observability — `LiveMetrics`
 
-Ports-and-adapters, same as media: `application/port/LiveMetrics` (no micrometer) ← `infrastructure/metrics`.
-ArchUnit rule 16 fails the build if `domain`/`application` imports `io.micrometer`. `LiveMetrics.NOOP` is
-selected at runtime via `ObjectProvider` when no `MeterRegistry` exists — **not** `@ConditionalOnBean`, which
-evaluates before autoconfiguration and would silently disable all metrics.
+Ports-and-adapters, same as media: `application/port/LiveMetrics` (no micrometer — ArchUnit rule 16) ←
+`infrastructure/metrics`. Metric semantics → `.claude/rules/live/observability.md`. Rules (each class's
+comment says why):
 
-- **Transitions and promotions are counted after commit** (the adapter registers a synchronization). Inside
-  a tx the transition may still roll back — `StartLiveService` saves products *after* the room.
-- **Round counters fire even on a 0-candidate round.** No record must mean "the scheduler is dead", not
-  "nothing to do", or a dead job is indistinguishable from a quiet one.
-- **The distributed lock punched a hole in that rule.** `@SchedulerLock` wraps `run()` from the *outside*,
-  so a round that loses the lock — or one where the lock store itself throws — raises no round counter.
-  `live.reconcile.lock{job,result=acquired|skipped|shutdown|failed}` records that outer result instead. A normal
-  shutdown waits 30s and then **releases nothing** — a round that finished has already unlocked itself in
-  ShedLock's own `finally`, and taking the lock off one that is *still running* is exactly the mutual
-  exclusion this lock exists for. `shutdownNow()` is merely an interrupt request and synchronous HTTP calls
-  need not honor it, so a still-running round keeps its lock and hands over only when the 20m/25m/50m lease
-  expires. Abnormal death follows the same
-  lease-expiry path.
-- **A round ends exactly one way: `completed` / `aborted` / `failed`** (`outcome` tag on
-  `live.reconcile.round`). `aborted` is the guard folding the round on its own; `failed` is an exception
-  escaping to the scheduler. Both look like "completed didn't rise" from outside but need opposite
-  responses — check the config vs. chase the exception — so they must never be merged.
-- `reconcileRoundAborted` is **round-scoped** — only `end-stale-live`'s cluster-wide guard raises it, and it
-  is the only external signal that a guard swallowed a round (those paths are a bare `return`). A per-room
-  verdict must never raise it: it would fire up to batch-size times in one round and break
-  `aborted + completed = rounds`. `expire-ready`'s "LiveKit doesn't know this room's ingress" is therefore
-  `ReconcileAction.SKIPPED_INGRESS_MISSING`, split out of plain `SKIPPED` so the misconfiguration signal
-  isn't buried under routine skips.
-- Per-room egress lookup failures use `SKIPPED_EGRESS_LOOKUP_FAILED`, not plain `SKIPPED`, so LiveKit
-  degradation is not buried under routine state-race skips. They do not abort the round; later candidates continue.
-- **`orphan-media` deliberately has no abort guard.** All three lists empty is the normal state on a quiet
-  night; counting it as `aborted` would alarm daily until someone mutes the alarm. It owns the
-  `live.livekit.egress.rooms` gauge instead — it sweeps unconditionally every round, so a misconfigured
-  `200 + []` shows up as the gauge dropping to 0 while DB-side `live.room.active` holds.
-- `MeteredLiveMediaManager` wraps `LiveKitMediaManager` as `@Primary`. **It must never swallow** — each port
-  method's failure direction is deliberate (see Media ports); swallowing one disarms the reconcile guards.
-- `PromotionTrigger` has three values because there are three go-live paths (`SELLER_START` rendezvous,
-  `WEBHOOK`, `RECONCILE`). A new entry point gets a compile error, not a silent metric gap.
-- `live.room.active` (DB `COUNT`, per scrape) is meant to be read **next to** `live.livekit.egress.rooms`
-  (last round's observation, `-1` = never observed). The two diverging is the shared symptom of live outages.
-  `end-stale-live` also refreshes the gauge, but only past its 0-candidate return — never rely on that one.
-- **Exposure: `management.server.port` is separate (template default 8091 — the app itself runs on 8081) and must stay cluster-internal.** Metrics
-  carry business volume and the gauge hits the DB per scrape, so on the user port an anonymous scraper reads
-  the numbers *and* competes for the pool that starts broadcasts.
-- **Splitting the port does not split security.** The management context inherits the filter chain, so
-  without a dedicated chain the scraper gets 401 and metrics silently stay empty — indistinguishable from
-  "no broadcasts". `LiveSecurityConfig.actuatorFilterChain` (`@Order(0)`, `EndpointRequest.toAnyEndpoint()`)
-  permits them, and that opening is safe **only** because the ports differ — which
-  `managementPortMustDiffer` enforces by refusing to boot. Never relax one of the two without the other.
-- **The round wrapper catches nothing.** It marks a completed flag on the normal path and counts `failed`
-  from `finally`, so an `Error` is counted like any other abnormal exit while never being caught — the
-  earlier "catch `RuntimeException` vs `Throwable`" dilemma disappears. Same trick in
-  `MeteredLiveMediaManager.timed`; prefer it over widening a catch.
+- `LiveMetrics.NOOP` via `ObjectProvider`, **never `@ConditionalOnBean`** (`LiveMetricsConfig`).
+- `MeteredLiveMediaManager` (`@Primary`) **must never swallow** — the port failure directions above are deliberate.
 - **The metrics adapter never throws** (`MicrometerLiveMetrics.safe`, `MeteredLiveMediaManager.record`).
-  Two paths make this business-critical, not tidiness: a throw from an `afterCommit` hook propagates to
-  the commit caller, so an already-committed `Ready→Live` would surface to the seller as a failed start;
-  and `reconcileRoundFailed` is called right before a rethrow, so a throw there replaces the real cause.
-- **`live.livekit.egress.rooms` counts rooms, not egress records** — one broadcast runs several egresses
-  (renditions), so record counts are a multiple of room counts and could not be read beside
-  `live.room.active`. Both writers (`orphan-media`, `end-stale-live`) parse and distinct the room id.
+- **`management.server.port` must differ from the app port and stay cluster-internal**; the actuator chain is
+  open only because of that (`managementPortMustDiffer`, `LiveSecurityConfig`). Never relax one without the other.
 
 ## LiveKit webhooks
 
 `POST /webhooks/livekit`, `permitAll` — auth is the **body signature**, not Spring Security. Body is read
 through a bounded stream, not `@RequestBody byte[]`.
 
-- **Signature alone does not stop replay** (the SDK accepts a missing `exp`). `createdAt` gates it: past 15m,
-  future 60s — asymmetric because retries keep the original `createdAt` and must survive a rolling deploy.
+- **Signature alone does not stop replay**; a `createdAt` window gates it — sizes and why: `LiveKitWebhookVerifier`.
 - **A destructive handler (`egress_ended`, `room_finished`, …) requires event-id dedup in the same change.**
   Today's only handler is a no-op unless the room is `Ready+RTMP`, and that is what caps replay damage.
 - Handlers belong to each feature, not the webhook package. **Must be idempotent.** Exceptions are logged and
@@ -280,9 +152,8 @@ through a bounded stream, not `@RequestBody byte[]`.
 - The rate limit is a **CPU ceiling, not availability protection** — nothing tells a forged request from a
   real one before verifying it. Keep it far above real traffic; lowering it lets an attacker starve
   `ingress_started` cheaply. rps limiting belongs upstream. Counter is per-instance.
-  **A dropped `ingress_started` is not recovered quickly**: the fallback is `expire-ready`, which only picks
-  up rooms older than its 60m threshold — so the room can sit in `Ready` for 60–70 minutes. Whether LiveKit
-  re-sends after a 429 is not visible from this repo and decides how often that actually happens.
+  **Accepted: a dropped `ingress_started` is recovered only by `expire-ready`'s threshold**, so the room sits in
+  `Ready` until then. Whether LiveKit re-sends after a 429 is not visible from this repo.
 
 ## Persistence & cache
 
@@ -291,176 +162,16 @@ through a bounded stream, not `@RequestBody byte[]`.
   unlocked reintroduces the double-`startHlsEgress` race. Ownership stays **in the query** — a service-side
   check would leak room existence. Hibernate emits **`for no key update`**, not `for update`; don't grep for
   the latter and conclude the lock is missing.
-- `LiveRoomMapper`: `status`/`streamInfo` come from columns, not auto-mapping; `scheduledAt` lives inside the
-  status, so `updateEntityFromDomain` must write it from there or a re-save wipes it.
+- `status`/`streamInfo`/`scheduledAt` are mapped by hand, not auto-mapped — why: `LiveRoomMapper`.
 - Ranking reads Redis only (`LiveRoomCache`), no DB.
-
-## Enter rate limit — the signing ceiling
-
-`enter` issues an RS256 token per call, so **a request that signs costs a private-key signature**:
-measured 685µs (RSA-2048) = ~1,458/s per core; re-measured 688µs / 1,453/s per core (n=20,000,
-p99 735.8µs, aarch64). (The webhook path is *not* a comparison — it does no
-RSA verification; the LiveKit API secret is symmetric, which is why that path's own measurements
-scale with body size.)
-
-**That per-core number is not a fleet ceiling, and the denominator is not in this repo.** Signing
-throughput is near-linear in cores (measured, same run: 1 thread 1,436/s · 2 → 2,777 · 4 → 5,450),
-so the same 1,000/s demand is 69.6% of one core, 36.0% of two, 18.3% of four (all three read off that one table; the
-latency measurement gives a slightly cheaper per-core figure, 1,453/s → 68.8%, because the
-single-thread throughput loop carries harness overhead — do not mix the two in one progression) — and no task/pod
-definition anywhere here records the allocation. Never compare a per-core supply number straight to
-a fleet demand number; say which core count you assumed.
-
-**Members no longer sign on every call** (`live.room-token.cache`, `CachingRoomTokenIssuer`): a
-bounded fixed-size array keyed by the whole `RoomTokenClaims` returns the previous token inside a
-TTL capped at half the issued TTL, so a hit's remaining life is never under half. **Guests always
-sign** — `issueGuestToken` mints a fresh random `sub` per call so their keys never repeat, and they
-are kept out of the cache entirely (reading is pointless, writing would evict members). So the cache
-removes at most the member half of the 1,000/s. HMAC was **rejected**: measured 108× cheaper
-(6.4µs) but chat must verify without being able to issue, and a shared secret would let chat forge
-the `owner` claim its own kick and unmasked-original gates rest on. Hit rate is observable —
-`live.token.signature{source="signed"|"cached"}`, denominator = member issuance only.
-
-Two population buckets cap it (`live.enter.rate-limit.guest-*` and
-`.member-*`, defaults 500/s · burst 1000 each), with `member-shards` per-account buckets under the
-member one sized to let the global stay binding, in `EnterRateLimitFilter`, inside the security chain
-**after** the
-JWT filter; a rejected call returns **429 with `Retry-After`** and never reaches the use case, so
-neither the `findById` nor the signature is paid.
-
-- **This is a CPU ceiling, not availability protection** — the same requirement the webhook limit
-  carries, and **rps fairness belongs upstream**. The guest/member split covers one direction: a guest
-  flood cannot starve logged-in viewers. **Sellers (`role=SELLER`) skip the member shard and global
-  and use their own lane** — same shape as members (`seller-shards` keyed buckets under a seller global;
-  defaults 8/s · burst 32 · 8 shards), so a member flood cannot block a seller from recovering the
-  `owner` claim by reconnecting. A single seller bucket was rejected: one seller account at a few
-  requests/s would block **every** seller — the cost scales with one attacker's rate, not with the
-  number of sellers. Shards bound that to the attacker's shard (~1/8) — **for one account**. The seller
-  shard refills sum exactly to the seller global (8 × 1/s), so ~22 accounts (coupon collector over 8
-  shards) drain it and block every seller. Accepted because seller signup verifies the business
-  registration externally and rejects duplicate business numbers (`SellerAuthService`), so each account
-  needs a distinct real business; revisit shards/global if that check is relaxed.
-  It is never unlimited, or it becomes a bypass of the whole cap. Residual: this filter runs before
-  `TokenRevocationFilter`, so a revoked seller token keeps draining its shard until it expires.
-- **Member traffic passes two gates with different jobs.** A shard bucket bounds **one account**;
-  the **global bucket enforces the aggregate ceiling**. `member-shards` (default 64) fixed-size
-  buckets are sized `ceil(global/shards)` — refill as is, burst times a headroom factor — so the
-  shard sums *exceed* the global and the global is the binding constraint. That is what makes the
-  configured number the real ceiling: with floor division the sums fell *below* it, and the defaults
-  enforced **448/s · burst 960** while the config said 500/s · burst 1000.
-  - **Shard first, then global.** Checking the global first lets a request the shard will reject burn
-    a global token anyway, so one account could drain the global while being refused. The mirror
-    image is real but smaller: a request rejected *by the global* has already spent its shard token.
-  - **Burst does not pool across shards.** Splitting the burst means the binomial tail becomes 429s:
-    with the burst split evenly, a 1,000-member reconnect storm — the demand vector this section
-    itself names — lost **12.0%** (measured, 3,000 trials). The headroom factor is set at mean + ~4σ,
-    where the same storm measures **0.0%**. The cost is that one account's one-shot rises to 32
-    (3.2% of the global burst); its sustained share stays at the shard refill (8/s).
-  - This bounds **blast radius, not fairness**: members hashed to the same shard are refused
-    together (~1.6% at 64 shards). Covering every shard is possible but superlinear — coupon
-    collector, **~301 accounts** for all 64, with 64 accounts reaching 63.5% coverage (measured).
-- **The shard key carries a process-local salt** — without it the shard is **targetable**. The key is
-  `sub` (= userId), `String.hashCode` is specified by the JDK, and the unauthenticated list response
-  (`GetLiveView.LiveRoomSummary.sellerId`) hands out a live seller's userId. An attacker could
-  compute that seller's shard offline and hold it empty with one account, which denies the seller the
-  `owner` claim that chat's kick and unmasked-original gates depend on. With the salt, placement
-  differs per instance; what remains is spraying, not aiming.
-- **Not per-IP, and not an unbounded per-principal map.** Per-IP for the same reason as the webhook
-  path (`X-Forwarded-For` is attacker-controlled → unbounded key space; `getRemoteAddr` collapses
-  everyone onto one proxy IP). A per-principal **map** is the same memory-growth path — which is why
-  this is a fixed-size **array**, bounded by construction *and* by an explicit `member-shards`
-  ceiling (4096); without that ceiling a typo could pass validation and allocate an array that fails
-  at allocation rather than at config validation.
-- **Rejections are counted** — `live.enter.rejected{population="guest"|"member"|"seller", gate="shard"|"global"}`.
-  The `gate` tag exists because the two gates call for **opposite responses**: `shard` means one
-  account exceeded its own share (go find it), `global` means the aggregate hit the ceiling (raise the
-  limit or add capacity). Since the shard sums now exceed the global, most rejections under
-  distributed load are `global`, so merging them would hide exactly the signal the shard exists for.
-  Guest rejections are always `global` — guests have no shard.
-  - Tag values are lowercase (`name().toLowerCase()`); querying the uppercase form returns *no
-    series*, which is indistinguishable from no alert, so `PrometheusScrapeTest` pins the name and
-    every tag string against real scrape output.
-  - The limiter's log names its gate but is throttled per population, so one window can print only
-    one of the two — read the split from the metric, not the log. Scale is what separates "attack"
-    from "limit set too low"; the limit was derived from CPU cost, not from measured normal traffic.
-- **The pool is a denominator, but the signature no longer holds a connection.** `EnterLiveService`
-  `.enter` carries **no** `@Transactional` — the single `findById` runs in Spring Data's own read-only
-  transaction and the connection is returned before `issue(...)` signs (685µs). Hikari's default max
-  pool is **10** and no `maximum-pool-size` is set anywhere in this repo, so `findById` still shares
-  that budget. If `enter` ever grows a second read, wrap **only the read**.
-- **The limit does not throw.** `GlobalExceptionHandler` logs every 4xx, so throwing would emit one
-  WARN per rejected request and let an attacker saturate log I/O; the limiter's own throttling only
-  covers its own logger. The webhook filter avoids this the same way. The cost is that this 429
-  carries **no `error.code`**, unlike every other error on the endpoint.
-- **A controller must not assemble this.** `apps/AGENTS.md` forbids it and its raw-DTO exemption
-  covers success bodies only — that is why the cap is a filter, not a branch in `enterRoom`.
-- **`guest-permits-per-second` / `guest-burst` / `member-*` / `seller-*` refuse to boot** when a limit is ≤0, a
-  burst is below its permits, `member-shards`/`seller-shards` is outside `1..4096`, or
-  permits-per-second < shards for either (the shard refills would then far exceed the global and
-  the shard would bound nothing) — the same fail-closed shape as the reconcile guards.
-- **Every bucket is instance-local** (population and shard alike), so the fleet limit is
-  `limit × replicas`; there is none.
-- **Recovery is a rolling restart** — the buckets are built once in the constructor and nothing here
-  is `@RefreshScope`.
-- The cap is on **issuance**, not on WS sessions: a room token is replayable within its TTL, so it
-  does not bound `MAX_SESSIONS_PER_USER_PER_ROOM` fan-out in streaming-app.
 
 ## Room token — chat entry auth
 
 `enter` issues an RS256 token; distinct key/alg/`aud` from the api-app HMAC token, never interchangeable.
 Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp` — **capped at 300s** (refuses to boot above it; chat sizes its TTLs on that cap).
 **email is PII** — never log the raw token. **Not single-use** — replayable within the TTL.
-
-Repeat enters by the same member inside the cache TTL now receive the **identical** token, not a
-fresh one with a later `exp` (`CachingRoomTokenIssuer`). Nothing keys off token uniqueness — there
-is no `jti`, the token was already replayable, and `MAX_SESSIONS_PER_USER_PER_ROOM` is keyed by
-user — so the exposure window is unchanged except that it stops being extended by re-entering. That
-is also why the cache TTL is capped at half the issued TTL: a hit must not hand out a token that is
-about to expire.
-
-- **A revoked access token cannot get one.** `TokenRevocationFilter` consults both axes —
-  `jti` (that one token) and `sid` (every token of that login session) — so logout, withdrawal and
-  refresh-reuse detection (`JwtTokenLifecycle.revoke`/`revokeAll`) now block re-entry. `jti` is
-  checked first and short-circuits, so a known-revoked token costs one round trip, not two.
-  **Role demotion is not covered**, because no code path changes a role: it is fixed at creation
-  (`UserEntity`'s two static factories, zero update writes). A path that demotes must revoke the
-  token, or the claim is only as fresh as the token.
-- **The window that remains is the token already issued.** Revocation gates *issuance*; it cannot
-  recall a room token in flight, so the exposure is that token's `exp` plus — for an open WS
-  session — whatever `ChatSessionRegistry` bounds. Before this filter the same window was the
-  **access** TTL (3600s default), because entry could simply be re-taken.
-- **It sits after the enter rate limit, before `AuthorizationFilter`** (`LiveSecurityConfig`).
-  After the limit so a rejected entry pays no Redis round trip — the limit is a CPU ceiling and
-  cannot absorb that cost. Before authorization so the SELLER/ADMIN rules (kick, ban release,
-  dictionary) judge an already-cleared context. `LiveFilterOrderTest` pins the order itself and
-  `TokenRevocationFilterTest` pins its consequence; both exist because either alone lets the other
-  flip silently.
-- **Confirmed revocation and a failed lookup are not the same answer.** Confirmed: the context is
-  cleared and the chain continues — a role-gated route becomes 401, and a `permitAll` route
-  **downgrades to guest**, which is correct (a revoked user who drops the header gets exactly what
-  any stranger gets, so the power gained is zero). `RevocationOnPublicRouteTest` asserts that
-  downgrade on purpose, so widening the fix to "stop both" cannot pass quietly.
-- **A failed lookup returns 503 and stops the chain.** Clearing the context there would make the
-  public enter route answer **200 + a GUEST room token** — `RevocationOnPublicRouteTest` pins that
-  path with its confirmed-revocation case (cleared context → 200 + GUEST), and reverting the
-  failure branch to "clear" breaks its sibling case. During a Redis outage a
-  seller entering their own live would get `role=GUEST, owner=false`, losing chat voice and the
-  unmasked-original view, with a 200 and no `error.code`, so neither the client nor the user has a
-  signal. That is worse than 401, which is at least visible. The cost is that **a request carrying
-  a token** is blocked during the outage; an unauthenticated one never reaches the lookup, so
-  public viewing and guest entry stay up. `Retry-After` is a flat 5s — shorter would pile retries
-  onto a struggling store, and the cause here is infrastructure, not the caller.
-- **Both are counted**, because neither produces a distinctive response on its own:
-  `live.token.revoked{axis="jti"|"sid"}` and `live.token.revocation.failed`. Separate *names*, not
-  one name with an extra tag — a Prometheus meter requires one tag-key set per name, so merging
-  them would silently drop whichever registers second. The axes call for opposite responses (`jti`
-  is one token, routine after a re-issue; `sid` is a whole login session, so a spike means mass
-  logout or token-theft response). Failure logs are throttled to one line per 10s with a running
-  total, like the enter limiter — this path's volume is in the outage's hands, not an attacker's.
-- **An active token costs two round trips** (`jti` then `sid`); the early return only saves one for
-  an *already revoked* token. Ordering after the rate limit saves the rejected portion, not this.
-- The checkers come from `common/auth`; only its refresh-token repository is kept out of the scan
-  (`LiveAppApplication`), since this app still issues and rotates nothing.
+The enter rate limit (CPU ceiling, shards, salt, gates), the room-token cache and revocation (503 vs. guest
+downgrade, filter order) → `.claude/rules/live/enter.md`. Read it before touching `enter`, its filters or the token.
 
 ## Errors & tests
 
