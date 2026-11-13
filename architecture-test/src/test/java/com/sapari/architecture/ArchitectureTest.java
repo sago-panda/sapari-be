@@ -276,8 +276,10 @@ class ArchitectureTest {
     // 포트에서 그 구멍을 닫는다 — chat-api 포트와 chat-core 의 저장소·출력 포트는 세 표시 중 정확히 하나를
     // 달아야 하고, 그 표시가 반환형과 맞아야 한다. 어댑터는 포트를 구현하므로 위 두 규칙에 따라 들어온다.
     //
-    // 반환형 대조의 한계: @ReactiveChat 은 Publisher 를 돌려주는 메서드가 "하나 이상" 이다 — 설정값을
-    // 동기로 돌려주는 메서드(ChatSessionRepository.heartbeatInterval)가 섞여 있다. @BlockingChat 과
+    // 반환형 대조의 한계: @ReactiveChat 은 Publisher 를 돌려주는 메서드가 "하나 이상" 이면 통과한다. 그래서
+    // 리액티브 포트의 Publisher 아닌 메서드는 기계가 검증하지 않는 선언이다 — 동기 설정 getter 와 동기 블로킹
+    // 호출은 시그니처가 같다. 오늘 그런 메서드는 ChatSessionRepository.heartbeatInterval() 하나이고, 그 포트를
+    // streaming-app 이 쥔다. 하나 더 달려면 그 포트를 쥔 앱이 어디인지 보고 판단한다. @BlockingChat 과
     // @InMemoryChat 은 시그니처로 구별되지 않으므로, 저장소 포트를 @InMemoryChat 으로 다는 거짓은 여기서
     // 안 잡히고 아래 chat_types_holding_blocking_infrastructure_are_marked_blocking 이 어댑터 쪽에서 잡는다.
     @Test
