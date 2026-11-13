@@ -5,6 +5,7 @@ import java.util.function.Function;
 
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.domain.model.ChatSession;
+import com.sapari.chat.port.ReactiveChat;
 
 import reactor.core.publisher.Mono;
 
@@ -12,6 +13,7 @@ import reactor.core.publisher.Mono;
  * 세션 관리 추상화 — 각 Pod 로컬 메모리 레지스트리 + Redis HASH를 함께 조율한다.
  * 구현체 ChatSessionRegistry는 실제 WS 채널을 쥐고 있어 transport(streaming-app)에 둔다.
  */
+@ReactiveChat
 public interface ChatSessionManager {
 
     /**
@@ -48,8 +50,12 @@ public interface ChatSessionManager {
      *
      * <p>방 색인을 쓸 수 없어 이 Pod의 세션을 훑는다. 그래도 되는 이유는 이 조치가 드물기 때문이다 —
      * 방 fan-out은 메시지마다 돌아 색인이 필요했지만, 밴은 시간당 몇 건이다.
+     *
+     * <p><b>사유를 인자로 받는다.</b> close 코드가 양쪽 다 1008 이라 와이어로는 갈리지 않고, 이
+     * 메서드의 운영 호출자가 둘이다 — 밴 집행(제재)과 계정 탈퇴(제재 아님). 사유를 안에서 고정하면
+     * 사용자가 스스로 누른 탈퇴가 제재율을 올린다.
      */
-    Mono<Void> closeUserEverywhere(UUID userId);
+    Mono<Void> closeUserEverywhere(UUID userId, SessionCutReason reason);
 
     // 고유 유저 수(HVALS distinct) — 멀티탭은 1로 집계
     Mono<Long> getActiveCount(UUID roomId);

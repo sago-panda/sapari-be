@@ -56,9 +56,9 @@ spring:
       # 이 값이 chat 의 모든 Redis 호출에 대한 실질 상한이다. Lettuce 기본값(60s)으로 두면
       # 패킷을 떨구는 장애에서 커맨드가 그만큼 pending 이고, 전송 경로가 직렬화돼 있어 그 세션의
       # 채팅이 통째로 멈춘다(실측: 차가운 커넥션 60,245ms → 1s 설정 시 1,115ms).
-      # 내릴 때 주의 — 강퇴·밴·종료 마커 조회는 실패 시 fail-open 이라, 이 값을 넘기면
-      # "느린 Redis = 그 판정이 통과" 가 된다. 정본이 그 정책을 의도로 적어 두었지만 값을
-      # 더 내리면 그 쪽으로 더 자주 기운다.
+      # 내릴 때 주의 — 이 값을 넘긴 판정은 입장에서는 통과, 전송에서는 그 전송의 거절이 된다
+      # (강퇴·밴·종료 조회). 정본이 두 방향을 의도로 적어 두었지만 값을 더 내리면 그쪽으로
+      # 더 자주 기운다.
       # timeout: 1s
 
   # ⚠️ 접두가 spring.data.mongodb 가 아니라 spring.mongodb 다.
@@ -203,9 +203,13 @@ chat:
   #
   #    값을 바꾸려면 주석을 풀고 값을 적는 쪽이 가장 안전하다.
   #
-  # 서로 제약한다(아니면 부팅 실패: SessionTimeouts). 셋 다 양수여야 하고,
+  # 서로 제약한다(아니면 부팅 실패: SessionTimeouts · ③만 WebSocketConfig). 셋 다 양수여야 하고,
   #   ① 기한 >= 간격 × 2
   #   ② 지터를 뺀 최소 수명 > 기한 + 간격
+  #
+  #   ③ 수명 <= 방 종료 마커 보관 기간(70m, WebSocketConfig 가 검사한다). 종료 신호를 놓친 Pod 의
+  #     세션은 수명이 다할 때까지 남고, 그 세션의 전송을 막는 것은 마커 재확인뿐이다 — 마커가
+  #     먼저 사라지면 끝난 방에 글이 쌓인다. 수명을 70m 위로 올리려면 마커 상수부터 올려야 한다.
   #
   # ②가 두 군데서 직관과 어긋나므로 풀어 적는다.
   #   - 수명은 아래로 15% 흩어진다(재접속이 한 점에 몰리지 않게). 그래서 비교 대상은 적은 값이
@@ -255,6 +259,28 @@ chat:
   #   max-lifetime: 60m          # 코드 기본값 (env: CHAT_SESSION_MAX_LIFETIME)
   #   ping-interval: 30s         # 코드 기본값 (env: CHAT_SESSION_PING_INTERVAL)
   #   liveness-deadline: 90s     # 코드 기본값, 3 × ping (env: CHAT_SESSION_LIVENESS_DEADLINE)
+  #   max-per-room: 5            # 코드 기본값 (env: CHAT_SESSION_MAX_PER_ROOM)
+  #                              # (유저, 방) 동시 세션 상한. 1 미만이면 기동 실패.
+  #                              # 올릴 판단: chat.sessions.admission_capped 는 오르는데
+  #                              # chat.sessions.reaped 가 평평하면 어뷰즈가 아니라 상한이 낮은 쪽이다.
+  #
+  # mongo:
+  #   operation-timeout: 2s      # 코드 기본값 (env: CHAT_MONGO_OPERATION_TIMEOUT)
+  #                              # 드라이버 CSOT. 전송 경로의 save 가 멈추면 이게 끊는다 —
+  #                              # 드라이버 기본값은 무한(socketReadTimeoutMs=0, timeoutMs=null, 실측).
+  #                              # 호출부 .timeout() 으로는 안 된다: 끊어도 커넥션을 반납하지 않아
+  #                              # 다음 메시지가 남은 차단 시간을 기다린다(실측 2,521ms vs 22ms).
+  #                              # 부팅 인덱스 생성은 이 값에 걸리지 않는다 — 그 경로만 10분으로
+  #                              # 되올려 받는다(ChatMongoConfig.indexTimeoutFactory).
+  #                              # 1 미만이면 기동 실패.
+  #
+  # 탈퇴 신청 기록의 수명. 탈퇴 전에 받아 둔 룸 토큰으로 재입장하는 것을 이 기록이 막으므로,
+  # 그 토큰의 남은 수명(live 의 live.room-token.expiration-seconds, 기본 90s)보다 짧으면 안 된다.
+  # chat 은 live 의 값을 읽을 수 없지만 live 가 그 값을 300s 이하로 묶는다(넘으면 live 가 기동 실패).
+  # 그래서 300s 미만이면 기동 실패다.
+  # 탈퇴에는 철회 경로가 없어 길게 둬도 잘못 막는 사람이 없다.
+  # withdrawal:
+  #   record-ttl: 24h            # 코드 기본값 (env: CHAT_WITHDRAWAL_RECORD_TTL)
 
 # ── 관측 ──────────────────────────────────────────────────────────────────────
 #

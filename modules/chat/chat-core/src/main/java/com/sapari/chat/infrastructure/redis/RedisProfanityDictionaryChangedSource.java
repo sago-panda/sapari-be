@@ -5,6 +5,8 @@ import java.time.Duration;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.ChatSubscription;
 import com.sapari.chat.application.port.ProfanityDictionaryChangedSource;
 
 import lombok.extern.slf4j.Slf4j;
@@ -31,11 +33,14 @@ public class RedisProfanityDictionaryChangedSource implements ProfanityDictionar
 
     private final Flux<Long> shared;
 
-    public RedisProfanityDictionaryChangedSource(ReactiveStringRedisTemplate redis) {
+    public RedisProfanityDictionaryChangedSource(ReactiveStringRedisTemplate redis, ChatMetrics metrics) {
         this.shared = redis.listenToChannel(ChatRedisKeys.dictChanged())
                 .flatMap(message -> parse(message.getMessage()))
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(30))
-                        .doBeforeRetry(s -> log.warn("chat:dict:changed 구독 재시도 — 끊김 후 자가복구", s.failure())))
+                        .doBeforeRetry(s -> {
+                            metrics.subscriptionResubscribed(ChatSubscription.PROFANITY_DICTIONARY);
+                            log.warn("chat:dict:changed 구독 재시도 — 끊김 후 자가복구", s.failure());
+                        }))
                 .publish()
                 .autoConnect(0);
     }

@@ -12,6 +12,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 
 import com.sapari.chat.application.protocol.ChatAccountEvent;
+import com.sapari.chat.application.port.ChatMetrics;
 
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
@@ -37,7 +38,7 @@ class RedisChatAccountEventSourceTest {
         // 생성자가 listenToChannel을 부른다 — 구독 자체는 여기서 재지 않으므로 빈 스트림이면 충분하다.
         org.mockito.BDDMockito.given(redis.listenToChannel(org.mockito.ArgumentMatchers.anyString()))
                 .willReturn(Flux.empty());
-        return new RedisChatAccountEventSource(redis);
+        return new RedisChatAccountEventSource(redis, ChatMetrics.NOOP);
     }
 
     @Test
@@ -117,7 +118,7 @@ class RedisChatAccountEventSourceTest {
                 .given(redis).listenToChannel(org.mockito.ArgumentMatchers.anyString());
 
         // when & then: 재시도가 없으면 첫 에러에서 끝나고 이 단언은 상한에 걸린다
-        StepVerifier.create(new RedisChatAccountEventSource(redis).events().next())
+        StepVerifier.create(new RedisChatAccountEventSource(redis, ChatMetrics.NOOP).events().next())
                 .expectNext(new ChatAccountEvent.Banned(userId))
                 .expectComplete()
                 .verify(java.time.Duration.ofSeconds(15));

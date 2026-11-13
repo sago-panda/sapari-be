@@ -17,7 +17,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
+import org.springframework.data.mongodb.core.index.Index;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.testcontainers.containers.GenericContainer;
@@ -136,6 +138,27 @@ class ChatMessageRepositoryImplTest {
         assertThat(recovered.displayMessage()).isEqualTo("원본");
     }
 
+    /**
+     * 중복 복구가 본문을 대 보는 축은 원문이다({@code SendChatService.recoverDuplicate}). 재조회가 원문을
+     * 표시문과 따로 실어 오는지를 둘을 다르게 두고 본다 — 같게 두면 둘을 바꿔 매핑해도 초록이다.
+     */
+    @Test
+    @DisplayName("중복 재조회는 원문을 표시문과 따로 실어 온다 — 본문 비교가 기대는 필드다")
+    void duplicate_recovery_carries_original_message() {
+        // given
+        repository.save(new ChatMessage(null, roomId, senderId, "구매자닉", "buyer@example.com",
+                ChatRole.BUYER, new ChatMessageType.Normal(), "원문", "표시문", "dup-orig", Instant.now()))
+                .block(VERIFY_CEILING);
+
+        // when
+        ChatMessage recovered = repository
+                .findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "dup-orig").block(VERIFY_CEILING);
+
+        // then
+        assertThat(recovered.originalMessage()).isEqualTo("원문");
+        assertThat(recovered.displayMessage()).isEqualTo("표시문");
+    }
+
     @Test
     @DisplayName("dedup — clientMsgId=null은 partial 인덱스 미적용이라 2건 이상 저장 가능")
     void null_clientMsgId_is_not_deduplicated() {
@@ -150,17 +173,43 @@ class ChatMessageRepositoryImplTest {
     }
 
     @Test
-    @DisplayName("인덱스 3종(페이징·dedup unique partial·TTL 2년)이 생성된다")
-    void creates_three_indexes() {
+    @DisplayName("인덱스 5종(페이징·dedup unique partial·TTL 2년·VOD 윈도우·공지 partial)이 생성된다")
+    void creates_five_indexes() {
         // given
         var indexes = mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo().collectList().block(VERIFY_CEILING);
 
-        // when & then
+        // when & then: 다섯을 다 적는다 — 종전에는 셋만 적어 윈도우 인덱스의 이름이 아무 데도
+        // 단언되지 않았고, 그래서 그 인덱스의 키가 바뀌어도 이 칸이 초록이었다.
         assertThat(indexes).extracting(i -> i.getName())
-                .contains("roomId_1__id_1", "roomId_1_senderId_1_clientMsgId_1", "createdAt_1");
+                .contains("roomId_1__id_1", "roomId_1_senderId_1_clientMsgId_1", "createdAt_1",
+                        "roomId_1_createdAt_1__id_1", "roomId_1__id_1_notice");
+        var notice = indexes.stream().filter(i -> i.getName().equals("roomId_1__id_1_notice")).findFirst().orElseThrow();
+        assertThat(notice.getPartialFilterExpression()).contains("NOTICE");
         var ttl = indexes.stream().filter(i -> i.getName().equals("createdAt_1")).findFirst().orElseThrow();
         assertThat(ttl.getExpireAfter()).isPresent();
         assertThat(ttl.getExpireAfter().get().toDays()).isEqualTo(730);
+    }
+
+    @Test
+    @DisplayName("⭐ 옛 2키 윈도우 인덱스는 걷어낸다 — 그냥 두면 가장 뜨거운 쓰기 경로에 인덱스가 하나 늘어난다")
+    void the_superseded_two_key_window_index_is_removed() {
+        // given: 이미 배포된 환경의 모양을 만든다. 3키는 2키의 **접두가 아니라 상위집합**이라
+        // 이름이 달라지고, 그러면 Mongo 는 기존 것을 두고 새 것을 하나 더 만든다
+        // (실측, 일회용 mongo:7.0: "_id_ | roomId_1_createdAt_1 | roomId_1_createdAt_1__id_1").
+        // 그 상태는 조회에 해가 없지만 chat_messages 의 모든 insert 가 인덱스를 하나 더 쓴다.
+        mongoTemplate.indexOps(ChatMessageDocument.class).createIndex(new Index()
+                .on("roomId", Sort.Direction.ASC)
+                .on("createdAt", Sort.Direction.ASC)).block(VERIFY_CEILING);
+
+        // when: 부팅 경로를 그 상태 위에서 돌린다
+        ChatMongoConfig.createChatMessagesIndexes(mongoTemplate);
+
+        // then
+        assertThat(mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo()
+                .map(i -> i.getName()).collectList().block(VERIFY_CEILING))
+                .as("옛 2키 윈도우 인덱스가 남아 있다 — 상위집합이 섰는데도 쓰기 비용을 계속 낸다")
+                .doesNotContain("roomId_1_createdAt_1")
+                .contains("roomId_1_createdAt_1__id_1");
     }
 
     private ChatMessage message(String text, String clientMsgId) {

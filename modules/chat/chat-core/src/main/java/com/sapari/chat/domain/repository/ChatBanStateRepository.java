@@ -1,10 +1,12 @@
 package com.sapari.chat.domain.repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import com.sapari.chat.domain.model.ChatBan;
+import com.sapari.chat.port.BlockingChat;
 
 /**
  * 밴의 정본(Postgres). <b>블로킹</b> — 호출자가 live-app(MVC)이다.
@@ -12,6 +14,7 @@ import com.sapari.chat.domain.model.ChatBan;
  * <p>Redis의 {@code chat:banned:} 키는 이 테이블의 미러다({@link ChatBanWriteRepository}). 판정은 미러가
  * 하지만 근거는 여기 있고, 미러가 날아가도 여기서 다시 만들 수 있다.
  */
+@BlockingChat
 public interface ChatBanStateRepository {
 
     /**
@@ -21,13 +24,11 @@ public interface ChatBanStateRepository {
      * 배제한다. {@code chat_ban}을 직접 읽거나 쓰는 다른 경로는 전혀 막지 못한다. 오늘 그 경로가
      * 하나뿐이라 성립하는 것이고, 그 전제를 강제하는 것은 아무것도 없다.
      *
-     * <p>⚠️ <b>그래서 "잠금을 같이 잡아라"가 모든 처방이 되지는 않는다.</b> 예고된 수동 해제(행 DELETE)를
-     * 만들 때 실제로 성립하는 어긋남은 이렇다 — ① 강퇴가 활성 밴을 보고 조기 반환하며 커밋하고 잠금을
-     * 놓는다 ② 해제가 행을 지우고 미러를 지운다 ③ 그런데 ①의 호출자는 돌려받은 밴을 <b>커밋 뒤에</b>
-     * 미러에 쓴다. 결과는 정본 없음 + 미러 존재, 즉 과다 차단이고 영구 밴이면 사람이 손대기 전까지
-     * 풀리지 않는다. <b>해제가 이 잠금을 잡아도 막히지 않는다</b> — 그 미러 쓰기는 설계상 일부러 잠금
-     * 밖(커밋 뒤)에 있다. 필요한 처방은 "같은 잠금"이 아니라 "미러 쓰기까지 포함하는 단위"다.
-     * 조기 반환이 가장 흔한 경로라는 점이 특히 고약하다.
+     * <p>⚠️ <b>그래서 "잠금을 같이 잡아라"가 모든 처방이 되지는 않는다.</b> 강퇴는 돌려받은 밴을
+     * <b>커밋 뒤에</b> 미러에 쓰고, 그 쓰기는 일부러 잠금 밖이다. 잠금 뒤에 해제가 끼어 미러를 먼저
+     * 지우면 늦게 온 강퇴의 쓰기가 지운 밴을 되살린다 — 이 잠금으로는 막히지 않는다. 그 축은
+     * {@link #nextChangeVersion}이 닫는다: 이 잠금 안에서 집은 번호를 미러 쓰기에 싣고, 미러가 늦은
+     * 번호를 거절한다.
      *
      * <p>한때 이 자리에 다른 어긋남이 적혀 있었다 — 활성 밴 없음을 읽은 뒤 해제가 끼어들고
      * {@link #extendOrCreate}가 지운 밴을 되살린다는 것. <b>성립하지 않는다.</b> 쓰기 경로는 활성 밴이
@@ -102,10 +103,9 @@ public interface ChatBanStateRepository {
      * 코드가 영영 안 남는다. 없는 키를 지우는 것은 no-op이므로 해제 명령 전체가 몇 번을 다시 돌려도
      * 같은 결과여야 한다.
      *
-     * <p>⚠️ <b>그 둘을 다 지켜도 동시 강퇴와는 어긋난다.</b> 강퇴의 조기 반환 경로가 커밋 <i>뒤에</i>
-     * 미러를 다시 쓰므로, 그 사이에 해제가 끼면 지운 밴이 미러에만 되살아난다. {@link #lockForBanDecision}을
-     * 해제에서 같이 잡아도 막히지 않는다 — 그 쓰기는 잠금 밖이다. 해제를 만들 때 정해야 하는 것은
-     * 미러 쓰기까지 포함하는 단위이고, 그 판단이 이 포트 밖(유스케이스)에 있다.
+     * <p><b>그 둘을 지켜도 미러 축의 순서는 따로 정해야 한다.</b> 강퇴가 커밋 <i>뒤에</i> 미러를
+     * 쓰므로 그 사이에 해제가 끼면 늦은 쓰기가 지운 밴을 되살린다. {@link #lockForBanDecision}만으로는
+     * 막히지 않는다 — 그 쓰기는 잠금 밖이다. 번호({@link #nextChangeVersion})가 닫는다.
      *
      * <p>⚠️ 과다 차단이 <b>스스로 풀리는 것은 기한부 밴뿐이다.</b> 영구 밴은 미러에 TTL 없이 쓰이므로,
      * 해제에서 미러 삭제가 빠지면 사람이 손대기 전까지 영구히 막힌다.
@@ -140,12 +140,11 @@ public interface ChatBanStateRepository {
      * 않고</b> 그 사이에 끼어 "방금 접은 누적으로 해제 직후 1년 밴이 새로 생기는" 결과를 만든다.
      * 근거와 자원 순서는 {@code ChatBanReleaseRecorder.release} javadoc 에 있다.
      *
-     * <p><b>그래도 미러 축과는 어긋난다.</b> 강퇴가 커밋 <i>뒤에</i> 미러를 쓰므로 — 조기 반환만이
-     * 아니라 승격 갈래도 같다 — 그 사이에 해제가 끼면 지운 밴이 미러에만 되살아난다(과다 차단). <b>이쪽은
-     * 잠금으로 막히지 않는다</b> — 그 쓰기는 설계상 잠금 밖이다. 창은 밀리초이고 <b>복구 수단은
-     * 해제를 다시 누르는 것</b>이다 — 그래서 미러 삭제를 행 존재로 게이팅하면 안 된다. 막으려면
-     * 미러 쓰기를 트랜잭션 안으로 들여야 하는데, 그건 강퇴 자가치유(미러가 날아간 밴을 다음
-     * 강퇴에서 되찾는 것)를 잃는 쪽이라 더 나쁘다고 보고 두었다.
+     * <p><b>미러 축은 잠금이 아니라 번호로 닫는다.</b> 강퇴가 커밋 <i>뒤에</i> 미러를 쓰므로 — 조기
+     * 반환만이 아니라 승격 갈래도 같다 — 그 사이에 해제가 끼면 늦은 쓰기가 지운 밴을 되살린다. 그 쓰기를
+     * 트랜잭션 안으로 들이면 강퇴 자가치유(미러가 날아간 밴을 다음 강퇴에서 되찾는 것)를 잃으므로, 대신
+     * 양쪽이 잠금 안에서 {@link #nextChangeVersion}을 집고 미러가 늦은 번호를 거절한다. 미러 삭제를
+     * 행 존재로 게이팅하지 않는 것은 그대로다 — 재시도는 새 번호를 들고 온다.
      *
      * <p><b>지운 것을 돌려준다.</b> 정본 행이 사라지므로 그 내용(영구였는지·누가 걸었는지)은
      * 감사 행과 이 반환값 말고는 어디에도 남지 않는다. 그리고 <b>되돌릴 수도 없다</b> — 수동 밴을
@@ -155,6 +154,18 @@ public interface ChatBanStateRepository {
      * @return 무엇을 지웠는가. 지울 밴이 없었어도 기준선은 남았다 — 실패가 아니다
      */
     Released release(UUID userId, UUID releasedById, Instant now);
+
+    /**
+     * 미러에 실을 변경 번호를 하나 집는다. <b>{@link #lockForBanDecision} 안에서 불러야 한다</b> —
+     * 같은 사용자에 대해 잠금이 커밋 순서를 정하므로, 잠금 안에서 집은 번호만 그 순서와 같다.
+     *
+     * <p>미러 반영은 커밋 뒤 잠금 밖이라 도착 순서가 커밋 순서와 다를 수 있다. 미러가 이 번호로
+     * 늦게 온 쓰기를 거절한다({@link ChatBanWriteRepository}).
+     */
+    long nextChangeVersion();
+
+    /** 지금 유효한 밴이 걸린 사용자 전부 — {@link #findActive} 와 같은 술어다. 미러 재적재의 입력이다. */
+    List<UUID> findActiveUserIds(Instant now);
 
     /**
      * 해제가 지운 것.

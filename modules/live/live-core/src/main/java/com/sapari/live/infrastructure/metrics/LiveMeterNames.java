@@ -41,6 +41,15 @@ final class LiveMeterNames {
 
     /** 버린 최근 본 기록 수. 이유는 {@code reason} 태그(rejected·failed). */
     static final String RECENT_VIEW_DROPPED = "live.recent_view.dropped";
+    /**
+     * 룸 토큰 발급 건수. 서명을 쳤는지 캐시에서 나왔는지를 {@code source} 태그로 가른다(값은 소문자).
+     *
+     * <p>분모가 <b>회원 입장뿐</b>이다 — 게스트는 캐시를 타지 않는다({@code RoomTokenSignatureSource}).
+     */
+    static final String TOKEN_SIGNATURE = "live.token.signature";
+
+    /** 방 종료 신호(키·이벤트) 실패 — {@code signal} 태그가 어느 쪽인지 가른다. */
+    static final String ROOM_ENDED_SIGNAL_FAILED = "live.room.ended.signal.failed";
 
     static final String TAG_JOB = "job";
     static final String TAG_WRITE = "write";
@@ -52,9 +61,11 @@ final class LiveMeterNames {
     static final String TAG_POPULATION = "population";
     static final String TAG_GATE = "gate";
     static final String TAG_AXIS = "axis";
+    static final String TAG_SOURCE = "source";
     static final String TAG_FROM = "from";
     static final String TAG_TO = "to";
     static final String TAG_TRIGGER = "trigger";
+    static final String TAG_SIGNAL = "signal";
 
     private LiveMeterNames() {
     }

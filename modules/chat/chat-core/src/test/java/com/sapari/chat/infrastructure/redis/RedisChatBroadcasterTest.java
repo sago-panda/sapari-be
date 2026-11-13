@@ -35,11 +35,14 @@ import com.sapari.chat.application.protocol.ChatMessageTypeMixin;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.application.port.ChatMetrics;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
+import com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 class RedisChatBroadcasterTest {
 
@@ -67,7 +70,7 @@ class RedisChatBroadcasterTest {
         pattern = Sinks.many().multicast().onBackpressureBuffer();
         // 생성자가 패턴 구독을 즉시 연결(autoConnect 0)하므로 stub을 먼저 건다.
         doReturn(pattern.asFlux()).when(redis).listenToPattern("chat:pubsub:*");
-        broadcaster = new RedisChatBroadcaster(redis);
+        broadcaster = new RedisChatBroadcaster(redis, ChatMetrics.NOOP);
         mapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .addMixIn(ChatMessageType.class, ChatMessageTypeMixin.class);
@@ -296,7 +299,10 @@ class RedisChatBroadcasterTest {
                 : afterReconnect.asFlux()))
                 .when(flaky).listenToPattern("chat:pubsub:*");
 
-        RedisChatBroadcaster recovering = new RedisChatBroadcaster(flaky);
+        // 재구독에 지표가 붙는지도 같이 본다 — 구독이 죽은 파드가 Ready 로 서 있는 상태를
+        // 가리키는 신호가 전에는 10~30초마다의 WARN 한 줄뿐이었다(SPR-179).
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        RedisChatBroadcaster recovering = new RedisChatBroadcaster(flaky, new MicrometerChatMetrics(meters));
         String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
         afterReconnect.tryEmitNext(message(channel, wire));
 
@@ -305,6 +311,11 @@ class RedisChatBroadcasterTest {
                 .expectNextMatches(e -> e instanceof ChatEnvelope.ChatMsg)
                 .thenCancel()
                 .verify(VERIFY_CEILING);
+        assertThat(meters.find("chat.subscription.resubscribed")
+                .tag("subscription", "chat_pubsub").counter())
+                .as("재구독에 지표가 없다 — 복구는 되지만 그 사실이 밖에서 안 보인다")
+                .isNotNull()
+                .satisfies(counter -> assertThat(counter.count()).isGreaterThanOrEqualTo(1.0));
 
         assertThat(subscribeCount.get()).isGreaterThan(1);   // 실제로 다시 붙었다
     }

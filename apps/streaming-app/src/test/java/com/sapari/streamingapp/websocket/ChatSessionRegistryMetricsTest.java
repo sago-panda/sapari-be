@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
@@ -26,12 +27,15 @@ import reactor.core.publisher.Mono;
 /**
  * 서버가 세션을 끊은 <b>사유</b>가 밖으로 나가는지 본다.
  *
- * <p>이 지표가 존재하는 이유는 와이어에서 셋이 구분되지 않기 때문이다 — 방 종료·수명 만료·생존 실패가
+ * <p>이 지표가 존재하는 이유는 와이어에서 구분되지 않기 때문이다 — 방 종료·수명 만료·생존 실패가
  * 전부 close 1000 이고, 그중 방 종료만 직전에 설명 프레임을 보낸다. 밖에서 보면 "정상 종료가 늘었다"
  * 로만 보이는데 대응은 각각 다르다(방송 수와 함께 움직여야 / 지터가 안 듣는다 / 네트워크·적체).
+ * close 1008 도 둘이다 — 제재와 탈퇴이고, 합치면 사용자가 스스로 누른 탈퇴가 제재율을 올린다.
  *
- * <p>사유의 합이 서버 주도 종료 전체와 맞아야 종료율을 보는 사람이 설명되지 않는 차이를 쫓지 않는다 —
- * 그래서 강퇴·밴(1008)과 버퍼 초과(1013)도 같은 지표에 들어간다.
+ * <p>⚠️ <b>사유의 합은 서버 주도 종료 전체가 아니다.</b> 한때 이 자리에 그렇게 적혀 있었는데 거짓이고,
+ * 이 테스트도 그것을 재지 않는다 — 입장 거부 셋({@code KICKED}·{@code BANNED}·{@code ROOM_ENDED})은
+ * 세션이 성립하기 전이라 이 미터에 오지 않고, 프레임 상한 초과(close 1009)는 전송 계층이 보낸다.
+ * 여기서 재는 것은 <b>성립한 세션이 서버 판단으로 끊길 때 그 사유가 밖으로 나가는가</b> 하나다.
  */
 @DisplayName("세션 종료 관측 — close 1000 세 갈래를 사유로 가른다")
 class ChatSessionRegistryMetricsTest {
@@ -66,6 +70,27 @@ class ChatSessionRegistryMetricsTest {
     private double cut(String reason) {
         Counter counter = registry.find("chat.session.cut").tags("reason", reason).counter();
         return counter == null ? 0 : counter.count();
+    }
+
+    @Test
+    @DisplayName("⭐ 구현이 호출자의 사유를 그대로 싣는다 — 안 싣고 MODERATION 으로 고정해도 전 모듈이 초록이었다")
+    void theReasonTheCallerPassesIsTheReasonReported() {
+        // given: 사유를 가르는 축은 호출자에게 있다 — 핸들러 테스트는 **호출자가 넘기는 것**을 재고
+        // (ChatSessionManager 가 목이다) 구현이 그것을 **쓰는지**는 아무도 재지 않았다.
+        // 실측: closeUserEverywhere 가 사유를 무시하고 MODERATION 으로 고정해도 streaming-app
+        // 29클래스 295칸이 전부 초록이고, WITHDRAWN 이 이 앱(main+test) 전체에 0건이었다.
+        UUID userId = UUID.randomUUID();
+        subject.register("s-withdrawn", new ChatSession(roomId, userId, ChatRole.BUYER,
+                "닉", "e@example.com", false)).block(VERIFY_CEILING);
+
+        // when
+        subject.closeUserEverywhere(userId, SessionCutReason.WITHDRAWN).block(VERIFY_CEILING);
+
+        // then: 탈퇴는 제재가 아니다 — 합치면 사용자가 스스로 누른 것이 제재율을 올린다
+        assertThat(cut("withdrawn")).isEqualTo(1);
+        assertThat(cut("moderation"))
+                .as("탈퇴가 제재로 세어졌다 — close 코드가 양쪽 1008 이라 와이어로는 가려낼 수 없다")
+                .isZero();
     }
 
     @Test

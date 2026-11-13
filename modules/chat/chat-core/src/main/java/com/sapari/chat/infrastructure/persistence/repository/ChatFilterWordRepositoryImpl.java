@@ -35,6 +35,11 @@ public class ChatFilterWordRepositoryImpl implements ChatFilterWordRepository {
      * 그 근거가 실현되지 않았다(Postgres 는 순서를 보장하지 않는다).
      */
     @Override
+    public void lockForWrite() {
+        jpaRepository.lockForDictionaryWrite();
+    }
+
+    @Override
     public Set<String> findWords(FilterWordKind kind) {
         return new LinkedHashSet<>(jpaRepository.findWordsByKind(kind.name()));
     }

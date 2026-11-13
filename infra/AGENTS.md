@@ -74,12 +74,107 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
   `contextLoads` stays green on a local database that predates the migration. The guard fires on a real
   run (`bootRun` / deployed pod), which is where it matters; locally, run `migrate.sh` against your DB, or
   set `live.reconcile.enabled=false` to take the jobs down with it.
+- **Removed live-app config keys must leave every deployed yaml/env before the upgrade**, or the app refuses
+  to boot → `.claude/rules/live/reconcile.md`.
+- **Before a bulk UPDATE of `live_schema.live_room.status`, disable the orphan-media job and rolling-restart
+  first** → `modules/live/AGENTS.md` §Design-time invariants.
 
 How it runs:
 - **local:** `DB_URL=… DB_USER=… DB_PASSWORD=… ./infra/migration/migrate.sh` (needs Flyway CLI;
   auto-detects `db/migration` from repo root).
 - **docker:** image built from `infra/migration/Dockerfile`.
 - **prod:** same image run by a Helm pre-upgrade Job (wired when prod is promoted).
+
+## Audit-log queries (operator script, measured SPR-175)
+
+`infra/audit-query/query-audit-log.sh` is the read path into `live_schema.audit_logs` — the table
+chat's audit rows land in, because chat has no schema of its own (see Migrations above). It only
+ever runs `SELECT`; there is no write mode, so it cannot be the tool that corrupts the evidence.
+
+- **Three query modes** (`actor` / `action` / `target`), plus `--explain` for the plan and
+  `--self-test` for the pure logic. **`actor` requires `actor_type`** — a rejection, not a missing
+  optional argument. Measured at 400k rows on `postgres:16`: `actor_id` + `actor_type` pinned →
+  **0.088ms, Index Scan Backward**; `actor_id` alone → **13.0ms** — **148×**, because the index is
+  `(actor_id, actor_type, created_at)` and dropping the middle column costs the ordering too.
+  `action` → 0.072ms, exact equality only (no `LIKE`, so `ChatAuditAction`'s `action LIKE 'CHAT_%'`
+  remark describes psql by hand, not this script). `target` has **no index** → 9.9ms; it still runs,
+  and the integration test deliberately does **not** assert its plan, so adding an index later is
+  not a test failure. **There is no `detail` (jsonb) mode at all** — 15.8ms measured and no plan
+  shape to pin, which is why it was left out; an earlier version of this section wrongly listed it
+  as a supported path.
+- **Exit codes**: `0` success — **including 0 rows**, which is an answer ("that action is not in the
+  log"), not a failure. `64` (`EX_USAGE`) usage or argument validation. `12` `--self-test` failure.
+  Anything else is **psql's own code passing through** (2 connection failure, 3 `ON_ERROR_STOP`).
+  - ⚠️ **`2` is deliberately not used for validation, and this is load-bearing for the tests.**
+    Measured: with validation on `2`, a connect failure and a typo were *the same code*, and the
+    argv-layer test cells — which run before the container exists — passed because psql could not
+    connect, not because a guard fired. Denominator 0 on every one of them. `64` is a code psql
+    does not emit, so those cells now measure the guard. One cell asserts the separation directly.
+  - The sibling has a `preflight()` → `exit 1`; this script has none, deliberately. The sibling
+    generates `UPDATE`s across repeated rounds, so not starting on bad input matters; a read-only
+    one-shot gets the same information from psql's own error text.
+- **The row count never hides truncation — on the snapshot axis.** It counts to `limit + 1` and says
+  `N건 이상 — 상한 N 에서 잘렸다` rather than printing a capped number: at the cap, "exactly 50" and
+  "the first 50 of many" are different answers to an audit question. Counting the whole predicate
+  instead would unbind the LIMIT the plan above depends on. The probe has no `ORDER BY`, so the
+  plan `--explain` pins is the row query's, not the probe's; LIMIT is what bounds the probe.
+  - ⚠️ **That sentence held on the snapshot axis and failed on another one.** With a leading zero
+    in `limit`, the probe read the value in a different base from the row query, so the count was
+    wrong *and* the truncation warning disappeared — the exact property this bullet claims. The
+    guard below closes it; the lesson is that "never hides X" wants the axis named.
+- **Credentials never in `argv`** (ps-readable) — libpq env vars / `~/.pgpass` / `PGSERVICE`, same
+  position as `replay-backfill`. ⚠️ **libpq prefers the service file over env vars**, so a shell set
+  up for production reaches production; `integration-test.sh` `unset`s
+  `PGSERVICE PGSERVICEFILE PGOPTIONS PGHOSTADDR PGSSLMODE PGPASSWORD` **as its first statement**,
+  before any cell runs — measured: while that line sat lower in the file, the connect-failure cell
+  above it set `PGHOST`/`PGPORT` by hand, the service file won anyway, and with a reachable service
+  file the cell both reported FAIL and sent its `SELECT` to that database. Every
+  psql call passes `-X`, so a developer's `~/.psqlrc` cannot reshape operator output or the count.
+- **`limit` is the only value interpolated into SQL as a shell string.** Everything else goes
+  through psql `-v` variables with the SQL on **stdin** — `psql -c` does not interpolate `:'var'`
+  at all. What that claim rests on: `mode` is a three-item whitelist and `v1`/`v2` go through `-v`.
+  `$where` is interpolated too, so **a fourth mode that embeds any operator value in its WHERE
+  makes the sentence silently false** — a new mode must pass values as `:'vN'`.
+  - ⚠️ **This value's real defect was not injection but the numeric base**, and the test comment
+    nailing the axis to injection alone is why nothing measured it. Measured: one string is read
+    three ways — Postgres `LIMIT 050` → decimal 50, `[ 050 -gt 49 ]` → decimal 50,
+    `$((050 + 1))` → **octal 41**. A leading zero therefore printed 50 rows, counted 41, and
+    `[ 41 -gt 050 ]` being false **also suppressed the truncation warning**. `08`/`09` are worse:
+    `$((08 + 1))` dies with *value too great for base*, and `set -e` exits **1** — a code this
+    file's table does not list, and the sibling's `die()` value.
+  - **`$((10#$limit + 1))` is not the fix here.** `10#` is a bash/ksh extension, not POSIX
+    arithmetic (measured: `dash` → `arithmetic expression: expecting EOF`), and the shebang is
+    `#!/bin/sh`. The guard rejects leading zeros instead, so all three readers see one value.
+  - It is now **one shape guard plus a ceiling**, not the original two-check pair. Once leading
+    zeros are rejected the surviving values are `[1-9][0-9]*`, so the old `-gt 0` check had
+    denominator 0 and was removed. Three earlier versions of this bullet were wrong about these
+    guards — first claiming a mutation had to remove both, then calling them a message/gate pair,
+    then justifying the absence of a ceiling with an error that does not fire.
+  - **`limit` is capped at 10000**, and the reason the earlier "no ceiling" line gave was false in
+    two places. Measured against 5 rows: `limit=9000000000000000000` → **exit 0, 5 rows, correct
+    count** — nothing dies, so "psql's bigint error kills it first" never fires in that band, while
+    the row query stops being bounded by `LIMIT` at all; `limit=9223372036854775807` → exit 3, but
+    the death is in the **probe**, not the row query, because `$((max + 1))` wraps negative
+    (`LIMIT must not be negative`) *after* the rows have already printed — the last face of the
+    base/overflow root above; `9223372036854775808` and up → exit 3, `bigint out of range`.
+    Nothing is silently wrong in any band, so this is a false justification, not a defect. The cap
+    makes all three unreachable and turns "LIMIT bounds the plan" — which every cost figure here
+    rests on — from an explanation into an entry condition. **10000 is a policy ceiling, not a
+    measured threshold**: this is a window a person reads in a terminal, and an answer bigger than
+    that is the wrong question. What the measurements decide is only *that* there must be a cap.
+- **Two test layers**, same split the sibling learned: `--self-test` covers the pure argv/validation
+  logic with no database and reports how many checks it ran (a self-test that is one `exit 0` is a
+  guard with denominator 0); `infra/audit-query/integration-test.sh` covers the rest in 26 cells —
+  table/column names, query syntax, real exit codes and their separation, newest-first ordering,
+  truncation in both directions, rows-printed matching the cap, both leading-zero vectors, both
+  sides of the `limit` ceiling, the usage text listing every mode (and the 148× figure it states,
+  so that number cannot drift unnoticed), and the index plans. It applies
+  **the whole real `db/migration/live/V1__init_live.sql`**.
+  - It also checks `current_database()` and that `live_schema` is empty before running DDL, copied
+    from the sibling. ⚠️ **On this script's own path that guard cannot fire** — like the sibling, the
+    test starts its own container and exports `PGHOST`/`PGPORT` itself, so the target is always its
+    own database. Denominator 0 today; it earns its place only if someone later points the test at
+    a database it did not create. Fed a reachable wrong target by hand, both halves do reject.
 
 ## Observability ports (live-app)
 
@@ -109,11 +204,11 @@ so the port split is the only thing standing between an anonymous scraper and th
   so a config slip fails loudly instead of quietly publishing metrics on the user port.
 - ⚠️ **"Manifests still have to *set* the management port" is weaker than it reads.** The guard rejects an
   *absent* key, and the shipped template is `port: ${MANAGEMENT_PORT:8091}`
-  (`application.yaml.example:239`) — copy that and leave the env var unset and the placeholder resolves to
+  (`management.server.port` in live-app `application.yaml.example`) — copy that and leave the env var unset and the placeholder resolves to
   8091, so the app **boots normally**. A manifest whose scrape target was pointed at the env value then
   gets silently empty metrics. If you want the env var to be load-bearing, drop the `:8091` default from
   the template; today it is a convenience, not a gate. (streaming-app: same shape,
-  `${MANAGEMENT_PORT:8092}` at `application.yml.example:167`.)
+  `${MANAGEMENT_PORT:8092}` at `management.server.port` in `application.yml.example`.)
 - **It also refuses to start unless `health` and `prometheus` are *actually exposed*** (added 2026-10-31,
   widened 2026-11-01). The guard does **not** read `exposure.include`/`exclude` any more — it asks
   `WebEndpointsSupplier.getEndpoints()`, because six config axes can remove an endpoint and a key-reading
@@ -136,7 +231,7 @@ so the port split is the only thing standing between an anonymous scraper and th
   app refuses to start by design.
   - ⚠️ **`MANAGEMENT_PORT` itself is not load-bearing today**, and an earlier version of this bullet said
     it was. The guard rejects an *absent* key, and the shipped template is `${MANAGEMENT_PORT:8091}`
-    (`application.yaml.example:239`) — copy that, leave the env var unset, and the placeholder resolves to
+    (`management.server.port` in live-app `application.yaml.example`) — copy that, leave the env var unset, and the placeholder resolves to
     8091 and the app **boots**. A manifest that points its scrape target at the env value then gets
     silently empty metrics. To make the env var a real gate, drop the `:8091` default from the template.
   - Developers running locally need the same keys; copy the `management` block from
@@ -291,7 +386,8 @@ An egress writes two manifests per rendition and they are **not** interchangeabl
   explicitly account for every report-only population (suspended, no live URL, no ended_at); a suspended
   legacy room may end later. Only after that review, a `0` exit **and** complete retirement of pre-SPR-148 writers may the legacy-hiding
   mapping (`LiveRoomMapper.archiveUrl`, the Ended branch of `applyStatusFields`) be removed, and that
-  removal must update `modules/live/AGENTS.md`, the mapper comment, the
+  removal must update `modules/live/AGENTS.md` §Design-time invariants (the legacy-rows line), the mapper
+  comment, the
   `copiedLiveUrlIsUnavailableUntilBackfilled` test name and `.claude/review/domains/live.md` LIVE-08 in the
   same commit.
 
@@ -360,12 +456,13 @@ that on.
     `chat_messages` runs in an **eager singleton** (`ChatMongoConfig`), which is **before the port
     binds** — so for the whole of that window `httpGet` and `tcpSocket` both get **connection refused**,
     not a false `Ready` (asserted by a raw TCP connect in
-    `EagerSingletonsRunBeforeThePortBindsTest`). The window's length is bounded by
-    **`ChatMongoConfig.INDEX_CREATE_CEILING` = 10 min** (SPR-152), and that is **one deadline over all
-    four index creations**, not per call — a fifth index does not add to it. Nothing in the driver bounds
+    `EagerSingletonsRunBeforeThePortBindsTest`). The window's length is
+    **10 min 30 s** (SPR-178): `ChatMongoConfig.INDEX_CREATE_CEILING` = 10 min (SPR-152) is **one
+    deadline over all four index creations**, not per call — a fifth *creation* would not add to it —
+    and `INDEX_DROP_CEILING` = 30 s sits **outside** that deadline, for the one superseded-index drop. Nothing in the driver bounds
     it otherwise: `socketReadTimeoutMs` defaults to **0 (infinite)** and the repo sets no Mongo client
     timeout anywhere (measured).
-    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min**. Under that and
+    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min 30 s**. Under that and
       Kubernetes kills the pod before the app's own ceiling fires — which throws away the one message
       that tells the operator *which* of the two causes it was (Mongo silent vs. first build on a large
       collection). `livenessProbe`/`readinessProbe` are not the lever here; a `startupProbe` is, because
@@ -381,7 +478,7 @@ that on.
       disconnect leaves the server-side build in place — `createIndexes` op still listed,
       `IndexBuildsCoordinatorMongod-0` still running — and the index finishes with no client attached).
       So restarting does not undo progress and the loop is **not permanent**: a build taking N× the
-      ceiling costs roughly N restarts, and the wall clock is N × 10 min **plus Kubernetes'
+      ceiling costs roughly N restarts, and the wall clock is N × 10 min 30 s **plus Kubernetes'
       `CrashLoopBackOff` backoff**, which grows 10s → 20s → … up to a 5 min cap between restarts.
       - Scope, because this claim keeps getting repeated: **standalone**. A replica set builds in phases
         with a commit quorum and DocumentDB is a compatibility layer, and this repo does not record which
@@ -402,10 +499,44 @@ that on.
   boots (see the bullet above). The template no longer calls that line optional (it did for one day, while the guard already
   required it — follow that stale template and the pod CrashLoopBackOffs). Developers running locally copy
   the `management` block from `application.yml.example`.
-- **What the metrics carry** — two kinds, and they want different alerts.
+- **What the metrics carry** — **four kinds**, and they want different alerts. (This said "two" while three groups were already listed below, and the fourth arrives with SPR-179; the count is the kind of number that drifts because nothing reads it.)
   - **Counters that are 0 when healthy**: `chat.policy.open`, `chat.ratelimit.degraded`,
-    `chat.delivery.dropped`, `chat.session.cut`. Every one of them is a *policy not being enforced* right
-    now, so any non-zero rate is worth watching. Details in `modules/chat/AGENTS.md`.
+    `chat.delivery.dropped`, `chat.session.cut`, `chat.dictionary.fastpath.lost`,
+    `chat.persist.timeout`, `chat.send.refused`. Every one of them is a *policy not being enforced*
+    right now — or, for the last, sends refused because the policy could not be read — so any
+    non-zero rate is worth watching. `chat.send.refused` counts failed reads per `policy`, not
+    refused sends (one send can raise kick and ban together); alert on the max over `policy`. Details in `modules/chat/AGENTS.md`.
+    - ⚠️ **`chat.dictionary.fastpath.lost` was missing from this list** until SPR-177, while
+      `ChatMeterNames` had declared it since it was added — the discipline is "add a line when adding
+      a meter" and that line was never added. Whoever reads this list as the set of chat counters was
+      reading one short.
+    - ⚠️ **`chat.persist.timeout` is not the same axis as `chat.delivery.dropped`** and must not be
+      summed with it. `delivery.dropped` means *the message is persisted and only live delivery was
+      lost*. Reading them as one number says "it is in the history" about messages that are not.
+    - ⚠️ **`chat.persist.timeout` has a `stage` tag whose two values must not be summed either**
+      (SPR-178). `stage=write` means **the write's result is unknown**; `stage=duplicate_recovery_read` is the
+      duplicate-recovery read, whose premise is that the document **already exists** — the message is
+      in the history and only reading it back was cut. Alert on `write` for **a persist whose result is
+      unknown** — ⚠️ **not** for confirmed data loss: a client-side timeout does not cancel the
+      server's write, and both branches surface as the same driver exception, so the caller cannot
+      tell "nothing was stored" from "stored but unconfirmed" (measured on mongo:7.0 with driver
+      5.6.5: a 1ms/2ms bound threw with **no** document, a 3ms/5ms bound threw while the document was
+      **present**). The claim that `write` means nothing was stored had spread widely and was corrected
+      under SPR-180. ⚠️ **No count is given here on purpose.** Two earlier versions of this line each
+      stated one ("four", then "ten, all corrected") and both were short: `PersistStage.WRITE` — the tag
+      enum this runbook sends you to — was never on the list, because the sweep matched `아무것도 남지`
+      while that file reads `아무 데도 남지`, and two more survived because the filter dropped sentences
+      already narrowed to the write branch, which is precisely what made them false. **A count is itself
+      a claim.** The reproducible statement is the sweep: match on the *subject* (`stage=write`,
+      `PersistStage.WRITE`, `PERSIST_TIMEOUT`) and read every hit, rather than on one phrasing of the
+      predicate.
+    - **What to do when `write` fires**: do not report data loss. Check whether the message is in the
+      history. Do not tell the user to retype the message: the client resends with the *same*
+      `clientMsgId` and body ("Retry contract (SPR-188)" in `modules/chat/AGENTS.md`), which the
+      unique partial index deduplicates if the first write landed. A retyped message is a new UUID and can duplicate.
+      Also alert on
+      `duplicate_recovery_read` for "the sender cannot see a message that is already stored"; they
+      need different responses. Details in `modules/chat/AGENTS.md`.
   - **Counters that are 0 when nobody is abusing** (added SPR-152): `chat.sessions.admission_capped` ·
     `chat.sessions.reaped` — the per-`(user, room)` session cap denying a connect, and the same cap
     reclaiming a slot whose socket had already gone silent. These are a different kind from the four
@@ -414,6 +545,18 @@ that on.
     rising together reads as clients dropping sockets without closing them, which is ordinary mobile
     behaviour. Neither question can be answered from `chat.session.cut{liveness}`, whose only tag is the
     reason.
+    - **"A cap set too low" is now actionable from config** (SPR-176): the cap is
+      `chat.session.max-per-room`, and it takes effect on restart — it is a constructor argument, not
+      `@RefreshScope`. **A value below 1 fails boot by design** rather than quietly running an uncapped
+      pod. ⚠️ That guard covers `< 1` **only** — `500`, or a misspelled key falling back to the default,
+      both roll out fine, so it does not make every typo visible. There is no upper bound; a very large
+      value is how you ask for "no cap".
+      Before raising it, note the derivation in `modules/chat/AGENTS.md`: live sessions per
+      `(user, room)` can briefly reach **2× whatever you set**, so a cap of 20 is a transient 40.
+      - **Read the cap off `chat.sessions.max_per_room`, not off this file.** That gauge exists because
+        the pair above *stops being readable* at a large cap: both counters flatten to 0, and that is the
+        same picture as healthy. It is also the only way to see a rolling deploy where replicas disagree —
+        without it, two different denominators get summed into one graph.
   - **Gauges that are *not* 0 when healthy** (added 2026-11-01): `chat.sessions.local` ·
     `chat.rooms.local` — this pod's live WebSocket sessions and the rooms it relays. These are capacity
     signals, not failure signals, so "non-zero = problem" does not apply; they want a **threshold**.
@@ -423,6 +566,27 @@ that on.
     outbound buffer*, so a pod with backed-up sessions costs more — which means the app side is not the
     constraint and the cap has to come from transport-side load testing. Order: gauge → threshold alert
     → cap.
+  - **Counters whose 0 is ambiguous** (added SPR-179): `chat.sessions.heartbeat_failures` — the session
+    registry's re-registration failing. It belongs to none of the three groups above: not a policy being
+    let through, not a policy firing, not a capacity reading. It is an infrastructure failure, and the
+    consequence is severe — if re-registration stops, **every live viewer drops out of the count** after
+    the staleness window (4 × the heartbeat interval).
+    - ⚠️ **Do not read 0 as healthy.** A round that *fails* is counted; a round that never *finishes* is
+      not, and the registry's own javadoc records that branch as the worse one. No signal measures round
+      duration yet, so this counter is evidence that re-registration **is failing** — never evidence that
+      it is working. The only reading available for a stall today is `chat.sessions.local` holding steady
+      while connections continue.
+    - Before this meter existed the only signal was a WARN thinned to one line per 10s, and that latch is
+      **shared** with two other failure modes, so whichever fires first hides the others' first
+      occurrence. Details in `modules/chat/AGENTS.md`.
+    - `chat.subscription.resubscribed{subscription}` — a Redis pub/sub subscription retrying its establish.
+      Same ambiguity, different shape: re-subscription is a `retryWhen` loop, so **a recovered drop climbs a
+      few times and stops while a wedged subscription climbs forever**. Alert on "still climbing after N
+      minutes", not on non-zero. 0 also covers "never established", which this counter does not answer.
+      Measured (SPR-179): the production shape retried twice and recovered when the `PSUBSCRIBE` establish
+      reply was delayed past the 1s command bound — so treat permanent death as a shape to watch for, not
+      the default. Per-subscription tag because `chat_pubsub` losing its stream silently drops every chat
+      delivery and every KICK notice on that pod, while `profanity_dictionary` only ages the dictionary.
 - **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
   network restrictions above are enforced from here.
 

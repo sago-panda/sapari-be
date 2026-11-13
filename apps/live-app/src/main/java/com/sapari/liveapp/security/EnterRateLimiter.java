@@ -8,9 +8,14 @@ import lombok.extern.slf4j.Slf4j;
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
 import com.sapari.live.application.port.LiveMetrics;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 /**
- * 입장(=룸 토큰 발급) 상한. 게스트와 회원이 각자 버킷을 갖는다.
+ * 입장(=룸 토큰 발급) 상한. 게스트·회원·판매자가 각자 통로를 갖는다.
  *
  * <p><b>왜 상한이 필요한가.</b> {@code GET /api/v1/lives/rooms/{roomId}} 는 미인증도 받고
  * 호출마다 새 룸 토큰을 찍는다. 그 한 건이 치르는 것은 둘이다 — {@code findById}(방송을
@@ -26,11 +31,16 @@ import com.sapari.live.application.port.LiveMetrics;
  * <p>축을 왜 이렇게 갈랐는지(집단 둘 · 회원은 샤드 배열 · IP 아님 · 무한 맵 아님)는
  * {@link EnterRateLimitProperties} javadoc 이 적는다.
  *
- * <p>⚠️ <b>방 주인에게 예약 용량이 없다.</b> 샤드가 한 계정의 피해 반경을 묶지만 판매자 자신의
- * 샤드를 비우는 것은 막지 않는다 — 같은 샤드에 해싱된 회원들이나 자기 재시도만으로도 비워진다.
- * 거부되면 입장이 도달하지 않고 {@code owner} 클레임이 실린 룸 토큰도 발급되지 않는데, 그
- * 클레임이 chat 의 강퇴·비마스킹 원문 게이트다. 즉 진행 중 방송의 판매자가 <b>재접속으로</b>
- * 조정 권한을 복구할 수 없다. 기존 WS 세션은 유지되므로 영향은 (재)접속 순간에 한정된다.
+ * <p><b>판매자는 전용 통로를 쓴다</b>({@link #trySellerEntry}, SPR-185). 판매자가 회원 샤드·전역을
+ * 같이 쓰던 때는 시청자가 몰리면 재접속이 거부됐고, 그러면 {@code owner} 클레임이 실린 룸 토큰이
+ * 발급되지 않아 진행 중 방송의 판매자가 chat 의 강퇴·비마스킹 원문 권한을 복구할 수 없었다.
+ *
+ * <p>⚠️ <b>판매자끼리는 같은 샤드 안에서 서로 밀어낼 수 있다.</b> 통로가 버킷 하나였다면 판매자
+ * 계정 하나가 초당 몇 건으로 <b>모든</b> 판매자를 막았다 — 그래서 회원과 같은 키 혼합 샤드로 나눴고,
+ * 피해는 공격자와 같은 샤드의 판매자로 묶인다. 다계정(약 22개면 전 샤드)의 한계와 그것을 받아들인
+ * 근거(사업자 검증)는 {@link EnterRateLimitProperties} 의 판매자 기본값 주석에 있다. 남는 구멍 하나:
+ * 이 필터는 폐기 조회({@code TokenRevocationFilter})보다 앞이라, 폐기된 판매자 토큰도 만료까지 자기
+ * 샤드를 소모한다. 기존 WS 세션은 유지되므로 영향은 (재)접속 순간에 한정된다.
  *
  * <p><b>던지지 않고 {@code false} 를 돌려준다.</b> 던지면 공용
  * {@code GlobalExceptionHandler} 가 <b>거부마다 WARN 한 줄</b>을 쓴다(그 핸들러는 4xx 를
@@ -70,25 +80,54 @@ public class EnterRateLimiter {
     private static final int BURST_HEADROOM = 2;
 
     /**
-     * 샤드 선택에 섞는 <b>프로세스 로컬 솔트</b> — 샤드를 <b>조준 불가</b>로 만든다.
+     * 샤드 선택 <b>키</b> — 프로세스 로컬 랜덤. 샤드를 <b>조준 불가</b>로 만든다.
      *
-     * <p>솔트가 없으면 공격자가 대상의 샤드를 <b>오프라인에서</b> 계산한다: 샤드 키가
-     * {@code sub}(=userId)이고 {@code String.hashCode} 는 JDK 규격이라 값이 재현되며,
-     * 미인증으로 열린 목록 응답({@code GetLiveView.LiveRoomSummary.sellerId})이 방송 중
-     * 판매자의 userId 를 그대로 준다. 그 샤드에 떨어지는 계정이 나올 때까지 가입만 하면
+     * <p>막으려는 것: 공격자가 대상의 샤드를 <b>오프라인에서</b> 계산하는 것. 샤드 키가
+     * {@code sub}(=userId)이고 미인증으로 열린 목록 응답이 방송 중 판매자의 userId 를 그대로
+     * 준다(실측으로 확인한 경로: {@code LiveSecurityConfig} 의 {@code GET /api/v1/lives/rooms}
+     * → {@code permitAll} → {@code LiveController.getRooms} → {@code GetLiveView.rooms} →
+     * {@code LiveRoomSummary.sellerId}). 그 샤드에 떨어지는 계정이 나올 때까지 가입만 하면
      * (가입 스로틀 없음) 계정 하나로 그 샤드를 상시 비울 수 있고, 그러면 판매자가 재입장으로
      * {@code owner} 클레임을 복구할 수 없다 — chat 의 강퇴·비마스킹 원문 게이트가 그 클레임이다.
      *
-     * <p>솔트는 인스턴스마다 다르므로 같은 판매자가 레플리카마다 다른 샤드에 떨어진다. 남는
-     * 위험은 조준이 아니라 <b>살포</b>다(샤드 전부를 덮으려면 계정이 많이 필요하다 — 아래
-     * {@code shardFor} javadoc).
+     * <p>⚠️ <b>한때 이것이 문자열 솔트를 주체 앞에 <i>이어 붙이는</i> 방식이었고, 그 방식은
+     * 위 공격을 막지 못했다(SPR-179 에서 실측).</b> 이유는 대수다 —
+     * {@code hash(a+b) = hash(a)·31^|b| + hash(b)} 이고 UUID 문자열 길이 36 은 짝수라
+     * {@code 31^36 ≡ 1 (mod 64)}, 그래서 솔트는 샤드 인덱스에 <b>상수 회전</b>으로만 들어갔다.
+     * 공격자에게 필요한 것은 절대 샤드 번호가 아니라 "내 계정이 타깃과 같은 샤드인가" 이고
+     * 그 <b>관계</b>에서는 회전이 양쪽에 똑같이 더해져 소거된다. 실측: 솔트를 모른 채
+     * {@code salt=""} 로 고른 후보가 실제 솔트에서도 타깃과 같은 샤드인 비율이
+     * <b>2000/2000 = 100%</b>(대조군 1.25% · 우연 기대 1.5625%)였다.
+     *
+     * <p>그래서 이어 붙이지 않고 <b>키로 쓴다</b>(HmacSHA256). MAC 은 키 없이 충돌 관계를
+     * 계산할 수 없으므로 위 소거가 성립하지 않는다. 비용은 <b>서브-µs</b> 다 — 연접이 수십 ns,
+     * HMAC(스레드 로컬 재사용)이 그 두어 배다. ⚠️ 세 자리로 적지 않는다: 독립 측정 둘이
+     * 연접에서 4배까지 갈렸고(기계·JIT 차) 결론만 같다. 이 경로는 통과 시 Redis 왕복 3회(≈3ms)를
+     * 쓰므로 어느 쪽이든 그 1만분의 1 수준이다 — 자릿수를 여행시키면 다음 사람이 그 차이를
+     * 결함으로 읽는다.
+     *
+     * <p>남는 위험은 조준이 아니라 <b>살포</b>다 — 샤드 전부를 덮으려면 계정이 많이 필요하다
+     * (아래 {@code shardFor} javadoc의 쿠폰 수집 수치).
      */
-    private final String shardSalt = java.util.UUID.randomUUID().toString();
+    private final byte[] shardKey = newShardKey();
+
+    /**
+     * {@code Mac} 은 상태를 들고 있어 스레드 안전하지 않다 — 스레드마다 하나 둔다.
+     *
+     * <p>{@code ThreadLocal} 누수를 걱정하지 않는 이유는 호출자가 서블릿 스레드 풀(유계)이기
+     * 때문이다. 호출마다 새로 만드는 쪽도 0.412µs 로 충분히 싸지만, 3배 차이를 공짜로 버릴
+     * 이유가 없다.
+     */
+    private final ThreadLocal<Mac> shardMac = ThreadLocal.withInitial(this::newShardMac);
 
     private final EnterRateLimitProperties properties;
     private final LiveMetrics metrics;
     private final TokenBucket guestBucket;
     private final TokenBucket memberBucket;
+    /** 판매자 통로의 전역 버킷 — 회원 샤드·전역과 분리돼 있다({@link #trySellerEntry}). */
+    private final TokenBucket sellerBucket;
+    /** 판매자 샤드 — 회원 샤드와 같은 키({@link #shardKey})로 고른다. */
+    private final TokenBucket[] sellerShards;
     /**
      * 회원 샤드 버킷 — {@code sub} 해시로 고른다. 길이가 고정이라 계정을 양산해도 늘어나는
      * 것이 없다({@link EnterRateLimitProperties} javadoc).
@@ -96,6 +135,7 @@ public class EnterRateLimiter {
     private final TokenBucket[] memberShards;
     private final AtomicLong guestRejected = new AtomicLong();
     private final AtomicLong memberRejected = new AtomicLong();
+    private final AtomicLong sellerRejected = new AtomicLong();
     /**
      * 마지막으로 로그를 남긴 시각 — <b>집단마다 따로다.</b> 벽시계가 아니라 단조 시계다
      * ({@link TokenBucket} 과 같은 이유).
@@ -105,6 +145,7 @@ public class EnterRateLimiter {
      */
     private final AtomicLong guestLastLogNanos;
     private final AtomicLong memberLastLogNanos;
+    private final AtomicLong sellerLastLogNanos;
     private final LongSupplier nanoClock;
 
     public EnterRateLimiter(EnterRateLimitProperties properties, LiveMetrics metrics) {
@@ -128,6 +169,10 @@ public class EnterRateLimiter {
                 properties.guestBurst(), properties.guestPermitsPerSecond(), nanoClock);
         this.memberBucket = new TokenBucket(
                 properties.memberBurst(), properties.memberPermitsPerSecond(), nanoClock);
+        this.sellerBucket = new TokenBucket(
+                properties.sellerBurst(), properties.sellerPermitsPerSecond(), nanoClock);
+        this.sellerShards = newShards(properties.sellerShards(),
+                properties.sellerPermitsPerSecond(), properties.sellerBurst(), nanoClock);
         int shards = properties.memberShards();
         this.memberShards = new TokenBucket[shards];
         // 샤드 몫을 <올림>으로 내고 버스트에 헤드룸을 준다. 합이 전역을 넘으므로 집계 천장은
@@ -141,6 +186,7 @@ public class EnterRateLimiter {
         }
         this.guestLastLogNanos = new AtomicLong(nanoClock.getAsLong() - LOG_INTERVAL_NANOS);
         this.memberLastLogNanos = new AtomicLong(nanoClock.getAsLong() - LOG_INTERVAL_NANOS);
+        this.sellerLastLogNanos = new AtomicLong(nanoClock.getAsLong() - LOG_INTERVAL_NANOS);
     }
 
     /** 미인증 입장 한 건. {@code false} 면 호출자가 429 로 돌려보낸다. */
@@ -199,6 +245,33 @@ public class EnterRateLimiter {
         return false;
     }
 
+    /**
+     * 판매자 입장 한 건 — 회원 샤드·전역을 <b>건너뛰고</b> 판매자 샤드 → 판매자 전역을 지난다.
+     *
+     * <p>판매자가 회원 통로를 같이 쓰면 시청자가 몰리는 순간 재접속이 429 가 되고, 그러면
+     * {@code owner} 클레임이 실린 룸 토큰을 못 받아 chat 의 강퇴·비마스킹 권한을 잃는다.
+     * 관문 순서와 그 이유는 {@link #tryMemberEntry} 와 같다(샤드가 먼저).
+     *
+     * @param subject 검증된 JWT 의 주체. {@code null} 이면 샤드를 건너뛴다({@link #tryMemberEntry} 와 같다).
+     */
+    public boolean trySellerEntry(String subject) {
+        if (subject != null && !sellerShards[sellerShardIndexFor(subject)].tryAcquire()) {
+            metrics.enterRateLimited(EnterPopulation.SELLER, EnterRejectionGate.SHARD);
+            logThrottled("판매자", EnterRejectionGate.SHARD, sellerLastLogNanos,
+                    sellerRejected.incrementAndGet(),
+                    properties.sellerPermitsPerSecond(), properties.sellerBurst());
+            return false;
+        }
+        if (sellerBucket.tryAcquire()) {
+            return true;
+        }
+        metrics.enterRateLimited(EnterPopulation.SELLER, EnterRejectionGate.GLOBAL);
+        logThrottled("판매자", EnterRejectionGate.GLOBAL, sellerLastLogNanos,
+                sellerRejected.incrementAndGet(),
+                properties.sellerPermitsPerSecond(), properties.sellerBurst());
+        return false;
+    }
+
     private void logThrottled(String which, EnterRejectionGate gate, AtomicLong lastLogNanos,
             long count, int permitsPerSecond, int burst) {
         if (!shouldLog(lastLogNanos)) {
@@ -216,13 +289,13 @@ public class EnterRateLimiter {
         // 모두 거부해도 먼저 찍힌 쪽 한 줄만 뜬다 — 관문별 비율은 로그가 아니라
         // live.enter.rejected 의 gate 태그에서 본다.
         log.warn("{} 입장 상한 초과({} 관문) — 공격이거나 한도가 낮다. 한도={}/s(burst {}), "
-                        + "프로세스 누적 거부: 이 집단={}건 게스트={}건 회원={}건",
+                        + "프로세스 누적 거부: 이 집단={}건 게스트={}건 회원={}건 판매자={}건",
                 which, gate, permitsPerSecond, burst, count,
-                guestRejected.get(), memberRejected.get());
+                guestRejected.get(), memberRejected.get(), sellerRejected.get());
     }
 
     /**
-     * 주체를 샤드에 붙인다 — {@link #shardSalt} 를 앞에 붙여 조준을 막는다.
+     * 주체를 샤드에 붙인다 — {@link #shardKey} 로 키 혼합(MAC)해 조준을 막는다.
      *
      * <p>{@code floorMod} 를 쓰는 이유: {@code hashCode()} 는 음수일 수 있고 {@code %} 는 그
      * 부호를 보존해 배열 인덱스가 음수가 된다.
@@ -242,7 +315,57 @@ public class EnterRateLimiter {
      * 샤드 용량이었다).
      */
     int shardIndexFor(String subject) {
-        return Math.floorMod((shardSalt + subject).hashCode(), memberShards.length);
+        return Math.floorMod(foldedMac(subject), memberShards.length);
+    }
+
+    /** 판매자 샤드 인덱스 — 회원과 같은 키를 쓴다. 테스트가 배치를 이 메서드로 묻는다. */
+    int sellerShardIndexFor(String subject) {
+        return Math.floorMod(foldedMac(subject), sellerShards.length);
+    }
+
+    private int foldedMac(String subject) {
+        byte[] digest = shardMac.get()
+                .doFinal(subject.getBytes(StandardCharsets.UTF_8));
+        // 앞 4바이트를 int 로 접는다. MAC 출력은 균등하므로 어느 4바이트를 쓰든 같다 —
+        // floorMod 로 음수를 접는 것은 이 int 가 부호 있는 값이기 때문이다.
+        return ((digest[0] & 0xff) << 24) | ((digest[1] & 0xff) << 16)
+                | ((digest[2] & 0xff) << 8) | (digest[3] & 0xff);
+    }
+
+    private static byte[] newShardKey() {
+        byte[] key = new byte[32];
+        new SecureRandom().nextBytes(key);
+        return key;
+    }
+
+    /**
+     * 스레드 하나를 위한 MAC.
+     *
+     * <p>{@code HmacSHA256} 이 없는 JRE 는 없다(JCA 필수 알고리즘)지만, 없으면 <b>던진다</b> —
+     * 조용히 연접으로 떨어지면 위 javadoc 이 적은 공격이 그대로 돌아오고, 그 사실이 어디에도
+     * 안 남는다. 샤드 배치는 상한의 일부이므로 "관측을 잃는" 것이 아니라 "집행을 잃는" 쪽이다.
+     */
+    private Mac newShardMac() {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(shardKey, "HmacSHA256"));
+            return mac;
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(
+                    "HmacSHA256 을 쓸 수 없다 — 샤드 조준 방어가 성립하지 않으므로 기동을 막는다", e);
+        }
+    }
+
+    /** 회원 샤드와 같은 몫 계산(올림 + 버스트 헤드룸) — 근거는 생성자의 회원 샤드 주석. */
+    private static TokenBucket[] newShards(int shards, int permitsPerSecond, int burst,
+            LongSupplier nanoClock) {
+        TokenBucket[] buckets = new TokenBucket[shards];
+        int shardBurst = ceilDiv(burst, shards) * BURST_HEADROOM;
+        int shardRefill = ceilDiv(permitsPerSecond, shards);
+        for (int i = 0; i < shards; i++) {
+            buckets[i] = new TokenBucket(shardBurst, shardRefill, nanoClock);
+        }
+        return buckets;
     }
 
     /** 올림 나눗셈. 샤드 몫이 전역을 <b>넘도록</b> 올려야 집계 천장이 전역에서 집행된다. */

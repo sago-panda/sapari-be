@@ -1,6 +1,7 @@
 package com.sapari.chat.infrastructure.persistence.repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -226,4 +227,20 @@ public interface ChatBanJpaRepository extends JpaRepository<ChatBanEntity, UUID>
      */
     @Query(value = "SELECT * FROM live_schema.chat_ban WHERE user_id = :userId", nativeQuery = true)
     Optional<ChatBanEntity> findAnyByUserId(@Param("userId") UUID userId);
+
+    /**
+     * 미러 변경의 다음 번호. 사용자별 잠금 안에서 불려야 순서가 커밋 순서와 같다.
+     *
+     * <p>{@code nextval} 은 롤백돼도 되돌아가지 않는다 — 번호에 구멍이 생길 뿐 겹치지 않고, 미러는
+     * "본 것보다 큰가" 만 묻기 때문에 구멍은 무해하다.
+     */
+    @Query(value = "SELECT nextval('live_schema.chat_ban_change_seq')", nativeQuery = true)
+    long nextChangeVersion();
+
+    /** 지금 유효한 밴이 걸린 사용자 전부 — {@link #findActive} 와 같은 술어다. 재적재 입력이다. */
+    @Query(value = """
+            SELECT user_id FROM live_schema.chat_ban
+             WHERE expires_at IS NULL OR expires_at > :now
+            """, nativeQuery = true)
+    List<UUID> findActiveUserIds(@Param("now") Instant now);
 }

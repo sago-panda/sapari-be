@@ -2,7 +2,7 @@
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
 ✅ connect / send / fan-out / room-end / kick + ban escalation / history (VOD) / reverse paths —
-ban release, kick-list reconcile, end-marker clear, dictionary propagation + admin API
+ban release, kick-list reconcile, ban-mirror reconcile, end-marker clear, dictionary propagation + admin API
 (REST host: **live-app**). Run `./gradlew :modules:chat:chat-core:test`.
 
 ## One module, two stacks — the rule that governs everything else
@@ -38,33 +38,57 @@ ban release, kick-list reconcile, end-marker clear, dictionary propagation + adm
   `MongoTemplate` without it, and promoting it would hand the reactive app a sync driver.
 
 ArchUnit enforces the calling direction: streaming-app must not touch blocking Redis/Mongo templates or
-blocking chat use cases; live-app (MVC) must not touch reactive ones. **Rule ② matches class names by regex** —
-name a service something other than `KickUserService` and it silently guards nothing.
+blocking chat use cases; live-app (MVC) must not touch reactive ones. Which side a type is on comes from
+`@BlockingChat` / `@ReactiveChat` / `@InMemoryChat` (chat-api `port`); the rules also catch implementations of
+a marked interface. Every chat port — chat-api `port`, chat-core `domain.repository` and `application.port` —
+must carry exactly one, matching its return types (`every_chat_port_declares_whether_it_blocks`). Blocking and
+in-memory look the same in a signature, so a second rule counts from the adapter side: any chat type holding
+`StringRedisTemplate` / `RedisTemplate` / `MongoTemplate` / a JPA repository must be `@BlockingChat`, itself or
+through an interface (`chat_types_holding_blocking_infrastructure_are_marked_blocking`; 12 such types on
+2026-11-13, all reached through their port). `ChatKickRecorder` and `ChatAccountEventHandler` are neither ports
+nor infrastructure holders, so their markers are by hand and neither rule counts them.
 
-## Failure policy — the moderation reads open, the rate limit degrades
+## Failure policy — entry reads open, send reads refuse, the rate limit degrades
 
-Every moderation read (kick, ban, room-ended) is **fail-open**. The rate limit is **not** one of them
-any more: it falls back to a pod-local window of the same length, so a Redis **outage — or a round trip
-slower than 200ms** — no longer removes the cap. The latency half matters: dropping packets instead of
+Moderation reads (kick, ban, room-ended, withdrawal) are **fail-open at entry** and **fail-closed at send**
+(SPR-188). The rate limit is **not** one of them
+any more: it falls back to a pod-local copy of the same rule (GCRA: one per 3s on average, burst 3), so a
+Redis **outage — or a round trip slower than 200ms** — no longer removes the cap. The latency half matters: dropping packets instead of
 dying keeps the command pending to Lettuce's 60s default, and without the bound the fallback never fires.
 It also means degradation is no longer a rare event you can leave to a throttled `log.error`; it fires on
 latency, so "what fraction of the time was enforcement pod-local" wants a metric, not a log line.
-There is still no fail-closed path in chat.
 
 | Read | On failure | Loses |
 |---|---|---|
-| room-ended marker (entry + send re-check) | allow | ended-room blocking |
-| kick set | allow | kick enforcement |
-| ban key | allow | ban enforcement |
-| rate limit | **degrade** (pod-local 3s window) | cross-pod accuracy (≈ N pods × 1 per window) |
+| room-ended marker — entry | allow | ended-room blocking at entry |
+| room-ended marker — send re-check | **refuse** that send (`ERROR(UNAVAILABLE)`), next frame re-checks | that one send |
+| kick set — entry | allow | kick enforcement at entry |
+| kick set — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send, plus a definite ban read alongside it (below) |
+| ban key — entry | allow | ban enforcement at entry |
+| ban key — send | **refuse** that send (`ERROR(UNAVAILABLE)`) | that one send, plus a definite kick read alongside it (below) |
+| withdrawal record (entry only) | allow | re-entry block on a pre-withdrawal room token |
+| rate limit | **degrade** (pod-local GCRA, same 3s / burst 3) | cross-pod accuracy (≈ N pods × the per-user allowance) |
 | session HASH register / viewer count | allow | count accuracy only |
 
-The bet: total chat outage is worse than a kicked user slipping through. **Adapters propagate, consumers
-decide** — an adapter that swallows into `false` destroys the distinction between "definitely not kicked"
-and "could not ask".
+**Why the two checkpoints point opposite ways.** Delivery is Redis Pub/Sub only — even same-pod sessions
+receive through it (`RedisChatBroadcaster`). So while these reads fail, publish usually fails with them:
+letting a send through buys no one seeing it, and costs an unchecked message in permanent history plus an
+ACK that reports success. A refused send is refused **before persist**, so retrying with the same
+`clientMsgId` cannot duplicate. Entry goes the other way because refusing it closes with 1008, which the
+frontend guide treats as "do not reconnect" — viewers would stay out after Redis recovers — and whoever gets
+in through an open entry gate can only read, which a guest can do anyway.
 
-**One exception, and it changes severity, not policy.** A kick key of the wrong Redis type keeps failing
-forever — retry is idempotent *and* permanently futile. `KickStoreCorruptedException` splits it so the
+The two send reads run together in `Mono.zip`, so one failing read decides the result even when the other
+came back definite. With kick = true and the ban read failing, the client gets `UNAVAILABLE`, not `KICKED`,
+and the session is **not** closed. That send is still blocked, so nothing is bypassed; the next frame reads
+again.
+
+**Adapters propagate, consumers decide** — an adapter that swallows into `false` destroys the distinction
+between "definitely not kicked" and "could not ask".
+
+**One exception: a kick key of the wrong Redis type.** It keeps failing forever — retry is idempotent *and*
+permanently futile. At send it is **let through**, not refused: Redis is up and delivery works, so refusing
+would stop that room's chat until a human clears the key. `KickStoreCorruptedException` splits it so the
 "never heals" case is not buried in the logs of an outage that will. Detection is by message prefix
 (`RedisWrongType`), because the driver uses one exception type for every server-side error; measured, not
 assumed. **No self-healing DEL** — that would erase the room's whole kick list and possibly someone else's data.
@@ -78,8 +102,8 @@ first, which is backwards. Reasons are counted separately so one does not bury a
 production log statements all pass `sessionId`/`roomId`/`userId`/`role` scalars. The same holds for any
 record that carries `email` or an unmasked body. Absorbing a failure is also not the same as silencing
 it: when a handler swallows to keep a verdict, it still owes a counter and an interval-throttled log
-(`RedisRateLimiter.denied` is the worked example — it kept the verdict and lost the signal until that was
-put back). ⚠️ **A previous version of this paragraph claimed a counter cannot live in `application/`.
+(`RedisRateLimiter`'s local fallback is the worked example — it keeps enforcing and still raises
+`chat.ratelimit.degraded` and an interval-throttled WARN). ⚠️ **A previous version of this paragraph claimed a counter cannot live in `application/`.
 That was false** — rule 16 (`domain_and_application_must_not_depend_on_metrics_library`) bans the
 *library* (`io.micrometer..`), and its own javadoc says to put a port there instead. chat already has
 that port and injects it in `application/`: `application/port/ChatMetrics` →
@@ -88,11 +112,7 @@ application-layer observation on the strength of that rule.
 
 What is true is narrower. `ChatMetrics` is deliberately written in **domain-event** vocabulary, not
 `counter`/`gauge`, so adding a signal means adding a method to that port — not injecting a
-`MeterRegistry`. And one swallow in this module does *not* carry a counter on purpose:
-`ManageFilterWordsService.warnIfCommittedSourceViolates` swallows a **diagnostic** read that runs after
-the write and the publish have both succeeded, and the state it would have reported is caught by the
-next write's `guardSource` as a 409 — an externally visible, structural signal. That is the argument for
-leaving it out; "the layer cannot hold one" is not.
+`MeterRegistry`.
 
 ## Profanity dictionary — the table is the source, the file seeds it, and short words are the trap
 
@@ -167,12 +187,13 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   cannot see "half new" — a whitelist entry only means something next to the profanity it covers.
   The version bump + `SET` + `PUBLISH` are **one Lua script**; split them and you get "version
   advanced, body did not", after which the receiver's poll reads the old body and advances its version
-  anyway. The bump is `current + 1` under a CAS, not an `INCR` — see the next bullet.
+  anyway. The bump is `max(current + 1, publish time ms)` under a CAS, not an `INCR` — see the next bullets.
 - **streaming-app reads.** `ProfanityDictionaryRefreshHandler` merges three triggers (boot, notify,
   poll) into one `concatMap` stream, so only one refresh runs at a time and monotonicity is a field
   comparison. ⚠️ The **poll** is what makes propagation work, not the notification: Redis pub/sub is
-  non-persistent, so a pod whose subscription was down during a publish never gets that message and
-  would enforce the old dictionary until restart. The notification only saves the poll interval.
+  non-persistent, so a pod whose subscription was down during a publish never gets that message and,
+  with the notification alone, would enforce the old dictionary until restart. The notification only
+  saves the poll interval.
 - **Failure directions are deliberate.** A transport failure does **not** advance the local version
   (otherwise the poll sees "same" and never retries — that ordering is the load-bearing part of the
   self-heal, pinned by a revert test). A **content** refusal does advance it, because re-reading the
@@ -232,42 +253,28 @@ can read the source of truth (live-app) reads it and leaves a snapshot where the
   cell, and narrowing acceptance only moves the cell. Two earlier attempts failed there (refusing →
   every dictionary write 500s forever; resetting to 1 → the same number carried two different bodies
   and pods holding 1 skipped it in silence).
-- **At the boundary cell the base falls to 0 and the next publish restarts at v1 — and that restart is
-  logged.** v1 *is* readable, which is what separates this from the discarded reset: the reset reused a
-  number *silently*, this one says so. Reaching the cell needs one out-of-band write plus one
-  eviction/`DEL`, so it is not exotic.
-
-  Two things that paragraph used to get wrong. **The residual is not "irreducible with ephemeral
-  state"** — the receiver has the decoded body in hand (`apply(snapshot, …)`), so comparing *content*
-  would close it; what keeps it open is the *choice* to compare only versions. ⚠️ That choice's price
-  is **not** "a trie rebuild per equal-version poll" — an earlier draft said so and it is false in both
-  readings: today the upstream `filter(published != processedVersion)` sits *above* `read()`, so an
-  equal-version poll ends at the version `GET` and builds **nothing**; and a content comparison would
-  still only build when the content differs. The price is the **body transfer plus decode — ~11 KB per
-  pod per poll** (1,078 + 38 bundled entries), which is exactly the cost the version key exists to
-  avoid. Do not read "irreducible" as a reason to stop looking at that axis, and do not price the axis
-  by trie builds. And **the recovery is not "delete both keys"** — that reproduces the
-  deadlock (base 0 → v1 again). Measured: boundary + write → v1 (fleet at 1 skips) → `DEL` both →
-  v1 again → skip again; whereas *re-sending the same ADMIN write* bases on the 1 this publish just
-  wrote → v2 → the fleet applies. Adds are idempotent and publish even when nothing changed, so "send
-  it once more" is the whole procedure. Verify by the receiver's `갈아 끼웠다 … version=` INFO (its
-  absence for the response's `version` is the verdict) — the same check `FilterWordChange.version`'s
-  javadoc already prescribes; the functional check (does the word mask?) is the backup, since there is
-  no dry-run endpoint and it needs a live room.
+- **At the boundary cell the base falls to 0 — and that restart is logged.** Reaching the cell needs one
+  out-of-band write plus one eviction/`DEL`, so it is not exotic. Losing both keys together (`FLUSHDB`, an
+  old RDB restore, a stale-replica failover) lands on the same base 0.
+- **A base of 0 does not reuse a number: the new version is `max(base + 1, publish time in ms)`.** The
+  receiver skips an *equal* version without reading the body, so a reused number meant "different body,
+  never applied" on every pod that held it — before the floor, both-keys-lost restarted at v1 and the
+  recovery had to be "send the same ADMIN write once more". Now the restart starts at the current time,
+  which is above every earlier number (each was at most its own publish time, plus a few within one
+  millisecond). What remains is a clock that moved back past an earlier publish *and* both keys lost.
+  Pinned by `ProfanityDictionarySnapshotRedisPublisherTest.losingBothKeysDoesNotReuseAVersion`.
 - **The config CSV (`chat.profanity.words`) is boot-only and dies at the first swap.** It is *not*
   merged into propagated filters on purpose: merging would make the enforced set differ from the set
   live-app pre-checks, so one config word colliding with a source whitelist entry would freeze swaps
   while writes passed — the same gate-plane/runtime-plane split this ticket keeps closing. Its lifetime
   is logged at boot so it does not vanish silently; durable changes go through the ADMIN API.
-- **Rule (1) crosses kinds, so two concurrent adds can each pass and still commit a violation**
-  (`rejectUselessWhitelist` tests a whitelist entry against the *word* set). No lock — and the reason is
-  **not** that closing it is expensive: `ChatKickRecorder.record` already shows the cheap shape (advisory
-  lock as the first statement inside `REQUIRES_NEW`, Redis only after it returns), so there would be no
-  external call inside the transaction. The real cost is **one more lock resource**, which
-  `ChatKickRecorder` obliges you to order or prove acyclic. It is left open because the probability is
-  low (same string, both kinds, simultaneously, at human typing rates), the result is recoverable
-  (remove either), and a post-write re-check now logs it against the request that caused it. If any of
-  those three changes — e.g. dictionary writes become automated — revisit it.
+- **Read → check → write runs under one dictionary lock** (`ChatFilterWordWriteRecorder.underWriteLock`:
+  a transaction-scoped advisory lock taken before the reads; publish stays outside). The checks look at
+  both whole sets, so without it two concurrent writes could each pass and commit a combined violation:
+  two removes of the last two profanities empty the table (after which every add is 409 and removal of
+  the last word is refused — no API way out), and rule (1) crosses kinds so the same string added to both
+  kinds at once breaks the whitelist rule. The lock adds a resource; no cycle — only the two dictionary
+  writes take it and they take nothing else.
 - **Rejection is attributed, and that split is load-bearing.** The service checks the *pre-change* set
   first: if that already fails, the cause is not the caller's input → `409 CHAT-011`. If the pre-change
   set is clean and the resulting one fails, the only difference is the submitted item → `400 CHAT-010`.
@@ -474,13 +481,22 @@ adapters share it by living in the same package. **Do not widen it to `public`.*
 |---|---|---|
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
 | `chat:room:{id}:sessions` | HASH | value is `userId:lastSeenMillis`; entries not re-registered within 4 heartbeats stop being counted. 24h key TTL is a backstop, refreshed by every heartbeat |
-| `chat:room:{id}:ended` | String | 30m — floor = longest room token, ceiling = blast radius of a false end signal |
+| `chat:room:{id}:ended` | String | 70m — floor = session `max-lifetime` (a pod that missed the end signal keeps its sessions that long, and their sends are stopped only by this marker or live's `live:room:ended:{roomId}`, which may be absent); streaming-app refuses to boot if `max-lifetime` exceeds it. Ceiling = blast radius of a false end signal |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h. `SADD` must be followed by `PERSIST` — **two writers now**: a kick (`register`) and a reconcile (`reconcile`), both in live-app |
 | `chat:banned:{userId}` | String | key presence = banned; TTL is the expiry. No status field, so no stale window |
+| `chat:withdrawing:{userId}` | String | key presence = withdrawal requested; written by **every** streaming pod on `user:account:withdrawing` before it closes that user's sessions, read by `EntryGate`. TTL `chat.withdrawal.record-ttl` (24h) — floor = the remaining life of a room token issued before the withdrawal (`live.room-token.expiration-seconds`, 90s default; chat cannot read it, but live refuses to boot above 300s, so the adapter refuses to boot below 300s — a copied number, nothing checks it against live's). No cancel path exists today; one that is added must delete this key |
+| `chat:ban:ver:{userId}` | String | highest change version that reached the mirror; 1d TTL (only has to outlive one request's commit→Redis gap). Writes at or below it are rejected |
 | `ratelimit:chat:{userId}` | String | prefix position differs; ownership is already in the name |
 | `chat:account:events` | Pub/Sub | account-scoped, **deliberately outside `PUBSUB_PREFIX`** — the room pattern parses its suffix as a UUID, so a name under it makes every pod log a parse failure and drop the envelope |
 
 `live:room:ended` is **live's channel** — subscribed, never written, and deliberately not in `ChatRedisKeys`.
+`live:room:ended:{roomId}` is **live's durable ended key** (value endedAt millis, TTL 70m) — read by
+`ChatRoomEndedRedisRepository.isEnded` together with the chat marker in one `EXISTS`, never written, and
+likewise not in `ChatRedisKeys`. The string is copied from live's package-private `LiveRedisKeys`; nothing
+checks the two against each other. Its **TTL is copied the other way**: live's `ROOM_ENDED_TTL` (70m) is a
+copy of `ENDED_TTL`. Raising `max-lifetime` (and so `ENDED_TTL`) passes chat's boot check while live's key
+still expires at 70m — tell live first. The one `EXISTS` covers two keys with no shared hash tag: fine on
+today's single-node Redis, `CROSSSLOT` on a cluster.
 
 Only the kick SET is exposed to WRONGTYPE (`SISMEMBER` type-checks). `SET`/`EXISTS` keys are not, so the
 corruption split is not widened to them.
@@ -545,6 +561,14 @@ save → publish. Zero-cost checks first; reordering makes a rejected guest cost
 
 - **`concatMap`, never `flatMap`** on inbound frames — flatMap's 256 concurrency lets a pipelining client
   bypass the local rate-limit window entirely.
+- **Per-session inbound cap before decoding** (`ChatWebSocketHandler.runInbound` → `ChatSessionRegistry.shouldDropInbound`:
+  10 frames/s, burst 20, GCRA). UTF-8 decode and JSON parse run on the event loop, and the rate limit and the
+  reply throttle both sit after them, so without it one client at line rate puts that cost straight on the
+  loop. A dropped frame costs one map lookup; receive/framing before it is bounded only by the 4 KiB frame
+  limit and the wire. Over-cap frames get **no reply** and the connection stays — the liveness tap in `handle`
+  must stay **ahead** of the cap or capped sessions get reaped as unresponsive. Measured for a 4 KiB frame:
+  parse 2.5µs valid … ~29µs unknown keys with nested-object values, decode ~2.3µs Korean (production
+  ObjectMapper, openjdk 21, 15-batch median).
 - **Persist before publish**, so `DuplicateKey` is caught before a duplicate broadcast.
 - **Publish failure is absorbed**: saved + ACK'd is a success; cross-pod delivery is best-effort.
 - Rate-limit exemption is `role + room ownership`, not role — a seller in someone else's room is a viewer.
@@ -560,22 +584,31 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
   close. Contention means another thread held the lock → drop that message, keep the session. Merging them
   makes load shed healthy viewers, whose reconnects raise load further.
 - Close codes: **1000** room ended, session-lifetime expiry, and liveness-check failure (all three on purpose
-  — see below), **1008** entry denial / kick / account-level ban, **1009** inbound frame over the 4 KB limit
+  — see below), **1008** entry denial / kick / account-level ban / **account withdrawal**, **1009** inbound frame over the 4 KB limit
   (Netty's decoder closes; the reason string leaks the configured limit), **1013** buffer overflow.
   1013 rather than 1000 exists to stop instant reconnect.
 - **1008 no longer implies "do not reconnect" — the SYSTEM code decides.** `KICKED`, `BANNED` and
   `ROOM_ENDED` are states a person cannot clear by retrying. `TOO_MANY_SESSIONS` (SPR-152) is the
   opposite: it clears as soon as one of that user's sessions in that room goes away, and a dead slot is
   reclaimed on the next attempt. So the client **may** retry it after a backoff, and must not fold it into
-  the "denied, give up" branch. Splitting the close code instead (1013-style) was rejected: 1008 is
+  the "denied, give up" branch. `WITHDRAWING` is a fifth, and it belongs to neither group: like the first
+  three it cannot be cleared by retrying, but unlike them **the account itself is going away**, so the
+  right client behaviour is to end the session rather than to show a denial. SPR-178 split it off
+  `MODERATION` in `chat.session.cut` for the same reason — a withdrawal is not a sanction — and this
+  line is the contract side of that split. Splitting the close code instead (1013-style) was rejected: 1008 is
   already the front end's "entry denial" bucket and splitting it changes how every denial is handled.
 - ⚠️ **1000 now means three different things, and only one of them carries an explanation.** Room end is
   preceded by `SYSTEM(ROOM_ENDED)`; lifetime expiry and liveness failure send no frame at all, because the
   only thing the client should do is reconnect. **That makes "did a SYSTEM(ROOM_ENDED) arrive just before the
   close?" the sole signal separating "the broadcast is over" from "reconnect now"** — an implicit contract the
   front end must hold. If it instead reads 1000 as "ended", every healthy viewer sees "방송이 종료되었습니다"
-  once per lifetime window. **The front-end behaviour is not verifiable from this repo** (no front-end code
-  here), so treat it as an assumption to confirm, not a measured fact. Giving expiry its own code would remove
+  once per lifetime window. **The contract doc does specify it, and conditionally** —
+  `chat-frontend-guide.v1.2.md:78` reads `| 1000 | 방송 종료 | 재접속하지 않음 (직전
+  SYSTEM(ROOM_ENDED) 수신) |`, so "do not reconnect" is scoped to *having received that frame
+  first*. The implicit contract described above is therefore **explicit on the contract side**, and
+  what is unverified from here is only whether a given client honours the parenthetical. (An earlier version of this
+  line called the behaviour unverifiable from this repo — true about code, false as a conclusion:
+  there is no front-end code here but there is a contract doc, and it had not been read.) Giving expiry its own code would remove
   the ambiguity at the cost of a new front-end contract.
 - ⚠️ **1009 has no defined front-end behaviour yet** — nothing in this repo mentions it besides the limit
   itself. A client hitting it is sending frames the protocol layer refuses, so retrying unchanged will loop.
@@ -592,8 +625,11 @@ Outbound buffer is **256 and bounded**. Raising it is the documented path to nod
 `live:room:ended` is Pub/Sub with no persistence: a pod whose subscription was down misses it entirely, and
 its sessions keep writing to a finished room.
 
-1. Send path re-checks the marker on a **30s window**, and **stops asking once ended** — a window alone only
-   blocks one frame per interval.
+1. Send path re-checks the ended state on a **30s window**, and **stops asking once ended** — a window alone only
+   blocks one frame per interval. "Ended" = the chat marker **or** live's `live:room:ended:{roomId}`. The
+   marker is shared, so a pod that missed the signal still reads what other pods wrote; live's key covers the
+   case where **no** pod wrote it. Its absence proves nothing — live writes it after media cleanup and does
+   not retry a failed write.
 2. On discovery it closes **that session only** (1000, same frames as the normal path). Room-wide closing
    would mean duplicating the 5-step handler in transport.
 3. Session HASH TTL is the last backstop.
@@ -683,10 +719,28 @@ three writes as one command: delete the record row, append an **amnesty baseline
 The prescription above said "`DEL` + set" — a reprieve turned out to need only the delete, because the
 mirror's extend-only script returns 0 on a key with no TTL, so a permanent ban cannot be shortened by
 writing at all. Order is **record → mirror**, with the commit in between: the reverse leaves a row that
-the next kick re-mirrors, so the ban *resurrects*. The remaining mismatch is the mirror axis — a kick
-writes the mirror **after** its commit, outside the lock by design, so a release landing in that window
-is undone in the mirror only (over-blocking, repaired by pressing release again; that is why the mirror
-delete must not be gated on the row having existed).
+the next kick re-mirrors, so the ban *resurrects*. The mirror axis — a kick writes the mirror **after** its
+commit, outside the lock by design, so a release landing in that window was undone in the mirror only — is
+closed by a **change version** (SPR-181): kick, release and reconcile each take
+`nextval('live_schema.chat_ban_change_seq')` inside `lockForBanDecision`, carry it to the mirror, and the
+mirror (`chat:ban:ver:{userId}`) rejects anything at or below what it has seen. A rejected kick write
+(`MirrorApply.STALE`) also skips the account `Banned` event. The mirror delete is still not gated on the row
+having existed — a retry takes a fresh version.
+
+**Ban-mirror reconcile** (`PUT /api/v1/chat/bans/mirror`, ADMIN, `ReconcileBanMirrorService`) is the ban
+side of the kick-list reconcile: enforcement is key presence, so a lost key reads as a normal "not banned"
+and no fail-open counter sees it. It walks every active row, re-reads each under the lock with a version,
+and reports how many keys were **missing** (`MirrorApply.CREATED` = mismatch). `EXTENDED` is not counted: on a mirror
+that agrees with the record, whether the write comes back `EXTENDED` or `UNCHANGED` is set by the difference
+of two unmeasured delays — the kick's TTL is computed from `kickedAt` (before its commit), which makes the
+mirror *longer*, and the reconcile's `now` is read before its own lock and commit, which makes `want` longer.
+Measured by the peer review on redis:7.4 with the production script: 10ms/2ms → `UNCHANGED` 200/200, 10ms/25ms →
+`EXTENDED` 200/200. So a genuinely short mirror and ms-level jitter share that result; the axis carries no
+signal until the jitter bound is known. Every write that is not `STALE` also publishes the account
+ban event, like a kick does — a user who joined while the key was lost keeps an open session otherwise, and
+when a reconcile reaches the mirror ahead of an overlapping kick, the kick's write is `STALE` and the kick
+skips its event, so this one is the only cut. It does not fix the opposite direction (a key with no row) —
+those users cannot be enumerated from the record; release fixes that one.
 
 Escalation counts **distinct kickers** across rooms on a 2-year window — people, not kicks. Since
 SPR-165 the window has **two lower bounds**: that 2 years *and the user's most recent ban release*,
@@ -781,9 +835,48 @@ way for a person to query it. `chat_kick_log` shows the difference — it is rea
 lets a human ask it anything, which is what "a store is not an audit" looks like.
 
 **The envelope is chat's own, not a cross-domain contract.** `ChatAccountEvent` lives in chat-core, so no
-other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). When withdrawal
-(T-11) needs the same effect, follow `live:room:ended`: the publisher owns the wire shape and chat adapts it
-in an adapter. That costs one more channel and subscription and buys keeping the type inside this module.
+other module can publish with it (`X-core → Y-api ONLY`; `-core` is never depended on). Withdrawal needed
+the same effect and took that route: `user:account:withdrawing` is **user's** channel, published by
+`UserAccountService` from an `afterCommit` hook, and chat absorbs it in `RedisAccountWithdrawingSource`
+(`{"userId","requestedAt"}` → `Flux<UUID>`) for `AccountWithdrawingHandler` to close the sessions. It cost
+one more channel, subscription and handler, and kept the type inside this module — same trade `live:room:ended`
+makes.
+
+Why a **separate** handler rather than a branch in `ChatAccountEventHandler`: that one's source is chat's own
+channel, this one's is user's. Two streams, two subscriptions — merged, one source's disconnect would stall
+the other's actions too.
+
+Why the signal is the **request**, not the hard delete: withdrawal is two-phase (status → `WITHDRAWING`
+immediately; hard delete later in batch). The account stops being active at the request, so waiting for the
+delete would leave the whole grace period open. And the request path already calls `revokeAllSessions`, which
+stops **new** room tokens being issued once it has run (live-app's `TokenRevocationFilter` checks every
+request, and token issuance — cached or not — sits behind it in the controller, so a cache hit cannot bypass
+it; that is structural, not measured) — **an established WS session never looks at the token again**, so that
+revocation and this event are different axes. The event is published **before** the revocation
+(`requestWithdrawal` publishes after commit, then the caller runs `revokeAllSessions`), so a token can still be
+issued in that gap.
+A room token issued *before* the request is still valid until it expires, and a closed client reconnects at
+once, so the handler first writes `chat:withdrawing:{userId}` and `EntryGate` denies on it (`WITHDRAWING`,
+1008) — fail-open like the ban read.
+
+⚠️ **There is no backstop for a missed publish**, and there are two ways to miss one: the publish itself
+failing, and **a publish that arrives while the subscription is down** (Pub/Sub keeps nothing, so that window's
+messages are gone).
+
+**The bound then differs by axis.** On the **send** side it holds and does not depend on the signal:
+`EntryGate.isRoomAlive` re-reads the persisted ended-marker (and live's ended key) on the send path, so a stale session is closed on
+its next send (`terminateRoomEnded`) even with a dead subscription — bound = window + next send. On the
+**read-only** side it does not: that re-check exists only on the send path ("a receive-only session on the same
+pod is not closed until it sends"), and the remaining mechanism is room-ended cleanup, which rides **the same
+subscription** (`ClearRoomEndedMarkerService`: "the only caller of markEnded is `LiveRoomEndedHandler` — woken
+only by the `live:room:ended` subscription"). For a pod whose subscription was down, that never arrives either,
+so the bound is the **session lifetime** (`chat.session.max-lifetime`, 60m default): `ChatWebSocketHandler`
+triggers every session's close at it unconditionally (jitter only shortens it) and the close completes within
+seconds (≤ 3s grace + 5s flush cap for a stuck client), and the reconnect goes through live's entry again.
+
+(This paragraph first claimed the bound was simply "until the broadcast ends, because room-ended clears
+sessions". The conclusion held for the send axis but the mechanism cited was the very subscription whose loss
+it was bounding.)
 
 The record can only be shortened by deleting the row, and **the mirror must be deleted in the same change**:
 enforcement reads `chat:banned:`, never the table. Order it record → mirror — a break in the middle leaves
@@ -812,7 +905,7 @@ The cost was investigated and **no redesign is warranted** (measured, redis:7 co
 | Shape | Worst concurrent command |
 |---|---|
 | `HVALS`+distinct alone, 12,000 entries | p50 3ms / max 6ms |
-| 100 concurrent on the *same* 12,000-entry hash | SETNX **211ms** — crosses the rate limiter's 200ms |
+| 100 concurrent on the *same* 12,000-entry hash | SETNX **211ms** (the limiter's call before SPR-189's script) — crosses the rate limiter's 200ms |
 | after in-flight merge: 60,000 sessions in one room | 28ms |
 | after merge: 6 pods × 100 rooms (360,000 entries at once) | 130ms |
 
@@ -851,6 +944,15 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
 - **A single session's failure is absorbed.** If it ended the stream, the pod would stop re-registering
   *everything* and the whole audience would disappear after the staleness window — worse than the bug being
   fixed. `concatMap` also keeps a slow Redis from overlapping rounds and doubling the writes.
+- **The absorbed failures are counted** (SPR-179): `chat.sessions.heartbeat_failures`
+  (`ChatSessionGaugeConfig`, a `FunctionCounter` over `ChatSessionRegistry.heartbeatFailures()`). The
+  `AtomicLong` had existed all along with no meter and its only reader was a test, so in production the
+  single signal for the failure above was a WARN thinned to one line per 10s — and that latch is shared
+  with two other failure modes, so whichever fires first hides the others' first occurrence.
+  - ⚠️ **0 does not mean the heartbeat is healthy.** A round that *fails* increments it; a round that never
+    *finishes* does not, and that is the worse branch — re-registration stops permanently while this stays
+    0. No signal measures round duration yet. Treat it as evidence that re-registration **is failing**,
+    never as evidence that it is working.
 - Staleness is judged against the **reader's** wall clock, so cross-pod clock skew applies; the 3-beat margin
   swallows second-scale skew. Moving the comparison into Lua would use Redis's single clock but would also
   move a full scan onto its single thread, and that cost is measured to be fine where it is.
@@ -866,8 +968,25 @@ one half. Both were investigated; the reasons differ.
 
 **Connection cap** — **split into two axes in SPR-152; one is now enforced, the other is not.**
 
-- **Abuse cap — enforced.** `ChatSessionRegistry.MAX_SESSIONS_PER_USER_PER_ROOM` (5) bounds concurrent
-  sessions per `(userId, roomId)`; over it, `register` denies with `EntryDeniedException.TOO_MANY_SESSIONS`
+- **Abuse cap — enforced, and tunable since SPR-176.** `ChatSessionRegistry.maxSessionsPerUserPerRoom()`
+  bounds concurrent sessions per `(userId, roomId)`; the value comes from **`chat.session.max-per-room`**
+  (default: `DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM`, which the placeholder's own default is written from,
+  so the number lives in one place) and **a value below 1 fails boot** rather than
+  quietly running an uncapped pod — the same choice as `managementPortMustDiffer`. There is no upper
+  bound: a very large value means "no cap", which is a state an operator may choose (it is what this
+  pod did before SPR-152). ⚠️ **That guard covers `< 1` and nothing else**, so it does not mean a typo
+  cannot leave a replica unprotected: `500`, or a misspelled key falling back to the default, both boot
+  happily — the first uncapped in practice, the second not what the operator set. And the number is
+  **not magnitude-free**, which an earlier version of this bullet asserted without measuring:
+  `reapUnresponsiveIfFull` only runs **once occupancy has reached the cap** — it returns at
+  `size() < cap` — and the scan it then does inside `computeIfPresent` is sized by **occupancy, not by
+  the cap**. So the direction is the opposite of the obvious one: **raising the cap makes this path run
+  less often**, because reaching it gets harder. The absolute cost is unmeasured on this side.
+  The configured value is exposed as **`chat.sessions.max_per_room`** (`ChatSessionGaugeConfig`), because
+  the `admission_capped` / `reaped` pair that `infra/AGENTS.md` tells the on-call to read **stops being
+  readable at a large cap** — both flatten to 0, which is also what healthy looks like — and because
+  replicas can disagree mid-rollout.
+  Over the cap, `register` denies with `EntryDeniedException.TOO_MANY_SESSIONS`
   → `SystemMessageCode.TOO_MANY_SESSIONS` + close 1008, counted by `chat.sessions.admission_capped`. The
   unit is `(user, room)` because a room token is scoped to one room and is **replayable within its ~90s
   TTL** (`modules/live/AGENTS.md`), so that pair is the narrowest thing that closes the replay window.
@@ -875,7 +994,8 @@ one half. Both were investigated; the reasons differ.
   - **It does not cover guests.** Unauthenticated entry mints a **fresh random `userId` per entry**
     (`EnterLiveService`), so guest connections never collide on the key. That branch is an issuing-side
     rate limit in live, outside this repo.
-  - **It is pod-local**, so the effective bound is `5 × replicas`. Going global would add a Redis round
+  - **It is pod-local**, so the effective bound is `cap × replicas` (the cap moved out of the code in
+    SPR-176). Going global would add a Redis round
     trip to every connect; the data is already there (`ChatSessionRepository.add` writes userId), so this
     is a choice, not a constraint.
   - **It created a new capability: locking the rightful owner out.** A replayed token can fill the slots,
@@ -901,11 +1021,16 @@ one half. Both were investigated; the reasons differ.
       it would kill a session that the loop's 30 s grid would have spared — then hand the freed slot to
       the caller. That would make "only dead slots" false in the window the buffer exists for.
     - Consequence, with the derivation because the number hangs on a ratio: live sessions per
-      `(user, room)` can reach **2× the cap (10) for ≤8 s** — `FORCED_CLOSE_GRACE 3s +
-      CLOSE_FLUSH_TIMEOUT 5s` — and a reap cannot fire more than once per 90 s per key (the five new
-      sessions are not unresponsive before `livenessDeadline`). **8 s ≪ 90 s**, so it settles at 10 and
-      does not stack. Drop `liveness-deadline` below 8 s, or raise the close ceilings, and it grows
-      linearly instead (measured without cleanup: 5 · 10 · 15 · 20 over four cycles).
+      `(user, room)` can reach **2× the cap for ≤8 s** — `FORCED_CLOSE_GRACE 3s +
+      CLOSE_FLUSH_TIMEOUT 5s` — and a reap cannot fire more than once per `liveness-deadline` per key
+      (the newly admitted sessions are not unresponsive before it). At the default 90 s,
+      **8 s ≪ 90 s**, so it settles at 2× and does not stack. Raise the close ceilings and it grows
+      linearly instead (measured without cleanup at the default cap: 5 · 10 · 15 · 20 over four cycles).
+      - ⚠️ **`liveness-deadline` below 8 s also breaks it, and nothing stops you setting that.**
+        `SessionTimeouts` validates only `>= 2 × ping-interval`, so `ping-interval: 1s` +
+        `liveness-deadline: 2s` passes and this derivation stops holding. That gap predates SPR-176
+        (which made the *cap* tunable, not the deadline) and no guard was added for it — recorded here
+        rather than implied, because the sentence above would otherwise read as unconditional.
     - It reclaims **nothing** against an attacker who answers pings, and its count is exposed separately
       (`chat.sessions.reaped`) because `chat.session.cut{liveness}` cannot tell "the cap freed a dead
       slot" from "the liveness loop collected one" — exactly the axis that separates an attack from a
@@ -930,17 +1055,40 @@ guess. Shipping a number from nowhere is what this repo spends its time undoing.
 per-session leak. It was **Mockito recording 40,000 invocations** on the stubbed repository. With a
 hand-written stub the residual is 0. If you re-run this, do not use a mock for the collaborator.
 
-**Per-room serialization + batching (and dropping `clientMsgId` from broadcasts)** — today `serialize` runs
-inside each session's pipeline, so one message costs N serializations in a room of N. The premise for the
-contract half is **verified**: `ACK` already carries both `id` and `clientMsgId`, and the front-end guide
-already tells clients to dedup broadcasts by `id`, so the mapping can be built from ACK alone and the
-broadcast copy needs no `clientMsgId` — which collapses the four per-recipient variants to two.
+**Per-room serialization — done, not pending.** An earlier version of this section described it in the
+present tense as future work ("today `serialize` runs inside each session's pipeline, so one message costs
+N serializations in a room of N"). `OutboundFrame` closed it: the sink carries a frame that computes the
+wire **bytes** lazily and shares them across every session in one fan-out, so **serialization and UTF-8
+encoding** became O(variants) instead of O(sessions). The per-session term is not zero: that class measures
+`wrap` at **56.1 ns** per session on the production factory, which is why it puts the encoding saving at
+**~1.4 ms**, not the 2.09 ms a naive reading gives. Measured and recorded at that class: one serialization 0.77 µs, 12,000 sessions 9.23 ms →
+4 variants 0.0031 ms (~3,000×), and the UTF-8 encoding half was collected in the same change. The reason
+the old paragraph gave for deferring it ("the sink would have to carry wire text instead of
+`OutboundMessage`") is also spent — the sink carries `OutboundFrame` today.
 
-It stays a separate ticket because it moves the transport boundary: the sink would have to carry wire text
-instead of `OutboundMessage`, so every producer (`SendChatService` echo fallback, `SystemMessageService`,
-`LiveRoomEndedHandler`, `ChatBroadcastSubscriber`) serializes and the mapper configuration moves into
-chat-core. That is a defensible change — `OutboundMessage` already owns the wire contract — but it is a
-different review from this one.
+**Dropping `clientMsgId` from broadcasts — do not open this as written.** The old paragraph claimed the
+contract premise was **verified**, on the grounds that `ACK` carries both `id` and `clientMsgId` so the
+mapping can be built from ACK alone. **That premise is false**, and the front-end guide says so itself:
+**`chat-frontend-guide.v1.2.md:142`** (in the separate `sapari-be-docs` repo, not in this one) states it
+as a **contract**, not a symptom: *"그래서 서버가 보낸 사람의 프레임에는 `clientMsgId`를 실어 보낸다
+(브로드캐스트 포함). 순서와 무관하게 짝지을 수 있다."* Removing it from the broadcast is therefore a
+published-contract violation on its own, before any reasoning about order. The reasoning is there too:
+its 2026-08-08 correction (`:140`) states that ACK arriving first is *not* guaranteed and that the
+broadcast is in fact the likelier one to win (Redis writes subscriber output buffers before replying to the publisher).
+With no `clientMsgId` on the broadcast, a sender whose broadcast arrives first sees a message with an `id`
+it does not know yet and renders it as new; the ACK then stamps that same `id` onto the optimistic bubble,
+leaving **two renders of one message**. The four per-recipient variants therefore stay four: the sender
+axis is what carries `clientMsgId` — and note that the guide scopes that value to the **account**, not
+the session (`:144`: other tabs of the same account receive it, and the rule is "match only what is in my
+pending list"), so "sender" here is a user, not a socket. After `OutboundFrame` its cost is **at most one extra
+serialization per fan-out** — 0.77 µs by that class's measurement, and **zero when no session consumes
+that variant**, because the bytes are computed lazily. An earlier version of this paragraph put it at
+"~1.5 µs per message" with no derivation; the honest statement is a bound, not a figure. Either way it is
+not the O(sessions) term that made collapsing them worth a ticket in the first place.
+
+**Batching** is still unimplemented and still unmeasured. With serialization already shared, what is left
+to save is sink emissions and WebSocket frames per fan-out — nobody has put a number on either, so there
+is nothing here to size a ticket from.
 
 ## Viewer count updates — the same frame again, only when it changed
 
@@ -953,8 +1101,13 @@ count accurate, and nothing could deliver that accurate number to sessions alrea
   ⚠️ It is still a **front-end contract addition**: that guide says "join only", and it has been updated.
 - **Only on change.** Pushing every round costs one frame per session per round forever, which in a large
   room is the entire cost of the feature. A quiet room now costs nothing.
-- **The first round seeds, it does not send.** The join-time `ROOM_INFO` is the baseline; sending again would
-  hand every session in every room one duplicate of a number it already has.
+- **No last-sent value → send, even if unchanged.** That is the pod's first round for the room, or the round
+  after a join (the handler clears the room's last-sent value **after** the join-time `ROOM_INFO` is
+  emitted — clearing it in `register` let a round that ran in between record the right number and the
+  cached one arrive last, so the next round skipped). The join-time `ROOM_INFO` cannot be the
+  baseline: it comes through the 3s count cache, and sessions join at different times, so a room has no
+  single baseline. It used to skip that round, and a wrong join-time number stayed on screen until the count
+  changed again. Busy rooms change count on most joins anyway, so the extra frames are few.
 - **An unknown count is never pushed.** `activeCount` is nullable to mean "don't know", and pushing that as an
   *update* blanks a number the viewer could already see — different from not knowing it at join.
 - **The read bypasses the 3s count cache.** That cache exists to damp a join storm, but this timer's whole job
@@ -1033,8 +1186,9 @@ individual lines.
 
 | Shape | Level | Why |
 |---|---|---|
-| Moderation read failed, request let through | WARN | heals when Redis returns; `chat.policy.open` has the rate |
-| Rate limit degraded / TTL fallback | WARN | enforcement continues, only accuracy is lost |
+| Moderation read failed, request let through (entry) | WARN | heals when Redis returns; `chat.policy.open` has the rate |
+| Moderation read failed, send refused | WARN | heals when Redis returns; `chat.send.refused` has the rate |
+| Rate limit degraded | WARN | enforcement continues, only accuracy is lost |
 | Publish or fan-out dropped | WARN | the message is persisted; only live delivery was lost |
 | **Key type conflict** (`WRONGTYPE`) | **ERROR** | retries never heal it; a human must clear the key |
 | Payload parse / deserialize failure | **ERROR** | a contract mismatch; it takes a deploy |
@@ -1062,10 +1216,80 @@ conditional variant really does fall back to NOOP.
 
 | Meter | Tags | What it means |
 |---|---|---|
-| `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through |
-| `chat.ratelimit.degraded` | `mode` | pod-local window, or a denial whose TTL read failed |
+| `chat.policy.open` | `policy`, `checkpoint`, `failure` | a moderation read failed and the request was let through (entry; at send only the kick-key type conflict) |
+| `chat.send.refused` | `policy` | a send-side moderation read failed and the send was refused before persist. **Per tag, not per send:** kick and ban usually fail together and both count, so one refusal can raise the sum by 2 — alert on `max by (policy)`, not the sum |
+| `chat.ratelimit.degraded` | `mode` | Redis did not answer and this pod judged locally (`local_window` — name kept from the fixed-window days) |
 | `chat.delivery.dropped` | `stage` | publish failed / session emit contention / ping tick dropped |
 | `chat.session.cut` | `reason` | the server closed a session |
+| `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
+| `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step — see the branch warning below |
+| `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
+| `chat.withdrawal.record.failed` | — | a pod could not write `chat:withdrawing:{userId}`; the close still ran, so the pre-withdrawal room token re-enters until it expires |
+| `chat.inbound.dropped` | — | a frame over the per-session inbound cap was dropped unread and unanswered; expected 0 (normal clients do not reach the cap). Pod-level only — **which session is not recoverable** (no tag, no log) |
+
+⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
+is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged
+subscription makes it climb forever — the signal is whether it stops. 0 over a window means "no retry in
+this window", which also covers "the subscription was never established"; that branch is not answered here.
+Measured: with the production shape and the `PSUBSCRIBE` establish reply delayed past the command bound, it
+retried twice and recovered (one message received) — so permanent death is not the default, and what
+operators need is the *shape* of this counter rather than a liveness gauge. The tag is per subscription
+because the blast radii differ by orders of magnitude: `chat_pubsub` losing its stream drops **every chat
+delivery and every KICK notice on that pod** while senders still get their ACKs, whereas
+`profanity_dictionary` only means this pod enforces with a dictionary up to one cycle old.
+
+⚠️ **`chat.persist.timeout` is a different axis from `chat.delivery.dropped` and the two must never be
+summed.** `delivery.dropped` means *persisted, live delivery lost* — every `DeliveryStage` value rests on
+that. Adding them produces a number that says "it is in the history" about messages that are not.
+
+⚠️ **`chat.persist.timeout` carries a `stage` tag, and its two values mean opposite things — do not sum
+them either** (`PersistStage`, SPR-178). `stage=write` means **the write's result is unknown** — a
+client-side bound does **not** cancel the server's write (measured on mongo:7.0 with driver 5.6.5,
+bound reduced per handle: 1ms/2ms → exception with **no** document, 3ms/5ms → exception with the
+document **present**, and **both branches are the same exception class**, so the caller cannot tell them
+apart). `stage=duplicate_recovery_read` is the `DuplicateKey` recovery read: its premise is that the
+document **already exists**. Summing mixes a *known-present* count into an *unknown* one and neither
+can be read afterwards.
+
+⚠️ An earlier version of this paragraph said `write` means "nothing was stored". That was false, and the
+same sentence had been copied into this table, the `infra/AGENTS.md` runbook, the exception javadoc (twice
+in one file), the meter javadoc, both adapter comments, `SendChatService` and one of its tests, the
+translation test, `CHAT-012`'s user-facing text, and the **`PersistStage.WRITE` javadoc** — the tag enum
+the runbook sends an on-call engineer to. All corrected under SPR-180.
+
+⚠️ **No face count is given, deliberately.** Two sweeps each produced one ("four", then "ten, all
+corrected") and both were short. `PersistStage` was missing because the pattern matched `아무것도 남지`
+while that file reads `아무 데도 남지`; two others survived because the filter dropped sentences already
+narrowed to the write branch — and being narrowed to that branch is exactly what made them false. **A
+count is itself a claim, and it kept being the wrong one.** What reproduces is the sweep: match the
+*subject* (`stage=write`, `PersistStage.WRITE`, `PERSIST_TIMEOUT`) and read every hit, not one phrasing
+of the predicate.
+
+The two also differ in what the sender sees. `stage=write` is translated to
+`ChatErrorCode.PERSIST_TIMEOUT` (503, `CHAT-012`); the recovery read is **not translated**, so the sender
+gets an untranslated 500. That gap is deliberate, and the reason changed with SPR-180: `CHAT-012` no
+longer asserts failure (its text is now "메시지 저장 결과를 확인하지 못했습니다. 잠시 후 이력을 확인해
+주세요."), so the old argument — that translating would make `CHAT-012` false — no longer applies. What
+still blocks the merge of the two branches is that they carry **different** certainty (unknown vs
+known-present) and separating that in the response needs one more error code, i.e. a wire-contract
+change. The count exists; the per-branch wording does not.
+
+**Retry contract (SPR-188).** `CHAT-012`'s text never reaches a chat sender: the WS `ERROR` frame carries
+only a code and `clientMsgId`, and both persist branches arrive as `ERROR(INTERNAL)`. The retry rule
+therefore lives in `chat-frontend-guide.v1.2.md`: on `INTERNAL` and `UNAVAILABLE` the client keeps the
+failed bubble and resends with the **same `clientMsgId` and the same body**. Every branch is safe under it —
+not stored → stored now; stored → `DuplicateKey` → same original body → the stored message comes back as
+the ACK; a different body under a used key → `ERROR(CLIENT_MSG_ID_REUSED)`, where it used to be a silent
+success carrying the first body's id. A new UUID is the unsafe retry: the index cannot deduplicate it.
+
+⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
+`ChatMeterNames` declared it when it was added. The rule in this section is "a scrape test walks every enum
+value; add a line when adding a meter" — and **neither half was done**: an earlier version of this sentence
+said "the test did its half", which was false. `ChatMetricsPrometheusScrapeTest` and
+`MicrometerChatMetricsTest.neverThrows` both hand-enumerate, and both were short by that meter — so the
+`safe()` invariant was unguarded for it too. SPR-177 added both meters to both enumerations; the lesson is
+that a hand-enumerated guard is only as complete as the last person who remembered it, and saying "the test
+covers it" is a claim that needs the enumeration read, not assumed.
 
 - **The adapter must never throw.** Most call sites are inside `onErrorResume` lambdas — a throw there
   propagates downstream and *denies* the request the policy decided to allow. Instrumentation would invert
@@ -1075,9 +1299,17 @@ conditional variant really does fall back to NOOP.
 - **`checkpoint` separates entry from send.** Open at entry only means a sanctioned user is watching; open at
   the send re-check means posts land in an ended room. A mutation test caught that this distinction was
   initially unguarded.
-- **`chat.session.cut` exists because close 1000 means three things** (room end, lifetime, liveness) and only
-  room end is preceded by an explaining frame. `MODERATION` (1008) and `BUFFER_OVERFLOW` (1013) are in the
-  same meter so the reasons sum to all server-initiated closes.
+- **`chat.session.cut` exists because the close code does not identify the cause.** Close 1000 means three
+  things (room end, lifetime, liveness) and only room end is preceded by an explaining frame; close 1008
+  means two (`MODERATION` and `WITHDRAWN` — a ban is a sanction, a withdrawal is the user's own click, and
+  merging them inflates the sanction rate). `BUFFER_OVERFLOW` (1013) is in the same meter.
+  - ⚠️ **The reasons do not sum to all server-initiated closes** — an earlier version of this line claimed
+    they did, and that was false. At least four closes never reach this meter: the three entry denials
+    (`KICKED`, `BANNED`, `ROOM_ENDED`) happen in `EntryGate` before a session exists and carry no metric at
+    all (of the denials only the session cap is counted, under `chat.sessions.admission_capped`), and a
+    frame over the 4 KiB limit closes with 1009 from the transport layer, which chat code never sees. Read
+    this meter as **sessions that were established and then cut by a server decision**, not as the whole of
+    server-initiated closes.
 - Every meter is **0 in the healthy case**, which is what makes alerting possible — tests assert the counters
   are not even created on a healthy path.
 - The Prometheus registry rejects same-name-different-tag-key meters, so a call that omits a tag makes that
@@ -1170,15 +1402,19 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
     dies instead of serving". `ChatMongoConfig`'s startup index creation blocks, and against a closed
     address it throws `DataAccessResourceFailureException` after **30,053 ms** (measured) — the Mongo
     `serverSelectionTimeout` default. That is finite, but what it buys is "boot fails loudly" and the
-    cost is a stall bounded by **`ChatMongoConfig.INDEX_CREATE_CEILING`** (SPR-152; 10 min, and it is a
-    deadline over **all four** index creations, not per call). Measured driver defaults
+    cost is a stall bounded by **10 min 30 s** — `ChatMongoConfig.INDEX_CREATE_CEILING` (SPR-152;
+    10 min, a deadline over **all four** index creations, not per call) plus `INDEX_DROP_CEILING`
+    (SPR-178; 30 s, **outside** that deadline, for the superseded-index drop). Measured driver defaults
     (`MongoClientSettings.builder().build()`): `serverSelectionTimeoutMs=30000`,
     **`socketReadTimeoutMs=0` (infinite)**, `socketConnectTimeoutMs=10000`, global `timeoutMs=null` — and
     the repo sets no Mongo *client* timeout anywhere, so those defaults apply. So 30s bounds only the
     "never picks a server" mode; once a server *is* picked and `createIndex` does not answer, the driver
     has nothing that would cut it — which is why the bound lives at the call site instead.
-    - **This line has been wrong four times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
-      "worst wait is that one value" while the ceiling was still **per call**. The first three fixed the
+    - **This line has been wrong five times.** 90s → "120s for the four … a fifth adds 30s" → "~30s" →
+      "worst wait is that one value" while the ceiling was still **per call** → "bounded by
+      `INDEX_CREATE_CEILING`" after SPR-178 added a drop with its **own** 30 s bound outside the shared
+      deadline. The fifth is the second judgment's shape exactly: a step was added and the number that
+      sizes the `startupProbe` was not re-derived. The first three fixed the
       *number* without measuring **what bounds it**; the fourth measured what bounds it but not the
       **unit** — per call or per method. Measured: ceiling 400ms × 4 calls at 300ms each → total
       **1,279 ms**, **0 throws** — a per-call ceiling does not bound the method, it scales with the count.
@@ -1231,7 +1467,7 @@ Prefer `@ServiceConnection` over naming properties for exactly that reason.
       commit (the start latch was a bare→bounded **conversion** there, not an addition) — and
       `ChatSessionGaugeConfigTest` has **no**
       `await(` at all — what grew there was `block(VERIFY_CEILING)`.
-    - A fourth statement-form site shows up in the discard list (`RedisRateLimiterDegradedTest:337`) and
+    - A fourth statement-form site shows up in the discard list (`RedisRateLimiterDegradedTest:231`) and
       it is **not** the same defect: that one is a `CyclicBarrier`, whose `await(timeout, unit)`
       **throws** `TimeoutException` instead of returning a boolean, so discarding its result loses
       nothing. Only `CountDownLatch.await` is silent on timeout. Do not "fix" the barrier site.

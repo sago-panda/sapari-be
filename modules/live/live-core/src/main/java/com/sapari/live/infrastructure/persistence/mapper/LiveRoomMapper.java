@@ -69,7 +69,11 @@ public interface LiveRoomMapper {
         return StreamInfo.of(sfuRoomId, entity.getEgressId(), entity.getHlsUrl(), entity.getHlsArchiveUrl());
     }
 
-    /** SPR-148 이전에 라이브 URL을 그대로 복사한 행은 백필 전까지 아카이브 없는 방으로 읽는다. */
+    /**
+     * SPR-148 이전에 라이브 URL을 그대로 복사한 행은 백필 전까지 아카이브 없는 방으로 읽는다.
+     * 파일명 허용 목록 없이 같음만 비교한다 — 다른 URL 은 쿼리 문자열까지 그대로 둔다. 저장된 URL 의
+     * 미디어 내용을 증명하지는 않는다.
+     */
     private String archiveUrl(LiveRoomEntity entity) {
         String archive = entity.getHlsArchiveUrl();
         return archive != null && archive.equals(entity.getHlsUrl()) ? null : archive;

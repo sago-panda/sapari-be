@@ -7,9 +7,11 @@ import org.springframework.stereotype.Component;
 import com.sapari.global.logging.LogFields;
 import com.sapari.chat.application.port.ChatAccountEventSource;
 import com.sapari.chat.application.port.ChatSessionManager;
+import com.sapari.chat.application.port.SessionCutReason;
 import com.sapari.chat.application.protocol.ChatAccountEvent;
 import com.sapari.chat.application.protocol.OutboundMessage;
 import com.sapari.chat.application.protocol.SystemMessageCode;
+import com.sapari.chat.port.ReactiveChat;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -30,6 +32,7 @@ import reactor.core.publisher.Mono;
  * 평가되기 때문이다 — 그중 하나가 동기 throw하면 {@code Mono}를 돌려주기 전에 터져 아래
  * {@code onErrorResume}이 잡지 못한다.
  */
+@ReactiveChat
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -84,7 +87,7 @@ public class ChatAccountEventHandler {
                     log.warn("밴 사유 전송 실패 — 종료는 그대로 진행한다", e);
                     return Mono.empty();
                 })
-                .then(sessionManager.closeUserEverywhere(userId))
+                .then(sessionManager.closeUserEverywhere(userId, SessionCutReason.MODERATION))
                 // 계정 이벤트는 Redis 구독 스레드에서 돌아 세션 컨텍스트가 없다. 위 경고에는 대상이
                 // 적혀 있지 않은데(밴은 사람 단위라 방을 모른다) 그걸 메시지에 넣는 대신 필드로 싣는다 —
                 // "이 사람에게 일어난 모든 줄" 로 묶이는 쪽이 밴 조사에 쓰이는 축이다.

@@ -17,6 +17,9 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
+import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 class RedisLiveRoomEndedSourceTest {
 
@@ -30,7 +33,7 @@ class RedisLiveRoomEndedSourceTest {
         ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
         // 생성자가 채널 구독을 즉시 연결(autoConnect 0)하므로 stub을 먼저 건다.
         doReturn(Flux.empty()).when(redis).listenToChannel("live:room:ended");
-        source = new RedisLiveRoomEndedSource(redis);
+        source = new RedisLiveRoomEndedSource(redis, ChatMetrics.NOOP);
     }
 
     @Test
@@ -64,7 +67,7 @@ class RedisLiveRoomEndedSourceTest {
     @DisplayName("채널 구독이 끊겨도 재구독으로 되살아나 이후 종료 신호가 다시 들어온다")
     void ended_recovers_after_upstream_failure() {
         // given: 첫 구독은 즉시 끊기고, 재구독부터 정상 스트림을 준다.
-        // 이 스트림이 죽은 채로 남으면 방이 끝나도 세션이 안 닫힌다 — 자가복구가 유일한 방어다.
+        // 이 스트림이 죽은 채로 남으면 방이 끝나도 수신 전용 세션이 수명 상한까지 남는다 — 그 창을 막는 것은 자가복구다.
         UUID roomId = UUID.fromString("22222222-2222-2222-2222-222222222222");
         Sinks.Many<Message<String, String>> afterReconnect = Sinks.many().replay().all();
         AtomicInteger subscribeCount = new AtomicInteger();
@@ -74,7 +77,10 @@ class RedisLiveRoomEndedSourceTest {
                 : afterReconnect.asFlux()))
                 .when(flaky).listenToChannel("live:room:ended");
 
-        RedisLiveRoomEndedSource recovering = new RedisLiveRoomEndedSource(flaky);
+        // 재구독에 지표가 붙는지도 같이 본다 — 구독이 죽은 파드가 Ready 로 서 있는 상태를
+        // 가리키는 신호가 전에는 10~30초마다의 WARN 한 줄뿐이었다(SPR-179).
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        RedisLiveRoomEndedSource recovering = new RedisLiveRoomEndedSource(flaky, new MicrometerChatMetrics(meters));
         Message<String, String> ended = mock(Message.class);
         doReturn("{\"roomId\":\"" + roomId + "\"}").when(ended).getMessage();
         afterReconnect.tryEmitNext(ended);
@@ -86,5 +92,10 @@ class RedisLiveRoomEndedSourceTest {
                 .verify(VERIFY_CEILING);
 
         assertThat(subscribeCount.get()).isGreaterThan(1);   // 실제로 다시 붙었다
+        assertThat(meters.find("chat.subscription.resubscribed")
+                .tag("subscription", "live_room_ended").counter())
+                .as("재구독에 지표가 없다 — 복구는 되지만 그 사실이 밖에서 안 보인다")
+                .isNotNull()
+                .satisfies(counter -> assertThat(counter.count()).isGreaterThanOrEqualTo(1.0));
     }
 }

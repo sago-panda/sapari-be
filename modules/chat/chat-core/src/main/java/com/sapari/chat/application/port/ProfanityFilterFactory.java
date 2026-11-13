@@ -3,6 +3,7 @@ package com.sapari.chat.application.port;
 import java.util.Set;
 
 import com.sapari.chat.domain.rule.ProfanityFilter;
+import com.sapari.chat.port.InMemoryChat;
 
 /**
  * 두 집합을 <b>사전의 문</b>에 통과시켜 필터로 만든다.
@@ -19,6 +20,7 @@ import com.sapari.chat.domain.rule.ProfanityFilter;
  * 부팅 입구가 부팅을 세우는 것과 방향이 다른데, 도는 Pod 을 사전 한 줄의 오타로 죽이는 것이
  * 그 오타보다 나쁘기 때문이다.
  */
+@InMemoryChat
 public interface ProfanityFilterFactory {
 
     /**

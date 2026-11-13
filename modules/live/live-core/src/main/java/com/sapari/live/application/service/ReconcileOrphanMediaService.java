@@ -436,8 +436,9 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
     /**
      * ingress 삭제에만 거는 유예. 방금 {@code createIngress} 를 마치고 {@code save} 가 아직인 정상
      * 요청이 고아와 똑같이 보이므로, 방의 {@code updated_at} 이 유예를 지났을 때만 손댄다.
-     * 종단 방(Ended·Cancelled)에는 유예가 없다 — 그 상태에 정당한 ingress 는 존재하지 않는다.
-     * 취소는 updated_at 을 갱신하므로, 유예를 걸면 취소 직후 정리 실패분을 유예 동안 못 본다(종료와 같은 이유).
+     * 종단 방(Ended·Cancelled)에는 유예가 없다 — 그 상태에 정당한 ingress 는 존재하지 않는다. 게다가 종료·취소
+     * 트랜잭션이 {@code updated_at} 을 갱신하므로, 유예를 걸면 커밋과 정리 사이에 죽은 직후(생존 ingress 로 판매자가
+     * 계속 송출할 수 있는 바로 그때) 이 잡이 유예 내내 눈을 감는다.
      *
      * <p>egress 에는 이 게이트를 쓰지 않는다({@link #isOrphanEgress} 참고).
      */

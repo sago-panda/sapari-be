@@ -1,11 +1,17 @@
 package com.sapari.chat.application.service;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sapari.chat.domain.model.ChatAuditAction;
+import com.sapari.chat.domain.model.ChatAuditEntry;
+import com.sapari.chat.domain.model.ChatRole;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanStateRepository.Released;
 
@@ -50,13 +56,13 @@ public class ChatBanReleaseRecorder {
     static final int TRANSACTION_TIMEOUT_SECONDS = ChatKickRecorder.TRANSACTION_TIMEOUT_SECONDS;
 
     private final ChatBanStateRepository banStateRepository;
+    private final ChatAuditLogRepository auditLogRepository;
 
     /**
      * 정본에서 밴을 지우고 사면 기준선을 남긴다.
      *
-     * <p><b>{@code lockForBanDecision}을 먼저 잡는다.</b> 한때 "잡아도 막히는 것이 없다" 고 적혀
-     * 있었고 그건 <b>미러 축에 대해서만</b> 참이었다 — 강퇴의 미러 쓰기는 커밋 뒤라 어떤 잠금으로도
-     * 못 막는다. 그런데 Postgres 축에 막히는 끼어들기가 하나 더 있다:
+     * <p><b>{@code lockForBanDecision}을 먼저 잡는다.</b> 이 잠금이 지키는 것은 두 가지다. 하나는
+     * 아래 미러 변경 번호의 순서이고, 다른 하나는 Postgres 축의 끼어들기다:
      * <pre>
      *   T1(강퇴)  잠금 → append → findActive(없음) → 세기(기준선 없음 → 9명)
      *   R(해제)                            ├─ DELETE chat_ban + INSERT 기준선, 커밋
@@ -82,14 +88,59 @@ public class ChatBanReleaseRecorder {
      * 그래서 전순서가 유지된다(사이클 없음). 어드바이저리를 뒤로 옮기거나 해제에서 빼면 그 보장이
      * 사라지고, 어겼다는 사실은 운영에서 {@code 40P01} 로 처음 드러난다.
      *
-     * <p>미러 축의 어긋남은 그대로 남는다 — 복구 수단이 <b>해제의 멱등성</b>이다. 지운 행이 없어도
-     * 기준선은 남고 미러 삭제는 조건 없이 돌아가므로 같은 명령을 다시 눌러 수렴한다.
+     * <p><b>미러 축은 번호로 닫는다.</b> 강퇴의 미러 쓰기는 커밋 뒤 잠금 밖이라 해제의 미러 삭제보다
+     * 늦게 도착할 수 있다. 그래서 여기서도 잠금 안에서 번호를 집어 돌려주고, 호출자가 그 번호로
+     * 지운다 — 미러는 이 번호 이하로 늦게 온 강퇴의 쓰기를 거절한다. 잠금 밖에서 집으면 이 해제와
+     * 강퇴의 번호 순서가 커밋 순서와 갈릴 수 있다.
      *
-     * @return 무엇을 지웠는가. 지울 밴이 없었어도 기준선은 남았다 — 실패가 아니다
+     * <p><b>감사 한 줄이 같은 트랜잭션에 들어간다.</b> 지운 밴의 내용(영구였는지·누가 걸었는지)은
+     * 정본 행이 사라지므로 그 행 말고는 어디에도 남지 않는다 —
+     * {@code ChatBanStateRepository.release} javadoc 이 이미 "감사 행과 반환값 말고는 어디에도"
+     * 라고 적고 있다. 반환값은 응답으로 나가고 사라지므로 남는 쪽은 감사 행뿐이다.
+     *
+     * <p><b>자원이 하나 늘었다</b>({@code audit_logs}). 순서는 어드바이저리 → {@code chat_ban} →
+     * {@code chat_ban_release} → {@code audit_logs} 인데, 사이클이 없는 근거는 순서가 아니라
+     * 그 테이블에 겨룰 행이 없다는 것이다({@link ChatKickRecorder#record} javadoc 에 전개해 뒀다).
+     *
+     * @return 무엇을 지웠는가와 미러 변경 번호. 지울 밴이 없었어도 기준선은 남았다 — 실패가 아니다
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = TRANSACTION_TIMEOUT_SECONDS)
-    public Released release(UUID targetUserId, UUID actorId, Instant now) {
+    public Recorded release(UUID targetUserId, UUID actorId, ChatRole actorRole, Instant now) {
         banStateRepository.lockForBanDecision(targetUserId);
-        return banStateRepository.release(targetUserId, actorId, now);
+        Released released = banStateRepository.release(targetUserId, actorId, now);
+        auditLogRepository.append(auditEntry(targetUserId, actorId, actorRole, released, now));
+        return new Recorded(released, banStateRepository.nextChangeVersion());
+    }
+
+    /**
+     * 해제의 결과와, 잠금 안에서 집은 미러 변경 번호.
+     *
+     * @param mirrorVersion 미러 삭제에 실을 번호({@code ChatBanWriteRepository.releaseMirror})
+     */
+    public record Recorded(Released released, long mirrorVersion) {
+    }
+
+    /**
+     * 감사 한 줄. {@code detail} 이 <b>지워진 행의 내용</b>을 싣는다 — 이 셋은 호출 뒤 어디서도
+     * 읽을 수 없다.
+     *
+     * <p>{@code banExisted} 가 거짓이면 "밴 없는 사람에게 버튼을 눌렀다" 이고 그것이 활성 밴을 푼
+     * 것과 구분돼야 한다 — 그 호출만으로도 730일 누적이 접히므로 조치가 없었던 것이 아니다.
+     * 거짓일 때 나머지 둘은 넣지 않는다(실을 값이 애초에 {@code null} 이다).
+     */
+    private static ChatAuditEntry auditEntry(UUID targetUserId, UUID actorId, ChatRole actorRole,
+                                             Released released, Instant now) {
+        Map<String, String> detail = new LinkedHashMap<>();
+        detail.put("banExisted", Boolean.toString(released.banExisted()));
+        if (released.banExisted()) {
+            // 영구 밴은 만료가 없다. 빈칸으로 두면 "기한부인데 값이 빠진" 것과 같아 보이므로 적는다.
+            detail.put("expiresAt",
+                    released.expiresAt() == null ? "permanent" : released.expiresAt().toString());
+            if (released.bannedById() != null) {
+                detail.put("bannedById", released.bannedById().toString());
+            }
+        }
+        return new ChatAuditEntry(actorId, actorRole, ChatAuditAction.CHAT_RELEASE_BAN,
+                targetUserId, detail, now);
     }
 }

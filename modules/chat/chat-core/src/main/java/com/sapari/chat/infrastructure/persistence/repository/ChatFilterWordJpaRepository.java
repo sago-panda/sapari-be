@@ -13,6 +13,23 @@ import com.sapari.chat.infrastructure.persistence.entity.ChatFilterWordEntity;
 public interface ChatFilterWordJpaRepository extends JpaRepository<ChatFilterWordEntity, UUID> {
 
     /**
+     * 사전 쓰기 잠금의 seed — 밴 판정 잠금({@code ChatBanJpaRepository.BAN_DECISION_LOCK_SEED})과
+     * 키 공간을 가른다. 그쪽 javadoc 이 seed 로 네임스페이스를 얻는 이유를 적는다.
+     */
+    String DICTIONARY_WRITE_LOCK_SEED = "5204913";
+
+    /**
+     * 사전 쓰기를 직렬화한다 — 트랜잭션이 끝날 때 풀리는 어드바이저리 잠금 하나(사전 전체).
+     *
+     * <p>반환형이 {@code void} 이고 {@code @Modifying} 이 없는 이유는
+     * {@code ChatBanJpaRepository.lockForBanDecision} 과 같다.
+     */
+    @Query(value = "SELECT pg_advisory_xact_lock("
+            + "hashtextextended('chat_filter_word', " + DICTIONARY_WRITE_LOCK_SEED + "))",
+            nativeQuery = true)
+    void lockForDictionaryWrite();
+
+    /**
      * 그 종류의 단어만 읽는다 — 엔티티를 띄우지 않는다.
      *
      * <p>이 질의의 호출자는 스냅샷 발행이고 그것이 쓰는 값은 단어 문자열뿐이다. 엔티티로 읽으면

@@ -2,6 +2,8 @@ package com.sapari.chat.domain.repository;
 
 import java.util.UUID;
 
+import com.sapari.chat.port.BlockingChat;
+
 /**
  * 강퇴 명단에 사람을 올리는 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
  *
@@ -13,6 +15,7 @@ import java.util.UUID;
  * 정해져 있다 — 로그가 커밋으로 확정된 <i>다음에</i> 여기 올린다. 반대로 하면 롤백된 강퇴가 Redis에만
  * 남아 근거 없이 사람을 막는다.
  */
+@BlockingChat
 public interface ChatKickWriteRepository {
 
     /**

@@ -2,6 +2,7 @@ package com.sapari.chat.port;
 
 import com.sapari.chat.command.ReleaseBanCommand;
 
+@BlockingChat
 public interface ReleaseBanUseCase {
 
     /**

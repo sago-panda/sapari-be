@@ -65,13 +65,21 @@ modules/X/X-api   → no internal module dependencies; DTO / interface only
 
 All code work follows **[.claude/rules/karpathy-guidelines.md](./.claude/rules/karpathy-guidelines.md)** — scope, simplicity, surgical diffs, goal-driven execution.
 
+## Where knowledge lives
+
+- `AGENTS.md` and path-scoped `.claude/rules/`: **what and why** — invariants, prohibitions, irreversible decisions, accepted risks, cross-file contracts — one line each, with the implementing class name.
+- Code comments: **how**, and the why that belongs to that class alone.
+- Never write the same fact twice: if a comment has it, `AGENTS.md` only names the class. Cite by section name, never by line number.
+- Spec/plan reads the root `AGENTS.md` **and `modules/<domain>/AGENTS.md` of every domain it touches** — a nested
+  file loads only once a file under it is opened, so open it explicitly. Implementation reads the code.
+
 ## Task-Based References (JIT index)
 
 Create a missing referenced file only when starting work in that area.
 
 | Task | Reference |
 |---|---|
-| Live broadcast domain | `modules/live/AGENTS.md` |
+| Live broadcast domain | `modules/live/AGENTS.md` — signpost + Design-time invariants, **read in full before a spec/plan**; area rules in `.claude/rules/live/` (open every area the spec touches; if unsure, all) |
 | New domain module layout | `modules/AGENTS.md` |
 | Order / payment domain | `modules/order/AGENTS.md` |
 | Controllers / response envelope | `apps/AGENTS.md` |

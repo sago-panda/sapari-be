@@ -2,6 +2,8 @@ package com.sapari.liveapp.controller.chat;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.BDDMockito.willThrow;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.mockito.Mockito.never;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -29,6 +31,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.port.KickUserUseCase;
@@ -39,6 +42,11 @@ import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
+import com.sapari.chat.domain.exception.ChatKickContendedException;
+import com.sapari.chat.domain.exception.ChatKickEvidenceMismatchException;
+import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
+import com.sapari.chat.domain.exception.LiveNotActiveException;
+import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 
@@ -72,8 +80,10 @@ import java.time.ZoneOffset;
                 "management.endpoints.web.exposure.include=health,prometheus"})
 // 컨트롤러를 명시로 등록한다. 아래 TestApplication 은 @SpringBootConfiguration 뿐이라 컴포넌트
 // 스캔이 없고, 스캔이 없으면 @WebMvcTest 의 controllers 지정만으로는 빈이 생기지 않아 404 가 된다.
+// GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
+// (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
 @Import({ChatModerationController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
-        ChatKickAuthorizationTest.FixedClockConfig.class})
+        ChatKickAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("강퇴 엔드포인트 — 판매자와 관리자만 관문을 지난다")
 class ChatKickAuthorizationTest {
 
@@ -115,6 +125,34 @@ class ChatKickAuthorizationTest {
         Authentication auth = new UsernamePasswordAuthenticationToken(
                 principal, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
         return authentication(auth);
+    }
+
+    @Test
+    @DisplayName("⭐ 도메인 예외가 선언한 상태코드로 HTTP 를 떠난다 — 서비스 테스트는 타입만 보고 이 구간을 아무도 잇지 않았다")
+    void chatErrorCodesLeaveAsTheirDeclaredStatus() throws Exception {
+        // given & when & then: 코드마다 상태를 따로 본다 — 하나만 보면 "전부 400" 같은 회귀가 통과한다.
+        // 분모가 0 이었던 자리다: 이 슬라이스가 GlobalExceptionHandler 를 안 올려 ChatException 이
+        // 매핑되지 않았고, 그래서 ChatErrorCode 의 상태를 뒤집어도 live-app 에서 아무것도 깨지지 않았다.
+        assertKickFailureMapsTo(new ChatKickContendedException("경합", null),
+                status().isConflict(), "CHAT-008");
+        assertKickFailureMapsTo(new LiveNotActiveException("진행 중이 아니다"),
+                status().isBadRequest(), "CHAT-004");
+        assertKickFailureMapsTo(new ChatKickEvidenceMismatchException("증거 불일치"),
+                status().isBadRequest(), "CHAT-006");
+        assertKickFailureMapsTo(new ChatPermissionDeniedException("권한 없음"),
+                status().isForbidden(), "CHAT-001");
+    }
+
+    /** 유스케이스가 그 예외를 던질 때 엔드포인트가 내는 상태와 코드. */
+    private void assertKickFailureMapsTo(RuntimeException thrown, ResultMatcher expectedStatus,
+            String expectedCode) throws Exception {
+        willThrow(thrown).given(kickUserUseCase).kick(any());
+
+        mockMvc.perform(post("/api/v1/lives/{roomId}/chat/kick", ROOM_ID)
+                        .with(as("ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(expectedStatus)
+                .andExpect(jsonPath("$.error.code").value(expectedCode));
     }
 
     @Test

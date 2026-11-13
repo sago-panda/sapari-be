@@ -41,6 +41,16 @@ class ChatSessionGaugeConfigTest {
 
     private static final Duration VERIFY_CEILING = Duration.ofSeconds(10);
 
+    /**
+     * 이 파일 전체가 집행시키는 (유저, 방) 상한.
+     *
+     * <p>작은 수인 이유는 {@code theReapedCounterFollowsTheRegistry} 가 상한에 <b>닿아야</b> 거둘
+     * 자리가 생기기 때문이다({@code reapUnresponsiveIfFull} 은 찼을 때만 거둔다). 나머지 칸들은
+     * 상한에 무관하지만 {@code @BeforeEach} 가 하나를 공유하므로 이름을 그 한 칸이 아니라
+     * 파일 기준으로 둔다.
+     */
+    private static final int CAP = 4;
+
     private final ChatSessionGaugeConfig config = new ChatSessionGaugeConfig();
     private MeterRegistry meters;
     private ChatSessionRegistry registry;
@@ -55,7 +65,13 @@ class ChatSessionGaugeConfigTest {
         lenient().when(sessionRepository.add(any(), any(), any())).thenReturn(Mono.empty());
         lenient().when(sessionRepository.remove(any(), any())).thenReturn(Mono.empty());
         lenient().when(sessionRepository.heartbeatInterval()).thenReturn(Duration.ofMinutes(10));
-        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        // ⚠️ 상한을 넉넉히 주면 안 된다 — theReapedCounterFollowsTheRegistry 는 상한에 **닿아야**
+        // 거둘 자리가 생긴다(reapUnresponsiveIfFull 은 자리가 찼을 때만 거둔다). 실측: 1,000 으로
+        // 두면 50회 등록이 전부 통과해 거둔 수가 0 이 되고 그 칸이 깨진다.
+        // 그래서 "닿을 수 있는 작은 수" 를 이 파일이 직접 정한다. 기본값을 베껴 적지는 않는다 —
+        // 여기서 필요한 것은 기본값이 아니라 도달 가능한 상한이고, 베끼면 기본이 바뀔 때 조용히 갈린다.
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP,
+                CAP);
         config.chatSessionGauges(registry, providing(meters));
     }
 
@@ -257,7 +273,7 @@ class ChatSessionGaugeConfigTest {
     }
 
     @Test
-    @DisplayName("⭐ 등록한 미터 집합을 고정한다 — 이름으로 찾는 단언은 '안 만든 미터' 를 못 잡는다")
+    @DisplayName("⭐ 등록한 미터 집합을 이름까지 고정한다 — 상수로 적으면 이름 변경을 따라가 버린다")
     void theRegisteredMeterSetIsPinned() {
         // 이 클래스의 다른 테스트는 전부 미터를 <b>이름으로</b> 조회한다. 그러면 새 미터를 상수만
         // 만들고 등록을 빠뜨려도 아무것도 깨지지 않는다 — 실제로 그랬다: chat.sessions.reaped 가
@@ -265,11 +281,36 @@ class ChatSessionGaugeConfigTest {
         // modules/chat/AGENTS.md)이 당직자에게 그 지표를 보라고 적고 있었다. 빈 패널이 하필 "공격" 서명으로 읽히는 쪽이라 더 나쁘다.
         assertThat(meters.getMeters().stream().map(meter -> meter.getId().getName()).toList())
                 .as("등록된 미터 집합이 바뀌었다 — 늘었으면 문서에, 줄었으면 당직 판독에 영향이 간다")
+                // 기댓값을 상수가 아니라 리터럴로 적는다. 상수를 참조하면 값이 바뀔 때 단언도 같이
+                // 따라가므로 이름 변경이 조용히 통과한다 — 실측: SESSIONS_GAUGE 를
+                // "chat.sessions.localx" 로 바꿨을 때 이 파일 8칸이 전부 초록이었다(SPR-179).
+                // 미터 이름은 발행된 인터페이스다 — infra/AGENTS.md 의 당직 런북이 이 다섯을 리터럴로
+                // 인용하므로, 이름이 바뀌면 그 런북이 조용히 거짓이 된다. 그래서 독립된 진실 원천은
+                // 코드가 아니라 그 런북이고, 여기 적힌 다섯 문자열이 그 사본이다.
                 .containsExactlyInAnyOrder(
-                        ChatSessionGaugeConfig.SESSIONS_GAUGE,
-                        ChatSessionGaugeConfig.ROOMS_GAUGE,
-                        ChatSessionGaugeConfig.ADMISSION_CAPPED_COUNTER,
-                        ChatSessionGaugeConfig.SLOTS_REAPED_COUNTER);
+                        "chat.sessions.local",
+                        "chat.rooms.local",
+                        "chat.sessions.admission_capped",
+                        "chat.sessions.reaped",
+                        "chat.sessions.max_per_room",
+                        "chat.sessions.heartbeat_failures");
+    }
+
+    @Test
+    @DisplayName("⭐ 상한 게이지가 설정된 값을 낸다 — 기본값을 보고하면 분모가 통째로 틀린다")
+    void theCapGaugeReportsTheConfiguredValue() {
+        // 이 파일의 레지스트리는 기본값이 아니라 CAP 로 세워진다. 그래서 게이지가 상수를 읽고
+        // 있으면 여기서 갈린다 — 이 게이지의 존재 이유가 "파드마다 다를 수 있는 분모를 보이게"
+        // 하는 것이라, 기본값을 보고하는 게이지는 없는 것보다 나쁘다(틀린 분모로 합쳐진다).
+        assertThat(meters.get(ChatSessionGaugeConfig.MAX_PER_ROOM_GAUGE).gauge().value())
+                .as("설정값이 아니라 다른 수를 낸다")
+                .isEqualTo(CAP);
+        // ⚠️ 리터럴 5 를 보면 안 된다 — 기본값이 CAP 로 바뀌는 변이에서 이 가드가 선언한 바로 그
+        // 상태(CAP == 기본값)를 통과시킨다(실측으로 그랬다). 상수를 본다. 그 상수가 다른 패키지에서
+        // 보이는 이유는 접근자와 같다 — 게이지 설정이 상한과 그 기본값을 둘 다 알아야 한다.
+        assertThat(CAP)
+                .as("CAP 이 기본값과 같으면 위 단언이 상수를 읽는 구현도 통과시킨다")
+                .isNotEqualTo(ChatSessionRegistry.DEFAULT_MAX_SESSIONS_PER_USER_PER_ROOM);
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.sapari.chat.domain.repository;
 import java.util.Optional;
 
 import com.sapari.chat.domain.model.ChatMessageEvidence;
+import com.sapari.chat.port.BlockingChat;
 
 /**
  * 강퇴 증거로 삼을 메시지를 서버가 직접 읽는 포트. <b>블로킹</b> — 호출자가 live-app(MVC)이다.
@@ -18,6 +19,7 @@ import com.sapari.chat.domain.model.ChatMessageEvidence;
  * "형식이 틀렸다"와 "그런 메시지가 없다"는 같은 결론(강퇴 거부)으로 이어지고, 둘을 갈라 응답하면
  * 메시지 id를 더듬어 찾는 통로가 된다.
  */
+@BlockingChat
 public interface ChatMessageEvidenceRepository {
 
     Optional<ChatMessageEvidence> findEvidence(String messageId);

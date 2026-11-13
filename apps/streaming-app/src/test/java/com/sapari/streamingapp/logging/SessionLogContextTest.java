@@ -90,7 +90,8 @@ class SessionLogContextTest {
                         .subscribeOn(Schedulers.boundedElastic()));
         given(kicks.isKicked(any(), any())).willReturn(Mono.just(false));
         given(bans.isBanned(any())).willReturn(Mono.just(false));
-        gate = new EntryGate(kicks, roomEnded, bans, ChatMetrics.NOOP, mock(ChatSessionRegistry.class));
+        gate = new EntryGate(kicks, roomEnded, bans, userId -> Mono.just(false), ChatMetrics.NOOP,
+                mock(ChatSessionRegistry.class));
 
         gateLogger = (Logger) LoggerFactory.getLogger(EntryGate.class);
         appender = new MdcSafeAppender();

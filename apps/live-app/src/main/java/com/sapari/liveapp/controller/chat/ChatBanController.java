@@ -5,11 +5,14 @@ import java.util.UUID;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.sapari.chat.command.ReconcileBanMirrorCommand;
 import com.sapari.chat.command.ReleaseBanCommand;
 import com.sapari.common.response.ResponseEnvelope;
+import com.sapari.chat.port.ReconcileBanMirrorUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
@@ -42,6 +45,7 @@ import lombok.RequiredArgsConstructor;
 public class ChatBanController {
 
     private final ReleaseBanUseCase releaseBanUseCase;
+    private final ReconcileBanMirrorUseCase reconcileBanMirrorUseCase;
 
     @DeleteMapping("/{userId}")
     public ResponseEnvelope<ReleaseBanResponse> release(
@@ -51,6 +55,19 @@ public class ChatBanController {
                 new ReleaseBanCommand(userId, principal.userId(), principal.role()));
         return ResponseEnvelope.success(
                 new ReleaseBanResponse(result.banExisted(), result.wasPermanent()));
+    }
+
+    /**
+     * 유효한 밴 전부를 정본에서 미러로 다시 깐다. 본문이 없다 — 명단을 받으면 정본에 없는 사람을
+     * 막을 수 있다({@code ReconcileBanMirrorCommand}). 관문은 위 해제와 같은 {@code /chat/bans/**} ADMIN 규칙이다.
+     */
+    @PutMapping("/mirror")
+    public ResponseEnvelope<ReconcileBanMirrorResponse> reconcileMirror(
+            @AuthenticationPrincipal LiveUserPrincipal principal) {
+        var outcome = reconcileBanMirrorUseCase.reconcile(
+                new ReconcileBanMirrorCommand(principal.userId(), principal.role()));
+        return ResponseEnvelope.success(
+                new ReconcileBanMirrorResponse(outcome.active(), outcome.restored()));
     }
 
     /**
@@ -68,5 +85,8 @@ public class ChatBanController {
      * <p>발급자 id 는 싣지 않는다 — 제3자 식별자다. 그 감사는 {@code chat_ban_release} 행이 든다.
      */
     public record ReleaseBanResponse(boolean banExisted, boolean wasPermanent) {
+    }
+
+    public record ReconcileBanMirrorResponse(int active, int restored) {
     }
 }

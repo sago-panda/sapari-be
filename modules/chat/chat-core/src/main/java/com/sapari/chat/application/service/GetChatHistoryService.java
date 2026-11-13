@@ -3,6 +3,7 @@ package com.sapari.chat.application.service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -10,6 +11,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.chat.command.GetChatHistoryCommand;
+import com.sapari.chat.command.GetChatNoticeCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatRole;
@@ -17,6 +19,7 @@ import com.sapari.chat.domain.repository.ChatHistoryRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.port.GetChatHistoryUseCase;
+import com.sapari.chat.port.GetChatNoticeUseCase;
 import com.sapari.chat.view.ChatMessageView;
 import com.sapari.chat.view.GetChatHistoryView;
 import com.sapari.live.port.GetLiveRoomUseCase;
@@ -26,7 +29,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 채팅 이력 조회 — VOD 다시보기용. <b>블로킹</b>(live-app MVC).
+ * 채팅 이력 조회 — VOD 다시보기용 — 와 방의 현재 공지 조회. <b>블로킹</b>(live-app MVC).
  *
  * <p>세 가지가 여기서 결정된다 — 누가 원문·이메일을 보는가, 강퇴자 메시지를 어떻게 빼는가,
  * 재생 위치를 어떤 시각 구간으로 바꾸는가.
@@ -38,7 +41,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @RequiredArgsConstructor
 @Slf4j
-public class GetChatHistoryService implements GetChatHistoryUseCase {
+public class GetChatHistoryService implements GetChatHistoryUseCase, GetChatNoticeUseCase {
 
     /** VOD 창 길이 — 재생 위치에서 이만큼 앞까지 본다. */
     private static final Duration PLAYBACK_WINDOW = Duration.ofMinutes(5);
@@ -72,7 +75,8 @@ public class GetChatHistoryService implements GetChatHistoryUseCase {
                 // 있는데 조용했다" 와 구분되지 않아 그쪽이 더 나쁘다.
                 .orElseThrow(() -> new ChatPermissionDeniedException("이력을 조회할 수 없는 방이다"));
 
-        boolean privileged = isPrivileged(command, room);
+        boolean privileged = command.hasRequesterIdentity()
+                && isPrivileged(command.requesterId(), command.requesterRole(), command.roomId(), room, "이력");
         Set<UUID> kicked = Set.copyOf(kickLogRepository.findKickedUserIds(command.roomId()));
 
         List<ChatMessage> messages = command.isPlaybackWindow()
@@ -83,20 +87,38 @@ public class GetChatHistoryService implements GetChatHistoryUseCase {
     }
 
     /**
+     * 방의 현재 공지 — 이력과 같은 판정(없는 방 거부 · 특권 뷰 · 강퇴자 제외)으로 한 건만 읽는다.
+     *
+     * <p>판정을 이력과 공유하는 이유: 공지도 이력에 그대로 나오는 메시지다. 여기서만 강퇴자의 공지가
+     * 보이거나 원문이 다르게 나가면 같은 메시지에 두 조회가 다른 답을 한다.
+     */
+    @Override
+    @Transactional(readOnly = true, propagation = Propagation.SUPPORTS)
+    public Optional<ChatMessageView> findLatestNotice(GetChatNoticeCommand command) {
+        LiveRoomView room = liveRooms.findRoom(command.roomId())
+                .orElseThrow(() -> new ChatPermissionDeniedException("공지를 조회할 수 없는 방이다"));
+
+        boolean privileged = command.hasRequesterIdentity()
+                && isPrivileged(command.requesterId(), command.requesterRole(), command.roomId(), room, "공지");
+        Set<UUID> kicked = Set.copyOf(kickLogRepository.findKickedUserIds(command.roomId()));
+
+        return historyRepository.findLatestNotice(command.roomId(), kicked)
+                .map(message -> render(message, privileged));
+    }
+
+    /**
      * 원문·발신자 이메일을 볼 자격이 있는가.
      *
      * <p><b>판정을 여기서 하지 않는다</b> — 실시간 팬아웃이 묻는 것과 같은 질문이라, 각자 적어 두면
      * 특권 뷰를 받는 역할이 하나 늘 때 한쪽만 따라간다. 실제로 그 위험이 코드에 경고로 적혀 있었다:
      * 소유만 보면 <b>실시간은 관리자에게 열리고 이력은 닫힌다</b>.
      *
-     * <p>비회원은 신원이 없어 곧바로 거짓이다 — 역할을 모르는데 특권을 줄 수는 없다.
+     * <p>비회원은 신원이 없어 호출자가 부르지 않는다 — 역할을 모르는데 특권을 줄 수는 없다.
      */
-    private boolean isPrivileged(GetChatHistoryCommand command, LiveRoomView room) {
-        if (!command.hasRequesterIdentity()) {
-            return false;
-        }
-        boolean roomOwner = command.requesterId().equals(room.sellerId());
-        ChatRole role = parseRole(command.requesterRole());
+    private boolean isPrivileged(UUID requesterId, String requesterRole, UUID roomId, LiveRoomView room,
+            String readKind) {
+        boolean roomOwner = requesterId.equals(room.sellerId());
+        ChatRole role = parseRole(requesterRole);
 
         // 남의 방에서 특권 뷰(원문·발신자 이메일)를 쓰는 조회는 남긴다. 실시간 입장 경로가 같은 판정에
         // 같은 로그를 남기는데 이력 경로만 비어 있었다 — 그러면 "누가 남의 방 구매자 이메일을 봤는가"
@@ -106,8 +128,8 @@ public class GetChatHistoryService implements GetChatHistoryUseCase {
         // 문구가 '관리자' 가 아닌 것도 실시간 쪽과 같은 이유다 — 판정이 역할을 가리지 않으므로,
         // 특권 뷰가 넓어지는 날 감사가 자동으로 따라와야 하고 그때 비-관리자를 관리자로 기록하면 안 된다.
         if (permissionPolicy.usesPrivilegedViewInSomeoneElsesRoom(role, roomOwner)) {
-            log.info("특권 뷰 이력 조회 — role={} userId={} roomId={}",
-                    role, command.requesterId(), command.roomId());
+            log.info("특권 뷰 {} 조회 — role={} userId={} roomId={}",
+                    readKind, role, requesterId, roomId);
         }
         return permissionPolicy.seesUnmaskedContent(role, roomOwner);
     }

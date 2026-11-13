@@ -1,4 +1,12 @@
+plugins {
+    id 'java-library'
+}
+
 dependencies {
+    // GetSellerProductsUseCase가 CursorPage를 반환한다 — 공개 포트 시그니처에 노출되는 타입이라 api로 전이한다.
+    // -api가 의존해도 되는 유일한 토대 패키지(com.sapari.common.page, 루트 AGENTS.md).
+    api project(':common:page')
+
     implementation 'org.springframework.boot:spring-boot-starter'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

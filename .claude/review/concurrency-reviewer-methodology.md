@@ -15,10 +15,12 @@ state, idempotency under duplicate delivery. Other reviewers own the *consequenc
 theirs for the consequence.
 
 Context that decides most findings here — read it before judging:
-- `modules/live/AGENTS.md` **Persistence & cache** and **Media ports**: every state-transition read takes
+- `.claude/rules/live/persistence.md` **Persistence & cache** and `.claude/rules/live/media.md` **Media ports**
+  (ShedLock/round-budget detail: `.claude/rules/live/reconcile.md`): every state-transition read takes
   a row lock (`findByIdForUpdate`); Hibernate emits `for no key update`, not `for update` — don't grep
   the latter and conclude the lock is missing. Start-side media calls sit inside `@Transactional` **on
-  purpose**, bounded by `callTimeout`; end-side cleanup runs after commit. Schedulers are **multi-replica
+  purpose** — LiveKit calls bounded by `callTimeout`, the master publish by the `MasterPlaylistPublisher`
+  port contract; end-side cleanup runs after commit. Schedulers are **multi-replica
   safe since SPR-142** — each holds a ShedLock lock (`live-reconcile-<job>`). A missing `@SchedulerLock`,
   a shared lock name, or a `lockAtMostFor` shorter than the job's worst round **is** a current gap, not a
   future one. Only `orphan-media` strictly needs the lock (the other two gate on a row lock and register

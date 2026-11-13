@@ -67,6 +67,27 @@ class ChatRoomEndedRedisRepositoryTest {
     }
 
     @Test
+    @DisplayName("live 종료 키만 있음 — chat 마커가 없어도 종료로 판정한다(종료 신호를 놓친 Pod)")
+    void isEnded_trueWhenOnlyLiveKeyExists() {
+        // given — live 가 쓰는 모양 그대로: 값은 종료 시각 epoch millis, chat 마커는 없다
+        redisTemplate.opsForValue().set("live:room:ended:" + roomId, "1762650000000").block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(repository.isEnded(roomId).block(VERIFY_CEILING)).isTrue();
+    }
+
+    @Test
+    @DisplayName("다른 방의 live 종료 키 — 이 방은 종료로 판정되지 않는다")
+    void isEnded_ignoresOtherRoomsLiveKey() {
+        // given
+        redisTemplate.opsForValue().set("live:room:ended:" + UUID.randomUUID(), "1762650000000")
+                .block(VERIFY_CEILING);
+
+        // when & then
+        assertThat(repository.isEnded(roomId).block(VERIFY_CEILING)).isFalse();
+    }
+
+    @Test
     @DisplayName("중복 기록 — 여러 Pod가 같은 방을 동시에 처리해도 안전하다")
     void markEnded_isIdempotent() {
         // given

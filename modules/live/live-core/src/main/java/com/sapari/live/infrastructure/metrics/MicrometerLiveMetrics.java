@@ -16,6 +16,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import com.sapari.live.application.port.EnterPopulation;
 import com.sapari.live.application.port.EnterRejectionGate;
+import com.sapari.live.application.port.RoomEndedSignal;
+import com.sapari.live.application.port.RoomTokenSignatureSource;
 import com.sapari.live.application.port.TokenRevocationAxis;
 import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
@@ -159,6 +161,14 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     }
 
     @Override
+    public void roomEndedSignalFailed(RoomEndedSignal signal) {
+        safe(() -> Counter.builder(LiveMeterNames.ROOM_ENDED_SIGNAL_FAILED)
+                .tag(LiveMeterNames.TAG_SIGNAL, tag(signal))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
     public void tokenRevocationHit(TokenRevocationAxis axis) {
         safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOKED)
                 .tag(LiveMeterNames.TAG_AXIS, tag(axis))
@@ -206,6 +216,14 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     public void recentViewDropped(RecentViewDropReason reason) {
         safe(() -> Counter.builder(LiveMeterNames.RECENT_VIEW_DROPPED)
                 .tag(LiveMeterNames.TAG_REASON, tag(reason))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void roomTokenIssued(RoomTokenSignatureSource source) {
+        safe(() -> Counter.builder(LiveMeterNames.TOKEN_SIGNATURE)
+                .tag(LiveMeterNames.TAG_SOURCE, tag(source))
                 .register(registry)
                 .increment());
     }

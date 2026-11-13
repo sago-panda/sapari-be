@@ -4,6 +4,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.any;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -57,6 +58,14 @@ class LivePublicRoutesTest {
             mvc.perform(post("/api/v1/lives/rooms/room-id/cancel")).andExpect(status().isUnauthorized());
             mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                     .put("/api/v1/lives/rooms/room-id")).andExpect(status().isUnauthorized());
+            // 공개로 선언한 채팅 이력 — GET 과 HEAD 가 같이 열려야 한다. Spring MVC 는
+            // @GetMapping 에 대해 HEAD 를 서비스하므로, 매처를 GET 으로만 두면 같은 핸들러가
+            // HEAD 에서는 401 이 된다. 본문을 안 보내도 조회 비용(Postgres 1 + Mongo 1)은 같다.
+            mvc.perform(get("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
+            mvc.perform(head("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
+            // 현재 공지도 같은 모양이다 — 비회원도 입장 때 공지를 본다.
+            mvc.perform(get("/api/v1/lives/room-id/chat/notice")).andExpect(status().isOk());
+            mvc.perform(head("/api/v1/lives/room-id/chat/notice")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/ingress")).andExpect(status().isUnauthorized());
             mvc.perform(get("/api/v1/lives/future-private")).andExpect(status().isUnauthorized());
             mvc.perform(post("/api/v1/lives/rooms")).andExpect(status().isUnauthorized());
@@ -79,7 +88,7 @@ class LivePublicRoutesTest {
             // 둬서 상한이 경로 판정 결과를 가리지 않게 한다.
             EnterRateLimitFilter enterRateLimitFilter = new EnterRateLimitFilter(
                     new EnterRateLimiter(new EnterRateLimitProperties(
-                            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1),
+                            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1, null, null, null),
                             com.sapari.live.application.port.LiveMetrics.NOOP));
             // 폐기 조회도 이 테스트의 축이 아니다. 이 테스트의 요청은 전부 토큰이 없어
             // principal 이 null 이므로 체커는 호출되지 않는다 — 목을 두는 것은 체인을

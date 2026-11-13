@@ -30,6 +30,8 @@ import com.sapari.chat.application.service.SystemMessageService;
 import com.sapari.chat.command.SendChatCommand;
 import com.sapari.chat.domain.exception.ChatPermissionDeniedException;
 import com.sapari.chat.domain.exception.ChatRateLimitException;
+import com.sapari.chat.domain.exception.ChatSendUnavailableException;
+import com.sapari.chat.domain.exception.ClientMsgIdReusedException;
 import com.sapari.chat.domain.exception.LiveNotActiveException;
 import com.sapari.chat.domain.exception.UserBannedException;
 import com.sapari.chat.domain.exception.UserKickedException;
@@ -156,10 +158,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             // 토큰(email PII 포함)은 쿼리 아닌 Sec-WebSocket-Protocol 헤더로 — access log·Referer·브라우저 히스토리 잔류 방지
             token = extractToken(session);
         } catch (Exception e) {
-            return session.close(CloseStatus.POLICY_VIOLATION);   // 잘못된 핸드셰이크 — 상세 미노출
+            return closeBounded(session);   // 잘못된 핸드셰이크 — 상세 미노출
         }
         if (token == null) {
-            return session.close(CloseStatus.POLICY_VIOLATION);
+            return closeBounded(session);
         }
 
         // 상관 식별자를 Reactor Context 에 싣는다. MDC 로는 안 된다 — ThreadLocal 이라 Reactor 의
@@ -179,7 +181,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         .contextWrite(context -> context.put(LogFields.USER_ID,
                                 chatSession.userId().toString())))
                 .onErrorResume(EntryDeniedException.class, e -> denyAndClose(session, e.reason()))
-                .onErrorResume(WebSocketAuthException.class, e -> session.close(CloseStatus.POLICY_VIOLATION))
+                .onErrorResume(WebSocketAuthException.class, e -> closeBounded(session))
                 .contextWrite(context -> context
                         .put(LogFields.SESSION_ID, session.getId())
                         .put(LogFields.ROOM_ID, roomId.toString()));
@@ -283,12 +285,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     // PONG 이 일반 프레임 경로로 올라오기 때문이다({@code WebsocketServerSpec.handlePing()}
                     // 기본값 false = PING 자동 응답). 그 핸들러를 파이프라인에 끼우거나 서버를 바꾸면
                     // <b>이 기능이 조용히 죽는다.</b>
-                    .doOnNext(message -> registry.recordInbound(sid))
-                    // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
-                    // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(들어오는 PING 은 reactor-netty 가 자동
-                    // 응답하고 올려주지 않는다 — 위 문단의 귀속과 같다. PONG 은 올라오므로 위 탭이 센다).
-                    .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
-                    .map(WebSocketMessage::getPayloadAsText), sid, chatSession);
+                    //
+                    // 인바운드 상한(runInbound)보다도 앞이어야 한다 — 상한에 걸려 버려지는 프레임도 시계를
+                    // 밀어야 "버리되 연결은 유지한다" 가 참이다. 이 탭이 뒤로 가면 상한에 걸린 세션이
+                    // 무응답으로 걷힌다.
+                    .doOnNext(message -> registry.recordInbound(sid)), sid, chatSession);
 
             // 강제 종료 경로. sink complete가 버퍼에 막혀 outbound가 끝나지 않는 클라(소켓을 읽지 않는 경우)를
             // 위한 것이라, 정상 클라가 남은 메시지를 다 받고 스스로 끝낼 시간을 준 뒤에야 발화한다.
@@ -362,12 +363,16 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             // 기한만 넘기면 생존 루프의 격자에서는 살아남는 구간(기한~기한+간격)에 있던 세션을 죽인다 —
             // 그리고 비워진 자리를 이 호출이 즉시 가져간다. 그러면 "죽은 자리만 거둔다" 가 그 구간에서
             // 거짓이 되고, evict-oldest 를 기각한 근거("남의 살아 있는 세션을 끊지 않는다")도 같이
-            // 무너진다. 상한이 5라 창이 간격 하나만큼 길어지는 비용은 사실상 없다.
+            // 무너진다. 창이 간격 하나만큼 길어지는 비용은 **상한 하나당** 세션 하나를 더 오래
+            // 들고 있는 것이고, 상한은 `chat.session.max-per-room` 으로 운영이 정한다(SPR-176).
+            // 한때 여기 "상한이 5라 비용은 사실상 없다" 고 적혀 있었는데, 그 문장은 상한이 코드
+            // 상수일 때만 성립한다 — 크기에 매달린 주장이라 값을 여는 커밋이 같이 고쳐야 했다.
             registry.reapUnresponsiveIfFull(chatSession.userId(), roomId,
                     timeouts.livenessDeadline().plus(timeouts.pingInterval()));
             return registry.register(sid, chatSession)
                     .then(roomInfoFor(roomId, chatSession))
                     .flatMap(info -> registry.sendToSession(sid, info))
+                    .then(Mono.fromRunnable(() -> registry.forgetLastPushedCount(roomId)))
                     // firstWithSignal: 다섯 중 먼저 끝나는 쪽에 종료 — 클라 disconnect(inbound), 정상 종료
                     // (sink complete → outbound), 그 둘이 다 막혔을 때의 강제 종료, 그리고 수명 상한·생존 확인.
                     // 클라가 먼저 끊은 경우(inbound)는 닫을 소켓이 이미 없으므로 코드를 붙이지 않는다.
@@ -460,8 +465,32 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      * 뒤따르는 정리(doFinally)를 진행시킨다. (테스트 진입점)
      */
     Mono<Void> closeWithReason(WebSocketSession session, String sid) {
-        return Mono.defer(() -> session.close(registry.closeStatusOf(sid)))
+        return closeBounded(session, () -> registry.closeStatusOf(sid));
+    }
+
+    /**
+     * 상한을 받는 close. <b>배선은 이 파일에 둘이고, 덮는 구간이 달라서 둘이다</b> —
+     * 여기(close 만 덮는다)와 {@link #denyAndClose}(send + close 조립 전체를 덮는다). 셋 이상으로
+     * 늘면 한 군데만 빠진 상태가 전 스위트 초록으로 통과한다 — 그게 이 티켓 전의 상태였고, 그때는
+     * 닫는 길 다섯 중 <b>하나만</b> 상한이 있었다.
+     *
+     * <p>왜 상한이 필요한가: close 는 write future 에 채널 닫기를 걸어두는 구조라 그 write 가
+     * flush 되지 않으면 채널이 남고, "이미 close 보냄" 표시 때문에 다시 닫으려 해도 무동작이다.
+     * {@link #CLOSE_FLUSH_TIMEOUT} 에 그 근거가 적혀 있다.
+     *
+     * <p>사유를 <b>값이 아니라 공급자로</b> 받는 이유: 등록된 세션은
+     * {@code registry.closeStatusOf(sid)} 를 읽어야 하고 그 조회를 구독 시점으로 미뤄야 한다
+     * (종전 {@code Mono.defer} 가 하던 일이다). 등록 전 경로는 그 조회에 쓸 sid 가 없어 상수를 넘긴다.
+     */
+    private Mono<Void> closeBounded(WebSocketSession session,
+            java.util.function.Supplier<CloseStatus> status) {
+        return Mono.defer(() -> session.close(status.get()))
                 .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
+    }
+
+    /** 사유 없이 1008 로 닫는다 — 핸드셰이크가 깨졌거나 토큰이 없거나 검증이 실패한 길. */
+    private Mono<Void> closeBounded(WebSocketSession session) {
+        return closeBounded(session, () -> CloseStatus.POLICY_VIOLATION);
     }
 
     /**
@@ -479,7 +508,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     /** 인바운드 1건 처리 — 어떤 입력이 와도 ERROR 응답으로 끝내고 연결은 유지한다. (단위 테스트 진입점) */
     Mono<Void> onInbound(String sid, ChatSession chatSession, String payload) {
         // 종료가 확정된 세션은 소켓이 닫히기 전이라도 더 받지 않는다 — 그 창에 강퇴된 사용자가 계속
-        // 보낼 수 있고, 그걸 막는 건 전송 경로의 Redis 조회뿐인데 그건 장애 시 통과(fail-open)한다.
+        // 보낼 수 있고, 그걸 막는 건 전송 경로의 Redis 조회뿐이다.
         if (registry.isTerminating(sid)) {
             return Mono.empty();
         }
@@ -501,8 +530,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 커맨드 생성(신뢰경계 검증)은 반드시 flatMap 안에서 한다 — 밖에서 만들면 인자 평가 위치에서 터져
         // 아래 onErrorResume을 지나치고, 인바운드 스트림이 죽어 연결째 끊긴다. flatMap 안의 throw는
         // onError 신호가 되므로 그 프레임만 ERROR로 돌아간다.
-        // 레이트리밋 창 안이면 Redis에 다시 묻지 않는다 — 답을 이미 안다. 묻는 비용이 왕복 3회(강퇴 조회·
-        // SET NX·잔여 TTL)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
+        // 레이트리밋 창 안이면 Redis에 다시 묻지 않는다 — 답을 이미 안다. 묻는 비용이 왕복 3회(강퇴·밴 조회·
+        // 레이트리밋 스크립트)라, 회선 속도로 미는 클라 하나가 그대로 Redis 부하가 된다. 창이 끝나면 평소대로 묻는다.
         long retryAfter = registry.rateLimitRetryAfterSeconds(sid);
         if (retryAfter > 0) {
             return respondRejected(sid, OutboundMessage.rateLimit(retryAfter, clientMsgId));
@@ -594,9 +623,28 @@ public class ChatWebSocketHandler implements WebSocketHandler {
      *
      * <p>병렬로 처리해서 얻는 것도 없다. 오히려 저장·중계 순서가 전송 순서와 어긋난다
      * (레이트리밋이 면제되는 방 주인에게서 실제로 드러난다).
+     *
+     * <p><b>세션당 인바운드 상한은 디코드보다 앞이다.</b> 상한이 막으려는 것은 이벤트 루프에서 드는 프레임당
+     * 비용이고, 그 비용은 UTF-8 디코드({@code getPayloadAsText})에서 시작한다. 레이트리밋과 거부 응답 솎기는
+     * 둘 다 그 뒤라 그것을 줄이지 못한다. 상한에 걸린 프레임에 남는 비용은 맵 조회 하나다(버퍼는
+     * reactor-netty 가 해제한다 — {@code handle} 의 생존 시계 탭 주석).
      */
-    Mono<Void> runInbound(Flux<String> payloads, String sid, ChatSession chatSession) {
-        return payloads.concatMap(payload -> onInbound(sid, chatSession, payload)).then();
+    Mono<Void> runInbound(Flux<WebSocketMessage> frames, String sid, ChatSession chatSession) {
+        return frames
+                // 채팅 프레임은 TEXT뿐이다. BINARY·PONG까지 파싱에 넣으면 모바일 keepalive 한 번에
+                // ERROR(VALIDATION) 한 번씩 되돌려주게 된다(들어오는 PING 은 reactor-netty 가 자동
+                // 응답하고 올려주지 않는다. PONG 은 올라오므로 handle 의 생존 시계 탭이 센다).
+                .filter(message -> message.getType() == WebSocketMessage.Type.TEXT)
+                .filter(message -> {
+                    if (registry.shouldDropInbound(sid)) {
+                        metrics.inboundFrameDropped();
+                        return false;
+                    }
+                    return true;
+                })
+                .map(WebSocketMessage::getPayloadAsText)
+                .concatMap(payload -> onInbound(sid, chatSession, payload))
+                .then();
     }
 
     // ── 순수 변환 (단위 테스트 진입점) ──
@@ -651,6 +699,14 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         }
         if (e instanceof IllegalArgumentException) {
             return "VALIDATION";
+        }
+        // 저장 전에 거절했다 — 아무것도 남지 않았다. 결과를 모를 수 있는 INTERNAL 과 가른다.
+        if (e instanceof ChatSendUnavailableException) {
+            return "UNAVAILABLE";
+        }
+        // 클라이언트가 키를 재사용했다 — 다시 보내도 같은 답이다. 새 clientMsgId 로 보내야 한다.
+        if (e instanceof ClientMsgIdReusedException) {
+            return "CLIENT_MSG_ID_REUSED";
         }
         return "INTERNAL";
     }
@@ -756,7 +812,16 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         }
     }
 
-    private Mono<Void> denyAndClose(WebSocketSession session, EntryDeniedException.Reason reason) {
+    /**
+     * 거부를 통보하고 닫는다. <b>flush 가 막혀도 상한 뒤 완료하고 소켓을 직접 내린다</b>
+     * ({@link #closeWithReason} 와 같은 이유 — 그 javadoc 과
+     * {@link #CLOSE_FLUSH_TIMEOUT} 를 볼 것). {@link #closeBounded} 를 쓰지 않는 이유는 아래 주석에
+     * 있다 — 상한이 덮어야 하는 구간이 다르다. 이쪽은 close <b>앞에 send 가 하나 더</b> 있어
+     * 멈출 길이 더 많고, 이 경로가 적대적이거나 깨진 클라가 실제로 모는 길이다 —
+     * {@code TOO_MANY_SESSIONS} · {@code KICKED} · {@code BANNED} · 입장 시 {@code ROOM_ENDED}.
+     * (테스트 진입점)
+     */
+    Mono<Void> denyAndClose(WebSocketSession session, EntryDeniedException.Reason reason) {
         OutboundMessage system = OutboundMessage.system(systemCode(reason));
         // 사유가 무엇이든 1008이다. 접속 중 방이 끝난 경우(terminateRoomEnded)는 1000인데 여기만 1008인 게
         // 비대칭으로 보이지만, 그쪽은 "성립해 있던 세션의 정상 종료"고 이쪽은 "세션이 성립하지 못한 거부"다.
@@ -773,8 +838,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // 그 묶음을 쪼개면 거부 전체의 분기가 바뀌기 때문이다. 대신 <b>정책을 SYSTEM code 가
         // 싣는다</b> — 영구(KICKED·BANNED·ROOM_ENDED)는 재접속하지 않고, TOO_MANY_SESSIONS 는
         // 백오프 후 재시도해도 된다. 그 구분은 modules/chat/AGENTS.md 의 close-code 계약에 적혀 있다.
+        // 상한을 조립된 Mono 에 건다 — closeBounded 를 쓰면 상한이 close 구간만 덮고 그 앞의
+        // send 가 영원히 멈출 수 있다(수신 윈도를 0 으로 광고하는 클라는 그 프레임을 빼 가지 않는다).
         return session.send(Mono.just(session.textMessage(serialize(system))))
-                .then(session.close(CloseStatus.POLICY_VIOLATION));
+                .then(session.close(CloseStatus.POLICY_VIOLATION))
+                .timeout(CLOSE_FLUSH_TIMEOUT, Mono.fromRunnable(() -> forceDispose(session)));
     }
 
     /** 거부 사유를 클라가 렌더할 code로. switch 식이라 Reason이 늘면 컴파일이 막는다(조용한 오매핑 방지). */
@@ -783,6 +851,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             case KICKED -> SystemMessageCode.KICKED;
             case BANNED -> SystemMessageCode.BANNED;
             case ROOM_ENDED -> SystemMessageCode.ROOM_ENDED;
+            case WITHDRAWING -> SystemMessageCode.WITHDRAWING;
             case TOO_MANY_SESSIONS -> SystemMessageCode.TOO_MANY_SESSIONS;
         };
     }

@@ -10,29 +10,34 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import com.sapari.chat.application.port.ChatKickEventPublisher;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
 import com.sapari.chat.application.port.ProfanityFilterFactory;
+import com.sapari.chat.application.service.ChatAuditRecorder;
 import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
 import com.sapari.chat.application.service.ManageFilterWordsService;
 import com.sapari.chat.infrastructure.config.DictionaryProfanityFilterFactory;
 import com.sapari.chat.port.ManageFilterWordsUseCase;
 import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
 import com.sapari.chat.application.service.ProfanityDictionaryPublishService;
+import com.sapari.chat.domain.repository.ChatAuditLogRepository;
 import com.sapari.chat.domain.repository.ChatFilterWordRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogJpaRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatAuditLogRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatFilterWordRepositoryImpl;
 import com.sapari.chat.infrastructure.redis.ProfanityDictionarySnapshotRedisPublisher;
+import com.sapari.chat.application.service.ChatBanMirrorSnapshotter;
 import com.sapari.chat.application.service.ChatBanReleaseRecorder;
 import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
 import com.sapari.chat.application.service.ClearRoomEndedMarkerService;
 import com.sapari.chat.application.service.GetChatViewerCountsService;
+import com.sapari.chat.application.service.ReconcileBanMirrorService;
 import com.sapari.chat.application.service.ReconcileKickListService;
 import com.sapari.chat.application.service.ReleaseBanService;
 import com.sapari.chat.domain.repository.ChatHistoryRepository;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapper;
 import com.sapari.chat.infrastructure.persistence.mapper.ChatMessageMapperImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatHistoryMongoRepository;
-import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.domain.repository.ChatBanStateRepository;
 import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
@@ -56,10 +61,14 @@ import com.sapari.chat.infrastructure.redis.ChatViewerCountRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
 import com.sapari.chat.port.GetChatViewerCountsUseCase;
+import com.sapari.chat.port.ReconcileBanMirrorUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.GetLiveRoomUseCase;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * 강퇴 경로의 <b>블로킹</b> 조각을 이 앱에 세운다.
@@ -99,6 +108,39 @@ public class ChatModerationBeansConfig {
         return builder -> builder.uuidRepresentation(UuidRepresentation.STANDARD);
     }
 
+    /**
+     * live-app 의 Mongo <b>연산 상한</b>. streaming-app 의 것이 여기에 적용되지 않는다 —
+     * 그쪽 상한은 {@code ChatMongoConfig} 가 걸고 이 앱은 그 설정을 들이지 않는다(위 UUID
+     * 커스터마이저만 따로 등록한 이유와 같다).
+     *
+     * <p><b>왜 필요한가.</b> 드라이버 기본값은 전체 연산 상한이 <b>미설정</b>이고 socket read
+     * timeout 이 <b>0</b> 이다. 그래서 이 앱의 이력·증거 조회는 <b>동기</b> {@code MongoTemplate} 을
+     * 쓰면서 상한이 코드로 보장되지 않는다 — 멈춘 Mongo 아래에서 HTTP 워커가 무한정 점유된다.
+     * ⚠️ 운영 URI 에 별도 상한이 있을 수는 있어 "운영에서도 반드시 무제한" 이라고 단정하지 않는다.
+     * 단정하는 것은 <b>코드와 예시 설정만으로는 상한이 보장되지 않는다</b> 는 쪽이다.
+     *
+     * <p><b>값의 축이 streaming-app 과 다르다.</b> 그쪽은 전송이 {@code concatMap} 으로 직렬화돼
+     * 상한이 <b>메시지마다</b> 걸리므로 축이 "(세션이 막혀도 되는 시간 ÷ 대기 프레임 수)" 였다.
+     * 이쪽은 요청 하나가 Mongo 조회 하나를 쓰고 끝나므로 축이 <b>"HTTP 워커를 몇 초까지 점유해도
+     * 되는가"</b> 다. 동시 점유 수는 공개 이력 조회 상한(기본 20/s)이 위에서 잡는다.
+     *
+     * <p>⚠️ 3초는 <b>재지 않은 값</b>이다 — 잴 수 없어서가 아니라 안 쟀다. 재서 나온 것은
+     * "상한이 없다" 와 "축이 워커 점유다" 둘이고 그 수는 거기서 나오지 않는다. 운영에서 올리는
+     * 것이 복구 수단이고, 잘못된 값만 부팅에서 막는다.
+     */
+    @Bean
+    public MongoClientSettingsBuilderCustomizer liveAppChatMongoOperationTimeoutCustomizer(
+            @Value("${live.chat.mongo.operation-timeout:3s}") Duration operationTimeout) {
+        long millis = operationTimeout.toMillis();
+        if (millis < 1) {
+            // 프로퍼티 이름을 메시지에 싣는다 — 기동 로그만 보고 어느 키를 고칠지 알아야 한다
+            // (형제 chat.mongo.operation-timeout 과 같은 모양이다).
+            throw new IllegalArgumentException(
+                    "live.chat.mongo.operation-timeout 은 1ms 이상이어야 합니다: " + operationTimeout);
+        }
+        return builder -> builder.timeout(millis, TimeUnit.MILLISECONDS);
+    }
+
     /** 순수 정책이라 프레임워크 애너테이션이 없다 — 그래서 호스트가 직접 세운다. */
     @Bean
     public ChatPermissionPolicy chatPermissionPolicy() {
@@ -113,6 +155,25 @@ public class ChatModerationBeansConfig {
     @Bean
     public ChatBanStateRepository chatBanStateRepository(ChatBanJpaRepository jpaRepository) {
         return new ChatBanStateRepositoryImpl(jpaRepository);
+    }
+
+    /**
+     * 감사 기록 쓰기. 들어가는 테이블은 {@code live_schema.audit_logs} 로 <b>도메인 공용</b>이고
+     * (정본 DDL 이 "공통 (도메인 전용 outbox / audit)" 아래 두었다) 지금 그 테이블에 쓰는 코드는
+     * chat 뿐이다 — 그래서 {@code action} 값에 {@code CHAT_} 접두가 붙는다.
+     */
+    @Bean
+    public ChatAuditLogRepository chatAuditLogRepository(ChatAuditLogJpaRepository jpaRepository) {
+        return new ChatAuditLogRepositoryImpl(jpaRepository);
+    }
+
+    /**
+     * 감사 한 줄에 트랜잭션 경계만 주는 빈 — <b>DB 트랜잭션이 없는 조치 둘</b>(강퇴 명단 재적재·
+     * 종료 마커 해제)이 쓴다. 나머지 셋은 자기 recorder 의 트랜잭션 안에서 저장소를 직접 부른다.
+     */
+    @Bean
+    public ChatAuditRecorder chatAuditRecorder(ChatAuditLogRepository auditLogRepository) {
+        return new ChatAuditRecorder(auditLogRepository);
     }
 
     /**
@@ -146,13 +207,18 @@ public class ChatModerationBeansConfig {
     }
 
     /**
-     * 이력 조회 유스케이스.
+     * 이력 조회 · 현재 공지 조회 유스케이스.
      *
      * <p>{@code GetLiveRoomUseCase} 를 받는다 — 특권 뷰 판정에 방 주인이 필요하고, VOD 창을 역산하는
      * 기준이 방송 시작 시각이다. 둘 다 live 소유 값이라 포트로만 묻는다.
+     *
+     * <p>반환 타입이 구현 클래스인 이유: 한 서비스가 두 포트({@code GetChatHistoryUseCase} ·
+     * {@code GetChatNoticeUseCase})를 구현한다. 반환 타입을 한쪽 인터페이스로 두면 다른 쪽 포트 주입이
+     * 빈 생성 순서에 따라 갈린다 — 이 빈이 아직 안 만들어졌으면 선언된 반환 타입으로만 매칭해 실패한다.
+     * 같은 서비스로 빈을 하나 더 등록하면 인스턴스가 둘이 되므로 그렇게 하지 않는다.
      */
     @Bean
-    public GetChatHistoryUseCase getChatHistoryUseCase(GetLiveRoomUseCase liveRoomReader,
+    public GetChatHistoryService getChatHistoryUseCase(GetLiveRoomUseCase liveRoomReader,
                                                         ChatHistoryRepository historyRepository,
                                                         ChatKickLogRepository kickLogRepository,
                                                         ChatPermissionPolicy permissionPolicy) {
@@ -175,8 +241,8 @@ public class ChatModerationBeansConfig {
      */
     @Bean
     public ProfanityDictionarySnapshotPublisher profanityDictionarySnapshotPublisher(
-            StringRedisTemplate redisTemplate) {
-        return new ProfanityDictionarySnapshotRedisPublisher(redisTemplate);
+            StringRedisTemplate redisTemplate, TimeProvider timeProvider) {
+        return new ProfanityDictionarySnapshotRedisPublisher(redisTemplate, timeProvider);
     }
 
     /**
@@ -216,8 +282,9 @@ public class ChatModerationBeansConfig {
      * ({@code @Modifying} 쿼리가 트랜잭션을 요구하고, 자기 호출은 프록시를 타지 않는다).
      */
     @Bean
-    public ChatFilterWordWriteRecorder chatFilterWordWriteRecorder(ChatFilterWordRepository repository) {
-        return new ChatFilterWordWriteRecorder(repository);
+    public ChatFilterWordWriteRecorder chatFilterWordWriteRecorder(
+            ChatFilterWordRepository repository, ChatAuditLogRepository auditLogRepository) {
+        return new ChatFilterWordWriteRecorder(repository, auditLogRepository);
     }
 
     /**
@@ -230,9 +297,10 @@ public class ChatModerationBeansConfig {
             ChatFilterWordRepository repository,
             ChatFilterWordWriteRecorder writeRecorder,
             ProfanityDictionaryPublishService publishService,
-            ProfanityFilterFactory filterFactory) {
-        return new ManageFilterWordsService(
-                permissionPolicy, repository, writeRecorder, publishService, filterFactory);
+            ProfanityFilterFactory filterFactory,
+            TimeProvider timeProvider) {
+        return new ManageFilterWordsService(permissionPolicy, repository, writeRecorder,
+                publishService, filterFactory, timeProvider);
     }
 
     @Bean
@@ -269,8 +337,9 @@ public class ChatModerationBeansConfig {
      */
     @Bean
     public ChatKickRecorder chatKickRecorder(ChatKickLogRepository kickLogRepository,
-                                             ChatBanStateRepository banStateRepository) {
-        return new ChatKickRecorder(kickLogRepository, banStateRepository);
+                                             ChatBanStateRepository banStateRepository,
+                                             ChatAuditLogRepository auditLogRepository) {
+        return new ChatKickRecorder(kickLogRepository, banStateRepository, auditLogRepository);
     }
 
     @Bean
@@ -292,8 +361,9 @@ public class ChatModerationBeansConfig {
      * 밴 해제의 DB 쓰기를 감싸는 트랜잭션 빈 — 위 {@code chatKickRecorder}와 같은 이유로 별도 빈이다.
      */
     @Bean
-    public ChatBanReleaseRecorder chatBanReleaseRecorder(ChatBanStateRepository banStateRepository) {
-        return new ChatBanReleaseRecorder(banStateRepository);
+    public ChatBanReleaseRecorder chatBanReleaseRecorder(ChatBanStateRepository banStateRepository,
+                                                         ChatAuditLogRepository auditLogRepository) {
+        return new ChatBanReleaseRecorder(banStateRepository, auditLogRepository);
     }
 
     /**
@@ -324,9 +394,30 @@ public class ChatModerationBeansConfig {
     public ReconcileKickListUseCase reconcileKickListUseCase(ChatPermissionPolicy permissionPolicy,
                                                              GetLiveRoomUseCase liveRoomReader,
                                                              ChatKickLogRepository kickLogRepository,
-                                                             ChatKickWriteRepository kickWriteRepository) {
-        return new ReconcileKickListService(
-                permissionPolicy, liveRoomReader, kickLogRepository, kickWriteRepository);
+                                                             ChatKickWriteRepository kickWriteRepository,
+                                                             ChatAuditRecorder auditRecorder,
+                                                             TimeProvider timeProvider) {
+        return new ReconcileKickListService(permissionPolicy, liveRoomReader, kickLogRepository,
+                kickWriteRepository, auditRecorder, timeProvider);
+    }
+
+    /** 밴 미러 재적재가 사용자마다 잠금 안에서 읽는 트랜잭션 빈 — {@code chatKickRecorder}와 같은 이유로 별도 빈이다. */
+    @Bean
+    public ChatBanMirrorSnapshotter chatBanMirrorSnapshotter(ChatBanStateRepository banStateRepository) {
+        return new ChatBanMirrorSnapshotter(banStateRepository);
+    }
+
+    /** 밴 미러 재적재 — 강퇴 명단 재적재의 밴 쪽 짝이다. 방을 읽지 않는다(밴은 사람에 붙는다). */
+    @Bean
+    public ReconcileBanMirrorUseCase reconcileBanMirrorUseCase(ChatPermissionPolicy permissionPolicy,
+                                                               ChatBanStateRepository banStateRepository,
+                                                               ChatBanMirrorSnapshotter snapshotter,
+                                                               ChatBanWriteRepository banWriteRepository,
+                                                               ChatAuditRecorder auditRecorder,
+                                                               ChatAccountEventPublisher accountEventPublisher,
+                                                               TimeProvider timeProvider) {
+        return new ReconcileBanMirrorService(permissionPolicy, banStateRepository, snapshotter,
+                banWriteRepository, auditRecorder, accountEventPublisher, timeProvider);
     }
 
     /**
@@ -342,8 +433,12 @@ public class ChatModerationBeansConfig {
     @Bean
     public ClearRoomEndedMarkerUseCase clearRoomEndedMarkerUseCase(
             GetLiveRoomUseCase liveRoomReader,
-            ChatRoomEndedWriteRepository roomEndedWriteRepository) {
-        return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository);
+            ChatRoomEndedWriteRepository roomEndedWriteRepository,
+            ChatAuditRecorder auditRecorder,
+            ChatPermissionPolicy permissionPolicy,
+            TimeProvider timeProvider) {
+        return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository,
+                auditRecorder, permissionPolicy, timeProvider);
     }
 
     /**

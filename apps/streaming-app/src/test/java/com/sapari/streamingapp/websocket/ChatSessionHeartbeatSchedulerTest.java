@@ -12,7 +12,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -23,6 +25,18 @@ import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+import com.sapari.streamingapp.config.ChatSessionGaugeConfig;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
+import org.springframework.beans.factory.ObjectProvider;
+
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.AppenderBase;
+
+import org.slf4j.LoggerFactory;
 
 import reactor.core.publisher.Mono;
 
@@ -64,6 +78,116 @@ class ChatSessionHeartbeatSchedulerTest {
     private void register(String sessionId, UUID userId) {
         registry.register(sessionId, new ChatSession(roomId, userId, ChatRole.BUYER,
                 "닉", "e@example.com", false)).block(VERIFY_CEILING);
+    }
+
+
+    /**
+     * 재등록 실패에 <b>미터</b>가 붙는지. 셀 값은 있었고 미터가 없었다.
+     *
+     * <p>{@code heartbeatFailures} 는 전부터 {@code AtomicLong} 으로 쌓였지만
+     * {@code ChatSessionGaugeConfig} 가 등록하는 미터 다섯에 들어 있지 않았고, 그 접근자를 읽는 곳은
+     * 이 테스트뿐이었다. 그래서 운영에서는 억눌린 WARN 한 줄이 유일한 신호였다 — 이 파일 머리가
+     * 적는 결과("살아 있는 시청자 전원이 상한 뒤에 집계에서 사라진다")가 그 신호 하나에 걸려 있었다.
+     *
+     * <p>⚠️ <b>이 수가 0 이어도 재등록이 멈춰 있을 수 있다.</b> 회차가 <b>실패</b>하면 세어지지만
+     * 아예 <b>안 끝나면</b> 세어지지 않는다 — {@code ChatSessionRegistry} 의 주기 javadoc 이 그 갈래를
+     * 적고 있고, 회차 길이를 재는 신호는 아직 없다. 그러니 이 미터는 "재등록이 건강하다" 의 증거가
+     * 아니고 "재등록이 실패하고 있다" 의 증거다. 그 둘을 바꿔 읽으면 침묵이 안전으로 읽힌다.
+     *
+     * <p>이름을 상수가 아니라 <b>리터럴</b>로 쓴다 — 상수는 {@code config} 패키지 전용이고, 더 중요하게는
+     * 미터 이름이 발행된 인터페이스라서다({@code infra/AGENTS.md} 의 당직 런북이 인용한다).
+     */
+    @Test
+    @DisplayName("⭐ 재등록 실패에 미터가 붙는다 — 억눌린 WARN 한 줄이 유일한 신호였다")
+    void theHeartbeatFailureCounterIsRegisteredAndFollows() {
+        // given: 재등록이 늘 실패한다
+        given(sessionRepository.heartbeat(any(), any(), any()))
+                .willReturn(Mono.error(new IllegalStateException("Redis down")));
+        MeterRegistry meters = new SimpleMeterRegistry();
+        new ChatSessionGaugeConfig().chatSessionGauges(registry, providing(meters));
+        register("s1", userA);
+
+        // when
+        registry.startHeartbeat();
+        try {
+            await(() -> registry.heartbeatFailures() >= 2);
+        } finally {
+            // 먼저 멈춘다 — 돌고 있는 동안 비교하면 두 읽기 사이에 값이 늘어 플레이크가 된다.
+            registry.stopHeartbeat();
+        }
+
+        // then: 미터가 없으면 get(...) 에서 먼저 터진다 — 그게 이 칸이 잡는 결함이다.
+        assertThat(meters.get("chat.sessions.heartbeat_failures").functionCounter().count())
+                .as("미터가 레지스트리 값을 따라오지 않는다 — 형제 접근자에 배선되면 집합 단언은 초록이다")
+                .isEqualTo(registry.heartbeatFailures());
+        assertThat(registry.heartbeatFailures())
+                .as("실패가 한 건도 안 생겼다 — 셀 것이 없으면 이 칸은 아무것도 보증하지 않는다")
+                .isGreaterThanOrEqualTo(2);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<MeterRegistry> providing(MeterRegistry value) {
+        ObjectProvider<MeterRegistry> provider = mock(ObjectProvider.class);
+        lenient().when(provider.getIfAvailable()).thenReturn(value);
+        return provider;
+    }
+
+
+    /**
+     * 실패 모드가 <b>사유별로</b> 솎인다 — 래치를 공유하면 먼저 찍은 쪽이 다른 사유의 첫 발생을 덮는다.
+     *
+     * <p>이 저장소가 같은 결함을 이미 두 번 이름 붙여 고쳤다. {@code EntryGate} — *"사유별로 따로
+     * 센다 — 하나를 공유하면 먼저 찍은 쪽이 다른 사유의 첫 발생을 통째로 덮는다."*
+     * {@code SendChatService} — *"카운터와 스로틀을 공유하면 … 영영 안 낫는 상태가 곧 복구될 장애의
+     * 로그에 묻힌다."* 그리고 {@code ChatSessionRegistry} 자신이 형제 둘(입장 상한 · 수명 만료)에
+     * 사유별 래치를 갖고 있다. 재등록 실패 · 시청자 수 갱신 실패 · emit 경합 드롭 셋만 공유로 남았다.
+     *
+     * <p>이 둘을 고른 이유는 <b>같은 회차에서 함께 나기 때문</b>이다 — 시청자 수 갱신이 재등록 바로
+     * 뒤에 같은 타이머를 탄다. 즉 공유 래치에서는 10초 창 안의 두 사유가 아니라 <b>한 회차 안의</b>
+     * 두 사유가 서로를 가린다. 상관관계가 그걸 더 나쁘게 만든다: 둘 다 Redis 가 흔들릴 때 함께 난다.
+     */
+    @Test
+    @DisplayName("⭐ 한 회차에 두 사유가 나면 두 줄이 남는다 — 래치를 공유하면 뒤쪽이 통째로 묻힌다")
+    void bothFailureModesSurviveTheSameRound() {
+        // given: 한 회차에서 재등록과 시청자 수 갱신이 둘 다 실패한다
+        given(sessionRepository.heartbeat(any(), any(), any()))
+                .willReturn(Mono.error(new IllegalStateException("Redis down")));
+        given(sessionRepository.count(any()))
+                .willReturn(Mono.error(new IllegalStateException("Redis down")));
+        register("s1", userA);
+
+        // ⚠️ ListAppender 가 아니라 CopyOnWriteArrayList 로 받는다. 타이머 스레드가 로그를 쌓는 동안
+        // 이 스레드가 순회하므로 ArrayList 면 ConcurrentModificationException 이 난다 — 실측으로 났고,
+        // 그 빨강은 "래치가 공유다" 와 구분되지 않는다(하네스 사유의 빨강은 근거가 못 된다).
+        List<String> logged = new CopyOnWriteArrayList<>();
+        Logger logger = (Logger) LoggerFactory.getLogger(ChatSessionRegistry.class);
+        AppenderBase<ILoggingEvent> appender = new AppenderBase<>() {
+            @Override
+            protected void append(ILoggingEvent event) {
+                logged.add(event.getFormattedMessage());
+            }
+        };
+        appender.start();
+        logger.addAppender(appender);
+
+        // when: 두 회차를 확인한다 — 한 회차의 재등록 뒤에 시청자 수 갱신이 따라오므로,
+        // 두 번째 실패가 보이면 첫 회차는 그 갱신까지 끝났다.
+        registry.startHeartbeat();
+        try {
+            await(() -> registry.heartbeatFailures() >= 2);
+        } finally {
+            registry.stopHeartbeat();
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        // then: 두 사유가 각자 한 줄을 남긴다
+        assertThat(logged)
+                .as("재등록 실패 줄이 없다 — 이 칸이 재는 두 사유 중 하나가 발생하지 않았다")
+                .anySatisfy(line -> assertThat(line).startsWith("세션 명부 재등록 실패"));
+        assertThat(logged)
+                .as("시청자 수 갱신 실패 줄이 없다 — 래치를 공유하면 먼저 찍은 쪽이 이 줄을 덮는다")
+                .anySatisfy(line -> assertThat(line).startsWith("시청자 수 갱신 실패"));
     }
 
     private static void await(java.util.function.BooleanSupplier condition) {
