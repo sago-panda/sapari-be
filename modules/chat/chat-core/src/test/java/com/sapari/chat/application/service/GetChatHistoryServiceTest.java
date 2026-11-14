@@ -124,7 +124,9 @@ class GetChatHistoryServiceTest {
                 .roomId(roomId)
                 .senderId(buyerId)
                 .senderNickname("닉")
-                .senderEmail("buyer@example.com")
+                // 저장소는 이메일을 돌려주지 못한다(영속하지 않는다 — ChatMessageDocument). 어댑터 모양 그대로.
+                // 이메일 게이팅의 FULL↔MASKED 는 이메일이 실제로 있는 실시간 팬아웃(ChatBroadcastSubscriberTest)이 잰다.
+                .senderEmail(null)
                 .senderRole(ChatRole.BUYER)
                 .type(new ChatMessageType.Normal())
                 .originalMessage("시발")
@@ -140,8 +142,8 @@ class GetChatHistoryServiceTest {
     }
 
     @Test
-    @DisplayName("⭐ 방 주인에게는 원문·발신자 이메일이 채워진다")
-    void theRoomOwnerSeesTheOriginalAndTheEmail() {
+    @DisplayName("⭐ 방 주인에게는 원문이 채워지고, 이메일은 이력에 없다")
+    void theRoomOwnerSeesTheOriginalButNoEmail() {
         // given
         stubOnePage();
 
@@ -151,7 +153,7 @@ class GetChatHistoryServiceTest {
         // then
         assertThat(view.messages()).singleElement().satisfies(message -> {
             assertThat(message.originalMessage()).isEqualTo("시발");
-            assertThat(message.senderEmail()).isEqualTo("buyer@example.com");
+            assertThat(message.senderEmail()).isNull();
             assertThat(message.displayMessage()).isEqualTo("시*");
         });
     }
@@ -168,7 +170,7 @@ class GetChatHistoryServiceTest {
         // then
         assertThat(view.messages()).singleElement().satisfies(message -> {
             assertThat(message.originalMessage()).isEqualTo("시발");
-            assertThat(message.senderEmail()).isEqualTo("buyer@example.com");
+            assertThat(message.senderEmail()).isNull();
         });
     }
 
