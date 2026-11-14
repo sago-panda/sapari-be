@@ -19,11 +19,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.reactive.socket.WebSocketMessage;
-import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -103,12 +101,6 @@ class ChatSessionLivenessTest {
                 .compact();
     }
 
-    private HttpHeaders tokenHeaders(String token) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.add("Sec-WebSocket-Protocol", "bearer," + token);
-        return headers;
-    }
-
     @Test
     @DisplayName("⭐ 말하지 않는 클라도 기한을 넘겨 살아 있다 — 서버 ping 의 pong 이 인바운드로 돌아온다")
     void silent_client_survives_past_the_liveness_deadline() {
@@ -124,8 +116,8 @@ class ChatSessionLivenessTest {
         // 단언을 "닫히지 않았다"로 쓸 수 없다 — 수신을 끝내는 순간 클라가 스스로 닫으므로 그 close 와
         // 서버가 끊은 close 가 구별되지 않는다(둘 다 1000이다). 기한 뒤의 <b>왕복</b>이 그 둘을 가른다:
         // 서버가 3초에 끊었다면 ACK 가 올 곳이 없다.
-        new ReactorNettyWebSocketClient().execute(URI.create(
-                "ws://localhost:" + port + "/ws/chat?roomId=" + roomId), tokenHeaders(token), session ->
+        ChatWsClients.connect(URI.create(
+                "ws://localhost:" + port + "/ws/chat?roomId=" + roomId), token, session ->
                 session.send(Mono.just(session.textMessage(
                                 "{\"type\":\"NORMAL\",\"content\":\"살아있나\",\"clientMsgId\":\"live-1\"}"))
                                 .delaySubscription(Duration.ofSeconds(5)))

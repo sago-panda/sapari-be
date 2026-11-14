@@ -130,9 +130,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 
-    // getSubProtocols()는 의도적으로 비운다(응답에 subprotocol echo 안 함). 서버가 offered subprotocol을
-    // 응답에 실으면 클라 handshaker가 "기대 목록에 없다"며 거부하는 구현이 있어(Reactor Netty) 호환성 위험.
-    // no-echo는 브라우저·Netty 모두 허용된다. 토큰은 아래 extractToken이 요청 헤더에서 직접 읽는다.
+    /**
+     * 응답의 {@code Sec-WebSocket-Protocol} 로 {@code bearer} 를 돌려준다.
+     *
+     * <p>클라이언트는 {@code ["bearer", token]} 을 요청하고, 요청한 것 중 하나가 응답에 없으면 연결을
+     * 실패시킨다. 비워 두면 응답에 헤더가 빠지고, 실측으로 WHATWG 클라이언트(브라우저와 같은 규격, Node 22
+     * 내장)·{@code ws}·Netty 클라이언트가 모두 끊었다.
+     * 목록에 토큰을 넣지 않는 것이 요점이다 — 넣으면 이메일이 담긴 토큰이 응답 헤더에 실린다.
+     */
+    @Override
+    public List<String> getSubProtocols() {
+        return List.of(TOKEN_SUBPROTOCOL);
+    }
 
     /** Sec-WebSocket-Protocol 헤더에서 룸 토큰 추출 — 클라 제시 ["bearer", token] 중 "bearer"가 아닌 값. */
     private String extractToken(WebSocketSession session) {
