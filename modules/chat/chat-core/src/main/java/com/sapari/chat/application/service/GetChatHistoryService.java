@@ -79,9 +79,14 @@ public class GetChatHistoryService implements GetChatHistoryUseCase, GetChatNoti
                 && isPrivileged(command.requesterId(), command.requesterRole(), command.roomId(), room, "이력");
         Set<UUID> kicked = Set.copyOf(kickLogRepository.findKickedUserIds(command.roomId()));
 
-        List<ChatMessage> messages = command.isPlaybackWindow()
-                ? playbackWindow(command, room, kicked)
-                : historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
+        List<ChatMessage> messages;
+        if (command.isPlaybackWindow()) {
+            messages = playbackWindow(command, room, kicked);
+        } else if (command.isAfterCursor()) {
+            messages = historyRepository.findAfter(command.roomId(), command.afterId(), command.size(), kicked);
+        } else {
+            messages = historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
+        }
 
         return new GetChatHistoryView(messages.stream().map(message -> render(message, privileged)).toList());
     }

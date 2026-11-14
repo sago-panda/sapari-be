@@ -272,8 +272,9 @@ A new UUID is the unsafe retry.
 
 `GetChatHistoryService` (chat-core, **blocking**) ← `ChatHistoryController` (live-app).
 
-- Cursor (`beforeId`) and VOD window (`playbackPositionMs`) are mutually exclusive.
-- `findBefore` reads exactly `size` (the front end infers `hasNext` from a full page) — not `CursorPage`.
+- Three mutually exclusive modes: past cursor (`beforeId`), reconnect cursor (`afterId`, SPR-201), VOD window
+  (`playbackPositionMs`). `findAfter` is the only one that returns **oldest first** (`ChatHistoryRepository.findAfter`).
+- `findBefore` · `findAfter` read exactly `size` (the front end infers `hasNext` from a full page) — not `CursorPage`.
 - **Kicked senders are excluded inside the Mongo query** (`$nin`); filtering after makes the scroll stop silently.
 - The privileged view is `seesUnmaskedContent`; an unknown requester role throws; anonymous is allowed, but
   `requesterId` and `requesterRole` come as a pair.

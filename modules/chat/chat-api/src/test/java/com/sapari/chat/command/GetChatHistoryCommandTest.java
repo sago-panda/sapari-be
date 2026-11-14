@@ -1,5 +1,6 @@
 package com.sapari.chat.command;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -59,11 +60,45 @@ class GetChatHistoryCommandTest {
     }
 
     @Test
-    @DisplayName("두 조회 모드는 배타다 — 한쪽을 조용히 무시하지 않고 즉시 거부한다")
+    @DisplayName("과거 커서와 VOD 위치는 배타다 — 한쪽을 조용히 무시하지 않고 즉시 거부한다")
     void theTwoModesAreExclusive() {
         assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
                 "68000000000000000000000a", 1_000L, 20))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 커서(afterId)도 다른 두 모드와 배타다")
+    void theAfterCursorIsExclusiveWithTheOtherModes() {
+        assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, null, null,
+                "68000000000000000000000a", "68000000000000000000000b", null, 20))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("afterId");
+        assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, null, null,
+                null, "68000000000000000000000b", 1_000L, 20))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("afterId");
+    }
+
+    @Test
+    @DisplayName("afterId 만 있으면 재접속 모드다 — 다른 모드 판정은 거짓이다")
+    void anAfterCursorAloneSelectsTheAfterMode() {
+        GetChatHistoryCommand command = new GetChatHistoryCommand(ROOM_ID, null, null,
+                null, "68000000000000000000000b", null, 20);
+
+        assertThat(command.isAfterCursor()).isTrue();
+        assertThat(command.isPlaybackWindow()).isFalse();
+    }
+
+    @Test
+    @DisplayName("⭐ afterId 가 없는 6인자 생성자가 남아 있다 — live-app 컨트롤러가 이걸로 짓는다")
+    void theSixArgumentConstructorStillBuildsWithoutAnAfterCursor() {
+        GetChatHistoryCommand command = new GetChatHistoryCommand(ROOM_ID, null, null,
+                "68000000000000000000000a", null, 20);
+
+        assertThat(command.afterId()).isNull();
+        assertThat(command.isAfterCursor()).isFalse();
+        assertThat(command.beforeId()).isEqualTo("68000000000000000000000a");
     }
 
     @Test

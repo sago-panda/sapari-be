@@ -47,6 +47,19 @@ public interface ChatHistoryRepository {
     List<ChatMessage> findBefore(UUID roomId, String beforeId, int size, Collection<UUID> excludedSenderIds);
 
     /**
+     * 재접속 조회 — {@code afterId} 보다 뒤의 메시지를 <b>오래된 것부터</b> {@code size} 건.
+     *
+     * <p>방향이 {@link #findBefore} 와 반대인 이유: 끊긴 동안 쌓인 것이 {@code size} 보다 많으면 클라이언트가
+     * 마지막 {@code id} 로 다시 불러 이어 받는다. 최신부터 주면 첫 페이지가 틈의 <b>끝</b>을 가져가 그 앞이
+     * 이어 받을 커서 없이 빠진다. 다음 페이지 판단(길이 == size)과 형식이 틀린 커서의 400 은
+     * {@link #findBefore} 와 같다.
+     *
+     * @param afterId           필수 — 마지막으로 받은 메시지의 {@code id}
+     * @param excludedSenderIds 질의에서 제외할 발신자(강퇴자). 비어 있어도 된다
+     */
+    List<ChatMessage> findAfter(UUID roomId, String afterId, int size, Collection<UUID> excludedSenderIds);
+
+    /**
      * VOD 윈도우 조회 — {@code [from, to]} 구간의 메시지를 최신순으로 최대 {@code limit} 건.
      *
      * <p>구간은 재생 위치에서 역산한 <b>절대 시각</b>이다. 경과 시간을 문서에 저장하지 않기로 했으므로

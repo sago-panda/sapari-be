@@ -225,6 +225,79 @@ class ChatHistoryMongoRepositoryTest {
     }
 
     @Test
+    @DisplayName("⭐ 재접속 조회는 커서 뒤를 오래된 것부터 준다 — 커서 자신은 빠진다")
+    void theAfterCursorReturnsLaterMessagesOldestFirst() {
+        // given
+        save(roomId, cleanSender, "m0", BASE);
+        String cursor = save(roomId, cleanSender, "m1", BASE.plusSeconds(1));
+        save(roomId, cleanSender, "m2", BASE.plusSeconds(2));
+        save(roomId, cleanSender, "m3", BASE.plusSeconds(3));
+
+        // when
+        List<ChatMessage> page = repository.findAfter(roomId, cursor, 10, Set.of());
+
+        // then
+        assertThat(page).extracting(ChatMessage::displayMessage).containsExactly("m2", "m3");
+    }
+
+    @Test
+    @DisplayName("⭐ 틈이 size 보다 크면 앞쪽부터 size 건 — 마지막 id 로 이어 받으면 빠짐도 겹침도 없다")
+    void aGapLargerThanSizeIsWalkedForwardWithoutLossOrOverlap() {
+        // given: 커서 뒤에 7건. size 3 이면 3 + 3 + 1 로 이어 받는다.
+        String cursor = save(roomId, cleanSender, "start", BASE);
+        for (int i = 0; i < 7; i++) {
+            save(roomId, cleanSender, "m" + i, BASE.plusSeconds(i + 1));
+        }
+
+        // when
+        List<String> received = new java.util.ArrayList<>();
+        List<ChatMessage> page;
+        do {
+            page = repository.findAfter(roomId, cursor, 3, Set.of());
+            page.forEach(message -> received.add(message.displayMessage()));
+            if (!page.isEmpty()) {
+                cursor = page.get(page.size() - 1).id();
+            }
+        } while (page.size() == 3);
+
+        // then: 최신부터 주면 첫 페이지가 m4~m6 을 가져가고 m0~m3 은 이어 받을 커서 없이 빠진다
+        assertThat(received).containsExactly("m0", "m1", "m2", "m3", "m4", "m5", "m6");
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 조회도 강퇴자를 질의에서 제외하고 다른 방을 섞지 않는다")
+    void theAfterCursorExcludesKickedSendersAndOtherRoomsInsideTheQuery() {
+        // given
+        String cursor = save(roomId, cleanSender, "start", BASE);
+        for (int i = 0; i < 6; i++) {
+            save(roomId, i % 2 == 0 ? kickedSender : cleanSender, "m" + i, BASE.plusSeconds(i + 1));
+        }
+        save(otherRoomId, cleanSender, "theirs", BASE.plusSeconds(10));
+
+        // when
+        List<ChatMessage> page = repository.findAfter(roomId, cursor, 3, Set.of(kickedSender));
+
+        // then: 질의가 제외했으므로 요청한 3건이 그대로 온다
+        assertThat(page).extracting(ChatMessage::displayMessage).containsExactly("m1", "m3", "m5");
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 조회의 잘못된 커서도 400 이다 — 과거 방향과 같은 판정")
+    void aMalformedAfterCursorIsRejected() {
+        assertThatThrownBy(() -> repository.findAfter(roomId, "not-an-object-id", 10, Set.of()))
+                .isInstanceOf(ChatHistoryQueryInvalidException.class);
+    }
+
+    @Test
+    @DisplayName("재접속 조회는 커서와 size 1 이상이 필수다 — 없으면 방 전체를 긁는다")
+    void theAfterCursorRequiresACursorAndAPositiveSize() {
+        assertThatThrownBy(() -> repository.findAfter(roomId, null, 10, Set.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> repository.findAfter(roomId, "68000000000000000000000a", 0, Set.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("VOD 윈도우는 구간 안만 최신순으로 준다")
     void theWindowReturnsOnlyWhatIsInside() {
         // given

@@ -32,11 +32,11 @@ public enum ChatErrorCode implements ErrorCode {
 
     // 이력 조회 입력이 계약을 어겼다. 도달 가능한 사유를 <b>열거만</b> 한다 — 개수를 적으면 사유가
     // 늘 때마다 그 수가 틀리고, 이 자리에서 "세 사유"→"네 사유" 로 이미 두 번 틀렸다:
-    //   · 커서와 재생 위치를 동시에 지정
+    //   · 조회 모드(beforeId · afterId · 재생 위치)를 둘 이상 지정
     //   · 음수 재생 위치
     //   · 재생 위치가 TTL 상한(730일)을 넘음
     //   · size 가 1~100 밖
-    //   · 커서 형식이 ObjectId 가 아님(어댑터가 판정)
+    //   · 커서(beforeId · afterId) 형식이 ObjectId 가 아님(어댑터가 판정)
     // 이 코드가 따로 있는 이유: 명령 record 의 불변식은 IllegalArgumentException 으로 던지는데
     // 전역 핸들러에 그 타입 처리가 없어 <b>클라 잘못이 500 + "Unhandled exception" 로그</b>가 된다.
     // 전역 핸들러에 IllegalArgumentException 을 더하는 쪽은 저장소 전체의 응답을 바꾸므로(인프라 깊은

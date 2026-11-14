@@ -6,9 +6,9 @@ import java.util.UUID;
 /**
  * 채팅 이력 조회 입력 (live-app REST).
  *
- * <p>두 가지 조회 모드가 있고 <b>서로 배타다</b> — 커서 페이징({@code beforeId})과 VOD 윈도우
- * ({@code playbackPositionMs}). 한쪽을 조용히 무시하면 클라가 보낸 의도와 다른 결과를 받고도
- * 그 사실을 알 수 없으므로 즉시 거부한다.
+ * <p>세 가지 조회 모드가 있고 <b>서로 배타다</b> — 과거 방향 커서({@code beforeId}), 재접속 커서
+ * ({@code afterId} — 마지막으로 받은 메시지 이후), VOD 윈도우({@code playbackPositionMs}). 한쪽을
+ * 조용히 무시하면 클라가 보낸 의도와 다른 결과를 받고도 그 사실을 알 수 없으므로 즉시 거부한다.
  *
  * <p><b>요청자는 없을 수 있다.</b> 다시보기 채팅은 비회원도 본다(설계 확정). 그래서 {@code requesterId}
  * 가 필수가 아니고, 없으면 특권 뷰(원문·발신자 이메일)를 받지 못할 뿐이다 — 그 판정은 서비스가 한다.
@@ -23,8 +23,9 @@ public record GetChatHistoryCommand(
         UUID roomId,
         UUID requesterId,          // nullable — 비회원 조회. 있으면 requesterRole 도 있어야 한다
         String requesterRole,      // nullable — ChatRole 이름. requesterId 와 쌍이다
-        String beforeId,           // 커서(nullable) — playbackPositionMs와 배타
-        Long playbackPositionMs,   // VOD 위치(nullable) — beforeId와 배타
+        String beforeId,           // 과거 방향 커서(nullable) — 나머지 두 모드와 배타
+        String afterId,            // 재접속 커서(nullable) — 나머지 두 모드와 배타
+        Long playbackPositionMs,   // VOD 위치(nullable) — 나머지 두 모드와 배타
         int size                   // 페이지 크기(커서 모드 전용 — VOD 모드는 200 고정)
 ) {
     /**
@@ -57,6 +58,9 @@ public record GetChatHistoryCommand(
         if (beforeId != null && playbackPositionMs != null) {
             throw new IllegalArgumentException("beforeId와 playbackPositionMs는 동시에 지정할 수 없습니다.");
         }
+        if (afterId != null && (beforeId != null || playbackPositionMs != null)) {
+            throw new IllegalArgumentException("afterId는 beforeId·playbackPositionMs와 동시에 지정할 수 없습니다.");
+        }
         // 음수 위치는 창을 재생 시작 앞으로 보내 조용히 빈 결과가 된다 — 빈 이력과 구분되지 않는다.
         if (playbackPositionMs != null && playbackPositionMs < 0) {
             throw new IllegalArgumentException("playbackPositionMs는 0 이상이어야 합니다.");
@@ -70,13 +74,30 @@ public record GetChatHistoryCommand(
         }
     }
 
+    /**
+     * {@code afterId} 가 없는 생성자 — live-app 컨트롤러가 지금 이걸로 짓는다.
+     *
+     * <p>남기는 이유: 컨트롤러는 live-app 파일이라 chat 변경과 같은 커밋에 고칠 수 없다. 이 생성자가
+     * 없으면 chat 이 먼저 머지되는 순간 live-app 컴파일이 깨진다. 컨트롤러가 {@code afterId} 를 넘기게
+     * 되면 지워도 된다.
+     */
+    public GetChatHistoryCommand(UUID roomId, UUID requesterId, String requesterRole, String beforeId,
+            Long playbackPositionMs, int size) {
+        this(roomId, requesterId, requesterRole, beforeId, null, playbackPositionMs, size);
+    }
+
     /** 특권 뷰 판정에 쓸 신원이 있는가 — 비회원이면 없다. */
     public boolean hasRequesterIdentity() {
         return requesterId != null;
     }
 
-    /** VOD 윈도우 모드인가. 아니면 커서 모드다(둘은 배타라 이 하나로 갈린다). */
+    /** VOD 윈도우 모드인가. */
     public boolean isPlaybackWindow() {
         return playbackPositionMs != null;
+    }
+
+    /** 재접속 모드인가 — 마지막으로 받은 메시지 이후를 묻는다. 둘 다 아니면 과거 방향 커서 모드다. */
+    public boolean isAfterCursor() {
+        return afterId != null;
     }
 }
