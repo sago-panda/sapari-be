@@ -276,8 +276,8 @@ public class SendChatService implements SendChatUseCase {
      * 6) 욕설필터 → 도메인 생성 → 저장(먼저) → 발행.
      *
      * <p>DuplicateKey 는 <b>같은 키의 재삽입</b>이고 원인을 재전송으로 단정하지 않는다 — 본문이
-     * 달라도 같은 키면 여기로 온다. 기존 메시지를 재조회해 원문이 같으면 그것을 돌려주고(재발행은
-     * 생략한다), 다르면 거절한다(클래스 javadoc).
+     * 달라도 같은 키면 여기로 온다. 기존 메시지를 재조회해 원문이 같으면 한 번 더 발행하고 그것을
+     * 돌려주며({@link #recoverDuplicate}), 다르면 거절한다(클래스 javadoc).
      */
     private Mono<ChatMessageView> persistAndPublish(SendChatCommand command, ChatRole role,
                                                     ChatMessageType type, String content) {
@@ -303,34 +303,51 @@ public class SendChatService implements SendChatUseCase {
                 .createdAt(timeProvider.now())     // Instant.now() 직접 금지 — TimeProvider
                 .build();
 
-        // persist-then-publish: DuplicateKey를 발행 전에 잡아 중복 broadcast를 억제한다
+        // persist-then-publish: 저장된 것만 발행한다. 같은 키의 재저장은 DuplicateKey → recoverDuplicate
         return chatMessageRepository.save(message)
-                .flatMap(saved -> broadcaster.publish(command.roomId(), saved)
-                        // publish 실패는 흡수한다 — 저장은 됐으므로 반환 view(=ack)를 그대로 돌려준다.
-                        // 낙관적 렌더 모델: 발신자는 send 시점에 자기 메시지를 이미 로컬 렌더했고 이 ack로 확정한다
-                        // → 서버 에코 불필요. 크로스 Pod·동일 Pod 타 세션은 실시간 미전달 — 의도한 선택이고 재발행하지
-                        // 않는다. 메시지는 이력 조회로 보인다.
-                        .onErrorResume(err -> {
-                            // 장애 중엔 전 전송이 이 경로다 — 건당 스택트레이스는 원인 로그를 묻는다(레이트리밋과 동일)
-                            metrics.deliveryDropped(DeliveryStage.REDIS_PUBLISH);
-                            long count = publishFailureCount.incrementAndGet();
-                            if (shouldLog(lastPublishFailureLog)) {
-                                // WARN — 저장은 이미 끝났고 잃은 것은 실시간 전달뿐이다.
-                                // 규모는 chat.delivery.dropped{stage=redis_publish} 가 들고 있다.
-                                log.warn("Redis publish 실패 — 저장됨·실시간 전달만 실패, 발신자는 낙관적 렌더+ack로 표시"
-                                        + "(누적 {}건) 표본 roomId={}", count, command.roomId(), err);
-                            }
-                            return Mono.empty();
-                        })
-                        .thenReturn(saved.toView()))
+                .flatMap(saved -> publishBestEffort(command.roomId(), saved))
                 .onErrorResume(DuplicateKeyException.class, e -> recoverDuplicate(command));
     }
 
+    /**
+     * 발행하고 저장된 메시지의 view(=ack)를 돌려준다. 발행 실패는 흡수한다 — 저장은 이미 끝났다.
+     *
+     * <p>낙관적 렌더 모델: 발신자는 send 시점에 자기 메시지를 이미 로컬 렌더했고 이 ack로 확정한다 → 서버 에코
+     * 불필요. 발행이 실패하면 크로스 Pod·동일 Pod 타 세션에는 실시간으로 가지 않고, 메시지는 이력 조회로 보인다.
+     */
+    private Mono<ChatMessageView> publishBestEffort(UUID roomId, ChatMessage message) {
+        return broadcaster.publish(roomId, message)
+                .onErrorResume(err -> {
+                    // 장애 중엔 전 전송이 이 경로다 — 건당 스택트레이스는 원인 로그를 묻는다(레이트리밋과 동일)
+                    metrics.deliveryDropped(DeliveryStage.REDIS_PUBLISH);
+                    long count = publishFailureCount.incrementAndGet();
+                    if (shouldLog(lastPublishFailureLog)) {
+                        // WARN — 저장은 이미 끝났고 잃은 것은 실시간 전달뿐이다.
+                        // 규모는 chat.delivery.dropped{stage=redis_publish} 가 들고 있다.
+                        log.warn("Redis publish 실패 — 저장됨·실시간 전달만 실패, 발신자는 낙관적 렌더+ack로 표시"
+                                + "(누적 {}건) 표본 roomId={}", count, roomId, err);
+                    }
+                    return Mono.empty();
+                })
+                .thenReturn(message.toView());
+    }
+
+    /**
+     * 같은 키로 이미 저장된 메시지를 돌려준다. 본문이 같으면 <b>한 번 더 발행한다.</b>
+     *
+     * <p>저장 시간 초과는 서버 쓰기를 취소하지 않아, 문서는 남았는데 발행은 안 된 채 재시도가 여기로 온다. 발행하지
+     * 않으면 발신자는 ACK 를 받고 다른 시청자에게는 끝까지 가지 않는다.
+     *
+     * <p>첫 시도가 이미 발행됐는데 다시 오는 것은 ACK 프레임이 유실돼 클라이언트가 자기 타임아웃으로 다시 보낸
+     * 경우뿐이다 — 계약이 정의한 {@code INTERNAL}·{@code UNAVAILABLE} 재시도로는 생기지 않는다(발행 실패는 위에서
+     * 흡수돼 ACK 가 가고, 저장이 끊기면 발행은 돌지 않는다). 그때 시청자는 같은 {@code id} 를 두 번 받고, 프론트
+     * 계약이 수신 메시지를 {@code id} 로 거른다.
+     */
     private Mono<ChatMessageView> recoverDuplicate(SendChatCommand command) {
         return chatMessageRepository
                 .findByRoomIdAndSenderIdAndClientMsgId(command.roomId(), command.senderId(), command.clientMsgId())
                 .flatMap(existing -> command.content().equals(existing.originalMessage())
-                        ? Mono.just(existing.toView())
+                        ? publishBestEffort(command.roomId(), existing)
                         : Mono.<ChatMessageView>error(new ClientMsgIdReusedException()))
                 // 재조회 miss 시 empty 전파를 막는다 — 그대로 두면 send()가 무응답 complete → 동일 clientMsgId 재시도 루프
                 .switchIfEmpty(Mono.error(new IllegalStateException(

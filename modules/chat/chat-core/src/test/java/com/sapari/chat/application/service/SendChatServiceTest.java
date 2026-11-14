@@ -36,6 +36,7 @@ import ch.qos.logback.core.read.ListAppender;
 
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatMetrics;
+import com.sapari.chat.application.port.DeliveryStage;
 import com.sapari.chat.application.port.RateLimitResult;
 import com.sapari.chat.application.port.RateLimiter;
 import com.sapari.chat.command.SendChatCommand;
@@ -487,9 +488,13 @@ class SendChatServiceTest {
         assertThat(saved.displayMessage()).doesNotContain("욕설");
     }
 
+    /**
+     * 저장 시간 초과는 서버 쓰기를 취소하지 않아, 문서는 남았는데 발행은 한 번도 안 된 채 재시도가 이 갈래로 온다.
+     * 여기서 발행하지 않으면 발신자는 ACK 를 받고 다른 시청자에게는 끝까지 전달되지 않는다.
+     */
     @Test
-    @DisplayName("dedup — 저장 시 DuplicateKey면 기존 메시지 재조회, 재발행 안 함")
-    void duplicate_key_recovers_existing_without_republish() {
+    @DisplayName("dedup — 저장 시 DuplicateKey면 기존 메시지를 재조회해 한 번 발행하고 그 view를 돌려준다")
+    void duplicate_key_recovers_existing_and_publishes_it() {
         // given
         given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
         given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
@@ -503,6 +508,7 @@ class SendChatServiceTest {
                 .build();
         given(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
                 .willReturn(Mono.just(existing));
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
 
         // when
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
@@ -510,7 +516,32 @@ class SendChatServiceTest {
                 .expectComplete().verify(VERIFY_CEILING);
 
         // then
-        then(broadcaster).should(never()).publish(any(), any());
+        then(broadcaster).should(times(1)).publish(roomId, existing);
+    }
+
+    @Test
+    @DisplayName("dedup — 기존 메시지의 재발행이 실패해도 흡수하고 그 view를 돌려준다")
+    void duplicate_key_republish_failure_is_absorbed() {
+        // given
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        given(chatMessageRepository.save(any())).willReturn(Mono.error(new DuplicateKeyException("dup")));
+        ChatMessage existing = ChatMessage.builder()
+                .id("existingId").roomId(roomId).senderId(senderId)
+                .senderNickname("닉네임").senderRole(ChatRole.BUYER)
+                .type(new ChatMessageType.Normal())
+                .originalMessage("안녕").displayMessage("안녕")
+                .clientMsgId("c1").createdAt(Instant.parse("2026-06-18T00:00:00Z"))
+                .build();
+        given(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
+                .willReturn(Mono.just(existing));
+        given(broadcaster.publish(any(), any())).willReturn(Mono.error(new RuntimeException("redis publish down")));
+
+        // when & then
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))
+                .assertNext(view -> assertThat(view.id()).isEqualTo("existingId"))
+                .expectComplete().verify(VERIFY_CEILING);
+        then(metrics).should().deliveryDropped(DeliveryStage.REDIS_PUBLISH);
     }
 
     @Test
@@ -559,6 +590,7 @@ class SendChatServiceTest {
                 .build();
         given(chatMessageRepository.findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "c1"))
                 .willReturn(Mono.just(existing));
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
 
         // when & then
         StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕", "c1")))

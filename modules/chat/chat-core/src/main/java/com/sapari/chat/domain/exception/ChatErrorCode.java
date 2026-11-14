@@ -73,8 +73,8 @@ public enum ChatErrorCode implements ErrorCode {
     //
     // ⚠️ 이 코드는 **쓰기 갈래 전용**이다. 중복복구 재조회가 같은 상한에 끊겨도 이 코드로 올리지
     // 않는다 — 그 갈래의 전제가 DuplicateKey 라 문서가 이미 있고, 위 문구가 그 경우에 거짓이 된다.
-    // 그 갈래는 번역 없이 5xx 로 가고 수만 chat.persist.timeout{stage=duplicate_recovery_read} 가
-    // 센다(SPR-178). 갈래별 문구를 주려면 코드가 하나 더 필요하고 그건 와이어 계약 변경이다.
+    // 그 갈래는 번역 없이 올라가 WS 에서 ERROR(INTERNAL)이 되고, 수만
+    // chat.persist.timeout{stage=duplicate_recovery_read} 가 센다(SPR-178). 갈래별 문구를 주려면 코드가 하나 더 필요하고 그건 와이어 계약 변경이다.
     // ⚠️ "저장하지 못했습니다" 가 아니다 — 클라이언트 상한은 서버 쓰기를 취소하지 않으므로
     // 저장됐을 수도 있다(실측: 상한 3ms·5ms 에서 예외인데 문서 1건). 그래서 결과를 단정하지 않는다.
     //
