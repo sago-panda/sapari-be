@@ -7,7 +7,7 @@ import java.util.UUID;
  * 채팅 이력 조회 입력 (live-app REST).
  *
  * <p>세 가지 조회 모드가 있고 <b>서로 배타다</b> — 과거 방향 커서({@code beforeId}), 재접속 커서
- * ({@code afterId} — 마지막으로 받은 메시지 이후), VOD 윈도우({@code playbackPositionMs}). 한쪽을
+ * ({@code afterId} — 클라이언트가 고른 기준점 이후), VOD 윈도우({@code playbackPositionMs}). 한쪽을
  * 조용히 무시하면 클라가 보낸 의도와 다른 결과를 받고도 그 사실을 알 수 없으므로 즉시 거부한다.
  *
  * <p><b>요청자는 없을 수 있다.</b> 다시보기 채팅은 비회원도 본다(설계 확정). 그래서 {@code requesterId}

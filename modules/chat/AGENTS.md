@@ -1,7 +1,7 @@
 # chat — live chat domain
 
 Root `AGENTS.md` owns the cross-cutting rules; this file is chat-specific only.
-✅ connect / send / fan-out / room-end / kick + ban escalation / history (VOD) / reverse paths —
+✅ connect / send / fan-out / room-end / kick + ban escalation / history (scroll · reconnect · VOD) / reverse paths —
 ban release, kick-list reconcile, ban-mirror reconcile, end-marker clear, dictionary propagation + admin API
 (REST host: **live-app**). Run `./gradlew :modules:chat:chat-core:test`.
 
