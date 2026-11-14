@@ -1,10 +1,14 @@
 package com.sapari.chat.application.handler;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import org.springframework.stereotype.Component;
 
 import com.sapari.global.logging.LogFields;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.DeliveryStage;
@@ -48,6 +52,8 @@ public class ChatBroadcastSubscriber {
     /** 팬아웃 유실의 규모를 밖으로 내보낸다 — 로그 등급을 내린 근거가 이 지표다. */
     private final ChatMetrics metrics;
 
+    private final TimeProvider timeProvider;
+
     /** 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수. */
     public Disposable subscribeRoom(UUID roomId) {
         return broadcaster.subscribe(roomId)
@@ -71,9 +77,22 @@ public class ChatBroadcastSubscriber {
     /** 봉투 1건을 로컬 세션에 라우팅. (테스트 진입점) */
     Mono<Void> route(UUID roomId, ChatEnvelope envelope) {
         return switch (envelope) {
-            case ChatEnvelope.ChatMsg chat -> fanOutChat(roomId, chat.message());
+            case ChatEnvelope.ChatMsg chat -> timed(() -> fanOutChat(roomId, chat.message()));
             case ChatEnvelope.KickEvent kick -> fanOutKick(roomId, kick.userId());
         };
+    }
+
+    /**
+     * 뷰 조립부터 세션에 다 넣을 때까지를 잰다. 조립을 {@code defer} 안에 두어 뷰 생성도 들어가고, 세션에 넣는
+     * 일은 구독 시점에 실행되므로({@code sendToRoomGated}) 그 실행 시간까지 잡힌다. 실패한 전파는 세지
+     * 않는다 — 그쪽은 {@code deliveryDropped} 가 센다.
+     */
+    private Mono<Void> timed(Supplier<Mono<Void>> fanOut) {
+        return Mono.defer(() -> {
+            Instant started = timeProvider.now();
+            return fanOut.get().doOnSuccess(ignored ->
+                    metrics.roomFanOutCompleted(Duration.between(started, timeProvider.now())));
+        });
     }
 
     /**

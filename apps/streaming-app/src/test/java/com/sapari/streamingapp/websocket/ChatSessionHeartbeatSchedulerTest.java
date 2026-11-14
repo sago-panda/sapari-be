@@ -25,6 +25,7 @@ import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.domain.repository.ChatSessionRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+import com.sapari.chat.infrastructure.metrics.MicrometerChatMetrics;
 import com.sapari.streamingapp.config.ChatSessionGaugeConfig;
 
 import io.micrometer.core.instrument.MeterRegistry;
@@ -91,7 +92,8 @@ class ChatSessionHeartbeatSchedulerTest {
      *
      * <p>⚠️ <b>이 수가 0 이어도 재등록이 멈춰 있을 수 있다.</b> 회차가 <b>실패</b>하면 세어지지만
      * 아예 <b>안 끝나면</b> 세어지지 않는다 — {@code ChatSessionRegistry} 의 주기 javadoc 이 그 갈래를
-     * 적고 있고, 회차 길이를 재는 신호는 아직 없다. 그러니 이 미터는 "재등록이 건강하다" 의 증거가
+     * 적고 있고, 그 갈래는 {@code chat.sessions.heartbeat.skipped} 로 보인다(아래 멈춘 회차 칸).
+     * 그러니 이 미터는 "재등록이 건강하다" 의 증거가
      * 아니고 "재등록이 실패하고 있다" 의 증거다. 그 둘을 바꿔 읽으면 침묵이 안전으로 읽힌다.
      *
      * <p>이름을 상수가 아니라 <b>리터럴</b>로 쓴다 — 상수는 {@code config} 패키지 전용이고, 더 중요하게는
@@ -123,6 +125,65 @@ class ChatSessionHeartbeatSchedulerTest {
         assertThat(registry.heartbeatFailures())
                 .as("실패가 한 건도 안 생겼다 — 셀 것이 없으면 이 칸은 아무것도 보증하지 않는다")
                 .isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("하트비트 회차가 끝날 때마다 회차 시간이 기록된다")
+    void eachCompletedRoundIsTimed() {
+        // given
+        given(sessionRepository.heartbeat(any(), any(), any())).willReturn(Mono.empty());
+        MeterRegistry meters = new SimpleMeterRegistry();
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(),
+                new MicrometerChatMetrics(meters));
+        register("s1", userA);
+
+        // when
+        registry.startHeartbeat();
+        try {
+            await(() -> roundsTimed(meters) >= 2);
+        } finally {
+            registry.stopHeartbeat();
+        }
+
+        // then
+        assertThat(roundsTimed(meters)).isGreaterThanOrEqualTo(2);
+    }
+
+    /**
+     * 회차가 <b>안 끝나면</b> 회차 시간은 한 건도 기록되지 않는다 — 완료 시점에 재는 Timer 의 한계다. 그 경우를
+     * 드러내는 것은 버려지는 tick 이다: 앞 회차가 안 끝나 다음 tick 이 계속 버려지고, 그 수가 오른다.
+     */
+    @Test
+    @DisplayName("⭐ 회차가 멈추면 회차 시간은 0건이고, 버려진 tick 수가 오른다")
+    void aStuckRoundShowsAsSkippedTicksNotAsDuration() {
+        // given: 재등록이 끝나지 않는다(멈춘 Redis)
+        given(sessionRepository.heartbeat(any(), any(), any())).willReturn(Mono.never());
+        MeterRegistry meters = new SimpleMeterRegistry();
+        registry = new ChatSessionRegistry(sessionRepository, new ChatPermissionPolicy(),
+                new MicrometerChatMetrics(meters));
+        register("s1", userA);
+
+        // when
+        registry.startHeartbeat();
+        try {
+            await(() -> ticksSkipped(meters) >= 2);
+        } finally {
+            registry.stopHeartbeat();
+        }
+
+        // then
+        assertThat(ticksSkipped(meters)).isGreaterThanOrEqualTo(2);
+        assertThat(roundsTimed(meters)).isZero();
+    }
+
+    private static long roundsTimed(MeterRegistry meters) {
+        var timer = meters.find("chat.sessions.heartbeat.duration").timer();
+        return timer == null ? 0 : timer.count();
+    }
+
+    private static double ticksSkipped(MeterRegistry meters) {
+        var counter = meters.find("chat.sessions.heartbeat.skipped").counter();
+        return counter == null ? 0 : counter.count();
     }
 
     @SuppressWarnings("unchecked")

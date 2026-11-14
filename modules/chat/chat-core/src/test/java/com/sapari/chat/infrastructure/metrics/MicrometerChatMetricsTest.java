@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -20,7 +22,11 @@ import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.distribution.DistributionStatisticConfig;
+import io.micrometer.core.instrument.distribution.pause.PauseDetector;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 /** 어댑터 — 이름·태그가 맞는지, 그리고 <b>무슨 일이 있어도 던지지 않는지</b>. */
@@ -62,6 +68,9 @@ class MicrometerChatMetricsTest {
         metrics.inboundFrameDropped();
         metrics.persistTimedOut(PersistStage.WRITE);
         metrics.sendRefused(ChatPolicy.KICK);
+        metrics.roomFanOutCompleted(Duration.ofMillis(3));
+        metrics.heartbeatRoundCompleted(Duration.ofMillis(40));
+        metrics.heartbeatTickSkipped();
 
         // then
         assertThat(registry.get("chat.ratelimit.degraded").tags("mode", "local_window")
@@ -73,6 +82,10 @@ class MicrometerChatMetricsTest {
         assertThat(registry.get("chat.withdrawal.record.failed").counter().count()).isEqualTo(1);
         assertThat(registry.get("chat.inbound.dropped").counter().count()).isEqualTo(1);
         assertThat(registry.get("chat.send.refused").tags("policy", "kick").counter().count()).isEqualTo(1);
+        assertThat(registry.get("chat.fanout.duration").timer().totalTime(TimeUnit.MILLISECONDS)).isEqualTo(3);
+        assertThat(registry.get("chat.sessions.heartbeat.duration").timer().totalTime(TimeUnit.MILLISECONDS))
+                .isEqualTo(40);
+        assertThat(registry.get("chat.sessions.heartbeat.skipped").counter().count()).isEqualTo(1);
     }
 
     /**
@@ -90,9 +103,15 @@ class MicrometerChatMetricsTest {
     @DisplayName("⭐ 레지스트리가 던져도 어댑터는 던지지 않는다 — 포트 메서드 전수를 리플렉션으로 센다")
     void neverThrows() {
         // given: 모든 counter() 호출이 던지는 레지스트리
+        // Timer 는 counter() 를 거치지 않고 builder 로 등록된다 — newTimer 도 던져야 Timer 메서드가 분모에 든다.
         ChatMetrics broken = new MicrometerChatMetrics(new SimpleMeterRegistry() {
             @Override
             public Counter counter(String name, String... tags) {
+                throw new IllegalStateException("registry 고장");
+            }
+
+            @Override
+            protected Timer newTimer(Meter.Id id, DistributionStatisticConfig config, PauseDetector pauseDetector) {
                 throw new IllegalStateException("registry 고장");
             }
         });
@@ -138,10 +157,11 @@ class MicrometerChatMetricsTest {
             Object[] args = new Object[method.getParameterCount()];
             Class<?>[] types = method.getParameterTypes();
             for (int i = 0; i < args.length; i++) {
-                assertThat(types[i].isEnum())
-                        .as("열거가 아닌 인자가 생겼다 — 이 헬퍼를 넓혀야 한다: %s", method.getName())
+                assertThat(types[i].isEnum() || types[i] == Duration.class)
+                        .as("열거·Duration 이 아닌 인자가 생겼다 — 이 헬퍼를 넓혀야 한다: %s", method.getName())
                         .isTrue();
-                args[i] = nulls ? null : types[i].getEnumConstants()[0];
+                args[i] = nulls ? null
+                        : types[i] == Duration.class ? Duration.ofMillis(1) : types[i].getEnumConstants()[0];
             }
             try {
                 method.invoke(target, args);

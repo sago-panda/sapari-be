@@ -955,8 +955,10 @@ only reclaim was the 24h key TTL. And the key's expiry was refreshed only on joi
   with two other failure modes, so whichever fires first hides the others' first occurrence.
   - ⚠️ **0 does not mean the heartbeat is healthy.** A round that *fails* increments it; a round that never
     *finishes* does not, and that is the worse branch — re-registration stops permanently while this stays
-    0. No signal measures round duration yet. Treat it as evidence that re-registration **is failing**,
-    never as evidence that it is working.
+    0. That branch shows as `chat.sessions.heartbeat.skipped` climbing (SPR-199): ticks dropped while a
+    round is still running. `chat.sessions.heartbeat.duration` times completed rounds only, so a stuck
+    round never reaches it. Treat this counter as evidence that re-registration **is failing**, never as
+    evidence that it is working.
 - Staleness is judged against the **reader's** wall clock, so cross-pod clock skew applies; the 3-beat margin
   swallows second-scale skew. Moving the comparison into Lua would use Redis's single clock but would also
   move a full scan onto its single thread, and that cost is measured to be fine where it is.
@@ -1230,6 +1232,9 @@ conditional variant really does fall back to NOOP.
 | `chat.subscription.resubscribed` | `subscription` | a Redis pub/sub subscription retried its establish — **read the rate, not the total** |
 | `chat.withdrawal.record.failed` | — | a pod could not write `chat:withdrawing:{userId}`; the close still ran, so the pre-withdrawal room token re-enters until it expires |
 | `chat.inbound.dropped` | — | a frame over the per-session inbound cap was dropped unread and unanswered; expected 0 (normal clients do not reach the cap). Pod-level only — **which session is not recoverable** (no tag, no log) |
+| `chat.fanout.duration` | — | Timer (SPR-199): one chat message fanned out to this pod's sessions in the room, timed around the emission itself (it runs synchronously on the Redis subscription thread). KICK notices are not timed |
+| `chat.sessions.heartbeat.duration` | — | Timer (SPR-199): one completed heartbeat round (re-registration + viewer-count push). A round that never finishes is never recorded — read `chat.sessions.heartbeat.skipped` for that |
+| `chat.sessions.heartbeat.skipped` | — | a heartbeat tick dropped because the previous round was still running. A round slower than the interval raises it on the ticks it overruns; a stuck round raises it every tick while `heartbeat.duration` stops counting |
 
 ⚠️ **`chat.subscription.resubscribed` is read as a rate, and 0 is not health** (SPR-179). Re-subscription
 is a `retryWhen` loop, so a recovered drop makes it climb a few times and **stop**, while a wedged
