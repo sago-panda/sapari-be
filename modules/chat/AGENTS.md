@@ -569,7 +569,11 @@ save → publish. Zero-cost checks first; reordering makes a rejected guest cost
   must stay **ahead** of the cap or capped sessions get reaped as unresponsive. Measured for a 4 KiB frame:
   parse 2.5µs valid … ~29µs unknown keys with nested-object values, decode ~2.3µs Korean (production
   ObjectMapper, openjdk 21, 15-batch median).
-- **Persist before publish**, so `DuplicateKey` is caught before a duplicate broadcast.
+- **Persist before publish**: only a stored message is published. A re-insert of the same key is caught as
+  `DuplicateKey` and goes to `recoverDuplicate`, which **publishes the stored message once more** when the
+  body matches. A timed-out write can leave the document without ever publishing it, so the
+  retry is its only chance to reach other viewers; when the first attempt had published, viewers receive
+  the same `id` twice and the frontend contract drops it by `id`.
 - **Publish failure is absorbed**: saved + ACK'd is a success; cross-pod delivery is best-effort.
 - Rate-limit exemption is `role + room ownership`, not role — a seller in someone else's room is a viewer.
 - `clientMsgId` is **required**; the dedup index is partial (`$type:"string"`), so a missing value silently
@@ -1266,8 +1270,9 @@ count is itself a claim, and it kept being the wrong one.** What reproduces is t
 of the predicate.
 
 The two also differ in what the sender sees. `stage=write` is translated to
-`ChatErrorCode.PERSIST_TIMEOUT` (503, `CHAT-012`); the recovery read is **not translated**, so the sender
-gets an untranslated 500. That gap is deliberate, and the reason changed with SPR-180: `CHAT-012` no
+`ChatErrorCode.PERSIST_TIMEOUT` (503, `CHAT-012`); the recovery read is **not translated**. The send path is
+WS only, so neither status reaches the sender — both arrive as `ERROR(INTERNAL)` (next paragraph). That gap
+is deliberate, and the reason changed with SPR-180: `CHAT-012` no
 longer asserts failure (its text is now "메시지 저장 결과를 확인하지 못했습니다. 잠시 후 이력을 확인해
 주세요."), so the old argument — that translating would make `CHAT-012` false — no longer applies. What
 still blocks the merge of the two branches is that they carry **different** certainty (unknown vs
@@ -1278,8 +1283,9 @@ change. The count exists; the per-branch wording does not.
 only a code and `clientMsgId`, and both persist branches arrive as `ERROR(INTERNAL)`. The retry rule
 therefore lives in `chat-frontend-guide.v1.2.md`: on `INTERNAL` and `UNAVAILABLE` the client keeps the
 failed bubble and resends with the **same `clientMsgId` and the same body**. Every branch is safe under it —
-not stored → stored now; stored → `DuplicateKey` → same original body → the stored message comes back as
-the ACK; a different body under a used key → `ERROR(CLIENT_MSG_ID_REUSED)`, where it used to be a silent
+not stored → stored now; stored → `DuplicateKey` → same original body → the stored message is published once
+more and comes back as the ACK (a timed-out write can leave the document unpublished, and this retry is what
+delivers it); a different body under a used key → `ERROR(CLIENT_MSG_ID_REUSED)`, where it used to be a silent
 success carrying the first body's id. A new UUID is the unsafe retry: the index cannot deduplicate it.
 
 ⚠️ **`chat.dictionary.fastpath.lost` had been missing from both tables** until SPR-177, although
