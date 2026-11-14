@@ -336,8 +336,12 @@ public class SendChatService implements SendChatUseCase {
      * 같은 키로 이미 저장된 메시지를 돌려준다. 본문이 같으면 <b>한 번 더 발행한다.</b>
      *
      * <p>저장 시간 초과는 서버 쓰기를 취소하지 않아, 문서는 남았는데 발행은 안 된 채 재시도가 여기로 온다. 발행하지
-     * 않으면 발신자는 ACK 를 받고 다른 시청자에게는 끝까지 가지 않는다. 첫 시도가 이미 발행됐던 경우(ACK 만 잃음)에는
-     * 시청자가 같은 {@code id} 를 두 번 받는데, 프론트 계약이 수신 메시지를 {@code id} 로 거른다.
+     * 않으면 발신자는 ACK 를 받고 다른 시청자에게는 끝까지 가지 않는다.
+     *
+     * <p>첫 시도가 이미 발행됐는데 다시 오는 것은 ACK 프레임이 유실돼 클라이언트가 자기 타임아웃으로 다시 보낸
+     * 경우뿐이다 — 계약이 정의한 {@code INTERNAL}·{@code UNAVAILABLE} 재시도로는 생기지 않는다(발행 실패는 위에서
+     * 흡수돼 ACK 가 가고, 저장이 끊기면 발행은 돌지 않는다). 그때 시청자는 같은 {@code id} 를 두 번 받고, 프론트
+     * 계약이 수신 메시지를 {@code id} 로 거른다.
      */
     private Mono<ChatMessageView> recoverDuplicate(SendChatCommand command) {
         return chatMessageRepository
