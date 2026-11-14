@@ -1,5 +1,7 @@
 package com.sapari.chat.application.port;
 
+import java.time.Duration;
+
 import com.sapari.chat.port.InMemoryChat;
 
 /**
@@ -102,6 +104,25 @@ public interface ChatMetrics {
     void inboundFrameDropped();
 
     /**
+     * 채팅 봉투 1건을 이 Pod 의 로컬 세션 전부에 넣는 데 걸린 시간. 강퇴 봉투는 세지 않는다 — 세션
+     * close 까지 포함돼 채팅 전파의 분포를 흐린다.
+     *
+     * <p>전파는 Pod 당 Redis 구독 스레드 하나에서 돈다. 이 시간이 메시지 간격에 다가가면 그 Pod 의 다른
+     * 방 전달이 함께 밀린다.
+     */
+    void roomFanOutCompleted(Duration took);
+
+    /** 하트비트 한 회차(로컬 세션 재등록 + 시청자 수 갱신)가 끝나는 데 걸린 시간. */
+    void heartbeatRoundCompleted(Duration took);
+
+    /**
+     * 앞 회차가 안 끝나 하트비트 tick 하나를 버렸다. 기대값은 0 이다.
+     *
+     * <p>회차 시간은 끝난 회차만 세므로, 회차가 아예 멈추면 그쪽은 조용하고 이 수만 오른다.
+     */
+    void heartbeatTickSkipped();
+
+    /**
      * 아무것도 하지 않는 구현. <b>registry 없이도 뜨는 것이 포트 구현의 기본값이어야 하기 때문</b>이고,
      * 실제 용도는 단위 테스트가 registry 를 세우지 않고 돌게 하는 것이다.
      */
@@ -117,5 +138,8 @@ public interface ChatMetrics {
         @Override public void subscriptionResubscribed(ChatSubscription subscription) { }
         @Override public void withdrawalRecordFailed() { }
         @Override public void inboundFrameDropped() { }
+        @Override public void roomFanOutCompleted(Duration took) { }
+        @Override public void heartbeatRoundCompleted(Duration took) { }
+        @Override public void heartbeatTickSkipped() { }
     };
 }

@@ -69,6 +69,15 @@ final class ChatMeterNames {
     /** 전송 판정을 못 읽어 거절한 전송 수. */
     static final String SEND_REFUSED = "chat.send.refused";
 
+    /** 채팅 봉투 1건을 로컬 세션 전부에 넣은 시간(Timer). */
+    static final String FAN_OUT_DURATION = "chat.fanout.duration";
+
+    /** 하트비트 한 회차의 시간(Timer). {@code chat.sessions.heartbeat_failures} 와 같은 접두로 묶는다. */
+    static final String HEARTBEAT_DURATION = "chat.sessions.heartbeat.duration";
+
+    /** 앞 회차가 안 끝나 버린 하트비트 tick 수. */
+    static final String HEARTBEAT_SKIPPED = "chat.sessions.heartbeat.skipped";
+
     static final String TAG_POLICY = "policy";
     static final String TAG_CHECKPOINT = "checkpoint";
     static final String TAG_FAILURE = "failure";

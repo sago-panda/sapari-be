@@ -319,7 +319,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 지키는 장치는 없다. 안쪽이 주기의 다섯 배로 느려지면 실효 주기가 상한을 넘어 <b>살아 있는 세션이
      * 집계에서 빠진다</b> — 이 드롭이 막으려던 실패와 같은 것이다. 더 나쁜 쪽은 안쪽이 아예 안 끝나는
      * 경우로, 그때는 재등록이 영구히 멈추는데 {@code heartbeatFailures} 는 0 이다(실패가 아니라
-     * 미완료라서). 회차 길이를 재는 신호는 아직 없다 — 별건으로 남긴다.
+     * 미완료라서). 끝난 회차의 길이는 {@code chat.sessions.heartbeat.duration} 이 재고, 안 끝나는 회차는
+     * 그 Timer 에 안 잡히는 대신 버려진 tick 이 {@code chat.sessions.heartbeat.skipped} 로 오른다.
      *
      * <p>⚠️ 어댑터의 정적 가드가 지키는 하한은 <b>3배</b>다(4배가 아니다) — 지금 값이 4배지만 3배로
      * 줄여도 가드는 통과한다. 즉 네 배는 현재 값의 성질이고 가드가 보장하는 값이 아니다.
@@ -328,14 +329,20 @@ public class ChatSessionRegistry implements ChatSessionManager {
     void startHeartbeat() {
         Duration interval = sessionRepository.heartbeatInterval();
         heartbeat = Flux.interval(interval, interval)
-                .onBackpressureDrop(tick -> { })
-                .concatMap(tick -> Flux.fromIterable(local.values())
-                        .flatMap(this::reregister)
-                        .then()
-                        // 같은 타이머에 시청자 수 갱신을 얹는다 — 둘 다 "이 Pod 가 주기마다 하는 일"
-                        // 이고 타이머를 하나 더 두면 세션 수만큼의 비용이 두 배가 된다. 순서가 이쪽인
-                        // 이유는 재등록이 먼저 끝나야 그 회차의 수가 좀비를 걷어낸 값이기 때문이다.
-                        .then(pushViewerCounts())
+                // 버린 tick 을 센다 — 회차 시간은 끝난 회차만 재므로, 회차가 멈추면 이 수만 오른다.
+                .onBackpressureDrop(tick -> metrics.heartbeatTickSkipped())
+                .concatMap(tick -> Mono.defer(() -> {
+                            long started = System.nanoTime();
+                            return Flux.fromIterable(local.values())
+                                    .flatMap(this::reregister)
+                                    .then()
+                                    // 같은 타이머에 시청자 수 갱신을 얹는다 — 둘 다 "이 Pod 가 주기마다 하는 일"
+                                    // 이고 타이머를 하나 더 두면 세션 수만큼의 비용이 두 배가 된다. 순서가 이쪽인
+                                    // 이유는 재등록이 먼저 끝나야 그 회차의 수가 좀비를 걷어낸 값이기 때문이다.
+                                    .then(pushViewerCounts())
+                                    .doOnSuccess(ignored -> metrics.heartbeatRoundCompleted(
+                                            Duration.ofNanos(System.nanoTime() - started)));
+                        })
                         // ⭐ 회차 단위로 흡수한다. 여기까지 올라온 onError 는 concatMap 을 타고
                         // 밖으로 나가 subscribe() 를 끝내는데, 그러면 이 Pod 는 재시작 전까지
                         // 재등록과 시청자 수 갱신을 둘 다 잃는다 — 살아 있는 시청자 전원이 낡음
@@ -400,8 +407,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * {@code chat.sessions.heartbeat_failures} 를 이 접근자에 배선하기 때문이다.
      *
      * <p>⚠️ <b>0 이 "건강하다" 를 뜻하지 않는다.</b> 회차가 <b>실패</b>하면 늘지만 아예
-     * <b>안 끝나면</b> 늘지 않는다 — 위 주기 javadoc 이 그 갈래를 적는다. 회차 길이를 재는 신호는
-     * 아직 없으므로, 이 수로 "재등록이 돌고 있다" 를 결론 내리면 침묵이 안전으로 읽힌다.
+     * <b>안 끝나면</b> 늘지 않는다 — 위 주기 javadoc 이 그 갈래를 적는다. 그 갈래는
+     * {@code chat.sessions.heartbeat.skipped} 가 오르는 것으로 보이므로, 이 수 하나로 "재등록이 돌고
+     * 있다" 를 결론 내리면 침묵이 안전으로 읽힌다.
      */
     public long heartbeatFailures() {
         return heartbeatFailures.get();
@@ -1577,6 +1585,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * ({@link #maxSessionsPerUserPerRoom()})은 이 수를 기다리지 않았다: 그쪽 값은 용량이 아니라
      * "정상 사용자가 동시에 몇 개를 여는가" 에서 나온다. 한때 이 문장이 "연결 수 상한" 으로 적혀
      * 그 둘을 한 덩이로 묶었다.
+     *
+     * <p>이 레지스트리의 힙은 용량 상한을 정하는 자원이 아니다 — 실측(프로세스 안, 20,000 세션,
+     * register/unregister 3주기): 유휴 세션당 약 1,990 B, 12,000 세션에 약 24 MB, 전원 퇴장 후 잔존
+     * 0 MB(주기마다 누수 없음). 그래서 용량 상한의 수는 이 측정이 못 보는 축(Netty·TLS 버퍼, 파일
+     * 디스크립터, 팬아웃 CPU)에서, 즉 실제 Pod 부하 측정에서 나와야 한다.
+     *
+     * <p>⚠️ 다시 잴 때 협력자를 mock 으로 두지 말 것. 처음 측정은 주기마다 15 MB 가 남아 선형으로
+     * 늘어 세션 누수처럼 보였는데, 원인은 Mockito 가 스텁 저장소에 쌓은 호출 기록 40,000 건이었다.
+     * 손으로 쓴 스텁으로 바꾸자 잔존이 0 이 됐다.
      */
     public int localSessionCount() {
         return local.size();

@@ -1,5 +1,7 @@
 package com.sapari.chat.infrastructure.metrics;
 
+import java.time.Duration;
+
 import com.sapari.chat.application.port.ChatCheckpoint;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
@@ -11,6 +13,7 @@ import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -73,6 +76,21 @@ public class MicrometerChatMetrics implements ChatMetrics {
     @Override
     public void inboundFrameDropped() {
         safe(() -> registry.counter(ChatMeterNames.INBOUND_DROPPED).increment());
+    }
+
+    @Override
+    public void roomFanOutCompleted(Duration took) {
+        safe(() -> Timer.builder(ChatMeterNames.FAN_OUT_DURATION).register(registry).record(took));
+    }
+
+    @Override
+    public void heartbeatRoundCompleted(Duration took) {
+        safe(() -> Timer.builder(ChatMeterNames.HEARTBEAT_DURATION).register(registry).record(took));
+    }
+
+    @Override
+    public void heartbeatTickSkipped() {
+        safe(() -> registry.counter(ChatMeterNames.HEARTBEAT_SKIPPED).increment());
     }
 
     @Override

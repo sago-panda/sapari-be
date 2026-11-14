@@ -564,10 +564,10 @@ that on.
     consequence is severe — if re-registration stops, **every live viewer drops out of the count** after
     the staleness window (4 × the heartbeat interval).
     - ⚠️ **Do not read 0 as healthy.** A round that *fails* is counted; a round that never *finishes* is
-      not, and the registry's own javadoc records that branch as the worse one. No signal measures round
-      duration yet, so this counter is evidence that re-registration **is failing** — never evidence that
-      it is working. The only reading available for a stall today is `chat.sessions.local` holding steady
-      while connections continue.
+      not, and the registry's own javadoc records that branch as the worse one. So this counter is
+      evidence that re-registration **is failing** — never evidence that it is working. A stall reads as
+      `chat.sessions.heartbeat.skipped` climbing (SPR-199); `chat.sessions.heartbeat.duration` times only
+      completed rounds, so a stuck round never appears in it.
     - Before this meter existed the only signal was a WARN thinned to one line per 10s, and that latch is
       **shared** with two other failure modes, so whichever fires first hides the others' first
       occurrence. Details in `modules/chat/AGENTS.md`.

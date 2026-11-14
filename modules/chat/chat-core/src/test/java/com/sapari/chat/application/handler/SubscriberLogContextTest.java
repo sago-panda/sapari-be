@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -29,6 +30,7 @@ import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.global.logging.LogFields;
+import com.sapari.global.time.TimeProvider;
 
 import io.micrometer.context.ContextRegistry;
 import io.micrometer.context.ThreadLocalAccessor;
@@ -102,7 +104,8 @@ class SubscriberLogContextTest {
                 .willReturn(Mono.error(new IllegalStateException("팬아웃 실패")));
 
         ChatBroadcastSubscriber subscriber =
-                new ChatBroadcastSubscriber(broadcaster, sessionManager, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+                new ChatBroadcastSubscriber(broadcaster, sessionManager, new ChatPermissionPolicy(), ChatMetrics.NOOP,
+                        new TimeProvider(Clock.systemUTC()));
 
         // when
         subscriber.subscribeRoom(roomId);
