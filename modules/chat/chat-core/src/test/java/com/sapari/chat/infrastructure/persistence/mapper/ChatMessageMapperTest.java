@@ -22,7 +22,7 @@ class ChatMessageMapperTest {
     private final ChatMessageMapper mapper = Mappers.getMapper(ChatMessageMapper.class);
 
     @Test
-    @DisplayName("domain → document → domain round-trip — 전 필드·sealed type 보존")
+    @DisplayName("domain → document → domain round-trip — 이메일 외 전 필드·sealed type 보존")
     void round_trips_all_fields() {
         // given
         ChatMessage message = new ChatMessage(
@@ -35,8 +35,8 @@ class ChatMessageMapperTest {
 
         ChatMessage back = mapper.toDomain(mapper.toDocument(message));
 
-        // when & then
-        assertThat(back).isEqualTo(message);
+        // when & then: 이메일만 영속하지 않는다(ChatMessageDocument javadoc)
+        assertThat(back).isEqualTo(message.toBuilder().senderEmail(null).build());
     }
 
     @Test
@@ -78,7 +78,7 @@ class ChatMessageMapperTest {
         // given
         ChatMessageDocument corrupted = new ChatMessageDocument(
                 "65a1f2c3d4e5f60718293a4b", UUID.randomUUID(), UUID.randomUUID(),
-                "닉", null, "BUYER", "SYSTEM", null, "본문", null, Instant.now());
+                "닉", "BUYER", "SYSTEM", null, "본문", null, Instant.now());
 
         // when & then
         assertThatThrownBy(() -> mapper.toDomain(corrupted))
@@ -91,7 +91,7 @@ class ChatMessageMapperTest {
         // given: 전 필드에 값이 있는 도큐먼트 — 비어 있는 타깃은 도큐먼트가 아니라 매퍼 탓이어야 한다
         ChatMessageDocument document = new ChatMessageDocument(
                 "65a1f2c3d4e5f60718293a4b", UUID.randomUUID(), UUID.randomUUID(),
-                "구매자닉", "buyer@example.com", "BUYER", "NORMAL",
+                "구매자닉", "BUYER", "NORMAL",
                 "원문", "마스킹본", "client-1", Instant.parse("2026-06-12T00:00:00Z"));
 
         // when
@@ -111,10 +111,19 @@ class ChatMessageMapperTest {
         // 그 속성이 지워지는 것은 ArchitectureTest 의 ArchUnit 규칙이 잡는다.
         //
         // 이 중 다섯(roomId·senderId·senderRole·type·createdAt)은 ChatMessage 컴팩트 생성자가 null 을
-        // 거부하므로 미매핑이면 단언에 닿기 전에 생성이 던진다. 이 순회가 새로 보는 것은 나머지 여섯과
+        // 거부하므로 미매핑이면 단언에 닿기 전에 생성이 던진다. 이 순회가 새로 보는 것은 나머지와
         // 앞으로 더해질 필드다.
+        //
+        // senderEmail 하나만 예외다 — 영속하지 않는 필드라 읽은 값은 null 이어야 맞다(ChatMessageDocument
+        // javadoc). 예외는 이름으로 고정하고 그쪽은 반대로 null 을 단언한다: 순회에서 빼기만 하면 매퍼가
+        // 언젠가 이메일을 다시 채워도 아무것도 깨지지 않는다.
         for (RecordComponent component : ChatMessage.class.getRecordComponents()) {
-            assertThat(component.getAccessor().invoke(domain))
+            Object value = component.getAccessor().invoke(domain);
+            if (component.getName().equals("senderEmail")) {
+                assertThat(value).as("ChatMessage.senderEmail — 영속하지 않으므로 null").isNull();
+                continue;
+            }
+            assertThat(value)
                     .as("ChatMessage.%s — toDomain 이 채우지 않았다", component.getName())
                     .isNotNull();
         }
