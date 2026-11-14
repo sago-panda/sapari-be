@@ -241,7 +241,7 @@ class ChatHistoryMongoRepositoryTest {
     }
 
     @Test
-    @DisplayName("⭐ 틈이 size 보다 크면 앞쪽부터 size 건 — 마지막 id 로 이어 받으면 빠짐도 겹침도 없다")
+    @DisplayName("⭐ 틈이 size 보다 크면 앞쪽부터 size 건 — 마지막 id 로 이어 받으면 _id 순서 안에서 빠짐도 겹침도 없다")
     void aGapLargerThanSizeIsWalkedForwardWithoutLossOrOverlap() {
         // given: 커서 뒤에 7건. size 3 이면 3 + 3 + 1 로 이어 받는다.
         String cursor = save(roomId, cleanSender, "start", BASE);

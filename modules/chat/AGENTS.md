@@ -268,12 +268,15 @@ A new UUID is the unsafe retry.
 - Serialization is shared per fan-out (`OutboundFrame`). The four per-recipient variants stay four: the sender
   axis carries `clientMsgId` (front-end contract). Batching is unmeasured.
 
-## History (VOD)
+## History (scroll · reconnect · VOD)
 
 `GetChatHistoryService` (chat-core, **blocking**) ← `ChatHistoryController` (live-app).
 
 - Three mutually exclusive modes: past cursor (`beforeId`), reconnect cursor (`afterId`, SPR-201), VOD window
   (`playbackPositionMs`). `findAfter` is the only one that returns **oldest first** (`ChatHistoryRepository.findAfter`).
+  `_id` order is not arrival order (pod-made `ObjectId`, second-resolution timestamp), so the client's first
+  reconnect cursor must be a message received ≥ 2 s before the drop — the server does not shift the cursor
+  (that would also shift continuation calls and repeat pages). Reason in the `findAfter` javadoc.
 - `findBefore` · `findAfter` read exactly `size` (the front end infers `hasNext` from a full page) — not `CursorPage`.
 - **Kicked senders are excluded inside the Mongo query** (`$nin`); filtering after makes the scroll stop silently.
 - The privileged view is `seesUnmaskedContent`; an unknown requester role throws; anonymous is allowed, but

@@ -29,7 +29,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 채팅 이력 조회 — VOD 다시보기용 — 와 방의 현재 공지 조회. <b>블로킹</b>(live-app MVC).
+ * 채팅 이력 조회(과거 스크롤 · 재접속 누락분 · VOD 다시보기)와 방의 현재 공지 조회. <b>블로킹</b>(live-app MVC).
  *
  * <p>세 가지가 여기서 결정된다 — 누가 원문·이메일을 보는가, 강퇴자 메시지를 어떻게 빼는가,
  * 재생 위치를 어떤 시각 구간으로 바꾸는가.
