@@ -45,13 +45,15 @@ import com.sapari.chat.infrastructure.persistence.document.ChatMessageDocument;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.ERROR)
 public interface ChatMessageMapper {
 
+    // 이메일은 영속하지 않으므로(ChatMessageDocument javadoc) 읽은 값에는 언제나 null 이다.
     @Mapping(target = "type", expression = "java(toType(document.getType()))")
+    @Mapping(target = "senderEmail", ignore = true)
     ChatMessage toDomain(ChatMessageDocument document);
 
     default ChatMessageDocument toDocument(ChatMessage message) {
         return new ChatMessageDocument(
                 message.id(), message.roomId(), message.senderId(), message.senderNickname(),
-                message.senderEmail(), message.senderRole().name(), toTypeName(message.type()),
+                message.senderRole().name(), toTypeName(message.type()),
                 message.originalMessage(), message.displayMessage(), message.clientMsgId(),
                 message.createdAt());
     }

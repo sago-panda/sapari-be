@@ -304,8 +304,11 @@ public class SendChatService implements SendChatUseCase {
                 .build();
 
         // persist-then-publish: 저장된 것만 발행한다. 같은 키의 재저장은 DuplicateKey → recoverDuplicate
+        // 이메일은 저장되지 않으므로 저장 결과에는 없다 — 실시간 전달(방 주인·ADMIN 의 특권 뷰)에는 이
+        // 요청의 값을 다시 싣는다. 중복 복구의 재발행은 저장본만 있어 이메일 없이 나간다.
         return chatMessageRepository.save(message)
-                .flatMap(saved -> publishBestEffort(command.roomId(), saved))
+                .flatMap(saved -> publishBestEffort(command.roomId(),
+                        saved.toBuilder().senderEmail(message.senderEmail()).build()))
                 .onErrorResume(DuplicateKeyException.class, e -> recoverDuplicate(command));
     }
 

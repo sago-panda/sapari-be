@@ -136,6 +136,12 @@ the exception — **never invert it**. Privileged = room owner **or** ADMIN, dec
 entry audit (`usesPrivilegedViewInSomeoneElsesRoom`; tripwire `PrivilegedEntryAuditTest`). Ownership is
 per-room: a SELLER in someone else's room is a viewer.
 
+**The sender's email is never persisted** (`ChatMessageDocument`, SPR-200). Messages live for the 2-year
+TTL and a withdrawal does not shorten it, so a stored email outlived the account. It still travels on the
+live envelope — `SendChatService` re-attaches it to the saved message before publish — so only the
+**live** privileged view shows it; history and a duplicate-recovery republish never carry it. The cleanup
+for documents written before that change is in `infra/AGENTS.md` (Migrations).
+
 ## Send path — the order is the contract
 
 `isRoomAlive` → validation → permission → kick → rate limit → profanity → Mongo save → publish

@@ -69,7 +69,7 @@ class ChatMessageEvidenceMongoRepositoryTest {
 
     private ChatMessageDocument save(String original, String display) {
         return mongoTemplate.save(new ChatMessageDocument(
-                null, roomId, senderId, "구매자닉", "buyer@example.com", "BUYER", "NORMAL",
+                null, roomId, senderId, "구매자닉", "BUYER", "NORMAL",
                 original, display, UUID.randomUUID().toString(), Instant.parse("2026-09-02T00:00:00Z")));
     }
 

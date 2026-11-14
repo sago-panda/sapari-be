@@ -32,6 +32,16 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
     `ChatMongoConfig`, which only runs in **streaming-app** (its argument is a `ReactiveMongoTemplate`,
     which live-app does not have). So the indexes behind live-app's chat-history endpoint depend on a
     *different* app having booted. Nothing in this file used to say so.
+  - **One-off after deploying SPR-200 — remove stored sender emails.** `chat_messages` stopped storing
+    `senderEmail` (it outlived withdrawal for the 2-year TTL), but documents written before the deploy
+    still carry the key. Reads ignore it; it stays on disk until this runs (mongosh, against the chat DB):
+    `db.chat_messages.updateMany({senderEmail: {$exists: true}}, {$unset: {senderEmail: ""}})`.
+    Measured on mongo:7.0: it clears both a value and an explicit `null`, leaves other fields alone, and a
+    second run matches 0 — safe to re-run. Run it **after** the last old streaming-app replica is gone,
+    or an old pod can write the key again. It scans the collection (no index on that field), so run it off-peak.
+    Read the result with `db.chat_messages.countDocuments({senderEmail: {$exists: true}})`: 0 right after,
+    and 0 again a day later — a non-zero second reading means an old replica was still writing; run the
+    `$unset` again.
 - **No cross-schema FK** — domains reference each other by `uuid` id columns only, so schemas
   have no apply-order dependency (the runner loops schemas in any order).
 - **Run on PRIMARY only** (replicas get it via WAL). `outOfOrder=true`, so timestamp versions

@@ -184,6 +184,33 @@ class SendChatServiceTest {
         then(broadcaster).should(times(1)).publish(eq(roomId), any());
     }
 
+    /**
+     * 이메일은 저장되지 않으므로 저장소가 돌려준 값에는 없다(실제 어댑터의 모양 그대로 스텁한다). 실시간 발행은
+     * 방 주인·ADMIN 의 특권 뷰가 쓰므로 요청의 이메일을 다시 실어야 하고, id 는 저장 결과의 것이어야 한다.
+     */
+    @Test
+    @DisplayName("실시간 발행에는 요청의 이메일이 실린다 — 저장 결과에는 이메일이 없다")
+    void live_publish_carries_email_that_is_not_persisted() {
+        // given: 저장 결과 = id 부여 + 이메일 없음
+        given(kickRepository.isKicked(any(), any())).willReturn(Mono.just(false));
+        given(rateLimiter.tryAcquire(any())).willReturn(Mono.just(new RateLimitResult(true, 0)));
+        willAnswer(inv -> Mono.just(((ChatMessage) inv.getArgument(0)).toBuilder()
+                .id("genId").senderEmail(null).build()))
+                .given(chatMessageRepository).save(any());
+        given(broadcaster.publish(any(), any())).willReturn(Mono.empty());
+
+        // when
+        StepVerifier.create(service.send(command("BUYER", false, true, "NORMAL", "안녕하세요", "c1")))
+                .expectNextCount(1)
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        ArgumentCaptor<ChatMessage> published = ArgumentCaptor.forClass(ChatMessage.class);
+        then(broadcaster).should(times(1)).publish(eq(roomId), published.capture());
+        assertThat(published.getValue().id()).isEqualTo("genId");
+        assertThat(published.getValue().senderEmail()).isEqualTo("buyer@example.com");
+    }
+
     @Test
     @DisplayName("isRoomAlive=false → LiveNotActiveException, kicked/저장 미호출 (체크순서 1번, TC#7)")
     void room_not_alive_rejected_first() {
