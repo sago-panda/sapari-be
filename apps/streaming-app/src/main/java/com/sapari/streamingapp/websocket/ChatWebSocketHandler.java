@@ -130,11 +130,29 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 
-    // getSubProtocols()는 의도적으로 비운다(응답에 subprotocol echo 안 함). 서버가 offered subprotocol을
-    // 응답에 실으면 클라 handshaker가 "기대 목록에 없다"며 거부하는 구현이 있어(Reactor Netty) 호환성 위험.
-    // no-echo는 브라우저·Netty 모두 허용된다. 토큰은 아래 extractToken이 요청 헤더에서 직접 읽는다.
+    /**
+     * 응답의 {@code Sec-WebSocket-Protocol} 로 {@code bearer} 를 돌려준다.
+     *
+     * <p>Spring 은 클라이언트가 보낸 값 중 이 목록에 들어 있는 첫 값을 응답에 싣는다(대소문자 구분). 응답 값은
+     * 항상 이 목록의 원소라 토큰이 응답 헤더에 실릴 길이 없다.
+     *
+     * <p>클라이언트는 {@code ["bearer", token]} 을 요청하고, 요청한 것 중 하나가 응답에 없으면 연결을
+     * 실패시킨다. 서브프로토콜을 선언한 Netty 클라이언트로 그 실패를 재는 것이
+     * {@code ChatWebSocketIntegrationTest.declared_subprotocol_is_answered_with_bearer} 다. 브라우저 규격
+     * 클라이언트와 {@code ws} 에서도 같은 실패를 2026-11-14 에 실측했다(SPR-197).
+     */
+    @Override
+    public List<String> getSubProtocols() {
+        return List.of(TOKEN_SUBPROTOCOL);
+    }
 
-    /** Sec-WebSocket-Protocol 헤더에서 룸 토큰 추출 — 클라 제시 ["bearer", token] 중 "bearer"가 아닌 값. */
+    /**
+     * Sec-WebSocket-Protocol 헤더에서 룸 토큰 추출 — 클라 제시 ["bearer", token] 중 "bearer"가 아닌 값.
+     *
+     * <p>여기서는 {@code bearer} 를 대소문자 없이 거르지만, 응답 협상({@link #getSubProtocols()})은 대소문자를
+     * 구분한다. 그래서 {@code "Bearer"} 를 보낸 클라이언트는 토큰이 여기서 뽑혀도 응답에 서브프로토콜이 없고,
+     * 응답을 검사하는 클라이언트(브라우저 등)는 스스로 끊는다 — 계약상 받는 값은 소문자 {@code bearer} 하나다.
+     */
     private String extractToken(WebSocketSession session) {
         List<String> values = session.getHandshakeInfo().getHeaders().get(SEC_WEBSOCKET_PROTOCOL);
         if (values == null) {
