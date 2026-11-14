@@ -337,6 +337,8 @@ class ChatBroadcastSubscriberTest {
         // then
         then(sessionManager).should(times(2)).sendToRoomGated(eq(roomId), any());
         assertThat(subscription).isNotNull();
+        // 전파 시간은 성공한 전파만 잰다 — 실패한 첫 봉투는 deliveryDropped 쪽에서 센다
+        then(metrics).should(times(1)).roomFanOutCompleted(any());
     }
 
     @Test

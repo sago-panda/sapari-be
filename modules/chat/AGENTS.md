@@ -151,7 +151,7 @@ per-room: a SELLER in someone else's room is a viewer.
 - `clientMsgId` is **required** (the dedup index is partial on `$type: "string"`); its length cap is in
   `ChatConstants` for both the rejecting and the echoing side.
 
-**Retry contract.** The WS `ERROR` frame carries only a code and `clientMsgId`, and both persist-timeout
+**Retry contract (SPR-188).** The WS `ERROR` frame carries only a code and `clientMsgId`, and both persist-timeout
 branches arrive as `ERROR(INTERNAL)`. On `INTERNAL` and `UNAVAILABLE` the client resends with the **same
 `clientMsgId` and the same body** (`chat-frontend-guide.v1.2.md`): not stored → stored now; stored →
 `DuplicateKey` → republished and ACK'd; a different body under a used key → `ERROR(CLIENT_MSG_ID_REUSED)`.
@@ -256,8 +256,9 @@ A new UUID is the unsafe retry.
   - **Live sessions per `(user, room)` can reach 2× the cap for ≤ 8s** (`FORCED_CLOSE_GRACE 3s +
     CLOSE_FLUSH_TIMEOUT 5s`) and do not stack while `liveness-deadline` ≫ 8s. `SessionTimeouts` does not stop a
     deadline below that.
-- **Capacity cap — not implemented.** Registry heap is ~2 KB per idle session, so the number has to come from a
-  real pod's other axes (the load track), not a guess.
+- **Capacity cap — not implemented.** Registry heap is ~2 KB per idle session (measurement and its Mockito
+  trap: `ChatSessionRegistry.localSessionCount`), so the number has to come from a real pod's other axes (the
+  load track), not a guess.
 - Serialization is shared per fan-out (`OutboundFrame`). The four per-recipient variants stay four: the sender
   axis carries `clientMsgId` (front-end contract). Batching is unmeasured.
 

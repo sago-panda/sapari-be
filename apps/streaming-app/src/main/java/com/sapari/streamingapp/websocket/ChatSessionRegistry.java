@@ -1585,6 +1585,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * ({@link #maxSessionsPerUserPerRoom()})은 이 수를 기다리지 않았다: 그쪽 값은 용량이 아니라
      * "정상 사용자가 동시에 몇 개를 여는가" 에서 나온다. 한때 이 문장이 "연결 수 상한" 으로 적혀
      * 그 둘을 한 덩이로 묶었다.
+     *
+     * <p>이 레지스트리의 힙은 용량 상한을 정하는 자원이 아니다 — 실측(프로세스 안, 20,000 세션,
+     * register/unregister 3주기): 유휴 세션당 약 1,990 B, 12,000 세션에 약 24 MB, 전원 퇴장 후 잔존
+     * 0 MB(주기마다 누수 없음). 그래서 용량 상한의 수는 이 측정이 못 보는 축(Netty·TLS 버퍼, 파일
+     * 디스크립터, 팬아웃 CPU)에서, 즉 실제 Pod 부하 측정에서 나와야 한다.
+     *
+     * <p>⚠️ 다시 잴 때 협력자를 mock 으로 두지 말 것. 처음 측정은 주기마다 15 MB 가 남아 선형으로
+     * 늘어 세션 누수처럼 보였는데, 원인은 Mockito 가 스텁 저장소에 쌓은 호출 기록 40,000 건이었다.
+     * 손으로 쓴 스텁으로 바꾸자 잔존이 0 이 됐다.
      */
     public int localSessionCount() {
         return local.size();

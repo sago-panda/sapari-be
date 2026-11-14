@@ -145,8 +145,9 @@ class ChatSessionHeartbeatSchedulerTest {
             registry.stopHeartbeat();
         }
 
-        // then
+        // then: 회차가 주기 안에 끝나면 버려지는 tick 은 없다 — 건강한 쪽의 기대값 0 을 여기서 고정한다
         assertThat(roundsTimed(meters)).isGreaterThanOrEqualTo(2);
+        assertThat(ticksSkipped(meters)).isZero();
     }
 
     /**
