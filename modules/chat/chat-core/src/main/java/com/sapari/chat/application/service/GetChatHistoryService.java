@@ -29,7 +29,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 채팅 이력 조회 — VOD 다시보기용 — 와 방의 현재 공지 조회. <b>블로킹</b>(live-app MVC).
+ * 채팅 이력 조회(과거 스크롤 · 재접속 누락분 · VOD 다시보기)와 방의 현재 공지 조회. <b>블로킹</b>(live-app MVC).
  *
  * <p>세 가지가 여기서 결정된다 — 누가 원문·이메일을 보는가, 강퇴자 메시지를 어떻게 빼는가,
  * 재생 위치를 어떤 시각 구간으로 바꾸는가.
@@ -79,9 +79,14 @@ public class GetChatHistoryService implements GetChatHistoryUseCase, GetChatNoti
                 && isPrivileged(command.requesterId(), command.requesterRole(), command.roomId(), room, "이력");
         Set<UUID> kicked = Set.copyOf(kickLogRepository.findKickedUserIds(command.roomId()));
 
-        List<ChatMessage> messages = command.isPlaybackWindow()
-                ? playbackWindow(command, room, kicked)
-                : historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
+        List<ChatMessage> messages;
+        if (command.isPlaybackWindow()) {
+            messages = playbackWindow(command, room, kicked);
+        } else if (command.isAfterCursor()) {
+            messages = historyRepository.findAfter(command.roomId(), command.afterId(), command.size(), kicked);
+        } else {
+            messages = historyRepository.findBefore(command.roomId(), command.beforeId(), command.size(), kicked);
+        }
 
         return new GetChatHistoryView(messages.stream().map(message -> render(message, privileged)).toList());
     }

@@ -1,7 +1,7 @@
 package com.sapari.chat.domain.exception;
 
 /**
- * 이력 조회 입력이 계약을 어겼다 — 두 모드 동시 지정, 범위 밖 재생 위치({@code <0} 또는 TTL 초과),
+ * 이력 조회 입력이 계약을 어겼다 — 조회 모드(beforeId · afterId · 재생 위치) 둘 이상 지정, 범위 밖 재생 위치({@code <0} 또는 TTL 초과),
  * 범위 밖 {@code size}, 형식이 깨진 커서.
  *
  * <p><b>왜 번역이 필요한가.</b> {@code GetChatHistoryCommand} 의 불변식은 record 생성자에서

@@ -317,6 +317,45 @@ class GetChatHistoryServiceTest {
     }
 
     @Test
+    @DisplayName("⭐ 재접속 커서는 이후 방향 조회로 간다 — 커서·size·강퇴자 목록이 그대로 내려가고 과거 방향은 안 부른다")
+    void theAfterCursorGoesToTheForwardQuery() {
+        // given
+        given(kickLogRepository.findKickedUserIds(roomId)).willReturn(List.of(kickedId));
+        given(historyRepository.findAfter(eq(roomId), any(), anyInt(), any())).willReturn(List.of(message()));
+
+        // when
+        service.getHistory(new GetChatHistoryCommand(
+                roomId, buyerId, "BUYER", null, "68000000000000000000000b", null, 30));
+
+        // then
+        ArgumentCaptor<java.util.Collection<UUID>> captor = ArgumentCaptor.captor();
+        then(historyRepository).should()
+                .findAfter(eq(roomId), eq("68000000000000000000000b"), eq(30), captor.capture());
+        assertThat(captor.getValue()).containsExactly(kickedId);
+        then(historyRepository).should(never()).findBefore(any(), any(), anyInt(), any());
+        then(historyRepository).should(never()).findWindow(any(), any(), any(), anyInt(), any());
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 조회도 같은 특권 판정을 쓴다 — 방 주인은 원문, 구매자는 마스킹")
+    void theAfterCursorUsesTheSameViewGating() {
+        // given
+        given(historyRepository.findAfter(eq(roomId), any(), anyInt(), any())).willReturn(List.of(message()));
+
+        // when
+        GetChatHistoryView owner = service.getHistory(new GetChatHistoryCommand(
+                roomId, sellerId, "SELLER", null, "68000000000000000000000b", null, 20));
+        GetChatHistoryView buyer = service.getHistory(new GetChatHistoryCommand(
+                roomId, buyerId, "BUYER", null, "68000000000000000000000b", null, 20));
+
+        // then
+        assertThat(owner.messages()).singleElement()
+                .satisfies(message -> assertThat(message.originalMessage()).isEqualTo("시발"));
+        assertThat(buyer.messages()).singleElement()
+                .satisfies(message -> assertThat(message.originalMessage()).isNull());
+    }
+
+    @Test
     @DisplayName("⭐ 남의 방 특권 뷰 조회가 감사 로그로 남는다 — 실시간 경로와 갈리면 그 비대칭이 사각지대다")
     void aPrivilegedViewInSomeoneElsesRoomIsAudited() {
         // given: 방 주인은 sellerId 이고 요청자는 ADMIN 이다
