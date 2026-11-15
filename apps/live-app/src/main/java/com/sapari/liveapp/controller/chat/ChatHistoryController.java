@@ -33,9 +33,9 @@ import lombok.RequiredArgsConstructor;
  * <p><b>신원은 본문·쿼리가 아니라 인증 주체에서 온다.</b> 요청자가 자기 id 를 보내게 하면 아무나
  * 방 주인 id 를 넣어 남의 방 구매자 이메일과 욕설 원문을 읽는다.
  *
- * <p>두 모드는 같은 경로에 산다 — 커서({@code beforeId})와 VOD 위치({@code playbackPositionMs}).
- * 동시 지정은 명령이 거부한다(한쪽을 조용히 무시하면 클라가 받은 결과가 자기 의도와 다른 것을
- * 알 수 없다). 그 거부는 {@code IllegalArgumentException} 인데 전역 핸들러에 그 타입 처리가 없어서,
+ * <p>세 모드가 같은 경로에 산다 — 과거 방향 커서({@code beforeId}), 재접속 커서({@code afterId} —
+ * 클라이언트가 고른 기준점 이후를 오래된 것부터), VOD 위치({@code playbackPositionMs}). 둘 이상 지정은
+ * 명령이 거부한다(한쪽을 조용히 무시하면 클라가 받은 결과가 자기 의도와 다른 것을 알 수 없다). 그 거부는 {@code IllegalArgumentException} 인데 전역 핸들러에 그 타입 처리가 없어서,
  * 아래 {@code command} 가 받아 {@code CHAT-009}(400) 로 번역한다.
  *
  * <p>{@code size} 기본값 15 는 커서 모드 전용이다 — VOD 모드에서는 무시되고 200 고정이다
@@ -69,12 +69,13 @@ public class ChatHistoryController {
     public ResponseEnvelope<GetChatHistoryView> history(
             @PathVariable UUID roomId,
             @RequestParam(required = false) String beforeId,
+            @RequestParam(required = false) String afterId,
             @RequestParam(required = false) Long playbackPositionMs,
             @RequestParam(defaultValue = "" + DEFAULT_SIZE) int size,
             @AuthenticationPrincipal LiveUserPrincipal principal) {
 
         return ResponseEnvelope.success(getChatHistoryUseCase.getHistory(
-                command(roomId, beforeId, playbackPositionMs, size, principal)));
+                command(roomId, beforeId, afterId, playbackPositionMs, size, principal)));
     }
 
     /**
@@ -108,14 +109,14 @@ public class ChatHistoryController {
      * 코드의 버그라 사용자가 사유별로 다르게 할 일이 없고, 사유는 로그에 남는다. 사유 목록은
      * {@code ChatErrorCode.HISTORY_QUERY_INVALID} 옆에 열거해 두었다 — 여기서 개수를 세지 않는다.
      */
-    private static GetChatHistoryCommand command(UUID roomId, String beforeId, Long playbackPositionMs,
-            int size, LiveUserPrincipal principal) {
+    private static GetChatHistoryCommand command(UUID roomId, String beforeId, String afterId,
+            Long playbackPositionMs, int size, LiveUserPrincipal principal) {
         try {
             return new GetChatHistoryCommand(
                     roomId,
                     principal == null ? null : principal.userId(),
                     principal == null ? null : chatRoleNameOf(principal.role()),
-                    beforeId, playbackPositionMs, size);
+                    beforeId, afterId, playbackPositionMs, size);
         } catch (IllegalArgumentException e) {
             throw new ChatHistoryQueryInvalidException(e.getMessage(), e);
         }

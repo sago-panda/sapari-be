@@ -256,6 +256,33 @@ class ChatHistoryControllerTest {
     }
 
     @Test
+    @DisplayName("⭐ 재접속 커서가 그대로 전달된다 — 떨어지면 과거 방향 조회가 되어 최신 페이지가 200 으로 온다")
+    void theAfterCursorIsForwarded() throws Exception {
+        // given
+        stubEmpty();
+
+        // when
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID)
+                        .param("afterId", "68000000000000000000000b")
+                        .param("size", "50"))
+                .andExpect(status().isOk());
+
+        // then
+        assertThat(captured().afterId()).isEqualTo("68000000000000000000000b");
+        assertThat(captured().beforeId()).isNull();
+        assertThat(captured().size()).isEqualTo(50);
+    }
+
+    @Test
+    @DisplayName("재접속 커서와 과거 커서를 함께 보내면 400 이다")
+    void theAfterCursorWithAPastCursorIsRejected() throws Exception {
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID)
+                        .param("beforeId", "68000000000000000000000a")
+                        .param("afterId", "68000000000000000000000b"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     @DisplayName("VOD 위치만 보내면 그대로 전달된다")
     void thePlaybackPositionIsForwarded() throws Exception {
         // given
