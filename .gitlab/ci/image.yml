@@ -1,4 +1,4 @@
-# 앱 이미지 빌드·ECR 푸시 (live-app, streaming-app).
+# 이미지 빌드·ECR 푸시 (live-app, streaming-app, migration).
 #
 # dev 브랜치 push 에서만 돈다. MR 단계의 검증은 build 잡(테스트·ArchUnit)이 이미 맡았고,
 # 이 잡은 "머지된 코드를 배포 가능한 산출물로 만든다" 만 한다. Dockerfile 의 bootJar 는
@@ -31,7 +31,7 @@
 #   경로 목록은 gradle 의존성(apps/<앱>/build.gradle 의 project(...)와 그 하위)을 따라 만들었다.
 #   앱이 새 모듈에 의존하게 되면 아래 목록을 같이 고친다 — 빠뜨리면 그 모듈만 바뀐 push 에서
 #   이미지가 올라가지 않는다. common/ · storage/ 는 통째로 넣어 덜 빠뜨리는 쪽을 택했다.
-#   dev 에서 손으로 띄운 파이프라인(Run pipeline)은 변경과 상관없이 두 앱을 모두 올린다.
+#   dev 에서 손으로 띄운 파이프라인(Run pipeline)은 변경과 상관없이 세 이미지를 모두 올린다(이미 있는 태그는 건너뛴다).
 #   홈랩 앱(api-app 등)은 ECR 이 아니라 GitLab Container Registry 경로(sapari-cicd-template)로 간다.
 
 # stages 선언은 .gitlab-ci.yml 이 소유한다 (include 간 덮어쓰기 방지).
@@ -66,10 +66,19 @@
   script:
     # 태그는 커밋 SHA 하나. latest 를 쓰지 않는다 — 어느 커밋이 떠 있는지 이미지 이름으로 갈려야
     # 롤백이 "이전 SHA 로 되돌리기" 한 줄이 된다.
-    - IMAGE="$ECR_REGISTRY/sapari-$ENVIRONMENT-$APP:$CI_COMMIT_SHORT_SHA"
+    - REPO="sapari-$ENVIRONMENT-$APP"
+    - IMAGE="$ECR_REGISTRY/$REPO:$CI_COMMIT_SHORT_SHA"
+    # ECR 태그가 IMMUTABLE 이라 같은 SHA 로 다시 돌면(재시도·수동 실행) 푸시가
+    # ImageTagAlreadyExistsException 으로 실패한다. 이미 있으면 건너뛴다.
+    # 조회가 권한 등 다른 이유로 실패하면 그대로 빌드·푸시로 진행해 거기서 오류가 드러나게 둔다.
+    - |
+      if aws ecr describe-images --region "$AWS_REGION" --repository-name "$REPO" --image-ids imageTag="$CI_COMMIT_SHORT_SHA" >/dev/null 2>&1; then
+        echo "이미 있음, 건너뜀 $IMAGE"
+        exit 0
+      fi
     # provenance 는 끈다. 켜면 단일 플랫폼이어도 인덱스+attestation 매니페스트가 붙어
     # ECR 에 태그 없는 항목이 하나씩 더 생긴다.
-    - docker buildx build --platform linux/arm64 --provenance=false -f "apps/$APP/Dockerfile" -t "$IMAGE" --push .
+    - docker buildx build --platform linux/arm64 --provenance=false -f "${DOCKERFILE:-apps/$APP/Dockerfile}" -t "$IMAGE" --push .
     - echo "푸시 완료 $IMAGE"
 
 # 공통 경로(common · storage · chat · user-api · 빌드 설정)는 두 잡에 똑같이 적는다. 하나를 고치면 둘 다 고친다.
@@ -114,5 +123,21 @@ image-publish:streaming-app:
         - settings.gradle
         - gradle/**/*
         - gradlew
+        - .dockerignore
+        - .gitlab/ci/image.yml
+
+# 마이그레이션 이미지(flyway + db/migration + migrate.sh). 클라우드 Job 은 MIGRATE_SCHEMAS 로 대상 스키마를 고른다.
+# 실행 단계에 RUN 이 없어야 한다 — 위 아키텍처 문단 참고(Dockerfile 이 COPY --chmod 를 쓰는 이유).
+image-publish:migration:
+  extends: .image-publish
+  variables:
+    APP: migration
+    DOCKERFILE: infra/migration/Dockerfile # 앱 잡은 비워 두고 apps/$APP/Dockerfile 을 쓴다
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+      changes:
+        - db/migration/**/*
+        - infra/migration/**/*
         - .dockerignore
         - .gitlab/ci/image.yml

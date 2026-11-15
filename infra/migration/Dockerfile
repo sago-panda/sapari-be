@@ -13,13 +13,16 @@
 # 운영: 같은 이미지를 Helm pre-upgrade Job이 실행 (DB 자격증명은 k8s Secret 주입,
 #       DDL 권한의 flyway 전용 롤 사용 — 앱 롤과 분리)
 # =============================================================================
-FROM flyway/flyway:10-alpine
+# 10-alpine 은 amd64 전용이라 arm64(Graviton) 노드에서 exec format error 로 죽는다.
+# flyway/flyway:10 은 amd64·arm64 를 모두 담은 manifest list 다.
+FROM flyway/flyway:10
 
 # 스키마별 마이그레이션 SQL (소유: 각 도메인. 레이아웃: db/migration/<schema>/V*.sql)
 COPY db/migration /flyway/db/migration
 
 # per-schema 러너 (스키마마다 자기 history + 독립 버전 + outOfOrder)
-COPY infra/migration/migrate.sh /migrate.sh
-RUN chmod +x /migrate.sh
+# RUN chmod 대신 COPY --chmod — CI 는 amd64 러너에서 arm64 로 빌드하므로 RUN 이 있으면
+# 에뮬레이션(binfmt)이 필요해진다(.gitlab/ci/image.yml 아키텍처 문단).
+COPY --chmod=0755 infra/migration/migrate.sh /migrate.sh
 
 ENTRYPOINT ["/migrate.sh"]
