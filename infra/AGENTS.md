@@ -589,6 +589,11 @@ that on.
       reply was delayed past the 1s command bound — so treat permanent death as a shape to watch for, not
       the default. Per-subscription tag because `chat_pubsub` losing its stream silently drops every chat
       delivery and every KICK notice on that pod, while `profanity_dictionary` only ages the dictionary.
+  - **Volume that is not 0 when healthy** (added SPR-204): `chat.pubsub.received` — envelopes this pod's
+    chat pattern subscription received, `_count` messages and `_sum` UTF-8 payload bytes (channel name and
+    Redis framing are not counted). The subscription is a pattern, so every pod receives the whole fleet's
+    chat; summed across pods it is that subscription's Redis egress, minus framing. Read it before deciding
+    to replace the pattern subscription (`RedisChatBroadcaster`). Not an alert.
 - **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
   network restrictions above are enforced from here.
 

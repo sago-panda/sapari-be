@@ -22,6 +22,7 @@ import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -100,10 +101,24 @@ class MicrometerChatMetricsTest {
      * {@code doBeforeRetry} 람다인데 거기서 던지면 자가복구 루프가 그 자리에서 끝난다.
      */
     @Test
+    @DisplayName("pub/sub 수신은 건수와 본문 바이트 합을 한 미터로 낸다")
+    void pubsubReceivedCarriesCountAndBytes() {
+        // when
+        metrics.pubsubMessageReceived(100);
+        metrics.pubsubMessageReceived(23);
+
+        // then
+        DistributionSummary received = registry.get("chat.pubsub.received").summary();
+        assertThat(received.count()).isEqualTo(2);
+        assertThat(received.totalAmount()).isEqualTo(123);
+    }
+
+    @Test
     @DisplayName("⭐ 레지스트리가 던져도 어댑터는 던지지 않는다 — 포트 메서드 전수를 리플렉션으로 센다")
     void neverThrows() {
         // given: 모든 counter() 호출이 던지는 레지스트리
-        // Timer 는 counter() 를 거치지 않고 builder 로 등록된다 — newTimer 도 던져야 Timer 메서드가 분모에 든다.
+        // Timer·DistributionSummary 는 counter() 를 거치지 않고 builder 로 등록된다 — newTimer 와
+        // newDistributionSummary 도 던져야 그 메서드들이 분모에 든다.
         ChatMetrics broken = new MicrometerChatMetrics(new SimpleMeterRegistry() {
             @Override
             public Counter counter(String name, String... tags) {
@@ -112,6 +127,12 @@ class MicrometerChatMetricsTest {
 
             @Override
             protected Timer newTimer(Meter.Id id, DistributionStatisticConfig config, PauseDetector pauseDetector) {
+                throw new IllegalStateException("registry 고장");
+            }
+
+            @Override
+            protected DistributionSummary newDistributionSummary(Meter.Id id, DistributionStatisticConfig config,
+                    double scale) {
                 throw new IllegalStateException("registry 고장");
             }
         });
@@ -157,10 +178,12 @@ class MicrometerChatMetricsTest {
             Object[] args = new Object[method.getParameterCount()];
             Class<?>[] types = method.getParameterTypes();
             for (int i = 0; i < args.length; i++) {
-                assertThat(types[i].isEnum() || types[i] == Duration.class)
-                        .as("열거·Duration 이 아닌 인자가 생겼다 — 이 헬퍼를 넓혀야 한다: %s", method.getName())
+                assertThat(types[i].isEnum() || types[i] == Duration.class || types[i] == int.class)
+                        .as("열거·Duration·int 가 아닌 인자가 생겼다 — 이 헬퍼를 넓혀야 한다: %s", method.getName())
                         .isTrue();
-                args[i] = nulls ? null
+                // int 는 null 을 못 받으므로 nulls 일 때 0 이다.
+                args[i] = types[i] == int.class ? (nulls ? 0 : 1)
+                        : nulls ? null
                         : types[i] == Duration.class ? Duration.ofMillis(1) : types[i].getEnumConstants()[0];
             }
             try {

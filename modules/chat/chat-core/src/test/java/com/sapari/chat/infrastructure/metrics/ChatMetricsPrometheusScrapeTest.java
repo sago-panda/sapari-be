@@ -97,6 +97,7 @@ class ChatMetricsPrometheusScrapeTest {
         metrics.roomFanOutCompleted(Duration.ofMillis(1));
         metrics.heartbeatRoundCompleted(Duration.ofMillis(1));
         metrics.heartbeatTickSkipped();
+        metrics.pubsubMessageReceived(1);
 
         // then
         assertThat(registry.find("chat.ratelimit.degraded").counters())
@@ -122,6 +123,7 @@ class ChatMetricsPrometheusScrapeTest {
         assertThat(scrape).contains("chat_fanout_duration_seconds_count");
         assertThat(scrape).contains("chat_sessions_heartbeat_duration_seconds_count");
         assertThat(scrape).contains("chat_sessions_heartbeat_skipped_total");
+        assertThat(scrape).contains("chat_pubsub_received_bytes_count");
     }
 
     /**
@@ -161,6 +163,7 @@ class ChatMetricsPrometheusScrapeTest {
                         "chat.dictionary.fastpath.lost",
                         "chat.persist.timeout",
                         "chat.subscription.resubscribed",
+                        "chat.pubsub.received",
                         "chat.withdrawal.record.failed",
                         "chat.inbound.dropped",
                         "chat.send.refused",
@@ -177,10 +180,11 @@ class ChatMetricsPrometheusScrapeTest {
             Object[] args = new Object[method.getParameterCount()];
             Class<?>[] types = method.getParameterTypes();
             for (int i = 0; i < args.length; i++) {
-                assertThat(types[i].isEnum() || types[i] == Duration.class)
-                        .as("열거·Duration 이 아닌 인자가 생겼다 — 이 칸을 넓혀야 한다: %s", method.getName())
+                assertThat(types[i].isEnum() || types[i] == Duration.class || types[i] == int.class)
+                        .as("열거·Duration·int 가 아닌 인자가 생겼다 — 이 칸을 넓혀야 한다: %s", method.getName())
                         .isTrue();
-                args[i] = types[i] == Duration.class ? Duration.ofMillis(1) : types[i].getEnumConstants()[0];
+                args[i] = types[i] == int.class ? 1
+                        : types[i] == Duration.class ? Duration.ofMillis(1) : types[i].getEnumConstants()[0];
             }
             method.invoke(metrics, args);
         }

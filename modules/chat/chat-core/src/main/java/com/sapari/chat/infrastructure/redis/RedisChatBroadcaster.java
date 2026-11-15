@@ -1,5 +1,6 @@
 package com.sapari.chat.infrastructure.redis;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.UUID;
@@ -33,7 +34,7 @@ import reactor.util.retry.Retry;
  * 방별 lazy 구독(b)이 갖는 <i>구독 활성 전 메시지 유실 레이스</i>와 ref-count lifecycle 버그가 원천적으로 없다.
  * 비용(모든 방 메시지 수신)은 <b>채널명에서 roomId만 먼저 추출</b>(역직렬화 없이)하고, 실제 구독 중인 방만
  * {@code subscribe()}에서 역직렬화하므로 비로컬 방 파싱 비용이 0이다. 동시 방이 수십 개+로 커지고 Redis egress가
- * 꼬리에 닿으면 어댑터만 Redis Streams로 교체(포트 시그니처 불변).
+ * 꼬리에 닿으면 어댑터만 Redis Streams로 교체(포트 시그니처 불변). 받는 양은 {@code chat.pubsub.received} 가 센다.
  *
  * <p><b>ObjectMapper</b>: 봉투를 다루는 ObjectMapper는 {@link ChatMessageTypeMixin} 등록이 의무(누락 시 첫
  * 역직렬화 즉사). {@code ChatMessage.createdAt}(Instant) 때문에 JavaTimeModule도 등록.
@@ -73,6 +74,8 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
 
         // publish().autoConnect(0): 생성 즉시 업스트림 연결 + 구독자 0이어도 끊지 않음(상시 가동 → 구독 레이스 제거).
         this.shared = redis.listenToPattern(ChatRedisKeys.pubsubPattern())
+                // 채널명을 해석하기 전에 센다 — 깨진 채널도 Redis 가 보낸 양이다.
+                .doOnNext(msg -> metrics.pubsubMessageReceived(payloadBytes(msg.getMessage())))
                 .mapNotNull(msg -> toRaw(msg.getChannel(), msg.getMessage()))
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(30))
                         .doBeforeRetry(s -> {
@@ -81,6 +84,18 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
                         }))
                 .publish()
                 .autoConnect(0);
+
+        // 구독자가 0 이 되지 않게 하는 상시 소비자다. publish() 는 구독자가 한 번 생겼다가 0 으로 돌아가면
+        // 업스트림 요청을 멈추고, 그동안 Redis 가 보낸 메시지는 리액티브 구독 쪽에 쌓였다가 다음 구독자에게
+        // 한꺼번에 넘어간다. 실측(일회용 redis:7.2): 마지막 방 구독을 해제한 뒤 20,000건을 발행하면 힙이
+        // 약 14MB 늘었고 버려진 것은 0건, 다음에 그 방을 구독한 쪽이 20,000건을 실시간처럼 받았다. 이 소비자를
+        // 둔 같은 절차에서는 힙 증가 0MB, 다음 구독자가 받은 묵은 메시지 0건이다.
+        this.shared.subscribe();
+    }
+
+    /** 본문의 UTF-8 바이트 수. 본문이 없는 메시지는 0 이다. */
+    private static int payloadBytes(String body) {
+        return body == null ? 0 : body.getBytes(StandardCharsets.UTF_8).length;
     }
 
     @Override
