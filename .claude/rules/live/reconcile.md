@@ -25,7 +25,8 @@ clock-bounded rounds (`roundBudget` = 4/5 of the lease, `ROUND_BUDGET_EXHAUSTED`
 `ORPHAN_ROOM_CANDIDATE` as the signal, no lease extension → `ReconcileOrphanMediaService`, `OrphanMediaScheduler` ·
 removed `batch-size` keys refuse to boot → `LiveReconcileConfig` · deadline checked only between candidates,
 so one room can outlive its lease (duplicate cleanup accepted) → `LiveReconcileProperties.roundBudget` ·
-`STALE_LIVE_CANDIDATE` / `STALE_LIVE_BATCH_SATURATED` semantics → `ReconcileAction`.
+`STALE_LIVE_CANDIDATE` / `STALE_LIVE_BATCH_SATURATED` semantics → `ReconcileAction` · replay recovery runs
+after the stale-live step in its own `try`, under the same lock → `EndStaleLiveScheduler`, `RecoverStuckReplaysService`.
 
 **Not in any comment:**
 

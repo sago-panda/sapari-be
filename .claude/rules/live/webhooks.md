@@ -7,7 +7,7 @@ paths:
   - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{LiveWebhookService,*WebhookHandler}.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/infrastructure/media/LiveKitWebhookVerifier.java"
   - "apps/live-app/src/main/resources/application*.yaml*"
-  - "{modules/live/live-core,apps/live-app}/src/test/java/**/{LiveKitWebhook,LiveWebhookService,IngressStartedWebhookHandler,Webhook}*Test.java"
+  - "{modules/live/live-core,apps/live-app}/src/test/java/**/{LiveKitWebhook,LiveWebhookService,IngressStartedWebhookHandler,EgressWebhookHandler,Webhook}*Test.java"
 ---
 
 # live — LiveKit webhooks
@@ -22,7 +22,8 @@ through a bounded stream, not `@RequestBody byte[]`.
 
 - **Signature alone does not stop replay**; a `createdAt` window gates it — sizes and why: `LiveKitWebhookVerifier`.
 - **A destructive handler (`egress_ended`, `room_finished`, …) requires event-id dedup in the same change.**
-  Today's only handler is a no-op unless the room is `Ready+RTMP`, and that is what caps replay damage.
+  `ingress_started` is a no-op unless the room is `Ready+RTMP`, and that is what caps replay damage; the egress
+  handler is non-destructive — it only moves `vod_status` forward (`EgressWebhookHandler`), so it needs no dedup.
 - Handlers belong to each feature, not the webhook package. **Must be idempotent.** Exceptions are logged and
   still return 200 — a throw does not trigger re-send.
 - The rate limit is a **CPU ceiling, not availability protection** — nothing tells a forged request from a

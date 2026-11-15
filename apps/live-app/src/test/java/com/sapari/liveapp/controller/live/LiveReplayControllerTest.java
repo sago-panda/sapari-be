@@ -46,12 +46,16 @@ class LiveReplayControllerTest {
 
     @Test
     void returnsReplayEnvelopeWithoutPrincipal() throws Exception {
-        given(replay.getReplay(roomId)).willReturn(new ReplayView(roomId, "https://cdn/720p/playlist.m3u8"));
+        given(replay.getReplay(roomId)).willReturn(new ReplayView(roomId, "https://cdn/720p/playlist.m3u8",
+                "지난 방송", 440L, Instant.parse("2026-09-10T00:07:20Z")));
         mvc.perform(get("/api/v1/lives/rooms/{roomId}/replay", roomId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.roomId").value(roomId.toString()))
-                .andExpect(jsonPath("$.data.hlsArchiveUrl").value("https://cdn/720p/playlist.m3u8"));
+                .andExpect(jsonPath("$.data.hlsArchiveUrl").value("https://cdn/720p/playlist.m3u8"))
+                .andExpect(jsonPath("$.data.title").value("지난 방송"))
+                .andExpect(jsonPath("$.data.durationSeconds").value(440))
+                .andExpect(jsonPath("$.data.endedAt").exists());
     }
 
     @Test
