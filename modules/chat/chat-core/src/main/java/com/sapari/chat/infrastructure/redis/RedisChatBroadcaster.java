@@ -90,10 +90,13 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         // 한꺼번에 넘어간다. 실측(일회용 redis:7.2): 마지막 방 구독을 해제한 뒤 20,000건을 발행하면 힙이
         // 약 14MB 늘었고 버려진 것은 0건, 다음에 그 방을 구독한 쪽이 20,000건을 실시간처럼 받았다. 이 소비자를
         // 둔 같은 절차에서는 힙 증가 0MB, 다음 구독자가 받은 묵은 메시지 0건이다.
+        // ⚠️ 막는 것은 구독자 0 하나다. 가장 느린 구독자가 멈추면 이 소비자도 같이 멈춘다 — publish() 는
+        // 모든 구독자가 가져간 만큼만 큐를 비운다(실측: request(5) 에서 멈춘 구독자가 있을 때 2,000건 중
+        // 이 소비자가 받은 것 5건, 업스트림 261건에서 정지. 그 구독자를 해제하면 바로 풀린다).
         this.shared.subscribe();
     }
 
-    /** 본문의 UTF-8 바이트 수. 본문이 없는 메시지는 0 이다. */
+    /** 본문의 UTF-8 바이트 수. 본문이 null 인 메시지는 0 이다. */
     private static int payloadBytes(String body) {
         return body == null ? 0 : body.getBytes(StandardCharsets.UTF_8).length;
     }

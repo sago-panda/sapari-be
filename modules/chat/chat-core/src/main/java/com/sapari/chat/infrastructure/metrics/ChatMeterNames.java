@@ -62,7 +62,7 @@ final class ChatMeterNames {
 
     /**
      * 채팅 pub/sub 패턴 구독이 받은 봉투(DistributionSummary, 단위 bytes). 건수는 {@code _count}, 본문
-     * 바이트 합은 {@code _sum} 으로 나간다. 채널명과 Redis 프로토콜 틀은 세지 않는다.
+     * 바이트 합은 {@code _sum} 으로 나간다. 채널명·패턴명과 Redis 프로토콜 틀은 세지 않는다.
      */
     static final String PUBSUB_RECEIVED = "chat.pubsub.received";
 

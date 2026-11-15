@@ -103,7 +103,7 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
      * {@code IllegalArgumentException} 으로 올리면 전역 핸들러에 그 타입이 없어 500 이 된다.
      *
      * <p>이 파일의 나머지 검사(size·limit·from>to·afterId 필수)는 생 {@code IllegalArgumentException} 으로
-     * 둔다. 커서와 달리 그 값은 클라이언트가 아니라 {@code GetChatHistoryService} 가 만든다 — size 는 명령
+     * 둔다. 커서와 달리 그 값은 클라이언트가 아니라 {@code GetChatHistoryService} 가 만든다(이 포트의 운영 호출자는 그 하나다) — size 는 명령
      * record 가 1~100 으로 검증한 값, limit 은 상수, 구간은 서비스가 재생 위치에서 계산한 값이고,
      * {@code findAfter} 는 afterId 가 있을 때만 불린다. 그러니 이 검사에 걸리면 서버 버그이고, 전역 핸들러의
      * 500 + {@code Unhandled exception} 로그가 맞는 답이다. 400 으로 바꾸면 서버 버그가 클라이언트 잘못으로 보인다.

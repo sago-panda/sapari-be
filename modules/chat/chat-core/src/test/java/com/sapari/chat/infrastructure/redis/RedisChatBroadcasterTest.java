@@ -330,13 +330,14 @@ class RedisChatBroadcasterTest {
         doReturn(source.asFlux()).when(template).listenToPattern("chat:pubsub:*");
         new RedisChatBroadcaster(template, new MicrometerChatMetrics(meters));
 
-        // when: 한글 2자(6바이트) · ASCII 3바이트
+        // when: 한글 2자(6바이트) · ASCII 3바이트 · 본문 null(0바이트, 건수에는 든다)
         source.tryEmitNext(message("chat:pubsub:" + UUID.randomUUID(), "안녕"));
         source.tryEmitNext(message("chat:pubsub:not-a-uuid", "abc"));
+        source.tryEmitNext(message("chat:pubsub:" + UUID.randomUUID(), null));
 
         // then
         var received = meters.get("chat.pubsub.received").summary();
-        assertThat(received.count()).isEqualTo(2);
+        assertThat(received.count()).isEqualTo(3);
         assertThat(received.totalAmount())
                 .as("문자 수(5)가 아니라 UTF-8 바이트 수(9)여야 egress 와 같은 단위다")
                 .isEqualTo(9);
