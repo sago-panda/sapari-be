@@ -101,8 +101,12 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
      * <p>도메인 예외로 올리는 이유는 번역이 아니라 <b>경계</b>다 — 여기서 잡을 인프라 예외는 없고
      * ({@code ObjectId.isValid} 는 DB 를 치지 않는 순수 24자 16진수 검사다) 이건 입력 검증이다. 생
      * {@code IllegalArgumentException} 으로 올리면 전역 핸들러에 그 타입이 없어 500 이 된다.
-     * ⚠️ 이 파일의 size·limit·from>to·afterId 필수 검사는 아직 생 {@code IllegalArgumentException} 이다 —
-     * 지금은 명령 record 와 서비스의 분기가 앞에서 막아 도달하지 않지만, 일관성은 어긋나 있다.
+     *
+     * <p>이 파일의 나머지 검사(size·limit·from>to·afterId 필수)는 생 {@code IllegalArgumentException} 으로
+     * 둔다. 커서와 달리 그 값은 클라이언트가 아니라 {@code GetChatHistoryService} 가 만든다 — size 는 명령
+     * record 가 1~100 으로 검증한 값, limit 은 상수, 구간은 서비스가 재생 위치에서 계산한 값이고,
+     * {@code findAfter} 는 afterId 가 있을 때만 불린다. 그러니 이 검사에 걸리면 서버 버그이고, 전역 핸들러의
+     * 500 + {@code Unhandled exception} 로그가 맞는 답이다. 400 으로 바꾸면 서버 버그가 클라이언트 잘못으로 보인다.
      */
     private static ObjectId cursor(String id) {
         if (!ObjectId.isValid(id)) {
