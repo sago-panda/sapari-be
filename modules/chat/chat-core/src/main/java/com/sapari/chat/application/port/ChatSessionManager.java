@@ -38,6 +38,13 @@ public interface ChatSessionManager {
 
     Mono<Void> unregister(UUID roomId, String sessionId);
 
+    /**
+     * 이 방에서 이 사람의 세션을 끊는다(강퇴).
+     *
+     * <p>⚠️ <b>구현은 끝나는 Mono 를 돌려줘야 한다.</b> {@link #sendToRoomGated} 와 같은 이유다 — 강퇴 봉투의
+     * 팬아웃이 이걸 이어 부르고, 그 팬아웃이 Pod 의 공유 pub/sub 스트림 위에서 돈다. 지키는 칸: 이 메서드를
+     * 끝나지 않게 바꾼 역변이에서 streaming-app 326칸 중 5칸이 빨강이다({@code ChatSessionRegistryTest}).
+     */
     Mono<Void> closeUser(UUID roomId, UUID userId);
 
     Mono<Void> closeAll(UUID roomId);
@@ -89,6 +96,11 @@ public interface ChatSessionManager {
      *
      * <p>그래서 호출부는 뷰 조합을 <b>미리 만들어 두고 고르기만</b> 한다. 예:
      * {@code ChatBroadcastSubscriber.fanOutChat} 은 특권 × 발신자 축으로 4종을 먼저 만든다.
+     *
+     * <p>⚠️ <b>구현은 끝나는 Mono 를 돌려줘야 한다.</b> 이 팬아웃은 Pod 의 공유 pub/sub 스트림 위에서 돌아서,
+     * 끝나지 않으면 그 방만이 아니라 그 Pod 의 모든 방 전달이 멈춘다({@code ChatBroadcastSubscriber.subscribeRoom}).
+     * 지키는 칸: 이 메서드를 끝나지 않게 바꾼 역변이에서 streaming-app 326칸 중 16칸이 빨강이다
+     * ({@code ChatSessionRegistryTest} 가 {@code .block(VERIFY_CEILING)} 으로 완료를 기다린다).
      */
     Mono<Void> sendToRoomGated(UUID roomId, Function<ChatSession, OutboundMessage> resolver);
 }

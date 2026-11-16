@@ -64,7 +64,9 @@ class GetChatHistoryCommandTest {
     void theTwoModesAreExclusive() {
         assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
                 "68000000000000000000000a", null, 1_000L, 20))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                // StartingWith 여야 갈린다 — afterId 쪽 메시지도 "beforeId" 를 포함한다.
+                .hasMessageStartingWith("beforeId");
     }
 
     @Test

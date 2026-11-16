@@ -59,11 +59,14 @@ public class ChatBroadcastSubscriber {
      *
      * <p>⚠️ <b>{@link #route} 가 돌려주는 Mono 는 끝나야 한다.</b> 이 구독은 Pod 의 공유 pub/sub 스트림에
      * 붙어 있어서, 끝나지 않는 Mono 가 {@code flatMap} 의 동시성(기본 256)을 채우면 이 방만이 아니라
-     * <b>그 Pod 의 모든 방 전달이 멈춘다</b>. 지금은 닿지 않는다 — 세션 매니저의 팬아웃·종료가 동기
-     * {@code Mono.fromRunnable} 이라 구독 즉시 끝난다. 실측(방 A 구독 + 방 A·B 각 2,000건, 가짜 Redis 소스 ·
-     * 실제 브로드캐스터 · 세션 매니저는 스텁): 건당 0.2ms 동기 팬아웃에서 방 A 2,000/2,000 · 수신 4,000/4,000, 내부를
-     * {@code Mono.never()} 로 바꾸면 방 A 256 에서 정지 · 수신 1,151/4,000. 세션 매니저에 소켓 쓰기를
-     * 기다리는 비동기 경로를 넣는 변경이 이 전제를 깬다.
+     * <b>그 Pod 의 모든 방 전달이 멈춘다</b>. 실측(방 A 구독 + 방 A·B 각 2,000건, 가짜 Redis 소스 · 실제
+     * 브로드캐스터 · 세션 매니저 스텁): 건당 0.2ms 동기 팬아웃에서 방 A 2,000/2,000 · 수신 4,000/4,000, 내부를
+     * {@code Mono.never()} 로 바꾸면 방 A 256 에서 정지 · 수신 1,151/4,000.
+     *
+     * <p>지금은 닿지 않는다 — 운영 구현({@code ChatSessionRegistry})의 {@code sendToRoomGated}·{@code closeUser}
+     * 가 동기 {@code Mono.fromRunnable} 이라 끝난다. 그 계약은 포트 javadoc 에 있고, 깨면 테스트가 잡는다(두 메서드를
+     * 끝나지 않게 바꾼 역변이에서 streaming-app 326칸 중 각각 16칸·5칸이 빨강). 다만 <b>즉시 끝나는 것은 아니다</b> —
+     * 세션 수에 비례해 이 구독 스레드를 잡는다(그 클래스의 실측: 60세션 0.100ms, 12,000세션 3.96ms).
      */
     public Disposable subscribeRoom(UUID roomId) {
         return broadcaster.subscribe(roomId)
