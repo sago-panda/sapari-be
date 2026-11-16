@@ -26,6 +26,8 @@ import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.liveapp.security.ChatReadRateLimitFilter;
+import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
 import com.sapari.liveapp.security.EnterRateLimiter;
@@ -70,6 +72,7 @@ class LiveFilterOrderTest {
             int authentication = names.indexOf(StatelessJwtAuthenticationFilter.class.getSimpleName());
             int rateLimit = names.indexOf(EnterRateLimitFilter.class.getSimpleName());
             int revocation = names.indexOf(TokenRevocationFilter.class.getSimpleName());
+            int chatReadRateLimit = names.indexOf(ChatReadRateLimitFilter.class.getSimpleName());
             int authorization = names.indexOf(AuthorizationFilter.class.getSimpleName());
 
             assertThat(List.of(authentication, rateLimit, revocation, authorization))
@@ -84,6 +87,17 @@ class LiveFilterOrderTest {
             assertThat(revocation)
                     .as("인가가 폐기 조회보다 앞이면 폐기된 ADMIN 토큰이 밴 해제를 통과한다")
                     .isLessThan(authorization);
+            // 채팅 조회 상한(SPR-203)도 같은 두 제약을 받는다 — 인증 뒤여야 회원 샤드를 고르고,
+            // 폐기 조회 앞이어야 거부될 요청이 Redis 왕복을 치지 않는다.
+            assertThat(chatReadRateLimit)
+                    .as("채팅 조회 상한이 체인에 없다 — 실제 순서: %s", names)
+                    .isNotEqualTo(-1);
+            assertThat(authentication)
+                    .as("채팅 조회 상한이 인증보다 앞이면 회원이 게스트 버킷을 쓴다")
+                    .isLessThan(chatReadRateLimit);
+            assertThat(chatReadRateLimit)
+                    .as("폐기 조회가 채팅 조회 상한보다 앞이면 거부될 요청까지 Redis 왕복을 친다")
+                    .isLessThan(revocation);
         }
     }
 
@@ -102,7 +116,7 @@ class LiveFilterOrderTest {
                     LiveMetrics.NOOP);
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
-                    enterRateLimitFilter, tokenRevocationFilter,
+                    enterRateLimitFilter, ChatReadRateLimitFixtures.unlimited(), tokenRevocationFilter,
                     mock(JwtAuthenticationEntryPoint.class),
                     mock(JwtAccessDeniedHandler.class));
         }

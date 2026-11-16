@@ -47,6 +47,7 @@ import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
+import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
@@ -66,7 +67,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
                 "management.endpoints.web.exposure.include=health,prometheus"})
 // GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
 // (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
-@Import({ChatBanController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
+@Import({ChatBanController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
         ChatBanReleaseAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("밴 해제 엔드포인트 — 관리자만 관문을 지난다")
 class ChatBanReleaseAuthorizationTest {

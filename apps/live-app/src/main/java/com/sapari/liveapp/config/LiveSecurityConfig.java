@@ -31,6 +31,7 @@ import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.liveapp.security.ChatReadRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.StatelessJwtAuthenticationFilter;
 import com.sapari.liveapp.security.TokenRevocationFilter;
@@ -41,11 +42,12 @@ import com.sapari.liveapp.security.TokenRevocationFilter;
  * <p>시청(조회)은 공개, 라이브 생성/시작/종료 등 변경은 판매자 전용이다. 홈랩이 발급한 access JWT를
  * {@link StatelessJwtAuthenticationFilter}가 서명·claims만으로 검증하며, user DB에 의존하지 않는다.
  *
- * <p><b>필터 셋의 순서가 설계다.</b> 인증({@link StatelessJwtAuthenticationFilter}) → 입장 상한
- * ({@link EnterRateLimitFilter}) → 폐기 조회({@link TokenRevocationFilter}) 이고, 셋 다
+ * <p><b>필터 순서가 설계다.</b> 인증({@link StatelessJwtAuthenticationFilter}) → 입장 상한
+ * ({@link EnterRateLimitFilter}) → 채팅 조회 상한({@link ChatReadRateLimitFilter}) → 폐기 조회
+ * ({@link TokenRevocationFilter}) 이고, 모두
  * {@code AuthorizationFilter} 앞이라 아래 {@code authorizeHttpRequests} 판정은 이미 거둬진
  * 컨텍스트를 본다. 상한이 폐기 조회보다 앞인 이유는 비용이다 — 거부될 요청이 Redis 왕복을
- * 치지 않는다. 그 셋을 바꿔 끼우면 둘 중 하나가 깨진다.
+ * 치지 않는다. 이 순서를 바꿔 끼우면 둘 중 하나가 깨진다.
  *
  * <p>⚠️ <b>아래 {@code permitAll} 목록이 폐기 조회의 실패 방향을 정한다.</b> 공개 경로에서는
  * 인증이 거둬져도 요청이 통과하고 principal 만 {@code null} 이 되므로, 폐기 조회가 실패를
@@ -310,6 +312,7 @@ public class LiveSecurityConfig {
             HttpSecurity http,
             StatelessJwtAuthenticationFilter statelessJwtAuthenticationFilter,
             EnterRateLimitFilter enterRateLimitFilter,
+            ChatReadRateLimitFilter chatReadRateLimitFilter,
             TokenRevocationFilter tokenRevocationFilter,
             JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint,
             JwtAccessDeniedHandler jwtAccessDeniedHandler
@@ -357,16 +360,16 @@ public class LiveSecurityConfig {
                         // ⚠️ 위 세 줄도 같은 모양이지만 건드리지 않는다 — live 의 엔드포인트이고
                         // 이 티켓의 범위가 chat 이다. 같은 성질이라는 사실만 여기 적어 둔다.
                         // ⚠️ HEAD 를 여는 것은 비용 경로의 표면을 넓히는 것이다(본문을 안 보내도
-                        // Postgres 1 + Mongo 1 은 그대로 든다). 그래서 이 커밋보다 앞에
-                        // ChatHistoryRateLimitFilter 가 먼저 들어갔고, 그쪽이 GET 과 HEAD 를
-                        // 같은 버킷으로 센다.
+                        // Postgres 2 + Mongo 1 은 그대로 든다). 그래서 이 커밋보다 앞에
+                        // 이력 상한이 먼저 들어갔고, 지금은 ChatReadRateLimitFilter 가 GET 과
+                        // HEAD 를 같은 버킷으로 센다.
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/lives/{roomId}/chat/history").permitAll()
                         .requestMatchers(HttpMethod.HEAD,
                                 "/api/v1/lives/{roomId}/chat/history").permitAll()
                         // 현재 공지도 이력과 같은 모양이다 — 비회원도 입장 때 공지를 본다. GET 과
                         // HEAD 를 같이 여는 이유와 그 비용은 위 이력 주석과 같고, 상한은 따로 둔
-                        // ChatNoticeRateLimitFilter 가 GET 과 HEAD 를 같은 버킷으로 센다.
+                        // 공지 버킷(ChatReadRateLimitFilter)이 GET 과 HEAD 를 같이 센다.
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/lives/{roomId}/chat/notice").permitAll()
                         .requestMatchers(HttpMethod.HEAD,
@@ -436,12 +439,15 @@ public class LiveSecurityConfig {
                 // SecurityContextHolder 가 채워진 뒤여야 한다. 체인 밖 최상위 필터로 두면
                 // springSecurityFilterChain 자체가 하나의 필터라 그 순서가 보장되지 않는다.
                 .addFilterAfter(enterRateLimitFilter, StatelessJwtAuthenticationFilter.class)
+                // 채팅 조회(이력·공지) 상한도 같은 이유로 인증 뒤, 폐기 조회 앞이다(SPR-203).
+                // 경로가 입장과 겹치지 않아 둘 사이 순서는 결과를 바꾸지 않는다.
+                .addFilterAfter(chatReadRateLimitFilter, EnterRateLimitFilter.class)
                 // 폐기 조회는 상한 <뒤>다 — 상한에 걸려 거부될 입장 요청이 Redis 왕복을 치지
                 // 않게 한다(상한은 CPU 천장이라 그 비용을 막아 주지 못한다). 그런데도
                 // AuthorizationFilter 보다는 앞이라 아래 역할 규칙은 거둬진 컨텍스트를 본다.
                 // 입장 밖 경로는 상한 필터가 EnterPaths.isEnterRequest 로 즉시 통과시키므로
                 // 이 순서가 그쪽 비용을 늘리지 않는다.
-                .addFilterAfter(tokenRevocationFilter, EnterRateLimitFilter.class)
+                .addFilterAfter(tokenRevocationFilter, ChatReadRateLimitFilter.class)
                 .build();
     }
 }
