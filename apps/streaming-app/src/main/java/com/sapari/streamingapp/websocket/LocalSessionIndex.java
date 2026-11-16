@@ -22,7 +22,7 @@ import java.util.function.Consumer;
  * 있는데 집합이 빈" 상태가 구성 자체가 되지 않는다 — 레지스트리의 등록 보상({@code finally})이 무해하다는
  * 논증이 이것에 얹혀 있다. 지키는 칸: {@link #removeSession} 이 빈 집합을 남기게 바꾼 역변이에서
  * streaming-app 328칸 중 6칸이 빨강이다(방 색인 누수 · 시청자 수 캐시 · 마지막으로 보낸 수 · 게이지 ·
- * 자리 키).
+ * 자리 키 · Redis 명부 제거 실패 퇴장).
  */
 final class LocalSessionIndex {
 
