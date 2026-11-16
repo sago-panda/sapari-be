@@ -54,7 +54,17 @@ public class ChatBroadcastSubscriber {
 
     private final TimeProvider timeProvider;
 
-    /** 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수. */
+    /**
+     * 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수.
+     *
+     * <p>⚠️ <b>{@link #route} 가 돌려주는 Mono 는 끝나야 한다.</b> 이 구독은 Pod 의 공유 pub/sub 스트림에
+     * 붙어 있어서, 끝나지 않는 Mono 가 {@code flatMap} 의 동시성(기본 256)을 채우면 이 방만이 아니라
+     * <b>그 Pod 의 모든 방 전달이 멈춘다</b>. 지금은 닿지 않는다 — 세션 매니저의 팬아웃·종료가 동기
+     * {@code Mono.fromRunnable} 이라 구독 즉시 끝난다. 실측(방 A 구독 + 방 A·B 각 2,000건, 가짜 Redis 소스 ·
+     * 실제 브로드캐스터 · 세션 매니저는 스텁): 건당 0.2ms 동기 팬아웃에서 방 A 2,000/2,000 · 수신 4,000/4,000, 내부를
+     * {@code Mono.never()} 로 바꾸면 방 A 256 에서 정지 · 수신 1,151/4,000. 세션 매니저에 소켓 쓰기를
+     * 기다리는 비동기 경로를 넣는 변경이 이 전제를 깬다.
+     */
     public Disposable subscribeRoom(UUID roomId) {
         return broadcaster.subscribe(roomId)
                 // 팬아웃은 Pod 공유 Redis 구독 스레드에서 돈다 — 세션 컨텍스트가 없다. 여기서 room_id 를

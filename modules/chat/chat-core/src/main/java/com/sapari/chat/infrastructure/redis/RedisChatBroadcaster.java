@@ -93,6 +93,7 @@ public class RedisChatBroadcaster implements ChatBroadcaster {
         // ⚠️ 막는 것은 구독자 0 하나다. 가장 느린 구독자가 멈추면 이 소비자도 같이 멈춘다 — publish() 는
         // 모든 구독자가 가져간 만큼만 큐를 비운다(실측: request(5) 에서 멈춘 구독자가 있을 때 2,000건 중
         // 이 소비자가 받은 것 5건, 업스트림 261건에서 정지. 그 구독자를 해제하면 바로 풀린다).
+        // 운영 방 구독자(ChatBroadcastSubscriber)는 그 상태에 닿지 않는다 — 조건은 그쪽 javadoc.
         this.shared.subscribe();
     }
 
