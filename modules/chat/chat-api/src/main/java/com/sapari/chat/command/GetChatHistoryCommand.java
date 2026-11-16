@@ -74,18 +74,6 @@ public record GetChatHistoryCommand(
         }
     }
 
-    /**
-     * {@code afterId} 가 없는 생성자 — live-app 컨트롤러가 지금 이걸로 짓는다.
-     *
-     * <p>남기는 이유: 컨트롤러는 live-app 파일이라 chat 변경과 같은 커밋에 고칠 수 없다. 이 생성자가
-     * 없으면 chat 이 먼저 머지되는 순간 live-app 컴파일이 깨진다. 컨트롤러가 {@code afterId} 를 넘기게
-     * 되면 지워도 된다.
-     */
-    public GetChatHistoryCommand(UUID roomId, UUID requesterId, String requesterRole, String beforeId,
-            Long playbackPositionMs, int size) {
-        this(roomId, requesterId, requesterRole, beforeId, null, playbackPositionMs, size);
-    }
-
     /** 특권 뷰 판정에 쓸 신원이 있는가 — 비회원이면 없다. */
     public boolean hasRequesterIdentity() {
         return requesterId != null;

@@ -30,14 +30,14 @@ class GetChatHistoryCommandTest {
     private static final UUID REQUESTER_ID = UUID.randomUUID();
 
     private GetChatHistoryCommand cursor(UUID requesterId, String requesterRole, int size) {
-        return new GetChatHistoryCommand(ROOM_ID, requesterId, requesterRole, "68000000000000000000000a",
+        return new GetChatHistoryCommand(ROOM_ID, requesterId, requesterRole, "68000000000000000000000a", null,
                 null, size);
     }
 
     @Test
     @DisplayName("roomId 는 필수다")
     void roomIdIsRequired() {
-        assertThatThrownBy(() -> new GetChatHistoryCommand(null, REQUESTER_ID, "BUYER", null, null, 20))
+        assertThatThrownBy(() -> new GetChatHistoryCommand(null, REQUESTER_ID, "BUYER", null, null, null, 20))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("roomId");
     }
@@ -63,7 +63,7 @@ class GetChatHistoryCommandTest {
     @DisplayName("과거 커서와 VOD 위치는 배타다 — 한쪽을 조용히 무시하지 않고 즉시 거부한다")
     void theTwoModesAreExclusive() {
         assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
-                "68000000000000000000000a", 1_000L, 20))
+                "68000000000000000000000a", null, 1_000L, 20))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -91,17 +91,6 @@ class GetChatHistoryCommandTest {
     }
 
     @Test
-    @DisplayName("⭐ afterId 가 없는 6인자 생성자가 남아 있다 — live-app 컨트롤러가 이걸로 짓는다")
-    void theSixArgumentConstructorStillBuildsWithoutAnAfterCursor() {
-        GetChatHistoryCommand command = new GetChatHistoryCommand(ROOM_ID, null, null,
-                "68000000000000000000000a", null, 20);
-
-        assertThat(command.afterId()).isNull();
-        assertThat(command.isAfterCursor()).isFalse();
-        assertThat(command.beforeId()).isEqualTo("68000000000000000000000a");
-    }
-
-    @Test
     @DisplayName("size 는 1~100 이다 — 커서 모드 페이징 크기")
     void sizeIsBounded() {
         assertThatThrownBy(() -> cursor(REQUESTER_ID, "BUYER", 0))
@@ -116,7 +105,7 @@ class GetChatHistoryCommandTest {
     @DisplayName("⭐ VOD 위치는 음수일 수 없다 — 음수면 창이 재생 시작 앞으로 가 조용히 빈 결과가 된다")
     void aNegativePlaybackPositionIsRejected() {
         assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
-                null, -1L, 20))
+                null, null, -1L, 20))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("playbackPositionMs");
     }
@@ -128,7 +117,7 @@ class GetChatHistoryCommandTest {
         // 그 값을 Mongo 로 보낼 때 toEpochMilli() 가 ArithmeticException(long overflow) 을 던진다.
         // 무인증 공개 엔드포인트라 파라미터 하나로 500 을 만들 수 있었다.
         assertThatThrownBy(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
-                null, Long.MAX_VALUE, 20))
+                null, null, Long.MAX_VALUE, 20))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("playbackPositionMs");
     }
@@ -138,6 +127,6 @@ class GetChatHistoryCommandTest {
     void aPositionWithinTheBoundPasses() {
         long twoYears = java.time.Duration.ofDays(730).toMillis();
         assertThatCode(() -> new GetChatHistoryCommand(ROOM_ID, REQUESTER_ID, "BUYER",
-                null, twoYears, 20)).doesNotThrowAnyException();
+                null, null, twoYears, 20)).doesNotThrowAnyException();
     }
 }
