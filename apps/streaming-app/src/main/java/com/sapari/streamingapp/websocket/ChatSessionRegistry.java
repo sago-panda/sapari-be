@@ -11,7 +11,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -110,6 +109,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** 고른 세션에 넣고 끊는 쪽 — 스핀 예산과 드롭·버퍼 초과 처분이 거기 있다. */
     private final SessionOutbound outbound;
+
+    /** 이 Pod 의 세션 명부와 방 색인. */
+    private final LocalSessionIndex index = new LocalSessionIndex();
 
 
     /**
@@ -212,8 +214,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return maxSessionsPerUserPerRoom;
     }
 
-    /** sessionId → (도메인 세션 + 아웃바운드 Sink). 로컬 메모리(이 Pod 한정). */
-    private final Map<String, LocalSession> local = new ConcurrentHashMap<>();
 
     /** Pod 전체의 재등록 타이머 — 세션당 하나가 아니다. 종료 시 해제한다. */
     // volatile — @PostConstruct 가 쓰고 @PreDestroy 가 읽는데 둘이 같은 스레드라는 보장이 계약에
@@ -281,7 +281,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 .onBackpressureDrop(tick -> metrics.heartbeatTickSkipped())
                 .concatMap(tick -> Mono.defer(() -> {
                             long started = System.nanoTime();
-                            return Flux.fromIterable(local.values())
+                            return Flux.fromIterable(index.sessions())
                                     .flatMap(this::reregister)
                                     .then()
                                     // 같은 타이머에 시청자 수 갱신을 얹는다 — 둘 다 "이 Pod 가 주기마다 하는 일"
@@ -331,7 +331,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     Mono<Void> reregister(LocalSession ls) {
         return Mono.defer(() -> {
-                    if (!local.containsKey(ls.sessionId())) {
+                    if (!index.contains(ls.sessionId())) {
                         return Mono.<Void>empty();
                     }
                     return sessionRepository.heartbeat(
@@ -407,7 +407,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 가질 가치가 없다.
      */
     Mono<Void> pushViewerCounts() {
-        return Flux.fromIterable(List.copyOf(roomSessions.keySet()))
+        return Flux.fromIterable(index.roomsSnapshot())
                 .concatMap(this::pushViewerCount)
                 .then();
     }
@@ -419,7 +419,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return sessionRepository.count(roomId)
                 .flatMap(count -> {
                     Long previous = lastPushedCount.put(roomId, count);
-                    if (!roomSessions.containsKey(roomId)) {
+                    if (!index.hasRoom(roomId)) {
                         // 이 회차의 조회가 도는 사이에 방의 마지막 세션이 빠졌다. unregister 가 이미
                         // 항목을 회수했는데 위 put 이 그걸 되살린 것이고, 아무도 재입장하지 않으면
                         // 영구히 남는다 — 방송마다 하나씩 쌓이는 누수다. 자기 쓰기를 되돌린다.
@@ -458,14 +458,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return lastPushedCount.size();
     }
 
-    /**
-     * roomId → 그 방의 sessionId 집합. {@link #local}의 보조 인덱스다.
-     *
-     * <p>방 fan-out이 Pod 전체 세션을 훑지 않게 한다 — 메시지 1건마다 전체 스캔이면 다른 방 세션 수에
-     * 비례해 비용이 붙고, 그걸 이벤트루프에서 한다. 갱신은 {@code compute} 계열로만 해서 등록/해제가
-     * 서로 끼어들지 않게 하고, 방이 비면 항목 자체를 지운다(죽은 방 누적 방지).
-     */
-    private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
 
     /**
      * 같은 사람이 같은 방에 동시에 열 수 있는 세션 수의 상한.
@@ -562,9 +554,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
     }
 
     /**
-     * (유저, 방) → 그 조합의 sessionId 집합. {@link #roomSessions} 와 같은 종류의 보조 인덱스다.
+     * (유저, 방) → 그 조합의 sessionId 집합. 방 색인({@link LocalSessionIndex}) 와 같은 종류의 보조 인덱스다.
      *
-     * <p>세지 않고 {@link #local} 을 훑으면 접속 1건이 Pod 전체 세션 수에 비례한다 — 재접속 폭풍이
+     * <p>세지 않고 {@code local}(명부 — {@link LocalSessionIndex}) 을 훑으면 접속 1건이 Pod 전체 세션 수에 비례한다 — 재접속 폭풍이
      * 정확히 그 둘(접속 수 × 세션 수)이 동시에 큰 구간이라, 상한을 넣으려고 만든 코드가 그 구간의
      * 비용이 된다. 방이 비면 항목을 걷어내는 것도 같은 이유다(죽은 키 누적 방지).
      */
@@ -624,7 +616,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 해제 시각을 알고 있는 동안은 같은 답을 다시 물을 이유가 없으므로 여기에 적어두고 로컬에서 끊는다.
      */
     public void recordRateLimited(String sessionId, long retryAfterSeconds) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return;
         }
@@ -654,7 +646,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 같은 유저의 다른 탭이나 다른 Pod가 소모한 몫을 모른다. "확실히 막혀 있다"만 여기서 답할 수 있다.
      */
     public long rateLimitRetryAfterSeconds(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return 0;
         }
@@ -779,7 +771,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 던질 수 있다. 추론으로 지키는 대신 <b>집행</b>한다 — 실패하면 자리를 되돌린다.
             // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
             // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
-            local.put(sessionId, pending);
+            index.put(sessionId, pending);
 
             // ⚠️ 감사 로그가 <b>상한 검사 뒤</b>에 있다. 한때 register 첫 줄이었는데, 그러면 상한으로
             // 거부된 접속도 "특권 뷰 입장" 으로 남아 감사가 실제 특권 뷰보다 많아진다 — 이 줄의 값이
@@ -797,13 +789,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                         session.role(), sessionId, session.userId(), session.roomId());
             }
 
-            // compute — 집합 생성과 추가를 한 원자 구간에 묶는다. computeIfAbsent 후 add로 나누면 그 사이
-            // 마지막 퇴장이 빈 집합을 걷어내 방금 넣은 세션이 인덱스에서 사라질 수 있다.
-            roomSessions.compute(session.roomId(), (room, sessionIds) -> {
-                Set<String> ids = sessionIds == null ? ConcurrentHashMap.newKeySet() : sessionIds;
-                ids.add(sessionId);
-                return ids;
-            });
+            index.addToRoom(session.roomId(), sessionId);
             // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·
             // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
             //
@@ -845,7 +831,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 하려면 공유 객체가 소비 지점까지 와야 한다({@link OutboundFrame} 에 이유가 적혀 있다).
      */
     public Flux<OutboundFrame> outboundFrames(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         return ls == null ? Flux.empty() : ls.sink().asFlux();
     }
 
@@ -881,7 +867,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // local.put → roomSessions.compute 다) 어느 쪽을 써도 무연산이다 — 한때 "보상 경로에서
         // leaving 이 null 일 수 있어 인자가 필요하다" 를 제약으로 적었는데, 그 순서를 보면 제약이
         // 아니다.
-        LocalSession leaving = local.get(sessionId);
+        LocalSession leaving = index.get(sessionId);
         UUID indexRoom = leaving != null ? leaving.session().roomId() : roomId;
         if (leaving != null) {
             releaseSlot(leaving.session().userId(), leaving.session().roomId(), sessionId);
@@ -998,15 +984,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 그 방에 아무도 다시 안 들어오면 영영 남는다. 방 인덱스와 같은 락 안에서 판단해 그 창을 없앤다.
      */
     private void cacheIfRoomStillLocal(UUID roomId, long count) {
-        roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
-            activeCountCache.put(roomId, new CachedCount(count, System.nanoTime() + ACTIVE_COUNT_CACHE_NANOS));
-            return sessionIds;
-        });
+        index.ifRoomPresent(roomId,
+                () -> activeCountCache.put(roomId, new CachedCount(count, System.nanoTime() + ACTIVE_COUNT_CACHE_NANOS)));
     }
 
     @Override
     public Mono<Void> sendToSession(String sessionId, OutboundMessage message) {
-        return Mono.fromRunnable(() -> outbound.emit(local.get(sessionId), new OutboundFrame(message)));
+        return Mono.fromRunnable(() -> outbound.emit(index.get(sessionId), new OutboundFrame(message)));
     }
 
     @Override
@@ -1015,7 +999,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             SessionOutbound.FanOutBudget budget = outbound.newSharedBudget();
             // 전원이 같은 메시지를 받는다 — 프레임 하나를 공유하므로 직렬화도 한 번이다.
             OutboundFrame frame = new OutboundFrame(message);
-            forEachInRoom(roomId, ls -> outbound.emit(ls, frame, budget));
+            index.forEachInRoom(roomId, ls -> outbound.emit(ls, frame, budget));
         });
     }
 
@@ -1039,7 +1023,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 그래서 계약은 javadoc 이 아니라 테스트가 지킨다
             // (ChatBroadcastSubscriberTest.theResolverReturnsTheSameInstancePerView).
             Map<OutboundMessage, OutboundFrame> frames = new IdentityHashMap<>(4);
-            forEachInRoom(roomId, ls -> {
+            index.forEachInRoom(roomId, ls -> {
                 OutboundMessage message = resolver.apply(ls.session());
                 if (message != null) {
                     outbound.emit(ls, frames.computeIfAbsent(message, OutboundFrame::new), budget);
@@ -1053,7 +1037,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 강퇴는 정책상 종료라 1008 — 프론트가 "재접속하지 말 것"으로 읽는 코드다.
         return Mono.fromRunnable(() -> {
             SessionOutbound.FanOutBudget budget = outbound.newSharedBudget();
-            forEachInRoom(roomId, ls -> {
+            index.forEachInRoom(roomId, ls -> {
                 if (ls.session().userId().equals(userId)) {
                     metrics.sessionCut(SessionCutReason.MODERATION);
                     outbound.terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
@@ -1068,7 +1052,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             SessionOutbound.FanOutBudget budget = outbound.newSharedBudget();
             // 한 사람의 모든 탭이 같은 메시지를 받는다 — 위와 같은 이유로 프레임 하나를 공유한다.
             OutboundFrame frame = new OutboundFrame(message);
-            forEachSessionOf(userId, ls -> outbound.emit(ls, frame, budget));
+            index.forEachSessionOf(userId, ls -> outbound.emit(ls, frame, budget));
         });
     }
 
@@ -1078,53 +1062,20 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 가르는 것은 사유 태그뿐이고, 그래서 호출자가 그것을 넘긴다(제재율과 탈퇴율은 다른 수다).
         return Mono.fromRunnable(() -> {
             SessionOutbound.FanOutBudget budget = outbound.newSharedBudget();
-            forEachSessionOf(userId, ls -> {
+            index.forEachSessionOf(userId, ls -> {
                 metrics.sessionCut(reason);
                 outbound.terminate(ls, CloseStatus.POLICY_VIOLATION, budget.completeDeadline());
             });
         });
     }
 
-    /**
-     * 이 Pod에서 그 사람의 세션을 전부 훑는다.
-     *
-     * <p><b>방 색인을 못 쓴다</b> — 계정 조치는 방을 모른 채로 오고, {@code userId → 세션} 색인은 두지
-     * 않았다. 두면 {@code register}/{@code unregister}마다 동기화 대상이 하나 늘고 그 어긋남이 조용한
-     * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다.
-     *
-     * <p>⚠️ <b>{@link #userRoomSessions} 가 생겼지만 이 경로는 여전히 훑는다.</b> 그 색인의 키는
-     * {@code (userId, roomId)} 쌍이라 "이 사람의 세션 전부" 를 물으면 방을 모르는 채로 전체 항목을
-     * 뒤져야 한다 — 이 스캔보다 싸지 않다. 위 문단의 경고가 틀렸다는 뜻도 아니다: 그 색인에
-     * 정확히 그 조용한 버그가 생길 수 있고(퇴장이 항목을 걷지 않으면 그 유저가 그 방에 영구히
-     * 못 들어온다), 그래서 {@code SessionAdmissionCapTest} 가 그 한 가지를 따로 고정한다. 색인을
-     * 하나 더 두는 값은 <b>메시지마다 도는 경로</b>에서만 나오고, 이 경로는 시간당 몇 건이다.
-     * 12,000 세션 전체 스캔이 58µs다(실측, 워밍업 후 최소값).
-     *
-     * <p><b>비용을 폭발시키는 변수는 이벤트 빈도가 아니라 파드당 세션 수다.</b> 스캔은 선형이 아니다 —
-     * 12,000에서 58µs인데 100,000에서 4.2ms로, 8.3배 입력에 70배 넘게 든다(캐시 미스). 시간당 한 건이어도
-     * 10만 세션이면 한 건이 스레드를 그만큼 잡는다.
-     *
-     * <p>그리고 <b>이벤트 하나가 스캔을 두 번</b> 한다(사유 전송 + 종료). 위 수치는 1회분이므로 실제
-     * 비용은 그 두 배다 — 10만이면 8ms 남짓이다. <b>파드당 2~3만 세션</b>이 다시 판단할 자리다.
-     *
-     * <p>돌 때 밟는 것은 이벤트루프가 아니라 Redis pub/sub I/O 스레드다({@code listenToChannel}이 자기
-     * 연결을 만든다). 시청자 커넥션이 멈추지는 않지만 한가한 스레드도 아니다 — 방 팬아웃과 커맨드 응답이
-     * 같은 곳에 얹힌다.
-     */
-    private void forEachSessionOf(UUID userId, Consumer<LocalSession> action) {
-        for (LocalSession ls : local.values()) {
-            if (ls.session().userId().equals(userId)) {
-                action.accept(ls);
-            }
-        }
-    }
 
     @Override
     public Mono<Void> closeAll(UUID roomId) {
         // 방 종료는 정상 종료(1000). 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다.
         return Mono.fromRunnable(() -> {
             SessionOutbound.FanOutBudget budget = outbound.newSharedBudget();
-            forEachInRoom(roomId, ls -> {
+            index.forEachInRoom(roomId, ls -> {
                 metrics.sessionCut(SessionCutReason.ROOM_ENDED);
                 outbound.terminate(ls, CloseStatus.NORMAL, budget.completeDeadline());
             });
@@ -1133,7 +1084,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** transport 전용: 핸들러가 강제 종료 경로에 연결할 제어 신호. 모르는 세션이면 영영 발화하지 않는다. */
     public Mono<CloseStatus> terminationSignal(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         // 빈 Mono를 주면 즉시 완료돼 멀쩡한 세션이 곧장 닫힌다 — never여야 한다.
         return ls == null ? Mono.never() : ls.terminate().asMono();
     }
@@ -1145,7 +1096,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 유예 시간만큼). 그 창에 들어오는 전송을 막지 않으면 강퇴된 사용자가 계속 보낼 수 있다.
      */
     public boolean isTerminating(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         return ls != null && ls.closeStatus().get() != null;
     }
 
@@ -1158,7 +1109,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * @return 종료가 확인된 세션이면 true. 그 세션은 더 물을 것 없이 전송을 막는다.
      */
     public boolean isRoomKnownEnded(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         return ls != null && ls.roomEnded().get();
     }
 
@@ -1170,7 +1121,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 다음 확인까지의 프레임이 그대로 통과해 이력에 쌓인다 — 막으려던 것이 거의 그대로 남는다.
      */
     public void markRoomEnded(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls != null) {
             ls.roomEnded().set(true);
         }
@@ -1194,7 +1145,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *         이미 종료가 확인된 세션은 {@link #isRoomKnownEnded}가 앞에서 걸러야 한다.
      */
     public boolean shouldRecheckRoomAlive(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return false;
         }
@@ -1211,7 +1162,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 다음 창 길이만큼 확인한 것으로 남는다.
      */
     public void requireRoomAliveRecheck(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls != null) {
             ls.lastRoomAliveCheckNanos().set(System.nanoTime() - ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
         }
@@ -1229,7 +1180,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 않는다(인바운드 필터 주석 참고). 그래서 서버가 먼저 묻는 쪽이어야 한다.
      */
     public void recordInbound(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls != null) {
             ls.lastInboundNanos().set(System.nanoTime());
         }
@@ -1242,7 +1193,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 세션을 또 닫으려 든다.
      */
     public boolean isUnresponsive(String sessionId, Duration deadline) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return false;
         }
@@ -1251,7 +1202,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** 생존 시계를 과거로 밀어 "응답 없음" 상태를 만든다. (테스트 진입점 — 기한을 기다리지 않기 위해) */
     void expireLiveness(String sessionId, Duration deadline) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls != null) {
             ls.lastInboundNanos().addAndGet(-deadline.toNanos());
         }
@@ -1259,7 +1210,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** 마지막 확인 시각을 과거로 밀어 창이 열린 상태를 만든다. (테스트 진입점 — 30초를 기다리지 않기 위해) */
     void expireRoomAliveWindow(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls != null) {
             ls.lastRoomAliveCheckNanos().addAndGet(-ROOM_ALIVE_RECHECK_INTERVAL_NANOS);
         }
@@ -1274,7 +1225,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * @return 답해도 되면 true. false면 호출자는 아무것도 보내지 않는다.
      */
     public boolean shouldReplyToRejection(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return false;   // 이미 사라진 세션 — 되돌려 보낼 곳이 없다
         }
@@ -1293,7 +1244,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>모르는 세션은 버리지 않는다 — 상한은 등록된 세션의 상태라 셀 것이 없다.
      */
     public boolean shouldDropInbound(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         return ls != null && !admitInbound(ls.inboundAllowedAtNanos(), System.nanoTime());
     }
 
@@ -1326,7 +1277,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 유계가 아니다). 방금 권위 있게 확인했으니 여기서 닫는다.
      */
     public void terminateKicked(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return;
         }
@@ -1344,7 +1295,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 사유는 앞서 보낸 SYSTEM(ROOM_ENDED)이 전달한다(정상 경로와 동일).
      */
     public void terminateRoomEnded(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return;
         }
@@ -1385,7 +1336,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 늘어난다.
      */
     public void terminateLifetimeExpired(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return;
         }
@@ -1411,7 +1362,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * <p>정상 종료(1000)다 — 클라가 살아 있다면 다시 붙으면 되고, 죽었다면 받을 쪽이 없다.
      */
     public void terminateUnresponsive(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         if (ls == null) {
             return;
         }
@@ -1423,34 +1374,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     /** transport 전용: 이 세션을 어떤 코드로 닫을지. 서버가 정한 사유가 없으면(클라가 먼저 끊는 등) 정상 종료. */
     public CloseStatus closeStatusOf(String sessionId) {
-        LocalSession ls = local.get(sessionId);
+        LocalSession ls = index.get(sessionId);
         CloseStatus status = ls == null ? null : ls.closeStatus().get();
         return status == null ? CloseStatus.NORMAL : status;
     }
 
 
-    /**
-     * 방 인덱스를 타고 해당 방 세션만 순회한다. Pod 전체 스캔을 피하는 자리라 방 fan-out은 모두 여기를 통한다.
-     *
-     * <p>인덱스에는 있지만 {@link #local}에서 이미 빠진 세션은 건너뛴다 — 퇴장 중인 세션과 겹칠 수 있고,
-     * 그 세션은 어차피 곧 닫힌다.
-     */
-    private void forEachInRoom(UUID roomId, Consumer<LocalSession> action) {
-        Set<String> sessionIds = roomSessions.get(roomId);
-        if (sessionIds == null) {
-            return;
-        }
-        for (String sessionId : sessionIds) {
-            LocalSession ls = local.get(sessionId);
-            if (ls != null) {
-                action.accept(ls);
-            }
-        }
-    }
-
     /** 인덱스가 추적 중인 방 수. (테스트 진입점 — 방이 비면 항목이 사라지는지 확인용) */
     int trackedRoomCount() {
-        return roomSessions.size();
+        return index.roomCount();
     }
 
     /**
@@ -1473,17 +1405,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 손으로 쓴 스텁으로 바꾸자 잔존이 0 이 됐다.
      */
     public int localSessionCount() {
-        return local.size();
+        return index.sessionCount();
     }
 
     /** 이 Pod 가 중계 중인 방 수 — 게이지용. 세션 수와 함께 봐야 "방당 세션" 이 나온다. */
     public int localRoomCount() {
-        return roomSessions.size();
+        return index.roomCount();
     }
 
 
     /**
-     * {@link #local} 과 방 색인(과 그 수명을 따르는 캐시 둘)을 되돌린다. <b>자리는 건드리지 않는다.</b>
+     * {@code local} 과 방 색인(과 그 수명을 따르는 캐시 둘)을 되돌린다. <b>자리는 건드리지 않는다.</b>
      *
      * <p>퇴장과 <b>등록 실패 보상</b>이 같은 걷기를 쓰도록 한 곳에 둔다. 둘이 따로 있으면 한쪽만
      * 빠뜨리는 변경이 조용히 들어온다 — 실제로 그랬다: 보상이 자리만 되돌리던 동안 {@code local}
@@ -1491,7 +1423,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * {@code local.get} 으로 키를 만들어 자리를 못 걷는다(테스트가 7건 누출로 잡았다).
      *
      * <p>⚠️ <b>자리를 여기 두지 않는 이유가 있다.</b> 한때 이 메서드가 자리까지 되돌렸고 그 키를
-     * {@code local.get(sessionId)} 으로 만들었다. 그러면 자리 반납이 "{@code local} 에 항목이 있을
+     * {@code index.get(sessionId)} 으로 만들었다. 그러면 자리 반납이 "{@code local} 에 항목이 있을
      * 때" 로 좁아진다. 실측: 그 상태에서 {@code local.put} 직전에 던지게 하면 자리 다섯이 새고 그
      * 뒤 거부가 {@code TOO_MANY_SESSIONS} 로 바뀐다. 자리는 호출부가 <b>인자에서 키를 만들어</b>
      * 무조건 되돌린다 — 던진 지점이 어디든 같은 키가 나오므로 그 조건에 기대지 않는다.
@@ -1513,16 +1445,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
      *               한다(등재를 그 값으로 했으므로).
      */
     private void rollbackLocalIndexes(String sessionId, UUID roomId) {
-        local.remove(sessionId);
-        // 방이 비면 항목까지 걷어낸다 — 남기면 방송이 끝난 방이 계속 쌓인다(인덱스 자체가 누수원이 됨).
-        roomSessions.computeIfPresent(roomId, (room, sessionIds) -> {
-            sessionIds.remove(sessionId);
-            if (sessionIds.isEmpty()) {
-                activeCountCache.remove(roomId);   // 인덱스와 같은 수명 — 남기면 이쪽이 누수원이 된다
-                lastPushedCount.remove(roomId);    // 같은 이유 — 방이 사라지면 마지막 값도 쓸모가 없다
-                return null;
-            }
-            return sessionIds;
+        index.removeSession(sessionId, roomId, () -> {
+            activeCountCache.remove(roomId);   // 인덱스와 같은 수명 — 남기면 이쪽이 누수원이 된다
+            lastPushedCount.remove(roomId);    // 같은 이유 — 방이 사라지면 마지막 값도 쓸모가 없다
         });
     }
 
@@ -1584,7 +1509,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 세션 하나씩 돈다. 자리를 선반납해도 그 수거가 늦어지지 않는다(다음 틱이 간격 하나 안에 온다).
      * 자리 회계와 종료를 가른 것이 이 설계의 값이다.
      *
-     * <p>그래서 거둔 세션이 {@link #local} 에는 잠깐 남는다 — {@code (유저, 방)}당 실제 세션 수가
+     * <p>그래서 거둔 세션이 {@code local} 에는 잠깐 남는다 — {@code (유저, 방)}당 실제 세션 수가
      * <b>최대 2배(10), 지속 ≤8초</b>가 된다. 그 수는 종료 상한 둘에서 나온다:
      * {@code FORCED_CLOSE_GRACE 3s + CLOSE_FLUSH_TIMEOUT 5s}. 그리고 reap 은 키당
      * <b>{@code livenessDeadline + pingInterval}</b>(기본 120초)에 한 번보다 자주 발동할 수 없다 —
@@ -1603,7 +1528,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 써서 기다리지 않기 때문이다 — 그 구성에서는 세션이 한 개라 위 증가가 문제가 되지 않는다.
      * 즉 위 수는 <b>운영 기본값에서의</b> 것이다.
      *
-     * <p>그 창이 파생시키는 것 둘, 알고 둔다. 첫째, 거둔 세션이 아직 {@link #local} 에 있으므로
+     * <p>그 창이 파생시키는 것 둘, 알고 둔다. 첫째, 거둔 세션이 아직 {@code local} 에 있으므로
      * {@link #reregister} 의 {@code containsKey} 가드를 통과해 하트비트를 한두 주기 더 받는다.
      * 둘째, 그래서 같은 창의 Redis 명부가 최대 2배의 항목을 든다 — 다만 <b>보고되는 시청자 수는
      * 바뀌지 않는다</b>(그 수가 {@code HVALS distinct} 라 같은 유저의 중복은 세지 않고, 이 창의
