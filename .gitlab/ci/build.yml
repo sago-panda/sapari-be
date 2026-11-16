@@ -61,8 +61,27 @@ build:
   # build 없이 리뷰만 돌아, "빌드가 깨진 MR 에 리뷰 토큰을 쓰지 않는다" 가 절반만 참이 된다.
   # 대가는 재리뷰마다 빌드가 한 번 더 도는 것이고, 그것이 맞는 동작이다 — 재리뷰 시점의
   # 코드가 빌드되는지는 첫 리뷰 때와 별개다.
+  #
+  # MR 은 빌드 입력이 바뀐 경우에만 돈다. 문서(AGENTS.md 등)·.claude/·infra/ 만 고친 MR 은 build 가
+  # 생기지 않는다. 목록은 '빌드가 읽는 것' 이다 — 여기서 빠진 경로를 테스트나 빌드 스크립트가 읽게
+  # 되면 그 변경은 검증 없이 머지되므로, 그런 경로가 생기면 이 목록에 같이 넣는다.
+  # db/ 는 테스트가 마이그레이션 SQL 을 런타임에 읽어서 들어 있다(아래 --build-cache 주석 참고).
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - apps/**/src/**/*
+        - modules/**/src/**/*
+        - common/**/src/**/*
+        - storage/**/src/**/*
+        - architecture-test/**/*
+        - db/**/*
+        - "**/build.gradle"
+        - settings.gradle
+        - gradle/**/*
+        - gradlew
+        - gradlew.bat
+        - .gitlab-ci.yml
+        - .gitlab/ci/build.yml
     - if: '$FORCE_REVIEW == "true"'
   # 앱 설정은 이 클론에 없다 — application*.yaml 이 .gitignore 대상이다. 종전에는 그 때문에
   # 컨텍스트를 띄우는 테스트를 @Tag("context") 로 CI 에서 제외했는데, 그 제외는 2026-10-31 에
@@ -109,7 +128,13 @@ build:
       - .gradle/caches
   script:
     # architecture-test:test 는 build 에 포함된다. 명시하면 어느 검사가 막았는지 로그에서 갈린다.
-    - ./gradlew build --console=plain
+    # --build-cache: 입력이 그대로인 모듈의 test 는 다시 돌지 않고 FROM-CACHE 로 끝난다. 캐시는
+    # GRADLE_USER_HOME 아래(.gradle/caches/build-cache-1)라 위 cache 경로에 이미 실린다 — 브랜치별
+    # 캐시이므로 효과는 같은 MR 의 두 번째 push 부터다.
+    # 캐시가 옳으려면 테스트가 읽는 파일이 전부 test 입력이어야 한다. 런타임에 db/migration 을 읽는
+    # 모듈(chat-core · live-app · product-core)은 build.gradle 에 inputs.dir 로 선언돼 있다. 새 테스트가
+    # 저장소의 다른 파일을 읽으면 같이 선언할 것 — 빠지면 그 파일만 바꾼 MR 이 옛 결과로 통과한다.
+    - ./gradlew build --build-cache --console=plain
   artifacts:
     when: on_failure # 통과하면 남길 것이 없다
     paths:
