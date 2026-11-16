@@ -989,6 +989,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return status == null ? CloseStatus.NORMAL : status;
     }
 
+    /** 자리 맵의 (유저, 방) 항목 수. (테스트 진입점 — 자리가 다 비면 항목이 사라지는지 확인용) */
+    int trackedSlotCount() {
+        return slots.trackedSlotKeys();
+    }
+
 
     /** 인덱스가 추적 중인 방 수. (테스트 진입점 — 방이 비면 항목이 사라지는지 확인용) */
     int trackedRoomCount() {

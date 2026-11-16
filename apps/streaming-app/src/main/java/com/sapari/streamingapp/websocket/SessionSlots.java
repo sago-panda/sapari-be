@@ -192,6 +192,11 @@ final class SessionSlots {
         return dead.size();
     }
 
+    /** 자리 맵의 (유저, 방) 항목 수 — 빈 항목이 걷히는지 재는 테스트 진입점. */
+    int trackedSlotKeys() {
+        return userRoomSessions.size();
+    }
+
     long slotsReaped() {
         return slotsReaped.get();
     }
