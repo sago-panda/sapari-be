@@ -165,6 +165,10 @@ A new UUID is the unsafe retry.
 
 ## Sessions & shutdown (`ChatSessionRegistry`, streaming-app)
 
+- `ChatSessionRegistry` is the `ChatSessionManager` facade and keeps register/unregister ordering, per-session
+  state and the terminate paths. It delegates sink writes and close budgets to `SessionOutbound`, the roster and
+  room index to `LocalSessionIndex`, viewer count and the heartbeat timer to `ViewerCounts`, and per-(user, room)
+  slots to `SessionSlots`.
 - The outbound buffer is **256 and bounded**. Overflow → close 1013; emit contention → drop that message and
   keep the session. Never merge the two.
 - **Close codes:** 1000 room end / lifetime expiry / liveness failure · 1008 entry denial, kick, ban, withdrawal ·
@@ -236,7 +240,7 @@ A new UUID is the unsafe retry.
 ## Viewer count and roster
 
 - `count` is `HVALS` + distinct — people, not tabs; `HLEN` is a different number (pinned by the repository
-  test). The cache + in-flight merge in `ChatSessionRegistry` is the fix for its cost. The residual tail is
+  test). The cache + in-flight merge in `ViewerCounts` is the fix for its cost. The residual tail is
   head-of-line blocking on the one shared Lettuce connection, not Redis: the same load through a separate
   connection factory dropped p99 from 113ms to 12ms (measured), so a dedicated connection for this read is the
   cheap answer if it ever matters.
