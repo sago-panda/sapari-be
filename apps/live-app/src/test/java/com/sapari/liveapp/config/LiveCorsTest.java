@@ -38,6 +38,7 @@ import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
 import com.sapari.liveapp.security.EnterRateLimiter;
@@ -144,7 +145,7 @@ class LiveCorsTest {
                     mock(AccessTokenRevocationChecker.class), mock(SessionRevocationChecker.class), LiveMetrics.NOOP);
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
-                    enterRateLimitFilter, tokenRevocationFilter, entryPoint, mock(JwtAccessDeniedHandler.class));
+                    enterRateLimitFilter, ChatReadRateLimitFixtures.unlimited(), tokenRevocationFilter, entryPoint, mock(JwtAccessDeniedHandler.class));
         }
 
         @Bean

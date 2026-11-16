@@ -40,6 +40,7 @@ import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
+import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.chat.domain.exception.ChatKickContendedException;
@@ -82,7 +83,7 @@ import java.time.ZoneOffset;
 // 스캔이 없고, 스캔이 없으면 @WebMvcTest 의 controllers 지정만으로는 빈이 생기지 않아 404 가 된다.
 // GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
 // (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
-@Import({ChatModerationController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
+@Import({ChatModerationController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
         ChatKickAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("강퇴 엔드포인트 — 판매자와 관리자만 관문을 지난다")
 class ChatKickAuthorizationTest {
