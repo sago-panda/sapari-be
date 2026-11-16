@@ -3,6 +3,7 @@ package com.sapari.streamingapp.websocket;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 
@@ -293,30 +294,35 @@ class ViewerCountPushTest {
         // given: 첫 회차만 실패하는 레지스트리. 오늘 운영 코드에서는 회차 단위 onError 에 도달하지
         // 않는다(잎 셋이 모두 흡수한다) — 그래서 이 테스트가 그 자리를 직접 만든다. 막으려는 것은
         // "잎 하나가 흡수를 빼먹는 변경" 이고, 그때 깨지는 것은 한 회차가 아니라 이 파드의 관측 전부다.
+        //
+        // 흡수를 빼먹은 잎은 회차 끝의 지표 호출로 만든다 — 운영 구현은 safe() 로 감싸지만 포트 계약이
+        // 그걸 요구하지는 않고, 그 호출은 회차 안의 다른 흡수(재등록 · 갱신) 바깥이라 예외가 회차 단위까지
+        // 올라간다. 한때 이 칸은 레지스트리를 상속해 pushViewerCounts 를 덮었는데, 회차가 ViewerCounts 로
+        // 옮겨 간 뒤로 그 덮어쓰기는 타이머가 부르지 않는다(회차 0 으로 빨강이었다).
         given(sessionRepository.heartbeatInterval()).willReturn(Duration.ofMillis(30));
         given(sessionRepository.count(roomId)).willReturn(Mono.just(7L));
         AtomicInteger rounds = new AtomicInteger();
-        ChatSessionRegistry failingFirstRound = new ChatSessionRegistry(
-                sessionRepository, new ChatPermissionPolicy(), ChatMetrics.NOOP) {
-            @Override
-            Mono<Void> pushViewerCounts() {
-                if (rounds.incrementAndGet() == 1) {
-                    return Mono.error(new IllegalStateException("회차 실패"));
-                }
-                return super.pushViewerCounts();
+        ChatMetrics metrics = mock(ChatMetrics.class);
+        willAnswer(invocation -> {
+            if (rounds.incrementAndGet() == 1) {
+                throw new IllegalStateException("회차 실패");
             }
-        };
+            return null;
+        }).given(metrics).heartbeatRoundCompleted(any());
+        ChatSessionRegistry failingFirstRound = new ChatSessionRegistry(
+                sessionRepository, new ChatPermissionPolicy(), metrics);
         failingFirstRound.register("s1", new ChatSession(roomId, buyerId, ChatRole.BUYER,
                 "닉", "e@example.com", false)).block(VERIFY_CEILING);
         List<OutboundMessage> frames = new CopyOnWriteArrayList<>();
         failingFirstRound.outbound("s1").subscribe(frames::add);
 
-        // when: 1회차 실패 → 2회차가 7 을 보낸다. 흡수가 없으면 1회차에서 바깥 subscribe() 가
-        // 끝나므로 2회차가 아예 오지 않고 프레임도 영원히 없다.
+        // when: 1회차가 7 을 보낸 뒤 회차 끝에서 실패 → 2회차가 돈다. 흡수가 없으면 1회차에서 바깥
+        // subscribe() 가 끝나므로 2회차가 아예 오지 않는다. 프레임은 1회차가 이미 보냈으므로
+        // 생존 신호가 못 된다 — 회차 수를 기다린다.
         failingFirstRound.startHeartbeat();
         try {
             long deadline = System.nanoTime() + VERIFY_CEILING.toNanos();
-            while (frames.isEmpty() && System.nanoTime() - deadline < 0) {
+            while (rounds.get() < 2 && System.nanoTime() - deadline < 0) {
                 Thread.onSpinWait();
             }
         } finally {

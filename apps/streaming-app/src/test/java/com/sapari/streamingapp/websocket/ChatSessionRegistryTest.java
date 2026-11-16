@@ -1485,9 +1485,11 @@ class ChatSessionRegistryTest {
      */
     @SuppressWarnings("unchecked")
     private java.util.Map<UUID, Mono<Long>> inFlightCounts() throws Exception {
-        java.lang.reflect.Field field = ChatSessionRegistry.class.getDeclaredField("inFlightCounts");
+        java.lang.reflect.Field owner = ChatSessionRegistry.class.getDeclaredField("viewerCounts");
+        owner.setAccessible(true);
+        java.lang.reflect.Field field = ViewerCounts.class.getDeclaredField("inFlightCounts");
         field.setAccessible(true);
-        return (java.util.Map<UUID, Mono<Long>>) field.get(registry);
+        return (java.util.Map<UUID, Mono<Long>>) field.get(owner.get(registry));
     }
 
     /**
