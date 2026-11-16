@@ -116,14 +116,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     private static final long DEFAULT_COMPLETE_SPIN_NANOS = Duration.ofMillis(50).toNanos();
 
-    /**
-     * 드롭 로그 솎아내기 간격 — 드롭이 몰리는 상황이 곧 CPU 포화라 건당 로그가 상황을 악화시킨다.
-     * <b>건수가 아니라 경과시간</b>으로 센다: 건수 기준은 카운터가 프로세스 생애 누적이라 두 번째 이후의
-     * 짧은 버스트가 통째로 침묵한다 — 드롭은 실제 메시지 유실이라 "조용한 유실이 되지 않게"라는
-     * 이 클래스의 목표와 정면으로 어긋난다.
-     */
-    private static final long DROP_LOG_INTERVAL_NANOS = Duration.ofSeconds(10).toNanos();
-
     private final ChatSessionRepository sessionRepository;   // Redis HASH 어댑터(T6) — 크로스 Pod activeCount
 
     /**
@@ -391,7 +383,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 })
                 .onErrorResume(e -> {
                     long failures = heartbeatFailures.incrementAndGet();
-                    if (shouldLogReregisterFail()) {
+                    if (reregisterFailLog.tryAcquire()) {
                         log.warn("세션 명부 재등록 실패 — 다음 주기가 받는다(누적 {}건) 표본 sessionId={} "
                                         + "표본 roomId={} cause={}", failures, ls.sessionId(),
                                 ls.session().roomId(), e.getClass().getSimpleName());
@@ -497,7 +489,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 .onErrorResume(e -> {
                     // 수를 모르면 보내지 않는다 — 다음 회차가 받는다. 여기서 터뜨리면 그 뒤로 이 Pod 의
                     // 모든 방 갱신이 멈춘다(concatMap 상류가 끝난다).
-                    if (shouldLogViewerPushFail()) {
+                    if (viewerPushFailLog.tryAcquire()) {
                         log.warn("시청자 수 갱신 실패 — 이번 회차 skip(다음 회차가 받는다) roomId={} cause={}",
                                 roomId, e.getClass().getSimpleName());
                     }
@@ -628,9 +620,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 죽은 소켓이 들고 있던 자리를 거둔 누적 수. 거부와 짝으로 봐야 공격과 핸드오버가 갈린다. */
     private final AtomicLong slotsReaped = new AtomicLong();
 
-    /** 상한 거부 로그를 마지막으로 남긴 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
-    private final AtomicLong lastAdmissionCapLogNanos =
-            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+    /** 상한 거부 로그 솎아내기. */
+    private final LogThrottle admissionCapLog = new LogThrottle();
 
     /**
      * 방별 시청자 수 캐시. 입장할 때마다 Redis HASH를 통째로 읽어오는 비용을 끊는다.
@@ -653,9 +644,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 수명 상한으로 끊은 누적 수 — 로그를 솎아도 규모는 남긴다. */
     private final AtomicLong lifetimeExpiredCount = new AtomicLong();
 
-    /** 수명 상한 로그를 마지막으로 남긴 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다. */
-    private final AtomicLong lastLifetimeExpiryLogNanos =
-            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+    /** 수명 상한 로그 솎아내기. */
+    private final LogThrottle lifetimeExpiryLog = new LogThrottle();
 
     /** 만든 fan-out 공유 예산 수 — fan-out당 하나라는 불변식을 테스트가 고정한다({@link #budgetsCreated}). */
     private final LongAdder budgetsCreated = new LongAdder();
@@ -669,26 +659,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
     /** 시청자 수 캐시 수명. 짧게 잡아도 몰리는 순간의 중복 조회는 대부분 걷힌다. */
     private static final long ACTIVE_COUNT_CACHE_NANOS = Duration.ofSeconds(3).toNanos();
 
-    /**
-     * emit 경합 드롭 로그를 마지막으로 남긴 시각. 첫 발생이 반드시 남도록 간격만큼 과거로 초기화한다.
-     *
-     * <p>⚠️ <b>사유마다 따로다.</b> 한때 이 래치 하나를 세 실패 모드가 공유했고(경합 드롭 · 재등록
-     * 실패 · 시청자 수 갱신 실패), 그러면 먼저 찍은 쪽이 다른 사유의 <b>첫 발생</b>을 통째로 덮는다.
-     * 재등록 실패와 시청자 수 갱신 실패는 같은 타이머 회차에서 연달아 나므로 10초 창이 아니라
-     * <b>한 회차</b> 안에서 서로를 가렸다. 이 저장소가 같은 결함을 이미 두 번 이름 붙여 고쳤다
-     * ({@code EntryGate} · {@code SendChatService}) — 형제 둘({@link #lastAdmissionCapLogNanos} ·
-     * {@link #lastLifetimeExpiryLogNanos})이 그 결론이고 이 셋이 마지막으로 남은 공유였다.
-     */
-    private final AtomicLong lastContentionDropLogNanos =
-            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
-
-    /** 재등록 실패 로그를 마지막으로 남긴 시각. {@link #lastContentionDropLogNanos} 의 사유별 짝이다. */
-    private final AtomicLong lastReregisterFailLogNanos =
-            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
-
-    /** 시청자 수 갱신 실패 로그를 마지막으로 남긴 시각. {@link #lastContentionDropLogNanos} 의 사유별 짝이다. */
-    private final AtomicLong lastViewerPushFailLogNanos =
-            new AtomicLong(System.nanoTime() - DROP_LOG_INTERVAL_NANOS);
+    /** 사유별 로그 솎아내기 — 경합 드롭 · 재등록 실패 · 시청자 수 갱신 실패. 공유하지 않는 이유는 {@link LogThrottle}. */
+    private final LogThrottle contentionDropLog = new LogThrottle();
+    private final LogThrottle reregisterFailLog = new LogThrottle();
+    private final LogThrottle viewerPushFailLog = new LogThrottle();
 
     /**
      * 한 커넥션의 채널 묶음.
@@ -848,7 +822,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         try {
             if (!admitted[0]) {
                 long capped = admissionCapped.incrementAndGet();
-                if (shouldLogAdmissionCap()) {
+                if (admissionCapLog.tryAcquire()) {
                     // 표본 하나와 Pod 누적을 함께 적는다 — 드롭 로그와 같은 표기다. 이 줄이 늘어나면
                     // 공격이 아니라 상한이 낮은 것일 수 있으니, 사람이 그 둘을 가를 수 있게 둘 다 남긴다.
                     log.warn("동시 세션 상한 초과로 입장 거부 — 표본 userId={} 표본 roomId={} 상한={} 누적거부={}",
@@ -1485,7 +1459,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 전부 간격 솎기를 쓰는 근거와 같다. 누적 수는 함께 남겨 규모를 잃지 않는다.
         metrics.sessionCut(SessionCutReason.LIFETIME);
         long expired = lifetimeExpiredCount.incrementAndGet();
-        if (shouldLogLifetimeExpiry()) {
+        if (lifetimeExpiryLog.tryAcquire()) {
             log.info("세션 수명 상한 — 종료(재접속으로 권위 재평가) 표본 sessionId={} 표본 roomId={} 누적={}",
                     sessionId, ls.session().roomId(), expired);
         }
@@ -1638,7 +1612,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // 로그는 솎아낸다 — 드롭이 나는 상황이 곧 CPU 포화라, 건당 동기 로그가 그걸 더 악화시킨다.
             metrics.deliveryDropped(DeliveryStage.SESSION_EMIT_CONTENTION);
             long dropped = droppedOnContention.incrementAndGet();
-            if (shouldLogContentionDrop()) {
+            if (contentionDropLog.tryAcquire()) {
                 // id는 이 창을 연 한 건의 것이고 누적은 Pod 전역이다 — "이 세션이 N건"으로 읽히지 않게 표기한다
                 log.warn("경합 재시도 소진 — 메시지 드롭(세션 유지) 표본 sessionId={} 표본 roomId={} 누적드롭={}",
                         ls.sessionId(), ls.session().roomId(), dropped);
@@ -1659,14 +1633,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 곱해지지 않는다 — 방 fan-out은 방 전체 중계를 담당하는 Redis 구독 스레드 위에서 돈다.
      */
     private record FanOutBudget(long emitDeadline, long completeDeadline) {
-    }
-
-    /** 수명 상한 로그 간격 — 드롭 로그와 같은 규율이다(간격당 1건, 첫 발생은 반드시). */
-    private boolean shouldLogLifetimeExpiry() {
-        long now = System.nanoTime();
-        long last = lastLifetimeExpiryLogNanos.get();
-        return now - last >= DROP_LOG_INTERVAL_NANOS
-                && lastLifetimeExpiryLogNanos.compareAndSet(last, now);
     }
 
     /**
@@ -1838,14 +1804,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return slotsReaped.get();
     }
 
-    /** 마지막 상한 거부 로그로부터 간격이 지났으면 true. {@link #shouldLogContentionDrop()} 과 같은 꼴이다. */
-    private boolean shouldLogAdmissionCap() {
-        long now = System.nanoTime();
-        long last = lastAdmissionCapLogNanos.get();
-        return now - last >= DROP_LOG_INTERVAL_NANOS
-                && lastAdmissionCapLogNanos.compareAndSet(last, now);
-    }
-
     /**
      * 동시 세션 상한으로 거부한 누적 수.
      *
@@ -1855,27 +1813,6 @@ public class ChatSessionRegistry implements ChatSessionManager {
      */
     public long admissionCapped() {
         return admissionCapped.get();
-    }
-
-    /** 마지막 드롭 로그로부터 간격이 지났으면 true. 경쟁 시 CAS로 한 스레드만 통과한다. */
-    private boolean shouldLogContentionDrop() {
-        return shouldLog(lastContentionDropLogNanos);
-    }
-
-    /** 재등록 실패 로그 간격. 경합 드롭과 <b>따로</b> 센다 — 공유하면 한 회차가 서로를 가린다. */
-    private boolean shouldLogReregisterFail() {
-        return shouldLog(lastReregisterFailLogNanos);
-    }
-
-    /** 시청자 수 갱신 실패 로그 간격. 재등록 실패와 같은 회차에 나므로 반드시 따로다. */
-    private boolean shouldLogViewerPushFail() {
-        return shouldLog(lastViewerPushFailLogNanos);
-    }
-
-    private static boolean shouldLog(AtomicLong latch) {
-        long now = System.nanoTime();
-        long last = latch.get();
-        return now - last >= DROP_LOG_INTERVAL_NANOS && latch.compareAndSet(last, now);
     }
 
     /** 세션 하나를 위한 예산 — 단건 전송과 단건 종료가 쓴다. 세지 않는다({@link #newSharedBudget} 참고). */
