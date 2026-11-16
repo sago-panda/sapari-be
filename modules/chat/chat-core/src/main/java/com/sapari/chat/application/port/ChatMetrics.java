@@ -91,6 +91,15 @@ public interface ChatMetrics {
     void subscriptionResubscribed(ChatSubscription subscription);
 
     /**
+     * 채팅 pub/sub 패턴 구독이 봉투 1건을 받았다. 인자는 본문의 UTF-8 바이트 수다.
+     *
+     * <p>패턴 구독이라 이 Pod 에 세션이 없는 방의 메시지도 전부 받는다 — 함대 전체의 채팅이 Pod 마다 한 번씩
+     * 흘러든다. Pod 전체의 합이 그 구독이 쓰는 Redis egress 에서 채널명·패턴명·프로토콜 틀을 뺀 양이고, 구독 방식을
+     * 바꿀지는 이 값으로 판단한다.
+     */
+    void pubsubMessageReceived(int payloadBytes);
+
+    /**
      * 탈퇴 신청 기록을 쓰지 못했다 — 그 사람은 탈퇴 전에 받아 둔 룸 토큰이 만료될 때까지 다시 들어올 수
      * 있다. 끊기는 그대로 진행되므로 사용자 쪽 증상이 없고, 이 수가 유일한 신호다.
      */
@@ -136,6 +145,7 @@ public interface ChatMetrics {
         @Override public void dictionaryFastPathLost() { }
         @Override public void persistTimedOut(PersistStage stage) { }
         @Override public void subscriptionResubscribed(ChatSubscription subscription) { }
+        @Override public void pubsubMessageReceived(int payloadBytes) { }
         @Override public void withdrawalRecordFailed() { }
         @Override public void inboundFrameDropped() { }
         @Override public void roomFanOutCompleted(Duration took) { }

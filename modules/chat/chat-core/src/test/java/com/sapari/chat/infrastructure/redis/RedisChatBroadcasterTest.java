@@ -320,6 +320,68 @@ class RedisChatBroadcasterTest {
         assertThat(subscribeCount.get()).isGreaterThan(1);   // 실제로 다시 붙었다
     }
 
+    @Test
+    @DisplayName("수신 지표는 로컬 구독이 없는 방과 깨진 채널까지 전부 UTF-8 바이트로 센다")
+    void counts_every_received_message_in_utf8_bytes() {
+        // given: 구독자가 없는 방 · 깨진 채널 — 둘 다 Redis 가 이 Pod 에 보낸 양이다.
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        Sinks.Many<ReactiveSubscription.Message<String, String>> source = Sinks.many().multicast().onBackpressureBuffer();
+        ReactiveStringRedisTemplate template = mock(ReactiveStringRedisTemplate.class);
+        doReturn(source.asFlux()).when(template).listenToPattern("chat:pubsub:*");
+        new RedisChatBroadcaster(template, new MicrometerChatMetrics(meters));
+
+        // when: 한글 2자(6바이트) · ASCII 3바이트 · 본문 null(0바이트, 건수에는 든다)
+        source.tryEmitNext(message("chat:pubsub:" + UUID.randomUUID(), "안녕"));
+        source.tryEmitNext(message("chat:pubsub:not-a-uuid", "abc"));
+        source.tryEmitNext(message("chat:pubsub:" + UUID.randomUUID(), null));
+
+        // then
+        var received = meters.get("chat.pubsub.received").summary();
+        assertThat(received.count()).isEqualTo(3);
+        assertThat(received.totalAmount())
+                .as("문자 수(5)가 아니라 UTF-8 바이트 수(9)여야 egress 와 같은 단위다")
+                .isEqualTo(9);
+    }
+
+    /**
+     * 마지막 방 구독이 해제된 뒤에도 공유 스트림이 계속 비워져야 한다. 상시 소비자가 없으면 {@code publish()} 가
+     * 업스트림 요청을 멈춰, 그동안의 메시지가 쌓였다가 다음 구독자에게 실시간처럼 넘어간다.
+     */
+    @Test
+    @DisplayName("⭐ 구독자가 0 으로 돌아간 동안의 메시지는 다음 구독자에게 넘어가지 않는다")
+    void messages_while_no_room_is_subscribed_are_not_replayed() throws Exception {
+        // given: 방을 구독해 메시지를 한 건 받은 뒤 해제한다 — publish() 의 구독자 수가 1 → 0 이 된다.
+        // 받기 전에 바로 해제하면 정체가 재현되지 않는다(실측: 그렇게 짠 판은 상시 소비자를 지운 변이에서도 초록).
+        String wire = mapper.writeValueAsString(new ChatEnvelope.ChatMsg(sampleMessage()));
+        AtomicInteger firstReceived = new AtomicInteger();
+        var first = broadcaster.subscribe(roomId).subscribe(e -> firstReceived.incrementAndGet());
+        pattern.tryEmitNext(message(channel, wire));
+        await(() -> firstReceived.get() == 1);
+        first.dispose();
+
+        // when: 아무도 구독하지 않는 동안 그 방에 1,000건이 발행된다.
+        for (int i = 0; i < 1_000; i++) {
+            pattern.tryEmitNext(message(channel, wire));
+        }
+
+        // then: 다시 구독한 쪽은 그 1,000건을 받지 않고, 구독 뒤에 온 메시지만 받는다.
+        // StepVerifier 의 expectNoEvent 로 재지 않는다 — 상시 소비자를 지운 변이에서도 그 칸은 초록이었다
+        // (실측: 쌓인 메시지가 1건만 나타났고 통과). 카운터 구독으로는 변이에서 빨강이다.
+        AtomicInteger secondReceived = new AtomicInteger();
+        var second = broadcaster.subscribe(roomId).subscribe(e -> secondReceived.incrementAndGet());
+        try {
+            Thread.sleep(300);
+            assertThat(secondReceived.get())
+                    .as("구독이 없던 동안의 메시지가 쌓였다가 실시간처럼 넘어왔다")
+                    .isZero();
+            pattern.tryEmitNext(message(channel, wire));
+            await(() -> secondReceived.get() == 1);
+            assertThat(secondReceived.get()).as("구독 뒤에 온 메시지는 받아야 한다").isEqualTo(1);
+        } finally {
+            second.dispose();
+        }
+    }
+
     /** 봉투 역직렬화를 실제로 시도해 터진 예외를 돌려준다(계약 그대로 — mixin/모듈 동일). */
     private Exception catchDeserialize(String json) {
         try {

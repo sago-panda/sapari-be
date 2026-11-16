@@ -12,6 +12,7 @@ import com.sapari.chat.application.port.PolicyReadFailure;
 import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
@@ -103,6 +104,12 @@ public class MicrometerChatMetrics implements ChatMetrics {
     public void subscriptionResubscribed(ChatSubscription subscription) {
         safe(() -> registry.counter(ChatMeterNames.SUBSCRIPTION_RESUBSCRIBED,
                 ChatMeterNames.TAG_SUBSCRIPTION, tag(subscription)).increment());
+    }
+
+    @Override
+    public void pubsubMessageReceived(int payloadBytes) {
+        safe(() -> DistributionSummary.builder(ChatMeterNames.PUBSUB_RECEIVED).baseUnit("bytes")
+                .register(registry).record(payloadBytes));
     }
 
     /**

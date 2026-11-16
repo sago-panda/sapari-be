@@ -103,7 +103,7 @@ Every measured number and vector: `ProfanityFilter`'s class javadoc and the head
 
 | Key | Type | Notes |
 |---|---|---|
-| `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing |
+| `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing. **Never drop the permanent drain subscriber in `RedisChatBroadcaster`** — without it the shared stream stalls once a pod's last room unsubscribes and replays the backlog to the next one. It covers only the zero-subscriber case: a stalled room subscriber still stalls the stream, drain included |
 | `chat:room:{id}:sessions` | HASH | `sessionId → userId:lastSeenMillis`; stale after 4 heartbeats; 24h key TTL backstop |
 | `chat:room:{id}:ended` | String | 70m; floor = session `max-lifetime` (streaming-app refuses to boot otherwise) |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h; every `SADD` is followed by `PERSIST` |
@@ -311,6 +311,7 @@ A new UUID is the unsafe retry.
 | `chat.dictionary.fastpath.lost` | — | the fast-path dictionary swap was missed; this pod enforces with a stale one |
 | `chat.persist.timeout` | `stage` | the Mongo operation bound cut a persist step |
 | `chat.subscription.resubscribed` | `subscription` | a pub/sub subscription retried its establish — read the rate |
+| `chat.pubsub.received` | — | DistributionSummary (bytes): envelopes the pattern subscription received, `_count` messages and `_sum` UTF-8 payload bytes — a volume reading, not a failure |
 | `chat.withdrawal.record.failed` | — | `chat:withdrawing:` could not be written; the close still ran |
 | `chat.inbound.dropped` | — | a frame over the per-session inbound cap was dropped; expected 0 |
 | `chat.fanout.duration` | — | Timer: one chat message fanned out to this pod's sessions in the room (KICK not timed) |
@@ -327,7 +328,7 @@ on-call reading of all of them is in `infra/AGENTS.md`.
   = the document already exists.
 - `failure=store_corrupted` is never merged into `unavailable`; `checkpoint` separates entry from send.
 - `chat.session.cut` does **not** cover entry denials (`EntryGate`, before a session exists) or 1009.
-- Every meter is 0 in the healthy case. **Adding a meter = a line in `ChatMetricsPrometheusScrapeTest` and in
+- **Adding a meter = a line in `ChatMetricsPrometheusScrapeTest` and in
   `MicrometerChatMetricsTest`** — both hand-enumerate, and a hand-enumerated guard is only as complete as the
   last person who remembered it.
 - **Exposure is locked in code** (`ObservabilityExposureConfig`): the management port must differ from the
