@@ -9,7 +9,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * 채팅 메시지 영속 포트 (reactive — streaming-app 이벤트루프에서 호출).
- * 이력 조회(강퇴자 제외·VOD 창)는 블로킹이라 {@code ChatHistoryRepository} 가 따로 맡는다.
+ * 이력 조회(과거 스크롤·재접속·VOD 창·공지 — 전부 강퇴자 제외)는 블로킹이라 {@code ChatHistoryRepository} 가 따로 맡는다.
  */
 @ReactiveChat
 public interface ChatMessageRepository {
