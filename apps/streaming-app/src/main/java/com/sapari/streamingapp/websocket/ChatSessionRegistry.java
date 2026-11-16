@@ -386,15 +386,15 @@ public class ChatSessionRegistry implements ChatSessionManager {
         //
         // ⚠️ 이 메서드는 {@code Mono.defer} 로 감싸여 있지 않다 — 자리 증가는 <b>조립 시점에 즉시</b>
         // 일어난다. 한때 여기 "그 구간은 Mono 조립뿐이라 도달 불가" 라고 적었는데 <b>두 문장이 다
-        // 틀렸다</b>: 그 구간에는 local.put 과 주입 협력자 호출(특권 뷰 감사)과 roomSessions.compute
+        // 틀렸다</b>: 그 구간에는 index.put 과 주입 협력자 호출(특권 뷰 감사)과 index.addToRoom
         // 가 있고, 이 파일의 테스트가 그 협력자를 던지게 해 실제로 그 구간을 밟는다. 그리고 "항목이
         // 영구히 남는다" 도 이제 아래 try/finally 가 되돌린다 — 불변식이 "도달 불가" 에서 "집행" 으로
         // 바뀐 것이 이 설계의 내용이다. 다음 사람이 "도달 불가" 를 읽고 그 가드를 걷으면 안 된다.
         //
-        // local.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 local 에 들어가 있어
+        // index.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 명부에 들어가 있어
         // 게이지·팬아웃이 그 세션을 한 번 보고, cleanup 이 지우기 전까지 시청자 수가 틀린다.
         // ⚠️ <b>세션 레코드를 자리 확보 앞에서 만든다.</b> 한때 자리를 넣은 뒤 이 자리에서 만들었고,
-        // 그러면 자리 추가와 {@code local.put} 사이에 <b>할당</b>이 들어와 OutOfMemoryError 로 던질 수
+        // 그러면 자리 추가와 {@code index.put} 사이에 <b>할당</b>이 들어와 OutOfMemoryError 로 던질 수
         // 있는 창이 생긴다. 그 창은 테스트로 밟을 수단이 없어(남는 것이 Error 뿐이다) 그 구간의
         // 보상은 CI 가 영원히 확인해 주지 않는다 — 실제로 그 보상이 세 라운드에 걸쳐 두 번
         // 좁아졌고 두 번 다 스위트가 초록이었다.
@@ -406,9 +406,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // 레이트리밋)은 원점이 앞설수록 더 안전한 방향이다.
         //
         // 그래서 금지가 "던질 수 있는 코드" 에서 <b>"느린 코드"</b> 로 바뀌었다 — 이 생성과
-        // local.put 사이에 I/O 나 락을 넣으면 그 창 둘이 그만큼 짧아진다.
+        // index.put 사이에 I/O 나 락을 넣으면 그 창 둘이 그만큼 짧아진다.
         //
-        // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ local.put 사이에
+        // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ index.put 사이에
         // 할당이 없다. 대가는 거부 1건마다 버려지는 아웃바운드 큐 하나(256슬롯, 약 2.3KB)이고,
         // 거부 경로가 남용 경로라 공짜가 아니다 — 다만 그 1건은 이미 WS 핸드셰이크와 토큰 검증과
         // 입장 게이트의 Redis 왕복 넷을 쓴 뒤다.
@@ -430,32 +430,31 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
         boolean admitted = slots.tryAcquire(session.userId(), session.roomId(), sessionId);
         // ⚠️ <b>자리를 넣은 다음부터 반환까지 전부 이 try 안이다.</b> 그 구간에서 던지면 회수 경로
-        // 둘이 다 못 걷기 때문이다 — unregister 는 local.get 이 null 이라 블록을 건너뛰고,
-        // reapUnresponsiveIfFull 은 isUnresponsive 가 local 에 없는 sessionId 에 "살아 있음" 을
+        // 둘이 다 못 걷기 때문이다 — unregister 는 index.get 이 null 이라 블록을 건너뛰고,
+        // reapUnresponsiveIfFull 은 isUnresponsive 가 명부에 없는 sessionId 에 "살아 있음" 을
         // 준다. 그러면 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다 — 이 파일이 스스로
         // "상한 코드가 만들 수 있는 최악의 결함" 이라 부른 그것이다.
         //
-        // ⚠️ "실패하면 되돌린다" 의 대상은 <b>넷</b>이다 — 자리·local·방 항목·캐시 둘.
-        // 한때 이 try 가 <b>local.put 하나만</b> 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
+        // ⚠️ "실패하면 되돌린다" 의 대상은 <b>넷</b>이다 — 자리·명부·방 항목·캐시 둘.
+        // 한때 이 try 가 <b>index.put 하나만</b> 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
         // (put 과 생성자들은 Error 외에 던질 경로가 없다) 정작 던질 수 있는 둘 — 주입 협력자를
-        // 부르는 감사 블록과 roomSessions.compute — 이 가드 <b>밖</b>에 남았다. 그 상태가 더
-        // 나빴다: 거기서 던지면 자리뿐 아니라 local 항목까지 남는다.
+        // 부르는 감사 블록과 index.addToRoom — 이 가드 <b>밖</b>에 남았다. 그 상태가 더
+        // 나빴다: 거기서 던지면 자리뿐 아니라 명부 항목까지 남는다.
         //
         // ⚠️ 근거가 한 번 낡았다. 한때 "호출부가 register(...).then(...).doFinally(cleanup) 이라
         // doFinally 가 애초에 조립되지 않는다" 고 적었는데, 호출부가 Mono.defer{...}.doFinally(...)
         // 로 바뀌어 <b>동기 예외에서도 doFinally 는 돈다</b>(실측). 가드가 여전히 필요한 이유는
-        // 다른 것이다 — 그 cleanup 이 부르는 unregister 가 local.get 으로 키를 만들고, 이 구간에서
-        // 던지면 local 에 항목이 없어 자리를 못 걷는다. 결론은 같고 근거만 교체됐다.
+        // 다른 것이다 — 그 cleanup 이 부르는 unregister 가 index.get 으로 키를 만들고, 이 구간에서
+        // 던지면 명부에 항목이 없어 자리를 못 걷는다. 결론은 같고 근거만 교체됐다.
         //
         // 거부 분기도 이 안에 둔다 — 자리 추가와 가드 사이에 <b>한 줄도 들어가지 않게</b> 하려는
         // 것이고, 인접성에 기대지 않는다는 것이 이 배치의 값이다.
         //
         // 그 경로의 finally 가 무해한 근거는 "remove 가 무연산" 한 단계가 아니다 — finally 는 자리와
-        // local 과 방 항목과 캐시 둘을 되돌리고, 그중 <b>방 항목 삭제와 캐시 둘은 remove 의 무연산
+        // 명부와 방 항목과 캐시 둘을 되돌리고, 그중 <b>방 항목 삭제와 캐시 둘은 remove 의 무연산
         // 여부와 무관하게 {@code sessionIds.isEmpty()} 하나로 갈린다.</b> 성립하는 근거는 더 센
-        // 불변식이다: <b>{@code roomSessions} 에 항목이 있으면 그 집합은 비어 있지 않다</b>(값 집합을
-        // 바꾸는 지점이 등록과 되돌리기 둘뿐이고 둘 다 같은 키의 compute 안이며, 비는 즉시 매핑을
-        // 걷는다). 그래서 "키는 있는데 집합이 빈" 상태가 구성 자체가 되지 않는다.
+        // 불변식이다: <b>방 색인에 항목이 있으면 그 집합은 비어 있지 않다</b>. 그 불변식을 집행하는 것도,
+        // 근거와 지키는 칸을 적는 것도 {@link LocalSessionIndex} 다.
         boolean registered = false;
         try {
             if (!admitted) {
@@ -471,9 +470,9 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 return Mono.error(new EntryDeniedException(EntryDeniedException.Reason.TOO_MANY_SESSIONS));
             }
 
-            // ⚠️ <b>자리 증가와 local.put 사이에서 던지면 자리가 영구히 남는다.</b> 회수 경로 둘이
-            // 다 못 걷기 때문이다 — unregister 는 local.get 이 null 이라 블록을 건너뛰고,
-            // reapUnresponsiveIfFull 은 isUnresponsive 가 local 에 없는 sessionId 에 "살아 있음" 을
+            // ⚠️ <b>자리 증가와 index.put 사이에서 던지면 자리가 영구히 남는다.</b> 회수 경로 둘이
+            // 다 못 걷기 때문이다 — unregister 는 index.get 이 null 이라 블록을 건너뛰고,
+            // reapUnresponsiveIfFull 은 isUnresponsive 가 명부에 없는 sessionId 에 "살아 있음" 을
             // 준다. 그러면 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다 — 이 파일이 스스로
             // "상한 코드가 만들 수 있는 최악의 결함" 이라 부른 그것이다.
             //
@@ -517,17 +516,17 @@ public class ChatSessionRegistry implements ChatSessionManager {
             return registration;
         } finally {
             if (!registered) {
-                // 자리만 되돌려서는 모자란다 — local 항목과 방 색인도 이미 들어가 있을 수 있고,
+                // 자리만 되돌려서는 모자란다 — 명부 항목과 방 색인도 이미 들어가 있을 수 있고,
                 // 등록이 던지면 그 뒤 단계가 돌지 않아 반쪽 상태가 남는다(호출부의 doFinally 는
-                // 돌지만, 그것이 부르는 unregister 는 local.get 으로 키를 만들어 자리를 못 걷는다).
+                // 돌지만, 그것이 부르는 unregister 는 index.get 으로 키를 만들어 자리를 못 걷는다).
                 //
                 // ⚠️ 이 가드가 못 덮는 갈래가 하나 있다: 등록이 성공한 뒤 호출부의 다음 단계가
-                // <b>영원히 끝나지 않는</b> 경우다(그러면 doFinally 가 돌지 않아 local 잔류가
+                // <b>영원히 끝나지 않는</b> 경우다(그러면 doFinally 가 돌지 않아 명부 잔류가
                 // 유계가 아니다). 실제로는 Lettuce 명령 타임아웃이 묶지만 그 값이 추적되는 설정에
                 // 없어 라이브러리 기본값에 기댄다. 능력 증가는 없고(구독 전이라 프레임도 받지
                 // 못한다) 자원 누수다 — 여기서 고칠 자리가 아니라 적어 둔다.
-                // 자리는 <b>인자에서 키를 만들어 무조건</b> 되돌린다 — local 조회로 키를 만들면
-                // 자리가 들어간 뒤 local.put 전에 던지는 구간에서 반납이 통째로 빠진다(실측).
+                // 자리는 <b>인자에서 키를 만들어 무조건</b> 되돌린다 — 명부 조회로 키를 만들면
+                // 자리가 들어간 뒤 index.put 전에 던지는 구간에서 반납이 통째로 빠진다(실측).
                 // 그 구간이 이 가드가 존재하는 유일한 이유다. 멱등이라 두 번 불려도 무해하다.
                 slots.release(session.userId(), session.roomId(), sessionId);
                 rollbackLocalIndexes(sessionId, session.roomId());
@@ -563,7 +562,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> unregister(UUID roomId, String sessionId) {
-        // 상한 인덱스를 <b>local 을 지우기 전에</b> 걷는다 — 세션 레코드에서 userId 를 읽어야 키를
+        // 상한 인덱스를 <b>명부를 지우기 전에</b> 걷는다 — 세션 레코드에서 userId 를 읽어야 키를
         // 만들 수 있다. 먼저 지우면 키를 못 만들어 항목이 남고, 그 유저는 그 방에 다시 들어올 수
         // 없게 된다(상한이 영구히 찬 상태로 고정된다). 상한 코드가 만들 수 있는 최악의 결함이다.
         // 자리도 방 색인도 <b>세션 자신의 roomId</b> 로 걷는다 — 등재를 session.roomId() 로 했으므로
@@ -574,8 +573,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
         // pushViewerCount 의 자가치유(항목 부재 검사)가 발동하지 않아, 하트비트 회차마다 그 유령
         // 방에 Redis 왕복이 하나 영구히 붙는다(게이지와 캐시 둘도 같이 부푼다).
         //
-        // 세션이 local 에 없으면 인자를 쓴다. 그 경우 방 색인에도 넣은 것이 없으므로(등록 순서가
-        // local.put → roomSessions.compute 다) 어느 쪽을 써도 무연산이다 — 한때 "보상 경로에서
+        // 세션이 명부에 없으면 인자를 쓴다. 그 경우 방 색인에도 넣은 것이 없으므로(등록 순서가
+        // index.put → index.addToRoom 다) 어느 쪽을 써도 무연산이다 — 한때 "보상 경로에서
         // leaving 이 null 일 수 있어 인자가 필요하다" 를 제약으로 적었는데, 그 순서를 보면 제약이
         // 아니다.
         LocalSession leaving = index.get(sessionId);
@@ -989,11 +988,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return status == null ? CloseStatus.NORMAL : status;
     }
 
+
     /** 자리 맵의 (유저, 방) 항목 수. (테스트 진입점 — 자리가 다 비면 항목이 사라지는지 확인용) */
     int trackedSlotCount() {
         return slots.trackedSlotKeys();
     }
-
 
     /** 인덱스가 추적 중인 방 수. (테스트 진입점 — 방이 비면 항목이 사라지는지 확인용) */
     int trackedRoomCount() {
@@ -1030,33 +1029,33 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
 
     /**
-     * {@code local} 과 방 색인(과 그 수명을 따르는 캐시 둘)을 되돌린다. <b>자리는 건드리지 않는다.</b>
+     * 명부({@link LocalSessionIndex})와 방 색인(과 그 수명을 따르는 캐시 둘)을 되돌린다. <b>자리는 건드리지 않는다.</b>
      *
      * <p>퇴장과 <b>등록 실패 보상</b>이 같은 걷기를 쓰도록 한 곳에 둔다. 둘이 따로 있으면 한쪽만
-     * 빠뜨리는 변경이 조용히 들어온다 — 실제로 그랬다: 보상이 자리만 되돌리던 동안 {@code local}
+     * 빠뜨리는 변경이 조용히 들어온다 — 실제로 그랬다: 보상이 자리만 되돌리던 동안 명부
      * 항목이 남았다 — 호출부의 {@code doFinally} 는 돌지만 그것이 부르는 {@code unregister} 가
-     * {@code local.get} 으로 키를 만들어 자리를 못 걷는다(테스트가 7건 누출로 잡았다).
+     * {@code index.get} 으로 키를 만들어 자리를 못 걷는다(테스트가 7건 누출로 잡았다).
      *
      * <p>⚠️ <b>자리를 여기 두지 않는 이유가 있다.</b> 한때 이 메서드가 자리까지 되돌렸고 그 키를
-     * {@code index.get(sessionId)} 으로 만들었다. 그러면 자리 반납이 "{@code local} 에 항목이 있을
-     * 때" 로 좁아진다. 실측: 그 상태에서 {@code local.put} 직전에 던지게 하면 자리 다섯이 새고 그
+     * {@code index.get(sessionId)} 으로 만들었다. 그러면 자리 반납이 "명부에 항목이 있을
+     * 때" 로 좁아진다. 실측: 그 상태에서 {@code index.put} 직전에 던지게 하면 자리 다섯이 새고 그
      * 뒤 거부가 {@code TOO_MANY_SESSIONS} 로 바뀐다. 자리는 호출부가 <b>인자에서 키를 만들어</b>
      * 무조건 되돌린다 — 던진 지점이 어디든 같은 키가 나오므로 그 조건에 기대지 않는다.
      *
      * <p>⚠️ <b>이 구분에 테스트는 없다.</b> 그 둘이 갈리는 유일한 지점이 "자리 추가 ~
-     * {@code local.put} 사이의 던짐" 인데, 세션 레코드를 자리 확보 앞으로 옮긴 뒤로 그 사이에
+     * {@code index.put} 사이의 던짐" 인데, 세션 레코드를 자리 확보 앞으로 옮긴 뒤로 그 사이에
      * <b>명시적</b> 할당이 없어졌다. 한때 여기 "잡을 회귀가 없다" 고 적었는데 <b>한 칸 과했다</b> —
-     * {@code local.put} <b>자신이</b> 그 창 안이고 그것이 할당한다(JDK 24 {@code src.zip} 확인:
+     * {@code index.put}(안쪽은 {@code ConcurrentHashMap.put}) <b>자신이</b> 그 창 안이고 그것이 할당한다(JDK 24 {@code src.zip} 확인:
      * {@code ConcurrentHashMap.putVal} 이 {@code new Node<>(..)} 를 두 자리에서 만들고
      * {@code addCount} 가 테이블 전이로 {@code Node[]} 를 새로 잡을 수 있다). 그 할당이 OOM 으로
-     * 떨어지면 <b>자리는 들어갔고 {@code local} 에는 항목이 없다</b> — 좁은 키가 정확히 못 걷는 그
+     * 떨어지면 <b>자리는 들어갔고 명부에는 항목이 없다</b> — 좁은 키가 정확히 못 걷는 그
      * 상태다. 그래서 인자 키는 보험이 아니라 <b>여전히 하중</b>이다.
      *
      * <p>그 OOM 갈래에 테스트를 붙이지 않는 이유는 따로다 — 시임을 만들려면 <b>불변식이 금지한
      * 코드를 그 구간에 넣어야</b> 한다. 보증은 테스트가 아니라 "던진 지점이 어디든 같은 키가
-     * 나온다" 는 구조이고, 실측은 1회(좁은 키 + {@code local.put} 직전 던짐 → 자리 다섯 누출)다.
+     * 나온다" 는 구조이고, 실측은 1회(좁은 키 + {@code index.put} 직전 던짐 → 자리 다섯 누출)다.
      *
-     * @param roomId 방 색인에서 걷을 방 — 세션이 {@code local} 에 있으면 <b>세션 자신의</b> 방이어야
+     * @param roomId 방 색인에서 걷을 방 — 세션이 명부에 있으면 <b>세션 자신의</b> 방이어야
      *               한다(등재를 그 값으로 했으므로).
      */
     private void rollbackLocalIndexes(String sessionId, UUID roomId) {

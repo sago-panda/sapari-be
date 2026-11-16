@@ -16,6 +16,13 @@ import java.util.function.Consumer;
  * 그 쓰기·지우기는 <b>방 항목의 원자 구간 안에서</b> 돌아야 한다 — 그래서 {@link #removeSession} ·
  * {@link #ifRoomPresent} 가 그 구간 안에서 호출자 코드를 실행한다. 구간 밖으로 꺼내면 방이 빈 직후에 늦게
  * 도착한 쓰기가 캐시를 되살려 그 캐시가 누수원이 된다.
+ *
+ * <p><b>방 색인에 항목이 있으면 그 집합은 비어 있지 않다.</b> 값 집합을 바꾸는 지점이 {@link #addToRoom}
+ * 과 {@link #removeSession} 둘뿐이고 둘 다 같은 키의 compute 안이며, 비는 즉시 매핑을 걷는다. 그래서 "키는
+ * 있는데 집합이 빈" 상태가 구성 자체가 되지 않는다 — 레지스트리의 등록 보상({@code finally})이 무해하다는
+ * 논증이 이것에 얹혀 있다. 지키는 칸: {@link #removeSession} 이 빈 집합을 남기게 바꾼 역변이에서
+ * streaming-app 328칸 중 6칸이 빨강이다(방 색인 누수 · 시청자 수 캐시 · 마지막으로 보낸 수 · 게이지 ·
+ * 자리 키).
  */
 final class LocalSessionIndex {
 
@@ -122,7 +129,7 @@ final class LocalSessionIndex {
      * 않았다. 두면 {@code register}/{@code unregister}마다 동기화 대상이 하나 늘고 그 어긋남이 조용한
      * 버그가 되는데, 그 비용을 낼 만큼 이 경로가 잦지 않다.
      *
-     * <p>⚠️ <b>{@code ChatSessionRegistry.userRoomSessions} 가 생겼지만 이 경로는 여전히 훑는다.</b> 그 색인의 키는
+     * <p>⚠️ <b>{@code SessionSlots.userRoomSessions} 가 생겼지만 이 경로는 여전히 훑는다.</b> 그 색인의 키는
      * {@code (userId, roomId)} 쌍이라 "이 사람의 세션 전부" 를 물으면 방을 모르는 채로 전체 항목을
      * 뒤져야 한다 — 이 스캔보다 싸지 않다. 위 문단의 경고가 틀렸다는 뜻도 아니다: 그 색인에
      * 정확히 그 조용한 버그가 생길 수 있고(퇴장이 항목을 걷지 않으면 그 유저가 그 방에 영구히

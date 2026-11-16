@@ -206,7 +206,7 @@ final class SessionOutbound {
      *
      * <p>⚠️ <b>이 갈라짐이 스스로를 지키지는 못한다.</b> 기존 경로가 {@link #newBudget}으로 돌아가면
      * 그 경로를 덮는 단언이 깨지지만, <b>일곱 번째 경로를 새로 만들고 열거 테스트에 한 줄 적지 않으면
-     * 아무도 묻지 않는다</b> — 조건절이 자기 자신이다. 구조로 막으려면 {@code ChatSessionRegistry.forEachInRoom}·
+     * 아무도 묻지 않는다</b> — 조건절이 자기 자신이다. 구조로 막으려면 {@code LocalSessionIndex.forEachInRoom}·
      * {@code forEachSessionOf}가 예산을 만들어 넘기게 해서 fan-out 측에 per-session 예산을 만들 수단
      * 자체를 없애야 하고, 그러면 이 셈도 필요 없어진다. 오늘의 여섯 열거는 완전하다.
      */
