@@ -222,7 +222,7 @@ class ChatSessionHeartbeatSchedulerTest {
         // 이 스레드가 순회하므로 ArrayList 면 ConcurrentModificationException 이 난다 — 실측으로 났고,
         // 그 빨강은 "래치가 공유다" 와 구분되지 않는다(하네스 사유의 빨강은 근거가 못 된다).
         List<String> logged = new CopyOnWriteArrayList<>();
-        Logger logger = (Logger) LoggerFactory.getLogger(ChatSessionRegistry.class);
+        Logger logger = (Logger) LoggerFactory.getLogger(ViewerCounts.class);
         AppenderBase<ILoggingEvent> appender = new AppenderBase<>() {
             @Override
             protected void append(ILoggingEvent event) {

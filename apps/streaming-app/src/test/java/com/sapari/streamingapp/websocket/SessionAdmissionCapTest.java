@@ -167,6 +167,34 @@ class SessionAdmissionCapTest {
     }
 
     @Test
+    @DisplayName("⭐ 다 나가면 자리 항목도 걷힌다 — 빈 항목을 남기면 (유저, 방) 조합마다 하나씩 쌓인다")
+    void anEmptiedSlotEntryIsRemovedOnLeave() {
+        // 빈 집합이 남아도 다음 입장은 통과한다(0 < 상한) — 그래서 위 칸들은 이 누수를 못 본다.
+        // 쌓이는 단위가 (유저, 방) 조합이라 방송이 끝나도 그 수만큼 남는다.
+        admit("a", roomId, userId);
+        admit("b", otherRoomId, userId);
+        registry.unregister(roomId, "a").block(VERIFY_CEILING);
+        registry.unregister(otherRoomId, "b").block(VERIFY_CEILING);
+
+        assertThat(registry.trackedSlotCount())
+                .as("자리가 다 비었는데 항목이 남았다 — 퇴장이 빈 집합을 걷지 않았다").isZero();
+    }
+
+    @Test
+    @DisplayName("⭐ 죽은 자리를 전부 거두면 그 항목도 걷힌다 — 수거 경로도 같은 누수를 만들 수 있다")
+    void anEmptiedSlotEntryIsRemovedOnReap() {
+        fillToCap();
+        for (int i = 0; i < CAP; i++) {
+            registry.expireLiveness("s" + i, REAP_DEADLINE);
+        }
+
+        registry.reapUnresponsiveIfFull(userId, roomId, REAP_DEADLINE);
+
+        assertThat(registry.trackedSlotCount())
+                .as("전부 거뒀는데 항목이 남았다 — 수거가 빈 집합을 걷지 않았다").isZero();
+    }
+
+    @Test
     @DisplayName("⭐ 죽은 소켓이 들고 있던 자리는 거둔다 — 모바일 핸드오버가 상한에 걸리지 않게")
     void deadSlotsAreReapedBeforeTheCapRejects() {
         // 상한만큼 붙은 뒤 전부 조용히 끊긴 상태를 만든다. 생존 확인의 첫 점검은 기한 + 간격
