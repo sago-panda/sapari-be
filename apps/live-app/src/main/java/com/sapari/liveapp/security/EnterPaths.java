@@ -11,7 +11,11 @@ import org.springframework.web.util.UrlPathHelper;
  * <p>⚠️ <b>접두사만 보면 형제 경로까지 잡는다.</b> {@code /api/v1/lives/rooms} 아래에는
  * 목록 조회({@code /rooms})와 다시보기({@code /rooms/{id}/replay})가 같이 있고 둘 다 룸 토큰을
  * 찍지 않는다 — 상한을 그쪽에 걸면 막는 비용이 없는 경로를 막는다. 그래서 <b>세그먼트 수와
- * 메서드까지</b> 본다: {@code GET} · {@code /api/v1/lives/rooms/{한 세그먼트}}.
+ * 메서드까지</b> 본다: {@code GET}/{@code HEAD} · {@code /api/v1/lives/rooms/{한 세그먼트}}.
+ *
+ * <p><b>{@code HEAD} 도 같은 버킷으로 센다.</b> Spring MVC 는 {@code @GetMapping} 에 대해
+ * {@code HEAD} 를 서비스하므로 입장 핸들러가 그대로 돌아 룸 토큰을 서명한다 — {@code GET} 만 보면
+ * 서명 비용이 상한 밖으로 빠진다. 선례는 {@code ChatHistoryPaths}.
  */
 final class EnterPaths {
 
@@ -21,7 +25,8 @@ final class EnterPaths {
     }
 
     static boolean isEnterRequest(HttpServletRequest request) {
-        if (!HttpMethod.GET.matches(request.getMethod())) {
+        String method = request.getMethod();
+        if (!HttpMethod.GET.matches(method) && !HttpMethod.HEAD.matches(method)) {
             return false;
         }
         String path = path(request);

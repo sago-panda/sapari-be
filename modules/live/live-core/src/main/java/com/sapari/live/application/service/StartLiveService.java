@@ -19,7 +19,9 @@ import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.command.StartLiveCommand;
 import com.sapari.live.command.StartLiveCommand.ProductEntry;
 import com.sapari.live.domain.exception.BroadcastStartException;
+import com.sapari.live.domain.exception.InvalidLiveProductException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveProduct;
 import com.sapari.live.domain.model.LiveRoom;
@@ -39,6 +41,7 @@ public class StartLiveService implements StartLiveUseCase {
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
     private final LiveMetrics liveMetrics;
+    private final LiveListCacheSync liveListCacheSync;
 
     @Override
     @Transactional
@@ -48,11 +51,20 @@ public class StartLiveService implements StartLiveUseCase {
 
         // 외부 호출 전 상태 사전 검증 (도메인 모델에서도 검증하나, 미디어 서버 호출을 막기 위해 여기서도 체크)
         if (!room.canStartLive()) {
-            throw new InvalidLiveStateException(room.id().toString());
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, room.id().toString());
+        }
+        // 키 없는 RTMP 방은 OBS 가 붙을 곳이 없어 시작하면 Ready 에 갇힌다 — 미디어 호출·상품 검증 전에 거부한다.
+        if (room.isRtmp() && !room.hasIngressKey()) {
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_REQUIRED, room.id().toString());
         }
 
         //pin 개수 검증, 1개가 아닌 경우 방송 시작 불가
         validatePinnedProduct(command.products());
+
+        // 가격 검증 — 상품은 미디어 호출 뒤에 저장되므로 여기서 먼저 거른다. 안 그러면 위반 요청이
+        // 토큰 발급·egress 시작까지 갔다가 롤백 보상으로 egress 를 끄는 외부 호출을 남긴다.
+        command.products().forEach(p ->
+                LiveProduct.validatePrices(p.originalPrice(), p.discountPrice(), p.liveDiscountPrice()));
 
         // 송출 방식 가드: RTMP는 시청 토큰 대신 ingress 로 push 하므로 별도 흐름(시작 대기 + webhook 전이)을 탄다.
         StartLiveView view = room.isRtmp() ? startRtmp(command, room) : startWebRtc(command, room);
@@ -78,6 +90,7 @@ public class StartLiveService implements StartLiveUseCase {
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송
 
         liveRoomRepository.save(updatedRoom);
+        liveListCacheSync.registerAfterCommit(updatedRoom);
         liveMetrics.roomTransitioned(room.status(), updatedRoom.status());
         return updatedRoom.toStartLiveResult(sfuToken, liveMediaManager.getSfuUrl());
     }
@@ -103,6 +116,7 @@ public class StartLiveService implements StartLiveUseCase {
             StreamInfo streamInfo = StreamInfo.of(room.sfuRoomId(), egressResult.egressId(), egressResult.hlsUrl(), egressResult.hlsArchiveUrl());
             LiveRoom liveRoom = armed.goLiveFromReady(streamInfo, timeProvider.now());
             liveRoomRepository.save(liveRoom);
+            liveListCacheSync.registerAfterCommit(liveRoom);
             // arm 과 승격이 한 트랜잭션에서 일어난 랑데부다. 두 전이를 각각 세야 깔때기(Scheduled→Ready→Live)
             // 의 단계별 이탈이 보인다 — 합쳐 세면 Ready 에서 멈춘 방과 구분되지 않는다.
             liveMetrics.roomTransitioned(room.status(), armed.status());
@@ -110,13 +124,13 @@ public class StartLiveService implements StartLiveUseCase {
             liveMetrics.rtmpPromoted(PromotionTrigger.SELLER_START);
             log.info("RTMP 방송 시작 — 시작 시점 ingress 활성 확인, 즉시 Live 전이. roomId={}", command.roomId());
             // RTMP는 셀러 토큰을 쓰지 않는다(ingress push). sfuToken/sfuUrl 은 미사용이라 null.
-            return new StartLiveView(liveRoom.id().toString(), null, liveRoom.hlsUrl(), null);
+            return new StartLiveView(liveRoom.id(), null, liveRoom.hlsUrl(), null);
         }
 
         liveRoomRepository.save(armed);
         liveMetrics.roomTransitioned(room.status(), armed.status());
         log.info("RTMP 방송 시작 — OBS 미연결, 시작 대기(Ready)로 저장. roomId={}", command.roomId());
-        return new StartLiveView(armed.id().toString(), null, null, null);
+        return new StartLiveView(armed.id(), null, null, null);
     }
 
     /**
@@ -156,7 +170,8 @@ public class StartLiveService implements StartLiveUseCase {
     private void validatePinnedProduct(List<ProductEntry> products) {
         long pinnedCount = products.stream().filter(ProductEntry::isPinned).count();
         if (pinnedCount != 1) {
-            throw new InvalidLiveStateException("핀 상품은 정확히 1개여야 합니다. 현재 핀 상품 수: " + pinnedCount);
+            throw new InvalidLiveProductException(LiveErrorCode.INVALID_PINNED_PRODUCT,
+                    "핀 상품은 정확히 1개여야 합니다. 현재 핀 상품 수: " + pinnedCount);
         }
     }
 }

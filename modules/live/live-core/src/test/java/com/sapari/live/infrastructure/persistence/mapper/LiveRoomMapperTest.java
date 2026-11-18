@@ -10,18 +10,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mapstruct.factory.Mappers;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.StreamInfo;
+import com.sapari.live.domain.model.VodStatus;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 import com.sapari.live.infrastructure.persistence.entity.StreamType;
 
 /**
  * MapStruct 생성 구현체({@code Mappers.getMapper})로 동작을 고정한다.
- * sealed 상태 ↔ enum/컬럼 변환과, 기존 hand-written 매퍼의 미묘한 동작(streamInfo·top-level scheduledAt 비움)을 검증.
+ * sealed 상태 ↔ enum/컬럼 변환과, 기존 hand-written 매퍼의 미묘한 동작(streamInfo·top-level scheduledAt 은 읽기만 채움)을 검증.
  */
 class LiveRoomMapperTest {
 
@@ -111,7 +113,7 @@ class LiveRoomMapperTest {
         Instant now = Instant.parse("2026-09-11T00:00:00Z");
         StreamInfo stream = StreamInfo.of("sfu", "egress", "https://cdn/720p/index.m3u8",
                 "https://cdn/720p/playlist.m3u8");
-        LiveRoom room = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now, now)
+        LiveRoom room = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now.plusSeconds(3600), new LiveStreamType.WebRtc(), now)
                 .startLive(stream, now);
         LiveRoomEntity entity = mapper.toEntity(room);
         assertThat(entity.getHlsArchiveUrl()).isEqualTo(stream.hlsArchiveUrl());
@@ -126,7 +128,7 @@ class LiveRoomMapperTest {
     @Test
     void archiveSurvivesStartUpdateReloadAndSuspendedEnd() {
         Instant now = Instant.parse("2026-09-11T00:00:00Z");
-        LiveRoom scheduled = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now, now);
+        LiveRoom scheduled = LiveRoom.create(UUID.randomUUID(), "제목", "설명", "닉네임", null, now.plusSeconds(3600), new LiveStreamType.WebRtc(), now);
         LiveRoomEntity entity = mapper.toEntity(scheduled);
         StreamInfo stream = StreamInfo.of("sfu", "egress", "https://cdn/master.m3u8",
                 "https://cdn/archive-master.m3u8");
@@ -142,7 +144,7 @@ class LiveRoomMapperTest {
     }
 
     @Test
-    @DisplayName("toDomain — SCHEDULED: 상태는 Scheduled, top-level scheduledAt 은 비운다")
+    @DisplayName("toDomain — SCHEDULED: 상태는 Scheduled, top-level scheduledAt 은 컬럼 값으로 채운다")
     void toDomain_scheduled() {
         Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
         UUID sellerId = UUID.randomUUID();
@@ -158,7 +160,7 @@ class LiveRoomMapperTest {
         assertThat(room.sellerId()).isEqualTo(sellerId);
         assertThat(room.title()).isEqualTo("제목");
         assertThat(room.streamInfo()).isNull(); // sfu_room_id 미배정 → StreamInfo 없음
-        assertThat(room.scheduledAt()).isNull(); // 기존 동작 보존: top-level 은 비우고 상태에만 담는다
+        assertThat(room.scheduledAt()).isEqualTo(scheduledAt); // 읽기만 채운다(SPR-158) — 쓰기는 상태 기반
         assertThat(room.status()).isInstanceOf(LiveStatus.Scheduled.class);
         assertThat(((LiveStatus.Scheduled) room.status()).scheduledAt()).isEqualTo(scheduledAt);
     }
@@ -283,6 +285,7 @@ class LiveRoomMapperTest {
         Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
         LiveRoom room = LiveRoom.create(
                 UUID.randomUUID(), "제목", "설명", "닉네임", "https://thumb", scheduledAt,
+                new LiveStreamType.WebRtc(),
                 Instant.parse("2026-06-09T00:00:00Z"));
 
         LiveRoomEntity entity = mapper.toEntity(room);
@@ -392,6 +395,25 @@ class LiveRoomMapperTest {
     }
 
     @Test
+    @DisplayName("왕복 — RTMP + ingress_id NULL(키 발급 전) 행을 예외 없이 Rtmp(null) 로 읽고 그대로 되쓴다")
+    void roundTrip_rtmpWithoutIngress() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID())
+                .title("제목")
+                .liveStatus(LiveRoomStatus.SCHEDULED)
+                .scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .build();
+        entity.assignRtmpIngress(null);
+
+        LiveRoom room = mapper.toDomain(entity);
+        assertThat(room.streamType()).isEqualTo(new LiveStreamType.Rtmp(null));
+
+        mapper.updateEntityFromDomain(entity, room);
+        assertThat(entity.getStreamType()).isEqualTo(StreamType.RTMP);
+        assertThat(entity.getIngressId()).isNull();
+    }
+
+    @Test
     @DisplayName("toDomain — READY: 상태는 Ready, scheduledAt 복원")
     void toDomain_ready() {
         Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
@@ -434,7 +456,7 @@ class LiveRoomMapperTest {
     void toEntity_defaultsWebRtc() {
         LiveRoom room = LiveRoom.create(
                 UUID.randomUUID(), "제목", "설명", "닉네임", "https://thumb",
-                Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"));
+                Instant.parse("2026-06-10T10:00:00Z"), new LiveStreamType.WebRtc(), Instant.parse("2026-06-09T00:00:00Z"));
 
         LiveRoomEntity entity = mapper.toEntity(room);
 
@@ -454,7 +476,7 @@ class LiveRoomMapperTest {
 
         LiveRoom room = LiveRoom.create(
                         entity.getSellerId(), "제목", "설명", "닉네임", "https://thumb",
-                        Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"))
+                        Instant.parse("2026-06-10T10:00:00Z"), new LiveStreamType.WebRtc(), Instant.parse("2026-06-09T00:00:00Z"))
                 .toBuilder().streamType(new LiveStreamType.Rtmp("ing-9")).build();
 
         mapper.updateEntityFromDomain(entity, room);
@@ -476,11 +498,76 @@ class LiveRoomMapperTest {
 
         LiveRoom webRtcRoom = LiveRoom.create(
                 entity.getSellerId(), "제목", "설명", "닉네임", "https://thumb",
-                Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"));
+                Instant.parse("2026-06-10T10:00:00Z"), new LiveStreamType.WebRtc(), Instant.parse("2026-06-09T00:00:00Z"));
 
         mapper.updateEntityFromDomain(entity, webRtcRoom);
 
         assertThat(entity.getStreamType()).isEqualTo(StreamType.WEBRTC);
         assertThat(entity.getIngressId()).isNull();
+    }
+
+    // ---- SPR-158: Cancelled · 모든 상태의 scheduledAt · vodStatus · rtmpUrl ----
+
+    @Test
+    @DisplayName("Cancelled 왕복 — status=CANCELLED, 취소 시각은 ended_at, scheduled_at 보존")
+    void cancelledRoundTrip() {
+        Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
+        Instant cancelledAt = Instant.parse("2026-06-09T08:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID()).title("제목").sellerNickname("닉")
+                .liveStatus(LiveRoomStatus.SCHEDULED).scheduledAt(scheduledAt).sfuRoomId("sfu-1")
+                .build();
+
+        mapper.updateEntityFromDomain(entity, mapper.toDomain(entity).cancel(cancelledAt));
+
+        assertThat(entity.getLiveStatus()).isEqualTo(LiveRoomStatus.CANCELLED);
+        assertThat(entity.getEndedAt()).isEqualTo(cancelledAt);
+        assertThat(entity.getScheduledAt()).isEqualTo(scheduledAt);
+        LiveRoom reloaded = mapper.toDomain(entity);
+        assertThat(reloaded.status()).isEqualTo(new LiveStatus.Cancelled(scheduledAt, cancelledAt));
+        assertThat(reloaded.scheduledAt()).isEqualTo(scheduledAt);
+
+        // 되저장해도 그대로다(종단 상태라 재조정 스냅샷을 믿는 근거)
+        mapper.updateEntityFromDomain(entity, reloaded);
+        assertThat(mapper.toDomain(entity).status()).isEqualTo(reloaded.status());
+    }
+
+    @Test
+    @DisplayName("종료된 방도 top-level scheduledAt 이 컬럼 값이다 — 판매자 목록 정렬 키")
+    void endedRoomKeepsScheduledAt() {
+        Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID()).title("제목").sellerNickname("닉")
+                .liveStatus(LiveRoomStatus.ENDED).scheduledAt(scheduledAt)
+                .startedAt(Instant.parse("2026-06-10T10:01:00Z")).endedAt(Instant.parse("2026-06-10T11:00:00Z"))
+                .sfuRoomId("sfu-1")
+                .build();
+
+        LiveRoom room = mapper.toDomain(entity);
+        mapper.updateEntityFromDomain(entity, room);
+
+        assertThat(room.scheduledAt()).isEqualTo(scheduledAt);
+        assertThat(entity.getScheduledAt()).isEqualTo(scheduledAt);
+    }
+
+    @Test
+    @DisplayName("vodStatus·rtmpUrl 은 읽기 전용 — 읽고, 되저장이 바꾸지 않는다")
+    void vodStatusAndRtmpUrlAreReadOnly() {
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID()).title("제목").sellerNickname("닉")
+                .liveStatus(LiveRoomStatus.SCHEDULED).scheduledAt(Instant.parse("2026-06-10T10:00:00Z"))
+                .build();
+        ReflectionTestUtils.setField(entity, "rtmpUrl", "rtmp://ingress/x");
+        ReflectionTestUtils.setField(entity, "vodStatus",
+                com.sapari.live.infrastructure.persistence.entity.VodStatus.PROCESSING);
+
+        LiveRoom room = mapper.toDomain(entity);
+        mapper.updateEntityFromDomain(entity, room.toBuilder().rtmpUrl(null).vodStatus(null).build());
+
+        assertThat(room.rtmpUrl()).isEqualTo("rtmp://ingress/x");
+        assertThat(room.vodStatus()).isEqualTo(VodStatus.PROCESSING);
+        assertThat(entity.getRtmpUrl()).isEqualTo("rtmp://ingress/x");
+        assertThat(entity.getVodStatus())
+                .isEqualTo(com.sapari.live.infrastructure.persistence.entity.VodStatus.PROCESSING);
     }
 }

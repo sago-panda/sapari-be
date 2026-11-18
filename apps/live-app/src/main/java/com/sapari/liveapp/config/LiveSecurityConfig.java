@@ -351,13 +351,16 @@ public class LiveSecurityConfig {
                         // 조인 쪽이 맞고, chat 경로를 여기 적는 비용이 그 안전의 값이다.
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/lives/rooms",
+                                "/api/v1/lives/upcoming",
+                                "/api/v1/lives/replays",
                                 "/api/v1/lives/rooms/{roomId}",
-                                "/api/v1/lives/rooms/{roomId}/replay").permitAll()
+                                "/api/v1/lives/rooms/{roomId}/replay",
+                                "/api/v1/lives/rooms/{roomId}/detail").permitAll()
                         // 채팅 이력은 GET 과 HEAD 를 같이 연다. Spring MVC 는 @GetMapping 에 대해
                         // HEAD 를 서비스하므로, 메서드를 GET 으로만 적으면 "공개" 로 선언한 같은
                         // 핸들러가 HEAD 에서는 401 이 된다 — 실측: 이 줄을 가르기 전
                         // LivePublicRoutesTest 에서 GET 200 · HEAD 401 이었다.
-                        // ⚠️ 위 세 줄도 같은 모양이지만 건드리지 않는다 — live 의 엔드포인트이고
+                        // ⚠️ 위 공개 GET 줄들도 같은 모양이지만 건드리지 않는다 — live 의 엔드포인트이고
                         // 이 티켓의 범위가 chat 이다. 같은 성질이라는 사실만 여기 적어 둔다.
                         // ⚠️ HEAD 를 여는 것은 비용 경로의 표면을 넓히는 것이다(본문을 안 보내도
                         // Postgres 2 + Mongo 1 은 그대로 든다). 그래서 이 커밋보다 앞에
@@ -430,6 +433,9 @@ public class LiveSecurityConfig {
                         // 다른 답이다. 끝난 방을 되살리는 데 쓰이지 못하게 막는 것은 역할이 아니라
                         // 유스케이스의 LIVE 검증이다(ClearRoomEndedMarkerService).
                         .requestMatchers("/api/v1/lives/*/chat/ended").hasAnyRole("SELLER", "ADMIN")
+                        // 최근 본 라이브는 구매자도 쓰는 회원 경로 — 아래 판매자 바닥보다 먼저 와야 한다.
+                        // 메서드를 한정하지 않는 이유는 위 /chat/bans/** 주석과 같다(폴스루에 역할 바닥).
+                        .requestMatchers("/api/v1/lives/recent").authenticated()
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

@@ -47,8 +47,18 @@ class LivePublicRoutesTest {
             MockMvc mvc = MockMvcBuilders.webAppContextSetup(context)
                     .addFilters(context.getBean(FilterChainProxy.class)).build();
             mvc.perform(get("/api/v1/lives/rooms")).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/lives/upcoming")).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/lives/replays")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/replay")).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/lives/rooms/room-id/detail")).andExpect(status().isOk());
+            // 판매자 조회는 공개 GET 형태(/rooms/{한 세그먼트})를 피해 /seller 아래에 둔다 — 익명은 401.
+            mvc.perform(get("/api/v1/lives/seller/rooms")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/api/v1/lives/seller/rooms/counts")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/api/v1/lives/seller/rooms/room-id")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/api/v1/lives/rooms/room-id/cancel")).andExpect(status().isUnauthorized());
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .put("/api/v1/lives/rooms/room-id")).andExpect(status().isUnauthorized());
             // 공개로 선언한 채팅 이력 — GET 과 HEAD 가 같이 열려야 한다. Spring MVC 는
             // @GetMapping 에 대해 HEAD 를 서비스하므로, 매처를 GET 으로만 두면 같은 핸들러가
             // HEAD 에서는 401 이 된다. 본문을 안 보내도 조회 비용(Postgres 2 + Mongo 1)은 같다.
@@ -58,8 +68,10 @@ class LivePublicRoutesTest {
             mvc.perform(get("/api/v1/lives/room-id/chat/notice")).andExpect(status().isOk());
             mvc.perform(head("/api/v1/lives/room-id/chat/notice")).andExpect(status().isOk());
             mvc.perform(get("/api/v1/lives/rooms/room-id/ingress")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/api/v1/lives/rooms/room-id/ingress/reissue")).andExpect(status().isUnauthorized());
             mvc.perform(get("/api/v1/lives/future-private")).andExpect(status().isUnauthorized());
             mvc.perform(post("/api/v1/lives/rooms")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/api/v1/lives/thumbnails/uploads")).andExpect(status().isUnauthorized());
         }
     }
 

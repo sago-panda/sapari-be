@@ -89,6 +89,11 @@ class ChatModerationWiringTest {
         registry.add("livekit.s3.secret-key", () -> "test-secret");
         registry.add("livekit.hls.cdn-base-url", () -> "http://localhost/hls");
         registry.add("livekit.hls.segment-duration", () -> 4);
+        registry.add("live.thumbnail.bucket", () -> "test-bucket");
+        registry.add("live.thumbnail.region", () -> "ap-northeast-2");
+        registry.add("live.thumbnail.access-key", () -> "test-access");
+        registry.add("live.thumbnail.secret-key", () -> "test-secret");
+        registry.add("live.thumbnail.cdn-base-url", () -> "https://cdn.example.test");
 
         registry.add("management.server.port", () -> 0);
         // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아 지표가 조용히 빈다
@@ -303,6 +308,8 @@ class ChatModerationWiringTest {
                 // 종료 마커 해제 — 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 해서
                 // 이 앱에 있다. 기록·조회는 리액티브 쪽이고 streaming-app 이 쓴다.
                 "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",
+                // 방송 중 목록의 시청자 수 — live 재조정이 chat-api 포트로 읽는다(SPR-157).
+                "ChatViewerCountRedisRepository", "GetChatViewerCountsService",
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",

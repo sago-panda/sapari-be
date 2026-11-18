@@ -33,6 +33,7 @@ import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
@@ -179,7 +180,7 @@ class ReconcileExpiredReadyServiceTest {
         UUID conflicted = UUID.randomUUID();
         UUID other = UUID.randomUUID();
         givenCandidates(conflicted, other);
-        willThrow(new InvalidLiveStateException(conflicted.toString()))
+        willThrow(new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, conflicted.toString()))
                 .given(expireOrphanLiveUseCase).expire(new ExpireOrphanLiveCommand(conflicted));
 
         service.reconcile();
@@ -380,6 +381,20 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
+    }
+
+    @Test
+    @DisplayName("키 없는 RTMP 방은 LiveKit 목록이 비어도 오설정이 아니다 — 배정한 ingress 가 없으니 정상 만료한다")
+    void keylessRtmpRoomWithNoIngress_isExpired() {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
+        given(liveMediaManager.listRoomIngress(roomId)).willReturn(List.of());
+        givenRoomWithIngress(roomId, null);
+
+        service.reconcile();
+
+        then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
     }
 
     @Test

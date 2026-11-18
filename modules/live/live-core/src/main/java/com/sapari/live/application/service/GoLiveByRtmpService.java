@@ -43,6 +43,7 @@ public class GoLiveByRtmpService {
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
     private final LiveMetrics liveMetrics;
+    private final LiveListCacheSync liveListCacheSync;
 
     /**
      * {@code trigger} 는 <b>어느 경로가 이 방을 올렸는지</b>를 남기기 위한 것이다. 승격 결과는 어느 쪽이든
@@ -90,6 +91,7 @@ public class GoLiveByRtmpService {
         //TODO: 도메인 이벤트 발행하여 연결된 시청자에게 방송 시작 이벤트 전송
 
         liveRoomRepository.save(liveRoom);
+        liveListCacheSync.registerAfterCommit(liveRoom);
         // 커밋된 전이만 세도록 구현(MicrometerLiveMetrics)이 트랜잭션 경계를 본다 — 여기서 롤백되면
         // 아래 두 건은 기록되지 않는다.
         liveMetrics.roomTransitioned(room.status(), liveRoom.status());

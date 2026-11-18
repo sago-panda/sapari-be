@@ -51,6 +51,11 @@ public class LiveRoomEntity extends UuidTimeEntity {
     // RTMP Ingress 참조. streamKey(자격증명)는 저장하지 않음 — 발급 시 1회 전달, 재조회는 LiveKit(listIngress).
     private String ingressId;
 
+    // RTMP 송출 주소. ingressId 와 같은 조건부 UPDATE 로만 쓴다(assignRtmpIngressIfAbsent) — 빌더에 없다.
+    // streamKey 와 달리 자격증명이 아니라 저장한다(키 없이는 송출할 수 없다).
+    @Column(length = 500)
+    private String rtmpUrl;
+
     // --- 시청 (HLS Egress, 공통) ---
     private String egressId;
 
@@ -106,11 +111,15 @@ public class LiveRoomEntity extends UuidTimeEntity {
 
     private Integer vodDurationSeconds;
 
+    // vod_status·vod_failed_reason 은 조건부 UPDATE 두 개(웹훅 advanceVodStatus, 복구 recoverStuckReplays)만 쓰고, 둘 다 NONE/PROCESSING 에서만 옮긴다.
+    // 엔티티는 변경 필드가 하나만 있어도 모든 컬럼을 UPDATE 하므로, 쓰기 가능하면 그 전에 읽어 둔 낡은 값으로 결과를
+    // 되돌린다.
+    // 삽입 값은 DB 기본값('NONE')이 채운다. @DynamicUpdate 가 없어서 생기는 일이므로 이 매핑을 "고치지" 말 것.
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
+    @Column(nullable = false, length = 20, insertable = false, updatable = false)
     private VodStatus vodStatus = VodStatus.NONE;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "TEXT", insertable = false, updatable = false)
     private String vodFailedReason;
 
     @Column(nullable = false)
@@ -152,6 +161,11 @@ public class LiveRoomEntity extends UuidTimeEntity {
         this.liveStatus = LiveRoomStatus.ENDED;
         this.endedAt = endedAt;
         this.hlsArchiveUrl = hlsArchiveUrl;
+    }
+    /** 취소 시각은 종단 시각 컬럼(ended_at)에 둔다 — 집계·다시보기는 status=ENDED 로 거르므로 섞이지 않는다. */
+    public void applyCancelled(Instant cancelledAt){
+        this.liveStatus = LiveRoomStatus.CANCELLED;
+        this.endedAt = cancelledAt;
     }
     public void applySuspended(Instant suspendedAt, String reason){
         this.liveStatus = LiveRoomStatus.SUSPENDED;

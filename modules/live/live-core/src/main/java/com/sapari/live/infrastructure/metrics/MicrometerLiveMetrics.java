@@ -19,9 +19,11 @@ import com.sapari.live.application.port.EnterRejectionGate;
 import com.sapari.live.application.port.RoomEndedSignal;
 import com.sapari.live.application.port.RoomTokenSignatureSource;
 import com.sapari.live.application.port.TokenRevocationAxis;
+import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
+import com.sapari.live.application.port.RecentViewDropReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.ReconcileLockResult;
@@ -177,6 +179,43 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     @Override
     public void tokenRevocationLookupFailed() {
         safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOCATION_FAILED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listCacheWriteFailed(ListCacheWrite write) {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_CACHE_WRITE_FAILED)
+                .tag(LiveMeterNames.TAG_WRITE, tag(write))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listViewerCountUnavailable() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_VIEWER_COUNT_UNAVAILABLE)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listRefreshSaturated() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_REFRESH_SATURATED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listRefreshFailed() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_REFRESH_FAILED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void recentViewDropped(RecentViewDropReason reason) {
+        safe(() -> Counter.builder(LiveMeterNames.RECENT_VIEW_DROPPED)
+                .tag(LiveMeterNames.TAG_REASON, tag(reason))
                 .register(registry)
                 .increment());
     }

@@ -46,11 +46,13 @@ import com.sapari.live.application.port.HlsEgressResult;
 import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.RoomTokenSignatureSource;
 import com.sapari.live.application.port.OrphanMediaReconcilePolicy;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
+import com.sapari.live.application.port.RecentViewDropReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.ReconcileLockResult;
@@ -505,6 +507,26 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
+        public void listCacheWriteFailed(ListCacheWrite write) {
+        }
+
+        @Override
+        public void listViewerCountUnavailable() {
+        }
+
+        @Override
+        public void listRefreshSaturated() {
+        }
+
+        @Override
+        public void listRefreshFailed() {
+        }
+
+        @Override
+        public void recentViewDropped(RecentViewDropReason reason) {
+        }
+
+        @Override
         public void roomTokenIssued(RoomTokenSignatureSource source) {
             // 이 더블은 정리 잡 회차를 센다 — 입장 경로 축은 무관하다.
         }
@@ -594,7 +616,13 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
-        public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now) {
+        public boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean reassignRtmpIngressIfCurrent(UUID roomId, UUID sellerId, String currentIngressId,
+                                                    String newIngressId, String rtmpUrl, Instant now) {
             throw new UnsupportedOperationException();
         }
 
@@ -605,6 +633,43 @@ class ReconcileSchedulerLockTest {
 
         @Override
         public long countLiveRooms() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findSellerRooms(UUID sellerId, Set<Class<? extends LiveStatus>> statuses,
+                                              Instant cursorScheduledAt, UUID cursorId, int limit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findAllLive(int limit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findUpcoming(Instant afterScheduledAt, UUID afterId, int limit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean advanceVodStatus(String egressId, com.sapari.live.domain.model.VodStatus target,
+                                        String failedReason) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findReplays(Instant afterEndedAt, UUID afterId, int limit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public int recoverStuckReplays(Instant endedBefore) {
             throw new UnsupportedOperationException();
         }
     }

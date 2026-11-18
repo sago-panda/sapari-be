@@ -36,7 +36,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 해싱된 회원(기본 64샤드에서 약 1.6%)은 같이 거부된다. 샤드를 <b>전부</b> 덮는 것도 가능하되
  * 비용이 선형이 아니다 — 쿠폰 수집 문제라 64샤드 전수에 평균 <b>301개</b> 계정이 들고 64개로는
  * 기대 커버리지가 63.5% 다(측정: 균일 분배 3,000회 시행). 호출자 단위 rps 공정성은
- * {@code modules/live/AGENTS.md} 가 형제 상한에 적는 그대로 상류(Ingress·WAF)의 몫이고
+ * {@code .claude/rules/live/webhooks.md} 가 형제 상한에 적는 그대로 상류(Ingress·WAF)의 몫이고
  * ("rps limiting belongs upstream"), 이 버킷들은 <b>CPU 천장</b>이다 — 샤딩이 바꾼 것은
  * <b>한 계정의 피해 반경</b>이지 그 결론이 아니다.
  *
@@ -76,7 +76,7 @@ public record EnterRateLimitProperties(
      * 형제 webhook 과는 비교하지 않는다 — 그쪽은 RSA 검증을 하지 않는다({@code EnterRateLimiter}).
      *
      * <p>⚠️ <b>이 값이 "정상 트래픽보다 한참 위" 라는 근거는 없다.</b>
-     * {@code modules/live/AGENTS.md} 가 형제 상한에 대해 요구하는 것이 정확히 그것인데
+     * {@code .claude/rules/live/webhooks.md} 가 형제 상한에 대해 요구하는 것이 정확히 그것인데
      * ("Keep it far above real traffic"), 여기서는 그 분모를 이 저장소에서 볼 수 없다
      * ({@code application*.yml} 미추적 · 배포 지표 부재). 구체적 수요 벡터 하나는 선다 —
      * <b>재접속 폭풍</b>: 룸 토큰 TTL 이 ~90s 이고 단일 사용이 아니므로 streaming-app 롤링

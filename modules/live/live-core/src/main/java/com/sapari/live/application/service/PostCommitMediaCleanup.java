@@ -10,7 +10,8 @@ import com.sapari.live.domain.model.LiveRoom;
 
 /**
  * 방 종료 후 LiveKit 리소스 회수를 <b>커밋 이후</b>로 미룬다. 종료 계열 세 서비스
- * ({@code EndLiveService}·{@code ExpireOrphanLiveService}·{@code EndStaleLiveService})가 공유한다.
+ * ({@code EndLiveService}·{@code ExpireOrphanLiveService}·{@code EndStaleLiveService})와 예약 취소
+ * ({@code CancelLiveService})가 공유한다.
  *
  * <p>미루는 이유: 정리 3종은 방과 함께 커밋돼야 할 것이 없는데(시작 측의 {@code egressId} 와 다르다),
  * 트랜잭션 안에서 부르면 LiveKit 왕복(호출당 15s, 최대 3건)만큼 행 잠금을 쥐고 있게 된다. 그동안 같은
@@ -46,7 +47,7 @@ final class PostCommitMediaCleanup {
      * 정리 순서 고정: egress 중단 → ingress 삭제 → 방 삭제.
      * ingress 가 남아 있으면 OBS 자동 재접속이 닫힌 SFU 방을 재생성한다(좀비 방) — 순서를 바꾸지 말 것.
      *
-     * <p>[의도된 swallow] 여기까지 왔으면 방은 이미 Ended 로 커밋됐다. 예외를 올리면 호출자는 종료가
+     * <p>[의도된 swallow] 여기까지 왔으면 방은 이미 종단(Ended·Cancelled)으로 커밋됐다. 예외를 올리면 호출자는 종료가
      * 실패한 줄 알고 재시도하는데, 그때는 상태 가드에 걸려 오히려 에러만 본다. LiveKit 에 남은 리소스는
      * 사용자가 알 일이 아니라 고아 미디어 정리 잡의 몫이다.
      */

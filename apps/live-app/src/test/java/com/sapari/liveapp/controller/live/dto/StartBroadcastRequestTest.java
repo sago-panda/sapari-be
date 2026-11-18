@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
+import java.util.stream.IntStream;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
@@ -103,5 +105,52 @@ class StartBroadcastRequestTest {
 
         assertThatThrownBy(request::toProductEntries)
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    @DisplayName("상품 50개는 통과, 51개는 @Size 위반")
+    void products_upTo50() {
+        assertThat(validator.validate(new StartBroadcastRequest(distinctProducts(50)))).isEmpty();
+
+        Set<ConstraintViolation<StartBroadcastRequest>> violations =
+                validator.validate(new StartBroadcastRequest(distinctProducts(51)));
+
+        assertThat(violations).extracting(ConstraintViolation::getMessage)
+                .containsExactly("라이브 상품은 최대 50개입니다.");
+    }
+
+    @Test
+    @DisplayName("같은 productId 가 두 번이면 가격이 달라도 위반")
+    void duplicateProductId_violates() {
+        UUID same = UUID.randomUUID();
+        List<ProductRequest> products = List.of(
+                new ProductRequest(same, 30000, 25000, 22500, true),
+                new ProductRequest(same, 10000, 9000, 8000, false));
+
+        Set<ConstraintViolation<StartBroadcastRequest>> violations =
+                validator.validate(new StartBroadcastRequest(products));
+
+        assertThat(violations).extracting(ConstraintViolation::getMessage)
+                .containsExactly("상품 ID가 중복되었습니다.");
+    }
+
+    @Test
+    @DisplayName("productId 가 null 인 항목은 @NotNull 위반만 — 중복 검사가 NPE 를 내지 않는다")
+    void nullProductId_onlyNotNull() {
+        List<ProductRequest> products = List.of(
+                new ProductRequest(null, 30000, 25000, 22500, true),
+                new ProductRequest(null, 10000, 9000, 8000, false));
+
+        Set<ConstraintViolation<StartBroadcastRequest>> violations =
+                validator.validate(new StartBroadcastRequest(products));
+
+        assertThat(violations).extracting(ConstraintViolation::getMessage)
+                .containsOnly("상품 ID는 필수입니다.");
+    }
+
+    private static List<ProductRequest> distinctProducts(int count) {
+        return IntStream.range(0, count)
+                .mapToObj(i -> new ProductRequest(UUID.randomUUID(), 30000, 25000, 22500, i == 0))
+                .toList();
     }
 }

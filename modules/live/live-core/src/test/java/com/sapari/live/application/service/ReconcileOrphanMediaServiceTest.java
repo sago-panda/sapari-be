@@ -535,6 +535,36 @@ class ReconcileOrphanMediaServiceTest {
         then(liveMediaManager).should(times(1)).deleteIngress(roomId, "ing-1");
     }
 
+    // ---------- 취소된 방(SPR-158): 종료와 같은 종단 ----------
+
+    @Test
+    @DisplayName("취소 — 취소된 방이 LiveKit 에 남아 있으면 유예 없이 닫는다 (커밋 후 정리 실패분)")
+    void cancelledRoom_aliveInLiveKit_isClosed() {
+        // 취소 트랜잭션이 updated_at 을 갱신한다 — 유예를 걸면 방금 취소된 방의 잔재를 놓친다.
+        givenLiveKit(List.of(), List.of(), List.of(sfuRoom(0, RECENT)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(new LiveStatus.Cancelled(NOW, RECENT), new LiveStreamType.WebRtc(), RECENT)));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(times(1)).closeRoom(roomId.toString());
+    }
+
+    @Test
+    @DisplayName("취소 — 방이 인정하던 ingress 도 고아다: 취소된 방의 키로 OBS 가 방을 되살린다")
+    void cancelledRoom_acknowledgedIngress_isDeletedBeforeClose() {
+        givenLiveKit(List.of(new IngressSummary("ing-1", roomId.toString(), false)), List.of(),
+                List.of(sfuRoom(0, RECENT)));
+        given(liveRoomRepository.findAllByIds(Set.of(roomId)))
+                .willReturn(List.of(room(new LiveStatus.Cancelled(NOW, RECENT), new LiveStreamType.Rtmp("ing-1"), RECENT)));
+
+        service.reconcile();
+
+        InOrder order = inOrder(liveMediaManager);
+        order.verify(liveMediaManager).deleteIngress(roomId, "ing-1");
+        order.verify(liveMediaManager).closeRoom(roomId.toString());
+    }
+
     @Test
     @DisplayName("ingress — 진행 중인 방의 정본 ingress 는 건드리지 않는다")
     void ingress_currentIngressOfOpenRoom_isKept() {
@@ -607,15 +637,28 @@ class ReconcileOrphanMediaServiceTest {
     @Test
     @DisplayName("ingress — 유예가 지나지 않았으면 지우지 않는다 (createIngress 직후 save 전인 정상 요청)")
     void ingress_withinGrace_isKept() {
-        // 이 시나리오의 방은 아직 Scheduled + WebRtc 다 — createIngress 는 끝났고 조건부 UPDATE 가 안 된 상태.
+        // 이 시나리오의 방은 아직 Scheduled + 키 없는 RTMP 다 — createIngress 는 끝났고 조건부 UPDATE 가 안 된 상태.
         // (Ended 로 두면 유예 면제에 걸려 이 테스트가 무엇을 재는지 알 수 없게 된다.)
         givenLiveKit(List.of(new IngressSummary("ing-DUP", roomId.toString(), false)), List.of());
         given(liveRoomRepository.findAllByIds(Set.of(roomId)))
-                .willReturn(List.of(room(new LiveStatus.Scheduled(NOW), new LiveStreamType.WebRtc(), RECENT)));
+                .willReturn(List.of(room(new LiveStatus.Scheduled(NOW), new LiveStreamType.Rtmp(null), RECENT)));
 
         service.reconcile();
 
         then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), anyString());
+    }
+
+    @Test
+    @DisplayName("ingress — 키 없는 RTMP 방의 ingress 는 고아다(NPE 없이): 배정에 진 발급의 잔재")
+    void ingress_onKeylessRtmpRoom_isDeleted() {
+        givenLiveKit(List.of(new IngressSummary("ing-DUP", roomId.toString(), false)), List.of());
+        LiveRoom keyless = room(new LiveStatus.Scheduled(NOW), new LiveStreamType.Rtmp(null), OLD);
+        given(liveRoomRepository.findAllByIds(Set.of(roomId))).willReturn(List.of(keyless));
+        given(liveRoomRepository.findById(roomId)).willReturn(java.util.Optional.of(keyless));
+
+        service.reconcile();
+
+        then(liveMediaManager).should(times(1)).deleteIngress(roomId, "ing-DUP");
     }
 
     @Test

@@ -148,16 +148,36 @@ class EnterRateLimitFilterTest {
     }
 
     @Test
+    @DisplayName("⭐ HEAD 입장도 GET 과 같은 버킷으로 센다 — 같은 핸들러가 룸 토큰을 서명한다")
+    void aHeadEntryIsCappedWithGet() throws Exception {
+        EnterRateLimitFilter filter = filter(props(1, 1));
+        CountingChain chain = new CountingChain();
+
+        filter.doFilter(get(ENTER_URI), new MockHttpServletResponse(), chain);
+        MockHttpServletRequest head = new MockHttpServletRequest("HEAD", ENTER_URI);
+        head.setRequestURI(ENTER_URI);
+        MockHttpServletResponse rejected = new MockHttpServletResponse();
+        filter.doFilter(head, rejected, chain);
+
+        assertThat(rejected.getStatus())
+                .as("HEAD 가 상한 밖이면 본문 없이 서명 비용만 치르는 우회로가 된다")
+                .isEqualTo(429);
+        assertThat(chain.passed.get()).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("⭐ 입장이 아닌 경로는 상한을 쓰지 않는다 — 룸 토큰을 찍지 않는 형제 경로")
     void siblingPathsAreNotCapped() throws Exception {
         EnterRateLimitFilter filter = filter(props(1, 1));
         CountingChain chain = new CountingChain();
 
-        // 목록·다시보기·POST 는 룸 토큰을 찍지 않는다. 접두사만 보면 전부 걸린다.
+        // 목록·예정 목록·다시보기·상세·POST 는 룸 토큰을 찍지 않는다. 접두사만 보면 전부 걸린다.
         for (String uri : java.util.List.of(
                 "/api/v1/lives/rooms",
                 "/api/v1/lives/rooms/",
-                ENTER_URI + "/replay")) {
+                "/api/v1/lives/upcoming",
+                ENTER_URI + "/replay",
+                ENTER_URI + "/detail")) {
             for (int i = 0; i < 5; i++) {
                 MockHttpServletResponse response = new MockHttpServletResponse();
                 filter.doFilter(get(uri), response, chain);

@@ -18,8 +18,11 @@ import java.util.concurrent.ScheduledExecutorService;
 @ConditionalOnProperty(prefix = "live.reconcile", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SchedulingConfig {
 
-    /** 정리 잡 수. 셋이 서로를 막지 않으려면 스레드도 그만큼 있어야 한다. */
-    private static final int POOL_SIZE = 3;
+    /**
+     * 정리 잡 셋 + 목록 재조정 하나. 서로를 막지 않으려면 스레드도 그만큼 있어야 한다 — 정리 회차는 수십 분까지
+     * 갈 수 있어, 셋이 다 돌 때 목록 갱신(15초)이 기다리면 그동안 시청자 수와 목록이 멈춘다.
+     */
+    private static final int POOL_SIZE = 4;
 
     /**
      * 잡별 기본 cron. <b>단일 출처다</b> — {@code @Scheduled} 와
@@ -29,8 +32,8 @@ public class SchedulingConfig {
      * <p>셋을 3분씩 어긋내 둔 것은 세 잡이 동시에 LiveKit 을 때리지 않게 하기 위해서다 — 정렬하지 말 것.
      *
      * <p><b>다만 스태거는 회차가 짧을 때만 유효하다.</b> 회차 예산이 40m/20m/16m 라 적체가 있으면
-     * 한 잡의 회차가 다음 잡의 발화를 넘어가고, 풀이 3스레드라 그때는 실제로 겹쳐 돈다(그게 의도다 —
-     * 한 잡이 다른 잡을 굶기지 않게 하려고 스레드를 3개 준다). 즉 스태거는 정상 상태의 최적화이지
+     * 한 잡의 회차가 다음 잡의 발화를 넘어가고, 정리 잡마다 스레드가 있어 그때는 실제로 겹쳐 돈다(그게 의도다 —
+     * 한 잡이 다른 잡을 굶기지 않게 정리 잡 3 + 목록 재조정 1 로 4개를 준다). 즉 스태거는 정상 상태의 최적화이지
      * 동시 실행을 막는 장치가 아니다. LiveKit 부하가 문제면 예산이나 주기를 조정할 것.
      */
     public static final String EXPIRE_READY_CRON = "0 0/10 * * * *";

@@ -3,7 +3,8 @@ package com.sapari.live.domain.model;
 /**
  * 판매자 송출 입력 소스 (도메인).
  *
- * <p>변종별로 자기 데이터만 보유해 불법 상태(예: RTMP인데 ingress 참조 없음)를 타입으로 차단한다.
+ * <p>변종별로 자기 데이터만 보유한다. 송출 방식은 방 생성 때 고정되므로 "RTMP인데 아직 ingress 참조 없음"
+ * (키 발급 전)은 정상 상태다 — 판정은 {@code LiveRoom.hasIngressKey()} 로 한다.
  * 공통 미디어(sfuRoomId/egressId/hlsUrl)는 여기 두지 않고 {@link StreamInfo}가 보유한다 —
  * 이 타입은 "입력 방식 + 그 방식 고유 데이터"만 책임진다.
  *
@@ -18,11 +19,12 @@ public sealed interface LiveStreamType permits LiveStreamType.WebRtc, LiveStream
     /**
      * OBS/전문 인코더가 LiveKit Ingress로 RTMP push. ingress 참조(ingressId)만 보유한다 —
      * streamKey(자격증명)는 저장하지 않고 LiveKit이 보관하며, 발급 시 1회 전달·재조회는 listIngress.
+     * ingressId 는 발급 전이면 null 이다. 빈 문자열은 발급 결과일 수 없으므로 거부한다.
      */
     record Rtmp(String ingressId) implements LiveStreamType {
         public Rtmp {
-            if (ingressId == null || ingressId.isBlank()) {
-                throw new IllegalArgumentException("ingressId는 필수입니다.");
+            if (ingressId != null && ingressId.isBlank()) {
+                throw new IllegalArgumentException("ingressId는 빈 값일 수 없습니다.");
             }
         }
     }

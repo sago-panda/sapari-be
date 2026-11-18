@@ -102,6 +102,36 @@ public interface LiveMetrics {
     void tokenRevocationLookupFailed();
 
     /**
+     * 커밋된 전이를 공개 목록 캐시에 반영하지 못했다(저장소 장애).
+     *
+     * <p>전이는 이미 성공으로 끝났고 어긋남은 목록 재조정이 한 회차(기본 15초) 안에 되돌린다 — 그래서 예외 대신 이 수가
+     * 유일한 신호다. 계속 오르면 Redis 를 보라. 재조정까지 실패하고 있다면 목록이 낡은 채로 머문다.
+     */
+    void listCacheWriteFailed(ListCacheWrite write);
+
+    /**
+     * 목록 재조정이 시청자 수를 읽지 못했다(chat 저장소 장애). 그 회차는 직전 점수를 유지한 채 구성원만 맞춘다.
+     */
+    void listViewerCountUnavailable();
+
+    /**
+     * 목록 재조정이 원본을 상한까지만 읽은 회차. 이 회차는 끝난 방을 걷지 않는다 — 계속 오르면 상한을 다시 볼 신호다.
+     */
+    void listRefreshSaturated();
+
+    /**
+     * 목록 재조정 회차가 예외로 끝났다. 커밋 후 목록 쓰기를 삼켜도 되는 근거가 "재조정이 고친다" 이므로, 그 재조정이
+     * 멈춘 것이 알람에 잡혀야 근거가 선다. 회차가 아예 돌지 않는 것(스위치 off·스케줄러 정지)은 이 수로 드러나지 않는다.
+     */
+    void listRefreshFailed();
+
+    /**
+     * 최근 본 기록 하나를 버렸다. 입장은 이미 성공으로 끝났으므로 예외 대신 이 수가 유일한 신호다.
+     * 이유별 대응이 반대라 갈라 센다({@link RecentViewDropReason}).
+     */
+    void recentViewDropped(RecentViewDropReason reason);
+
+    /**
      * 룸 토큰 한 장을 발급했다 — <b>서명을 쳤는지 캐시에서 나왔는지</b>를 함께 적는다.
      *
      * <p>이 수가 필요한 이유는 캐시가 <b>헛돌 때 아무 신호가 없다</b>는 것이다. 적중률이 0 이어도
@@ -147,6 +177,11 @@ public interface LiveMetrics {
                 EnterPopulation population, EnterRejectionGate gate) { }
         @Override public void tokenRevocationHit(TokenRevocationAxis axis) { }
         @Override public void tokenRevocationLookupFailed() { }
+        @Override public void listCacheWriteFailed(ListCacheWrite write) { }
+        @Override public void listViewerCountUnavailable() { }
+        @Override public void listRefreshSaturated() { }
+        @Override public void listRefreshFailed() { }
+        @Override public void recentViewDropped(RecentViewDropReason reason) { }
         @Override public void roomTokenIssued(RoomTokenSignatureSource source) { }
         @Override public void roomEndedSignalFailed(RoomEndedSignal signal) { }
     };

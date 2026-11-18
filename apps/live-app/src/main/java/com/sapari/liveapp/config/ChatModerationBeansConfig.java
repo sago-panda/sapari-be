@@ -30,6 +30,7 @@ import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
 import com.sapari.chat.application.service.ClearRoomEndedMarkerService;
+import com.sapari.chat.application.service.GetChatViewerCountsService;
 import com.sapari.chat.application.service.ReconcileBanMirrorService;
 import com.sapari.chat.application.service.ReconcileKickListService;
 import com.sapari.chat.application.service.ReleaseBanService;
@@ -42,6 +43,7 @@ import com.sapari.chat.domain.repository.ChatBanWriteRepository;
 import com.sapari.chat.domain.repository.ChatKickLogRepository;
 import com.sapari.chat.domain.repository.ChatKickWriteRepository;
 import com.sapari.chat.domain.repository.ChatRoomEndedWriteRepository;
+import com.sapari.chat.domain.repository.ChatViewerCountRepository;
 import com.sapari.chat.domain.repository.ChatMessageEvidenceRepository;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
 import com.sapari.chat.infrastructure.persistence.repository.ChatBanJpaRepository;
@@ -55,8 +57,10 @@ import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
 import com.sapari.chat.infrastructure.redis.ChatRoomEndedWriteRedisRepository;
+import com.sapari.chat.infrastructure.redis.ChatViewerCountRedisRepository;
 import com.sapari.chat.port.KickUserUseCase;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
+import com.sapari.chat.port.GetChatViewerCountsUseCase;
 import com.sapari.chat.port.ReconcileBanMirrorUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.chat.port.ReleaseBanUseCase;
@@ -435,5 +439,20 @@ public class ChatModerationBeansConfig {
             TimeProvider timeProvider) {
         return new ClearRoomEndedMarkerService(liveRoomReader, roomEndedWriteRepository,
                 auditRecorder, permissionPolicy, timeProvider);
+    }
+
+    /**
+     * 방별 채팅 시청자 수 — live 목록 재조정이 chat 키를 직접 읽지 않고 이 포트로 얻는다(SPR-157).
+     * 이 앱의 chat 빈 등록 지점이 이 파일 하나라 여기에 둔다.
+     */
+    @Bean
+    public ChatViewerCountRepository chatViewerCountRepository(StringRedisTemplate redisTemplate,
+                                                               TimeProvider timeProvider) {
+        return new ChatViewerCountRedisRepository(redisTemplate, timeProvider);
+    }
+
+    @Bean
+    public GetChatViewerCountsUseCase getChatViewerCountsUseCase(ChatViewerCountRepository viewerCountRepository) {
+        return new GetChatViewerCountsService(viewerCountRepository);
     }
 }

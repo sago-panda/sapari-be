@@ -5,7 +5,9 @@ import lombok.Builder;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.model.LiveStatus.Scheduled;
 import com.sapari.live.view.CreateLiveView;
 import com.sapari.live.view.StartLiveView;
@@ -24,6 +26,12 @@ public record LiveRoom(
         // 방별 다시보기 공개 스위치(live_rooms.is_vod_public, DB 기본 true). 읽기 전용이다 —
         // 엔티티 빌더에 이 필드가 없고 update 경로도 건드리지 않으므로 앱이 값을 덮어쓸 수 없다.
         boolean vodPublic,
+        // 다시보기 처리 상태(live_rooms.vod_status). 이 레코드로는 읽기 전용 — LiveRoomRepository 의
+        // 조건부 UPDATE 두 개(웹훅 advanceVodStatus, 복구 recoverStuckReplays)만 쓴다. 다시보기 노출은 READY 만.
+        VodStatus vodStatus,
+        // RTMP 송출 주소(live_rooms.rtmp_url). 발급의 조건부 UPDATE 만 쓴다(RtmpIngressAssigner) — 읽기 전용.
+        // 자격증명이 아니다: 키(streamKey) 없이는 송출할 수 없고, 키는 저장하지 않는다.
+        String rtmpUrl,
         Instant scheduledAt,
         Instant createdAt,
         Instant updatedAt
@@ -35,33 +43,58 @@ public record LiveRoom(
             String sellerNickname,
             String thumbnailUrl,
             Instant scheduledAt,
+            LiveStreamType streamType,
             Instant now
     ){
         if (sellerId == null) {
             throw new IllegalArgumentException("sellerId는 필수입니다.");
         }
-        if (title == null || title.isBlank()) {
-            throw new IllegalArgumentException("title은 필수입니다.");
+        // 송출 방식은 생성 때 고정된다. 요청 DTO 가 먼저 막고, CreateLiveService 경로는 그 전에 switch 에서 NPE 로 끝난다 — 여기는 다른 호출자용 방어선이다.
+        if (streamType == null) {
+            throw new IllegalArgumentException("streamType은 필수입니다.");
         }
+        requireEditableFields(title, scheduledAt, now);
         if (sellerNickname == null || sellerNickname.isBlank()) {
             throw new IllegalArgumentException("sellerNickname은 필수입니다.");
-        }
-        if (scheduledAt == null) {
-            throw new IllegalArgumentException("scheduledAt은 필수입니다.");
         }
         return builder()
                 .sellerId(sellerId)
                 .title(title)
-                .description(description)
+                .description(normalizeDescription(description))
                 .sellerNickname(sellerNickname)
                 .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
-                .streamType(new LiveStreamType.WebRtc())
+                .streamType(streamType)
                 .vodPublic(true)
+                .vodStatus(VodStatus.NONE)
                 .scheduledAt(scheduledAt)
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
+    }
+
+    /**
+     * 생성과 수정이 함께 지키는 필드 규칙. 둘이 갈리지 않게 한곳에 둔다.
+     *
+     * <p>예정 시각은 현재보다 뒤여야 한다(같으면 거부) — 판매자 입력이므로 IAE 가 아니라 LIVE-015.
+     * null 은 요청 DTO 가 먼저 막으므로 여기 오면 서버 결함이라 IAE 로 남긴다.
+     */
+    private static void requireEditableFields(String title, Instant scheduledAt, Instant now) {
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("title은 필수입니다.");
+        }
+        if (scheduledAt == null) {
+            throw new IllegalArgumentException("scheduledAt은 필수입니다.");
+        }
+        if (!scheduledAt.isAfter(now)) {
+            throw new InvalidLiveRoomException(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE,
+                    LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE.getMessage());
+        }
+    }
+
+    /** 설명은 선택 항목이다 — 공백뿐이면 없는 것으로 저장한다. */
+    private static String normalizeDescription(String description) {
+        return (description == null || description.isBlank()) ? null : description;
     }
 
     public LiveRoom withSfuRoomId(String sfuRoomId) {
@@ -75,7 +108,7 @@ public record LiveRoom(
 
     public LiveRoom startLive(StreamInfo newStreamInfo, Instant now){
         if(!canStartLive()){
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
 
         var nextStatus = new LiveStatus.Live(
@@ -98,7 +131,7 @@ public record LiveRoom(
      */
     public LiveRoom arm(Instant now){
         if (!(this.status instanceof LiveStatus.Scheduled scheduled)) {
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
         return toBuilder()
                 .status(new LiveStatus.Ready(scheduled.scheduledAt()))
@@ -112,7 +145,7 @@ public record LiveRoom(
      */
     public LiveRoom goLiveFromReady(StreamInfo newStreamInfo, Instant now){
         if (!canGoLiveByRtmp()) {
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
         var nextStatus = new LiveStatus.Live(
                 now,
@@ -129,7 +162,7 @@ public record LiveRoom(
 
     public LiveRoom endLive(Instant now){
         if (!canEndLive()) {
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
 
         Instant startedAt = switch (this.status) {
@@ -157,11 +190,41 @@ public record LiveRoom(
      */
     public LiveRoom expire(Instant now){
         if(!canExpire()){
-            throw new InvalidLiveStateException(this.id != null ? this.id.toString() : "알 수 없는 방");
+            throw new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
         }
         LiveStatus status = new LiveStatus.Ended(null, now, null);
         return toBuilder()
                 .status(status)
+                .updatedAt(now)
+                .build();
+    }
+
+    /**
+     * 판매자가 예약을 취소한다. Scheduled 에서만 허용한다 — Ready 는 OBS 연결 webhook 과 경합하므로
+     * 만료 배치에 맡긴다. 방송된 적이 없으므로 RoomEnded 를 발행하지 않는다(호출자 책임).
+     */
+    public LiveRoom cancel(Instant now){
+        if (!canCancel()) {
+            throw new InvalidLiveStateException(LiveErrorCode.CANCEL_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        return toBuilder()
+                .status(new LiveStatus.Cancelled(((LiveStatus.Scheduled) this.status).scheduledAt(), now))
+                .updatedAt(now)
+                .build();
+    }
+
+    /** 예약 내용을 통째로 바꾼다. Scheduled 에서만 허용한다. 예정 시각은 상태에 담겨야 영속에 반영된다. */
+    public LiveRoom update(String title, String description, String thumbnailUrl, Instant scheduledAt, Instant now){
+        if (!canUpdate()) {
+            throw new InvalidLiveStateException(LiveErrorCode.UPDATE_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        requireEditableFields(title, scheduledAt, now);
+        return toBuilder()
+                .title(title)
+                .description(normalizeDescription(description))
+                .thumbnailUrl(thumbnailUrl)
+                .status(new LiveStatus.Scheduled(scheduledAt))
+                .scheduledAt(scheduledAt)
                 .updatedAt(now)
                 .build();
     }
@@ -199,12 +262,25 @@ public record LiveRoom(
         return status instanceof LiveStatus.Scheduled;
     }
 
+    public boolean canCancel(){
+        return status instanceof LiveStatus.Scheduled;
+    }
+
+    public boolean canUpdate(){
+        return status instanceof LiveStatus.Scheduled;
+    }
+
     public boolean canExpire(){
         return status instanceof LiveStatus.Ready;
     }
 
     public boolean isRtmp(){
         return streamType instanceof LiveStreamType.Rtmp;
+    }
+
+    /** 송출 키(ingress)를 이미 발급받은 RTMP 방인지. RTMP 방은 키 발급 전이면 false 다. */
+    public boolean hasIngressKey(){
+        return streamType instanceof LiveStreamType.Rtmp rtmp && rtmp.ingressId() != null;
     }
 
     /**
@@ -214,7 +290,7 @@ public record LiveRoom(
     public boolean hasIngress(String ingressId){
         return streamType instanceof LiveStreamType.Rtmp rtmp
                 && ingressId != null && !ingressId.isBlank()
-                && rtmp.ingressId().equals(ingressId);
+                && ingressId.equals(rtmp.ingressId());
     }
 
     public CreateLiveView toCreateLiveView(){
@@ -223,7 +299,7 @@ public record LiveRoom(
 
     public StartLiveView toStartLiveResult(String sfuToken, String sfuUrl){
         return new StartLiveView(
-                id.toString(),
+                id,
                 sfuToken,
                 hlsUrl(),
                 sfuUrl

@@ -1,7 +1,7 @@
 # live 도메인 체크리스트 (`LIVE-*`)
 
-`domain-reviewer` 가 `domain=live` 로 읽는다. 각 항목은 `modules/live/AGENTS.md` 의 절을 근거로 하며
-(세부 근거는 그 파일이 가리키는 `.claude/rules/live/*.md` 로 분리됨, SPR-182), 그 파일들이 바뀌면 여기도 같이 본다 — 근거가 사라진 항목은 `CONV-10` 감이다.
+`domain-reviewer` 가 `domain=live` 로 읽는다. 각 항목의 §절은 `.claude/rules/live/*.md` 의 같은 이름 절을 근거로 하며
+(SPR-154 에서 `modules/live/AGENTS.md` 는 이정표와 §Design-time invariants 만 남김), 그 파일들이 바뀌면 여기도 같이 본다 — 근거가 사라진 항목은 `CONV-10` 감이다.
 
 ---
 

@@ -63,6 +63,11 @@ public final class LiveAppContextFixture {
         registry.add("livekit.s3.secret-key", () -> "test-secret-key");
         registry.add("livekit.hls.cdn-base-url", () -> "https://cdn.example.test");
         registry.add("livekit.hls.segment-duration", () -> "4");
+        registry.add("live.thumbnail.bucket", () -> "test-bucket");
+        registry.add("live.thumbnail.region", () -> "ap-northeast-2");
+        registry.add("live.thumbnail.access-key", () -> "test-access-key");
+        registry.add("live.thumbnail.secret-key", () -> "test-secret-key");
+        registry.add("live.thumbnail.cdn-base-url", () -> "https://cdn.example.test");
 
         // api-app 이 발급한 access 토큰을 이 앱이 검증한다(StatelessJwtAuthenticationFilter).
         // 시크릿은 32자 이상이어야 한다 — 더미여도 길이 제약은 실제 규칙이다.
@@ -73,6 +78,8 @@ public final class LiveAppContextFixture {
 
         // 정리 잡을 끈다 — 돌면 LiveKit 에 실제로 가려 한다.
         registry.add("live.reconcile.enabled", () -> "false");
+        // 목록 갱신 주기 잡도 끈다 — 테스트가 RefreshLiveListUseCase 를 직접 불러 시점을 쥔다.
+        registry.add("live.list.refresh.enabled", () -> "false");
 
         // 스키마는 운영 마이그레이션으로 세운다. 스키마 생성까지 Flyway 에 맡긴다 —
         // 컨테이너에는 live_schema 가 없다.
