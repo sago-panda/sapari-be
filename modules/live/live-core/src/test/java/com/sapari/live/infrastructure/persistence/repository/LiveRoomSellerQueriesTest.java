@@ -41,6 +41,7 @@ import com.sapari.live.application.service.GetSellerRoomsService;
 import com.sapari.live.command.GetSellerRoomsCommand;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 import com.sapari.live.infrastructure.persistence.mapper.LiveRoomMapper;
@@ -204,16 +205,75 @@ class LiveRoomSellerQueriesTest {
                 Map.entry(LiveStatus.Cancelled.class, 1L));
     }
 
+    /** RTMP 로 만들어졌고 아직 키가 없는 Scheduled 방(SPR-171 이후 생성 직후 모양). */
+    private UUID persistKeylessRtmp(UUID seller, LiveRoomStatus status) {
+        LiveRoomEntity entity = persist(seller, status, T);
+        entity.assignRtmpIngress(null);
+        jpa.save(entity);
+        em.flush();
+        return entity.getId();
+    }
+
     @Test
     @DisplayName("RTMP 배정이 rtmp_url 을 함께 저장하고, 두 번째 배정은 지지 않는다")
     void assignStoresRtmpUrl() {
-        UUID roomId = persist(sellerId, LiveRoomStatus.SCHEDULED, T).getId();
-        em.flush();
+        UUID roomId = persistKeylessRtmp(sellerId, LiveRoomStatus.SCHEDULED);
 
         assertThat(repository.assignRtmpIngressIfAbsent(roomId, sellerId, "ing-1", "rtmp://ingress/live", T)).isTrue();
         assertThat(repository.assignRtmpIngressIfAbsent(roomId, sellerId, "ing-2", "rtmp://other", T)).isFalse();
 
         LiveRoom room = repository.findById(roomId).orElseThrow();
         assertThat(room.rtmpUrl()).isEqualTo("rtmp://ingress/live");
+    }
+
+    @Test
+    @DisplayName("최초 배정은 WebRTC 방을 건드리지 않는다 — 송출 방식은 생성 때 고정")
+    void assignSkipsWebRtcRoom() {
+        UUID roomId = persist(sellerId, LiveRoomStatus.SCHEDULED, T).getId();
+        em.flush();
+
+        assertThat(repository.assignRtmpIngressIfAbsent(roomId, sellerId, "ing-1", "rtmp://ingress/live", T)).isFalse();
+
+        LiveRoom room = repository.findById(roomId).orElseThrow();
+        assertThat(room.streamType()).isEqualTo(new LiveStreamType.WebRtc());
+        assertThat(room.rtmpUrl()).isNull();
+    }
+
+    @Test
+    @DisplayName("재발급 CAS — ingress_id 가 이전 값일 때만 1행, ingress·rtmp_url 이 새 값이 된다")
+    void reassignOnlyWhenCurrent() {
+        UUID roomId = persistKeylessRtmp(sellerId, LiveRoomStatus.SCHEDULED);
+        repository.assignRtmpIngressIfAbsent(roomId, sellerId, "ing-OLD", "rtmp://old", T);
+
+        // 이전 값이 다르면(다른 재발급이 먼저 이김) 0행
+        assertThat(repository.reassignRtmpIngressIfCurrent(roomId, sellerId, "ing-STALE", "ing-X", "rtmp://x", T))
+                .isFalse();
+        // 남의 sellerId 는 0행
+        assertThat(repository.reassignRtmpIngressIfCurrent(roomId, UUID.randomUUID(), "ing-OLD", "ing-X", "rtmp://x", T))
+                .isFalse();
+        assertThat(repository.reassignRtmpIngressIfCurrent(roomId, sellerId, "ing-OLD", "ing-NEW", "rtmp://new", T))
+                .isTrue();
+        // 같은 이전 값으로 두 번째 요청은 진다
+        assertThat(repository.reassignRtmpIngressIfCurrent(roomId, sellerId, "ing-OLD", "ing-X", "rtmp://x", T))
+                .isFalse();
+
+        LiveRoom room = repository.findById(roomId).orElseThrow();
+        assertThat(room.streamType()).isEqualTo(new LiveStreamType.Rtmp("ing-NEW"));
+        assertThat(room.rtmpUrl()).isEqualTo("rtmp://new");
+    }
+
+    @Test
+    @DisplayName("재발급 CAS — Scheduled 가 아니면(Ready) 0행")
+    void reassignRejectsNonScheduled() {
+        UUID roomId = persistKeylessRtmp(sellerId, LiveRoomStatus.SCHEDULED);
+        repository.assignRtmpIngressIfAbsent(roomId, sellerId, "ing-OLD", "rtmp://old", T);
+        LiveRoomEntity entity = jpa.findById(roomId).orElseThrow();
+        entity.updateLiveStatus(LiveRoomStatus.READY);
+        jpa.save(entity);
+        em.flush();
+
+        assertThat(repository.reassignRtmpIngressIfCurrent(roomId, sellerId, "ing-OLD", "ing-NEW", "rtmp://new", T))
+                .isFalse();
+        assertThat(repository.findById(roomId).orElseThrow().rtmpUrl()).isEqualTo("rtmp://old");
     }
 }

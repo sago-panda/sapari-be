@@ -52,6 +52,7 @@ import com.sapari.live.port.GetUpcomingLivesUseCase;
 import com.sapari.live.port.PrepareIngressUseCase;
 import com.sapari.live.port.StartLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
+import com.sapari.live.view.LiveStreamKind;
 import com.sapari.live.view.IngressCredentialView;
 import com.sapari.live.view.StartLiveView;
 import com.sapari.liveapp.security.LiveUserPrincipal;
@@ -111,7 +112,7 @@ class LiveSellerControllerTest {
                 .content("""
                         {"title":"여름 라이브","description":"설명","sellerNickname":"스토어",
                          "thumbnailUrl":"https://cdn.example.com/thumbnails/33333333-3333-3333-3333-333333333333/44444444-4444-4444-4444-444444444444",
-                         "scheduledAt":"2026-11-07T09:00:00Z"}
+                         "scheduledAt":"2026-11-07T09:00:00Z","streamType":"RTMP"}
                         """));
 
         expectSuccessEnvelope(result.andExpect(status().isCreated()))
@@ -120,6 +121,23 @@ class LiveSellerControllerTest {
         ArgumentCaptor<CreateLiveCommand> command = ArgumentCaptor.forClass(CreateLiveCommand.class);
         then(createLiveUseCase).should().create(command.capture());
         assertThat(command.getValue().sellerId()).isEqualTo(SELLER_ID);
+        assertThat(command.getValue().streamType()).isEqualTo(LiveStreamKind.RTMP);
+    }
+
+    @Test
+    @DisplayName("방 생성 — 송출 방식 누락·RTMP/WEBRTC 이외 값은 400 봉투, 유스케이스 미호출")
+    void createRoomStreamTypeRequired() throws Exception {
+        String base = "{\"title\":\"제목\",\"sellerNickname\":\"스토어\","
+                + "\"thumbnailUrl\":\"https://cdn.example.com/thumbnails/a/b\",\"scheduledAt\":\"2026-11-07T09:00:00Z\"";
+
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                .content(base + "}")), "COMMON-001");
+        mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
+                        .content(base + ",\"streamType\":\"HLS\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.error.code").exists());
+        then(createLiveUseCase).should(never()).create(any());
     }
 
     @Test
@@ -285,7 +303,7 @@ class LiveSellerControllerTest {
 
     private static String createBody(String titleJson, String descriptionJson) {
         return "{\"title\":" + titleJson + ",\"description\":" + descriptionJson + ",\"sellerNickname\":\"스토어\","
-                + "\"thumbnailUrl\":\"https://cdn.example.com/thumbnails/a/b\",\"scheduledAt\":\"2026-11-07T09:00:00Z\"}";
+                + "\"thumbnailUrl\":\"https://cdn.example.com/thumbnails/a/b\",\"scheduledAt\":\"2026-11-07T09:00:00Z\",\"streamType\":\"WEBRTC\"}";
     }
 
     private static String product(UUID productId, boolean pinned) {

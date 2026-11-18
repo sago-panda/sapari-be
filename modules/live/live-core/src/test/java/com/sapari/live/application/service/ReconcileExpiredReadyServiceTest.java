@@ -384,6 +384,20 @@ class ReconcileExpiredReadyServiceTest {
     }
 
     @Test
+    @DisplayName("키 없는 RTMP 방은 LiveKit 목록이 비어도 오설정이 아니다 — 배정한 ingress 가 없으니 정상 만료한다")
+    void keylessRtmpRoomWithNoIngress_isExpired() {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
+        given(liveMediaManager.listRoomIngress(roomId)).willReturn(List.of());
+        givenRoomWithIngress(roomId, null);
+
+        service.reconcile();
+
+        then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
+    }
+
+    @Test
     @DisplayName("OBS 가 끝내 안 붙은 RTMP 방은 정상 만료한다 — ingress 는 등록돼 있고 송출만 없다")
     void rtmpRoomWithRegisteredButIdleIngress_isExpired() {
         UUID roomId = UUID.randomUUID();

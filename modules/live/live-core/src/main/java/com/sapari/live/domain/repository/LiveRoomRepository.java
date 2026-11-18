@@ -36,13 +36,22 @@ public interface LiveRoomRepository {
     List<UUID> findExpiredReadyRoomIds(Instant threshold, int limit);
 
     /**
-     * 아직 ingress 가 없는 Scheduled 방에만 RTMP ingress 를 배정한다. 검사와 쓰기가 한 문장이라
+     * 아직 ingress 가 없는 Scheduled RTMP 방에만 RTMP ingress 를 배정한다. 검사와 쓰기가 한 문장이라
      * 동시 요청 중 하나만 성공한다 — {@code prepare} 는 외부 호출을 트랜잭션 밖에 두려고 행 잠금을
      * 쓰지 않아서, 배타성을 여기서 얻는다.
      *
      * @return 획득했으면 true. false 면 이미 다른 요청이 배정했거나 방이 Scheduled 가 아니다.
      */
     boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now);
+
+    /**
+     * Scheduled RTMP 방의 ingress 가 아직 {@code currentIngressId} 일 때만 새 ingress·송출 주소로 바꾼다.
+     * 재발급의 배타성을 이 한 문장에서 얻는다(동시 재발급 중 하나만 성공).
+     *
+     * @return 바꿨으면 true. false 면 다른 요청이 먼저 바꿨거나 방이 더 이상 Scheduled 가 아니다.
+     */
+    boolean reassignRtmpIngressIfCurrent(UUID roomId, UUID sellerId, String currentIngressId,
+                                         String newIngressId, String rtmpUrl, Instant now);
 
     /**
      * {@code threshold} 이전에 시작된 Live 방 id 를 오래된 순으로 최대 {@code limit} 건.

@@ -41,9 +41,12 @@ public class PrepareIngressService implements PrepareIngressUseCase {
         if (!room.canPrepareIngress()) {
             throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, room.id().toString());
         }
-        // 멱등: 이미 ingress 가 발급된 방이면 재발급하지 않고 거부(중복 ingress 방지).
-        // streamKey 분실 복구(재발급)는 별도 티켓의 몫.
-        if (room.isRtmp()) {
+        // 송출 방식은 생성 때 고정된다 — WebRTC 방에는 키를 내주지 않는다(발급이 방식을 바꾸지 않는다).
+        if (!room.isRtmp()) {
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, "RTMP 방이 아닙니다: " + room.id());
+        }
+        // 멱등: 이미 ingress 가 발급된 방이면 거부(중복 ingress 방지). 분실 복구는 재발급(ReissueIngressService).
+        if (room.hasIngressKey()) {
             throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, "이미 RTMP ingress 가 발급된 방입니다: " + room.id());
         }
 

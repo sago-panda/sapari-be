@@ -11,7 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 
 /**
- * ingress 배정 UPDATE만 트랜잭션에 담는 얇은 빈.
+ * ingress 배정·재배정 UPDATE만 트랜잭션에 담는 얇은 빈.
  *
  * <p>{@code @Modifying} 쿼리는 트랜잭션이 없으면 {@code TransactionRequiredException} 이지만,
  * {@code PrepareIngressService} 에 {@code @Transactional} 을 붙이면 {@code createIngress}(외부 I/O)까지
@@ -32,5 +32,13 @@ public class RtmpIngressAssigner {
     @Transactional
     public boolean assignIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now) {
         return liveRoomRepository.assignRtmpIngressIfAbsent(roomId, sellerId, ingressId, rtmpUrl, now);
+    }
+
+    /** 재발급. @return 바꿨으면 true. false 면 다른 재발급에 졌거나 방이 더 이상 Scheduled 가 아니다. */
+    @Transactional
+    public boolean reassignIfCurrent(UUID roomId, UUID sellerId, String currentIngressId,
+                                     String newIngressId, String rtmpUrl, Instant now) {
+        return liveRoomRepository.reassignRtmpIngressIfCurrent(
+                roomId, sellerId, currentIngressId, newIngressId, rtmpUrl, now);
     }
 }

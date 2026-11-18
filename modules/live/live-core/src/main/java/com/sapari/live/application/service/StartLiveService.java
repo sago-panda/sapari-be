@@ -53,6 +53,10 @@ public class StartLiveService implements StartLiveUseCase {
         if (!room.canStartLive()) {
             throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, room.id().toString());
         }
+        // 키 없는 RTMP 방은 OBS 가 붙을 곳이 없어 시작하면 Ready 에 갇힌다 — 미디어 호출·상품 검증 전에 거부한다.
+        if (room.isRtmp() && !room.hasIngressKey()) {
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_REQUIRED, room.id().toString());
+        }
 
         //pin 개수 검증, 1개가 아닌 경우 방송 시작 불가
         validatePinnedProduct(command.products());

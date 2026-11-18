@@ -11,10 +11,12 @@ import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.application.port.SfuRoomResult;
 import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.ThumbnailUrlRule;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.CreateLiveUseCase;
 import com.sapari.live.view.CreateLiveView;
+import com.sapari.live.view.LiveStreamKind;
 
 @Slf4j
 @Service
@@ -39,6 +41,7 @@ public class CreateLiveService implements CreateLiveUseCase {
                 command.sellerNickname(),
                 command.thumbnailUrl(),
                 command.scheduledAt(),
+                toStreamType(command.streamType()),
                 timeProvider.now()
         );
 
@@ -51,5 +54,13 @@ public class CreateLiveService implements CreateLiveUseCase {
         liveRoomRepository.save(withSfu);
 
         return withSfu.toCreateLiveView();
+    }
+
+    /** RTMP 방은 키 없이 만든다 — 키는 판매자가 {@code /ingress} 로 따로 발급받는다. */
+    private static LiveStreamType toStreamType(LiveStreamKind kind) {
+        return switch (kind) {
+            case RTMP -> new LiveStreamType.Rtmp(null);
+            case WEBRTC -> new LiveStreamType.WebRtc();
+        };
     }
 }

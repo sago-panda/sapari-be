@@ -621,6 +621,12 @@ class ReconcileSchedulerLockTest {
         }
 
         @Override
+        public boolean reassignRtmpIngressIfCurrent(UUID roomId, UUID sellerId, String currentIngressId,
+                                                    String newIngressId, String rtmpUrl, Instant now) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public List<UUID> findStaleLiveRoomIds(Instant threshold, int limit) {
             throw new UnsupportedOperationException();
         }

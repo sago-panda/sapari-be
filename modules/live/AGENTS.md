@@ -53,8 +53,9 @@ here is written once; the named class holds the reasoning.
 - **The enter cap is a CPU ceiling** — supply is per core, demand is fleet-wide; never compare them without a core count (`EnterRateLimitProperties`).
 - **The seller enter lane's multi-account risk is accepted only because seller signup rejects duplicate business numbers** (`SellerAuthService`; why: `EnterRateLimitProperties`).
 - **Accepted: one room can outlive its reconcile lease → duplicate cleanup** (`LiveReconcileProperties.roundBudget`).
-- **A new `status` value is a rollout constraint** — an old replica cannot read it and fails whole rounds; expose
-  the transition that writes it only after every replica runs the new code (`LiveRoomStatus`; detail: state-machine rules).
+- **A new `status` value, or a column combination an old mapper rejects (e.g. RTMP without ingress), is a rollout
+  constraint** — an old replica cannot read it and fails whole rounds; expose the path that writes it only after every
+  replica runs the new code (`LiveRoomStatus`, `LiveStreamType`; detail and the one accepted exception: state-machine rules).
 - **Terminal = `Ended` or `Cancelled`** — "finished" checks use `isTerminal()`; replay alone is `Ended`-only (`LiveStatus`).
 - **Every exit from `Live` must remove the room from the Redis live list** (`LiveListCacheSync`).
 - **live-core never depends on chat-api** — viewer counts come through `LiveViewerCounter`, wired in live-app.

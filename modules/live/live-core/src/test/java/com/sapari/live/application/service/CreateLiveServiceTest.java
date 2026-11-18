@@ -12,6 +12,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
@@ -27,8 +29,10 @@ import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.ThumbnailUrlRule;
 import com.sapari.live.domain.repository.LiveRoomRepository;
+import com.sapari.live.view.LiveStreamKind;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("방 생성 — 썸네일(LIVE-016) → 예정 시각(LIVE-015) → 저장 → SFU")
@@ -46,7 +50,12 @@ class CreateLiveServiceTest {
     @InjectMocks private CreateLiveService createLiveService;
 
     private static CreateLiveCommand command(String thumbnailUrl, Instant scheduledAt, String description) {
-        return new CreateLiveCommand(SELLER, "제목", description, "닉", thumbnailUrl, scheduledAt);
+        return command(thumbnailUrl, scheduledAt, description, LiveStreamKind.WEBRTC);
+    }
+
+    private static CreateLiveCommand command(String thumbnailUrl, Instant scheduledAt, String description,
+                                             LiveStreamKind streamType) {
+        return new CreateLiveCommand(SELLER, "제목", description, "닉", thumbnailUrl, scheduledAt, streamType);
     }
 
     @Test
@@ -66,6 +75,27 @@ class CreateLiveServiceTest {
         then(liveRoomRepository).should(org.mockito.Mockito.times(2)).save(saved.capture());
         assertThat(saved.getAllValues().getFirst().description()).isNull();
         assertThat(saved.getAllValues().getFirst().thumbnailUrl()).isEqualTo(THUMB);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"RTMP", "WEBRTC"})
+    @DisplayName("송출 방식 — 요청 값대로 고정된다(RTMP 는 키 없이 생성)")
+    void fixesStreamType(LiveStreamKind kind) {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.save(any())).willAnswer(inv -> {
+            LiveRoom room = inv.getArgument(0);
+            return room.id() == null ? room.toBuilder().id(roomId).build() : room;
+        });
+        given(liveMediaManager.createRoom(roomId)).willReturn(new SfuRoomResult("sfu-1", 100, true));
+
+        createLiveService.create(command(THUMB, NOW.plusMillis(1), "설명", kind));
+
+        ArgumentCaptor<LiveRoom> saved = ArgumentCaptor.forClass(LiveRoom.class);
+        then(liveRoomRepository).should(org.mockito.Mockito.times(2)).save(saved.capture());
+        LiveStreamType expected = kind == LiveStreamKind.RTMP
+                ? new LiveStreamType.Rtmp(null) : new LiveStreamType.WebRtc();
+        assertThat(saved.getAllValues()).allSatisfy(r -> assertThat(r.streamType()).isEqualTo(expected));
     }
 
     @Test

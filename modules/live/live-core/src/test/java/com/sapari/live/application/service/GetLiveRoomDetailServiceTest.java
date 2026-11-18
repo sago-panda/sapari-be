@@ -24,6 +24,7 @@ import com.sapari.live.domain.model.VodStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.view.LiveRoomTab;
 import com.sapari.live.view.PublicLiveRoomDetailView;
+import com.sapari.live.view.LiveStreamKind;
 import com.sapari.live.view.SellerLiveRoomDetailView;
 
 /** 의존이 리포지토리 하나뿐이다 — 상세는 LiveKit 을 부르지 않는다(생성자에 미디어 포트가 없다). */
@@ -88,6 +89,24 @@ class GetLiveRoomDetailServiceTest {
 
         assertThat(view.status()).isEqualTo(LiveRoomTab.SCHEDULED);
         assertThat(view.rtmpUrl()).isEqualTo("rtmp://ingress/x");
+        assertThat(view.streamType()).isEqualTo(LiveStreamKind.RTMP);
+    }
+
+    @Test
+    @DisplayName("판매자 상세 — 송출 방식: 키 없는 RTMP 방은 RTMP·rtmpUrl 없음, WebRTC 방은 WEBRTC")
+    void sellerDetailStreamType() {
+        LiveRoom keyless = room(new LiveStatus.Scheduled(AT)).toBuilder()
+                .streamType(new LiveStreamType.Rtmp(null)).rtmpUrl(null).build();
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(keyless));
+
+        SellerLiveRoomDetailView view = service.getSellerDetail(new GetSellerRoomDetailCommand(roomId, sellerId));
+        assertThat(view.streamType()).isEqualTo(LiveStreamKind.RTMP);
+        assertThat(view.rtmpUrl()).isNull();
+
+        LiveRoom webRtc = keyless.toBuilder().streamType(new LiveStreamType.WebRtc()).build();
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(webRtc));
+        assertThat(service.getSellerDetail(new GetSellerRoomDetailCommand(roomId, sellerId)).streamType())
+                .isEqualTo(LiveStreamKind.WEBRTC);
     }
 
     @Test

@@ -30,6 +30,7 @@ import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.exception.UnsupportedRoleException;
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.view.EnterLiveView;
@@ -58,7 +59,7 @@ class EnterLiveServiceTest {
         sellerId = UUID.randomUUID();
         roomId = UUID.randomUUID();
         LiveRoom scheduled = LiveRoom.create(
-                        sellerId, "타이틀", "설명", "판매자닉", "http://thumb", now.plusSeconds(3600), now)
+                        sellerId, "타이틀", "설명", "판매자닉", "http://thumb", now.plusSeconds(3600), new LiveStreamType.WebRtc(), now)
                 .toBuilder().id(roomId).build();
         // Live 상태로 전이 + hlsUrl 세팅
         liveRoom = scheduled.startLive(StreamInfo.of("sfu-room", "egress-1", "http://cdn/master.m3u8", null), now);
@@ -201,7 +202,7 @@ class EnterLiveServiceTest {
     void rejects_whenNotLive() {
         Instant now = Instant.parse("2026-07-03T00:00:00Z");
         UUID scheduledId = UUID.randomUUID();
-        LiveRoom scheduled = LiveRoom.create(sellerId, "t", "d", "n", "http://th", now.plusSeconds(3600), now)
+        LiveRoom scheduled = LiveRoom.create(sellerId, "t", "d", "n", "http://th", now.plusSeconds(3600), new LiveStreamType.WebRtc(), now)
                 .toBuilder().id(scheduledId).build(); // Scheduled
         given(liveRoomRepository.findById(scheduledId)).willReturn(Optional.of(scheduled));
 
@@ -259,7 +260,7 @@ class EnterLiveServiceTest {
     @DisplayName("방송 중이 아니어서 거부되면 기록하지 않는다")
     void doesNotRecord_whenNotLive() {
         Instant now = Instant.parse("2026-07-03T00:00:00Z");
-        LiveRoom scheduled = LiveRoom.create(sellerId, "t", "d", "n", "http://th", now.plusSeconds(3600), now)
+        LiveRoom scheduled = LiveRoom.create(sellerId, "t", "d", "n", "http://th", now.plusSeconds(3600), new LiveStreamType.WebRtc(), now)
                 .toBuilder().id(roomId).build();
         given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(scheduled));
 

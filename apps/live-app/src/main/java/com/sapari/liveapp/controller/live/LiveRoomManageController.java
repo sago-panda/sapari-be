@@ -23,10 +23,13 @@ import com.sapari.common.web.security.CurrentUserId;
 import com.sapari.live.command.CancelLiveCommand;
 import com.sapari.live.command.GetSellerRoomDetailCommand;
 import com.sapari.live.command.GetSellerRoomsCommand;
+import com.sapari.live.command.ReissueIngressCommand;
 import com.sapari.live.port.CancelLiveUseCase;
 import com.sapari.live.port.GetLiveRoomDetailUseCase;
 import com.sapari.live.port.GetSellerRoomsUseCase;
+import com.sapari.live.port.ReissueIngressUseCase;
 import com.sapari.live.port.UpdateLiveUseCase;
+import com.sapari.live.view.IngressCredentialView;
 import com.sapari.live.view.LiveRoomTab;
 import com.sapari.live.view.PublicLiveRoomDetailView;
 import com.sapari.live.view.SellerLiveRoomCountsView;
@@ -35,7 +38,7 @@ import com.sapari.live.view.SellerLiveRoomSummary;
 import com.sapari.liveapp.controller.live.dto.UpdateRoomRequest;
 
 /**
- * 방 관리 — 취소·수정·판매자 내 방 목록·상세(SPR-158).
+ * 방 관리 — 취소·수정·판매자 내 방 목록·상세(SPR-158), 송출 키 재발급(SPR-171).
  *
  * <p><b>판매자 조회는 {@code /seller/rooms/**} 아래다.</b> {@code GET /rooms/{한 세그먼트}} 는 공개(permitAll)이자
  * 입장 상한({@code EnterPaths}) 대상이라, 거기에 판매자 경로({@code /rooms/mine} 등)를 두면 공개로 열린다.
@@ -53,11 +56,25 @@ public class LiveRoomManageController {
     private final UpdateLiveUseCase updateLiveUseCase;
     private final GetSellerRoomsUseCase getSellerRoomsUseCase;
     private final GetLiveRoomDetailUseCase getLiveRoomDetailUseCase;
+    private final ReissueIngressUseCase reissueIngressUseCase;
 
     @PostMapping("/rooms/{roomId}/cancel")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void cancelRoom(@CurrentUserId UUID sellerId, @PathVariable UUID roomId) {
         cancelLiveUseCase.cancel(new CancelLiveCommand(roomId, sellerId));
+    }
+
+    /**
+     * 송출 키 재발급(대기실). 새 streamKey 는 이 응답으로 한 번만 전달되고, 이전 키는 무효가 된다.
+     * 최초 발급({@code POST /rooms/{roomId}/ingress})은 {@code LiveController} 에 있다.
+     */
+    @PostMapping("/rooms/{roomId}/ingress/reissue")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ResponseEnvelope<IngressCredentialView> reissueIngress(
+            @CurrentUserId UUID sellerId,
+            @PathVariable UUID roomId
+    ) {
+        return ResponseEnvelope.success(reissueIngressUseCase.reissue(new ReissueIngressCommand(roomId, sellerId)));
     }
 
     @PutMapping("/rooms/{roomId}")
