@@ -7,8 +7,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -32,6 +34,7 @@ import com.sapari.chat.domain.model.ChatMessage;
 import com.sapari.chat.domain.model.ChatMessageType;
 import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
+import com.sapari.global.time.TimeProvider;
 
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -68,6 +71,10 @@ class ChatBroadcastSubscriberTest {
      */
     @Spy
     private ChatMetrics metrics = ChatMetrics.NOOP;
+
+    /** 전파 시간 칸이 실제 실행 시간을 재야 하므로 고정 시계가 아니라 시스템 시계다. */
+    @Spy
+    private TimeProvider timeProvider = new TimeProvider(Clock.systemUTC());
 
     @InjectMocks
     private ChatBroadcastSubscriber subscriber;
@@ -187,6 +194,53 @@ class ChatBroadcastSubscriberTest {
         assertThat(visitorMsg.originalMessage()).isNull();
     }
 
+    /**
+     * 전파 시간이 <b>실행</b>을 재는지 — 조립을 재면 0 에 가깝게 나와 병목이 안 보인다. 세션에 넣는 일이
+     * 구독 시점에 20ms 를 쓰게 두고, 기록이 그보다 짧으면 실행 전에 시계를 멈춘 것이다.
+     */
+    @Test
+    @DisplayName("채팅 봉투 1건의 전파 시간을 기록한다 — 세션에 넣는 실행 시간까지 포함한다")
+    void routeChat_recordsFanOutDurationIncludingExecution() {
+        // given: 세션에 넣는 일이 실행될 때 20ms 걸린다
+        given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class)))
+                .willReturn(Mono.fromRunnable(() -> spin(Duration.ofMillis(20))));
+        ChatMessage message = new ChatMessage(
+                "65a1f2c3d4e5f60718293a4b", roomId, buyerId, "구매자", "buyer@example.com",
+                ChatRole.BUYER, new ChatMessageType.Normal(), "안녕", "안녕",
+                null, Instant.parse("2026-06-11T00:00:00Z"));
+
+        // when
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.ChatMsg(message)))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        ArgumentCaptor<Duration> took = ArgumentCaptor.forClass(Duration.class);
+        then(metrics).should(times(1)).roomFanOutCompleted(took.capture());
+        assertThat(took.getValue()).isGreaterThanOrEqualTo(Duration.ofMillis(20));
+    }
+
+    @Test
+    @DisplayName("강퇴 봉투는 전파 시간에 넣지 않는다 — 세션 close 까지 포함돼 채팅 전파의 분포를 흐린다")
+    void routeKick_doesNotRecordFanOutDuration() {
+        // given
+        given(sessionManager.sendToRoomGated(eq(roomId), any(Function.class))).willReturn(Mono.empty());
+        given(sessionManager.closeUser(roomId, buyerId)).willReturn(Mono.empty());
+
+        // when
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.KickEvent(buyerId)))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        then(metrics).should(never()).roomFanOutCompleted(any());
+    }
+
+    private static void spin(Duration duration) {
+        long deadline = System.nanoTime() + duration.toNanos();
+        while (System.nanoTime() - deadline < 0) {
+            Thread.onSpinWait();
+        }
+    }
+
     @Test
     @DisplayName("KICK_EVENT 팬아웃 성공: 당사자에겐 SYSTEM(KICKED)을, 나머지에겐 KICK(userId)을 보내고 당사자 세션을 닫는다")
     void routeKickEvent_Success() {
@@ -283,6 +337,8 @@ class ChatBroadcastSubscriberTest {
         // then
         then(sessionManager).should(times(2)).sendToRoomGated(eq(roomId), any());
         assertThat(subscription).isNotNull();
+        // 전파 시간은 성공한 전파만 잰다 — 실패한 첫 봉투는 deliveryDropped 쪽에서 센다
+        then(metrics).should(times(1)).roomFanOutCompleted(any());
     }
 
     @Test

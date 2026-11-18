@@ -88,7 +88,7 @@ class ChatMessageRepositoryImplTest {
     }
 
     @Test
-    @DisplayName("save — id가 채번되고 전 필드가 보존된다")
+    @DisplayName("save — id가 채번되고 이메일 외 필드가 보존된다")
     void save_assigns_id_and_preserves_fields() {
         // given
         ChatMessage saved = repository.save(message("안녕하세요", "client-1")).block(VERIFY_CEILING);
@@ -96,8 +96,58 @@ class ChatMessageRepositoryImplTest {
         // when & then
         assertThat(saved.id()).isNotNull();
         assertThat(saved.displayMessage()).isEqualTo("안녕하세요");
-        assertThat(saved.senderEmail()).isEqualTo("buyer@example.com");
+        assertThat(saved.senderNickname()).isEqualTo("구매자닉");
         assertThat(saved.type()).isInstanceOf(ChatMessageType.Normal.class);
+    }
+
+    /**
+     * 발신자 이메일은 저장하지 않는다 — 메시지는 TTL 2년 동안 남고 회원 탈퇴가 그 수명을 줄이지 않으므로,
+     * 저장하면 탈퇴한 회원의 이메일이 2년간 남는다. 도메인 값이 null 인지가 아니라 <b>저장된 문서에 키가
+     * 없는지</b>를 원시 문서로 읽어 본다.
+     */
+    @Test
+    @DisplayName("save — 발신자 이메일은 문서에 키조차 남기지 않는다")
+    void save_does_not_persist_sender_email() {
+        // when
+        ChatMessage saved = repository.save(message("안녕하세요", "client-2")).block(VERIFY_CEILING);
+
+        // then
+        org.bson.Document raw = mongoTemplate
+                .findById(new ObjectId(saved.id()), org.bson.Document.class, "chat_messages")
+                .block(VERIFY_CEILING);
+        assertThat(raw).isNotNull().doesNotContainKey("senderEmail").containsKey("senderNickname");
+        assertThat(saved.senderEmail()).isNull();
+    }
+
+    /**
+     * 배포 전에 쓰인 문서에는 {@code senderEmail} 키가 남아 있다(운영 정리 명령 전까지). 그 문서를 읽어도
+     * 실패하지 않고, 읽은 값에 이메일이 실리지 않아야 한다 — 정리 전이라도 이력 응답으로는 나가지 않는다.
+     */
+    @Test
+    @DisplayName("이메일 키가 남은 옛 문서도 읽히고, 읽은 값에는 이메일이 없다")
+    void legacy_document_with_email_is_readable_without_email() {
+        // given: 이 변경 이전 모양의 문서를 직접 넣는다
+        org.bson.Document legacy = new org.bson.Document()
+                .append("roomId", roomId)
+                .append("senderId", senderId)
+                .append("senderNickname", "구매자")
+                .append("senderEmail", "legacy@example.com")
+                .append("senderRole", "BUYER")
+                .append("type", "NORMAL")
+                .append("originalMessage", "옛 메시지")
+                .append("displayMessage", "옛 메시지")
+                .append("clientMsgId", "legacy-1")
+                .append("createdAt", Date.from(Instant.parse("2026-06-11T00:00:00Z")));
+        mongoTemplate.insert(legacy, "chat_messages").block(VERIFY_CEILING);
+
+        // when
+        ChatMessage read = repository
+                .findByRoomIdAndSenderIdAndClientMsgId(roomId, senderId, "legacy-1").block(VERIFY_CEILING);
+
+        // then
+        assertThat(read).isNotNull();
+        assertThat(read.originalMessage()).isEqualTo("옛 메시지");
+        assertThat(read.senderEmail()).isNull();
     }
 
     @Test

@@ -15,7 +15,7 @@ import org.springframework.web.util.UrlPathHelper;
  *
  * <p><b>{@code GET} 과 {@code HEAD} 를 둘 다 본다.</b> Spring MVC 는 {@code @GetMapping} 에 대해
  * {@code HEAD} 를 서비스하므로, 메서드를 {@code GET} 으로만 보면 {@code HEAD} 가 상한 밖으로
- * 빠진다 — 본문을 안 보내도 <b>조회 비용은 그대로 든다</b>(Postgres 1 + Mongo 1).
+ * 빠진다 — 본문을 안 보내도 <b>조회 비용은 그대로 든다</b>(Postgres 2 + Mongo 1).
  */
 final class ChatHistoryPaths {
 

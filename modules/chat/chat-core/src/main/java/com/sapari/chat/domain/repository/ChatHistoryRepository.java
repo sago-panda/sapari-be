@@ -47,6 +47,26 @@ public interface ChatHistoryRepository {
     List<ChatMessage> findBefore(UUID roomId, String beforeId, int size, Collection<UUID> excludedSenderIds);
 
     /**
+     * 재접속 조회 — {@code afterId} 보다 뒤의 메시지를 <b>오래된 것부터</b> {@code size} 건.
+     *
+     * <p>방향이 {@link #findBefore} 와 반대인 이유: 받은 순서대로 바로 그릴 수 있고(부분 결과도 그대로 쓴다),
+     * 이어 받기가 이 파라미터 하나로 끝나 "모드는 셋 중 하나" 계약을 섞지 않으며, 방송 중인 방의 끝에서
+     * 자연히 멈춘다. 다음 페이지 판단(길이 == size)과 형식이 틀린 커서의 400 은 {@link #findBefore} 와 같다.
+     *
+     * <p>⚠️ <b>{@code _id} 순서는 도착 순서가 아니다.</b> {@code ObjectId} 는 저장하는 파드가 만들고
+     * 타임스탬프가 초 단위라, 같은 초 안에서는 파드마다 다른 난수 부분이 순서를 정한다. 같은 파드에서도
+     * 저장은 동시에 끝날 수 있어 발행 순서가 {@code _id} 순서와 어긋난다. 그래서 클라이언트가 <b>마지막으로
+     * 받은</b> {@code id} 를 그대로 넘기면 그보다 {@code _id} 가 작은 미수신 메시지를 이 조회는 돌려주지
+     * 않는다 — 에러 없이 빠진다. 첫 호출의 기준점은 클라이언트가 끊기기 2초 이상 전에 받은 메시지로
+     * 고른다(프론트 가이드 §7.4). 서버가 커서를 뒤로 밀지 않는 이유: 이어 받기 호출도 같이 밀려, 그 창
+     * 안에 {@code size} 건 이상 있으면 같은 페이지가 반복된다.
+     *
+     * @param afterId           필수 — 마지막으로 받은 메시지의 {@code id}
+     * @param excludedSenderIds 질의에서 제외할 발신자(강퇴자). 비어 있어도 된다
+     */
+    List<ChatMessage> findAfter(UUID roomId, String afterId, int size, Collection<UUID> excludedSenderIds);
+
+    /**
      * VOD 윈도우 조회 — {@code [from, to]} 구간의 메시지를 최신순으로 최대 {@code limit} 건.
      *
      * <p>구간은 재생 위치에서 역산한 <b>절대 시각</b>이다. 경과 시간을 문서에 저장하지 않기로 했으므로

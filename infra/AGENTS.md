@@ -32,6 +32,16 @@ DDL is owned by **Flyway**, not Hibernate (`ddl-auto` never creates). Runner liv
     `ChatMongoConfig`, which only runs in **streaming-app** (its argument is a `ReactiveMongoTemplate`,
     which live-app does not have). So the indexes behind live-app's chat-history endpoint depend on a
     *different* app having booted. Nothing in this file used to say so.
+  - **One-off after deploying SPR-200 — remove stored sender emails.** `chat_messages` stopped storing
+    `senderEmail` (it outlived withdrawal for the 2-year TTL), but documents written before the deploy
+    still carry the key. Reads ignore it; it stays on disk until this runs (mongosh, against the chat DB):
+    `db.chat_messages.updateMany({senderEmail: {$exists: true}}, {$unset: {senderEmail: ""}})`.
+    Measured on mongo:7.0: it clears both a value and an explicit `null`, leaves other fields alone, and a
+    second run matches 0 — safe to re-run. Run it **after** the last old streaming-app replica is gone,
+    or an old pod can write the key again. It scans the collection (no index on that field), so run it off-peak.
+    Read the result with `db.chat_messages.countDocuments({senderEmail: {$exists: true}})`: 0 right after,
+    and 0 again a day later — a non-zero second reading means an old replica was still writing; run the
+    `$unset` again.
 - **No cross-schema FK** — domains reference each other by `uuid` id columns only, so schemas
   have no apply-order dependency (the runner loops schemas in any order).
 - **Run on PRIMARY only** (replicas get it via WAL). `outOfOrder=true`, so timestamp versions
@@ -572,10 +582,10 @@ that on.
     consequence is severe — if re-registration stops, **every live viewer drops out of the count** after
     the staleness window (4 × the heartbeat interval).
     - ⚠️ **Do not read 0 as healthy.** A round that *fails* is counted; a round that never *finishes* is
-      not, and the registry's own javadoc records that branch as the worse one. No signal measures round
-      duration yet, so this counter is evidence that re-registration **is failing** — never evidence that
-      it is working. The only reading available for a stall today is `chat.sessions.local` holding steady
-      while connections continue.
+      not, and the registry's own javadoc records that branch as the worse one. So this counter is
+      evidence that re-registration **is failing** — never evidence that it is working. A stall reads as
+      `chat.sessions.heartbeat.skipped` climbing (SPR-199); `chat.sessions.heartbeat.duration` times only
+      completed rounds, so a stuck round never appears in it.
     - Before this meter existed the only signal was a WARN thinned to one line per 10s, and that latch is
       **shared** with two other failure modes, so whichever fires first hides the others' first
       occurrence. Details in `modules/chat/AGENTS.md`.
@@ -587,6 +597,13 @@ that on.
       reply was delayed past the 1s command bound — so treat permanent death as a shape to watch for, not
       the default. Per-subscription tag because `chat_pubsub` losing its stream silently drops every chat
       delivery and every KICK notice on that pod, while `profanity_dictionary` only ages the dictionary.
+  - **Volume that is not 0 when healthy** (added SPR-204): `chat.pubsub.received` — envelopes this pod's
+    chat pattern subscription received, `_count` messages and `_sum` UTF-8 payload bytes (channel and pattern
+    names and Redis framing are not counted). The subscription is a pattern, so every pod receives the whole fleet's
+    chat; summed across pods it is that subscription's Redis egress, minus those names and framing. Read it
+    before deciding to replace the pattern subscription (`RedisChatBroadcaster`). Not an alert, and not a stall
+    detector: it counts upstream of the shared stream, so a stalled room subscriber that stops the stream
+    silences this meter too — a drop to 0 is not proof of a quiet fleet.
 - **Not done yet in this repo**: as with live-app, the manifests live in the infra repo, so none of the
   network restrictions above are enforced from here.
 

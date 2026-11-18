@@ -1,10 +1,14 @@
 package com.sapari.chat.application.handler;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import org.springframework.stereotype.Component;
 
 import com.sapari.global.logging.LogFields;
+import com.sapari.global.time.TimeProvider;
 import com.sapari.chat.application.port.ChatBroadcaster;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.DeliveryStage;
@@ -48,7 +52,22 @@ public class ChatBroadcastSubscriber {
     /** 팬아웃 유실의 규모를 밖으로 내보낸다 — 로그 등급을 내린 근거가 이 지표다. */
     private final ChatMetrics metrics;
 
-    /** 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수. */
+    private final TimeProvider timeProvider;
+
+    /**
+     * 방 구독 시작 — 반환 Disposable로 마지막 퇴장 시 해제. 봉투 1건의 라우팅 실패가 스트림을 죽이지 않게 흡수.
+     *
+     * <p>⚠️ <b>{@link #route} 가 돌려주는 Mono 는 끝나야 한다.</b> 이 구독은 Pod 의 공유 pub/sub 스트림에
+     * 붙어 있어서, 끝나지 않는 Mono 가 {@code flatMap} 의 동시성(기본 256)을 채우면 이 방만이 아니라
+     * <b>그 Pod 의 모든 방 전달이 멈춘다</b>. 실측(방 A 구독 + 방 A·B 각 2,000건, 가짜 Redis 소스 · 실제
+     * 브로드캐스터 · 세션 매니저 스텁): 건당 0.2ms 동기 팬아웃에서 방 A 2,000/2,000 · 수신 4,000/4,000, 내부를
+     * {@code Mono.never()} 로 바꾸면 방 A 256 에서 정지 · 수신 1,151/4,000.
+     *
+     * <p>지금은 닿지 않는다 — 운영 구현({@code ChatSessionRegistry})의 {@code sendToRoomGated}·{@code closeUser}
+     * 가 동기 {@code Mono.fromRunnable} 이라 끝난다. 그 계약은 포트 javadoc 에 있고, 깨면 테스트가 잡는다(두 메서드를
+     * 끝나지 않게 바꾼 역변이에서 streaming-app 326칸 중 각각 16칸·5칸이 빨강). 다만 <b>즉시 끝나는 것은 아니다</b> —
+     * 세션 수에 비례해 이 구독 스레드를 잡는다(그 클래스의 실측: 60세션 0.100ms, 12,000세션 3.96ms).
+     */
     public Disposable subscribeRoom(UUID roomId) {
         return broadcaster.subscribe(roomId)
                 // 팬아웃은 Pod 공유 Redis 구독 스레드에서 돈다 — 세션 컨텍스트가 없다. 여기서 room_id 를
@@ -71,9 +90,22 @@ public class ChatBroadcastSubscriber {
     /** 봉투 1건을 로컬 세션에 라우팅. (테스트 진입점) */
     Mono<Void> route(UUID roomId, ChatEnvelope envelope) {
         return switch (envelope) {
-            case ChatEnvelope.ChatMsg chat -> fanOutChat(roomId, chat.message());
+            case ChatEnvelope.ChatMsg chat -> timed(() -> fanOutChat(roomId, chat.message()));
             case ChatEnvelope.KickEvent kick -> fanOutKick(roomId, kick.userId());
         };
+    }
+
+    /**
+     * 뷰 조립부터 세션에 다 넣을 때까지를 잰다. 조립을 {@code defer} 안에 두어 뷰 생성도 들어가고, 세션에 넣는
+     * 일은 구독 시점에 실행되므로({@code sendToRoomGated}) 그 실행 시간까지 잡힌다. 실패한 전파는 세지
+     * 않는다 — 그쪽은 {@code deliveryDropped} 가 센다.
+     */
+    private Mono<Void> timed(Supplier<Mono<Void>> fanOut) {
+        return Mono.defer(() -> {
+            Instant started = timeProvider.now();
+            return fanOut.get().doOnSuccess(ignored ->
+                    metrics.roomFanOutCompleted(Duration.between(started, timeProvider.now())));
+        });
     }
 
     /**

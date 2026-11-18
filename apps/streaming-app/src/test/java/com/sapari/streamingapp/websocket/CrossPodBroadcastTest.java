@@ -2,6 +2,7 @@ package com.sapari.streamingapp.websocket;
 
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.domain.rule.ChatPermissionPolicy;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -24,6 +25,7 @@ import com.sapari.chat.domain.model.ChatRole;
 import com.sapari.chat.domain.model.ChatSession;
 import com.sapari.chat.infrastructure.redis.ChatSessionRedisRepository;
 import com.sapari.chat.infrastructure.redis.RedisChatBroadcaster;
+import com.sapari.global.time.TimeProvider;
 
 import reactor.core.Disposable;
 import reactor.test.StepVerifier;
@@ -74,7 +76,8 @@ class CrossPodBroadcastTest {
 
         registryB = new ChatSessionRegistry(new ChatSessionRedisRepository(templateB, SYSTEM_TIME), new ChatPermissionPolicy(),
                 ChatMetrics.NOOP);
-        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB, ChatMetrics.NOOP), registryB, new ChatPermissionPolicy(), ChatMetrics.NOOP);
+        subscriberB = new ChatBroadcastSubscriber(new RedisChatBroadcaster(templateB, ChatMetrics.NOOP), registryB, new ChatPermissionPolicy(), ChatMetrics.NOOP,
+                new TimeProvider(Clock.systemUTC()));
     }
 
     @AfterAll

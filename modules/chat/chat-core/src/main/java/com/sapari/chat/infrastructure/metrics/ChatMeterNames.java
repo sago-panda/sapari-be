@@ -60,6 +60,12 @@ final class ChatMeterNames {
      */
     static final String SUBSCRIPTION_RESUBSCRIBED = "chat.subscription.resubscribed";
 
+    /**
+     * 채팅 pub/sub 패턴 구독이 받은 봉투(DistributionSummary, 단위 bytes). 건수는 {@code _count}, 본문
+     * 바이트 합은 {@code _sum} 으로 나간다. 채널명·패턴명과 Redis 프로토콜 틀은 세지 않는다.
+     */
+    static final String PUBSUB_RECEIVED = "chat.pubsub.received";
+
     /** 탈퇴 신청 기록을 쓰지 못한 건수. */
     static final String WITHDRAWAL_RECORD_FAILED = "chat.withdrawal.record.failed";
 
@@ -68,6 +74,15 @@ final class ChatMeterNames {
 
     /** 전송 판정을 못 읽어 거절한 전송 수. */
     static final String SEND_REFUSED = "chat.send.refused";
+
+    /** 채팅 봉투 1건을 로컬 세션 전부에 넣은 시간(Timer). */
+    static final String FAN_OUT_DURATION = "chat.fanout.duration";
+
+    /** 하트비트 한 회차의 시간(Timer). {@code chat.sessions.heartbeat_failures} 와 같은 접두로 묶는다. */
+    static final String HEARTBEAT_DURATION = "chat.sessions.heartbeat.duration";
+
+    /** 앞 회차가 안 끝나 버린 하트비트 tick 수. */
+    static final String HEARTBEAT_SKIPPED = "chat.sessions.heartbeat.skipped";
 
     static final String TAG_POLICY = "policy";
     static final String TAG_CHECKPOINT = "checkpoint";

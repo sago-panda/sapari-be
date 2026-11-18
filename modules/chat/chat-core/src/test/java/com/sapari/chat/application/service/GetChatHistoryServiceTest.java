@@ -115,7 +115,7 @@ class GetChatHistoryServiceTest {
     }
 
     private GetChatHistoryCommand cursorBy(UUID requesterId, String role) {
-        return new GetChatHistoryCommand(roomId, requesterId, role, null, null, 20);
+        return new GetChatHistoryCommand(roomId, requesterId, role, null, null, null, 20);
     }
 
     private ChatMessage message() {
@@ -124,7 +124,9 @@ class GetChatHistoryServiceTest {
                 .roomId(roomId)
                 .senderId(buyerId)
                 .senderNickname("닉")
-                .senderEmail("buyer@example.com")
+                // 저장소는 이메일을 돌려주지 못한다(영속하지 않는다 — ChatMessageDocument). 어댑터 모양 그대로.
+                // 이메일 게이팅의 FULL↔MASKED 는 이메일이 실제로 있는 실시간 팬아웃(ChatBroadcastSubscriberTest)이 잰다.
+                .senderEmail(null)
                 .senderRole(ChatRole.BUYER)
                 .type(new ChatMessageType.Normal())
                 .originalMessage("시발")
@@ -140,8 +142,8 @@ class GetChatHistoryServiceTest {
     }
 
     @Test
-    @DisplayName("⭐ 방 주인에게는 원문·발신자 이메일이 채워진다")
-    void theRoomOwnerSeesTheOriginalAndTheEmail() {
+    @DisplayName("⭐ 방 주인에게는 원문이 채워지고, 이메일은 이력에 없다")
+    void theRoomOwnerSeesTheOriginalButNoEmail() {
         // given
         stubOnePage();
 
@@ -151,7 +153,7 @@ class GetChatHistoryServiceTest {
         // then
         assertThat(view.messages()).singleElement().satisfies(message -> {
             assertThat(message.originalMessage()).isEqualTo("시발");
-            assertThat(message.senderEmail()).isEqualTo("buyer@example.com");
+            assertThat(message.senderEmail()).isNull();
             assertThat(message.displayMessage()).isEqualTo("시*");
         });
     }
@@ -168,7 +170,7 @@ class GetChatHistoryServiceTest {
         // then
         assertThat(view.messages()).singleElement().satisfies(message -> {
             assertThat(message.originalMessage()).isEqualTo("시발");
-            assertThat(message.senderEmail()).isEqualTo("buyer@example.com");
+            assertThat(message.senderEmail()).isNull();
         });
     }
 
@@ -231,7 +233,7 @@ class GetChatHistoryServiceTest {
                 .willReturn(List.of(message()));
 
         // when
-        service.getHistory(new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, 600_000L, 20));
+        service.getHistory(new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, null, 600_000L, 20));
 
         // then: [10분 − 5분, 10분] 구간, 상한 200
         then(historyRepository).should().findWindow(eq(roomId),
@@ -247,7 +249,7 @@ class GetChatHistoryServiceTest {
                 .willReturn(List.of());
 
         // when
-        service.getHistory(new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, 60_000L, 20));
+        service.getHistory(new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, null, 60_000L, 20));
 
         // then
         then(historyRepository).should().findWindow(eq(roomId),
@@ -262,7 +264,7 @@ class GetChatHistoryServiceTest {
                 .willReturn(List.of());
 
         // when: size=100 을 보내도
-        service.getHistory(new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, 600_000L, 100));
+        service.getHistory(new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, null, 600_000L, 100));
 
         // then: 200 고정
         then(historyRepository).should().findWindow(any(), any(), any(), eq(200), any());
@@ -288,7 +290,7 @@ class GetChatHistoryServiceTest {
 
         // when & then
         assertThatThrownBy(() -> service.getHistory(
-                new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, 600_000L, 20)))
+                new GetChatHistoryCommand(roomId, buyerId, "BUYER", null, null, 600_000L, 20)))
                 .isInstanceOf(ChatPermissionDeniedException.class);
     }
 
@@ -308,10 +310,49 @@ class GetChatHistoryServiceTest {
         // command.beforeId() 를 null 로 바꾼 한 줄 변경에 chat-core 412건이 전부 초록이었다.
         // 그 상태면 무한 스크롤이 같은 페이지를 반복하는데 서버는 200 이라 아무 신호가 없다.
         service.getHistory(new GetChatHistoryCommand(
-                roomId, buyerId, "BUYER", "68000000000000000000000a", null, 20));
+                roomId, buyerId, "BUYER", "68000000000000000000000a", null, null, 20));
 
         then(historyRepository).should()
                 .findBefore(eq(roomId), eq("68000000000000000000000a"), eq(20), any());
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 커서는 이후 방향 조회로 간다 — 커서·size·강퇴자 목록이 그대로 내려가고 과거 방향은 안 부른다")
+    void theAfterCursorGoesToTheForwardQuery() {
+        // given
+        given(kickLogRepository.findKickedUserIds(roomId)).willReturn(List.of(kickedId));
+        given(historyRepository.findAfter(eq(roomId), any(), anyInt(), any())).willReturn(List.of(message()));
+
+        // when
+        service.getHistory(new GetChatHistoryCommand(
+                roomId, buyerId, "BUYER", null, "68000000000000000000000b", null, 30));
+
+        // then
+        ArgumentCaptor<java.util.Collection<UUID>> captor = ArgumentCaptor.captor();
+        then(historyRepository).should()
+                .findAfter(eq(roomId), eq("68000000000000000000000b"), eq(30), captor.capture());
+        assertThat(captor.getValue()).containsExactly(kickedId);
+        then(historyRepository).should(never()).findBefore(any(), any(), anyInt(), any());
+        then(historyRepository).should(never()).findWindow(any(), any(), any(), anyInt(), any());
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 조회도 같은 특권 판정을 쓴다 — 방 주인은 원문, 구매자는 마스킹")
+    void theAfterCursorUsesTheSameViewGating() {
+        // given
+        given(historyRepository.findAfter(eq(roomId), any(), anyInt(), any())).willReturn(List.of(message()));
+
+        // when
+        GetChatHistoryView owner = service.getHistory(new GetChatHistoryCommand(
+                roomId, sellerId, "SELLER", null, "68000000000000000000000b", null, 20));
+        GetChatHistoryView buyer = service.getHistory(new GetChatHistoryCommand(
+                roomId, buyerId, "BUYER", null, "68000000000000000000000b", null, 20));
+
+        // then
+        assertThat(owner.messages()).singleElement()
+                .satisfies(message -> assertThat(message.originalMessage()).isEqualTo("시발"));
+        assertThat(buyer.messages()).singleElement()
+                .satisfies(message -> assertThat(message.originalMessage()).isNull());
     }
 
     @Test
@@ -353,7 +394,7 @@ class GetChatHistoryServiceTest {
         // when: 방 주인 자신 / 일반 구매자 / 비회원
         service.getHistory(cursorBy(sellerId, "SELLER"));
         service.getHistory(cursorBy(buyerId, "BUYER"));
-        service.getHistory(new GetChatHistoryCommand(roomId, null, null, null, null, 20));
+        service.getHistory(new GetChatHistoryCommand(roomId, null, null, null, null, null, 20));
 
         // then: 술어가 (방주인 || ADMIN) && !방주인 ≡ ADMIN && !방주인 으로 접히므로 이 셋은 전부
         // 조용하다. 그게 이 엔드포인트에서 중요한 이유는 무인증 공개라서다 — 남기는 쪽이면 요청자가

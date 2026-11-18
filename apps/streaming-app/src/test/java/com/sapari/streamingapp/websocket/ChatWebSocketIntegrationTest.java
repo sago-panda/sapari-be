@@ -25,13 +25,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.http.HttpHeaders;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketMessage;
-import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -128,14 +126,6 @@ class ChatWebSocketIntegrationTest {
         return URI.create("ws://localhost:" + port + "/ws/chat?roomId=" + roomId);
     }
 
-    /** 룸 토큰을 Sec-WebSocket-Protocol 서브프로토콜(["bearer", token])로 실어 보낸다. */
-    private HttpHeaders tokenHeaders(String token) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.add("Sec-WebSocket-Protocol", "bearer");
-        headers.add("Sec-WebSocket-Protocol", token);
-        return headers;
-    }
-
     @Test
     @DisplayName("연결 — 유효 룸 토큰이면 ROOM_INFO를 받는다")
     void valid_token_receives_room_info() {
@@ -145,7 +135,7 @@ class ChatWebSocketIntegrationTest {
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
 
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
+        ChatWsClients.connect(wsUri(roomId), token, session ->
                 session.receive().map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(frames::add).take(1).then())
                 .block(Duration.ofSeconds(15));
@@ -153,6 +143,24 @@ class ChatWebSocketIntegrationTest {
         // when & then
         assertThat(frames).hasSize(1);
         assertThat(frames.get(0)).contains("\"type\":\"ROOM_INFO\"");
+    }
+
+    @Test
+    @DisplayName("연결 — 서브프로토콜 [bearer, token]을 선언한 클라이언트는 bearer를 돌려받는다(토큰은 돌려받지 않는다)")
+    void declared_subprotocol_is_answered_with_bearer() {
+        // given
+        UUID roomId = UUID.randomUUID();
+        String token = roomToken(liveKeys.getPrivate(), roomId, UUID.randomUUID(), "BUYER", false, "구매자", "b@example.com");
+        AtomicReference<String> negotiated = new AtomicReference<>();
+
+        // when
+        ChatWsClients.connect(wsUri(roomId), token, session -> {
+            negotiated.set(session.getHandshakeInfo().getSubProtocol());
+            return session.receive().take(1).then();
+        }).block(Duration.ofSeconds(15));
+
+        // then — 토큰(이메일 포함)이 응답 헤더에 실리면 안 된다
+        assertThat(negotiated.get()).isEqualTo("bearer");
     }
 
     @Test
@@ -165,7 +173,7 @@ class ChatWebSocketIntegrationTest {
         String payload = "{\"type\":\"NORMAL\",\"content\":\"hello\",\"clientMsgId\":\"c1\"}";
 
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
+        ChatWsClients.connect(wsUri(roomId), token, session ->
                 session.send(Mono.just(session.textMessage(payload)).delaySubscription(Duration.ofMillis(500)))
                         .and(session.receive().map(WebSocketMessage::getPayloadAsText)
                                 .doOnNext(frames::add).take(Duration.ofSeconds(3)).then()))
@@ -188,7 +196,7 @@ class ChatWebSocketIntegrationTest {
 
         List<String> frames = new CopyOnWriteArrayList<>();
         try {
-            new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(forged), session ->
+            ChatWsClients.connect(wsUri(roomId), forged, session ->
                     session.receive().map(WebSocketMessage::getPayloadAsText)
                             .doOnNext(frames::add).then())
                     .block(Duration.ofSeconds(10));
@@ -244,7 +252,7 @@ class ChatWebSocketIntegrationTest {
                 .toList();
 
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
+        ChatWsClients.connect(wsUri(roomId), token, session ->
                 session.send(Flux.concat(
                                 Mono.just(session.textMessage(sends.get(0))).delaySubscription(Duration.ofMillis(500)),
                                 Flux.fromIterable(sends.subList(1, sends.size()))
@@ -265,12 +273,11 @@ class ChatWebSocketIntegrationTest {
     void missing_token_rejected() {
         // given
         UUID roomId = UUID.randomUUID();
-        HttpHeaders onlyBearer = new HttpHeaders();
-        onlyBearer.add("Sec-WebSocket-Protocol", "bearer");   // 토큰 값 없음 → extractToken null
 
         List<String> frames = new CopyOnWriteArrayList<>();
         try {
-            new ReactorNettyWebSocketClient().execute(wsUri(roomId), onlyBearer, session ->
+            // bearer 만 선언한다 — 토큰 값이 없어 extractToken 이 null
+            ChatWsClients.connect(wsUri(roomId), List.of("bearer"), session ->
                     session.receive().map(WebSocketMessage::getPayloadAsText)
                             .doOnNext(frames::add).then())
                     .block(Duration.ofSeconds(10));
@@ -294,7 +301,7 @@ class ChatWebSocketIntegrationTest {
         List<String> frames = new CopyOnWriteArrayList<>();
         AtomicReference<CloseStatus> observed = new AtomicReference<>();
 
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
+        ChatWsClients.connect(wsUri(roomId), token, session -> {
             session.closeStatus().doOnNext(observed::set).subscribe();
             Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
                     .doOnNext(frames::add).then();
@@ -348,8 +355,7 @@ class ChatWebSocketIntegrationTest {
         List<String> frames = new CopyOnWriteArrayList<>();
         AtomicReference<CloseStatus> observed = new AtomicReference<>();
 
-        Disposable held = new ReactorNettyWebSocketClient()
-                .execute(wsUri(roomId), tokenHeaders(token), session -> {
+        Disposable held = ChatWsClients.connect(wsUri(roomId), token, session -> {
                     session.closeStatus().doOnNext(status -> {
                         observed.set(status);
                         closed.countDown();
@@ -449,7 +455,7 @@ class ChatWebSocketIntegrationTest {
         AtomicReference<Long> closedAtNanos = new AtomicReference<>();
         List<String> received = new CopyOnWriteArrayList<>();
 
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
+        ChatWsClients.connect(wsUri(roomId), token, session -> {
             session.closeStatus().doOnNext(ignored -> closedAtNanos.set(System.nanoTime())).subscribe();
             Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
                     .doOnNext(received::add).then();
@@ -533,7 +539,7 @@ class ChatWebSocketIntegrationTest {
         List<String> frames = new CopyOnWriteArrayList<>();
         AtomicReference<CloseStatus> observed = new AtomicReference<>();
 
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
+        ChatWsClients.connect(wsUri(roomId), token, session -> {
             session.closeStatus().doOnNext(observed::set).subscribe();
             Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
                     .doOnNext(frames::add).take(Duration.ofSeconds(5)).then();
@@ -581,8 +587,7 @@ class ChatWebSocketIntegrationTest {
         try {
             for (int i = 0; i < cap; i++) {
                 AtomicBoolean counted = new AtomicBoolean();
-                held.add(new ReactorNettyWebSocketClient()
-                        .execute(wsUri(roomId), tokenHeaders(token), session ->
+                held.add(ChatWsClients.connect(wsUri(roomId), token, session ->
                                 session.receive().map(WebSocketMessage::getPayloadAsText)
                                         .doOnNext(frame -> {
                                             if (frame.contains("ROOM_INFO") && counted.compareAndSet(false, true)) {
@@ -614,7 +619,7 @@ class ChatWebSocketIntegrationTest {
     /** WS 접속(토큰=서브프로토콜) → (옵션) 1건 송신 → window 동안 수신 프레임 수집. */
     private List<String> collect(UUID roomId, String token, String sendPayload, Duration window) {
         List<String> frames = new CopyOnWriteArrayList<>();
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session -> {
+        ChatWsClients.connect(wsUri(roomId), token, session -> {
             Mono<Void> receive = session.receive().map(WebSocketMessage::getPayloadAsText)
                     .doOnNext(frames::add).take(window).then();
             if (sendPayload == null) {
@@ -639,7 +644,7 @@ class ChatWebSocketIntegrationTest {
         int baseline = connections.trackedCount();
 
         // when: 접속이 살아있는 동안의 추적 수를 본다
-        new ReactorNettyWebSocketClient().execute(wsUri(roomId), tokenHeaders(token), session ->
+        ChatWsClients.connect(wsUri(roomId), token, session ->
                 session.receive().map(WebSocketMessage::getPayloadAsText).take(1)
                         .doOnNext(f -> whileConnected.set(connections.trackedCount())).then())
                 .block(Duration.ofSeconds(15));

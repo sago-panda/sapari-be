@@ -1,5 +1,7 @@
 package com.sapari.chat.infrastructure.metrics;
 
+import java.time.Duration;
+
 import com.sapari.chat.application.port.ChatCheckpoint;
 import com.sapari.chat.application.port.ChatMetrics;
 import com.sapari.chat.application.port.ChatPolicy;
@@ -10,7 +12,9 @@ import com.sapari.chat.application.port.PolicyReadFailure;
 import com.sapari.chat.application.port.RateLimitDegradation;
 import com.sapari.chat.application.port.SessionCutReason;
 
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -76,6 +80,21 @@ public class MicrometerChatMetrics implements ChatMetrics {
     }
 
     @Override
+    public void roomFanOutCompleted(Duration took) {
+        safe(() -> Timer.builder(ChatMeterNames.FAN_OUT_DURATION).register(registry).record(took));
+    }
+
+    @Override
+    public void heartbeatRoundCompleted(Duration took) {
+        safe(() -> Timer.builder(ChatMeterNames.HEARTBEAT_DURATION).register(registry).record(took));
+    }
+
+    @Override
+    public void heartbeatTickSkipped() {
+        safe(() -> registry.counter(ChatMeterNames.HEARTBEAT_SKIPPED).increment());
+    }
+
+    @Override
     public void persistTimedOut(PersistStage stage) {
         safe(() -> registry.counter(ChatMeterNames.PERSIST_TIMEOUT,
                 ChatMeterNames.TAG_STAGE, tag(stage)).increment());
@@ -85,6 +104,12 @@ public class MicrometerChatMetrics implements ChatMetrics {
     public void subscriptionResubscribed(ChatSubscription subscription) {
         safe(() -> registry.counter(ChatMeterNames.SUBSCRIPTION_RESUBSCRIBED,
                 ChatMeterNames.TAG_SUBSCRIPTION, tag(subscription)).increment());
+    }
+
+    @Override
+    public void pubsubMessageReceived(int payloadBytes) {
+        safe(() -> DistributionSummary.builder(ChatMeterNames.PUBSUB_RECEIVED).baseUnit("bytes")
+                .register(registry).record(payloadBytes));
     }
 
     /**

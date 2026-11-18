@@ -30,6 +30,7 @@ import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
+import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
 import com.sapari.liveapp.security.EnterRateLimiter;
@@ -60,7 +61,7 @@ class LivePublicRoutesTest {
                     .put("/api/v1/lives/rooms/room-id")).andExpect(status().isUnauthorized());
             // 공개로 선언한 채팅 이력 — GET 과 HEAD 가 같이 열려야 한다. Spring MVC 는
             // @GetMapping 에 대해 HEAD 를 서비스하므로, 매처를 GET 으로만 두면 같은 핸들러가
-            // HEAD 에서는 401 이 된다. 본문을 안 보내도 조회 비용(Postgres 1 + Mongo 1)은 같다.
+            // HEAD 에서는 401 이 된다. 본문을 안 보내도 조회 비용(Postgres 2 + Mongo 1)은 같다.
             mvc.perform(get("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
             mvc.perform(head("/api/v1/lives/room-id/chat/history")).andExpect(status().isOk());
             // 현재 공지도 같은 모양이다 — 비회원도 입장 때 공지를 본다.
@@ -100,7 +101,7 @@ class LivePublicRoutesTest {
                     com.sapari.live.application.port.LiveMetrics.NOOP);
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
-                    enterRateLimitFilter, tokenRevocationFilter, entryPoint,
+                    enterRateLimitFilter, ChatReadRateLimitFixtures.unlimited(), tokenRevocationFilter, entryPoint,
                     mock(JwtAccessDeniedHandler.class));
         }
 

@@ -42,6 +42,7 @@ import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
+import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 import org.mockito.ArgumentCaptor;
@@ -74,7 +75,7 @@ import org.mockito.ArgumentCaptor;
 // CHAT-001/004/006/008/010/011 이 선언한 상태로 HTTP 를 떠나는지가 live-app 에서 단언되지
 // 않았다 — 역변이로 확인했다: CHAT-011 을 409 → 400 으로 뒤집어도 아무것도 깨지지 않았다.
 // 형제 셋이 이 주석을 가리키므로, 지우려면 그 셋을 먼저 볼 것.
-@Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, GlobalExceptionHandler.class})
+@Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class, GlobalExceptionHandler.class})
 @DisplayName("이력 엔드포인트 — 비회원도 지나고, 신원은 인증 주체에서만 온다")
 class ChatHistoryControllerTest {
 
@@ -252,6 +253,33 @@ class ChatHistoryControllerTest {
         mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID)
                         .param("beforeId", "68000000000000000000000a")
                         .param("playbackPositionMs", "1000"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 커서가 그대로 전달된다 — 떨어지면 과거 방향 조회가 되어 최신 페이지가 200 으로 온다")
+    void theAfterCursorIsForwarded() throws Exception {
+        // given
+        stubEmpty();
+
+        // when
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID)
+                        .param("afterId", "68000000000000000000000b")
+                        .param("size", "50"))
+                .andExpect(status().isOk());
+
+        // then
+        assertThat(captured().afterId()).isEqualTo("68000000000000000000000b");
+        assertThat(captured().beforeId()).isNull();
+        assertThat(captured().size()).isEqualTo(50);
+    }
+
+    @Test
+    @DisplayName("재접속 커서와 과거 커서를 함께 보내면 400 이다")
+    void theAfterCursorWithAPastCursorIsRejected() throws Exception {
+        mockMvc.perform(get("/api/v1/lives/{roomId}/chat/history", ROOM_ID)
+                        .param("beforeId", "68000000000000000000000a")
+                        .param("afterId", "68000000000000000000000b"))
                 .andExpect(status().isBadRequest());
     }
 

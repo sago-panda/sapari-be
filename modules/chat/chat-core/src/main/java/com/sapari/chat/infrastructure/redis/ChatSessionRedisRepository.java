@@ -39,7 +39,7 @@ import reactor.core.publisher.Mono;
  * <p><b>HLEN 으로 바꾸는 것은 최적화가 아니라 숫자를 틀리게 하는 것이다.</b> 이 해시는 탭마다 한 행이라
  * HLEN 은 멀티탭 배수만큼 부풀고(실측: 1인 2탭이면 2배), 그 교체는 저장소 테스트가 바로 잡는다.
  * O(N) 이 눈에 걸려 손대고 싶어지는 자리라 적어 둔다 — 비용 쪽은 이미 호출자가 캐시와 비행 병합으로
- * 닫았고, 설계 상한의 5배에서도 상한 아래라는 것을 재서 확인했다({@code ChatSessionRegistry}).
+ * 닫았고, 설계 상한의 5배에서도 상한 아래라는 것을 재서 확인했다(streaming-app {@code ViewerCounts}).
  */
 @Repository
 @RequiredArgsConstructor
@@ -87,7 +87,7 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
      * {@code onBackpressureDrop} + {@code concatMap} 이라 실효 주기가 설정값이 아니라 <b>한 회차가
      * 걸리는 시간</b>이 된다 — 실측(주기 20ms, 2초≈100tick): 안쪽이 5배 느리면 통과 17/드롭 83,
      * 안쪽이 안 끝나면 통과 1/드롭 98. 회차가 느려지면 실효 주기가 이 상한을 넘고, 그때 살아 있는
-     * 세션이 집계에서 빠진다({@code ChatSessionRegistry.startHeartbeat} 에 같은 내용이 적혀 있다).
+     * 세션이 집계에서 빠진다(streaming-app {@code ViewerCounts.startHeartbeat} 에 같은 내용이 적혀 있다).
      *
      * <p>그래서 이 수를 줄일 때 "3회 여유" 를 근거로 삼지 말 것. 아래 정적 가드가 지키는 하한은
      * <b>3배</b>이므로 ×3 으로 줄여도 가드는 통과하고, 그때 남는 여유는 2회가 아니라 <b>회차 길이에

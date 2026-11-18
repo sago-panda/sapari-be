@@ -102,7 +102,8 @@ class GetChatNoticeServiceTest {
                 .roomId(roomId)
                 .senderId(sellerId)
                 .senderNickname("판매자")
-                .senderEmail("seller@example.com")
+                // 저장소는 이메일을 돌려주지 못한다(영속하지 않는다 — ChatMessageDocument). 어댑터 모양 그대로.
+                .senderEmail(null)
                 .senderRole(ChatRole.SELLER)
                 .type(new ChatMessageType.Notice())
                 .originalMessage("시발 할인")
@@ -117,7 +118,7 @@ class GetChatNoticeServiceTest {
     }
 
     @Test
-    @DisplayName("⭐ 방 주인에게는 원문·발신자 이메일이 채워진다")
+    @DisplayName("⭐ 방 주인에게는 원문이 채워지고, 이메일은 공지 조회에 없다")
     void theRoomOwnerSeesTheOriginal() {
         stubNotice();
 
@@ -126,7 +127,7 @@ class GetChatNoticeServiceTest {
         assertThat(view).hasValueSatisfying(notice -> {
             assertThat(notice.type()).isEqualTo("NOTICE");
             assertThat(notice.originalMessage()).isEqualTo("시발 할인");
-            assertThat(notice.senderEmail()).isEqualTo("seller@example.com");
+            assertThat(notice.senderEmail()).isNull();
             assertThat(notice.displayMessage()).isEqualTo("시* 할인");
             assertThat(notice.createdAt()).isEqualTo(STARTED_AT.plusSeconds(60));
         });

@@ -65,8 +65,8 @@ public class ChatMessageRepositoryImpl implements ChatMessageRepository {
         // 그래서 **수는 세고 타입은 그대로 둔다**(위 doOnError). 지표가 갈래를 들고 있으므로
         // chat.persist.timeout{stage=write} 가 "결과 미확인" 으로 남고 이쪽은 "존재 확정" 으로 남는다.
         //
-        // 아직 없는 것은 **갈래별 사용자 문구**다. 이 갈래에서 발신자가 받는 것은 번역되지 않은
-        // UncategorizedMongoDbException(500)이고, 그 문구를 가르려면 에러코드가 하나 더 필요하다 —
-        // 그것은 와이어 계약 변경이라 이 티켓 밖이다.
+        // 아직 없는 것은 **갈래별 사용자 문구**다. 이 갈래의 예외는 번역되지 않고 올라가 발신자에게는
+        // WS ERROR(INTERNAL)로 간다 — 같은 clientMsgId·같은 본문으로 다시 보내면 이 재조회를 다시 타고
+        // 복구된다. 갈래를 응답에서 가르려면 에러코드가 하나 더 필요하고, 그것은 와이어 계약 변경이다.
     }
 }

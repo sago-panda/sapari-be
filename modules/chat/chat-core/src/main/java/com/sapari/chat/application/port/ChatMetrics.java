@@ -1,5 +1,7 @@
 package com.sapari.chat.application.port;
 
+import java.time.Duration;
+
 import com.sapari.chat.port.InMemoryChat;
 
 /**
@@ -89,6 +91,15 @@ public interface ChatMetrics {
     void subscriptionResubscribed(ChatSubscription subscription);
 
     /**
+     * 채팅 pub/sub 패턴 구독이 봉투 1건을 받았다. 인자는 본문의 UTF-8 바이트 수다.
+     *
+     * <p>패턴 구독이라 이 Pod 에 세션이 없는 방의 메시지도 전부 받는다 — 함대 전체의 채팅이 Pod 마다 한 번씩
+     * 흘러든다. Pod 전체의 합이 그 구독이 쓰는 Redis egress 에서 채널명·패턴명·프로토콜 틀을 뺀 양이고, 구독 방식을
+     * 바꿀지는 이 값으로 판단한다.
+     */
+    void pubsubMessageReceived(int payloadBytes);
+
+    /**
      * 탈퇴 신청 기록을 쓰지 못했다 — 그 사람은 탈퇴 전에 받아 둔 룸 토큰이 만료될 때까지 다시 들어올 수
      * 있다. 끊기는 그대로 진행되므로 사용자 쪽 증상이 없고, 이 수가 유일한 신호다.
      */
@@ -100,6 +111,25 @@ public interface ChatMetrics {
      * <b>어느 세션인지는 이 지표로 알 수 없다</b> — 태그도 로그도 없다.
      */
     void inboundFrameDropped();
+
+    /**
+     * 채팅 봉투 1건을 이 Pod 의 로컬 세션 전부에 넣는 데 걸린 시간. 강퇴 봉투는 세지 않는다 — 세션
+     * close 까지 포함돼 채팅 전파의 분포를 흐린다.
+     *
+     * <p>전파는 Pod 당 Redis 구독 스레드 하나에서 돈다. 이 시간이 메시지 간격에 다가가면 그 Pod 의 다른
+     * 방 전달이 함께 밀린다.
+     */
+    void roomFanOutCompleted(Duration took);
+
+    /** 하트비트 한 회차(로컬 세션 재등록 + 시청자 수 갱신)가 끝나는 데 걸린 시간. */
+    void heartbeatRoundCompleted(Duration took);
+
+    /**
+     * 앞 회차가 안 끝나 하트비트 tick 하나를 버렸다. 기대값은 0 이다.
+     *
+     * <p>회차 시간은 끝난 회차만 세므로, 회차가 아예 멈추면 그쪽은 조용하고 이 수만 오른다.
+     */
+    void heartbeatTickSkipped();
 
     /**
      * 아무것도 하지 않는 구현. <b>registry 없이도 뜨는 것이 포트 구현의 기본값이어야 하기 때문</b>이고,
@@ -115,7 +145,11 @@ public interface ChatMetrics {
         @Override public void dictionaryFastPathLost() { }
         @Override public void persistTimedOut(PersistStage stage) { }
         @Override public void subscriptionResubscribed(ChatSubscription subscription) { }
+        @Override public void pubsubMessageReceived(int payloadBytes) { }
         @Override public void withdrawalRecordFailed() { }
         @Override public void inboundFrameDropped() { }
+        @Override public void roomFanOutCompleted(Duration took) { }
+        @Override public void heartbeatRoundCompleted(Duration took) { }
+        @Override public void heartbeatTickSkipped() { }
     };
 }
