@@ -42,6 +42,7 @@ import com.sapari.live.port.ReissueIngressUseCase;
 import com.sapari.live.port.UpdateLiveUseCase;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
+import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
@@ -54,7 +55,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 @WebMvcTest(controllers = LiveRoomManageController.class,
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
-@Import({LiveRoomManageController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class,
+@Import({LiveRoomManageController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
         LiveRoomManageAuthorizationTest.FixedClockConfig.class})
 @DisplayName("방 관리 엔드포인트 — 판매자 경로는 구매자에게 403")
 class LiveRoomManageAuthorizationTest {
