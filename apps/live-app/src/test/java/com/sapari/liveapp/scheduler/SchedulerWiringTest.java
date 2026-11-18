@@ -32,6 +32,7 @@ import com.sapari.live.port.ReconcileExpiredReadyUseCase;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 import com.sapari.live.port.ReconcileStaleLiveUseCase;
+import com.sapari.live.port.RecoverStuckReplaysUseCase;
 import com.sapari.live.port.RefreshLiveListUseCase;
 import com.sapari.liveapp.config.ReconcileLockConfig;
 import com.sapari.liveapp.config.LiveListSchedulingConfig;
@@ -68,6 +69,7 @@ class SchedulerWiringTest {
         return new ApplicationContextRunner()
                 .withBean(ReconcileExpiredReadyUseCase.class, () -> mock(ReconcileExpiredReadyUseCase.class))
                 .withBean(ReconcileStaleLiveUseCase.class, () -> mock(ReconcileStaleLiveUseCase.class))
+                .withBean(RecoverStuckReplaysUseCase.class, () -> mock(RecoverStuckReplaysUseCase.class))
                 .withBean(ReconcileOrphanMediaUseCase.class, () -> mock(ReconcileOrphanMediaUseCase.class))
                 .withUserConfiguration(scheduler);
     }
@@ -245,7 +247,30 @@ class SchedulerWiringTest {
             ReconcileStaleLiveUseCase useCase = mock(ReconcileStaleLiveUseCase.class);
             willThrow(new IllegalStateException("LiveKit 장애")).given(useCase).reconcile();
 
-            assertThatCode(() -> new EndStaleLiveScheduler(useCase).run()).doesNotThrowAnyException();
+            assertThatCode(() -> new EndStaleLiveScheduler(useCase, mock(RecoverStuckReplaysUseCase.class)).run())
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("방치 방 정리가 실패해도 다시보기 복구는 돈다 — LiveKit 장애가 DB 만 쓰는 복구를 막지 않는다")
+        void replayRecoveryRunsEvenIfStaleLiveFails() {
+            ReconcileStaleLiveUseCase useCase = mock(ReconcileStaleLiveUseCase.class);
+            RecoverStuckReplaysUseCase recover = mock(RecoverStuckReplaysUseCase.class);
+            willThrow(new IllegalStateException("LiveKit 장애")).given(useCase).reconcile();
+
+            new EndStaleLiveScheduler(useCase, recover).run();
+
+            org.mockito.BDDMockito.then(recover).should().recover();
+        }
+
+        @Test
+        @DisplayName("다시보기 복구가 던져도 스케줄러 밖으로 전파되지 않는다")
+        void replayRecoveryExceptionDoesNotEscape() {
+            RecoverStuckReplaysUseCase recover = mock(RecoverStuckReplaysUseCase.class);
+            willThrow(new IllegalStateException("DB 장애")).given(recover).recover();
+
+            assertThatCode(() -> new EndStaleLiveScheduler(mock(ReconcileStaleLiveUseCase.class), recover).run())
+                    .doesNotThrowAnyException();
         }
     }
 
