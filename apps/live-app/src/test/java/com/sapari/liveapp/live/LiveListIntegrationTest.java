@@ -361,7 +361,7 @@ class LiveListIntegrationTest {
     private LiveRoom scheduledRoom(String title, Instant scheduledAt) {
         Instant now = Instant.now();
         LiveRoom saved = liveRoomRepository.save(LiveRoom.create(
-                UUID.randomUUID(), title, null, "판매자", null, scheduledAt, now));
+                UUID.randomUUID(), title, null, "판매자", null, scheduledAt, new LiveStreamType.WebRtc(), now));
         return liveRoomRepository.save(saved.withSfuRoomId("sfu-" + saved.id()));
     }
 

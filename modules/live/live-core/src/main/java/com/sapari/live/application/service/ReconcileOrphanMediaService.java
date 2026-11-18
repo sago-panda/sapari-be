@@ -30,7 +30,6 @@ import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.RoomSummary;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
-import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 
@@ -454,8 +453,7 @@ public class ReconcileOrphanMediaService implements ReconcileOrphanMediaUseCase 
         if (room.status().isTerminal()) {
             return true;
         }
-        return !(room.streamType() instanceof LiveStreamType.Rtmp rtmp)
-                || !rtmp.ingressId().equals(ingressId);
+        return !room.hasIngress(ingressId);
     }
 
     /**

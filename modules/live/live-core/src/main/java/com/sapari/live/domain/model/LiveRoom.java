@@ -42,10 +42,15 @@ public record LiveRoom(
             String sellerNickname,
             String thumbnailUrl,
             Instant scheduledAt,
+            LiveStreamType streamType,
             Instant now
     ){
         if (sellerId == null) {
             throw new IllegalArgumentException("sellerId는 필수입니다.");
+        }
+        // 송출 방식은 생성 때 고정된다. 요청 DTO 가 먼저 막고, CreateLiveService 경로는 그 전에 switch 에서 NPE 로 끝난다 — 여기는 다른 호출자용 방어선이다.
+        if (streamType == null) {
+            throw new IllegalArgumentException("streamType은 필수입니다.");
         }
         requireEditableFields(title, scheduledAt, now);
         if (sellerNickname == null || sellerNickname.isBlank()) {
@@ -58,7 +63,7 @@ public record LiveRoom(
                 .sellerNickname(sellerNickname)
                 .thumbnailUrl(thumbnailUrl)
                 .status(new Scheduled(scheduledAt))
-                .streamType(new LiveStreamType.WebRtc())
+                .streamType(streamType)
                 .vodPublic(true)
                 .vodStatus(VodStatus.NONE)
                 .scheduledAt(scheduledAt)
@@ -272,6 +277,11 @@ public record LiveRoom(
         return streamType instanceof LiveStreamType.Rtmp;
     }
 
+    /** 송출 키(ingress)를 이미 발급받은 RTMP 방인지. RTMP 방은 키 발급 전이면 false 다. */
+    public boolean hasIngressKey(){
+        return streamType instanceof LiveStreamType.Rtmp rtmp && rtmp.ingressId() != null;
+    }
+
     /**
      * 주어진 ingressId 가 이 방에 배정된 것인지. webhook 이 실어 온 id 를 전이 전에 대조하는 용도라
      * 알 수 없는 값(null/blank)은 <b>거짓</b>이다 — 모르면 전이하지 않는 쪽이 안전하다.
@@ -279,7 +289,7 @@ public record LiveRoom(
     public boolean hasIngress(String ingressId){
         return streamType instanceof LiveStreamType.Rtmp rtmp
                 && ingressId != null && !ingressId.isBlank()
-                && rtmp.ingressId().equals(ingressId);
+                && ingressId.equals(rtmp.ingressId());
     }
 
     public CreateLiveView toCreateLiveView(){

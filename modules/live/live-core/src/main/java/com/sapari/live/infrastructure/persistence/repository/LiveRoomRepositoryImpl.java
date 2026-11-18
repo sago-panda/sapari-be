@@ -84,6 +84,13 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
     }
 
     @Override
+    public boolean reassignRtmpIngressIfCurrent(UUID roomId, UUID sellerId, String currentIngressId,
+                                                String newIngressId, String rtmpUrl, Instant now){
+        return liveRoomJpaRepository.reassignRtmpIngressIfCurrent(roomId, sellerId, currentIngressId,
+                newIngressId, rtmpUrl, StreamType.RTMP, LiveRoomStatus.SCHEDULED, now) == 1;
+    }
+
+    @Override
     public List<UUID> findStaleLiveRoomIds(Instant threshold, int limit){
         return liveRoomJpaRepository.findByLiveStatusAndStartedAtBeforeOrderByStartedAtAsc(
                         LiveRoomStatus.LIVE, threshold, Limit.of(limit))

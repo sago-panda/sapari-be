@@ -122,7 +122,7 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
                 // LiveKit 이 이 방의 ingress 를 하나도 모르는데 DB 는 배정돼 있다고 한다 = 다른 클러스터를
                 // 보고 있거나 오설정. 여기서 만료로 넘기면 살아 있는 방송이 회차당 batch-size 만큼 끊긴다.
                 // "OBS 가 끝내 안 붙은 방"은 ingress 가 등록은 돼 있어(INACTIVE) 이 분기에 걸리지 않는다.
-                if (ingresses.isEmpty() && room.isRtmp()) {
+                if (ingresses.isEmpty() && room.hasIngressKey()) {
                     // 방 단위 판정이므로 회차 중단(aborted)이 아니라 별도 갈래로 센다. 여기서
                     // reconcileRoundAborted 를 부르면 회차 하나에서 후보 수만큼 올라 회차 지표가 깨진다.
                     ingressMissing++;

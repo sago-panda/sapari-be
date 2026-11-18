@@ -17,6 +17,7 @@ public record SellerLiveRoomDetailView(
         Instant startedAt,
         Instant endedAt,
         String vodStatus,
-        String rtmpUrl
+        String rtmpUrl,
+        LiveStreamKind streamType
 ) {
 }

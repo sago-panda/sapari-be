@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
 import com.sapari.live.command.CreateLiveCommand;
+import com.sapari.live.view.LiveStreamKind;
 import com.sapari.liveapp.controller.live.dto.constraint.LiveDescription;
 import com.sapari.liveapp.controller.live.dto.constraint.LiveSellerNickname;
 import com.sapari.liveapp.controller.live.dto.constraint.LiveThumbnailUrl;
@@ -25,9 +26,11 @@ public record CreateRoomRequest(
         @LiveThumbnailUrl
         String thumbnailUrl,
         @NotNull(message = "방송 예정 시간은 필수입니다.")
-        Instant scheduledAt
+        Instant scheduledAt,
+        @NotNull(message = "송출 방식은 필수입니다.")
+        LiveStreamKind streamType
 ) {
     public CreateLiveCommand toCommand(UUID sellerId){
-        return new CreateLiveCommand(sellerId, title, description, sellerNickname, thumbnailUrl, scheduledAt);
+        return new CreateLiveCommand(sellerId, title, description, sellerNickname, thumbnailUrl, scheduledAt, streamType);
     }
 }

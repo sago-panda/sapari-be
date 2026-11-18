@@ -9,6 +9,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.time.Instant;
 import java.util.List;
@@ -427,6 +428,23 @@ public class StartLiveServiceTest {
                 .isInstanceOf(InvalidLiveProductException.class);
         verify(liveMediaManager, never()).publishingIngressIdsOrEmpty(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+    }
+
+    @Test
+    @DisplayName("키 없는 RTMP 방 시작은 LIVE-017 — 미디어 호출·상품 검증·저장 없이 Scheduled 로 남는다")
+    void rtmp_without_ingress_key_is_live_017(){
+        LiveRoom keyless = rtmpScheduledRoom().toBuilder().streamType(new LiveStreamType.Rtmp(null)).build();
+        given(liveRoomRepository.findByIdAndSellerIdForUpdate(roomId, sellerId)).willReturn(Optional.of(keyless));
+        // 가격 위반을 함께 넣어 키 판정이 상품 검증보다 먼저임을 고정한다
+        StartLiveCommand bad = commandWith(new StartLiveCommand.ProductEntry(UUID.randomUUID(), 10000, 12000, 7000, true));
+
+        assertThatThrownBy(() -> startLiveService.start(bad))
+                .isInstanceOf(InvalidLiveStateException.class)
+                .satisfies(e -> assertThat(((LiveDomainException) e).getErrorCode())
+                        .isEqualTo(LiveErrorCode.INGRESS_REQUIRED));
+        verifyNoInteractions(liveMediaManager);
+        verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+        verify(liveProductRepository, never()).saveAll(any());
     }
 
     @Test

@@ -28,6 +28,7 @@ import com.sapari.common.page.InvalidCursorException;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.command.GetRecentLivesQuery;
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.RecentView;
 import com.sapari.live.domain.model.StreamInfo;
 import com.sapari.live.domain.repository.LiveRoomRepository;
@@ -56,7 +57,7 @@ class GetRecentLivesServiceTest {
     }
 
     private LiveRoom scheduled(UUID id) {
-        return LiveRoom.create(sellerId, "제목-" + id, "설명", "판매자", "https://cdn/t.jpg", T0.plusSeconds(3600), T0)
+        return LiveRoom.create(sellerId, "제목-" + id, "설명", "판매자", "https://cdn/t.jpg", T0.plusSeconds(3600), new LiveStreamType.WebRtc(), T0)
                 .toBuilder().id(id).build();
     }
 

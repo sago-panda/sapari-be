@@ -23,13 +23,51 @@ class LiveRoomTest {
     private LiveRoom scheduledRoom() {
         return LiveRoom.create(
                 UUID.randomUUID(), "제목", "설명", "닉네임", "https://thumb",
-                Instant.parse("2026-06-10T10:00:00Z"), Instant.parse("2026-06-09T00:00:00Z"));
+                Instant.parse("2026-06-10T10:00:00Z"), new LiveStreamType.WebRtc(),
+                Instant.parse("2026-06-09T00:00:00Z"));
     }
 
     @Test
-    @DisplayName("create — 기본 송출은 WebRtc")
-    void create_defaultsWebRtc() {
+    @DisplayName("create — 송출 방식은 인자 그대로다(RTMP 는 키 없이 생성)")
+    void create_keepsGivenStreamType() {
         assertThat(scheduledRoom().streamType()).isInstanceOf(LiveStreamType.WebRtc.class);
+
+        LiveRoom rtmp = LiveRoom.create(
+                UUID.randomUUID(), "제목", "설명", "닉네임", "https://thumb",
+                Instant.parse("2026-06-10T10:00:00Z"), new LiveStreamType.Rtmp(null),
+                Instant.parse("2026-06-09T00:00:00Z"));
+        assertThat(rtmp.streamType()).isEqualTo(new LiveStreamType.Rtmp(null));
+    }
+
+    @Test
+    @DisplayName("create — 송출 방식 null 은 서버 결함(IAE, 요청 DTO 가 먼저 막는다)")
+    void create_rejectsNullStreamType() {
+        assertThatThrownBy(() -> LiveRoom.create(
+                UUID.randomUUID(), "제목", "설명", "닉네임", "https://thumb",
+                Instant.parse("2026-06-10T10:00:00Z"), null, Instant.parse("2026-06-09T00:00:00Z")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("Rtmp — ingressId null 은 발급 전이라 허용, blank 는 IAE")
+    void rtmp_allowsNullRejectsBlank() {
+        assertThat(new LiveStreamType.Rtmp(null).ingressId()).isNull();
+        assertThatThrownBy(() -> new LiveStreamType.Rtmp(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("hasIngressKey — 키를 받은 RTMP 방만 true")
+    void hasIngressKey() {
+        assertThat(scheduledRoom().hasIngressKey()).isFalse();
+        assertThat(scheduledRtmpRoom(null).hasIngressKey()).isFalse();
+        assertThat(scheduledRtmpRoom("ing-1").hasIngressKey()).isTrue();
+    }
+
+    @Test
+    @DisplayName("hasIngress — 키 없는 RTMP 방은 어떤 id 에도 false(NPE 없음)")
+    void hasIngress_keylessRtmp() {
+        assertThat(scheduledRtmpRoom(null).hasIngress("ing-1")).isFalse();
     }
 
     /**
@@ -325,7 +363,7 @@ class LiveRoomTest {
     @MethodSource("nonFutureSchedules")
     @DisplayName("create — 예정 시각이 현재 이하면 LIVE-015")
     void create_rejectsNonFutureSchedule(Instant scheduledAt) {
-        assertThatThrownBy(() -> LiveRoom.create(UUID.randomUUID(), "제목", null, "닉네임", "https://thumb", scheduledAt, T0))
+        assertThatThrownBy(() -> LiveRoom.create(UUID.randomUUID(), "제목", null, "닉네임", "https://thumb", scheduledAt, new LiveStreamType.WebRtc(), T0))
                 .isInstanceOf(InvalidLiveRoomException.class)
                 .extracting(e -> ((LiveDomainException) e).getErrorCode())
                 .isEqualTo(LiveErrorCode.LIVE_SCHEDULE_NOT_FUTURE);
@@ -349,7 +387,7 @@ class LiveRoomTest {
     @DisplayName("create·update — 현재+1ms 는 통과")
     void futureByOneMillisPasses() {
         Instant at = T0.plusMillis(1);
-        assertThat(LiveRoom.create(UUID.randomUUID(), "제목", null, "닉네임", "https://thumb", at, T0).scheduledAt()).isEqualTo(at);
+        assertThat(LiveRoom.create(UUID.randomUUID(), "제목", null, "닉네임", "https://thumb", at, new LiveStreamType.WebRtc(), T0).scheduledAt()).isEqualTo(at);
         assertThat(scheduledRoom().update("제목", null, "https://thumb", at, T0).scheduledAt()).isEqualTo(at);
     }
 
@@ -357,7 +395,7 @@ class LiveRoomTest {
     @DisplayName("create·update — 공백뿐인 설명은 없음(null)으로 저장")
     void blankDescriptionBecomesNull() {
         Instant at = T0.plusSeconds(60);
-        assertThat(LiveRoom.create(UUID.randomUUID(), "제목", "  ", "닉네임", "https://thumb", at, T0).description()).isNull();
+        assertThat(LiveRoom.create(UUID.randomUUID(), "제목", "  ", "닉네임", "https://thumb", at, new LiveStreamType.WebRtc(), T0).description()).isNull();
         assertThat(scheduledRoom().update("제목", " ", "https://thumb", at, T0).description()).isNull();
         assertThat(scheduledRoom().update("제목", "설명", "https://thumb", at, T0).description()).isEqualTo("설명");
     }

@@ -16,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.view.LiveRoomView;
@@ -39,7 +40,7 @@ class GetLiveRoomServiceTest {
     void setup() {
         sellerId = UUID.randomUUID();
         roomId = UUID.randomUUID();
-        scheduled = LiveRoom.create(sellerId, "타이틀", "설명", "판매자닉", "http://thumb", NOW.plusSeconds(3600), NOW)
+        scheduled = LiveRoom.create(sellerId, "타이틀", "설명", "판매자닉", "http://thumb", NOW.plusSeconds(3600), new LiveStreamType.WebRtc(), NOW)
                 .toBuilder().id(roomId).build();
     }
 

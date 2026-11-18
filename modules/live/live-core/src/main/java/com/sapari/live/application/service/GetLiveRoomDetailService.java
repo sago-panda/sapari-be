@@ -13,6 +13,7 @@ import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.GetLiveRoomDetailUseCase;
 import com.sapari.live.view.PublicLiveRoomDetailView;
+import com.sapari.live.view.LiveStreamKind;
 import com.sapari.live.view.SellerLiveRoomDetailView;
 
 /**
@@ -44,7 +45,8 @@ public class GetLiveRoomDetailService implements GetLiveRoomDetailUseCase {
         return new SellerLiveRoomDetailView(room.title(), room.description(), room.thumbnailUrl(),
                 room.sellerNickname(), LiveRoomTabs.of(room.status()), room.scheduledAt(),
                 LiveRoomTabs.startedAtOf(room.status()), LiveRoomTabs.endedAtOf(room.status()),
-                vodStatusOf(room), room.rtmpUrl());
+                vodStatusOf(room), room.rtmpUrl(),
+                room.isRtmp() ? LiveStreamKind.RTMP : LiveStreamKind.WEBRTC);
     }
 
     /** 공개 상세는 다시보기 비공개 방의 처리 상태를 숨긴다(GetLiveReplayService 의 vodPublic 규칙과 같은 방향). 판매자 상세는 본다. */

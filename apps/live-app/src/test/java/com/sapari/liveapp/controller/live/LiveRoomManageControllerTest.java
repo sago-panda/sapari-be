@@ -40,6 +40,7 @@ import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.common.web.security.CurrentUserIdArgumentResolver;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.command.CancelLiveCommand;
+import com.sapari.live.command.ReissueIngressCommand;
 import com.sapari.live.command.GetSellerRoomsCommand;
 import com.sapari.live.command.UpdateLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveRoomException;
@@ -48,8 +49,11 @@ import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.port.CancelLiveUseCase;
 import com.sapari.live.port.GetLiveRoomDetailUseCase;
 import com.sapari.live.port.GetSellerRoomsUseCase;
+import com.sapari.live.port.ReissueIngressUseCase;
 import com.sapari.live.port.UpdateLiveUseCase;
+import com.sapari.live.view.IngressCredentialView;
 import com.sapari.live.view.LiveRoomTab;
+import com.sapari.live.view.LiveStreamKind;
 import com.sapari.live.view.PublicLiveRoomDetailView;
 import com.sapari.live.view.SellerLiveRoomCountsView;
 import com.sapari.live.view.SellerLiveRoomDetailView;
@@ -71,6 +75,7 @@ class LiveRoomManageControllerTest {
     private final UpdateLiveUseCase updateLiveUseCase = mock(UpdateLiveUseCase.class);
     private final GetSellerRoomsUseCase getSellerRoomsUseCase = mock(GetSellerRoomsUseCase.class);
     private final GetLiveRoomDetailUseCase getLiveRoomDetailUseCase = mock(GetLiveRoomDetailUseCase.class);
+    private final ReissueIngressUseCase reissueIngressUseCase = mock(ReissueIngressUseCase.class);
     private MockMvc mvc;
 
     @BeforeEach
@@ -78,7 +83,8 @@ class LiveRoomManageControllerTest {
         TimeProvider timeProvider = mock(TimeProvider.class);
         given(timeProvider.now()).willReturn(Instant.parse("2026-11-08T00:00:00Z"));
         mvc = MockMvcBuilders.standaloneSetup(new LiveRoomManageController(
-                        cancelLiveUseCase, updateLiveUseCase, getSellerRoomsUseCase, getLiveRoomDetailUseCase))
+                        cancelLiveUseCase, updateLiveUseCase, getSellerRoomsUseCase, getLiveRoomDetailUseCase,
+                        reissueIngressUseCase))
                 .setCustomArgumentResolvers(new CurrentUserIdArgumentResolver())
                 .setControllerAdvice(new GlobalExceptionHandler(timeProvider))
                 .build();
@@ -111,6 +117,30 @@ class LiveRoomManageControllerTest {
 
         expectFailure(mvc.perform(post("/api/v1/lives/rooms/{roomId}/cancel", ROOM_ID)), "LIVE-013")
                 .andExpect(jsonPath("$.error.message").value("취소할 수 없는 방송 상태입니다."))
+                .andExpect(content().string(not(containsString(ROOM_ID.toString()))));
+    }
+
+    @Test
+    @DisplayName("송출 키 재발급 — 201 + 봉투, 새 자격을 한 번 전달, sellerId 는 인증 주체에서")
+    void reissueReturns201() throws Exception {
+        given(reissueIngressUseCase.reissue(new ReissueIngressCommand(ROOM_ID, SELLER_ID)))
+                .willReturn(new IngressCredentialView("ing-NEW", "rtmp://new", "key-NEW"));
+
+        expectSuccessEnvelope(mvc.perform(post("/api/v1/lives/rooms/{roomId}/ingress/reissue", ROOM_ID))
+                .andExpect(status().isCreated()))
+                .andExpect(jsonPath("$.data.ingressId").value("ing-NEW"))
+                .andExpect(jsonPath("$.data.rtmpUrl").value("rtmp://new"))
+                .andExpect(jsonPath("$.data.streamKey").value("key-NEW"));
+    }
+
+    @Test
+    @DisplayName("송출 키 재발급 불가 — 400 LIVE-018, roomId 미노출")
+    void reissueRejectedIs400Live018() throws Exception {
+        willThrow(new InvalidLiveStateException(LiveErrorCode.INGRESS_REISSUE_NOT_ALLOWED, ROOM_ID.toString()))
+                .given(reissueIngressUseCase).reissue(any());
+
+        expectFailure(mvc.perform(post("/api/v1/lives/rooms/{roomId}/ingress/reissue", ROOM_ID)), "LIVE-018")
+                .andExpect(jsonPath("$.error.message").value("송출 키를 재발급할 수 없는 방입니다."))
                 .andExpect(content().string(not(containsString(ROOM_ID.toString()))));
     }
 
@@ -197,11 +227,12 @@ class LiveRoomManageControllerTest {
     void sellerDetailHasRtmpUrlButNoKey() throws Exception {
         given(getLiveRoomDetailUseCase.getSellerDetail(any())).willReturn(new SellerLiveRoomDetailView(
                 "제목", "설명", "https://cdn/t.jpg", "닉", LiveRoomTab.SCHEDULED, AT, null, null, "NONE",
-                "rtmp://ingress/live"));
+                "rtmp://ingress/live", LiveStreamKind.RTMP));
 
         expectSuccessEnvelope(mvc.perform(get("/api/v1/lives/seller/rooms/{roomId}", ROOM_ID))
                 .andExpect(status().isOk()))
                 .andExpect(jsonPath("$.data.rtmpUrl").value("rtmp://ingress/live"))
+                .andExpect(jsonPath("$.data.streamType").value("RTMP"))
                 .andExpect(jsonPath("$.data", not(hasKey("streamKey"))));
     }
 

@@ -38,6 +38,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.CancelLiveUseCase;
 import com.sapari.live.port.GetLiveRoomDetailUseCase;
 import com.sapari.live.port.GetSellerRoomsUseCase;
+import com.sapari.live.port.ReissueIngressUseCase;
 import com.sapari.live.port.UpdateLiveUseCase;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
@@ -70,6 +71,7 @@ class LiveRoomManageAuthorizationTest {
     @MockitoBean private UpdateLiveUseCase updateLiveUseCase;
     @MockitoBean private GetSellerRoomsUseCase getSellerRoomsUseCase;
     @MockitoBean private GetLiveRoomDetailUseCase getLiveRoomDetailUseCase;
+    @MockitoBean private ReissueIngressUseCase reissueIngressUseCase;
     @MockitoBean private JwtTokenProvider jwtTokenProvider;
     // TokenRevocationFilter 가 요구한다 — 기본 스텁(=폐기 아님)이라 인가 판정을 가리지 않는다.
     @MockitoBean private AccessTokenRevocationChecker accessTokenRevocationChecker;
@@ -94,6 +96,24 @@ class LiveRoomManageAuthorizationTest {
 
         then(cancelLiveUseCase).should(never()).cancel(any());
         then(updateLiveUseCase).should(never()).update(any());
+    }
+
+    @Test
+    @DisplayName("구매자 — 송출 키 재발급은 403, 유스케이스에 닿지 않는다")
+    void buyerCannotReissueIngress() throws Exception {
+        mockMvc.perform(post("/api/v1/lives/rooms/{roomId}/ingress/reissue", ROOM_ID).with(as("USER")))
+                .andExpect(status().isForbidden());
+
+        then(reissueIngressUseCase).should(never()).reissue(any());
+    }
+
+    @Test
+    @DisplayName("관리자 — 송출 키 재발급은 403. 판매자 바닥(hasRole SELLER)이 ADMIN 도 막는다")
+    void adminCannotReissueIngress() throws Exception {
+        mockMvc.perform(post("/api/v1/lives/rooms/{roomId}/ingress/reissue", ROOM_ID).with(as("ADMIN")))
+                .andExpect(status().isForbidden());
+
+        then(reissueIngressUseCase).should(never()).reissue(any());
     }
 
     @Test
