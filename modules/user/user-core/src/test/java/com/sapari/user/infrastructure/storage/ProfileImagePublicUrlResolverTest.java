@@ -50,11 +50,9 @@ class ProfileImagePublicUrlResolverTest {
     }
 
     @Test
-    @DisplayName("public base URL이 HTTP URL이 아니면 거부한다")
-    void resolveRejectsInvalidPublicBaseUrl() {
-        ProfileImagePublicUrlResolver resolver = new ProfileImagePublicUrlResolver(properties("ftp://localhost/sapari-local-assets"));
-
-        assertThatThrownBy(() -> resolver.resolve("users/user-id/profile/image.jpg"))
+    @DisplayName("public base URL이 HTTP URL이 아니면 설정 단계(기동)에서 거부한다")
+    void rejectsInvalidPublicBaseUrlAtConfiguration() {
+        assertThatThrownBy(() -> properties("ftp://localhost/sapari-local-assets"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("URL");
     }

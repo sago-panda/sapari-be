@@ -276,6 +276,35 @@ class SocialProfileImageHttpDownloaderTest {
     }
 
 
+    @Test
+    @DisplayName("이미지에 일반 Content-Type 이 붙어 와도 URL 확장자와 실제 바이트가 맞으면 받는다")
+    void acceptsGenericContentTypeWhenUrlExtensionMatchesBytes() throws IOException {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        SocialProfileImageHttpDownloader downloader = downloader(builder.build(), 1024);
+        server.expect(once(), requestTo("https://image.example/profile.png"))
+                .andRespond(withSuccess(pngBytes(), MediaType.APPLICATION_OCTET_STREAM));
+
+        Optional<SocialProfileImageDownloadResult> result =
+                downloader.download(ProviderType.KAKAO, "https://image.example/profile.png");
+
+        assertThat(result).hasValueSatisfying(image -> assertThat(image.contentType()).isEqualTo("image/png"));
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("일반 Content-Type 에 URL 확장자와 다른 바이트가 오면 거부한다")
+    void rejectsGenericContentTypeWhenBytesDoNotMatchExtension() throws IOException {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        SocialProfileImageHttpDownloader downloader = downloader(builder.build(), 1024);
+        server.expect(once(), requestTo("https://image.example/profile.png"))
+                .andRespond(withSuccess(jpegBytes(), MediaType.APPLICATION_OCTET_STREAM));
+
+        assertThat(downloader.download(ProviderType.KAKAO, "https://image.example/profile.png")).isEmpty();
+        server.verify();
+    }
+
     private byte[] jpegBytes() throws IOException {
         BufferedImage image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB);
         ByteArrayOutputStream output = new ByteArrayOutputStream();

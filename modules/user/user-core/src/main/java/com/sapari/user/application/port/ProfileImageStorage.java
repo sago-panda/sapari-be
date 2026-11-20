@@ -1,5 +1,7 @@
 package com.sapari.user.application.port;
 
+import java.util.UUID;
+
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
 import com.sapari.user.application.dto.StoredProfileImage;
 
@@ -20,6 +22,9 @@ public interface ProfileImageStorage {
      * 고아 object는 운영 정리 대상으로 남길 수 있으므로 호출자는 삭제 실패를 사용자 요청 실패로 바꾸지 않는다.
      */
     void deleteQuietly(String profileImageKey);
+
+    /** 그 회원에게 발급된 key 인지 본다. 되돌릴 수 없는 삭제 전에 소유를 대조하는 데 쓴다. */
+    boolean isOwnedBy(UUID userId, String profileImageKey);
 
     /** 삭제 실패 로그에 내부 작업 경로를 포함해 best-effort 정리한다. */
     default void deleteQuietly(String profileImageKey, String cleanupReason) {

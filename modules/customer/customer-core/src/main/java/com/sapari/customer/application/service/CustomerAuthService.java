@@ -47,6 +47,7 @@ import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.exception.NicknameChangeRestrictedException;
+import com.sapari.user.exception.UserPublicErrorCodes;
 import com.sapari.user.command.ProfileImagePrepareCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
 import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
@@ -442,7 +443,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
 
     private boolean isProfileImageStorageUnavailable(BusinessException exception) {
         // customer-core는 user-core를 의존하지 않으므로 user 공개 오류 코드로 저장소 실패만 구분한다.
-        return "USER-118".equals(exception.getErrorCode().getCode());
+        return UserPublicErrorCodes.PROFILE_IMAGE_STORAGE_UNAVAILABLE.equals(exception.getErrorCode().getCode());
     }
 
     /**

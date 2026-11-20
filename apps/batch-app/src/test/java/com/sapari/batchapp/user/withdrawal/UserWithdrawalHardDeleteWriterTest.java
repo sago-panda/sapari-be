@@ -63,7 +63,7 @@ class UserWithdrawalHardDeleteWriterTest {
         inOrder.verify(localCredentialRepository).deleteByUserId(userId);
         inOrder.verify(sellerProfileRepository).deleteByUserId(userId);
         inOrder.verify(userRepository).deleteById(userId);
-        inOrder.verify(imageCleanup).scheduleAfterCommit("latest-profile.jpg");
+        inOrder.verify(imageCleanup).scheduleAfterCommit(userId, "latest-profile.jpg");
     }
 
     /** reader 이후 활성 상태로 바뀐 사용자는 하위 데이터까지 보존한다. */

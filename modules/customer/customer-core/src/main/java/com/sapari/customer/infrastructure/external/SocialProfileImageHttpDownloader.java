@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.net.URI;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -27,6 +28,8 @@ import com.sapari.user.model.ProviderType;
 @Slf4j
 @Component
 public class SocialProfileImageHttpDownloader implements SocialProfileImageDownloader {
+
+    private static final Set<String> SUPPORTED_CONTENT_TYPES = Set.of("image/jpeg", "image/png", "image/webp");
 
     private final RestClient restClient;
     private final SocialProfileImageDownloadProperties properties;
@@ -103,10 +106,11 @@ public class SocialProfileImageHttpDownloader implements SocialProfileImageDownl
                     String contentType = response.getHeaders().getContentType() == null
                             ? null
                             : normalizedContentType(response.getHeaders().getContentType().toString());
+                    String filename = filenameFrom(uri, contentType);
                     // provider 응답도 직접 업로드와 동일하게 magic bytes·decode·해상도·재인코딩 검증을 거친다.
                     ImageFileValidator.ValidatedImageFile image = ImageFileValidator.validate(
-                            filenameFrom(uri, contentType),
-                            contentType,
+                            filename,
+                            contentTypeFor(filename, contentType),
                             content
                     );
                     return Optional.of(new SocialProfileImageDownloadResult(
@@ -152,6 +156,28 @@ public class SocialProfileImageHttpDownloader implements SocialProfileImageDownl
             filename = lastSlashIndex < 0 ? path : path.substring(lastSlashIndex + 1);
         }
         return filename;
+    }
+
+    /**
+     * CDN 이 이미지에도 application/octet-stream 같은 일반 타입을 붙이는 경우가 있다. 그때는 URL 확장자로
+     * 정한 파일명에 맞는 타입을 넘긴다 — 검증기가 Content-Type 과 확장자를 완전 일치로 보므로, 원래 타입을
+     * 그대로 넘기면 이 대체 경로가 항상 실패한다. 진짜 형식은 검증기의 magic bytes·decode 가 확인한다.
+     */
+    private String contentTypeFor(String filename, String contentType) {
+        if (SUPPORTED_CONTENT_TYPES.contains(normalizedContentType(contentType))) {
+            return contentType;
+        }
+        String lower = filename.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+            return "image/jpeg";
+        }
+        if (lower.endsWith(".png")) {
+            return "image/png";
+        }
+        if (lower.endsWith(".webp")) {
+            return "image/webp";
+        }
+        return contentType;
     }
 
     /** Content-Type의 선택 파라미터를 제외하고 비교 가능한 형태로 정규화한다. */

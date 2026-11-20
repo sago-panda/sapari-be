@@ -3,6 +3,8 @@ package com.sapari.user.infrastructure.storage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.UUID;
+
 import org.springframework.stereotype.Component;
 
 import com.sapari.storage.object.command.ObjectPutCommand;
@@ -44,6 +46,11 @@ public class ObjectStorageProfileImageStorage implements ProfileImageStorage {
             throw new UserException(UserErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE, e);
         }
         return new StoredProfileImage(key, command.contentType(), command.content().length);
+    }
+
+    @Override
+    public boolean isOwnedBy(UUID userId, String profileImageKey) {
+        return keyGenerator.isOwnedBy(userId, profileImageKey);
     }
 
     /**

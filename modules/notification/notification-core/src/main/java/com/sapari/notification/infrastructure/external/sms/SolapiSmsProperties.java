@@ -12,4 +12,9 @@ public record SolapiSmsProperties(
         String apiSecret,
         String from
 ) {
+    /** 자격증명이 로그에 원문으로 남지 않게 가린다(actuator configprops 는 toString 을 쓰지 않으니 별도). */
+    @Override
+    public String toString() {
+        return "SolapiSmsProperties[apiKey=***, apiSecret=***, from=" + from + "]";
+    }
 }

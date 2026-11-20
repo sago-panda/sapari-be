@@ -42,7 +42,7 @@ public class UserWithdrawalHardDeleteWriter implements ItemWriter<UUID> {
             sellerProfileRepository.deleteByUserId(userId);
             userRepository.deleteById(userId);
             // DB 삭제 호출 직후는 아직 커밋 전이므로 실제 사진 삭제 대신 콜백을 등록한다.
-            userProfileImageCleanupUseCase.scheduleAfterCommit(user.get().profileImageKey());
+            userProfileImageCleanupUseCase.scheduleAfterCommit(userId, user.get().profileImageKey());
         }
     }
 }

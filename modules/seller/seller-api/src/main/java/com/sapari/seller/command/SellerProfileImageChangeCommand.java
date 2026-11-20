@@ -10,4 +10,10 @@ public record SellerProfileImageChangeCommand(
         String contentType,
         byte[] content
 ) {
+    /** accessToken 이 로그·디버그 출력에 남지 않게 하고, 바이트 배열 대신 크기만 보인다. */
+    @Override
+    public String toString() {
+        return "SellerProfileImageChangeCommand[accessToken=REDACTED, contentType=" + contentType
+                + ", size=" + (content == null ? 0 : content.length) + "]";
+    }
 }

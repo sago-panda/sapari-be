@@ -21,6 +21,7 @@ import com.sapari.user.application.port.ProfileImageStorage;
 import com.sapari.user.application.service.UserProfileImageCleanupService;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.repository.UserRepository;
+import com.sapari.user.infrastructure.storage.ProfileImageObjectKeyGenerator;
 import com.sapari.user.model.UserStatus;
 
 class UserWithdrawalImageCleanupTransactionTest {
@@ -29,6 +30,8 @@ class UserWithdrawalImageCleanupTransactionTest {
     private final Connection connection = mock(Connection.class);
     private final UUID first = UUID.randomUUID();
     private final UUID second = UUID.randomUUID();
+    private final String firstKey = "users/" + first + "/profile/" + UUID.randomUUID() + ".jpg";
+    private final String secondKey = "users/" + second + "/profile/" + UUID.randomUUID() + ".jpg";
     private TransactionTemplate transaction;
 
     /** DB 접근만 대체하며 실제 트랜잭션 관리자와 정리 서비스를 조합한다. */
@@ -39,9 +42,11 @@ class UserWithdrawalImageCleanupTransactionTest {
         when(connection.getAutoCommit()).thenReturn(true);
         transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         when(users.findByIdForUpdate(first)).thenReturn(Optional.of(User.builder()
-                .userId(first).status(UserStatus.WITHDRAWING).profileImageKey("first.jpg").build()));
+                .userId(first).status(UserStatus.WITHDRAWING).profileImageKey(firstKey).build()));
         when(users.findByIdForUpdate(second)).thenReturn(Optional.of(User.builder()
-                .userId(second).status(UserStatus.WITHDRAWING).profileImageKey("second.jpg").build()));
+                .userId(second).status(UserStatus.WITHDRAWING).profileImageKey(secondKey).build()));
+        ProfileImageObjectKeyGenerator keyGenerator = new ProfileImageObjectKeyGenerator();
+        when(storage.isOwnedBy(any(), any())).thenAnswer(inv -> keyGenerator.isOwnedBy(inv.getArgument(0), inv.getArgument(1)));
     }
 
     /** Spring이 새 포트를 주입한 Writer가 같은 청크의 사진을 커밋 이후에 정리한다. */
@@ -51,12 +56,12 @@ class UserWithdrawalImageCleanupTransactionTest {
             UserWithdrawalHardDeleteWriter writer = context.getBean(UserWithdrawalHardDeleteWriter.class);
             transaction.executeWithoutResult(status -> {
                 writer.write(new Chunk<>(List.of(first, second)));
-                verifyNoInteractions(storage);
+                verify(storage, never()).deleteQuietly(anyString(), anyString());
             });
             InOrder order = inOrder(connection, storage);
             order.verify(connection).commit();
-            order.verify(storage).deleteQuietly("first.jpg", "USER_HARD_DELETE");
-            order.verify(storage).deleteQuietly("second.jpg", "USER_HARD_DELETE");
+            order.verify(storage).deleteQuietly(firstKey, "USER_HARD_DELETE");
+            order.verify(storage).deleteQuietly(secondKey, "USER_HARD_DELETE");
         }
     }
 
@@ -70,7 +75,7 @@ class UserWithdrawalImageCleanupTransactionTest {
                     writer.write(new Chunk<>(List.of(first, second)))))
                     .isInstanceOf(IllegalStateException.class);
             verify(connection).rollback();
-            verifyNoInteractions(storage);
+            verify(storage, never()).deleteQuietly(anyString(), anyString());
         }
     }
 

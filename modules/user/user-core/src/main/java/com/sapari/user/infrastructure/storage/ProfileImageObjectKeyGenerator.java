@@ -2,6 +2,7 @@ package com.sapari.user.infrastructure.storage;
 
 import java.util.Locale;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 import org.springframework.util.Assert;
@@ -14,6 +15,8 @@ import org.springframework.util.Assert;
 public class ProfileImageObjectKeyGenerator {
 
     private static final String PROFILE_IMAGE_KEY_PREFIX = "users";
+    private static final Pattern OWNED_FILE_NAME =
+            Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z]+");
 
     /**
      * 프로필 이미지 prefix 아래에 회원별 UUID 기반 object key를 만든다.
@@ -23,6 +26,20 @@ public class ProfileImageObjectKeyGenerator {
         Assert.notNull(userId, "userId는 필수입니다.");
         String normalizedExtension = normalizeExtension(extension);
         return "%s/%s/profile/%s.%s".formatted(PROFILE_IMAGE_KEY_PREFIX, userId, UUID.randomUUID(), normalizedExtension);
+    }
+
+    /**
+     * generate 가 만든 모양 그대로(users/{userId}/profile/{uuid}.{ext}) 그 회원의 key 인지 본다.
+     * 접두사만 보면 "users/A/profile/../../B/..." 가 통과하고, 경로를 정규화하는 저장소에서 남의 사진이 지워진다.
+     */
+    public boolean isOwnedBy(UUID userId, String profileImageKey) {
+        Assert.notNull(userId, "userId는 필수입니다.");
+        if (profileImageKey == null) {
+            return false;
+        }
+        String prefix = "%s/%s/profile/".formatted(PROFILE_IMAGE_KEY_PREFIX, userId);
+        return profileImageKey.startsWith(prefix)
+                && OWNED_FILE_NAME.matcher(profileImageKey.substring(prefix.length())).matches();
     }
 
     /**

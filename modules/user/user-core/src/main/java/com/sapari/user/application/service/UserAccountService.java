@@ -11,6 +11,7 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
@@ -245,6 +246,8 @@ public class UserAccountService implements UserAccountUseCase {
      * 프로필 이미지 원본을 검증·저장한 뒤 DB에는 새 object key만 반영한다.
      * 저장소 업로드는 DB 트랜잭션 밖에서 수행하고, DB key 교체 실패 시 새 object를 best-effort로 보상 삭제한다.
      */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @Override
     public UserView changeProfileImage(ProfileImageChangeCommand command) {
         ProfileImageStoreCommand storeCommand = profileImageUploadValidator.validate(
@@ -279,6 +282,8 @@ public class UserAccountService implements UserAccountUseCase {
     }
 
     /** 공개 전달 타입의 바이트를 재검증한 뒤 저장하고 DB 실패 시 신규 object를 보상한다. */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @Override
     public UserView changePreparedProfileImage(UUID userId, PreparedProfileImage image) {
         // public record는 검증기를 거치지 않고도 생성할 수 있으므로 타입명만 신뢰하지 않는다.
@@ -308,6 +313,8 @@ public class UserAccountService implements UserAccountUseCase {
     /**
      * DB의 프로필 이미지 key를 비운 뒤 커밋된 기존 object만 best-effort로 정리한다.
      */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @Override
     public UserView removeProfileImage(UUID userId) {
         ProfileImageRemoveResult result = profileImageMutationProcessor.removeProfileImageKey(userId);

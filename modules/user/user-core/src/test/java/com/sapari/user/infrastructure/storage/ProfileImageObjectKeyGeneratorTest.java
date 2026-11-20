@@ -8,6 +8,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("프로필 이미지 object key 생성기 테스트")
 class ProfileImageObjectKeyGeneratorTest {
@@ -84,5 +86,30 @@ class ProfileImageObjectKeyGeneratorTest {
         assertThatThrownBy(() -> generator.generate(USER_ID, "jp2"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("확장자");
+    }
+
+    @Test
+    @DisplayName("generate 가 만든 key 는 그 회원 소유로 본다")
+    void generatedKeyIsOwnedByItsUser() {
+        ProfileImageObjectKeyGenerator generator = new ProfileImageObjectKeyGenerator();
+
+        assertThat(generator.isOwnedBy(USER_ID, generator.generate(USER_ID, "jpg"))).isTrue();
+        assertThat(generator.isOwnedBy(UUID.randomUUID(), generator.generate(USER_ID, "jpg"))).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "../../00000000-0000-0000-0000-000000000002/profile/11111111-1111-1111-1111-111111111111.jpg",
+            "",
+            "photo.jpg",
+            "11111111-1111-1111-1111-111111111111.jpg/extra",
+            "11111111-1111-1111-1111-111111111111.JPG"
+    })
+    @DisplayName("접두사가 맞아도 generate 모양이 아닌 key 는 소유로 보지 않는다")
+    void keyNotShapedByGenerateIsNotOwned(String fileName) {
+        ProfileImageObjectKeyGenerator generator = new ProfileImageObjectKeyGenerator();
+
+        assertThat(generator.isOwnedBy(USER_ID, USER_PREFIX + fileName)).isFalse();
+        assertThat(generator.isOwnedBy(USER_ID, null)).isFalse();
     }
 }
