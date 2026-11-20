@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
+import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +36,7 @@ import com.sapari.seller.application.mapper.SellerViewMapper;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
+import com.sapari.seller.command.SellerProfileImageChangeCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
@@ -58,6 +60,7 @@ import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
+import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.port.UserAccountUseCase;
 import com.sapari.user.port.UserSignupEmailVerificationUseCase;
 import com.sapari.user.view.UserView;
@@ -759,6 +762,62 @@ class SellerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("프로필 이미지 변경 시 Access Token 판매자 기준으로 user 프로필 이미지를 변경하고 판매자 응답을 조립한다")
+    void updateProfileImageChangesCurrentSellerProfileImage() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
+        SellerProfileImageChangeCommand command = new SellerProfileImageChangeCommand(
+                accessToken,
+                "profile.png",
+                "image/png",
+                new byte[] {1, 2, 3}
+        );
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
+        when(userAccountUseCase.changeProfileImage(any(ProfileImageChangeCommand.class)))
+                .thenReturn(sellerViewWithProfileImageUrl(userId, "https://cdn.example/users/%s/profile/new.png".formatted(userId)));
+        when(sellerProfileRepository.findByUserId(userId)).thenReturn(Optional.of(sellerProfile(userId)));
+
+        // when
+        var result = sellerAuthService.updateProfileImage(command);
+
+        // then
+        assertThat(result.profileImageUrl()).isEqualTo("https://cdn.example/users/%s/profile/new.png".formatted(userId));
+        assertThat(result.storeName()).isEqualTo("사파리 상점");
+        ArgumentCaptor<ProfileImageChangeCommand> commandCaptor = ArgumentCaptor.forClass(ProfileImageChangeCommand.class);
+        verify(userAccountUseCase).changeProfileImage(commandCaptor.capture());
+        assertThat(commandCaptor.getValue().userId()).isEqualTo(userId);
+        assertThat(commandCaptor.getValue().originalFilename()).isEqualTo("profile.png");
+        assertThat(commandCaptor.getValue().contentType()).isEqualTo("image/png");
+        assertThat(commandCaptor.getValue().content()).containsExactly(1, 2, 3);
+        verify(sellerProfileRepository).findByUserId(userId);
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 삭제 시 Access Token 판매자 기준으로 user 프로필 이미지를 제거하고 판매자 응답을 조립한다")
+    void deleteProfileImageRemovesCurrentSellerProfileImage() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.SELLER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
+        when(userAccountUseCase.removeProfileImage(userId)).thenReturn(sellerViewWithProfileImageUrl(userId, null));
+        when(sellerProfileRepository.findByUserId(userId)).thenReturn(Optional.of(sellerProfile(userId)));
+
+        // when
+        var result = sellerAuthService.deleteProfileImage(accessToken);
+
+        // then
+        assertThat(result.profileImageUrl()).isNull();
+        assertThat(result.storeName()).isEqualTo("사파리 상점");
+        verify(userAccountUseCase).removeProfileImage(userId);
+        verify(sellerProfileRepository).findByUserId(userId);
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
+    @Test
     @DisplayName("30일이 지난 뒤 닉네임 수정 시 판매자 닉네임만 갱신한다")
     void updateNicknameUpdatesSellerNickname() {
         // given
@@ -772,7 +831,7 @@ class SellerAuthServiceTest {
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
         when(sellerProfileRepository.findByUserId(userId)).thenReturn(Optional.of(sellerProfile(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
-        when(userAccountUseCase.changeNickname(userId, "updated"))
+        when(userAccountUseCase.changeNickname(userId, "updated", Duration.ofDays(30)))
                 .thenReturn(sellerView(userId, "updated", passwordChangedAt()));
 
         // when
@@ -797,7 +856,7 @@ class SellerAuthServiceTest {
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
         verify(userAccountUseCase).existsByNickname("updated");
-        verify(userAccountUseCase).changeNickname(userId, "updated");
+        verify(userAccountUseCase).changeNickname(userId, "updated", Duration.ofDays(30));
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
         verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
         verifyNoInteractions(sessionRevocationStore);
@@ -823,7 +882,7 @@ class SellerAuthServiceTest {
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED)
                 );
         verify(userAccountUseCase).existsByNickname("updated");
-        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class), any(Duration.class));
     }
 
     @Test
@@ -845,7 +904,7 @@ class SellerAuthServiceTest {
                         assertThat(exception.getErrorCode()).isEqualTo(SellerErrorCode.DUPLICATED_NICKNAME)
                 );
         verify(userAccountUseCase).existsByNickname("seller");
-        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class), any(Duration.class));
     }
 
     @Test
@@ -868,6 +927,21 @@ class SellerAuthServiceTest {
                 );
     }
 
+    /** 잠금 전 검증 이후 발생한 변경 간격 위반도 기존 도메인 응답으로 변환한다. */
+    @Test
+    void mapsNicknameRestrictionAfterLock() {
+        UUID id = UUID.randomUUID();
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(id, UserRole.SELLER.name()));
+        when(userAccountUseCase.findById(id)).thenReturn(Optional.of(sellerView(id)));
+        when(userAccountUseCase.changeNickname(id, "updated", Duration.ofDays(30)))
+                .thenThrow(new com.sapari.user.exception.NicknameChangeRestrictedException());
+
+        assertThatThrownBy(() -> sellerAuthService.updateNickname(new SellerNicknameUpdateCommand("updated", token)))
+                .isInstanceOfSatisfying(SellerException.class, e ->
+                        assertThat(e.getErrorCode()).isEqualTo(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
     @Test
     @DisplayName("저장 중 닉네임 unique 충돌이 발생하면 닉네임 중복으로 실패한다")
     void updateNicknameThrowsExceptionWhenNicknameSaveConflicts() {
@@ -880,7 +954,7 @@ class SellerAuthServiceTest {
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(sellerView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
-        when(userAccountUseCase.changeNickname(userId, "updated"))
+        when(userAccountUseCase.changeNickname(userId, "updated", Duration.ofDays(30)))
                 .thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
@@ -992,6 +1066,14 @@ class SellerAuthServiceTest {
     }
 
     private UserView sellerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status) {
+        return sellerView(userId, nickname, nicknameChangedAt, status, null);
+    }
+
+    private UserView sellerViewWithProfileImageUrl(UUID userId, String profileImageUrl) {
+        return sellerView(userId, "seller", passwordChangedAt(), UserStatus.ACTIVE, profileImageUrl);
+    }
+
+    private UserView sellerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status, String profileImageUrl) {
         return new UserView(
                 userId,
                 UserRole.SELLER,
@@ -1002,7 +1084,7 @@ class SellerAuthServiceTest {
                 LocalDate.of(1990, 1, 1),
                 null,
                 "01012345678",
-                null,
+                profileImageUrl,
                 EMAIL,
                 UserGrade.BRONZE,
                 0,

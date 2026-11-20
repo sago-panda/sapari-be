@@ -1,0 +1,35 @@
+# 리뷰어 매니페스트 — "어떤 리뷰어가 어떤 항목 ID 를 소유하는가" 의 단일 진실 원천.
+#
+# 여기서 유도되는 것 (손으로 다른 곳에 다시 적지 않는다):
+#   resolve-anchors.sh     활성 항목의 접두사로 REVIEWERS= 를 낸다 (로컬 /review 와 CI 가 같은 집합을 띄운다)
+#   check-item-ids.sh      항목 ID 의 정의 파일과 허용 접두사
+#   list-reviewers.sh      CI 가 단언·삭제·deny·해시할 파일 목록
+#
+# 규칙:
+#   - 모든 항목 ID 는 정확히 한 리뷰어가 소유한다. 접두사가 소유권이다.
+#   - 에이전트 정의는 .claude/agents/<name>.md (로컬, Bash 있음) 와 <name>-ci.md (CI, Bash 없음) 한 쌍.
+#   - 방법론 md 는 .claude/rules/ 에 두지 않는다 — 그 디렉터리는 모든 세션에 자동 로드된다.
+#     리뷰어만 Read 하도록 .claude/review/ 에 둔다. 공통 규칙은 .claude/review/common.md.
+#   - domains: 를 가진 리뷰어는 도메인 인자로 파라미터화된다. 접두사 = 도메인명 대문자,
+#     체크리스트 = .claude/review/domains/<domain>.md. 도메인 추가 = 이 목록 + 그 파일 하나.
+#
+# 파서는 pyyaml 없이 이 고정된 형태만 읽는다(anchorlib.reviewers). 구조를 바꾸면 거기도 고친다.
+
+version: 1
+
+reviewers:
+  - name: sapari-reviewer
+    prefixes: [CONV, TRAP]
+    methodology: .claude/review/sapari-reviewer-methodology.md
+
+  - name: security-reviewer
+    prefixes: [SEC]
+    methodology: .claude/review/security-reviewer-methodology.md
+
+  - name: concurrency-reviewer
+    prefixes: [CONC]
+    methodology: .claude/review/concurrency-reviewer-methodology.md
+
+  - name: domain-reviewer
+    domains: [live]
+    methodology: .claude/review/domain-reviewer-methodology.md

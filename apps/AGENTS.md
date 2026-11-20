@@ -5,7 +5,7 @@ App-specific detail lives in that app's own `AGENTS.md` (e.g. `apps/streaming-ap
 Who may depend on whom lives in the root `AGENTS.md` and is ArchUnit-enforced;
 this file is **how the web layer uses** what it is allowed to depend on.
 The reviewer judges the envelope rules below as `CONV-12` — change one, check the other
-(`.claude/agents/sapari-reviewer.md`). Paging assembly is `common/AGENTS.md` / `CONV-13`.
+(`.claude/review/sapari-reviewer-methodology.md`). Paging assembly is `common/AGENTS.md` / `CONV-13`.
 
 ## Response envelope (`com.sapari.common.response`)
 

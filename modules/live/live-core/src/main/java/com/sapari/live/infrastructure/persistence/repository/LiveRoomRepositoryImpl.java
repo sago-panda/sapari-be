@@ -100,4 +100,9 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
                 ).stream().map(LiveRoomEntity::getId)
                 .toList();
     }
+
+    @Override
+    public long countLiveRooms(){
+        return liveRoomJpaRepository.countByLiveStatus(LiveRoomStatus.LIVE);
+    }
 }

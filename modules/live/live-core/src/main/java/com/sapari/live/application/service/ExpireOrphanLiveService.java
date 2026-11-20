@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
@@ -28,6 +29,7 @@ import com.sapari.live.port.ExpireOrphanLiveUseCase;
 public class ExpireOrphanLiveService implements ExpireOrphanLiveUseCase {
 
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
     private final LiveMediaManager liveMediaManager;
     private final LiveRoomRepository liveRoomRepository;
 
@@ -39,6 +41,7 @@ public class ExpireOrphanLiveService implements ExpireOrphanLiveUseCase {
         LiveRoom expiredRoom = room.expire(timeProvider.now());
 
         liveRoomRepository.save(expiredRoom);
+        liveMetrics.roomTransitioned(room.status(), expiredRoom.status());
         PostCommitMediaCleanup.register(liveMediaManager, room);
         log.info("고아 라이브 정리. roomId: {}", expiredRoom.id());
     }
