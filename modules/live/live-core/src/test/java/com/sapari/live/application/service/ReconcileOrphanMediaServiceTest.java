@@ -22,6 +22,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
@@ -57,6 +59,8 @@ class ReconcileOrphanMediaServiceTest {
     @Mock
     private TimeProvider timeProvider;
 
+    private final RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
+
     private ReconcileOrphanMediaService service;
 
     private UUID roomId;
@@ -65,7 +69,7 @@ class ReconcileOrphanMediaServiceTest {
     void setup() {
         service = new ReconcileOrphanMediaService(
                 liveMediaManager, liveRoomRepository,
-                new OrphanMediaReconcilePolicy(Duration.ofMinutes(15)), timeProvider);
+                new OrphanMediaReconcilePolicy(Duration.ofMinutes(15)), timeProvider, liveMetrics);
         roomId = UUID.randomUUID();
     }
 
@@ -467,5 +471,45 @@ class ReconcileOrphanMediaServiceTest {
 
         then(liveRoomRepository).should(never()).findAllByIds(any());
         then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), anyString());
+    }
+
+    @Test
+    @DisplayName("이 잡이 매 회차 활성 egress 게이지를 갱신한다 — 방치 Live 잡은 후보가 있을 때만 거기까지 가므로 평상시엔 갱신되지 않는다")
+    void everyRound_refreshesActiveEgressGauge() {
+        UUID other = UUID.randomUUID();
+        givenLiveKit(List.of(), List.of(
+                new EgressSummary("eg-1", UUID.randomUUID().toString(), true, OLD),
+                new EgressSummary("eg-2", other.toString(), false, OLD)));
+
+        service.reconcile();
+
+        // active 인 것만 센다 — 멈춘 egress 는 방송이 아니다
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.liveKitEgressRooms).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("LiveKit 이 전 목록을 비워 줘도 회차 중단으로 세지 않는다 — 방송 없는 새벽과 구분이 안 돼 매일 울리는 알람이 된다")
+    void allListsEmpty_isNotCountedAsAbortedRound() {
+        givenLiveKit(List.of(), List.of());
+
+        service.reconcile();
+
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.abortedRounds).isEmpty();
+        // 대신 게이지가 0 으로 떨어져 DB 쪽 활성 방 수와의 괴리로 드러난다
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.liveKitEgressRooms).isZero();
+    }
+
+    @Test
+    @DisplayName("예외로 죽은 회차는 이 잡의 이름으로 failed 를 센다")
+    void failedRound_isCountedWithOwnJobName() {
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveMediaManager.listAllIngress()).willThrow(new IllegalStateException("LiveKit 장애"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.reconcile())
+                .isInstanceOf(IllegalStateException.class);
+
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.failedRounds)
+                .containsExactly(ReconcileJob.ORPHAN_MEDIA);
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.completedRounds).isEmpty();
     }
 }

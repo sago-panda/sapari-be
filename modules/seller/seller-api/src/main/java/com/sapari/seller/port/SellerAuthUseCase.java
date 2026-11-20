@@ -7,6 +7,7 @@ import com.sapari.seller.command.SellerEmailVerificationConfirmCommand;
 import com.sapari.seller.command.SellerEmailVerificationSendCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
+import com.sapari.seller.command.SellerProfileImageChangeCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.view.SellerLoginResult;
 import com.sapari.seller.view.SellerEmailVerificationConfirmResult;
@@ -51,4 +52,10 @@ public interface SellerAuthUseCase {
     SellerMeView getMyInfo(UUID userId);
 
     SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command);
+
+    /** 인증된 판매자의 프로필 이미지를 교체하고 공개 URL이 반영된 내 정보를 반환한다. */
+    SellerMeView updateProfileImage(SellerProfileImageChangeCommand command);
+
+    /** 인증된 판매자의 프로필 이미지 연결을 제거하고 갱신된 내 정보를 반환한다. */
+    SellerMeView deleteProfileImage(String accessToken);
 }

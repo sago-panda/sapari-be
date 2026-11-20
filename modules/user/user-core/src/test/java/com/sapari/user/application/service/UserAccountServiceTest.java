@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
@@ -25,8 +26,16 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.user.command.ProfileImageChangeCommand;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
+import com.sapari.user.application.dto.ProfileImageChangeResult;
+import com.sapari.user.application.dto.ProfileImageRemoveResult;
+import com.sapari.user.application.dto.ProfileImageStoreCommand;
+import com.sapari.user.application.dto.StoredProfileImage;
+import com.sapari.user.application.port.ProfileImageStorage;
+import com.sapari.user.application.support.ProfileImageUploadValidator;
 import com.sapari.user.domain.model.Terms;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.model.UserTermsAgreement;
@@ -35,12 +44,15 @@ import com.sapari.user.domain.repository.TermsRepository;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.domain.repository.UserTermsAgreementRepository;
 import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
+import com.sapari.user.domain.exception.UserErrorCode;
+import com.sapari.user.domain.exception.UserException;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.TermsType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
+import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.view.UserView;
 import com.sapari.user.application.support.WithdrawnUserRetentionMasker;
 
@@ -63,6 +75,18 @@ class UserAccountServiceTest {
     @Mock
     private UserTermsAgreementRepository userTermsAgreementRepository;
 
+    @Mock
+    private ProfileImageUploadValidator profileImageUploadValidator;
+
+    @Mock
+    private ProfileImageStorage profileImageStorage;
+
+    @Mock
+    private ProfileImageMutationProcessor profileImageMutationProcessor;
+
+    @Mock
+    private SocialCustomerRegistrationMutationProcessor socialCustomerRegistrationMutationProcessor;
+
     private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker = new WithdrawnUserRetentionMasker();
 
     private UserAccountService userAccountService;
@@ -75,8 +99,54 @@ class UserAccountServiceTest {
                 termsRepository,
                 userTermsAgreementRepository,
                 withdrawnUserRetentionMasker,
+                profileImageUploadValidator,
+                profileImageStorage,
+                profileImageMutationProcessor,
+                socialCustomerRegistrationMutationProcessor,
+                key -> key == null ? null : "https://cdn.example/" + key,
                 timeProvider
         );
+    }
+
+    @Test
+    @DisplayName("소셜 고객 가입 보상 성공 후 등록된 프로필 이미지 object를 삭제한다")
+    void rollbackSocialCustomerRegistrationDeletesProfileImageAfterDbCompensation() {
+        UUID userId = UUID.randomUUID();
+        String profileImageKey = "users/%s/profile/signup.png".formatted(userId);
+        SocialCustomerRegistrationRollbackCommand command = rollbackCommand(userId);
+        when(socialCustomerRegistrationMutationProcessor.rollback(command)).thenReturn(profileImageKey);
+
+        userAccountService.rollbackSocialCustomerRegistration(command);
+
+        verify(socialCustomerRegistrationMutationProcessor).rollback(command);
+        verify(profileImageStorage).deleteQuietly(profileImageKey);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지가 없는 소셜 고객 가입 보상은 object 삭제를 호출하지 않는다")
+    void rollbackSocialCustomerRegistrationSkipsProfileImageDeleteWhenKeyIsNull() {
+        UUID userId = UUID.randomUUID();
+        SocialCustomerRegistrationRollbackCommand command = rollbackCommand(userId);
+        when(socialCustomerRegistrationMutationProcessor.rollback(command)).thenReturn(null);
+
+        userAccountService.rollbackSocialCustomerRegistration(command);
+
+        verify(socialCustomerRegistrationMutationProcessor).rollback(command);
+        verifyNoInteractions(profileImageStorage);
+    }
+
+    @Test
+    @DisplayName("소셜 고객 가입 DB 보상이 실패하면 프로필 이미지 object를 먼저 삭제하지 않는다")
+    void rollbackSocialCustomerRegistrationDoesNotDeleteProfileImageWhenDbCompensationFails() {
+        UUID userId = UUID.randomUUID();
+        SocialCustomerRegistrationRollbackCommand command = rollbackCommand(userId);
+        IllegalStateException dbException = new IllegalStateException("db down");
+        when(socialCustomerRegistrationMutationProcessor.rollback(command)).thenThrow(dbException);
+
+        assertThatThrownBy(() -> userAccountService.rollbackSocialCustomerRegistration(command))
+                .isSameAs(dbException);
+
+        verifyNoInteractions(profileImageStorage);
     }
 
     @Test
@@ -185,6 +255,178 @@ class UserAccountServiceTest {
     }
 
     @Test
+    @DisplayName("UserView에는 내부 프로필 이미지 key가 아니라 공개 URL을 반환한다")
+    void findByIdResolvesProfileImageKeyToUrl() {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(userRepository.findById(userId)).thenReturn(Optional.of(activeCustomer(userId)));
+
+        // when
+        UserView result = userAccountService.findById(userId).orElseThrow();
+
+        // then
+        assertThat(result.profileImageUrl())
+                .isEqualTo("https://cdn.example/users/%s/profile/image.jpg".formatted(userId));
+    }
+
+    @Test
+    @DisplayName("준비된 프로필 이미지도 재검증 결과를 저장하고 새 key를 반영한다")
+    void changePreparedProfileImageStoresRevalidatedContent() {
+        UUID userId = UUID.randomUUID();
+        User user = activeCustomer(userId);
+        String oldKey = user.profileImageKey();
+        String newKey = "users/%s/profile/prepared.png".formatted(userId);
+        PreparedProfileImage image = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(
+                userId, image.normalizedExtension(), image.contentType(), image.content());
+        when(profileImageUploadValidator.validate(userId, "prepared.png", "image/png", image.content()))
+                .thenReturn(storeCommand);
+        when(profileImageStorage.store(storeCommand)).thenReturn(new StoredProfileImage(newKey, "image/png", 3));
+        when(profileImageMutationProcessor.replaceProfileImageKey(userId, newKey))
+                .thenReturn(new ProfileImageChangeResult(user.updateProfileImageKey(newKey), oldKey));
+
+        UserView result = userAccountService.changePreparedProfileImage(userId, image);
+
+        assertThat(result.profileImageUrl()).isEqualTo("https://cdn.example/" + newKey);
+        verify(profileImageUploadValidator).validate(userId, "prepared.png", "image/png", image.content());
+        verify(profileImageStorage).store(storeCommand);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 변경 시 검증된 이미지를 저장하고 새 key를 사용자에게 반영한다")
+    void changeProfileImageStoresValidatedImageAndUpdatesUserProfileImageKey() {
+        // given
+        UUID userId = UUID.randomUUID();
+        User user = activeCustomer(userId);
+        String oldKey = user.profileImageKey();
+        String newKey = "users/%s/profile/new-image.png".formatted(userId);
+        ProfileImageChangeCommand command = profileImageChangeCommand(userId);
+        ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(
+                userId,
+                "png",
+                "image/png",
+                new byte[] {1, 2, 3}
+        );
+        when(profileImageUploadValidator.validate(
+                userId,
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        )).thenReturn(storeCommand);
+        when(profileImageStorage.store(storeCommand)).thenReturn(new StoredProfileImage(newKey, "image/png", 3));
+        when(profileImageMutationProcessor.replaceProfileImageKey(userId, newKey))
+                .thenReturn(new ProfileImageChangeResult(user.updateProfileImageKey(newKey), oldKey));
+
+        // when
+        UserView result = userAccountService.changeProfileImage(command);
+
+        // then
+        assertThat(result.profileImageUrl()).isEqualTo("https://cdn.example/" + newKey);
+        verify(profileImageMutationProcessor).replaceProfileImageKey(userId, newKey);
+        verify(profileImageStorage).deleteQuietly(oldKey);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 검증 실패 시 저장소와 DB 저장을 호출하지 않는다")
+    void changeProfileImageDoesNotStoreWhenValidationFails() {
+        // given
+        UUID userId = UUID.randomUUID();
+        ProfileImageChangeCommand command = profileImageChangeCommand(userId);
+        when(profileImageUploadValidator.validate(
+                userId,
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        )).thenThrow(new UserException(UserErrorCode.PROFILE_IMAGE_INVALID_CONTENT));
+
+        // when, then
+        assertThatThrownBy(() -> userAccountService.changeProfileImage(command))
+                .isInstanceOf(UserException.class);
+        verifyNoInteractions(profileImageStorage);
+        verifyNoInteractions(profileImageMutationProcessor);
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 저장소 업로드 실패 시 DB 저장을 호출하지 않는다")
+    void changeProfileImageDoesNotSaveUserWhenStorageUploadFails() {
+        // given
+        UUID userId = UUID.randomUUID();
+        ProfileImageChangeCommand command = profileImageChangeCommand(userId);
+        ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(userId, "png", "image/png", new byte[] {1});
+        when(profileImageUploadValidator.validate(
+                userId,
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        )).thenReturn(storeCommand);
+        when(profileImageStorage.store(storeCommand)).thenThrow(new IllegalStateException("storage down"));
+
+        // when, then
+        assertThatThrownBy(() -> userAccountService.changeProfileImage(command))
+                .isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(profileImageMutationProcessor);
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 DB 저장 실패 시 새 object를 보상 삭제하고 원래 예외를 전파한다")
+    void changeProfileImageDeletesNewObjectWhenUserSaveFails() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String newKey = "users/%s/profile/new-image.png".formatted(userId);
+        ProfileImageChangeCommand command = profileImageChangeCommand(userId);
+        ProfileImageStoreCommand storeCommand = new ProfileImageStoreCommand(userId, "png", "image/png", new byte[] {1});
+        IllegalStateException dbException = new IllegalStateException("db down");
+        when(profileImageUploadValidator.validate(
+                userId,
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        )).thenReturn(storeCommand);
+        when(profileImageStorage.store(storeCommand)).thenReturn(new StoredProfileImage(newKey, "image/png", 1));
+        when(profileImageMutationProcessor.replaceProfileImageKey(userId, newKey)).thenThrow(dbException);
+
+        // when, then
+        assertThatThrownBy(() -> userAccountService.changeProfileImage(command))
+                .isSameAs(dbException);
+        verify(profileImageStorage).deleteQuietly(newKey);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 삭제 시 DB key를 비우고 기존 object를 best-effort로 삭제한다")
+    void removeProfileImageClearsProfileImageKeyAndDeletesOldObject() {
+        // given
+        UUID userId = UUID.randomUUID();
+        User user = activeCustomer(userId);
+        String oldKey = user.profileImageKey();
+        when(profileImageMutationProcessor.removeProfileImageKey(userId))
+                .thenReturn(new ProfileImageRemoveResult(user.removeProfileImage(), oldKey));
+
+        // when
+        UserView result = userAccountService.removeProfileImage(userId);
+
+        // then
+        assertThat(result.profileImageUrl()).isNull();
+        verify(profileImageMutationProcessor).removeProfileImageKey(userId);
+        verify(profileImageStorage).deleteQuietly(oldKey);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 삭제 DB 처리 실패 시 기존 object를 삭제하지 않는다")
+    void removeProfileImageDoesNotDeleteOldObjectWhenDbUpdateFails() {
+        // given
+        UUID userId = UUID.randomUUID();
+        IllegalStateException dbException = new IllegalStateException("db down");
+        when(profileImageMutationProcessor.removeProfileImageKey(userId)).thenThrow(dbException);
+
+        // when, then
+        assertThatThrownBy(() -> userAccountService.removeProfileImage(userId))
+                .isSameAs(dbException);
+        verifyNoInteractions(profileImageStorage);
+    }
+
+    @Test
     @DisplayName("탈퇴 신청 시 탈퇴회원 보존 레코드를 마스킹된 최소 정보로 생성한다")
     void requestWithdrawalCreatesMaskedRetentionRecord() {
         // given
@@ -192,7 +434,7 @@ class UserAccountServiceTest {
         Instant now = Instant.parse("2026-06-15T09:40:00Z");
         User user = activeCustomer(userId);
         when(timeProvider.now()).thenReturn(now);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(withdrawnUserRetentionRepository.existsByOriginalUserId(userId)).thenReturn(false);
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -232,7 +474,7 @@ class UserAccountServiceTest {
         Instant now = Instant.parse("2026-06-15T09:40:00Z");
         User user = activeCustomer(userId);
         when(timeProvider.now()).thenReturn(now);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(withdrawnUserRetentionRepository.existsByOriginalUserId(userId)).thenReturn(true);
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -241,6 +483,15 @@ class UserAccountServiceTest {
 
         // then
         verify(withdrawnUserRetentionRepository, never()).save(any());
+    }
+
+    private SocialCustomerRegistrationRollbackCommand rollbackCommand(UUID userId) {
+        return new SocialCustomerRegistrationRollbackCommand(
+                userId,
+                ProviderType.KAKAO,
+                "provider-id",
+                "customer@example.com"
+        );
     }
 
     private RegisterSocialCustomerCommand socialCustomerCommand(boolean privacyAgreed, boolean marketingAgreed) {
@@ -271,6 +522,15 @@ class UserAccountServiceTest {
         );
     }
 
+    private ProfileImageChangeCommand profileImageChangeCommand(UUID userId) {
+        return new ProfileImageChangeCommand(
+                userId,
+                "profile.png",
+                "image/png",
+                new byte[] {1, 2, 3}
+        );
+    }
+
     private Terms terms(UUID termsId, TermsType type, boolean required) {
         return Terms.of(
                 termsId,
@@ -298,6 +558,7 @@ class UserAccountServiceTest {
                 .birthDate(LocalDate.of(1995, 5, 15))
                 .gender(UserGender.MALE)
                 .phoneNumber("01012345678")
+                .profileImageKey("users/%s/profile/image.jpg".formatted(userId))
                 .email("test@example.com")
                 .grade(UserGrade.BRONZE)
                 .pointBalance(0)

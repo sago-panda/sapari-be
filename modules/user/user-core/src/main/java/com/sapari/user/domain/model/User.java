@@ -116,6 +116,22 @@ public record User(
                 .build();
     }
 
+    /** 검증·저장이 끝난 object key로 프로필 이미지 연결을 교체한 새 aggregate를 반환한다. */
+    public User updateProfileImageKey(String profileImageKey) {
+        Assert.hasText(profileImageKey, "profileImageKey는 필수입니다.");
+
+        return toBuilder()
+                .profileImageKey(profileImageKey)
+                .build();
+    }
+
+    /** 외부 object 삭제와 분리해 DB의 프로필 이미지 연결만 제거한 새 aggregate를 반환한다. */
+    public User removeProfileImage() {
+        return toBuilder()
+                .profileImageKey(null)
+                .build();
+    }
+
     /**
      * 회원탈퇴 유예 상태로 전환한다.
      * deletedAt은 실제 삭제 완료 시각이 아니라 30일 유예 기간의 시작 시각으로 사용한다.
