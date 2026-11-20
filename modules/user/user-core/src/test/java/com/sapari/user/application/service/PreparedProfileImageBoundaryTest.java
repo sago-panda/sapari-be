@@ -21,7 +21,7 @@ class PreparedProfileImageBoundaryTest {
         ProfileImageStorage storage = mock(ProfileImageStorage.class);
         ProfileImageMutationProcessor mutation = mock(ProfileImageMutationProcessor.class);
         UserAccountService service = new UserAccountService(null, null, null, null, null,
-                new ProfileImageUploadValidator(), storage, mutation, null, null, null);
+                new ProfileImageUploadValidator(), storage, mutation, null, null, null, null);
         PreparedProfileImage forged = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
 
         assertThatThrownBy(() -> service.changePreparedProfileImage(UUID.randomUUID(), forged))

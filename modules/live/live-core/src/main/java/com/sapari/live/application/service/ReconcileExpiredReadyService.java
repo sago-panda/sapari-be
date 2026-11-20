@@ -93,11 +93,23 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         int expired = 0;
         int promoted = 0;
         int skipped = 0;
+        // 후보 수가 아니라 시계로도 끊는다 — end-stale-live 와 같은 이유·같은 모양이다. 이 잡도
+        // 만료 시 PostCommitMediaCleanup 을 타고, 그 안의 stopHlsEgress/deleteIngress 는 방의
+        // egress·ingress 수만큼 왕복하므로 "후보당 9왕복" 은 상한이 아니라 전제가 붙은 추정이다.
+        // 마감은 후보 사이에서만 본다 — 진행 중인 동기 호출은 끊을 수단이 없다.
+        Instant deadline = startedAt.plus(policy.roundBudget());
+        boolean budgetExhausted = false;
         int ingressMissing = 0;   // skipped 의 부분집합 — 오설정 신호라 따로 센다
         // 집계는 finally 에서 내보낸다 — 루프 도중 예외로 빠져나가면 그때까지 실제로 만료·승격한
         // 건수가 통째로 사라지고 failed 만 남는다. "죽기 전까지 N건은 처리했다" 가 사후 추적의 시작점이다.
         try {
         for (UUID roomId : roomIds) {
+            if (!timeProvider.now().isBefore(deadline)) {
+                budgetExhausted = true;
+                log.warn("Ready 고착 정리 회차 예산 소진 — 남은 후보는 다음 회차로. 예산={}, 만료={}, 승격={}",
+                        policy.roundBudget(), expired, promoted);
+                break;
+            }
             try {
                 // 처리 직전에 확인한다 — 조회가 실패하면 그 방은 만료하지 않고 다음 회차로 미룬다.
                 List<IngressSummary> ingresses = liveMediaManager.listRoomIngress(roomId);
@@ -110,7 +122,7 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
                 // LiveKit 이 이 방의 ingress 를 하나도 모르는데 DB 는 배정돼 있다고 한다 = 다른 클러스터를
                 // 보고 있거나 오설정. 여기서 만료로 넘기면 살아 있는 방송이 회차당 batch-size 만큼 끊긴다.
                 // "OBS 가 끝내 안 붙은 방"은 ingress 가 등록은 돼 있어(INACTIVE) 이 분기에 걸리지 않는다.
-                if (ingresses.isEmpty() && room.isRtmp()) {
+                if (ingresses.isEmpty() && room.hasIngressKey()) {
                     // 방 단위 판정이므로 회차 중단(aborted)이 아니라 별도 갈래로 센다. 여기서
                     // reconcileRoundAborted 를 부르면 회차 하나에서 후보 수만큼 올라 회차 지표가 깨진다.
                     ingressMissing++;
@@ -162,6 +174,8 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
                     ReconcileJob.EXPIRE_READY, ReconcileAction.SKIPPED, skipped - ingressMissing);
             liveMetrics.reconcileActed(
                     ReconcileJob.EXPIRE_READY, ReconcileAction.SKIPPED_INGRESS_MISSING, ingressMissing);
+            liveMetrics.reconcileActed(
+                    ReconcileJob.EXPIRE_READY, ReconcileAction.ROUND_BUDGET_EXHAUSTED, budgetExhausted ? 1 : 0);
         }
         liveMetrics.reconcileRoundCompleted(ReconcileJob.EXPIRE_READY, elapsed(startedAt));
         log.info("고아 Ready 방 정리 완료. 후보={}, 만료={}, 승격={}, 스킵={}",

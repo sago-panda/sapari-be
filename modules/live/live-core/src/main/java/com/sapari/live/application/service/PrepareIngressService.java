@@ -10,6 +10,7 @@ import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.repository.LiveRoomRepository;
@@ -38,12 +39,15 @@ public class PrepareIngressService implements PrepareIngressUseCase {
 
         // 외부 호출 전 가드 — 방송 전(Scheduled)만 준비 허용
         if (!room.canPrepareIngress()) {
-            throw new InvalidLiveStateException(room.id().toString());
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, room.id().toString());
         }
-        // 멱등: 이미 ingress 가 발급된 방이면 재발급하지 않고 거부(중복 ingress 방지).
-        // streamKey 분실 복구(재발급)는 별도 티켓의 몫.
-        if (room.isRtmp()) {
-            throw new InvalidLiveStateException("이미 RTMP ingress 가 발급된 방입니다: " + room.id());
+        // 송출 방식은 생성 때 고정된다 — WebRTC 방에는 키를 내주지 않는다(발급이 방식을 바꾸지 않는다).
+        if (!room.isRtmp()) {
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, "RTMP 방이 아닙니다: " + room.id());
+        }
+        // 멱등: 이미 ingress 가 발급된 방이면 거부(중복 ingress 방지). 분실 복구는 재발급(ReissueIngressService).
+        if (room.hasIngressKey()) {
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, "이미 RTMP ingress 가 발급된 방입니다: " + room.id());
         }
 
         IngressResult result = liveMediaManager.createIngress(command.roomId(), command.sellerId());
@@ -51,7 +55,7 @@ public class PrepareIngressService implements PrepareIngressUseCase {
         // 배정은 조건부 UPDATE 한 문장 — 위 가드는 스냅샷이라 동시 요청이 둘 다 통과할 수 있고,
         // 그러면 각자 ingress 를 만들어 판매자에게 유효한 streamKey 가 여러 개 나간다.
         boolean assigned = rtmpIngressAssigner.assignIfAbsent(
-                command.roomId(), command.sellerId(), result.ingressId(), timeProvider.now());
+                command.roomId(), command.sellerId(), result.ingressId(), result.rtmpUrl(), timeProvider.now());
         if (!assigned) {
             // 진 쪽은 자기가 만든 ingress 를 즉시 회수한다(단건 삭제 — 방 단위로 지우면 이긴 쪽 것까지 날아간다).
             // 이 삭제가 실패해도 고아 미디어 정리 잡이 회수하므로 여기서 더 다루지 않는다.
@@ -60,7 +64,7 @@ public class PrepareIngressService implements PrepareIngressUseCase {
             // 빈도가 다르므로(전자는 판매자 더블클릭, 후자는 드묾) 로그에 남겨 구분 가능하게 둔다.
             log.info("RTMP ingress 배정 실패(경합 패배 또는 상태 변경) — 생성한 ingress 회수. roomId={}, ingressId={}",
                     command.roomId(), result.ingressId());
-            throw new InvalidLiveStateException("이미 RTMP ingress 가 발급된 방입니다: " + command.roomId());
+            throw new InvalidLiveStateException(LiveErrorCode.INGRESS_NOT_ALLOWED, "이미 RTMP ingress 가 발급된 방입니다: " + command.roomId());
         }
         log.info("RTMP ingress 발급 완료. roomId={}, ingressId={}", room.id(), result.ingressId());
 

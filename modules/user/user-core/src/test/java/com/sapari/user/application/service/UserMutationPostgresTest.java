@@ -278,7 +278,7 @@ class UserMutationPostgresTest {
         @Bean
         UserAccountService accounts(UserRepository users, ProfileImageMutationProcessor images) {
             return new UserAccountService(users, mock(WithdrawnUserRetentionRepository.class), null, null,
-                    new WithdrawnUserRetentionMasker(), null, null, images, null, key -> key,
+                    new WithdrawnUserRetentionMasker(), null, null, images, null, key -> key, mock(com.sapari.user.application.port.UserEventPublisher.class),
                     new com.sapari.global.time.TimeProvider(java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC)));
         }
     }

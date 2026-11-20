@@ -14,11 +14,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import com.sapari.live.application.port.EnterPopulation;
+import com.sapari.live.application.port.EnterRejectionGate;
+import com.sapari.live.application.port.RoomEndedSignal;
+import com.sapari.live.application.port.RoomTokenSignatureSource;
+import com.sapari.live.application.port.TokenRevocationAxis;
+import com.sapari.live.application.port.ListCacheWrite;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.live.application.port.PromotionTrigger;
 import com.sapari.live.application.port.ReconcileAbortReason;
+import com.sapari.live.application.port.RecentViewDropReason;
 import com.sapari.live.application.port.ReconcileAction;
 import com.sapari.live.application.port.ReconcileJob;
+import com.sapari.live.application.port.ReconcileLockResult;
 import com.sapari.live.domain.model.LiveStatus;
 
 /**
@@ -102,6 +110,15 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     }
 
     @Override
+    public void reconcileLockResult(ReconcileJob job, ReconcileLockResult result) {
+        safe(() -> Counter.builder(LiveMeterNames.RECONCILE_LOCK)
+                .tag(LiveMeterNames.TAG_JOB, tag(job))
+                .tag(LiveMeterNames.TAG_RESULT, tag(result))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
     public void reconcileActed(ReconcileJob job, ReconcileAction action, int count) {
         // 0 도 기록한다 — 시계열이 아예 없는 것과 0 인 것은 대시보드에서 다르게 읽힌다.
         // (없으면 "이 갈래가 사라졌나?" 를 의심하게 되고, 0 이면 "정상적으로 아무 일 없었다" 다.)
@@ -132,6 +149,83 @@ public class MicrometerLiveMetrics implements LiveMetrics {
     @Override
     public void liveKitActiveEgressRooms(int rooms) {
         liveKitEgressRooms.set(rooms);
+    }
+
+    @Override
+    public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
+        safe(() -> Counter.builder(LiveMeterNames.ENTER_REJECTED)
+                .tag(LiveMeterNames.TAG_POPULATION, tag(population))
+                .tag(LiveMeterNames.TAG_GATE, tag(gate))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void roomEndedSignalFailed(RoomEndedSignal signal) {
+        safe(() -> Counter.builder(LiveMeterNames.ROOM_ENDED_SIGNAL_FAILED)
+                .tag(LiveMeterNames.TAG_SIGNAL, tag(signal))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void tokenRevocationHit(TokenRevocationAxis axis) {
+        safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOKED)
+                .tag(LiveMeterNames.TAG_AXIS, tag(axis))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void tokenRevocationLookupFailed() {
+        safe(() -> Counter.builder(LiveMeterNames.TOKEN_REVOCATION_FAILED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listCacheWriteFailed(ListCacheWrite write) {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_CACHE_WRITE_FAILED)
+                .tag(LiveMeterNames.TAG_WRITE, tag(write))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listViewerCountUnavailable() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_VIEWER_COUNT_UNAVAILABLE)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listRefreshSaturated() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_REFRESH_SATURATED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void listRefreshFailed() {
+        safe(() -> Counter.builder(LiveMeterNames.LIST_REFRESH_FAILED)
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void recentViewDropped(RecentViewDropReason reason) {
+        safe(() -> Counter.builder(LiveMeterNames.RECENT_VIEW_DROPPED)
+                .tag(LiveMeterNames.TAG_REASON, tag(reason))
+                .register(registry)
+                .increment());
+    }
+
+    @Override
+    public void roomTokenIssued(RoomTokenSignatureSource source) {
+        safe(() -> Counter.builder(LiveMeterNames.TOKEN_SIGNATURE)
+                .tag(LiveMeterNames.TAG_SOURCE, tag(source))
+                .register(registry)
+                .increment());
     }
 
     /**

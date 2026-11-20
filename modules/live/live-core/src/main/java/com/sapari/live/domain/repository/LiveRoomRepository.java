@@ -2,11 +2,14 @@ package com.sapari.live.domain.repository;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 import com.sapari.live.domain.model.LiveRoom;
+import com.sapari.live.domain.model.LiveStatus;
+import com.sapari.live.domain.model.VodStatus;
 
 public interface LiveRoomRepository {
     LiveRoom save(LiveRoom liveRoom);
@@ -33,13 +36,22 @@ public interface LiveRoomRepository {
     List<UUID> findExpiredReadyRoomIds(Instant threshold, int limit);
 
     /**
-     * 아직 ingress 가 없는 Scheduled 방에만 RTMP ingress 를 배정한다. 검사와 쓰기가 한 문장이라
+     * 아직 ingress 가 없는 Scheduled RTMP 방에만 RTMP ingress 를 배정한다. 검사와 쓰기가 한 문장이라
      * 동시 요청 중 하나만 성공한다 — {@code prepare} 는 외부 호출을 트랜잭션 밖에 두려고 행 잠금을
      * 쓰지 않아서, 배타성을 여기서 얻는다.
      *
      * @return 획득했으면 true. false 면 이미 다른 요청이 배정했거나 방이 Scheduled 가 아니다.
      */
-    boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, Instant now);
+    boolean assignRtmpIngressIfAbsent(UUID roomId, UUID sellerId, String ingressId, String rtmpUrl, Instant now);
+
+    /**
+     * Scheduled RTMP 방의 ingress 가 아직 {@code currentIngressId} 일 때만 새 ingress·송출 주소로 바꾼다.
+     * 재발급의 배타성을 이 한 문장에서 얻는다(동시 재발급 중 하나만 성공).
+     *
+     * @return 바꿨으면 true. false 면 다른 요청이 먼저 바꿨거나 방이 더 이상 Scheduled 가 아니다.
+     */
+    boolean reassignRtmpIngressIfCurrent(UUID roomId, UUID sellerId, String currentIngressId,
+                                         String newIngressId, String rtmpUrl, Instant now);
 
     /**
      * {@code threshold} 이전에 시작된 Live 방 id 를 오래된 순으로 최대 {@code limit} 건.
@@ -62,4 +74,49 @@ public interface LiveRoomRepository {
      * 결정은 방마다 잠금 재조회로 판정해야 한다.
      */
     long countLiveRooms();
+
+    /**
+     * 판매자 내 방 목록의 한 페이지. {@code scheduled_at DESC, id DESC} 키셋이다 — 커서 둘이 모두 null 이면
+     * 첫 페이지, 아니면 그 행 다음부터. 호출자는 다음 페이지 판정을 위해 {@code size + 1} 을 {@code limit} 로 넘긴다.
+     *
+     * @param statuses 포함할 상태 종류(비어 있으면 안 된다). 탭 묶음은 호출자가 정한다.
+     */
+    List<LiveRoom> findSellerRooms(UUID sellerId, Set<Class<? extends LiveStatus>> statuses,
+                                   Instant cursorScheduledAt, UUID cursorId, int limit);
+
+    /** 판매자 방을 상태 종류별로 센다. 방이 없는 상태는 키가 없다. */
+    Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId);
+
+    /** 지금 Live 인 방, 최대 {@code limit} 건. 공개 목록 재조정의 원본이다. */
+    List<LiveRoom> findAllLive(int limit);
+
+    /**
+     * 아직 시작하지 않은 방(Scheduled·Ready)을 {@code scheduledAt, id} 오름차순으로, 커서 뒤부터 최대 {@code limit} 건.
+     * 커서가 없으면({@code afterScheduledAt == null}) 처음부터. 상태는 포함 조건으로만 거른다 — 새 상태(취소 등)는
+     * 자동으로 빠진다.
+     */
+    List<LiveRoom> findUpcoming(Instant afterScheduledAt, UUID afterId, int limit);
+
+    /**
+     * egress 웹훅 결과로 다시보기 처리 상태를 앞으로 옮긴다. 검사와 쓰기가 한 문장이라 <b>WHERE 절이 단조성 가드</b>다 —
+     * {@code egressId} 가 방에 기록된 값과 같고 현재 상태가 {@link VodStatus#predecessors()} 에 있을 때만 쓴다.
+     * vod_status 는 조건부 UPDATE 두 개(웹훅 advanceVodStatus, 복구 recoverStuckReplays)만 쓰고, 둘 다 NONE/PROCESSING 에서만 옮긴다(엔티티 매핑은 이 컬럼을 쓰지 않는다).
+     *
+     * @return 갱신했으면 true. false 는 중복·역순 알림이거나 방이 기록하지 않은 egress(비대표 화질 등)다 — 정상.
+     */
+    boolean advanceVodStatus(String egressId, VodStatus target, String failedReason);
+
+    /**
+     * 공개 다시보기 목록 — 종료 ∧ 녹화 완료(READY) ∧ 공개 ∧ 아카이브 있음(레거시 {@code hls_archive_url = hls_url}
+     * 제외)인 방을 {@code endedAt DESC, id DESC} 로 최대 {@code limit} 건. 커서가 없으면 처음부터.
+     */
+    List<LiveRoom> findReplays(Instant afterEndedAt, UUID afterId, int limit);
+
+    /**
+     * 녹화 종료 알림을 놓친 다시보기를 READY 로 올린다 — {@code endedBefore} 전에 끝났고 아카이브가 있는데(레거시
+     * 복사 제외) vod_status 가 아직 NONE/PROCESSING 인 종료 방. 공개 여부는 보지 않는다(노출은 조회가 따로 거른다).
+     *
+     * @return 올린 방 수
+     */
+    int recoverStuckReplays(Instant endedBefore);
 }

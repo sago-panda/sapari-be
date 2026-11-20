@@ -1,0 +1,15 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    // SendChatUseCase가 Mono를 반환한다 — 공개 포트 시그니처에 노출되는 타입이라
+    // api로 전이해 streaming-app(WebFlux)이 동일 타입을 본다.
+    api 'io.projectreactor:reactor-core'
+
+    implementation 'org.springframework.boot:spring-boot-starter'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.register("prepareKotlinBuildScriptModel"){}

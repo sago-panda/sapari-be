@@ -57,6 +57,11 @@ diff and fail at startup.
   `CursorCodec` + `Cursor.sortKeyAs*/idAsUuid` (they raise `InvalidCursorException` → 400); hand-rolled
   `UUID.fromString`/`Long.parseLong` on the raw cursor turns bad input into a 500. Offset: the count
   query must carry the same filters as the data query.
+- `CONV-14` **Knowledge placement** — root `AGENTS.md` §Where knowledge lives. Flag what the diff *adds*:
+  how-to (procedure, numbers, one class's internal reason) written into an `AGENTS.md` or `.claude/rules/`
+  file; a doc line that restates a code comment instead of naming the class; a cross-file invariant,
+  prohibition or accepted risk written only in a comment; a citation by line number instead of section
+  name. Don't sweep untouched text.
 
 `CONV-11` General quality: edge cases, null/Optional, N+1, request-DTO validation *presence*
 (mass-assignment & injection are `SEC-05`), resource leaks. (Races, shared mutable state and lock

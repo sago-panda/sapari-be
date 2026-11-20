@@ -2,6 +2,7 @@ package com.sapari.live.view;
 
 import lombok.Builder;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -17,6 +18,8 @@ public record GetLiveView(
             String hlsUrl,
             String pinnedProductName,
             String pinnedProductImageUrl,
-            long currentViewers
+            long currentViewers,
+            String title,
+            Instant startedAt
     ) {}
 }

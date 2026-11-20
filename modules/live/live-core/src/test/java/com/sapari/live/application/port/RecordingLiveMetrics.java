@@ -17,10 +17,71 @@ public class RecordingLiveMetrics implements LiveMetrics {
     public final List<ReconcileJob> completedRounds = new ArrayList<>();
     public final List<ReconcileAbortReason> abortedRounds = new ArrayList<>();
     public final List<ReconcileJob> failedRounds = new ArrayList<>();
+    public final List<String> lockResults = new ArrayList<>();
     public final List<String> acted = new ArrayList<>();
     public final List<String> transitions = new ArrayList<>();
     public final List<PromotionTrigger> promotions = new ArrayList<>();
     public int liveKitEgressRooms = -1;
+    public final List<EnterPopulation> enterRejections = new ArrayList<>();
+    public final List<EnterRejectionGate> enterRejectionGates = new ArrayList<>();
+    public final List<TokenRevocationAxis> tokenRevocationHits = new ArrayList<>();
+    public int tokenRevocationLookupFailures;
+    public final List<ListCacheWrite> listCacheWriteFailures = new ArrayList<>();
+    public int listViewerCountUnavailable;
+    public int listRefreshSaturated;
+    public int listRefreshFailed;
+    public final List<RecentViewDropReason> recentViewDrops = new ArrayList<>();
+    public final List<RoomTokenSignatureSource> roomTokensIssued = new ArrayList<>();
+
+    @Override
+    public void enterRateLimited(EnterPopulation population, EnterRejectionGate gate) {
+        enterRejections.add(population);
+        enterRejectionGates.add(gate);
+    }
+
+    @Override
+    public void tokenRevocationHit(TokenRevocationAxis axis) {
+        tokenRevocationHits.add(axis);
+    }
+
+    @Override
+    public void tokenRevocationLookupFailed() {
+        tokenRevocationLookupFailures++;
+    }
+
+    @Override
+    public void listCacheWriteFailed(ListCacheWrite write) {
+        listCacheWriteFailures.add(write);
+    }
+
+    @Override
+    public void listViewerCountUnavailable() {
+        listViewerCountUnavailable++;
+    }
+
+    @Override
+    public void listRefreshSaturated() {
+        listRefreshSaturated++;
+    }
+
+    @Override
+    public void listRefreshFailed() {
+        listRefreshFailed++;
+    }
+
+    @Override
+    public void recentViewDropped(RecentViewDropReason reason) {
+        recentViewDrops.add(reason);
+    }
+
+    @Override
+    public void roomTokenIssued(RoomTokenSignatureSource source) {
+        roomTokensIssued.add(source);
+    }
+
+    @Override
+    public void roomEndedSignalFailed(RoomEndedSignal signal) {
+    }
 
     @Override
     public void reconcileRoundCompleted(ReconcileJob job, Duration took) {
@@ -35,6 +96,11 @@ public class RecordingLiveMetrics implements LiveMetrics {
     @Override
     public void reconcileRoundFailed(ReconcileJob job) {
         failedRounds.add(job);
+    }
+
+    @Override
+    public void reconcileLockResult(ReconcileJob job, ReconcileLockResult result) {
+        lockResults.add(job + "=" + result);
     }
 
     @Override

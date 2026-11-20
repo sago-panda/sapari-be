@@ -37,7 +37,7 @@ class UserMutationPolicyTest {
             return current.get();
         });
         UserAccountService service = new UserAccountService(repository, null, null, null, null, null, null, null, null,
-                key -> key, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+                key -> key, null, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
         service.changeNickname(user.userId(), "first", java.time.Duration.ofDays(30));
         assertThatThrownBy(() -> service.changeNickname(user.userId(), "second", java.time.Duration.ofDays(30)))
                 .isInstanceOf(com.sapari.user.exception.NicknameChangeRestrictedException.class);
@@ -62,7 +62,7 @@ class UserMutationPolicyTest {
         UserRepository repository = repository(user);
         UserAccountService service = new UserAccountService(repository, mock(WithdrawnUserRetentionRepository.class), null, null,
                 new com.sapari.user.application.support.WithdrawnUserRetentionMasker(), null, null, null, null,
-                key -> key, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
+                key -> key, null, new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC)));
         assertThat(service.requestWithdrawal(user.userId()).status()).isEqualTo(UserStatus.WITHDRAWING);
         org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).save(any(User.class));
     }

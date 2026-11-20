@@ -1,0 +1,204 @@
+package com.sapari.product.infrastructure.persistence.repository.product;
+
+import com.sapari.product.infrastructure.persistence.entity.product.ProductEntity;
+import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionConfigEntity;
+import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionTypeEntity;
+import com.sapari.product.infrastructure.persistence.entity.product.option.ProductOptionValueEntity;
+
+import com.sapari.product.domain.exception.ProductConcurrentModificationException;
+import com.sapari.product.domain.model.product.Product;
+import com.sapari.product.domain.model.product.ProductOptionConfigModel;
+import com.sapari.product.domain.model.product.ProductOptionTypeModel;
+import com.sapari.product.domain.model.product.ProductSummary;
+import com.sapari.product.domain.repository.product.ProductRepository;
+import com.sapari.product.infrastructure.persistence.mapper.product.ProductMapper;
+import jakarta.persistence.EntityNotFoundException;
+import java.time.Instant;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Repository;
+
+/**
+ * Product 애그리거트 영속 어댑터. 루트 upsert + 태그·이미지 replace, 옵션 트리는 신규 INSERT 또는 {@link #replaceOptionTypes}로만 쓴다. 트랜잭션 경계는 application 레이어가 소유한다(여기서는 선언하지
+ * 않음).
+ */
+@Repository
+@RequiredArgsConstructor
+public class ProductRepositoryImpl implements ProductRepository {
+
+    private final ProductJpaRepository productJpaRepository;
+    private final ProductTagJpaRepository tagJpaRepository;
+    private final ProductImageJpaRepository imageJpaRepository;
+    private final ProductOptionTypeJpaRepository optionTypeJpaRepository;
+    private final ProductOptionValueJpaRepository optionValueJpaRepository;
+    private final ProductOptionConfigJpaRepository optionConfigJpaRepository;
+    private final ProductMapper mapper;
+    private final ProductQueryDslRepository queryDslRepository;
+
+    @Override
+    public Product save(Product product) {
+        ProductEntity entity;
+        if (product.id() == null) {
+            entity = productJpaRepository.save(mapper.toEntity(product));
+        } else {
+            entity = productJpaRepository.findById(product.id())
+                    .orElseThrow(() -> new EntityNotFoundException("상품을 찾을 수 없습니다: " + product.id()));
+            // 낙관적 락(stale 덮어쓰기 방지): 도메인이 (이전 요청에서) 읽은 version과 현재 행 version이 다르면, 그 사이 다른 요청이
+            // 먼저 수정한 것이므로 충돌로 거부한다. 같은 트랜잭션에서 읽었으면 version이 같아 통과한다(버전 미상이면 검사 생략).
+            // 동시 in-flight 레이스는 커밋 시 @Version이 OptimisticLockingFailureException으로 잡아 웹 레이어가 409로 매핑한다.
+            if (product.version() != null && !Objects.equals(entity.getVersion(), product.version())) {
+                throw new ProductConcurrentModificationException(
+                        "상품이 다른 요청에 의해 이미 수정되었습니다: " + product.id());
+            }
+            mapper.updateEntityFromDomain(entity, product);
+            entity = productJpaRepository.save(entity);
+            // 기존 상품은 태그·이미지만 동기화 — 옵션 트리를 다시 쓰면 옵션값 id가 재발급돼 조합·룰의 참조가 깨진다
+            replaceTagsAndImages(entity.getId(), product);
+            return loadAggregate(entity);
+        }
+        UUID productId = entity.getId();
+        replaceTagsAndImages(productId, product);
+        insertOptionTypes(productId, product.optionTypes());
+        if (product.optionConfig() != null) {
+            optionConfigJpaRepository.save(mapper.toConfigEntity(productId, product.optionConfig()));
+        }
+        return loadAggregate(entity);
+    }
+
+    @Override
+    public Product replaceOptionTypes(UUID productId, List<ProductOptionTypeModel> optionTypes) {
+        ProductEntity entity = productJpaRepository.findById(productId)
+                .orElseThrow(() -> new EntityNotFoundException("상품을 찾을 수 없습니다: " + productId));
+        deleteOptionTypes(productId);
+        insertOptionTypes(productId, optionTypes);
+        return loadAggregate(entity);
+    }
+
+    @Override
+    public void refreshStockPriceCache(UUID productId, Instant now) {
+        // 1) 대기 중인 조합 변경(INSERT/UPDATE)을 먼저 내보내 조합 행 잠금을 상품 잠금보다 앞서 잡는다 — 잠금 순서를 조합 → 상품으로 고정
+        productJpaRepository.flush();
+        // 2) 상품 행 잠금 — 같은 상품의 조합을 바꾸는 동시 트랜잭션을 여기서 직렬화한다
+        productJpaRepository.lockById(productId);
+        // 3) 잠금을 얻은 뒤 새 문장으로 계산 — READ COMMITTED에서 문장 스냅샷이 잠금 이후라, 먼저 커밋된 다른 트랜잭션의 조합 변경까지 반영된다
+        productJpaRepository.refreshStockPriceCache(productId, now);
+    }
+
+    @Override
+    public void replaceOptionConfig(UUID productId, ProductOptionConfigModel config) {
+        if (config == null) {
+            if (optionConfigJpaRepository.existsById(productId)) {
+                optionConfigJpaRepository.deleteById(productId);
+            }
+            return;
+        }
+        // 기존 행이 있으면 관리 엔티티를 그대로 갱신한다(dirty checking). PK가 앱 주입값이라 새 엔티티로 save하면
+        // merge 경로를 타는데, 같은 트랜잭션에서 앞선 save가 이미 이 행을 관리 중일 수 있어 관리 엔티티 갱신이 안전하다.
+        optionConfigJpaRepository.findById(productId)
+                .ifPresentOrElse(
+                        entity -> {
+                            // 직렬화는 매퍼가 맡는다 — 같은 포맷으로 만든 엔티티의 컬럼 값으로 관리 엔티티를 갱신
+                            ProductOptionConfigEntity serialized = mapper.toConfigEntity(productId, config);
+                            entity.updateRules(serialized.getSurchargeRules(), serialized.getExclusionRules());
+                        },
+                        () -> optionConfigJpaRepository.save(mapper.toConfigEntity(productId, config)));
+    }
+
+    @Override
+    public Optional<Product> findById(UUID id) {
+        return productJpaRepository.findById(id)
+                .map(this::loadAggregate);
+    }
+
+    @Override
+    public Optional<Product> findActiveById(UUID id) {
+        // 루트에서 deleted_at IS NULL로 거른다 — 삭제 상품이면 빈 결과라 자식(loadAggregate)도 로딩 안 함
+        return productJpaRepository.findByIdAndDeletedAtIsNull(id)
+                .map(this::loadAggregate);
+    }
+
+    @Override
+    public List<ProductSummary> findActiveSellerProductSummaries(UUID sellerId, Instant afterCreatedAt, UUID afterId,
+                                                                 int limit) {
+        // 복잡 프로젝션 조회는 QueryDSL 전용 어댑터에 위임
+        return queryDslRepository.findActiveSellerProductSummaries(sellerId, afterCreatedAt, afterId, limit);
+    }
+
+    /**
+     * 태그·이미지를 단순 replace(전체 삭제 후 재삽입)로 동기화한다. 둘 다 다른 행이 id로 참조하지 않으므로 재삽입해도 안전하다.
+     */
+    private void replaceTagsAndImages(UUID productId, Product product) {
+        tagJpaRepository.deleteByProductId(productId);
+        if (!product.tags()
+                .isEmpty()) {
+            tagJpaRepository.saveAll(product.tags()
+                    .stream()
+                    .map(name -> mapper.toTagEntity(productId, name))
+                    .toList());
+        }
+
+        imageJpaRepository.deleteByProductId(productId);
+        if (!product.images()
+                .isEmpty()) {
+            imageJpaRepository.saveAll(product.images()
+                    .stream()
+                    .map(mapper::toImageEntity)
+                    .toList());
+        }
+    }
+
+    /**
+     * 상품의 옵션 타입/값 행을 모두 삭제하고, 이어지는 INSERT보다 먼저 DB에 반영한다.
+     */
+    private void deleteOptionTypes(UUID productId) {
+        List<ProductOptionTypeEntity> existingTypes = optionTypeJpaRepository.findByProductId(productId);
+        if (existingTypes.isEmpty()) {
+            return;
+        }
+        optionValueJpaRepository.deleteByOptionTypeIdIn(
+                existingTypes.stream()
+                        .map(ProductOptionTypeEntity::getId)
+                        .toList());
+        optionTypeJpaRepository.deleteByProductId(productId);
+        // 삭제를 INSERT보다 먼저 DB에 반영한다. Hibernate는 한 flush 안에서 INSERT를 DELETE보다 먼저 실행하므로,
+        // 동일 (product_id, name) 옵션 타입을 교체하면 부분 유니크(deleted_at IS NULL) 제약과 충돌한다.
+        optionTypeJpaRepository.flush();
+    }
+
+    /**
+     * 옵션 타입과 그 값을 INSERT한다. 각 행은 새 id를 받는다.
+     */
+    private void insertOptionTypes(UUID productId, List<ProductOptionTypeModel> optionTypes) {
+        for (ProductOptionTypeModel typeModel : optionTypes) {
+            ProductOptionTypeEntity savedType = optionTypeJpaRepository.save(mapper.toTypeEntity(productId, typeModel));
+            if (!typeModel.values()
+                    .isEmpty()) {
+                optionValueJpaRepository.saveAll(typeModel.values()
+                        .stream()
+                        .map(v -> mapper.toValueEntity(savedType.getId(), v))
+                        .toList());
+            }
+        }
+    }
+
+    private Product loadAggregate(ProductEntity entity) {
+        UUID id = entity.getId();
+        List<ProductOptionTypeEntity> types = optionTypeJpaRepository.findByProductId(id);
+        List<UUID> typeIds = types.stream()
+                .map(ProductOptionTypeEntity::getId)
+                .toList();
+        List<ProductOptionValueEntity> values =
+                typeIds.isEmpty() ? List.of() : optionValueJpaRepository.findByOptionTypeIdIn(typeIds);
+        return mapper.toDomain(
+                entity,
+                tagJpaRepository.findByProductId(id),
+                imageJpaRepository.findByProductId(id),
+                types,
+                values,
+                optionConfigJpaRepository.findById(id)
+                        .orElse(null));
+    }
+}

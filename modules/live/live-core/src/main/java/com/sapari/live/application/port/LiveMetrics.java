@@ -38,6 +38,9 @@ public interface LiveMetrics {
      */
     void reconcileRoundFailed(ReconcileJob job);
 
+    /** 스케줄러 프록시가 시도한 분산 락의 결과. */
+    void reconcileLockResult(ReconcileJob job, ReconcileLockResult result);
+
     /** 이번 회차에 실제로 한 일. {@code count} 가 0 이어도 호출해도 된다(구현이 무시한다). */
     void reconcileActed(ReconcileJob job, ReconcileAction action, int count);
 
@@ -57,6 +60,104 @@ public interface LiveMetrics {
     void liveKitActiveEgressRooms(int rooms);
 
     /**
+     * 입장 상한이 요청 하나를 거부했다.
+     *
+     * <p><b>로그만으로는 부족해서 있다.</b> 거부 로그는 집단당 10초에 한 줄로 솎이므로 규모를
+     * 못 준다 — 그리고 규모가 바로 "공격인가, 한도가 낮은가" 를 가르는 축이다. 한도는 정상
+     * 트래픽에서 역산한 값이 아니라 CPU 천장에서 역산한 값이므로
+     * ({@code EnterRateLimitProperties} javadoc) 그 판정을 지표 없이 할 수 없다.
+     *
+     * <p>집단 태그가 필요한 이유: 게스트 거부와 회원 거부는 다른 사건이다. 전자는 대체로
+     * 정상 상태에서도 생길 수 있고 후자는 로그인 사용자가 막히고 있다는 뜻이다.
+     *
+     * <p>관문 태그가 필요한 이유는 같은 모양이고 <b>한 단계 더 안쪽</b>이다 —
+     * {@link EnterRejectionGate#SHARD} 는 한 계정을 찾으라는 신호이고
+     * {@link EnterRejectionGate#GLOBAL} 은 한도를 올리라는 신호다. 두 경로가 같은 지표·같은
+     * 로그를 쓰면 그 둘이 합쳐져 당직자가 반대 방향의 대응을 고를 수 있다.
+     */
+    void enterRateLimited(EnterPopulation population, EnterRejectionGate gate);
+
+    /**
+     * 폐기된 access 토큰의 인증을 거뒀다.
+     *
+     * <p><b>이게 없으면 폐기 조회가 한 번이라도 작동했는지 알 수 없다.</b> 적중은 거부 응답을
+     * 만들지 않는다 — 공개 경로에서는 그냥 게스트로 내려가고 역할 요구 경로에서만 401 이 된다.
+     * 즉 바깥에서 보면 "폐기 조회가 꺼진 것" 과 "폐기가 한 건도 없는 것" 이 똑같다.
+     *
+     * <p>축 태그의 이유는 {@link TokenRevocationAxis} 에 있다.
+     */
+    void tokenRevocationHit(TokenRevocationAxis axis);
+
+    /**
+     * 폐기 여부를 <b>묻지 못했다</b>(저장소 장애).
+     *
+     * <p>{@link #tokenRevocationHit} 과 <b>같은 카운터의 다른 태그가 아니라 별도 메서드</b>다 —
+     * 적중은 보안 사건이고 이쪽은 인프라 사건이라 대응이 정반대다(그 계정을 보라 vs Redis 를
+     * 보라). {@link #reconcileRoundAborted} 와 {@link #reconcileRoundFailed} 를 가른 것과 같다.
+     *
+     * <p>그리고 이쪽만 <b>볼륨이 장애 규모에 비례</b>한다. 그래서 로그는 10초에 한 줄로 솎고
+     * 규모는 이 수로 본다 — 형제 {@code EnterRateLimitFilter} 가 거부마다의 WARN 을 피한 것과
+     * 같은 이유다(그쪽 실측: 거부 50건에 핸들러 WARN 50줄).
+     */
+    void tokenRevocationLookupFailed();
+
+    /**
+     * 커밋된 전이를 공개 목록 캐시에 반영하지 못했다(저장소 장애).
+     *
+     * <p>전이는 이미 성공으로 끝났고 어긋남은 목록 재조정이 한 회차(기본 15초) 안에 되돌린다 — 그래서 예외 대신 이 수가
+     * 유일한 신호다. 계속 오르면 Redis 를 보라. 재조정까지 실패하고 있다면 목록이 낡은 채로 머문다.
+     */
+    void listCacheWriteFailed(ListCacheWrite write);
+
+    /**
+     * 목록 재조정이 시청자 수를 읽지 못했다(chat 저장소 장애). 그 회차는 직전 점수를 유지한 채 구성원만 맞춘다.
+     */
+    void listViewerCountUnavailable();
+
+    /**
+     * 목록 재조정이 원본을 상한까지만 읽은 회차. 이 회차는 끝난 방을 걷지 않는다 — 계속 오르면 상한을 다시 볼 신호다.
+     */
+    void listRefreshSaturated();
+
+    /**
+     * 목록 재조정 회차가 예외로 끝났다. 커밋 후 목록 쓰기를 삼켜도 되는 근거가 "재조정이 고친다" 이므로, 그 재조정이
+     * 멈춘 것이 알람에 잡혀야 근거가 선다. 회차가 아예 돌지 않는 것(스위치 off·스케줄러 정지)은 이 수로 드러나지 않는다.
+     */
+    void listRefreshFailed();
+
+    /**
+     * 최근 본 기록 하나를 버렸다. 입장은 이미 성공으로 끝났으므로 예외 대신 이 수가 유일한 신호다.
+     * 이유별 대응이 반대라 갈라 센다({@link RecentViewDropReason}).
+     */
+    void recentViewDropped(RecentViewDropReason reason);
+
+    /**
+     * 룸 토큰 한 장을 발급했다 — <b>서명을 쳤는지 캐시에서 나왔는지</b>를 함께 적는다.
+     *
+     * <p>이 수가 필요한 이유는 캐시가 <b>헛돌 때 아무 신호가 없다</b>는 것이다. 적중률이 0 이어도
+     * 응답·처리량·로그가 전부 같고 차이는 CPU 에만 난다. 그 상태는 "서명 비용을 걷어냈다" 는
+     * 문장만 남기고 비용은 그대로인 모양이라, 다음 사람이 그 문장을 근거로 상한을 올린다.
+     *
+     * <p>두 값을 <b>한 카운터의 태그</b>로 둔 것은 {@link #tokenRevocationHit}/
+     * {@link #tokenRevocationLookupFailed} 를 갈라 둔 것과 반대 판단이고, 근거는 둘의 관계다 —
+     * 여기선 합이 <b>회원 발급 전수</b>이고 구하려는 값이 비율이라 같은 이름이어야 나눌 수 있다.
+     * 저쪽은 합에 의미가 없고(보안 사건 + 인프라 사건) 대응이 정반대라 갈랐다.
+     *
+     * <p>게스트 발급은 <b>세지 않는다</b> — 캐시를 타지 않으므로 분모에 넣으면 적중률이 구조적으로
+     * 눌려 "슬롯이 작다" 와 구분되지 않는다({@link RoomTokenSignatureSource}).
+     */
+    void roomTokenIssued(RoomTokenSignatureSource source);
+
+    /**
+     * 방 종료 신호 하나를 내보내지 못했다(SPR-185).
+     *
+     * <p>발행 어댑터는 커밋 뒤에 돌아서 실패를 던질 수 없다 — 던져도 되돌릴 것이 없고 판매자에게
+     * 종료 실패만 보인다. 그래서 로그 외에 이 수가 <b>chat 이 종료를 모를 수 있는 방</b>의 유일한
+     * 집계 신호다. 어느 신호인지는 {@link RoomEndedSignal} 이 가른다.
+     */
+    void roomEndedSignalFailed(RoomEndedSignal signal);
+
+    /**
      * 아무것도 하지 않는 구현. <b>단위 테스트가 registry 없이 돌게 하는 것</b>이 실제 용도다.
      *
      * <p>(오해 주의: 지금 {@code live-core} 를 의존하는 앱은 {@code live-app} 하나뿐이다 — 확인함:
@@ -67,9 +168,21 @@ public interface LiveMetrics {
         @Override public void reconcileRoundCompleted(ReconcileJob job, Duration took) { }
         @Override public void reconcileRoundAborted(ReconcileJob job, ReconcileAbortReason reason) { }
         @Override public void reconcileRoundFailed(ReconcileJob job) { }
+        @Override public void reconcileLockResult(ReconcileJob job, ReconcileLockResult result) { }
         @Override public void reconcileActed(ReconcileJob job, ReconcileAction action, int count) { }
         @Override public void roomTransitioned(LiveStatus from, LiveStatus to) { }
         @Override public void rtmpPromoted(PromotionTrigger trigger) { }
         @Override public void liveKitActiveEgressRooms(int rooms) { }
+        @Override public void enterRateLimited(
+                EnterPopulation population, EnterRejectionGate gate) { }
+        @Override public void tokenRevocationHit(TokenRevocationAxis axis) { }
+        @Override public void tokenRevocationLookupFailed() { }
+        @Override public void listCacheWriteFailed(ListCacheWrite write) { }
+        @Override public void listViewerCountUnavailable() { }
+        @Override public void listRefreshSaturated() { }
+        @Override public void listRefreshFailed() { }
+        @Override public void recentViewDropped(RecentViewDropReason reason) { }
+        @Override public void roomTokenIssued(RoomTokenSignatureSource source) { }
+        @Override public void roomEndedSignalFailed(RoomEndedSignal signal) { }
     };
 }

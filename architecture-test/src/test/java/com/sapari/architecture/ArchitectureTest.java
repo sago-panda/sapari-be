@@ -1,18 +1,26 @@
 package com.sapari.architecture;
 
+import java.lang.annotation.Annotation;
 import com.tngtech.archunit.core.domain.Dependency;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
+import com.tngtech.archunit.lang.conditions.ArchConditions;
 import com.tngtech.archunit.library.dependencies.SlicesRuleDefinition;
 
 import org.junit.jupiter.api.Test;
+import org.reactivestreams.Publisher;
+
+import com.sapari.chat.port.BlockingChat;
+import com.sapari.chat.port.InMemoryChat;
+import com.sapari.chat.port.ReactiveChat;
 
 import java.util.Set;
 
@@ -224,6 +232,146 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
+    // chat-core 한 모듈에 reactive 유스케이스(WS 전송)와 blocking 유스케이스(강퇴·이력 조회)가 함께 산다.
+    // 두 앱이 chat-core를 의존하므로 양쪽 스택이 전이로 클래스패스에 올라오는데, 그 전이를 막으면 모듈 구조가
+    // 깨지므로 허용하고 '호출'만 막는다 — 블로킹 Redis 금지와 같은 계열이다.
+    //
+    // 어느 쪽인지는 타입에 단 표시(@BlockingChat · @ReactiveChat)로 가른다. 전에는 단순 이름 목록이었는데,
+    // 목록에 없는 이름은 아무것도 안 잡았다 — chat-api 포트 9개 중 3개만 들어 있었다(SPR-191 실측).
+    // 표시는 구현체로 이어진다: 표시된 인터페이스를 구현한 클래스도 같은 쪽으로 본다.
+
+    /** 그 표시가 붙었거나, 그 표시가 붙은 인터페이스를 구현한 타입. */
+    private static DescribedPredicate<JavaClass> markedWith(Class<? extends Annotation> marker) {
+        return DescribedPredicate.describe("@" + marker.getSimpleName() + " 이 붙었거나 그런 인터페이스를 구현한",
+                javaClass -> javaClass.isAnnotatedWith(marker)
+                        || javaClass.getAllRawInterfaces().stream().anyMatch(type -> type.isAnnotatedWith(marker)));
+    }
+
+    // WebFlux 앱이 blocking 유스케이스를 호출하면 Netty 이벤트루프가 그 시간만큼 멈춘다.
+    @Test
+    void streaming_app_must_not_call_blocking_chat_use_cases() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.streamingapp..")
+                .should().dependOnClassesThat(markedWith(BlockingChat.class))
+                .orShould().dependOnClassesThat(BLOCKING_INFRASTRUCTURE)
+                .as("streaming-app(WebFlux)은 블로킹 chat 타입·블로킹 인프라(MongoTemplate · JPA 저장소)를 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // MVC 앱이 Mono/Flux를 반환하는 유스케이스를 호출하면 결국 .block()을 강요당한다.
+    // 강퇴 REST가 얹히는 MVC 앱은 live-app이다. api-app은 chat 의존이 0건이라 대상에 넣지 않는다 —
+    // 넣으면 그쪽 클래스가 항상 존재해서, live-app이 클래스패스에서 빠져도 빈 검사가 드러나지 않는다.
+    @Test
+    void live_app_must_not_call_reactive_chat_use_cases() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("com.sapari.liveapp..")
+                .should().dependOnClassesThat(markedWith(ReactiveChat.class))
+                .as("live-app(MVC)은 reactive chat 유스케이스를 호출하면 안 된다");
+
+        rule.check(SAPARI);
+    }
+
+    // 위 두 규칙은 표시가 붙은 타입만 본다. 그래서 표시를 빠뜨리면 이름 목록과 같은 구멍이 다시 열린다.
+    // 포트에서 그 구멍을 닫는다 — chat-api 포트와 chat-core 의 저장소·출력 포트는 세 표시 중 정확히 하나를
+    // 달아야 하고, 그 표시가 반환형과 맞아야 한다. 어댑터는 포트를 구현하므로 위 두 규칙에 따라 들어온다.
+    //
+    // 반환형 대조의 한계: @ReactiveChat 은 Publisher 를 돌려주는 메서드가 "하나 이상" 이면 통과한다. 그래서
+    // 리액티브 포트의 Publisher 아닌 메서드는 기계가 검증하지 않는 선언이다 — 동기 설정 getter 와 동기 블로킹
+    // 호출은 시그니처가 같다. 오늘 그런 메서드는 ChatSessionRepository.heartbeatInterval() 하나이고, 그 포트를
+    // streaming-app 이 쥔다. 하나 더 달려면 그 포트를 쥔 앱이 어디인지 보고 판단한다. @BlockingChat 과
+    // @InMemoryChat 은 시그니처로 구별되지 않으므로, 저장소 포트를 @InMemoryChat 으로 다는 거짓은 여기서
+    // 안 잡히고 아래 chat_types_holding_blocking_infrastructure_are_marked_blocking 이 어댑터 쪽에서 잡는다.
+    @Test
+    void every_chat_port_declares_whether_it_blocks() {
+        ArchRule rule = classes()
+                .that().resideInAnyPackage(
+                        "com.sapari.chat.port", "com.sapari.chat.domain.repository", "com.sapari.chat.application.port")
+                .and().areInterfaces()
+                .and(DescribedPredicate.describe("애너테이션 타입이 아닌", javaClass -> !javaClass.isAnnotation()))
+                .should(new ArchCondition<JavaClass>(
+                        "@BlockingChat · @ReactiveChat · @InMemoryChat 중 정확히 하나를 달고, 그것이 반환형과 맞는다") {
+                    @Override
+                    public void check(JavaClass port, ConditionEvents events) {
+                        boolean blocking = port.isAnnotatedWith(BlockingChat.class);
+                        boolean reactive = port.isAnnotatedWith(ReactiveChat.class);
+                        boolean inMemory = port.isAnnotatedWith(InMemoryChat.class);
+                        if ((blocking ? 1 : 0) + (reactive ? 1 : 0) + (inMemory ? 1 : 0) != 1) {
+                            events.add(SimpleConditionEvent.violated(port, port.getName()
+                                    + " 은 @BlockingChat · @ReactiveChat · @InMemoryChat 중 정확히 하나를 달아야 한다"));
+                            return;
+                        }
+                        long publishers = port.getMethods().stream()
+                                .filter(method -> method.getRawReturnType().isAssignableTo(Publisher.class))
+                                .count();
+                        if (reactive && publishers == 0) {
+                            events.add(SimpleConditionEvent.violated(port,
+                                    port.getName() + " 은 @ReactiveChat 인데 Publisher 를 반환하는 메서드가 없다"));
+                        }
+                        if (!reactive && publishers > 0) {
+                            events.add(SimpleConditionEvent.violated(port,
+                                    port.getName() + " 은 Publisher 를 반환하는 메서드가 있는데 @ReactiveChat 이 아니다"));
+                        }
+                    }
+                });
+
+        rule.check(SAPARI);
+    }
+
+    /** 블로킹 인프라 — 이 타입을 직접 쥐면 호출 스레드를 붙잡는다. JPA 저장소는 하위 인터페이스로 쥐므로 대입 가능성으로 본다. */
+    private static final DescribedPredicate<JavaClass> BLOCKING_INFRASTRUCTURE = DescribedPredicate.describe(
+            "블로킹 인프라(StringRedisTemplate · RedisTemplate · MongoTemplate · JpaRepository)",
+            javaClass -> javaClass.getName().equals("org.springframework.data.redis.core.StringRedisTemplate")
+                    || javaClass.getName().equals("org.springframework.data.redis.core.RedisTemplate")
+                    || javaClass.getName().equals("org.springframework.data.mongodb.core.MongoTemplate")
+                    || javaClass.isAssignableTo("org.springframework.data.jpa.repository.JpaRepository"));
+
+    // 포트 쪽 완전성이 닿지 않는 자리를 어댑터 쪽에서 센다 — 블로킹 인프라를 직접 쥔 chat 타입은 블로킹으로
+    // 표시돼 있어야 한다(자기 자신이나 구현한 인터페이스로). 포트를 @InMemoryChat 으로 잘못 달거나, 포트 없이
+    // 템플릿을 쥔 타입을 새로 만들면 여기서 빨강이다. JPA 저장소 인터페이스 자신은 인프라 쪽으로 본다.
+    @Test
+    void chat_types_holding_blocking_infrastructure_are_marked_blocking() {
+        ArchRule rule = classes()
+                .that().resideInAPackage("com.sapari.chat..")
+                .and(DescribedPredicate.describe("블로킹 인프라를 직접 쥔", javaClass -> javaClass
+                        .getDirectDependenciesFromSelf().stream()
+                        .map(Dependency::getTargetClass)
+                        .filter(target -> !target.equals(javaClass))
+                        .anyMatch(BLOCKING_INFRASTRUCTURE)))
+                .and(DescribedPredicate.not(BLOCKING_INFRASTRUCTURE))
+                .should(ArchConditions.be(markedWith(BlockingChat.class)))
+                .as("블로킹 인프라를 직접 쥔 chat 타입은 @BlockingChat 이거나 그런 인터페이스를 구현해야 한다");
+
+        rule.check(SAPARI);
+    }
+
+    // OutboundMessage는 여덟 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 위치 인자로 지으면
+    // 한 칸 밀린 실수가 컴파일도 타입 검사도 통과한다 — 하필 senderEmail 바로 뒤가 displayMessage라,
+    // 그 실수는 발신자 이메일을 본문 자리에 넣어 방 전원에게 뿌린다.
+    //
+    // 밖에서는 타입별 정적 팩토리로만 짓는다. 팩토리 안에서 위치 인자를 안 쓰게 하는 것은 빌더가
+    // 맡고, 그 빌더는 package 접근이라 컴파일러가 이미 막는다 — 그래서 이 규칙은 생성자만 본다.
+    //
+    // 대상에서 빼는 것은 OutboundMessage와 그 중첩 클래스뿐이다. 빌더는 Lombok이 만든 중첩 클래스라
+    // FQN이 다르고(OutboundMessage$OutboundMessageBuilder), 이름 하나만 비교하면 자기 빌더를 자기
+    // 규칙이 잡는다(실제로 그랬다). 그렇다고 접두로 비교하면 같은 패키지의 OutboundMessageFactory 같은
+    // 이름까지 조용히 면제된다 — 중첩 구분자 '$'까지 붙여 정확히 중첩만 뺀다.
+    @Test
+    void outbound_message_must_be_built_through_factories() {
+        String outbound = "com.sapari.chat.application.protocol.OutboundMessage";
+
+        ArchRule rule = noClasses()
+                .that(DescribedPredicate.describe("OutboundMessage와 그 중첩 클래스가 아닌",
+                        javaClass -> !javaClass.getName().equals(outbound)
+                                && !javaClass.getName().startsWith(outbound + "$")))
+                .should().callConstructorWhere(DescribedPredicate.describe(
+                        "OutboundMessage 생성자",
+                        target -> target.getTargetOwner().getName().equals(outbound)))
+                .as("OutboundMessage는 타입별 정적 팩토리로만 생성해야 한다(위치 인자 밀림 = PII 유출)");
+
+        rule.check(SAPARI);
+    }
+
     // 10) @Transactional은 application 레이어에만 둔다.
     //     트랜잭션 경계는 유스케이스 오케스트레이션(application/service)의 책임 — 인프라/도메인/표현 계층에
     //     트랜잭션이 새면 경계가 흐려진다. (Spring Data 레포의 자체 트랜잭션은 여기 대상 아님)
@@ -324,4 +472,113 @@ class ArchitectureTest {
         String[] parts = packageName.split("\\.");
         return parts.length >= 3 && !NON_DOMAIN_ROOTS.contains(parts[2]);
     }
+
+    /**
+     * 20) MapStruct 매퍼는 미매핑 타깃에서 빌드를 깨야 한다.
+     *
+     * <p>기본 정책({@code WARN})이면 도메인 record 에 필드를 더하고 매퍼를 안 고쳤을 때 MapStruct 가
+     * 그 타깃을 비워 둔 채 경고 한 줄만 내고 통과한다. 그러면 영속된 메시지를 읽을 때마다 그 필드가
+     * 조용히 비어 있다.
+     *
+     * <p>매퍼 자신의 {@code unmappedTargetPolicy = ERROR} 가 그걸 막지만, <b>그 속성이 지워지는 것은
+     * 아무것도 막지 않는다</b> — 지우는 시점에 미매핑 필드가 없으면 빌드도 테스트도 멀쩡하다. 그 구간을
+     * 닫는 것이 이 규칙이다.
+     *
+     * <p>{@code @Mapper} 는 {@code RetentionPolicy.CLASS} 라 런타임 리플렉션으로는 못 읽지만 클래스
+     * 파일에는 남고, ArchUnit 은 클래스 파일을 직접 읽는다. 속성을 아예 지운 경우에는 ArchUnit 이
+     * <b>애너테이션 기본값을 채워</b> {@code WARN} 을 돌려주므로, 이 한 줄이 {@code IGNORE} 로의 명시적
+     * 격하와 속성 삭제를 동시에 잡는다 — "속성이 있는가" 를 따로 볼 필요가 없다.
+     *
+     * <p>{@code live} 하나만 예외다 — 엔티티에 도메인 대응이 없는 영속 전용 필드(VOD·시청자 집계 등)가
+     * 많아 비는 타깃이 정상이고, 그 사유가 {@code LiveRoomMapper} javadoc 에 적혀 있다. 나머지는
+     * 이미 전부 {@code ERROR} 였으므로 이 규칙이 새로 금지하는 것은 없고, <b>그 상태가 유지되게</b> 한다.
+     *
+     * <p>한때 범위를 chat 으로만 잡았는데 그건 chat 작업 중이어서였고 근거가 아니었다. 결과가 가장
+     * 무거운 자리는 다른 모듈이다 — {@code LocalCredentialMapper.toDomain} 이
+     * {@code passwordHash}·{@code failedLoginCount}·{@code lockedAt} 를 담은 도메인 record 를 만든다.
+     * 그쪽 정책이 지워진 뒤 필드가 늘면 <b>락아웃 상태가 조용히 빈다.</b>
+     */
+    @Test
+    void mapstruct_mappers_must_fail_on_unmapped_targets() {
+        ArchRule rule = classes()
+                .that().resideInAPackage("com.sapari..")
+                .and().resideOutsideOfPackage("com.sapari.live..")
+                .and().areAnnotatedWith("org.mapstruct.Mapper")
+                .should(declareUnmappedTargetPolicyError());
+
+        rule.check(SAPARI);
+    }
+
+    /** {@code @Mapper} 의 {@code unmappedTargetPolicy} 를 클래스 파일에서 읽어 ERROR 인지 본다. */
+    private static ArchCondition<JavaClass> declareUnmappedTargetPolicyError() {
+        return new ArchCondition<>("unmappedTargetPolicy = ERROR 로 선언되어야 한다") {
+            @Override
+            public void check(JavaClass mapper, ConditionEvents events) {
+                com.tngtech.archunit.core.domain.JavaAnnotation<?> annotation =
+                        mapper.getAnnotationOfType("org.mapstruct.Mapper");
+                String policy = annotation.get("unmappedTargetPolicy")
+                        .map(value -> value instanceof com.tngtech.archunit.core.domain.JavaEnumConstant constant
+                                ? constant.name()
+                                : String.valueOf(value))
+                        .orElse("(속성 없음 — ArchUnit 이 기본값도 못 채웠다)");
+                events.add(new SimpleConditionEvent(mapper, "ERROR".equals(policy),
+                        mapper.getName() + " 의 unmappedTargetPolicy = " + policy));
+            }
+        };
+    }
+    /**
+     * 욕설 필터를 갈아 끼우는 포트를 <b>한 곳만</b> 쓴다.
+     *
+     * <p>이 규칙이 떠받치는 것은 다른 파일의 <b>삭제된 방어</b>다.
+     * {@code ProfanityDictionaryRefreshHandler} 는 트리거 셋을 {@code concatMap} 으로 직렬화해
+     * 적용자가 하나이고, 그 사실 위에서 단조 버전 비교({@code snapshot.version() <= local} 이면
+     * 버림)를 <b>걷어냈다</b> — 그 비교가 "버전이 뒤로 간" 스냅샷을 조용히 버려서 Redis 가 상태를
+     * 잃은 Pod 이 함대와 영구히 갈리는 무음 분기를 만들었기 때문이다.
+     *
+     * <p>그래서 "적용자가 하나" 가 주석이 아니라 <b>구조</b>여야 한다. 두 번째 구독이나 두 번째
+     * 주입처가 생기면 두 적용이 겹칠 수 있고, 그때 더 낡은 사전이 나중에 깔려도 막는 것이 없다 —
+     * 그 방어를 이미 지웠으니까. 이 규칙이 그 전제를 깨는 변경을 빌드에서 세운다.
+     *
+     * <p><b>타입이 아니라 메서드를 건다.</b> 처음에 포트 <i>타입</i>의 의존자를 셌는데 구멍이
+     * 있었다 — 빈 선언 타입이 <b>구체 클래스</b>({@code ChatBeansConfig} 가
+     * {@code SwappableProfanityFilter} 를 돌려준다)이고 {@code install} 이 공개라, 포트를 안
+     * 거치고 구체 클래스를 주입받아 부르는 코드는 그 규칙을 <b>비껴간다.</b> 실측으로 확인했다
+     * (2026-11-05): 앱 패키지에 그런 적용자를 심으면 21건 전부 초록이었다. 응용 계층에 심으면
+     * {@code application_must_not_depend_on_infrastructure} 가 잡지만, 빈이 주입되는 자리는
+     * 앱 패키지라 그 경로가 현실적인 쪽이다.
+     *
+     * <p>메서드를 걸면 두 경로가 한 규칙으로 닫히고, <b>셀을 만드는 것</b>(호스트 앱의
+     * {@code @Bean})은 그대로 허용된다 — 막아야 하는 것은 생성이 아니라 <i>호출</i>이다.
+     * 그래서 허용 목록이 핸들러 하나다: 셀은 {@code install} 을 <b>선언</b>할 뿐 부르지 않고,
+     * 설정은 생성자만 부른다.
+     *
+     * <p><b>이 규칙은 조용해질 수 없다</b> — 이름을 문자열로 박았으니 클래스나 메서드가 옮겨지면
+     * 대상이 0건이 되어 "호출자 없음" 으로 초록이 될까 물을 자리다. 실측(2026-11-05), 두 축 모두
+     * <b>실패</b>한다: 메서드명을 없는 이름으로 바꾸면 이 규칙이 깨지고(ArchUnit 이 빈 집합을
+     * 거부한다 — {@code architecture-test/build.gradle} 이 {@code failOnEmptyShould} 기본값에
+     * 이미 하중을 걸고 있다), 선언 클래스 FQN 을 바꿔도 같다. 허용 목록 쪽도 실패 방향이다 —
+     * 핸들러가 옮겨지면 그 호출이 위반으로 잡힌다. 조용한 통과가 되는 축이 없다.
+     *
+     * <p>세 경로를 되돌림으로 확인했다(2026-11-05) — 포트 경유 · 앱 패키지에서 구체 클래스 경유 ·
+     * infrastructure 에서 구체 클래스 경유. 셋 다 이 규칙 이름으로 빨개진다. 가운데가 타입을
+     * 걸었을 때 <b>통과하던</b> 경로다.
+     */
+    @Test
+    void only_the_refresh_handler_may_install_a_profanity_filter() {
+        ArchRule rule = methods()
+                .that().haveName("install")
+                .and().areDeclaredInClassesThat().haveNameMatching(
+                        "com\\.sapari\\.chat\\.application\\.port\\.ProfanityFilterInstaller"
+                                + "|com\\.sapari\\.chat\\.infrastructure\\.config\\.SwappableProfanityFilter")
+                .should().onlyBeCalled().byClassesThat()
+                // haveNameMatching 은 FQN 에 맞는다. 패키지로 거는 쪽(resideInAnyPackage)이 이
+                // 저장소의 선례지만 여기서는 쓰지 않는다 — 막아야 하는 것이 "그 패키지 밖에서
+                // 쓰는 것" 이 아니라 <적용자가 둘이 되는 것>이라, 같은 패키지에 두 번째가
+                // 생기는 경우를 통과시키면 규칙이 자기 목적을 비껴간다.
+                .haveFullyQualifiedName(
+                        "com.sapari.chat.application.handler.ProfanityDictionaryRefreshHandler");
+
+        rule.check(SAPARI);
+    }
+
 }

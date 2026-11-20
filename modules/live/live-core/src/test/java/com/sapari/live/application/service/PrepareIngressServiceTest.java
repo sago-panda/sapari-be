@@ -27,6 +27,8 @@ import com.sapari.live.application.port.IngressResult;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveDomainException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -70,25 +72,34 @@ class PrepareIngressServiceTest {
     }
 
     private LiveRoom scheduledWebRtcRoom() {
+        return scheduledRoom(new LiveStreamType.WebRtc());
+    }
+
+    /** RTMP 로 만들어졌고 아직 키를 받지 않은 방 — 최초 발급이 허용되는 유일한 모양. */
+    private LiveRoom scheduledKeylessRtmpRoom() {
+        return scheduledRoom(new LiveStreamType.Rtmp(null));
+    }
+
+    private LiveRoom scheduledRoom(LiveStreamType streamType) {
         return fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("sellerId", sellerId)
                 .set("status", new LiveStatus.Scheduled(Instant.now()))
-                .set("streamType", new LiveStreamType.WebRtc())
+                .set("streamType", streamType)
                 .set("streamInfo", StreamInfo.ofSfuRoomId("sfu"))
                 .sample();
     }
 
     @Test
-    @DisplayName("발급 성공: ingress 발급 → RTMP 전환 저장 → rtmpUrl·streamKey 반환")
+    @DisplayName("발급 성공: 키 없는 RTMP 방에 ingress 발급 → ingressId·rtmpUrl 저장 → rtmpUrl·streamKey 반환")
     void prepare_success() {
         Instant now = Instant.parse("2026-06-09T02:00:00Z");
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
-                .willReturn(Optional.of(scheduledWebRtcRoom()));
+                .willReturn(Optional.of(scheduledKeylessRtmpRoom()));
         given(liveMediaManager.createIngress(roomId, sellerId))
                 .willReturn(new IngressResult("ingress-1", "rtmp://livekit/live", "secret-key"));
         given(timeProvider.now()).willReturn(now);
-        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-1", now)).willReturn(true);
+        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-1", "rtmp://livekit/live", now)).willReturn(true);
 
         IngressCredentialView view = prepareIngressService.prepare(command);
 
@@ -98,7 +109,7 @@ class PrepareIngressServiceTest {
         assertThat(view.streamKey()).isEqualTo("secret-key");
 
         // 배정은 조건부 UPDATE 로 한다 — save() 는 무조건 덮어써서 경합을 못 막는다.
-        then(rtmpIngressAssigner).should().assignIfAbsent(roomId, sellerId, "ingress-1", now);
+        then(rtmpIngressAssigner).should().assignIfAbsent(roomId, sellerId, "ingress-1", "rtmp://livekit/live", now);
         then(liveRoomRepository).should(never()).save(any(LiveRoom.class));
         then(liveMediaManager).should(never()).deleteIngress(any(UUID.class), any(String.class));
     }
@@ -106,8 +117,8 @@ class PrepareIngressServiceTest {
     @Test
     @DisplayName("LiveKit 이 빈 ingressId 를 주면 어댑터 경계에서 막는다 — 조건부 UPDATE 는 Rtmp 생성자를 거치지 않는다")
     void ingressResult_rejectsBlankIngressId() {
-        // 빈 값이 통과하면 stream_type=RTMP + ingress_id=NULL 행이 남아
-        // 다음 prepare 가 또 통과하고, 매퍼가 Rtmp(null) 을 만들려다 터져 방 조회 자체가 실패한다.
+        // 빈 값이 통과하면 ingress_id='' 행이 남아 매퍼가 Rtmp(" ") 을 만들려다 터져 방 조회 자체가 실패하고,
+        // null 이면 키를 받은 방이 키 없는 방으로 남는다.
         assertThatThrownBy(() -> new IngressResult(" ", "rtmp://livekit/live", "secret-key"))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new IngressResult(null, "rtmp://livekit/live", "secret-key"))
@@ -119,19 +130,36 @@ class PrepareIngressServiceTest {
     void prepare_losesRace_deletesOwnIngressAndRejects() {
         Instant now = Instant.parse("2026-06-09T02:00:00Z");
         given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
-                .willReturn(Optional.of(scheduledWebRtcRoom()));
+                .willReturn(Optional.of(scheduledKeylessRtmpRoom()));
         given(liveMediaManager.createIngress(roomId, sellerId))
                 .willReturn(new IngressResult("ingress-LOSER", "rtmp://livekit/live", "secret-key"));
         given(timeProvider.now()).willReturn(now);
         // 다른 요청이 먼저 배정 → 조건부 UPDATE 0건
-        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-LOSER", now)).willReturn(false);
+        given(rtmpIngressAssigner.assignIfAbsent(roomId, sellerId, "ingress-LOSER", "rtmp://livekit/live", now)).willReturn(false);
 
         assertThatThrownBy(() -> prepareIngressService.prepare(command))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
 
         // 단건 삭제여야 한다 — 방 단위로 지우면 이긴 쪽 ingress 까지 날아간다
         then(liveMediaManager).should().deleteIngress(roomId, "ingress-LOSER");
         then(liveMediaManager).should(never()).deleteIngress(any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("WebRTC 방은 발급 거부(LIVE-011) — 송출 방식은 생성 때 고정이라 발급이 방식을 바꾸지 않는다")
+    void prepare_rejectsWebRtcRoom() {
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId))
+                .willReturn(Optional.of(scheduledWebRtcRoom()));
+
+        assertThatThrownBy(() -> prepareIngressService.prepare(command))
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
+
+        then(liveMediaManager).should(never()).createIngress(any(), any());
+        then(rtmpIngressAssigner).shouldHaveNoInteractions();
     }
 
     @Test
@@ -160,7 +188,9 @@ class PrepareIngressServiceTest {
                 .willReturn(Optional.of(liveRoom));
 
         assertThatThrownBy(() -> prepareIngressService.prepare(command))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
 
         then(liveMediaManager).should(never()).createIngress(any(), any());
     }
@@ -179,7 +209,9 @@ class PrepareIngressServiceTest {
                 .willReturn(Optional.of(rtmpRoom));
 
         assertThatThrownBy(() -> prepareIngressService.prepare(command))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
 
         then(liveMediaManager).should(never()).createIngress(any(), any());
     }

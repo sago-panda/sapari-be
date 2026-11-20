@@ -33,6 +33,8 @@ import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndStaleLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveDomainException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -61,6 +63,9 @@ class EndStaleLiveServiceTest {
     @Spy
     private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
+    @Mock
+    private LiveListCacheSync liveListCacheSync;
+
     @InjectMocks
     private EndStaleLiveService endStaleLiveService;
 
@@ -86,7 +91,7 @@ class EndStaleLiveServiceTest {
                 .title("제목")
                 .sellerNickname("닉네임")
                 .status(new LiveStatus.Live(STARTED, "sfu-1", "eg-1", "https://hls/1"))
-                .streamInfo(StreamInfo.of("sfu-1", "eg-1", "https://hls/1"))
+                .streamInfo(StreamInfo.of("sfu-1", "eg-1", "https://hls/1", null))
                 .streamType(streamType)
                 .build();
     }
@@ -116,6 +121,7 @@ class EndStaleLiveServiceTest {
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ended.class);
     
         org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Live->Ended");
+        then(liveListCacheSync).should(times(1)).removeAfterCommit(roomId);
     }
 
     @Test
@@ -202,7 +208,9 @@ class EndStaleLiveServiceTest {
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ended));
 
         assertThatThrownBy(() -> endStaleLiveService.endStale(new EndStaleLiveCommand(roomId)))
-                .isInstanceOf(InvalidLiveStateException.class);
+                .isInstanceOf(InvalidLiveStateException.class)
+                .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
 
         then(liveMediaManager).shouldHaveNoInteractions();
         then(liveEventPublisher).shouldHaveNoInteractions();

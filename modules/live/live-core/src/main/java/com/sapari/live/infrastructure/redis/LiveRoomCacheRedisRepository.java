@@ -3,7 +3,10 @@ package com.sapari.live.infrastructure.redis;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -31,6 +34,8 @@ public class LiveRoomCacheRedisRepository implements LiveRoomCacheRepository {
     private static final String FIELD_HLS_URL = "hlsUrl";
     private static final String FIELD_PINNED_PRODUCT_NAME = "pinnedProductName";
     private static final String FIELD_PINNED_PRODUCT_IMAGE_URL = "pinnedProductImageUrl";
+    private static final String FIELD_TITLE = "title";
+    private static final String FIELD_STARTED_AT = "startedAt";
 
     private final StringRedisTemplate redis;
 
@@ -83,6 +88,91 @@ public class LiveRoomCacheRedisRepository implements LiveRoomCacheRepository {
         return result;
     }
 
+    @Override
+    public void register(LiveRoomCache room) {
+        redis.executePipelined(new SessionCallback<Object>() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                writeRoom(operations, room);
+                // NX — 중복 등록(재전송 웹훅·재시도)이 이미 쌓인 시청자 수를 0 으로 되돌리지 않게 한다.
+                operations.opsForZSet().addIfAbsent(LiveRedisKeys.ranking(), room.roomId().toString(), 0);
+                return null;
+            }
+        });
+    }
+
+    @Override
+    public void remove(UUID roomId) {
+        redis.executePipelined(new SessionCallback<Object>() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                operations.opsForZSet().remove(LiveRedisKeys.ranking(), roomId.toString());
+                operations.delete(LiveRedisKeys.room(roomId));
+                return null;
+            }
+        });
+    }
+
+    /**
+     * 구성원을 읽은 뒤(1회) 지우기·쓰기를 pipeline 한 번에 보낸다. 두 단계 사이에 들어온 등록·제거와 겹치면
+     * 한 회차만큼 어긋날 수 있다 — 다음 회차가 같은 원본으로 다시 맞춘다(plan Complexity Tracking).
+     */
+    @Override
+    public void reconcile(List<LiveRoomCache> live, Map<UUID, Long> viewers, boolean pruneStale) {
+        Set<String> members = pruneStale ? redis.opsForZSet().range(LiveRedisKeys.ranking(), 0, -1) : null;
+        Set<String> liveIds = new HashSet<>();
+        live.forEach(room -> liveIds.add(room.roomId().toString()));
+        List<String> stale = members == null ? List.of()
+                : members.stream().filter(member -> !liveIds.contains(member)).toList();
+
+        if (stale.isEmpty() && live.isEmpty()) {
+            return;
+        }
+        redis.executePipelined(new SessionCallback<Object>() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                for (String member : stale) {
+                    operations.opsForZSet().remove(LiveRedisKeys.ranking(), member);
+                    operations.delete(LiveRedisKeys.rawRoom(member));
+                }
+                for (LiveRoomCache room : live) {
+                    writeRoom(operations, room);
+                    String member = room.roomId().toString();
+                    Long count = viewers.get(room.roomId());
+                    if (count != null) {
+                        operations.opsForZSet().add(LiveRedisKeys.ranking(), member, count);
+                    } else {
+                        // 이번 회차에 수를 못 읽은 방 — 직전 점수를 지키고, 처음 보는 방만 0 으로 넣는다.
+                        operations.opsForZSet().addIfAbsent(LiveRedisKeys.ranking(), member, 0);
+                    }
+                }
+                return null;
+            }
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void writeRoom(RedisOperations operations, LiveRoomCache room) {
+        Map<String, String> fields = new HashMap<>();
+        putIfPresent(fields, FIELD_SELLER_ID, room.sellerId() == null ? null : room.sellerId().toString());
+        putIfPresent(fields, FIELD_SELLER_NICKNAME, room.sellerNickname());
+        putIfPresent(fields, FIELD_THUMBNAIL_URL, room.thumbnailUrl());
+        putIfPresent(fields, FIELD_HLS_URL, room.hlsUrl());
+        putIfPresent(fields, FIELD_TITLE, room.title());
+        putIfPresent(fields, FIELD_STARTED_AT,
+                room.startedAt() == null ? null : String.valueOf(room.startedAt().toEpochMilli()));
+        operations.opsForHash().putAll(LiveRedisKeys.room(room.roomId()), fields);
+    }
+
+    private static void putIfPresent(Map<String, String> fields, String key, String value) {
+        if (value != null) {
+            fields.put(key, value);
+        }
+    }
+
     private RankedRoom toRankedRoom(ZSetOperations.TypedTuple<String> tuple) {
         UUID roomId = parseUuidSafely(tuple.getValue());
         if (roomId == null) {
@@ -102,6 +192,8 @@ public class LiveRoomCacheRedisRepository implements LiveRoomCacheRepository {
                 .pinnedProductName((String) fields.get(FIELD_PINNED_PRODUCT_NAME))
                 .pinnedProductImageUrl((String) fields.get(FIELD_PINNED_PRODUCT_IMAGE_URL))
                 .currentViewers(viewers)
+                .title((String) fields.get(FIELD_TITLE))
+                .startedAt(parseEpochMillisSafely((String) fields.get(FIELD_STARTED_AT)))
                 .build();
     }
 
@@ -116,6 +208,19 @@ public class LiveRoomCacheRedisRepository implements LiveRoomCacheRepository {
             return UUID.fromString(uuidStr);
         } catch (IllegalArgumentException e) {
             log.warn("Invalid UUID format detected in Redis: {}", uuidStr);
+            return null;
+        }
+    }
+
+    /** 해시의 시작 시각이 숫자가 아니면 그 필드만 비운다 — 목록 전체를 깨뜨릴 이유가 없다. */
+    private Instant parseEpochMillisSafely(String millis) {
+        if (millis == null || millis.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.ofEpochMilli(Long.parseLong(millis));
+        } catch (NumberFormatException e) {
+            log.warn("Invalid startedAt detected in Redis: {}", millis);
             return null;
         }
     }

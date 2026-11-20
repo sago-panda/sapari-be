@@ -1,0 +1,23 @@
+# 빌드 컨텍스트는 리포 루트다(멀티 모듈이라 앱 하나도 루트 전체가 필요하다).
+# 여기서 빼는 것은 두 종류 — 이미지에 들어가면 안 되는 것, 빌드에 필요 없는 무거운 것.
+
+# 실제 설정·자격증명 (.gitignore 대상과 같다. 템플릿 *.example 은 이름이 달라 걸리지 않는다)
+**/application*.yaml
+**/application*.yml
+**/.env
+**/.env.*
+**/*.tfvars
+infra/terraform
+
+# 빌드 산출물·캐시
+**/build
+**/.gradle
+**/out
+.git
+.idea
+**/*.iml
+
+# 로컬 도구
+.claude
+.specify
+specs

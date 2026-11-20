@@ -2,11 +2,17 @@ package com.sapari.live.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 import java.security.PrivateKey;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.application.port.RoomTokenIssuer;
+import com.sapari.live.infrastructure.media.CachingRoomTokenIssuer;
+import com.sapari.live.infrastructure.media.RoomTokenProvider;
 
 class RoomTokenConfigTest {
 
@@ -74,5 +80,49 @@ class RoomTokenConfigTest {
         assertThat(s).doesNotContain(VALID_PKCS8_BASE64);
         // 비-민감 필드는 정상 노출(디버깅 가능)
         assertThat(s).contains("issuer=live").contains("audience=chat").contains("expirationSeconds=90");
+    }
+
+    // ------------------------------------------------------------------------
+    // 서명 캐시 빈 — 이 세 칸이 없으면 @Bean 메서드의 분기와 가드 호출이 분모 0 이다.
+    // 리뷰(SPR-173 R1 ㄱ-3)가 잡았다: 이전에는 RoomTokenCacheProperties.enabled() 가 false 를
+    // 돌려주는 것만 단언해서, enabled 를 무시하고 항상 데코레이터를 끼워도 초록이었다.
+    // ------------------------------------------------------------------------
+
+    private static RoomTokenProperties issuance(long expirationSeconds) {
+        return new RoomTokenProperties("live", "chat", VALID_PKCS8_BASE64, expirationSeconds);
+    }
+
+    @Test
+    @DisplayName("켜져 있으면 서명 캐시를 @Primary 로 끼운다")
+    void theEnabledCacheWrapsTheProvider() {
+        RoomTokenProvider provider = mock(RoomTokenProvider.class);
+
+        RoomTokenIssuer issuer = config.cachingRoomTokenIssuer(provider, mock(LiveMetrics.class),
+                issuance(90L), new RoomTokenCacheProperties(true, 16, 30L));
+
+        assertThat(issuer).isInstanceOf(CachingRoomTokenIssuer.class);
+    }
+
+    @Test
+    @DisplayName("꺼져 있으면 원본을 그대로 돌려준다 — 호출 경로에 데코레이터가 0줄 남는다")
+    void theDisabledCacheReturnsTheProviderItself() {
+        RoomTokenProvider provider = mock(RoomTokenProvider.class);
+
+        RoomTokenIssuer issuer = config.cachingRoomTokenIssuer(provider, mock(LiveMetrics.class),
+                issuance(90L), new RoomTokenCacheProperties(false, 16, 30L));
+
+        // isSameAs 여야 한다 — isInstanceOf 로는 "감싼 뒤 위임" 과 구분되지 않는다.
+        assertThat(issuer).isSameAs(provider);
+    }
+
+    @Test
+    @DisplayName("두 레코드에 걸친 TTL 불변식을 이 빈이 실제로 검사한다 — 호출을 지우면 이 칸이 깨진다")
+    void theBeanInvokesTheCrossRecordGuard() {
+        // 캐시 46s 는 발급 90s 의 절반을 넘는다. 어기는 조합이 여기서 걸려야 기동이 멈춘다.
+        assertThatThrownBy(() -> config.cachingRoomTokenIssuer(
+                mock(RoomTokenProvider.class), mock(LiveMetrics.class),
+                issuance(90L), new RoomTokenCacheProperties(true, 16, 46L)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(RoomTokenCacheProperties.TTL_MUST_LEAVE_HALF_THE_LIFE);
     }
 }

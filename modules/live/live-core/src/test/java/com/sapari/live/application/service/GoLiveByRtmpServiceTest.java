@@ -51,6 +51,9 @@ class GoLiveByRtmpServiceTest {
     @Spy
     private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
+    @Mock
+    private LiveListCacheSync liveListCacheSync;
+
     @InjectMocks
     private GoLiveByRtmpService goLiveByRtmpService;
 
@@ -78,7 +81,7 @@ class GoLiveByRtmpServiceTest {
         return fixtureMonkey.giveMeBuilder(LiveRoom.class)
                 .set("id", roomId)
                 .set("status", status)
-                .set("streamInfo", new StreamInfo("sfu-1", null, null))
+                .set("streamInfo", new StreamInfo("sfu-1", null, null, null))
                 .set("streamType", streamType)
                 .sample();
     }
@@ -89,7 +92,7 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
         given(liveMediaManager.startHlsEgress(roomId))
-                .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8"));
+                .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8", "http://archive/playlist.m3u8"));
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
     }
@@ -109,7 +112,7 @@ class GoLiveByRtmpServiceTest {
                 new LiveStreamType.Rtmp("ing-1"));
         given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
         given(liveMediaManager.startHlsEgress(roomId))
-                .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8"));
+                .willReturn(new HlsEgressResult("egress-1", "http://hls/index.m3u8", "http://archive/playlist.m3u8"));
         given(timeProvider.now()).willReturn(Instant.now());
         given(liveRoomRepository.save(any(LiveRoom.class))).willAnswer(inv -> inv.getArgument(0));
 
@@ -119,6 +122,8 @@ class GoLiveByRtmpServiceTest {
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
         verify(liveRoomRepository).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Live.class);
+        assertThat(captor.getValue().streamInfo().hlsArchiveUrl()).isEqualTo("http://archive/playlist.m3u8");
+        verify(liveListCacheSync).registerAfterCommit(captor.getValue());
     }
 
     @Test
@@ -145,6 +150,8 @@ class GoLiveByRtmpServiceTest {
 
         verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
         verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+        // 중복 웹훅이 목록을 다시 쓰지 않는다 — 등록은 실제 승격에만 붙는다.
+        verify(liveListCacheSync, never()).registerAfterCommit(any());
     }
 
     @Test

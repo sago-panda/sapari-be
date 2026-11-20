@@ -1,6 +1,7 @@
 package com.sapari.user.application.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -13,6 +14,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.sapari.global.time.TimeProvider;
 import com.sapari.user.command.ProfileImageChangeCommand;
@@ -25,6 +28,7 @@ import com.sapari.user.application.dto.ProfileImageRemoveResult;
 import com.sapari.user.application.dto.ProfileImageStoreCommand;
 import com.sapari.user.application.dto.StoredProfileImage;
 import com.sapari.user.application.port.ProfileImageStorage;
+import com.sapari.user.application.port.UserEventPublisher;
 import com.sapari.user.domain.model.Terms;
 import com.sapari.user.domain.exception.UserException;
 import com.sapari.user.domain.exception.UserErrorCode;
@@ -51,6 +55,7 @@ import com.sapari.user.view.UserView;
  * UserAccountUseCase 구현. User 애그리거트의 생성·조회·변경을 user-core 안으로 캡슐화하고
  * 외부에는 UserView만 노출한다. 시각은 TimeProvider로 user-core가 채운다.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserAccountService implements UserAccountUseCase {
@@ -67,6 +72,7 @@ public class UserAccountService implements UserAccountUseCase {
     private final ProfileImageMutationProcessor profileImageMutationProcessor;
     private final SocialCustomerRegistrationMutationProcessor socialCustomerRegistrationMutationProcessor;
     private final ProfileImageUrlResolver profileImageUrlResolver;
+    private final UserEventPublisher userEventPublisher;
     private final TimeProvider timeProvider;
 
     /**
@@ -333,13 +339,41 @@ public class UserAccountService implements UserAccountUseCase {
         User user = findUserForUpdate(userId);
         if (user.status() == UserStatus.WITHDRAWING) {
             // 세션 폐기 실패 후 재요청해도 최초 탈퇴 유예 시작 시각을 연장하지 않는다.
+            // 발행은 다시 건다 — 발행은 at-most-once 라 첫 발행이 유실됐으면 재요청이 유일한 재시도다.
+            // 구독자 동작(WS 세션 종료)은 중복에 무해하다.
+            registerWithdrawalPublish(userId, user.deletedAt());
             return toView(user);
         }
         Instant now = timeProvider.now();
         createRetentionIfAbsent(user, now);
 
         User updated = user.requestWithdrawal(now);
-        return toView(userRepository.save(updated));
+        UserView view = toView(userRepository.save(updated));
+
+        // 커밋 이후에만 발행 — 롤백 시 오발행(멀쩡한 계정에 구독자가 조치하는 것)을 막는다.
+        registerWithdrawalPublish(userId, now);
+        return view;
+    }
+
+    /**
+     * 탈퇴 신청 발행을 커밋 뒤로 미룬다 — 형제 {@code EndLiveService.registerRoomEndedPublish} 와 같은
+     * 모양이다. 트랜잭션 밖에서 불리면(회귀) 커밋 보장이 없으므로 발행하지 않고 경고만 남긴다.
+     *
+     * <p><b>발행이 하는 일</b>: 열려 있는 WebSocket 세션을 구독자가 끊는다. 이 경로는 이미
+     * {@code revokeAllSessions} 로 access 토큰을 폐기하지만, <b>이미 수립된 WS 세션은 토큰을 다시
+     * 보지 않는다</b> — 폐기가 막는 것은 재입장뿐이다. 그 둘이 다른 축이라 신호가 따로 필요하다.
+     */
+    private void registerWithdrawalPublish(UUID userId, Instant requestedAt) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            log.warn("트랜잭션 동기화 비활성 — 탈퇴 신청 발행 생략. userId={}", userId);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                userEventPublisher.publishWithdrawalRequested(userId, requestedAt);
+            }
+        });
     }
 
     /** 잠금 충돌은 사용자 부재와 구분하여 재시도 가능한 일시 장애로 노출한다. */

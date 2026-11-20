@@ -33,6 +33,7 @@ import com.sapari.live.application.port.IngressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.ExpireOrphanLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
+import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
@@ -76,7 +77,28 @@ class ReconcileExpiredReadyServiceTest {
     void setup() {
         service = new ReconcileExpiredReadyService(
                 liveRoomRepository, liveMediaManager, expireOrphanLiveUseCase, goLiveByRtmpService,
-                new ExpiredReadyReconcilePolicy(THRESHOLD, 100), timeProvider, liveMetrics);
+                new ExpiredReadyReconcilePolicy(THRESHOLD, 100, java.time.Duration.ofMinutes(40)), timeProvider, liveMetrics);
+    }
+
+    @Test
+    @DisplayName("회차 예산을 넘기면 남은 후보를 다음 회차로 넘긴다 — end-stale-live 와 같은 장치다")
+    void roundBudgetExhausted_stopsMidRound() {
+        // 이 잡도 PostCommitMediaCleanup 을 공유해 후보당 왕복 수가 방의 화질·ingress 수에 비례한다.
+        // batch-size 만으로는 회차가 lock-at-most-for(기본 50분) 안에 있다는 보장이 없다.
+        ReconcileExpiredReadyService budgeted = new ReconcileExpiredReadyService(
+                liveRoomRepository, liveMediaManager, expireOrphanLiveUseCase, goLiveByRtmpService,
+                new ExpiredReadyReconcilePolicy(THRESHOLD, 100, java.time.Duration.ofMinutes(1)),
+                timeProvider, liveMetrics);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        givenCandidates(first, second);
+        // 시작 → 첫 후보 직전(예산 내) → 그 뒤로는 예산 초과
+        given(timeProvider.now()).willReturn(NOW, NOW, NOW.plus(java.time.Duration.ofMinutes(5)));
+
+        budgeted.reconcile();
+
+        then(expireOrphanLiveUseCase).should(times(1)).expire(any());
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.acted).contains("ROUND_BUDGET_EXHAUSTED=1");
     }
 
     /** 후보만 있고 송출 중인 방은 없는 기본 상태. */
@@ -158,7 +180,7 @@ class ReconcileExpiredReadyServiceTest {
         UUID conflicted = UUID.randomUUID();
         UUID other = UUID.randomUUID();
         givenCandidates(conflicted, other);
-        willThrow(new InvalidLiveStateException(conflicted.toString()))
+        willThrow(new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, conflicted.toString()))
                 .given(expireOrphanLiveUseCase).expire(new ExpireOrphanLiveCommand(conflicted));
 
         service.reconcile();
@@ -359,6 +381,20 @@ class ReconcileExpiredReadyServiceTest {
         service.reconcile();
 
         then(expireOrphanLiveUseCase).should(never()).expire(any(ExpireOrphanLiveCommand.class));
+    }
+
+    @Test
+    @DisplayName("키 없는 RTMP 방은 LiveKit 목록이 비어도 오설정이 아니다 — 배정한 ingress 가 없으니 정상 만료한다")
+    void keylessRtmpRoomWithNoIngress_isExpired() {
+        UUID roomId = UUID.randomUUID();
+        given(timeProvider.now()).willReturn(NOW);
+        given(liveRoomRepository.findExpiredReadyRoomIds(any(Instant.class), anyInt())).willReturn(List.of(roomId));
+        given(liveMediaManager.listRoomIngress(roomId)).willReturn(List.of());
+        givenRoomWithIngress(roomId, null);
+
+        service.reconcile();
+
+        then(expireOrphanLiveUseCase).should(times(1)).expire(new ExpireOrphanLiveCommand(roomId));
     }
 
     @Test

@@ -84,8 +84,52 @@ angle: mass-assignment and injection (§5).
     **variable name and that a default exists — never the value.** Also: properties records holding
     secrets must mask `toString()` — asymmetry with a masking sibling is the tell.
 
+11. `SEC-11` **Moderation control that is dead, bypassable, or over-firing** — masking/filter dictionaries,
+    whitelists, kick/ban gates, rate limits. These fail *quietly in both directions*, and "the code is
+    there, the tests are green, the docs say it is on" does not establish that it fires. Check each:
+    - **Dead on arrival**: is the data actually loaded and non-empty, or does an empty/missing resource
+      boot into pass-through? The tell is a control whose off-state is indistinguishable from "nothing
+      to block" in logs and in the stored record.
+    - **The matcher's own normalisation gap**: what does the *matcher* treat as a separator or strip
+      before matching, and is there a character class just outside it? One invisible character that the
+      preprocessor keeps turns the whole dictionary off for anyone who types it. This is the widest hole
+      of the six because the loader side is an operator path while the matcher is reachable by any user
+      — closing only the loader leaves it fully open while the commit message reads as if it is shut.
+      Ask for the measurement across classes, not a list of characters: enumerations miss one.
+    - **Dead letter**: can an entry be accepted but never match? A term carrying a space or an invisible
+      character (NBSP, ZWSP, word joiner, BOM, Hangul fillers) never matches a `\S+` token; a term
+      swallowed by a broader exemption never matches either. Count goes up, nothing is blocked.
+    - **Exemption as a global off switch**: one whitelist/allow entry that *is* the blocked term unmasks
+      it everywhere. More generally, ask what the longest token an exemption preserves is — a prefix
+      match preserves the whole token, so every exemption is a switch unless it is span-scoped.
+    - **Gate plane ≠ runtime plane**: validation must normalise the way matching does (case, Unicode).
+      When they differ, two values that behave identically at runtime are judged differently at the gate
+      and the rejection message is false — the operator is sent to the wrong place mid-incident.
+    - **Over-firing on legitimate content**: a short term that is also an ordinary morpheme censors
+      normal speech. For a seller-facing product this is usually the *worse* direction: the broadcast
+      cannot be recalled and the masked text is what gets persisted. Ask what regression corpus the
+      author measured against, and whether the vectors came from anywhere but the bug already found.
+    - **Emergency path**: config-supplied terms are added mid-incident. Do they get the same validation
+      as the bundled data, in both directions? An emergency switch that silently no-ops is worse than
+      none, because it is believed.
+    - **Validation that becomes the outage**: the opposite failure. A guard that refuses a *legitimate*
+      value turns the mid-incident path into a boot failure, and for a bean that the app cannot start
+      without, that is the whole feature down. Check the premise the refusal rests on: "this value can
+      never work" is usually narrower than it sounds, and refusing on an overstated premise costs more
+      than it saves. Prefer load-and-warn unless the value is actively harmful.
+    - **Replace vs add**: when config or a curation step *narrows* a list, did it filter or substitute?
+      Substituting drops entries that the stated rule would have kept, and the loss is invisible because
+      reviews ask whether what remains is correct, not whether what left should have stayed.
+
+    Report the **class of hole and one concrete input that passes or is wrongly blocked**, never a
+    curated bypass list.
+
+Three of these bullets exist because the same feature produced them in consecutive rounds: the matcher
+gap, the availability direction, and replace-vs-filter were each found *after* the item was written.
+
 ## Output specifics
 Common format applies; each finding carries a **one-line attack scenario** + fix direction.
 A finding none of the items covers gets `SEC-00`, and repeated `SEC-00` means the list is missing an
-item — say so. `uncertain` when reachability depends on config or a caller that doesn't exist yet —
+item — say so. That is where `SEC-11` came from: four `SEC-00` findings in one round on a single
+masking feature, all of them the same shape. `uncertain` when reachability depends on config or a caller that doesn't exist yet —
 say which condition would make it exploitable.

@@ -17,6 +17,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.web.access.AccessDeniedHandler;
 
+import com.sapari.global.logging.LogFields;
 import com.sapari.common.core.exception.CommonErrorCode;
 import com.sapari.common.response.ErrorResponse;
 import com.sapari.common.response.ResponseEnvelope;
@@ -26,7 +27,6 @@ import com.sapari.global.time.TimeProvider;
 @RequiredArgsConstructor
 public class JwtAccessDeniedHandler implements AccessDeniedHandler {
 
-    private static final String REQUEST_ID = "requestId";
 
     private final ObjectMapper objectMapper;
     private final TimeProvider timeProvider;
@@ -41,7 +41,7 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
 
         ErrorResponse errorResponse = ErrorResponse.of(
                 CommonErrorCode.FORBIDDEN,
-                MDC.get(REQUEST_ID),
+                MDC.get(LogFields.REQUEST_ID),
                 timeProvider.now()
         );
 

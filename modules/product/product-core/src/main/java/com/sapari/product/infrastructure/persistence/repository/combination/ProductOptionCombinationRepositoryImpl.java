@@ -1,0 +1,194 @@
+package com.sapari.product.infrastructure.persistence.repository.combination;
+
+import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationEntity;
+import com.sapari.product.infrastructure.persistence.entity.combination.ProductOptionCombinationValueEntity;
+
+import com.sapari.product.domain.exception.ProductConcurrentModificationException;
+import com.sapari.product.domain.exception.ProductDomainException;
+import com.sapari.product.domain.exception.ProductErrorCode;
+import com.sapari.product.domain.model.combination.CombinationKey;
+import com.sapari.product.domain.model.combination.ProductOptionCombination;
+import com.sapari.product.domain.repository.combination.ProductOptionCombinationRepository;
+import com.sapari.product.infrastructure.persistence.mapper.combination.ProductOptionCombinationMapper;
+import jakarta.persistence.EntityNotFoundException;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Repository;
+
+/**
+ * {@link ProductOptionCombinationRepository} 영속 어댑터.
+ *
+ * <p>저장은 upsert(id==null→INSERT, 그 외 로드 후 mutator 갱신)이며, 옵션값 매핑은
+ * {@code deleteByOptionCombinationId} 후 재삽입으로 통째 교체한다. 조회 시 매핑 테이블에서 {@code optionValueIds}를 조립해 도메인 모델을 복원한다.
+ */
+@Repository
+@RequiredArgsConstructor
+public class ProductOptionCombinationRepositoryImpl implements ProductOptionCombinationRepository {
+
+    private final ProductOptionCombinationJpaRepository jpaRepository;
+    private final ProductOptionCombinationValueJpaRepository valueJpaRepository;
+    private final ProductOptionCombinationMapper mapper;
+
+    @Override
+    public ProductOptionCombination save(ProductOptionCombination combination) {
+        ProductOptionCombinationEntity entity;
+        if (combination.id() == null) {
+            entity = jpaRepository.save(mapper.toEntity(combination));
+        } else {
+            entity = jpaRepository.findById(combination.id())
+                    .orElseThrow(() -> new EntityNotFoundException("해당 옵션 조합을 찾을 수 없습니다."));
+            // 낙관적 락(stale 덮어쓰기 방지): 도메인이 (이전 요청에서) 읽은 version과 현재 행 version이 다르면, 그 사이 다른 요청이
+            // 먼저 수정한 것이므로 충돌로 거부한다. 같은 트랜잭션에서 읽었으면 version이 같아 통과한다(버전 미상이면 검사 생략).
+            // 동시 in-flight 레이스는 커밋 시 @Version이 OptimisticLockingFailureException으로 잡아 웹 레이어가 409로 매핑한다.
+            if (combination.version() != null && !Objects.equals(entity.getVersion(), combination.version())) {
+                throw new ProductConcurrentModificationException(
+                        "옵션 조합이 다른 요청에 의해 이미 수정되었습니다: " + combination.id());
+            }
+            mapper.updateEntityFromDomain(entity, combination);
+            entity = jpaRepository.save(entity);
+        }
+        replaceValues(entity.getId(), combination.optionValueIds());
+        return loadDomain(entity);
+    }
+
+    @Override
+    public List<ProductOptionCombination> saveAll(List<ProductOptionCombination> combinations) {
+        if (combinations.isEmpty()) {
+            return List.of();
+        }
+        // 신규(INSERT) 전용 가드 — id가 있으면 잘못된 호출(정상 흐름엔 도달 불가). 도메인 예외라 @Repository 변환 없이 그대로 전파·로그(500)
+        combinations.forEach(combination -> {
+            if (combination.id() != null) {
+                throw new ProductDomainException(
+                        ProductErrorCode.INTERNAL_PRODUCT_ERROR, "saveAll은 신규 조합 전용입니다");
+            }
+        });
+
+        // 1) 조합 행 일괄 INSERT
+        List<ProductOptionCombinationEntity> savedEntities = jpaRepository.saveAll(
+                combinations.stream()
+                        .map(mapper::toEntity)
+                        .toList());
+
+        // 2) 생성된 조합 id에 옵션값 매핑을 모아 일괄 INSERT (saveAll은 입력 순서를 보존)
+        List<ProductOptionCombinationValueEntity> valueEntities = new ArrayList<>();
+        for (int i = 0; i < savedEntities.size(); i++) {
+            UUID combinationId = savedEntities.get(i)
+                    .getId();
+            for (UUID valueId : combinations.get(i)
+                    .optionValueIds()) {
+                valueEntities.add(ProductOptionCombinationValueEntity.builder()
+                        .optionCombinationId(combinationId)
+                        .optionValueId(valueId)
+                        .build());
+            }
+        }
+        valueJpaRepository.saveAll(valueEntities);
+
+        // 3) 재조회 없이 입력 도메인에 부여된 id만 채워 반환 (read-back N+1 방지)
+        List<ProductOptionCombination> result = new ArrayList<>(savedEntities.size());
+        for (int i = 0; i < savedEntities.size(); i++) {
+            result.add(combinations.get(i)
+                    .toBuilder()
+                    .id(savedEntities.get(i)
+                            .getId())
+                    .build());
+        }
+        return result;
+    }
+
+    @Override
+    public Optional<ProductOptionCombination> findById(UUID id) {
+        return jpaRepository.findById(id)
+                .map(this::loadDomain);
+    }
+
+    @Override
+    public List<ProductOptionCombination> findByProductId(UUID productId) {
+        return assembleWithValues(jpaRepository.findByProductId(productId));
+    }
+
+    @Override
+    public List<ProductOptionCombination> findAllById(Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return assembleWithValues(jpaRepository.findAllById(ids));
+    }
+
+    @Override
+    public int discontinueAllByProductId(UUID productId, Instant now) {
+        int discontinued = jpaRepository.discontinueAllByProductId(productId, now);
+        // 은퇴한 기본 조합이 DEFAULT 키를 점유하면 옵션 교체 뒤 새 기본 조합을 만들 수 없다 — 키를 비운다
+        jpaRepository.releaseDefaultKey(productId, CombinationKey.DEFAULT, now);
+        return discontinued;
+    }
+
+    /**
+     * 조합 엔티티들에 옵션값 매핑을 IN 한 쿼리로 모아 붙여 도메인으로 조립한다(조합별 개별 조회 N+1 방지).
+     */
+    private List<ProductOptionCombination> assembleWithValues(List<ProductOptionCombinationEntity> entities) {
+        if (entities.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> combinationIds = entities.stream()
+                .map(ProductOptionCombinationEntity::getId)
+                .toList();
+        Map<UUID, List<UUID>> valueIdsByCombination =
+                valueJpaRepository.findByOptionCombinationIdIn(combinationIds)
+                        .stream()
+                        .collect(Collectors.groupingBy(
+                                ProductOptionCombinationValueEntity::getOptionCombinationId,
+                                Collectors.mapping(
+                                        ProductOptionCombinationValueEntity::getOptionValueId,
+                                        Collectors.toList())));
+        return entities.stream()
+                .map(entity -> mapper.toDomain(entity)
+                        .toBuilder()
+                        .optionValueIds(valueIdsByCombination.getOrDefault(entity.getId(), List.of()))
+                        .build())
+                .toList();
+    }
+
+    @Override
+    public Optional<ProductOptionCombination> findByProductIdAndSku(UUID productId, String sku) {
+        return jpaRepository.findByProductIdAndSku(productId, sku)
+                .map(this::loadDomain);
+    }
+
+    private void replaceValues(UUID combinationId, List<UUID> optionValueIds) {
+        valueJpaRepository.deleteByOptionCombinationId(combinationId);
+        // 삭제를 INSERT보다 먼저 DB에 반영 — 같은 (option_combination_id, option_value_id) 재삽입 시 unique 충돌 방지
+        // (Hibernate는 한 flush 안에서 INSERT를 DELETE보다 먼저 실행한다)
+        valueJpaRepository.flush();
+        if (optionValueIds == null) {
+            return;
+        }
+        for (UUID valueId : optionValueIds) {
+            valueJpaRepository.save(ProductOptionCombinationValueEntity.builder()
+                    .optionCombinationId(combinationId)
+                    .optionValueId(valueId)
+                    .build());
+        }
+    }
+
+    private ProductOptionCombination loadDomain(
+            ProductOptionCombinationEntity entity) {
+        List<UUID> valueIds = valueJpaRepository.findByOptionCombinationId(entity.getId())
+                .stream()
+                .map(ProductOptionCombinationValueEntity::getOptionValueId)
+                .toList();
+        return mapper.toDomain(entity)
+                .toBuilder()
+                .optionValueIds(valueIds)
+                .build();
+    }
+}

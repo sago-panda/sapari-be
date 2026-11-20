@@ -1,7 +1,7 @@
 # live 도메인 체크리스트 (`LIVE-*`)
 
-`domain-reviewer` 가 `domain=live` 로 읽는다. 각 항목은 `modules/live/AGENTS.md` 의 절을 근거로 하며,
-그 파일이 바뀌면 여기도 같이 본다 — 근거가 사라진 항목은 `CONV-10` 감이다.
+`domain-reviewer` 가 `domain=live` 로 읽는다. 각 항목의 §절은 `.claude/rules/live/*.md` 의 같은 이름 절을 근거로 하며
+(SPR-154 에서 `modules/live/AGENTS.md` 는 이정표와 §Design-time invariants 만 남김), 그 파일들이 바뀌면 여기도 같이 본다 — 근거가 사라진 항목은 `CONV-10` 감이다.
 
 ---
 
@@ -26,8 +26,8 @@
 - `LIVE-05` **Reconciliation decides per room, on DB status, right before acting** (§Orphan
   reconciliation) — a once-per-round snapshot; staleness from `updated_at` or viewer count instead of
   `started_at`; gating a room sweep on participant count; **dropping the "global zero is not evidence"
-  abort** in `end-stale-live`; adding grace to the `Ended` room/ingress sweeps (the file explains why
-  grace there opens the hole it would seem to close); deleting where "no DB row → log only" applies.
+  abort** in `end-stale-live`; adding grace to the `Ended` room/ingress sweeps (why grace there opens the
+  hole it would seem to close: `ReconcileOrphanMediaService` — room sweep and `ingressGraceElapsed`); deleting where "no DB row → log only" applies.
   Threshold/cron/batch-size changes: is the stagger (`0/10`, `3/10`, `6/10`) kept, and does the new
   blast radius stay reversible?
 - `LIVE-06` **Webhook handlers are idempotent and dedup'd before they destroy** (§LiveKit webhooks) — a
@@ -40,6 +40,17 @@
   `findByIdAndSellerIdForUpdate`; an ownership check moved from the query into the service (leaks
   room existence); `LiveRoomMapper.updateEntityFromDomain` no longer writing `scheduledAt` out of the
   status (a re-save wipes it). Hibernate emits `for no key update` — that is the lock, not its absence.
+
+- `LIVE-08` **Egress artifact URL contract: produced, consumed, and retained together** (§Media ports) —
+  an HLS artifact has three sides and a change that moves one without the others is the finding. Produced:
+  `playlist_name` / `live_playlist_name` / `filename_prefix` in `startRenditionEgress` (they must differ —
+  equal names stop every broadcast from starting). Consumed: `HlsRendition.variantPlaylistPath()`,
+  `MasterPlaylistGenerator`, and `LiveRoom.endLive`'s `hlsArchiveUrl` — an artifact written with no reader,
+  or `hlsArchiveUrl` pointing at the live sliding window instead of the EVENT playlist, is the finding.
+  Archive URL must survive `HlsEgressResult` → `StreamInfo` → persistence reload → `endLive`, and be
+  exposed through a separate replay use-case, never the authorization-only `GetLiveRoomUseCase` view.
+  Replay is public — see `modules/live/AGENTS.md` §Design-time invariants. Retained: an S3 lifecycle rule expiring `playlist.m3u8` before its
+  segments makes replay permanently unavailable. Check the constraint in `infra/AGENTS.md` by hand.
 
 Catch-all: none. A live-specific problem no item covers is reported under the closest item with a note
 that the checklist is missing it.

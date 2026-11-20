@@ -1,0 +1,51 @@
+# 상품 대량 등록(엑셀 업로드). 00-auth.http 먼저 실행해 sellerToken을 채운다.
+# 업로드 파일은 테스트 픽스처의 템플릿 예시(P-001·P-002·P-003). 카테고리 1001·2010이 로컬 DB에 없으면 REJECTED(PRODUCT-005)가 정상이다.
+# 검증 오류도 200(status=REJECTED, 셀 위치 오류 목록)이고, 파일 자체를 해석할 수 없을 때만 400 PRODUCT-012다.
+
+### [1/2] 템플릿 예시 업로드 → 200, status = COMPLETED 또는 REJECTED(카테고리 없음)
+POST {{productBaseUrl}}/api/v1/seller/products/bulk
+Authorization: Bearer {{sellerToken}}
+Content-Type: multipart/form-data; boundary=bulk
+
+--bulk
+Content-Disposition: form-data; name="file"; filename="product-bulk-upload-template.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ../src/test/resources/bulk/product-bulk-upload-template.xlsx
+--bulk--
+
+> {%
+    client.test("200 OK + 성공 봉투", function () {
+        client.assert(response.status === 200, "expected 200, got " + response.status);
+        client.assert(response.body.success === true, "success=" + response.body.success);
+    });
+    const data = response.body.data;
+    client.test("처리 결과가 COMPLETED 또는 REJECTED", function () {
+        client.assert(data.status === "COMPLETED" || data.status === "REJECTED", "status=" + data.status);
+    });
+    if (data.status === "COMPLETED") {
+        client.test("상품 3개 저장", function () {
+            client.assert(data.created.length === 3, "created=" + data.created.length);
+        });
+    } else {
+        client.log("REJECTED 오류: " + JSON.stringify(data.errors));
+    }
+%}
+
+### [2/2] xlsx가 아닌 파일 → 400 PRODUCT-012
+POST {{productBaseUrl}}/api/v1/seller/products/bulk
+Authorization: Bearer {{sellerToken}}
+Content-Type: multipart/form-data; boundary=bulk
+
+--bulk
+Content-Disposition: form-data; name="file"; filename="products.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+상품코드,카테고리ID
+P-001,1001
+--bulk--
+
+> {%
+    client.test("400 Bad Request", function () { client.assert(response.status === 400, "got " + response.status); });
+    client.test("PRODUCT-012", function () { client.assert(response.body.error.code === "PRODUCT-012", "code=" + response.body.error.code); });
+%}

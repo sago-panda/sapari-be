@@ -1,0 +1,354 @@
+package com.sapari.liveapp;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.security.KeyPairGenerator;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.Base64;
+
+import org.bson.UuidRepresentation;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.util.ClassUtils;
+
+import com.mongodb.MongoClientSettings;
+import org.springframework.boot.mongodb.autoconfigure.MongoClientSettingsBuilderCustomizer;
+import com.sapari.chat.application.service.ChatBanMirrorSnapshotter;
+import com.sapari.chat.application.service.ChatBanReleaseRecorder;
+import com.sapari.chat.application.service.ChatFilterWordSeedRecorder;
+import com.sapari.chat.application.service.ChatFilterWordWriteRecorder;
+import com.sapari.chat.application.service.ChatKickRecorder;
+import com.sapari.chat.port.GetChatHistoryUseCase;
+import com.sapari.chat.port.GetChatNoticeUseCase;
+import com.sapari.chat.port.KickUserUseCase;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * 강퇴 경로가 <b>이 앱에서 실제로 조립되는지</b>를 컨텍스트를 띄워 확인한다.
+ *
+ * <p>이 테스트는 두 건의 실제 사고에서 나왔다. 둘 다 유닛 테스트가 전부 초록인 채로 운영만 깨졌고,
+ * 원인이 같다 — <b>앱이 해야 할 배선을 테스트가 대신 해 주고 있었다.</b>
+ *
+ * <ul>
+ *   <li>DB 쓰기가 {@code @Modifying} 네이티브 INSERT라 트랜잭션 경계를 요구하는데 아무도 열지 않았다.
+ *       서비스 테스트는 목이라 쿼리가 돌지 않았고, 리포지토리 테스트는 {@code @DataJpaTest}가 경계를
+ *       대신 열어 줬다. 운영에서는 인가를 통과한 뒤 500이었다.</li>
+ *   <li>UUID를 standard BSON binary로 읽는 설정이 chat 쪽 {@code @Configuration}에 있는데, 이 앱이 chat을
+ *       스캔에서 빼면서 함께 빠졌다. 쓰는 쪽은 정상이라 데이터는 멀쩡한데 읽는 쪽만 깨졌다.</li>
+ * </ul>
+ *
+ * <p>그래서 여기서는 <b>컨텍스트가 실제로 만든 빈</b>을 본다. 손으로 조립해 검사하면 같은 구멍이 다시 생긴다.
+ *
+ * <p>설정은 이 테스트가 직접 채운다. {@code application.yaml}이 저장소에 없어 클린 체크아웃에서는 어차피
+ * 없고, 그걸 이유로 태그를 달아 CI에서 빼면 <b>이 테스트가 막으려는 회귀를 CI가 영원히 못 잡는다.</b>
+ * DB·Mongo·Redis에 실제로 붙지는 않는다 — 클라이언트는 지연 연결이고 JPA 메타데이터 조회도 꺼 둔다.
+ */
+@SpringBootTest
+@DisplayName("강퇴 배선 — 앱이 조립해야 할 것을 테스트가 대신하지 않는다")
+class ChatModerationWiringTest {
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", () -> "jdbc:postgresql://localhost:5432/sapari_test");
+        registry.add("spring.datasource.username", () -> "test");
+        registry.add("spring.datasource.password", () -> "test");
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "none");
+        registry.add("spring.jpa.database-platform", () -> "org.hibernate.dialect.PostgreSQLDialect");
+        // 이게 없으면 방언을 지정해도 Hibernate가 부팅 중 메타데이터를 읽으려 커넥션을 연다.
+        registry.add("spring.jpa.properties.hibernate.boot.allow_jdbc_metadata_access", () -> false);
+
+        registry.add("jwt.issuer", () -> "sapari-test");
+        registry.add("jwt.secret", () -> "test-only-secret-not-a-credential-32chars");
+        registry.add("jwt.access-token-expiration-seconds", () -> 3600);
+        registry.add("jwt.refresh-token-expiration-seconds", () -> 1209600);
+
+        registry.add("live.room-token.issuer", () -> "live");
+        registry.add("live.room-token.audience", () -> "chat");
+        registry.add("live.room-token.expiration-seconds", () -> 90);
+        registry.add("live.room-token.private-key", ChatModerationWiringTest::generatedPrivateKey);
+
+        registry.add("livekit.host", () -> "http://localhost:7880");
+        registry.add("livekit.api-key", () -> "test-key");
+        registry.add("livekit.api-secret", () -> "test-secret");
+        registry.add("livekit.s3.bucket", () -> "test-bucket");
+        registry.add("livekit.s3.region", () -> "ap-northeast-2");
+        registry.add("livekit.s3.key-prefix", () -> "test/");
+        registry.add("livekit.s3.access-key", () -> "test-access");
+        registry.add("livekit.s3.secret-key", () -> "test-secret");
+        registry.add("livekit.hls.cdn-base-url", () -> "http://localhost/hls");
+        registry.add("livekit.hls.segment-duration", () -> 4);
+        registry.add("live.thumbnail.bucket", () -> "test-bucket");
+        registry.add("live.thumbnail.region", () -> "ap-northeast-2");
+        registry.add("live.thumbnail.access-key", () -> "test-access");
+        registry.add("live.thumbnail.secret-key", () -> "test-secret");
+        registry.add("live.thumbnail.cdn-base-url", () -> "https://cdn.example.test");
+
+        registry.add("management.server.port", () -> 0);
+        // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아 지표가 조용히 빈다
+        // (LiveSecurityConfig.requiredEndpointsMustBeExposed — 실제 노출을 본다). 이 테스트가 재는
+        // 것과 무관하지만 채워야 뜬다.
+        registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus");
+
+        // ⚠️ 재조정 잡 셋을 끈다. 마스터 스위치가 matchIfMissing=true라 설정이 없으면 켜진다 —
+        //    저장소에 application.yaml이 없으니 이 테스트에서는 부재가 곧 활성이다. 그대로 두면
+        //    컨텍스트가 크론과 함께 뜨고, 컨텍스트는 테스트 JVM 수명 동안 캐시되므로 10분 경계를 넘기면
+        //    실제로 발화한다. 그중 둘은 방송을 시작시키거나 켜진 방송을 끝낼 수 있다.
+        //    지금 안 터지는 건 자격증명이 가짜라서지 설계된 차단이 아니다.
+        registry.add("live.reconcile.enabled", () -> false);
+    }
+
+    /**
+     * 룸 토큰 개인키는 실행할 때마다 만든다 — 저장소에 개인키 모양의 문자열을 남기지 않기 위해서다.
+     * 이 테스트는 서명 결과를 검증하지 않으므로 값이 무엇이든 형식만 맞으면 된다.
+     */
+    private static String generatedPrivateKey() {
+        try {
+            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+            generator.initialize(2048);
+            return Base64.getEncoder().encodeToString(generator.generateKeyPair().getPrivate().getEncoded());
+        } catch (Exception e) {
+            throw new IllegalStateException("테스트용 룸 토큰 키 생성 실패", e);
+        }
+    }
+
+    @Autowired
+    private ApplicationContext context;
+
+    @Test
+    @DisplayName("강퇴 유스케이스가 조립된다 — 빠진 협력자가 있으면 부팅이 실패한다")
+    void kickUseCaseIsAssembled() {
+        assertThat(context.getBean(KickUserUseCase.class)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("⭐ 이력·공지 두 포트가 같은 빈 하나로 주입된다 — 반환 타입이 한쪽 인터페이스면 생성 순서에 따라 갈린다")
+    void historyAndNoticePortsResolveToTheSameBean() {
+        // 빈이 하나 더 등록되면 getBean 이 NoUniqueBeanDefinitionException 으로 실패한다
+        assertThat(context.getBean(GetChatNoticeUseCase.class))
+                .isSameAs(context.getBean(GetChatHistoryUseCase.class));
+    }
+
+    @Test
+    @DisplayName("⭐ 기록 빈이 프록시다 — 프록시가 아니면 @Transactional이 안 걸리고 모든 강퇴가 500이 된다")
+    void recorderIsATransactionalProxy() {
+        // given: @Transactional은 프록시를 통해서만 걸린다. 같은 클래스 안의 메서드로 옮기거나
+        //        빈 등록을 잃으면 애너테이션은 남은 채 효력만 사라진다 — 그때 조용해진다.
+        ChatKickRecorder recorder = context.getBean(ChatKickRecorder.class);
+
+        // when & then
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatKickRecorder가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /**
+     * ⭐ 해제도 같은 축을 갖는다.
+     *
+     * <p>해제의 DB 쓰기 둘(행 DELETE + 사면 기준선 INSERT)이 모두 {@code @Modifying} 네이티브
+     * 쿼리라 경계가 없으면 {@code "No active transaction for update or delete query"}로 실패한다.
+     * 그리고 둘이 한 트랜잭션이 아니면 "밴은 풀렸는데 누적은 안 접힘" 또는 그 반대가 생긴다.
+     *
+     * <p>위 {@code recorderIsATransactionalProxy}와 따로 두는 이유: 같은 테스트에 둘을 담으면
+     * 한쪽 빈 등록을 잃었을 때 어느 쪽인지가 메시지로 안 나온다.
+     */
+    @Test
+    @DisplayName("⭐ 밴 해제 기록자도 트랜잭션 프록시다 — 두 쓰기가 한 트랜잭션이어야 한다")
+    void banReleaseRecorderIsATransactionalProxy() {
+        // given
+        ChatBanReleaseRecorder recorder = context.getBean(ChatBanReleaseRecorder.class);
+
+        // when & then
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatBanReleaseRecorder가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /** 재적재의 잠금 읽기도 같은 축이다 — 프록시가 아니면 잠금이 즉시 풀려 번호 순서가 커밋 순서와 갈린다. */
+    @Test
+    @DisplayName("⭐ 밴 미러 스냅샷도 트랜잭션 프록시다 — 잠금과 번호가 한 트랜잭션이어야 한다")
+    void banMirrorSnapshotterIsATransactionalProxy() {
+        assertThat(AopUtils.isAopProxy(context.getBean(ChatBanMirrorSnapshotter.class)))
+                .as("ChatBanMirrorSnapshotter가 프록시가 아니다 — @Transactional이 걸리지 않는다")
+                .isTrue();
+    }
+
+    /**
+     * ⭐ 사전 쓰기 둘도 같은 축을 갖는다 — <b>다만 깨지는 시점이 다르다.</b>
+     *
+     * <p>위 둘(강퇴·밴 해제)은 프록시를 잃으면 그 조치가 500 이 된다. 사전 쪽은 더 늦게 보인다:
+     * {@code @Modifying} 네이티브 쿼리가 트랜잭션 없이 돌면 {@code TransactionRequiredException}
+     * 인데, 그 경로가 <b>ADMIN 요청과 부팅 시드뿐</b>이라 평범한 테스트가 밟지 않는다. 시드 쪽은
+     * {@code ChatDictionaryBootstrap} 이 예외를 잡아 ERROR 로 넘기므로 <b>부팅도 성공한다</b> —
+     * 그러면 테이블이 비어 있는데 아무도 모르고, 함대는 번들 사전으로 집행한다.
+     *
+     * <p>그래서 이 단언이 없으면 프록시 상실이 "ADMIN 이 단어를 못 넣는다 + 시드가 조용히
+     * 안 된다" 로만 드러난다. 둘을 한 테스트에 담지 않는 것은 위 둘과 같은 이유다.
+     */
+    @Test
+    @DisplayName("⭐ 사전 시드 기록자가 트랜잭션 프록시다 — 아니면 시드가 조용히 안 된다")
+    void filterWordSeedRecorderIsATransactionalProxy() {
+        ChatFilterWordSeedRecorder recorder = context.getBean(ChatFilterWordSeedRecorder.class);
+
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatFilterWordSeedRecorder가 프록시가 아니다 — 시드가 "
+                        + "TransactionRequiredException 으로 실패하고 부팅은 성공한다")
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("⭐ 사전 쓰기 기록자도 트랜잭션 프록시다 — 아니면 모든 ADMIN 쓰기가 실패한다")
+    void filterWordWriteRecorderIsATransactionalProxy() {
+        ChatFilterWordWriteRecorder recorder = context.getBean(ChatFilterWordWriteRecorder.class);
+
+        assertThat(AopUtils.isAopProxy(recorder))
+                .as("ChatFilterWordWriteRecorder가 프록시가 아니다 — @Modifying 쿼리가 "
+                        + "TransactionRequiredException 으로 터진다")
+                .isTrue();
+    }
+
+    /**
+     * ⭐ UUID 표현이 standard로 적용되는지.
+     *
+     * <p><b>{@code MongoClientSettings} 빈을 그대로 보면 안 된다</b> — 그 빈은 프로퍼티에서만 만들어지고
+     * 커스터마이저는 클라이언트를 만들 때 적용된다(실측: 그 빈은 {@code UNSPECIFIED}다). 그래서 여기서는
+     * 그 조립을 그대로 재현한다 — 등록된 커스터마이저 전부를 빌더에 얹고 결과를 본다. 커스터마이저가
+     * 사라지거나 다른 값을 세우면 여기서 깨진다.
+     */
+    @Test
+    @DisplayName("⭐ UUID를 standard로 읽는다 — 기본값이면 증거 문서의 UUID가 Binary로 돌아온다")
+    void uuidRepresentationIsStandard() {
+        // given: 쓰는 쪽(streaming-app)이 standard로 쓴다. 이 앱이 chat 설정을 스캔에서 빼므로
+        //        같은 값을 여기서 다시 세우지 않으면 읽기만 조용히 깨진다.
+        // ⚠️ 순서가 중요하다. Boot 자신의 커스터마이저(@Order(0))가 프로퍼티 값으로 이 필드를 덮으므로,
+        //    정렬하지 않고 적용하면 우리 값이 지워진 결과가 나온다(실측: UNSPECIFIED). 실제 조립과 같게
+        //    @Order로 정렬해야 우리 커스터마이저가 마지막에 온다.
+        // when & then
+        assertThat(appliedMongoSettings().getUuidRepresentation()).isEqualTo(UuidRepresentation.STANDARD);
+    }
+
+    /**
+     * 연산 상한이 <b>앱 배선을 통해</b> 걸리는지.
+     *
+     * <p>⚠️ <b>이 칸이 없으면 축 하나가 통째로 빈다.</b> {@code LiveAppChatMongoTimeoutTest} 는
+     * {@code new ChatModerationBeansConfig()} 로 빈 메서드를 직접 불러 값·분모·부팅가드를 재는데,
+     * 그러면 <b>그 빈이 앱에 등록되는지</b>는 아무도 안 잰다. 실측: 커스터마이저의 {@code @Bean} 만
+     * 떼고 live-app 전수를 돌리면 <b>초록이다</b>(34클래스 183칸 실패 0) — 이 티켓이 고치려는 결함이
+     * 그대로 돌아와도 게이트가 통과한다.
+     *
+     * <p>이 클래스에서 <b>이미 한 번 터진 모양</b>이다 —
+     * {@code ChatMessageEvidenceMongoRepositoryTest} 가 적어 두었다: *"앱이 해야 할 배선을 테스트가
+     * 대신 해 주면 앱에서 그게 빠져도 이 테스트는 초록이다 — 실제로 그렇게 빠진 적이 있고, 그때 이
+     * 테스트는 통과했다."*
+     *
+     * <p>그래서 형제 칸과 같은 자리에서 잰다 — 실제 컨텍스트의 커스터마이저 빈을 <b>전부 모아</b>
+     * {@code @Order} 로 정렬해 적용한 결과를 본다(손열거가 아니라 구조적 수집이라 새 빈이 그냥 실린다).
+     */
+    @Test
+    @DisplayName("⭐ Mongo 연산 상한이 앱 배선으로 걸린다 — 빈이 빠지면 상한 없는 파드가 뜬다")
+    void mongoOperationTimeoutIsWiredIntoTheApp() {
+        assertThat(appliedMongoSettings().getTimeout(TimeUnit.MILLISECONDS))
+                .as("연산 상한이 조립된 설정에 없다 — 드라이버 기본값은 '무제한' 이고, 멈춘 Mongo "
+                        + "아래에서 HTTP 워커가 무한정 점유된다")
+                .isEqualTo(3_000L);
+    }
+
+    /**
+     * 실제 조립을 재현한다 — 등록된 커스터마이저 전부를 {@code @Order} 로 정렬해 빌더에 얹는다.
+     *
+     * <p>⚠️ 순서가 하중이다. Boot 자신의 커스터마이저({@code @Order(0)})가 프로퍼티 값으로 필드를
+     * 덮으므로 정렬하지 않으면 우리 값이 지워진 결과가 나온다(실측: UUID 가 UNSPECIFIED).
+     */
+    private MongoClientSettings appliedMongoSettings() {
+        List<MongoClientSettingsBuilderCustomizer> customizers =
+                new ArrayList<>(context.getBeansOfType(MongoClientSettingsBuilderCustomizer.class).values());
+        AnnotationAwareOrderComparator.sort(customizers);
+
+        MongoClientSettings.Builder builder = MongoClientSettings.builder();
+        customizers.forEach(customizer -> customizer.customize(builder));
+        return builder.build();
+    }
+
+    /**
+     * 이 앱에 존재하는 chat 빈의 <b>전부</b>를 고정한다.
+     *
+     * <p>패키지 몇 개만 골라 보면 검사가 이름이 주장하는 것보다 좁아진다 — 걸러 낸 자리 밖에서 새면
+     * 초록인 채로 통과한다. 그래서 특정 패키지가 아니라 {@code com.sapari.chat} 전체를 세고, 이 앱이
+     * <b>일부러 등록한 것</b>과 정확히 같은지 본다.
+     *
+     * <p>목록에 없는 것이 하나라도 생기면 깨진다. 그게 의도다 — chat 빈이 이 앱에 새로 생기는 일은
+     * 스캔 제외가 풀렸거나 누군가 {@code @Bean}을 더한 것이고, 둘 다 사람이 한 번 봐야 하는 변화다.
+     */
+    @Test
+    @DisplayName("⭐ 이 앱의 chat 빈은 일부러 등록한 것뿐이다 — 하나라도 더 있으면 스캔이 새고 있다")
+    void onlyDeliberatelyRegisteredChatBeansExist() {
+        // given: 리액티브 어댑터가 @Repository를 달고 같은 모듈에 살고, 그중 브로드캐스터는
+        //        생성자에서 Redis에 접속한다. 새어 들어오면 이 앱이 채팅 팬아웃 노드가 된다.
+        Set<String> expected = Set.of(
+                // ChatModerationBeansConfig 가 세우는 것
+                "ChatPermissionPolicy", "ChatKickRecorder", "KickUserService",
+                // 밴 해제 — 이 도메인의 첫 역경로. 해제는 ADMIN 전용이고 방을 읽지 않는다.
+                "ChatBanReleaseRecorder", "ReleaseBanService",
+                // 강퇴 집행 캐시의 역경로 — 정본을 읽어 Redis SET 을 다시 세운다.
+                "ReconcileKickListService",
+                // 밴 미러의 역경로 — 유효한 밴 전부를 정본에서 미러로 다시 깐다. 사용자마다 잠금 안에서 읽는
+                // 트랜잭션 빈이 함께 온다(미러 변경 번호가 해제와 같은 순서여야 한다).
+                "ChatBanMirrorSnapshotter", "ReconcileBanMirrorService",
+                // 종료 마커 해제 — 진위 검증(그 방이 실제로 진행 중인가)이 live 정본을 읽어야 해서
+                // 이 앱에 있다. 기록·조회는 리액티브 쪽이고 streaming-app 이 쓴다.
+                "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",
+                // 방송 중 목록의 시청자 수 — live 재조정이 chat-api 포트로 읽는다(SPR-157).
+                "ChatViewerCountRedisRepository", "GetChatViewerCountsService",
+                "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
+                "ChatMessageEvidenceMongoRepository",
+                "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",
+                "ChatKickEventRedisPublisher", "ChatAccountEventRedisPublisher",
+                // 이력 조회(VOD 다시보기 · 재접속 누락분) — 강퇴와 같은 이유로 이 앱이다: 방 주인과 방송 시작 시각을
+                // 묻는 빈이 live-core 에 있다. 매퍼는 생성된 MapStruct 구현을 손으로 세운 것이다
+                // (componentModel=spring 이지만 이 앱은 com.sapari.chat 을 스캔하지 않는다).
+                "GetChatHistoryService", "ChatHistoryMongoRepository", "ChatMessageMapperImpl",
+                // 사전 전파의 <쓰는 쪽>. 정본이 Postgres 인데 그것을 평가하는 앱(streaming-app)에는
+                // DataSource 가 없어서, 읽을 수 있는 이 앱이 읽어 Redis 스냅샷으로 내놓는다.
+                // 받는 쪽 빈(구독·재빌드·교체)은 전부 streaming-app 이고 여기 없다 — 그것이
+                // 이 목록이 보여 주는 비대칭이다.
+                "ChatFilterWordRepositoryImpl", "ProfanityDictionarySnapshotRedisPublisher",
+                "ChatFilterWordSeedRecorder", "ProfanityDictionaryPublishService",
+                // 사전 관리(ADMIN). 쓰기 선검사가 사전의 <문>을 쓰므로 그 구현도 이 앱에 있다 —
+                // 번들·설정·전파가 지나는 문과 같아야 하기 때문이다.
+                "DictionaryProfanityFilterFactory", "ChatFilterWordWriteRecorder",
+                "ManageFilterWordsService",
+                // 감사 기록. 들어가는 테이블(live_schema.audit_logs)은 도메인 공용인데 쓰는 코드는
+                // chat 뿐이다 — 그래서 action 값에 CHAT_ 접두가 붙는다. 경계 빈이 따로 있는 것은
+                // DB 트랜잭션이 없는 조치 둘(명단 재적재·종료 마커 해제) 때문이고, 나머지 셋은
+                // 자기 recorder 의 트랜잭션 안에서 저장소를 직접 부른다.
+                "ChatAuditLogRepositoryImpl", "ChatAuditRecorder");
+
+        // when
+        Set<String> actual = Arrays.stream(context.getBeanDefinitionNames())
+                .map(context::getType)
+                .filter(type -> type != null && type.getName().startsWith("com.sapari.chat."))
+                // Spring Data가 만드는 리포지토리 프록시는 인터페이스 이름으로 잡힌다 — 이 앱이
+                // @EnableJpaRepositories로 명시한 것이라 목록에 넣지 않고 여기서 걷어낸다.
+                .filter(type -> !type.isInterface())
+                // 프록시가 씌워진 빈은 이름이 ChatKickRecorder$$SpringCGLIB$$0 꼴이 된다.
+                // 원본 클래스로 되돌려 비교한다 — 프록시 유무는 이 테스트가 볼 것이 아니다(별도 테스트).
+                .map(type -> ClassUtils.getUserClass(type).getSimpleName())
+                .collect(Collectors.toSet());
+
+        // then
+        assertThat(actual)
+                .as("이 앱에 있어야 할 chat 빈과 실제가 다르다 — 스캔 제외가 풀렸거나 등록이 늘었다")
+                .isEqualTo(expected);
+    }
+}
