@@ -52,6 +52,7 @@ public class ApiSecurityConfig {
     private static final String[] CUSTOMER_PROTECTED_MATCHERS = {
             "/api/v1/customers/auth/me",
             "/api/v1/customers/auth/me/nickname",
+            "/api/v1/customers/auth/me/profile-image",
             "/api/v1/customers/auth/logout"
     };
 

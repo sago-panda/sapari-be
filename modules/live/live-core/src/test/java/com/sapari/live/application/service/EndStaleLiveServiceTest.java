@@ -22,11 +22,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.live.application.port.RecordingLiveMetrics;
 import com.sapari.live.application.port.LiveEventPublisher;
 import com.sapari.live.application.port.LiveMediaManager;
 import com.sapari.live.command.EndStaleLiveCommand;
@@ -55,6 +57,9 @@ class EndStaleLiveServiceTest {
 
     @Mock
     private TimeProvider timeProvider;
+
+    @Spy
+    private RecordingLiveMetrics liveMetrics = new RecordingLiveMetrics();
 
     @InjectMocks
     private EndStaleLiveService endStaleLiveService;
@@ -109,6 +114,8 @@ class EndStaleLiveServiceTest {
         ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
         then(liveRoomRepository).should(times(1)).save(captor.capture());
         assertThat(captor.getValue().status()).isInstanceOf(LiveStatus.Ended.class);
+    
+        org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).containsExactly("Live->Ended");
     }
 
     @Test

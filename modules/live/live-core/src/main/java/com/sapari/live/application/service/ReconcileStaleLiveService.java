@@ -3,6 +3,7 @@ package com.sapari.live.application.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -15,6 +16,10 @@ import org.springframework.stereotype.Service;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.application.port.EgressSummary;
 import com.sapari.live.application.port.LiveMediaManager;
+import com.sapari.live.application.port.LiveMetrics;
+import com.sapari.live.application.port.ReconcileAbortReason;
+import com.sapari.live.application.port.ReconcileAction;
+import com.sapari.live.application.port.ReconcileJob;
 import com.sapari.live.application.port.StaleLiveReconcilePolicy;
 import com.sapari.live.command.EndStaleLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
@@ -46,13 +51,38 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
     private final EndStaleLiveUseCase endStaleLiveUseCase;
     private final StaleLiveReconcilePolicy policy;
     private final TimeProvider timeProvider;
+    private final LiveMetrics liveMetrics;
 
+    /**
+     * 회차를 감싸 예외를 <b>세고 다시 던진다</b>. 스케줄러가 잡아 로그를 남기는 구조는 그대로 두고
+     * (실패 처리 방식을 바꾸지 않는다) 밖에서 보이는 사실만 하나 늘린다 — 이게 없으면 매 회차
+     * 예외로 죽는 잡과 스케줄러가 아예 안 도는 상황이 지표상 똑같다.
+     */
     @Override
     public void reconcile() {
-        Instant threshold = timeProvider.now().minus(policy.threshold());
+        // 예외를 잡지 않는다 — 정상 종료에만 표시를 남기고, 없으면 실패로 센다. catch 로 세면
+        // Error 로 죽은 회차가 무기록이 되어(= 스케줄러가 안 돈 것과 같아 보임) 이 지표를 만든
+        // 이유가 사라지고, Throwable 을 잡으면 죽어가는 JVM 을 건드린다.
+        boolean completed = false;
+        try {
+            doReconcile();
+            completed = true;
+        } finally {
+            if (!completed) {
+                liveMetrics.reconcileRoundFailed(ReconcileJob.END_STALE_LIVE);
+            }
+        }
+    }
+
+    private void doReconcile() {
+        Instant startedAt = timeProvider.now();
+        Instant threshold = startedAt.minus(policy.threshold());
 
         List<UUID> candidates = liveRoomRepository.findStaleLiveRoomIds(threshold, policy.batchSize());
         if (candidates.isEmpty()) {
+            // 후보 0건도 완료 회차다 — 기록하지 않으면 "할 일이 없던 회차" 와 "잡이 아예 안 돈 회차" 가
+            // 똑같이 무기록이 되어, 스케줄러가 죽은 걸 알아챌 방법이 사라진다.
+            liveMetrics.reconcileRoundCompleted(ReconcileJob.END_STALE_LIVE, elapsed(startedAt));
             return;
         }
 
@@ -68,7 +98,11 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         // Ended 방들의 실제 송출 ingress 를 지운다(그 잡은 Ended 면 publishing 이어도 지우는 게 옳다).
         // 후보가 있는데 활성 egress 가 하나도 없는 건 정상 운영에서 나올 수 있는 조합이 아니므로 회차를 접는다.
         // 오설정이면 다음 회차에도 같은 답이 오니 미루는 비용이 없고, 진짜로 전부 죽었어도 다음 회차가 줍는다.
+        liveMetrics.liveKitActiveEgressRooms(roomsWithActiveEgress.size());
+
         if (roomsWithActiveEgress.isEmpty()) {
+            liveMetrics.reconcileRoundAborted(
+                    ReconcileJob.END_STALE_LIVE, ReconcileAbortReason.NO_ACTIVE_EGRESS_CLUSTER_WIDE);
             log.error("방치 Live 정리 중단 — 후보 {}건인데 활성 egress 가 0건. LiveKit 오설정(200+빈 목록) 의심.",
                     candidates.size());
             return;
@@ -77,6 +111,9 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         int ended = 0;
         int skipped = 0;
         int spared = 0;
+        // 집계는 finally 에서 — 루프 도중 예외로 빠지면 이미 종료시킨 방 수가 기록되지 않는다.
+        // 이 잡은 살아 있는 방송을 끄는 잡이라, "죽기 전까지 몇 건을 껐나" 가 특히 중요하다.
+        try {
         for (UUID roomId : candidates) {
             if (roomsWithActiveEgress.contains(roomId)) {
                 spared++;
@@ -94,8 +131,18 @@ public class ReconcileStaleLiveService implements ReconcileStaleLiveUseCase {
         // 활성 egress 총계를 함께 남긴다 — 이 잡의 오판(멀쩡한 방송을 Ended 로)은 15분 뒤 고아 미디어 잡이
         // 실제 송출을 끊는 체인으로 이어지므로, 사후에 "그 회차의 egress 목록이 비정상적으로 비었는가"를
         // 되짚을 수단이 필요하다. roomId 만으로는 판정 근거가 남지 않는다.
+        } finally {
+            liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.ENDED, ended);
+            liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.SPARED, spared);
+            liveMetrics.reconcileActed(ReconcileJob.END_STALE_LIVE, ReconcileAction.SKIPPED, skipped);
+        }
+        liveMetrics.reconcileRoundCompleted(ReconcileJob.END_STALE_LIVE, elapsed(startedAt));
         log.info("방치된 Live 방 정리 완료. 후보={}, 종료={}, 송출중스킵={}, 이미처리={}, 활성egress총계={}",
                 candidates.size(), ended, spared, skipped, roomsWithActiveEgress.size());
+    }
+
+    private Duration elapsed(Instant startedAt) {
+        return Duration.between(startedAt, timeProvider.now());
     }
 
 }

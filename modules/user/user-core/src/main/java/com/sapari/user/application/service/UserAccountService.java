@@ -2,6 +2,7 @@ package com.sapari.user.application.service;
 
 import lombok.RequiredArgsConstructor;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -9,24 +10,41 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.global.time.TimeProvider;
+import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.command.ProfileImagePrepareCommand;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
+import com.sapari.user.application.dto.ProfileImageChangeResult;
+import com.sapari.user.application.dto.ProfileImageRemoveResult;
+import com.sapari.user.application.dto.ProfileImageStoreCommand;
+import com.sapari.user.application.dto.StoredProfileImage;
+import com.sapari.user.application.port.ProfileImageStorage;
 import com.sapari.user.domain.model.Terms;
+import com.sapari.user.domain.exception.UserException;
+import com.sapari.user.domain.exception.UserErrorCode;
+import com.sapari.user.exception.NicknameChangeRestrictedException;
 import com.sapari.user.domain.model.User;
 import com.sapari.user.domain.model.UserTermsAgreement;
 import com.sapari.user.domain.model.WithdrawnUserRetention;
 import com.sapari.user.application.support.WithdrawnUserRetentionMasker;
+import com.sapari.user.application.support.ProfileImageUploadValidator;
 import com.sapari.user.domain.repository.TermsRepository;
 import com.sapari.user.domain.repository.UserRepository;
 import com.sapari.user.domain.repository.UserTermsAgreementRepository;
 import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
+import com.sapari.user.application.port.ProfileImageUrlResolver;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.TermsType;
 import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.view.UserView;
 
 /**
@@ -44,6 +62,11 @@ public class UserAccountService implements UserAccountUseCase {
     private final TermsRepository termsRepository;
     private final UserTermsAgreementRepository userTermsAgreementRepository;
     private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker;
+    private final ProfileImageUploadValidator profileImageUploadValidator;
+    private final ProfileImageStorage profileImageStorage;
+    private final ProfileImageMutationProcessor profileImageMutationProcessor;
+    private final SocialCustomerRegistrationMutationProcessor socialCustomerRegistrationMutationProcessor;
+    private final ProfileImageUrlResolver profileImageUrlResolver;
     private final TimeProvider timeProvider;
 
     /**
@@ -62,6 +85,15 @@ public class UserAccountService implements UserAccountUseCase {
         return toView(savedUser);
     }
 
+    /** 소셜 가입 후 필수 후속 처리 실패 시 가입 데이터를 삭제하고 커밋된 프로필 이미지도 정리한다. */
+    @Override
+    public void rollbackSocialCustomerRegistration(SocialCustomerRegistrationRollbackCommand command) {
+        String profileImageKey = socialCustomerRegistrationMutationProcessor.rollback(command);
+        if (profileImageKey != null) {
+            profileImageStorage.deleteQuietly(profileImageKey);
+        }
+    }
+
     private User createSocialCustomer(RegisterSocialCustomerCommand command, Instant now) {
         return User.createSocialCustomer(
                 command.nickname(),
@@ -70,7 +102,7 @@ public class UserAccountService implements UserAccountUseCase {
                 command.gender(),
                 command.phoneNumber(),
                 command.email(),
-                command.profileImageUrl(),
+                command.profileImageKey(),
                 command.marketingAgreed(),
                 command.provider(),
                 command.providerId(),
@@ -190,14 +222,106 @@ public class UserAccountService implements UserAccountUseCase {
         return userRepository.existsByNickname(nickname);
     }
 
+    /** 최신 사용자 상태를 잠금으로 읽고 호출자의 변경 간격을 검사한 뒤 닉네임을 저장한다. */
     @Override
     @Transactional
-    public UserView changeNickname(UUID userId, String nickname) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
-        User updated = user.updateNickname(nickname, timeProvider.now());
+    public UserView changeNickname(UUID userId, String nickname, Duration changeInterval) {
+        if (changeInterval == null || changeInterval.isNegative() || changeInterval.isZero()) {
+            throw new IllegalArgumentException("닉네임 변경 간격은 양수여야 합니다.");
+        }
+        User user = findUserForUpdate(userId);
+        if (!user.isActive()) {
+            throw new UserException(UserErrorCode.USER_NOT_ACTIVE);
+        }
+        Instant now = timeProvider.now();
+        // 잠금 전에 두 요청이 모두 검증을 통과했어도 두 번째 변경은 최신 시각으로 거부한다.
+        if (now.isBefore(user.nicknameChangedAt().plus(changeInterval))) {
+            throw new NicknameChangeRestrictedException();
+        }
+        User updated = user.updateNickname(nickname, now);
         return toView(userRepository.save(updated));
     }
+
+    /**
+     * 프로필 이미지 원본을 검증·저장한 뒤 DB에는 새 object key만 반영한다.
+     * 저장소 업로드는 DB 트랜잭션 밖에서 수행하고, DB key 교체 실패 시 새 object를 best-effort로 보상 삭제한다.
+     */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Override
+    public UserView changeProfileImage(ProfileImageChangeCommand command) {
+        ProfileImageStoreCommand storeCommand = profileImageUploadValidator.validate(
+                command.userId(),
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        );
+        StoredProfileImage storedProfileImage = profileImageStorage.store(storeCommand);
+
+        ProfileImageChangeResult result;
+        try {
+            result = profileImageMutationProcessor.replaceProfileImageKey(command.userId(), storedProfileImage.key());
+        } catch (RuntimeException e) {
+            // 새 object 업로드 후 DB key 교체가 실패하면 참조되지 않는 object를 줄이기 위해 보상 삭제한다.
+            profileImageStorage.deleteQuietly(storedProfileImage.key());
+            throw e;
+        }
+
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+    /** 사용자 생성 전에 원본 이미지의 안전성 검증과 재인코딩을 완료한다. */
+    @Override
+    public PreparedProfileImage prepareProfileImage(ProfileImagePrepareCommand command) {
+        return profileImageUploadValidator.prepare(
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        );
+    }
+
+    /** 공개 전달 타입의 바이트를 재검증한 뒤 저장하고 DB 실패 시 신규 object를 보상한다. */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Override
+    public UserView changePreparedProfileImage(UUID userId, PreparedProfileImage image) {
+        // public record는 검증기를 거치지 않고도 생성할 수 있으므로 타입명만 신뢰하지 않는다.
+        ProfileImageStoreCommand storeCommand = profileImageUploadValidator.validate(
+                userId,
+                "prepared." + image.normalizedExtension(),
+                image.contentType(),
+                image.content()
+        );
+        // object key는 userId를 포함하므로 회원 생성이 끝난 이 단계에서 처음 생성·저장한다.
+        StoredProfileImage storedProfileImage = profileImageStorage.store(storeCommand);
+
+        ProfileImageChangeResult result;
+        try {
+            result = profileImageMutationProcessor.replaceProfileImageKey(userId, storedProfileImage.key());
+        } catch (RuntimeException e) {
+            // object 저장 후 DB key 반영에 실패하면 참조되지 않는 신규 object를 best-effort로 정리한다.
+            profileImageStorage.deleteQuietly(storedProfileImage.key());
+            throw e;
+        }
+
+        // 새 key가 DB에 반영된 뒤에만 이전 object를 삭제해 실패 시 기존 이미지를 보존한다.
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+    /**
+     * DB의 프로필 이미지 key를 비운 뒤 커밋된 기존 object만 best-effort로 정리한다.
+     */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Override
+    public UserView removeProfileImage(UUID userId) {
+        ProfileImageRemoveResult result = profileImageMutationProcessor.removeProfileImageKey(userId);
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
 
     /**
      * 회원탈퇴 신청 시 사용자 상태를 WITHDRAWING으로 변경하고 deletedAt에 유예 시작 시각을 기록한다.
@@ -206,14 +330,26 @@ public class UserAccountService implements UserAccountUseCase {
     @Override
     @Transactional
     public UserView requestWithdrawal(UUID userId) {
+        User user = findUserForUpdate(userId);
+        if (user.status() == UserStatus.WITHDRAWING) {
+            // 세션 폐기 실패 후 재요청해도 최초 탈퇴 유예 시작 시각을 연장하지 않는다.
+            return toView(user);
+        }
         Instant now = timeProvider.now();
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
-
         createRetentionIfAbsent(user, now);
 
         User updated = user.requestWithdrawal(now);
         return toView(userRepository.save(updated));
+    }
+
+    /** 잠금 충돌은 사용자 부재와 구분하여 재시도 가능한 일시 장애로 노출한다. */
+    private User findUserForUpdate(UUID userId) {
+        try {
+            return userRepository.findByIdForUpdate(userId)
+                    .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
+        } catch (PessimisticLockingFailureException e) {
+            throw new UserException(UserErrorCode.USER_MUTATION_BUSY, e);
+        }
     }
 
     /**
@@ -253,7 +389,7 @@ public class UserAccountService implements UserAccountUseCase {
                 user.birthDate(),
                 user.gender(),
                 user.phoneNumber(),
-                user.profileImageKey(),
+                profileImageUrlResolver.resolve(user.profileImageKey()),
                 user.email(),
                 user.grade(),
                 user.pointBalance(),
