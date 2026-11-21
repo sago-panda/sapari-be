@@ -16,8 +16,9 @@ public interface RefreshTokenStore {
 
     /**
      * 현재 저장된 Refresh Token ID가 기대값과 같을 때 새 ID로 교체한다.
+     * 기대값이 직전에 교체된 ID 이고 재사용 유예 시간 안이면 교체하지 않고 {@link RefreshTokenRotationResult#REUSED_WITHIN_GRACE} 를 준다.
      */
-    boolean rotate(UUID sessionId, UUID expectedRefreshTokenId, UUID newRefreshTokenId, Duration ttl);
+    RefreshTokenRotationResult rotate(UUID sessionId, UUID expectedRefreshTokenId, UUID newRefreshTokenId, Duration ttl);
 
     /**
      * 로그인 세션의 Refresh Token 정보와 사용자별 세션 ZSet의 sid를 삭제한다.

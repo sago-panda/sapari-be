@@ -226,7 +226,7 @@ public class CustomerAuthService implements CustomerAuthUseCase {
     @Override
     @Transactional
     public void logout(CustomerLogoutCommand command) {
-        customerJwtTokenAdapter.revokeSession(command.accessToken());
+        customerJwtTokenAdapter.revokeSessionByRefreshToken(command.refreshToken());
     }
 
     /**

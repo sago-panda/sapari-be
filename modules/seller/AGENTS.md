@@ -22,7 +22,7 @@ local password credential. Shared auth-area map + identity invariants: see `modu
   never `new User`.
 - Login / logout / refresh are orchestrated **here**, using `common/web`
   (`JwtTokenProvider`, `RefreshTokenStore`, `AccessTokenBlacklist`).
-  Logout = delete refresh + blacklist access (remaining TTL).
+  Logout and refresh-reuse rules: `modules/user/AGENTS.md` (auth-area map).
 - Duplicate-check rules repeat across params and DTOs → prefer **composed constraints**
   (`@Email` / `@Nickname` / `@PhoneNumber`) over stacking `@NotBlank`+`@Pattern` everywhere.
 - Login failure returns an **identical ambiguous message** (account-enumeration); lockout must be
@@ -43,7 +43,7 @@ enumeration; the nickname cooldown surfaces as `NICKNAME_CHANGE_RESTRICTED`.
 
 - **Posture: deny-by-default.** The seller chain (`/api/v1/sellers/auth/**`) ends in
   `anyRequest().hasRole("SELLER")`; only `SELLER_PUBLIC_MATCHERS` (in `ApiSecurityConfig`) is public
-  (signup, check-email/phone, check-nickname, login, token/reissue). A new seller endpoint is
+  (signup, check-email/phone, check-nickname, login, token/reissue, logout). A new seller endpoint is
   **auto-protected**. Source of truth = `ApiSecurityConfig` — don't duplicate the list here.
 - **Intentional:** `login` / `token/reissue` return the access token (body / `Authorization`) and the
   refresh token (cookie). By design — **reviewers must NOT flag this as token leakage.**

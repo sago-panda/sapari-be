@@ -4,6 +4,9 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -19,10 +22,13 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import jakarta.servlet.http.Cookie;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -33,18 +39,26 @@ import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.customer.infrastructure.oauth.CookieOAuth2AuthorizationRequestRepository;
+import com.sapari.customer.infrastructure.oauth.CustomerOAuth2FailureHandler;
 import com.sapari.customer.infrastructure.oauth.CustomerOAuth2SuccessHandler;
 import com.sapari.customer.infrastructure.oauth.CustomerOAuth2UserService;
+import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.port.CustomerAuthUseCase;
+import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.port.SellerAuthUseCase;
 
 @WebMvcTest(controllers = {CustomerAuthController.class, SellerAuthController.class})
 @Import({
+        // 중첩 TestApplication 은 컴포넌트 스캔을 하지 않아 컨트롤러를 직접 올린다(로그아웃처럼 필터를 통과하는 요청용).
+        CustomerAuthController.class,
+        SellerAuthController.class,
         ApiSecurityConfig.class,
         com.sapari.common.web.config.CommonWebMvcConfig.class,
         TimeProvider.class,
         SecurityFailureResponseTest.FixedClockConfig.class
 })
+@TestPropertySource(properties = "jwt.refresh-token-expiration-seconds=1209600")
 @DisplayName("인증/인가 실패 응답 테스트")
 class SecurityFailureResponseTest {
 
@@ -74,6 +88,12 @@ class SecurityFailureResponseTest {
 
     @MockitoBean
     private CustomerOAuth2SuccessHandler customerOAuth2SuccessHandler;
+
+    @MockitoBean
+    private CustomerOAuth2FailureHandler customerOAuth2FailureHandler;
+
+    @MockitoBean
+    private CookieOAuth2AuthorizationRequestRepository cookieOAuth2AuthorizationRequestRepository;
 
     @MockitoBean
     private ClientRegistrationRepository clientRegistrationRepository;
@@ -163,6 +183,35 @@ class SecurityFailureResponseTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.error.status").value(403))
                 .andExpect(jsonPath("$.error.message").value("접근 권한이 없습니다."));
+    }
+
+    @Test
+    @DisplayName("고객은 Access Token 없이 refresh 쿠키만으로 로그아웃하고 쿠키가 지워진다")
+    void customerLogoutWithRefreshCookieOnly() throws Exception {
+        mockMvc.perform(post("/api/v1/customers/auth/logout")
+                        .cookie(new Cookie("refresh_token", "refresh-token-value")))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string(HttpHeaders.SET_COOKIE,
+                        org.hamcrest.Matchers.allOf(
+                                org.hamcrest.Matchers.startsWith("refresh_token=;"),
+                                org.hamcrest.Matchers.containsString("Max-Age=0"))));
+
+        verify(customerAuthUseCase).logout(new CustomerLogoutCommand("refresh-token-value"));
+    }
+
+    @Test
+    @DisplayName("판매자는 Access Token 없이 refresh 쿠키만으로 로그아웃하고, 쿠키가 없어도 같은 204 를 받는다")
+    void sellerLogoutWithRefreshCookieOnlyAndIdempotent() throws Exception {
+        mockMvc.perform(post("/api/v1/sellers/auth/logout")
+                        .cookie(new Cookie("refresh_token", "refresh-token-value")))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(post("/api/v1/sellers/auth/logout"))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string(HttpHeaders.SET_COOKIE,
+                        org.hamcrest.Matchers.containsString("Max-Age=0")));
+
+        verify(sellerAuthUseCase).logout(new SellerLogoutCommand("refresh-token-value"));
+        verify(sellerAuthUseCase).logout(new SellerLogoutCommand(null));
     }
 
     @TestConfiguration(proxyBeanMethods = false)

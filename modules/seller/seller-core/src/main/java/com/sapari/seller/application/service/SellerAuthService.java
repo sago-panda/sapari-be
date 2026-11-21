@@ -177,7 +177,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public void logout(SellerLogoutCommand command) {
-        sellerJwtTokenAdapter.revokeSession(command.accessToken());
+        sellerJwtTokenAdapter.revokeSessionByRefreshToken(command.refreshToken());
     }
 
     /** 탈퇴 DB 변경을 커밋한 뒤 세션을 폐기한다. 폐기 실패의 재요청은 최초 탈퇴 시각을 유지한다. */

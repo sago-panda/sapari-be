@@ -29,6 +29,8 @@ import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.common.web.security.JwtAuthenticationFilter;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.customer.infrastructure.oauth.CookieOAuth2AuthorizationRequestRepository;
+import com.sapari.customer.infrastructure.oauth.CustomerOAuth2FailureHandler;
 import com.sapari.customer.infrastructure.oauth.CustomerOAuth2SuccessHandler;
 import com.sapari.customer.infrastructure.oauth.CustomerOAuth2UserService;
 
@@ -46,14 +48,14 @@ public class ApiSecurityConfig {
             "/api/v1/sellers/auth/check-nickname",
             "/api/v1/sellers/auth/signup/check-store-name",
             "/api/v1/sellers/auth/login",
-            "/api/v1/sellers/auth/token/reissue"
+            "/api/v1/sellers/auth/token/reissue",
+            "/api/v1/sellers/auth/logout"
     };
 
     private static final String[] CUSTOMER_PROTECTED_MATCHERS = {
             "/api/v1/customers/auth/me",
             "/api/v1/customers/auth/me/nickname",
-            "/api/v1/customers/auth/me/profile-image",
-            "/api/v1/customers/auth/logout"
+            "/api/v1/customers/auth/me/profile-image"
     };
 
     @Bean
@@ -137,7 +139,9 @@ public class ApiSecurityConfig {
             JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint,
             JwtAccessDeniedHandler jwtAccessDeniedHandler,
             CustomerOAuth2UserService customerOAuth2UserService,
-            CustomerOAuth2SuccessHandler customerOAuth2SuccessHandler
+            CustomerOAuth2SuccessHandler customerOAuth2SuccessHandler,
+            CustomerOAuth2FailureHandler customerOAuth2FailureHandler,
+            CookieOAuth2AuthorizationRequestRepository cookieOAuth2AuthorizationRequestRepository
     ) throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -154,6 +158,8 @@ public class ApiSecurityConfig {
                 .oauth2Login(oauth2 -> oauth2
                         .authorizationEndpoint(authorization -> authorization
                                 .baseUri("/api/v1/customers/auth/oauth2/authorization")
+                                // 세션 대신 암호화 쿠키 — 시작과 콜백이 다른 Pod 로 가도 state 를 찾는다.
+                                .authorizationRequestRepository(cookieOAuth2AuthorizationRequestRepository)
                         )
                         .redirectionEndpoint(redirection -> redirection
                                 .baseUri("/api/v1/customers/auth/oauth2/code/*")
@@ -162,6 +168,7 @@ public class ApiSecurityConfig {
                                 .userService(customerOAuth2UserService)
                         )
                         .successHandler(customerOAuth2SuccessHandler)
+                        .failureHandler(customerOAuth2FailureHandler)
                 )
                 .authorizeHttpRequests(authorize -> authorize
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()

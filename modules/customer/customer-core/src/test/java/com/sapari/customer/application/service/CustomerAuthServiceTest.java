@@ -71,6 +71,7 @@ import com.sapari.user.command.SignupContactVerificationConsumeCommand;
 import com.sapari.user.command.SignupPhoneVerificationConfirmCommand;
 import com.sapari.user.command.SignupPhoneVerificationSendCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.RefreshTokenRotationResult;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
@@ -1018,7 +1019,7 @@ class CustomerAuthServiceTest {
                 eq(refreshClaims.tokenId()),
                 any(UUID.class),
                 any(Duration.class)
-        )).thenReturn(true);
+        )).thenReturn(RefreshTokenRotationResult.ROTATED);
 
         // when
         CustomerTokenReissueResult result = customerAuthService.reissueAccessToken(refreshToken);
@@ -1145,7 +1146,7 @@ class CustomerAuthServiceTest {
                 eq(refreshClaims.tokenId()),
                 any(UUID.class),
                 any(Duration.class)
-        )).thenReturn(false);
+        )).thenReturn(RefreshTokenRotationResult.REJECTED);
 
         // when, then
         assertThatThrownBy(() -> customerAuthService.reissueAccessToken(refreshToken))
@@ -1173,21 +1174,39 @@ class CustomerAuthServiceTest {
     }
 
     @Test
-    @DisplayName("로그아웃 시 Refresh Token을 삭제하고 로그인 세션을 폐기한다")
+    @DisplayName("로그아웃 시 Refresh Token의 sid 세션을 폐기한다 — Access Token 없이도 된다")
     void logoutDeletesRefreshTokenAndRevokesSession() {
         // given
         UUID userId = UUID.randomUUID();
-        String accessToken =
-                jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
-        JwtTokenClaims accessClaims = jwtTokenProvider.parseToken(accessToken);
+        String refreshToken =
+                jwtTokenProvider.createRefreshToken(jwtSubject(userId, UserRole.USER.name()));
+        JwtTokenClaims refreshClaims = jwtTokenProvider.parseToken(refreshToken);
 
         // when
+        customerAuthService.logout(new CustomerLogoutCommand(refreshToken));
+
+        // then
+        verify(refreshTokenStore).deleteBySessionId(refreshClaims.userId(), refreshClaims.sessionId());
+        verify(sessionRevocationStore).revoke(refreshClaims.sessionId());
+        verify(accessTokenBlacklist, never()).save(any(UUID.class), any(Duration.class));
+    }
+
+    @Test
+    @DisplayName("로그아웃은 멱등이다 — 쿠키가 없거나 무효·Access 토큰이어도 예외 없이 아무것도 폐기하지 않는다")
+    void logoutIsNoOpWithoutValidRefreshToken() {
+        // given
+        String accessToken =
+                jwtTokenProvider.createAccessToken(jwtSubject(UUID.randomUUID(), UserRole.USER.name()));
+
+        // when
+        customerAuthService.logout(new CustomerLogoutCommand(null));
+        customerAuthService.logout(new CustomerLogoutCommand(""));
+        customerAuthService.logout(new CustomerLogoutCommand("not-a-jwt"));
         customerAuthService.logout(new CustomerLogoutCommand(accessToken));
 
         // then
-        verify(refreshTokenStore).deleteBySessionId(accessClaims.userId(), accessClaims.sessionId());
-        verify(sessionRevocationStore).revoke(accessClaims.sessionId());
-        verify(accessTokenBlacklist, never()).save(any(UUID.class), any(Duration.class));
+        verify(refreshTokenStore, never()).deleteBySessionId(any(UUID.class), any(UUID.class));
+        verify(sessionRevocationStore, never()).revoke(any(UUID.class));
     }
 
     @Test
