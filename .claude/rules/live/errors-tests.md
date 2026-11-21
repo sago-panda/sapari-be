@@ -17,7 +17,8 @@ Every domain exception maps to a `LiveErrorCode`; no raw `IllegalState`/`Runtime
 A state violation gets **one code per request kind** (start LIVE-003, end/expire/admin end 009, enter 010, ingress 011, cancel 013, update 014, start without ingress key 017, ingress reissue 018) via
 `InvalidLiveStateException(code, msg)` — keep the single class, reconcile jobs catch it as "lost the race, skip".
 Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`; room input
-(schedule not future 015, thumbnail URL 016) is `InvalidLiveRoomException` — never IAE —
+(schedule not future 015, thumbnail URL 016) is `InvalidLiveRoomException`; list query input (admin room list 020) is
+`InvalidLiveQueryException` — never IAE —
 IAE reaches the global net as 500. A new request kind (cancel, edit, …) adds its own code; don't reuse 003.
 Tests in `live-core/src/test` (Mockito on ports); scheduler wiring in `live-app` via `ApplicationContextRunner`.
 FixtureMonkey for fixtures, plain builders when asserting specific values (random strings trip VO validation).

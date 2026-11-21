@@ -14,13 +14,18 @@ import java.util.Set;
 import java.util.UUID;
 
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.criteria.Predicate;
 
 import org.springframework.data.domain.Limit;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.VodStatus;
+import com.sapari.live.domain.repository.AdminRoomFilter;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomEntity;
 import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
@@ -163,6 +168,43 @@ public class LiveRoomRepositoryImpl implements LiveRoomRepository {
             counts.put(byColumn.get((LiveRoomStatus) row[0]), (Long) row[1]);
         }
         return counts;
+    }
+
+    /** 관리자 목록 정렬. id 는 같은 예정 시각의 순서를 고정한다 — 없으면 페이지 경계에서 행이 겹치거나 빠진다. */
+    private static final Sort ADMIN_ROOMS_ORDER = Sort.by(Sort.Order.desc("scheduledAt"), Sort.Order.desc("id"));
+
+    @Override
+    public List<LiveRoom> findAdminRooms(AdminRoomFilter filter, int page, int size){
+        // slice 는 개수 쿼리를 내지 않는다 — 총 개수는 countAdminRooms 가 같은 조건으로 따로 센다.
+        // 정렬은 PageRequest 에 싣는다. sortBy(..) 로 주면 정렬 없는 Pageable 이 그것을 덮어 ORDER BY 가 빠진다.
+        return liveRoomJpaRepository.findBy(adminRoomSpec(filter),
+                        q -> q.slice(PageRequest.of(page, size, ADMIN_ROOMS_ORDER)))
+                .stream().map(liveRoomMapper::toDomain).toList();
+    }
+
+    @Override
+    public long countAdminRooms(AdminRoomFilter filter){
+        return liveRoomJpaRepository.count(adminRoomSpec(filter));
+    }
+
+    // 걸린 조건만 술어로 만든다 — 고정 JPQL 의 (:p IS NULL OR ...) 는 조건이 빠진 요청에서도 술어가 남아
+    // 플래너가 seller_id·scheduled_at 인덱스를 고르기 어렵다.
+    private static Specification<LiveRoomEntity> adminRoomSpec(AdminRoomFilter filter){
+        List<LiveRoomStatus> columns = filter.statuses().stream().map(STATUS_COLUMN::get).toList();
+        return (root, query, cb) -> {
+            List<Predicate> where = new ArrayList<>();
+            where.add(root.get("liveStatus").in(columns));
+            if (filter.sellerId() != null) {
+                where.add(cb.equal(root.get("sellerId"), filter.sellerId()));
+            }
+            if (filter.from() != null) {
+                where.add(cb.greaterThanOrEqualTo(root.get("scheduledAt"), filter.from()));
+            }
+            if (filter.to() != null) {
+                where.add(cb.lessThan(root.get("scheduledAt"), filter.to()));
+            }
+            return cb.and(where.toArray(Predicate[]::new));
+        };
     }
 
     /** 예정 목록에 들어가는 상태 — 포함 조건이다. 제외 목록으로 바꾸면 새 상태가 공개 목록에 새어 나온다. */
