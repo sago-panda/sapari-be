@@ -1,7 +1,9 @@
 package com.sapari.common.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.*;
 
 import java.time.Duration;
@@ -17,6 +19,7 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.core.ZSetOperations;
 
+import com.sapari.common.securityjwt.store.RefreshTokenRotationResult;
 import com.sapari.global.time.TimeProvider;
 
 @DisplayName("Refresh Token Redis 저장소 테스트")
@@ -29,8 +32,9 @@ class RefreshTokenRedisRepositoryTest {
     private final ValueOperations<String, String> valueOperations = valueOperations();
     private final ZSetOperations<String, String> zSetOperations = zSetOperations();
     private final TimeProvider timeProvider = mock(TimeProvider.class);
+    private static final Duration REUSE_GRACE = Duration.ofSeconds(5);
     private final RefreshTokenRedisRepository repository =
-            new RefreshTokenRedisRepository(stringRedisTemplate, timeProvider);
+            new RefreshTokenRedisRepository(stringRedisTemplate, timeProvider, REUSE_GRACE);
 
     @Test
     @DisplayName("세션 ID 기준으로 현재 Refresh Token ID를 TTL과 함께 저장한다")
@@ -101,48 +105,82 @@ class RefreshTokenRedisRepositoryTest {
 
     @Test
     @DisplayName("저장된 Refresh Token ID가 기대값과 같으면 새 ID로 교체한다")
-    void rotateReturnsTrueWhenRefreshTokenIdMatches() {
+    void rotateReturnsRotatedWhenRefreshTokenIdMatches() {
         // given
         UUID sessionId = UUID.randomUUID();
         UUID expectedRefreshTokenId = UUID.randomUUID();
         UUID newRefreshTokenId = UUID.randomUUID();
         String key = "refresh-token:session:" + sessionId;
+        when(timeProvider.now()).thenReturn(NOW);
         when(stringRedisTemplate.execute(
                 any(DefaultRedisScript.class),
-                eq(List.of(key)),
+                eq(List.of(key, "{" + key + "}:grace")),
                 eq(expectedRefreshTokenId.toString()),
                 eq(newRefreshTokenId.toString()),
-                eq(String.valueOf(REFRESH_TOKEN_TTL.toMillis()))
+                eq(String.valueOf(REFRESH_TOKEN_TTL.toMillis())),
+                eq(String.valueOf(NOW.toEpochMilli())),
+                eq(String.valueOf(REUSE_GRACE.toMillis()))
         )).thenReturn(1L);
 
         // when
-        boolean rotated = repository.rotate(sessionId, expectedRefreshTokenId, newRefreshTokenId, REFRESH_TOKEN_TTL);
+        RefreshTokenRotationResult rotated = repository.rotate(sessionId, expectedRefreshTokenId, newRefreshTokenId, REFRESH_TOKEN_TTL);
 
         // then
-        assertThat(rotated).isTrue();
+        assertThat(rotated).isEqualTo(RefreshTokenRotationResult.ROTATED);
     }
 
     @Test
     @DisplayName("저장된 Refresh Token ID가 기대값과 다르면 교체하지 않는다")
-    void rotateReturnsFalseWhenRefreshTokenIdDoesNotMatch() {
+    void rotateReturnsRejectedWhenRefreshTokenIdDoesNotMatch() {
         // given
         UUID sessionId = UUID.randomUUID();
         UUID expectedRefreshTokenId = UUID.randomUUID();
         UUID newRefreshTokenId = UUID.randomUUID();
         String key = "refresh-token:session:" + sessionId;
+        when(timeProvider.now()).thenReturn(NOW);
         when(stringRedisTemplate.execute(
                 any(DefaultRedisScript.class),
-                eq(List.of(key)),
+                eq(List.of(key, "{" + key + "}:grace")),
                 eq(expectedRefreshTokenId.toString()),
                 eq(newRefreshTokenId.toString()),
-                eq(String.valueOf(REFRESH_TOKEN_TTL.toMillis()))
+                eq(String.valueOf(REFRESH_TOKEN_TTL.toMillis())),
+                eq(String.valueOf(NOW.toEpochMilli())),
+                eq(String.valueOf(REUSE_GRACE.toMillis()))
         )).thenReturn(0L);
 
         // when
-        boolean rotated = repository.rotate(sessionId, expectedRefreshTokenId, newRefreshTokenId, REFRESH_TOKEN_TTL);
+        RefreshTokenRotationResult rotated = repository.rotate(sessionId, expectedRefreshTokenId, newRefreshTokenId, REFRESH_TOKEN_TTL);
 
         // then
-        assertThat(rotated).isFalse();
+        assertThat(rotated).isEqualTo(RefreshTokenRotationResult.REJECTED);
+    }
+
+    @Test
+    @DisplayName("스크립트가 유예 안의 재제시(2)를 돌려주면 REUSED_WITHIN_GRACE 로 바꾼다")
+    void rotateReturnsReusedWithinGraceWhenScriptReturnsTwo() {
+        // given
+        UUID sessionId = UUID.randomUUID();
+        UUID expectedRefreshTokenId = UUID.randomUUID();
+        UUID newRefreshTokenId = UUID.randomUUID();
+        when(timeProvider.now()).thenReturn(NOW);
+        when(stringRedisTemplate.execute(any(DefaultRedisScript.class), anyList(), any(Object[].class)))
+                .thenReturn(2L);
+
+        // when
+        RefreshTokenRotationResult rotated = repository.rotate(sessionId, expectedRefreshTokenId, newRefreshTokenId, REFRESH_TOKEN_TTL);
+
+        // then
+        assertThat(rotated).isEqualTo(RefreshTokenRotationResult.REUSED_WITHIN_GRACE);
+    }
+
+    @Test
+    @DisplayName("재사용 유예는 0초 이상 30초 이하만 받는다")
+    void reuseGraceOutOfRangeIsRejected() {
+        assertThatThrownBy(() -> new RefreshTokenRedisRepository(stringRedisTemplate, timeProvider, Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new RefreshTokenRedisRepository(stringRedisTemplate, timeProvider, Duration.ofSeconds(31)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(new RefreshTokenRedisRepository(stringRedisTemplate, timeProvider, Duration.ZERO)).isNotNull();
     }
 
     @Test
@@ -159,7 +197,7 @@ class RefreshTokenRedisRepositoryTest {
         repository.deleteBySessionId(userId, sessionId);
 
         // then
-        verify(stringRedisTemplate).delete(key);
+        verify(stringRedisTemplate).delete(List.of(key, "{" + key + "}:grace"));
         verify(zSetOperations).remove(userSessionKey, sessionId.toString());
     }
 
@@ -186,6 +224,7 @@ class RefreshTokenRedisRepositoryTest {
         );
         verify(stringRedisTemplate).delete(List.of(
                 "refresh-token:session:" + activeSessionId,
+                "{refresh-token:session:" + activeSessionId + "}:grace",
                 userSessionKey
         ));
     }

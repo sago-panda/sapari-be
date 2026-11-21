@@ -21,6 +21,17 @@ cross-cutting rules; this file is the user-specific + **auth-area shared map** o
 | Refresh / blacklist store | **`common/web`** interfaces (`RefreshTokenStore`, `AccessTokenBlacklist`) ← **`common/auth`** Redis impl |
 | Login / logout / refresh **orchestration** | the **flow module** (seller / customer), *not* user |
 
+Token lifecycle rules shared by seller and customer (`JwtTokenLifecycle`):
+
+- **Logout takes the refresh cookie only** — revokes that sid, so it works after the access token expired.
+  Public route, idempotent 204 even with no/invalid cookie. Seller and customer share the refresh cookie name,
+  so a token whose role isn't the calling flow's is left alone (`revokeSessionByRefreshToken`).
+- **Refresh reuse grace** — a jti replaced by rotation within `jwt.refresh-token-reuse-grace`, presented
+  again, gets a new access token only (no rotation, no revoke): tabs reissuing at once. Outside the window it
+  is reuse → sid revoked. Accepted risk: a stolen replaced refresh replayed inside the window gets an access
+  token. The session key keeps the plain current jti so pods without the grace script and rollbacks stay
+  compatible (`RefreshTokenRedisRepository`).
+
 > **Cross-domain rule (ArchUnit-enforced):** customer/seller depend on **`user-api` only**, never
 > `user-core`. So shared value types (`UserRole`, `UserStatus`, `UserGrade`, `UserGender`,
 > `ProviderType`) live in **user-api**, not user-core.

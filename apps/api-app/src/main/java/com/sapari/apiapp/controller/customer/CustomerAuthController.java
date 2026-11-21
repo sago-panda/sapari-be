@@ -235,20 +235,27 @@ public class CustomerAuthController {
         CustomerTokenReissueResult result = customerAuthUseCase.reissueAccessToken(refreshToken);
 
         response.setHeader(HttpHeaders.AUTHORIZATION, BearerTokenExtractor.toAuthorizationHeader(result.accessToken()));
-        response.addHeader(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
-                result.refreshToken(),
-                result.refreshTokenMaxAgeSeconds()
-        ).toString());
+        // 재사용 유예(동시 재발급)로 회전하지 않았으면 먼저 회전한 응답이 심은 쿠키를 그대로 둔다.
+        if (result.refreshToken() != null) {
+            response.addHeader(HttpHeaders.SET_COOKIE, AuthCookieSupport.createRefreshTokenCookie(
+                    result.refreshToken(),
+                    result.refreshTokenMaxAgeSeconds()
+            ).toString());
+        }
         return ResponseEnvelope.success(TokenReissueResponse.from(result));
     }
 
+    /**
+     * refresh 쿠키만으로 그 세션을 폐기한다 — access token 이 만료된 뒤에도 로그아웃된다.
+     * 쿠키가 없거나 이미 폐기·만료됐어도 같은 204 를 준다(멱등).
+     */
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @PostMapping("/logout")
     public void logout(
-            @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @CookieValue(name = AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME, required = false) String refreshToken,
             HttpServletResponse response
     ) {
-        customerAuthUseCase.logout(new CustomerLogoutCommand(resolveAccessToken(authorizationHeader)));
+        customerAuthUseCase.logout(new CustomerLogoutCommand(refreshToken));
 
         response.addHeader(HttpHeaders.SET_COOKIE, AuthCookieSupport
                 .createExpiredCookie(AuthCookieSupport.REFRESH_TOKEN_COOKIE_NAME)
