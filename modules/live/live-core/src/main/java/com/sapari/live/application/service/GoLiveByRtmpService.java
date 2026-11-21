@@ -44,6 +44,7 @@ public class GoLiveByRtmpService {
     private final TimeProvider timeProvider;
     private final LiveMetrics liveMetrics;
     private final LiveListCacheSync liveListCacheSync;
+    private final SellerLivePermissionGuard sellerLivePermissionGuard;
 
     /**
      * {@code trigger} 는 <b>어느 경로가 이 방을 올렸는지</b>를 남기기 위한 것이다. 승격 결과는 어느 쪽이든
@@ -76,6 +77,13 @@ public class GoLiveByRtmpService {
             return;
         }
 
+        // 시작한 뒤 관리자가 권한을 끈 판매자의 방 — Live 로 올리지 않고 닫는다. 올렸다가 끊으면 egress·녹화·라이브
+        // 목록 노출·RoomEnded 가 모두 생긴다. webhook 과 Ready 고착 배치가 모두 여기로 오므로 한 곳에서 막힌다.
+        if (sellerLivePermissionGuard.isBlocked(room.sellerId())) {
+            cancelForRevokedPermission(room);
+            return;
+        }
+
         // 사전 가드: 보상 훅을 등록할 수 없는 상태면 egress를 시작하기 전에 실패시킨다(고아 egress 방지).
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             throw new BroadcastStartException("egress 보상 훅 등록 불가 — 트랜잭션 동기화 비활성");
@@ -97,5 +105,15 @@ public class GoLiveByRtmpService {
         liveMetrics.roomTransitioned(room.status(), liveRoom.status());
         liveMetrics.rtmpPromoted(trigger);
         log.info("RTMP go-live 완료 — Ready→Live 전이. roomId={}, 경로={}", roomId, trigger);
+    }
+
+    private void cancelForRevokedPermission(LiveRoom room) {
+        LiveRoom cancelled = room.cancelForRevokedPermission(timeProvider.now());
+        liveRoomRepository.save(cancelled);
+        liveMetrics.roomTransitioned(room.status(), cancelled.status());
+        // save 뒤에 등록한다(CancelLiveService 와 같은 순서). ingress 를 지워 송출 중인 OBS 를 끊는다.
+        PostCommitMediaCleanup.register(liveMediaManager, room);
+        log.warn("RTMP go-live 거부 — 라이브 권한이 꺼진 판매자, 방을 Cancelled 로 닫음. roomId={}, sellerId={}",
+                room.id(), room.sellerId());
     }
 }

@@ -19,6 +19,8 @@ A state violation gets **one code per request kind** (start LIVE-003, end/expire
 Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveProductException`; room input
 (schedule not future 015, thumbnail URL 016) is `InvalidLiveRoomException` — never IAE —
 IAE reaches the global net as 500. A new request kind (cancel, edit, …) adds its own code; don't reuse 003.
+A seller whose live permission an admin turned off gets 403 LIVE-019 on create/start/ingress/reissue — a permission,
+not a state, so `LivePermissionDeniedException`, never `InvalidLiveStateException` (`SellerLivePermissionGuard`).
 Tests in `live-core/src/test` (Mockito on ports); scheduler wiring in `live-app` via `ApplicationContextRunner`.
 FixtureMonkey for fixtures, plain builders when asserting specific values (random strings trip VO validation).
 Run `./gradlew :modules:live:live-core:test`.

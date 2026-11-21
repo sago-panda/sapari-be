@@ -11,7 +11,8 @@ import com.sapari.live.domain.model.LiveRoom;
 /**
  * 방 종료 후 LiveKit 리소스 회수를 <b>커밋 이후</b>로 미룬다. 종료 계열 세 서비스
  * ({@code EndLiveService}·{@code ExpireOrphanLiveService}·{@code EndStaleLiveService}), 예약 취소
- * ({@code CancelLiveService}), 관리자 종료({@code AdminEndLiveService})가 공유한다.
+ * ({@code CancelLiveService}), 관리자 종료({@code AdminEndLiveService}), 권한 꺼진 판매자의 Ready 방 닫기
+ * ({@code GoLiveByRtmpService})가 공유한다.
  *
  * <p>미루는 이유: 정리 3종은 방과 함께 커밋돼야 할 것이 없는데(시작 측의 {@code egressId} 와 다르다),
  * 트랜잭션 안에서 부르면 LiveKit 왕복(호출당 15s, 최대 3건)만큼 행 잠금을 쥐고 있게 된다. 그동안 같은

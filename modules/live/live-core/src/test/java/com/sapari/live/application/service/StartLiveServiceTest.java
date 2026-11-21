@@ -42,6 +42,7 @@ import com.sapari.live.domain.exception.BroadcastStartException;
 import com.sapari.live.domain.exception.InvalidLiveProductException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveErrorCode;
+import com.sapari.live.domain.exception.LivePermissionDeniedException;
 import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveProduct;
@@ -75,6 +76,9 @@ public class StartLiveServiceTest {
 
     @Mock
     private LiveListCacheSync liveListCacheSync;
+
+    @Mock
+    private SellerLivePermissionGuard sellerLivePermissionGuard;
 
     @InjectMocks
     private StartLiveService startLiveService;
@@ -525,4 +529,15 @@ public class StartLiveServiceTest {
                 .forEach(s -> s.afterCompletion(status));
     }
 
+    @Test
+    @DisplayName("라이브 권한이 꺼진 판매자 — LIVE-019, 방 잠금·미디어 호출·상품 저장 없음")
+    void blockedSellerIsRejectedBeforeAnything() {
+        org.mockito.BDDMockito.willThrow(new LivePermissionDeniedException())
+                .given(sellerLivePermissionGuard).verifyLiveEnabled(sellerId);
+
+        assertThatThrownBy(() -> startLiveService.start(command))
+                .isInstanceOf(LivePermissionDeniedException.class);
+
+        org.mockito.Mockito.verifyNoInteractions(liveRoomRepository, liveMediaManager, liveProductRepository);
+    }
 }

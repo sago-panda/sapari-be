@@ -31,12 +31,15 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 | `Scheduled` | `cancel()` (seller) | `Cancelled` | `canCancel()` — else LIVE-013 |
 | `Live`/`Suspended` | `cancelByAdmin()` (admin end) | `Cancelled` (keeps `startedAt`) | `canEndLive()` — else LIVE-009 |
 | `Scheduled` | `update()` (seller) | `Scheduled` | `canUpdate()` — else LIVE-014 |
+| `Ready` | `cancelForRevokedPermission()` (OBS connect, seller blocked) | `Cancelled` | `canGoLiveByRtmp()` |
 
 - `expire()` and `cancel()` publish no `RoomEnded` — the room was never `Live`, so chat has no session.
   `cancelByAdmin()` does — the room was on air (`AdminEndLiveService`). Admin end lands in `Cancelled`, not
   `Ended`, so no API serves it as a replay (SPR-211, following the API spec's state flow). The recording itself
   stays in S3 as evidence and is not yet restricted at the media level → `infra/AGENTS.md` (SPR-214).
 - `cancel()` is `Scheduled`-only: `Ready` races the OBS-connect webhook, so it is left to the expire batch.
+  `cancelForRevokedPermission()` is the exception — it runs inside that promotion under the row lock, so there is
+  no race; a blocked seller's `Ready` room never goes `Live` and publishes no `RoomEnded` (`GoLiveByRtmpService`, SPR-213).
 - `create()` and `update()` share `requireEditableFields`: `scheduledAt` must be after now (LIVE-015), so editing
   a `Scheduled` room whose time has passed means rescheduling it — intended (SPR-156).
 - On end, `afterCommit` writes the ended key `live:room:ended:{roomId}` (TTL 70m) and publishes `RoomEnded` —

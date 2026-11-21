@@ -24,4 +24,19 @@ public interface LiveAuditLogJpaRepository extends JpaRepository<LiveAuditLogEnt
                         @Param("roomId") UUID roomId,
                         @Param("reason") String reason,
                         @Param("occurredAt") Instant occurredAt);
+
+    /** 관리자 판매자 라이브 권한 변경. {@code detail} 은 바꾼 값과 사유 — 이스케이프는 {@link #insertAdminEnd} 와 같다. */
+    @Modifying
+    @Query(value = """
+            INSERT INTO live_schema.audit_logs
+                   (actor_id, actor_type, action, target_id, target_type, detail, created_at)
+            VALUES (:adminId, 'ADMIN', 'LIVE_ADMIN_SELLER_PERMISSION', :sellerId, 'SELLER',
+                    jsonb_build_object('liveEnabled', CAST(:liveEnabled AS boolean),
+                                       'reason', CAST(:reason AS text)), :occurredAt)
+            """, nativeQuery = true)
+    void insertSellerLivePermission(@Param("adminId") UUID adminId,
+                                    @Param("sellerId") UUID sellerId,
+                                    @Param("liveEnabled") boolean liveEnabled,
+                                    @Param("reason") String reason,
+                                    @Param("occurredAt") Instant occurredAt);
 }
