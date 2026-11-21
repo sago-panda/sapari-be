@@ -62,6 +62,7 @@ import com.sapari.live.application.service.ReconcileOrphanMediaService;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
 import com.sapari.live.domain.model.LiveStreamType;
+import com.sapari.live.domain.repository.AdminRoomFilter;
 import com.sapari.live.domain.repository.LiveRoomRepository;
 import com.sapari.live.port.ReconcileOrphanMediaUseCase;
 import com.sapari.liveapp.config.ReconcileLockConfig;
@@ -644,6 +645,16 @@ class ReconcileSchedulerLockTest {
 
         @Override
         public Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<LiveRoom> findAdminRooms(AdminRoomFilter filter, int page, int size) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public long countAdminRooms(AdminRoomFilter filter) {
             throw new UnsupportedOperationException();
         }
 

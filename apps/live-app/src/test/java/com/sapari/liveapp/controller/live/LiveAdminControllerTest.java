@@ -7,6 +7,7 @@ import static org.mockito.BDDMockito.then;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -29,33 +30,40 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import com.sapari.common.page.OffsetPage;
 import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.common.web.security.CurrentUserIdArgumentResolver;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.command.AdminEndLiveCommand;
+import com.sapari.live.command.GetAdminRoomsQuery;
+import com.sapari.live.domain.exception.InvalidLiveQueryException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.port.AdminEndLiveUseCase;
+import com.sapari.live.port.GetAdminRoomsUseCase;
+import com.sapari.live.view.AdminLiveRoomSummary;
+import com.sapari.live.view.LiveRoomTab;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
- * 관리자 종료 엔드포인트의 입력·응답 계약. 인가(ADMIN 전용)는 {@code LiveAdminAuthorizationTest} 가 본다.
+ * 관리자 엔드포인트(종료·방 목록)의 입력·응답 계약. 인가(ADMIN 전용)는 {@code LiveAdminAuthorizationTest} 가 본다.
  */
-@DisplayName("관리자 종료 엔드포인트 — 사유 검증과 상태 코드")
+@DisplayName("관리자 엔드포인트 — 종료 사유·방 목록 파라미터 검증과 상태 코드")
 class LiveAdminControllerTest {
 
     private static final UUID ADMIN_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
     private static final UUID ROOM_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
 
     private final AdminEndLiveUseCase adminEndLiveUseCase = mock(AdminEndLiveUseCase.class);
+    private final GetAdminRoomsUseCase getAdminRoomsUseCase = mock(GetAdminRoomsUseCase.class);
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         TimeProvider timeProvider = mock(TimeProvider.class);
         given(timeProvider.now()).willReturn(Instant.parse("2026-11-20T00:00:00Z"));
-        mvc = MockMvcBuilders.standaloneSetup(new LiveAdminController(adminEndLiveUseCase))
+        mvc = MockMvcBuilders.standaloneSetup(new LiveAdminController(adminEndLiveUseCase, getAdminRoomsUseCase))
                 .setCustomArgumentResolvers(new CurrentUserIdArgumentResolver())
                 .setControllerAdvice(new GlobalExceptionHandler(timeProvider))
                 .build();
@@ -143,5 +151,70 @@ class LiveAdminControllerTest {
         forceEnd(reason("사유"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("LIVE-002"));
+    }
+
+    @Test
+    @DisplayName("방 목록 — 파라미터를 그대로 넘기고, 페이지 메타를 봉투에 싣는다")
+    void rooms_passesParamsAndWrapsPage() throws Exception {
+        UUID sellerId = UUID.fromString("22222222-2222-2222-2222-222222222222");
+        Instant at = Instant.parse("2026-11-20T10:00:00Z");
+        AdminLiveRoomSummary row = new AdminLiveRoomSummary(ROOM_ID, sellerId, "닉", "제목", null,
+                LiveRoomTab.CANCELLED, at, at.plusSeconds(10), at.plusSeconds(100));
+        given(getAdminRoomsUseCase.getRooms(any())).willReturn(OffsetPage.of(List.of(row), 1, 10, 11));
+
+        mvc.perform(get("/api/v1/lives/admin/rooms")
+                        .param("status", "CANCELLED").param("sellerId", sellerId.toString())
+                        .param("from", "2026-11-01T00:00:00Z").param("to", "2026-12-01T00:00:00Z")
+                        .param("page", "1").param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.content[0].roomId").value(ROOM_ID.toString()))
+                .andExpect(jsonPath("$.data.content[0].status").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.content[0].startedAt").exists())
+                .andExpect(jsonPath("$.data.page").value(1))
+                .andExpect(jsonPath("$.data.size").value(10))
+                .andExpect(jsonPath("$.data.totalElements").value(11))
+                .andExpect(jsonPath("$.data.totalPages").value(2));
+
+        then(getAdminRoomsUseCase).should().getRooms(new GetAdminRoomsQuery(LiveRoomTab.CANCELLED, sellerId,
+                Instant.parse("2026-11-01T00:00:00Z"), Instant.parse("2026-12-01T00:00:00Z"), 1, 10));
+    }
+
+    @Test
+    @DisplayName("방 목록 — 파라미터가 없으면 모두 null 로 넘긴다")
+    void rooms_noParams() throws Exception {
+        given(getAdminRoomsUseCase.getRooms(any())).willReturn(OffsetPage.of(List.of(), 0, 15, 0));
+
+        mvc.perform(get("/api/v1/lives/admin/rooms")).andExpect(status().isOk());
+
+        then(getAdminRoomsUseCase).should().getRooms(new GetAdminRoomsQuery(null, null, null, null, null, null));
+    }
+
+    @Test
+    @DisplayName("방 목록 — 형식이 틀린 status·sellerId·기간·page 는 400, 유스케이스 미호출")
+    void rooms_malformedParamsAre400() throws Exception {
+        List<String[]> bad = List.of(
+                new String[]{"status", "ON_AIR"},
+                new String[]{"sellerId", "not-a-uuid"},
+                new String[]{"from", "2026-11-01"},
+                new String[]{"to", "어제"},
+                new String[]{"page", "x"},
+                new String[]{"size", "1.5"});
+        for (String[] p : bad) {
+            mvc.perform(get("/api/v1/lives/admin/rooms").param(p[0], p[1]))
+                    .andExpect(status().isBadRequest());
+        }
+        then(getAdminRoomsUseCase).should(never()).getRooms(any());
+    }
+
+    @Test
+    @DisplayName("방 목록 — 서비스가 거부한 조건(음수 page·뒤집힌 기간)은 400 LIVE-020")
+    void rooms_rejectedQueryIs400Live020() throws Exception {
+        willThrow(new InvalidLiveQueryException(LiveErrorCode.INVALID_ADMIN_ROOM_QUERY, "page"))
+                .given(getAdminRoomsUseCase).getRooms(any());
+
+        mvc.perform(get("/api/v1/lives/admin/rooms").param("page", "-1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("LIVE-020"));
     }
 }
