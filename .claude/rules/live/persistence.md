@@ -23,6 +23,9 @@ invariants. What and why only; how lives in the named class's comment.
 ## Persistence & cache
 
 - Schema `live_schema`, Flyway-owned (`db/migration/live/`). Entity mutable, record immutable.
+- **`live_schema.audit_logs` is shared by live and chat** — rows are told apart only by the `action` prefix
+  (`LIVE_` / `CHAT_`); each side maps it separately because live-core cannot depend on chat-core
+  (`LiveAuditLogEntity`, `ChatAuditLogEntity`).
 - **Every state-transition read takes a row lock** (`findByIdForUpdate`, `findByIdAndSellerIdForUpdate`);
   unlocked reintroduces the double-`startHlsEgress` race. Ownership stays **in the query** — a service-side
   check would leak room existence. Hibernate emits **`for no key update`**, not `for update`; don't grep for

@@ -72,6 +72,24 @@ class GetLiveRoomDetailServiceTest {
     }
 
     @Test
+    @DisplayName("관리자 종료한 방 — 시작·끊긴 시각은 판매자 상세에만 보이고 공개 상세에는 없다")
+    void adminCancelledTimesOnlyForSeller() {
+        LiveRoom room = room(new LiveStatus.Cancelled(AT, AT.plusSeconds(60), AT.plusSeconds(600)));
+        given(liveRoomRepository.findById(roomId)).willReturn(Optional.of(room));
+        given(liveRoomRepository.findByIdAndSellerId(roomId, sellerId)).willReturn(Optional.of(room));
+
+        PublicLiveRoomDetailView publicView = service.getPublicDetail(roomId);
+        SellerLiveRoomDetailView sellerView = service.getSellerDetail(new GetSellerRoomDetailCommand(roomId, sellerId));
+
+        assertThat(publicView.status()).isEqualTo(LiveRoomTab.CANCELLED);
+        assertThat(publicView.startedAt()).isNull();
+        assertThat(publicView.endedAt()).isNull();
+        assertThat(sellerView.status()).isEqualTo(LiveRoomTab.CANCELLED);
+        assertThat(sellerView.startedAt()).isEqualTo(AT.plusSeconds(60));
+        assertThat(sellerView.endedAt()).isEqualTo(AT.plusSeconds(600));
+    }
+
+    @Test
     @DisplayName("공개 상세 — 없는 방 404")
     void publicDetailNotFound() {
         given(liveRoomRepository.findById(roomId)).willReturn(Optional.empty());

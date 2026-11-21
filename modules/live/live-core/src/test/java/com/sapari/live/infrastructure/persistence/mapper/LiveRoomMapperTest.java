@@ -533,6 +533,30 @@ class LiveRoomMapperTest {
     }
 
     @Test
+    @DisplayName("관리자 종료 왕복 — CANCELLED 로 저장되고 started_at 을 다시 읽는다, 아카이브는 남기지 않는다")
+    void adminCancelledRoundTripKeepsStartedAt() {
+        Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");
+        Instant startedAt = Instant.parse("2026-06-10T10:01:00Z");
+        Instant cancelledAt = Instant.parse("2026-06-10T10:30:00Z");
+        LiveRoomEntity entity = LiveRoomEntity.builder()
+                .sellerId(UUID.randomUUID()).title("제목").sellerNickname("닉")
+                .liveStatus(LiveRoomStatus.LIVE).scheduledAt(scheduledAt).startedAt(startedAt)
+                .sfuRoomId("sfu-1").egressId("eg-1").hlsUrl("https://hls/1")
+                .build();
+
+        mapper.updateEntityFromDomain(entity, mapper.toDomain(entity).cancelByAdmin(cancelledAt));
+
+        assertThat(entity.getLiveStatus()).isEqualTo(LiveRoomStatus.CANCELLED);
+        assertThat(entity.getEndedAt()).isEqualTo(cancelledAt);
+        assertThat(entity.getHlsArchiveUrl()).isNull();
+        LiveRoom reloaded = mapper.toDomain(entity);
+        assertThat(reloaded.status()).isEqualTo(new LiveStatus.Cancelled(scheduledAt, startedAt, cancelledAt));
+
+        mapper.updateEntityFromDomain(entity, reloaded);
+        assertThat(mapper.toDomain(entity).status()).isEqualTo(reloaded.status());
+    }
+
+    @Test
     @DisplayName("종료된 방도 top-level scheduledAt 이 컬럼 값이다 — 판매자 목록 정렬 키")
     void endedRoomKeepsScheduledAt() {
         Instant scheduledAt = Instant.parse("2026-06-10T10:00:00Z");

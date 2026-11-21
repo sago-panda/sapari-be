@@ -328,6 +328,9 @@ An egress writes two manifests per rendition and they are **not** interchangeabl
   Knowing a live URL can reveal the full archive by changing the filename, and viewers can keep downloaded
   copies. This is an accepted consequence of the ticket's explicit full-public replay requirement, not a
   technical claim that the old threat disappeared. Revoking already downloaded copies is not supported.
+- **Admin-ended rooms' recordings are kept but must be admin-only — not yet enforced (SPR-211 → SPR-214).** They are
+  the evidence for why the room was cut, so they are never deleted, yet they sit under the same public HLS prefix.
+  Restrict them before enabling public delivery; the full-public acceptance above covers replays, not these.
 - **Room thumbnail uploads share `S3_BUCKET` — public scope must exclude `uploads/` (SPR-156).** Sellers
   write unchecked bytes to `uploads/thumbnails/` via presigned POST; only the validation Lambda promotes
   them to `thumbnails/`. Opening the whole bucket (bucket-wide policy, or a CDN origin at the bucket root)
