@@ -66,8 +66,24 @@ final class LiveRoomTabs {
         };
     }
 
-    /** 종료 시각. Ended 만 있다 — 취소 시각은 계약에 내보내지 않는다. */
+    /** 공개 뷰용 종료 시각. Ended 만 있다 — 취소 시각은 공개 뷰에 내보내지 않는다(판매자 뷰는 {@link #endedAtForSeller}). */
     static Instant endedAtOf(LiveStatus status) {
         return status instanceof LiveStatus.Ended e ? e.endedAt() : null;
+    }
+
+    /**
+     * 판매자 화면(내 방 목록·상세)용 시작 시각. 관리자 종료한 방(방송 중 Cancelled)도 시작 시각을 보인다.
+     * 공개 상세·최근 본 라이브는 {@link #startedAtOf} 를 쓴다 — 관리자 종료한 방의 시각은 판매자만 본다(SPR-211).
+     */
+    static Instant startedAtForSeller(LiveStatus status) {
+        return status instanceof LiveStatus.Cancelled c ? c.startedAt() : startedAtOf(status);
+    }
+
+    /** 판매자 화면용 종료 시각. 방송했던 취소 방(관리자 종료)은 끊긴 시각, 판매자 예약 취소 방은 없음. */
+    static Instant endedAtForSeller(LiveStatus status) {
+        if (status instanceof LiveStatus.Cancelled c) {
+            return c.startedAt() != null ? c.cancelledAt() : null;
+        }
+        return endedAtOf(status);
     }
 }

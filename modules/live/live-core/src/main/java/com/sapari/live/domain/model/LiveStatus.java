@@ -53,12 +53,19 @@ public sealed interface LiveStatus
         }
     }
 
-    // 판매자가 예약(Scheduled)을 취소한 방. 방송된 적이 없어 채팅 세션도 RoomEnded 도 없다.
-    // scheduledAt 은 판매자 목록의 정렬·표시 키라 Scheduled 에서 이어받아 보존한다.
-    record Cancelled(Instant scheduledAt, Instant cancelledAt) implements LiveStatus {
+    // 취소된 방. 두 갈래다 — 판매자가 예약(Scheduled)을 취소한 방(방송 없음, startedAt null, RoomEnded 없음)과
+    // 관리자가 방송 중(Live·Suspended)에 끊은 방(startedAt 보존, RoomEnded 발행). 다시보기는 Ended 만이므로 둘 다 없다.
+    // scheduledAt 은 판매자 목록의 정렬·표시 키라 이어받아 보존한다.
+    record Cancelled(Instant scheduledAt, Instant startedAt, Instant cancelledAt) implements LiveStatus {
         public Cancelled {
             if (scheduledAt == null) throw new IllegalArgumentException("scheduledAt은 필수입니다.");
             if (cancelledAt == null) throw new IllegalArgumentException("cancelledAt은 필수입니다.");
+            if (startedAt != null && cancelledAt.isBefore(startedAt)) throw new IllegalArgumentException("cancelledAt은 startedAt 이후여야 합니다.");
+        }
+
+        /** 방송한 적 없는 취소(판매자 예약 취소). */
+        public Cancelled(Instant scheduledAt, Instant cancelledAt) {
+            this(scheduledAt, null, cancelledAt);
         }
     }
 }

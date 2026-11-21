@@ -84,6 +84,6 @@ public class GetSellerRoomsService implements GetSellerRoomsUseCase {
     private static SellerLiveRoomSummary toSummary(LiveRoom room) {
         return new SellerLiveRoomSummary(room.id(), room.title(), room.thumbnailUrl(),
                 LiveRoomTabs.of(room.status()), room.scheduledAt(),
-                LiveRoomTabs.startedAtOf(room.status()), LiveRoomTabs.endedAtOf(room.status()));
+                LiveRoomTabs.startedAtForSeller(room.status()), LiveRoomTabs.endedAtForSeller(room.status()));
     }
 }
