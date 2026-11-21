@@ -4,10 +4,10 @@ paths:
   - "modules/live/live-core/src/main/java/com/sapari/live/infrastructure/metrics/MeteredLiveMediaManager.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/infrastructure/config/LiveKitConfig.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/application/port/LiveMediaManager.java"
-  - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{StartLive,EndLive,GoLiveByRtmp,PrepareIngress,ReissueIngress}Service.java"
+  - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{StartLive,EndLive,AdminEndLive,GoLiveByRtmp,PrepareIngress,ReissueIngress}Service.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{PostCommitMediaCleanup,EgressRollbackCompensation,RtmpIngressAssigner,IngressStartedWebhookHandler}.java"
   - "apps/live-app/src/main/resources/application*.yaml*"
-  - "{modules/live/live-core,apps/live-app}/src/test/java/**/{LiveKitMediaManager,MeteredLiveMediaManager,StartLiveService,EndLiveService,GoLiveByRtmpService,PrepareIngressService,ReissueIngressService}*Test.java"
+  - "{modules/live/live-core,apps/live-app}/src/test/java/**/{LiveKitMediaManager,MeteredLiveMediaManager,StartLiveService,EndLiveService,AdminEndLiveService,GoLiveByRtmpService,PrepareIngressService,ReissueIngressService}*Test.java"
 ---
 
 # live — media ports & RTMP

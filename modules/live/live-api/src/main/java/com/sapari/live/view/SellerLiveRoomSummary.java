@@ -4,7 +4,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * 판매자 내 방 목록의 한 줄. {@code endedAt} 은 종료된 방에만 있다(취소 시각은 내보내지 않는다).
+ * 판매자 내 방 목록의 한 줄. {@code endedAt} 은 종료된 방과 관리자 종료한 방(끊긴 시각)에만 있다.
+ * 판매자 예약 취소 방의 취소 시각은 내보내지 않는다.
  */
 public record SellerLiveRoomSummary(
         UUID roomId,

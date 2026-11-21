@@ -180,6 +180,30 @@ public record LiveRoom(
                 .build();
     }
 
+    /**
+     * 관리자가 방송 중인 방을 끊는다(관리자 종료). 결과는 Ended 가 아니라 Cancelled 라 다시보기가 생기지 않는다.
+     * 대상과 거부 코드는 판매자 종료와 같다(Live·Suspended, 아니면 LIVE-009). 방송했던 방이므로 startedAt 을
+     * 보존하고, RoomEnded 발행은 호출자 책임이다(채팅 세션이 열려 있다).
+     */
+    public LiveRoom cancelByAdmin(Instant now){
+        if (!canEndLive()) {
+            throw new InvalidLiveStateException(LiveErrorCode.LIVE_END_NOT_ALLOWED, this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        // 나머지는 위 canEndLive 가 막는다. default 를 두지 않아 상태가 늘면 컴파일이 알려 준다.
+        Instant startedAt = switch (this.status) {
+            case LiveStatus.Live l -> l.startedAt();
+            case LiveStatus.Suspended s -> s.startedAt();
+            case LiveStatus.Scheduled s -> throw new IllegalStateException("예상치 못한 상태: " + s);
+            case LiveStatus.Ready r -> throw new IllegalStateException("예상치 못한 상태: " + r);
+            case LiveStatus.Ended e -> throw new IllegalStateException("예상치 못한 상태: " + e);
+            case LiveStatus.Cancelled c -> throw new IllegalStateException("예상치 못한 상태: " + c);
+        };
+        return toBuilder()
+                .status(new LiveStatus.Cancelled(this.scheduledAt, startedAt, now))
+                .updatedAt(now)
+                .build();
+    }
+
     // RTMP ingress 배정은 도메인 전이가 아니라 조건부 UPDATE 다(RtmpIngressAssigner) — 스냅샷 읽기 위에서는
     // 배타성을 보장할 수 없어 DB 가 승자를 고른다. 여기에 assignRtmpIngress 를 되살리지 말 것:
     // `ingress_id IS NULL` 조건 없는 경로가 생겨 한 방에 유효한 streamKey 가 여러 개 나간다.

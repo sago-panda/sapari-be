@@ -131,6 +131,24 @@ class GetSellerRoomsServiceTest {
     }
 
     @Test
+    @DisplayName("취소된 방 — 관리자 종료한 방은 시작·끊긴 시각이 보이고, 판매자 예약 취소 방은 둘 다 없다")
+    void cancelledSummaryTimes() {
+        Instant at = Instant.parse("2026-06-10T10:00:00Z");
+        LiveRoom adminCancelled = room(at, new LiveStatus.Cancelled(at, at.plusSeconds(10), at.plusSeconds(100)));
+        LiveRoom sellerCancelled = room(at, new LiveStatus.Cancelled(at, at.minusSeconds(3600)));
+        given(liveRoomRepository.findSellerRooms(any(), any(), any(), any(), anyInt()))
+                .willReturn(List.of(adminCancelled, sellerCancelled));
+
+        List<SellerLiveRoomSummary> content =
+                service.getRooms(new GetSellerRoomsCommand(sellerId, null, null, null)).content();
+
+        assertThat(content.get(0)).isEqualTo(new SellerLiveRoomSummary(adminCancelled.id(), "제목", null,
+                LiveRoomTab.CANCELLED, at, at.plusSeconds(10), at.plusSeconds(100)));
+        assertThat(content.get(1)).isEqualTo(new SellerLiveRoomSummary(sellerCancelled.id(), "제목", null,
+                LiveRoomTab.CANCELLED, at, null, null));
+    }
+
+    @Test
     @DisplayName("커서는 마이크로초까지 보존한다 — 밀리초로 자르면 같은 ms 안의 경계 행이 빠진다")
     void cursorKeepsMicros() {
         Instant at = Instant.parse("2026-06-10T10:00:00.123456Z");

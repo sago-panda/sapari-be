@@ -436,6 +436,10 @@ public class LiveSecurityConfig {
                         // 최근 본 라이브는 구매자도 쓰는 회원 경로 — 아래 판매자 바닥보다 먼저 와야 한다.
                         // 메서드를 한정하지 않는 이유는 위 /chat/bans/** 주석과 같다(폴스루에 역할 바닥).
                         .requestMatchers("/api/v1/lives/recent").authenticated()
+                        // 관리자 조치(관리자 종료 등). 아래 판매자 바닥보다 먼저 와야 한다 — 뒤에 오면
+                        // 판매자가 남의 방을 끝내고 관리자는 403 을 받는다. 메서드를 한정하지 않는 이유는
+                        // 위 /chat/bans/** 주석과 같다.
+                        .requestMatchers("/api/v1/lives/admin/**").hasRole("ADMIN")
                         // 그 외 라이브 API는 판매자 전용
                         .requestMatchers("/api/v1/lives/**").hasRole("SELLER")
                         .anyRequest().authenticated()

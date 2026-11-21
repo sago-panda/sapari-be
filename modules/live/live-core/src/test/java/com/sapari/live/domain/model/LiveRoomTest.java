@@ -274,6 +274,33 @@ class LiveRoomTest {
         return scheduledRoom().toBuilder().id(UUID.randomUUID()).status(status).build();
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("everyStatus")
+    @DisplayName("cancelByAdmin — Live·Suspended 만 Cancelled 로(시작·취소 시각 보존), 나머지는 LIVE-009")
+    void cancelByAdmin_onlyLiveOrSuspended(String name, LiveStatus status) {
+        LiveRoom room = roomIn(status);
+        Instant cancelledAt = SCHEDULED_AT.plusSeconds(3600);
+        if (status instanceof LiveStatus.Live || status instanceof LiveStatus.Suspended) {
+            LiveRoom cancelled = room.cancelByAdmin(cancelledAt);
+            assertThat(cancelled.status())
+                    .isEqualTo(new LiveStatus.Cancelled(SCHEDULED_AT, SCHEDULED_AT, cancelledAt));
+            assertThat(cancelled.updatedAt()).isEqualTo(cancelledAt);
+        } else {
+            assertThatThrownBy(() -> room.cancelByAdmin(cancelledAt))
+                    .isInstanceOf(InvalidLiveStateException.class)
+                    .extracting(e -> ((LiveDomainException) e).getErrorCode())
+                    .isEqualTo(LiveErrorCode.LIVE_END_NOT_ALLOWED);
+        }
+    }
+
+    @Test
+    @DisplayName("판매자 예약 취소는 방송한 적이 없으므로 startedAt 이 없다")
+    void cancel_hasNoStartedAt() {
+        LiveRoom cancelled = roomIn(new LiveStatus.Scheduled(SCHEDULED_AT)).cancel(NOW);
+
+        assertThat(((LiveStatus.Cancelled) cancelled.status()).startedAt()).isNull();
+    }
+
     @Test
     @DisplayName("everyStatus 는 sealed permits 전부를 덮는다 — 상태가 늘면 아래 표가 낡았다는 신호")
     void everyStatusCoversAllPermits() {

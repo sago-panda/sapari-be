@@ -44,7 +44,7 @@ public class GetLiveRoomDetailService implements GetLiveRoomDetailUseCase {
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
         return new SellerLiveRoomDetailView(room.title(), room.description(), room.thumbnailUrl(),
                 room.sellerNickname(), LiveRoomTabs.of(room.status()), room.scheduledAt(),
-                LiveRoomTabs.startedAtOf(room.status()), LiveRoomTabs.endedAtOf(room.status()),
+                LiveRoomTabs.startedAtForSeller(room.status()), LiveRoomTabs.endedAtForSeller(room.status()),
                 vodStatusOf(room), room.rtmpUrl(),
                 room.isRtmp() ? LiveStreamKind.RTMP : LiveStreamKind.WEBRTC);
     }
