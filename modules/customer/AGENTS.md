@@ -40,7 +40,7 @@ Run: `./gradlew :modules:customer:customer-core:test`.
 ## Security
 
 - **⚠️ Posture: allow-by-default (footgun).** The customer chain ends in `anyRequest().permitAll()`;
-  only `CUSTOMER_PROTECTED_MATCHERS` (in `ApiSecurityConfig`: `me`, `me/nickname`, `logout`) require
+  only `CUSTOMER_PROTECTED_MATCHERS` (in `ApiSecurityConfig`: `me`, `me/nickname`, `me/profile-image`, `logout`) require
   auth. **A new customer endpoint is PUBLIC unless added to `CUSTOMER_PROTECTED_MATCHERS`** — every new
   sensitive endpoint MUST be added there. Source of truth = `ApiSecurityConfig`.
 - **Intentional:** `login` / refresh return the access token (body / `Authorization`) and the refresh

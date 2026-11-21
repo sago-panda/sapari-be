@@ -12,7 +12,9 @@ public record RegisterSocialCustomerCommand(
         UserGender gender,
         String phoneNumber,
         String email,
-        Boolean marketingAgreed,
+        String profileImageKey,
+        boolean privacyAgreed,
+        boolean marketingAgreed,
         ProviderType provider,
         String providerId,
         String providerEmail

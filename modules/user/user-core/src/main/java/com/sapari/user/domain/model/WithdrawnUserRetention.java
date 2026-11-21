@@ -25,12 +25,10 @@ public record WithdrawnUserRetention(
             String nameMasked,
             String emailMasked,
             String phoneNumberMasked,
-            Instant retentionUntil,
-            Instant createdAt
+            Instant retentionUntil
     ) {
         Assert.notNull(originalUserId, "originalUserId는 필수입니다.");
         Assert.notNull(retentionUntil, "retentionUntil은 필수입니다.");
-        Assert.notNull(createdAt, "createdAt은 필수입니다.");
 
         return new WithdrawnUserRetention(
                 null,
@@ -39,7 +37,7 @@ public record WithdrawnUserRetention(
                 emailMasked,
                 phoneNumberMasked,
                 retentionUntil,
-                createdAt,
+                null,
                 null
         );
     }

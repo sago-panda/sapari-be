@@ -39,6 +39,8 @@ public class ApiSecurityConfig {
 
     private static final String[] SELLER_PUBLIC_MATCHERS = {
             "/api/v1/sellers/auth/signup",
+            "/api/v1/sellers/auth/signup/email-verifications",
+            "/api/v1/sellers/auth/signup/email-verifications/confirm",
             "/api/v1/sellers/auth/signup/check-email",
             "/api/v1/sellers/auth/signup/check-phone",
             "/api/v1/sellers/auth/check-nickname",
@@ -50,6 +52,7 @@ public class ApiSecurityConfig {
     private static final String[] CUSTOMER_PROTECTED_MATCHERS = {
             "/api/v1/customers/auth/me",
             "/api/v1/customers/auth/me/nickname",
+            "/api/v1/customers/auth/me/profile-image",
             "/api/v1/customers/auth/logout"
     };
 

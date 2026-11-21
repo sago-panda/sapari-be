@@ -14,14 +14,28 @@ import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.redis.RedisConnectionFailureException;
 
 import tools.jackson.databind.ObjectMapper;
 
+import com.sapari.common.core.exception.BusinessException;
+import com.sapari.common.core.exception.ErrorCode;
 import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
@@ -29,13 +43,20 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.customer.application.dto.SocialProfileImageDownloadResult;
 import com.sapari.customer.application.dto.SocialSignupInfo;
 import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.command.CustomerNicknameUpdateCommand;
+import com.sapari.customer.command.CustomerPhoneVerificationConfirmCommand;
+import com.sapari.customer.command.CustomerPhoneVerificationSendCommand;
+import com.sapari.customer.command.CustomerProfileImageChangeCommand;
 import com.sapari.customer.command.SocialSignupCommand;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
+import com.sapari.customer.view.CustomerMeView;
 import com.sapari.customer.view.CustomerNicknameUpdateResult;
+import com.sapari.customer.view.CustomerPhoneVerificationConfirmResult;
+import com.sapari.customer.view.CustomerPhoneVerificationSendResult;
 import com.sapari.customer.view.CustomerTokenReissueResult;
 import com.sapari.customer.view.SocialSignupInfoView;
 import com.sapari.customer.view.SocialLoginTokenResult;
@@ -43,16 +64,31 @@ import com.sapari.customer.view.SocialSignupResult;
 import com.sapari.customer.domain.repository.SocialLoginCodeRepository;
 import com.sapari.customer.domain.repository.SocialSignupRepository;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.command.ProfileImagePrepareCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
+import com.sapari.user.command.SignupContactVerificationConsumeCommand;
+import com.sapari.user.command.SignupPhoneVerificationConfirmCommand;
+import com.sapari.user.command.SignupPhoneVerificationSendCommand;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.customer.application.mapper.CustomerViewMapper;
+import com.sapari.customer.application.port.SocialProfileImageDownloader;
+import com.sapari.customer.domain.repository.SocialSignupAttemptRepository;
+
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserGender;
 import com.sapari.user.model.UserGrade;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.port.UserSignupContactVerificationUseCase;
+import com.sapari.user.port.UserSignupEmailVerificationUseCase;
+import com.sapari.user.port.UserSignupPhoneVerificationUseCase;
+import com.sapari.user.view.SignupPhoneVerificationConfirmResult;
+import com.sapari.user.view.SignupPhoneVerificationSendResult;
+import com.sapari.user.view.PreparedProfileImage;
 import com.sapari.user.view.UserView;
 
 @DisplayName("구매자 인증 서비스 테스트")
@@ -62,6 +98,7 @@ class CustomerAuthServiceTest {
     private static final String SIGNUP_SID = "signup-session-id";
     private static final String TEMPORARY_LOGIN_CODE = "temporary-login-code";
     private static final String EMAIL = "customer@example.com";
+    private static final String LEASE_TOKEN = "lease-token";
     private static final Instant NOW = Instant.now();
 
     private final SocialSignupRepository socialSignupRepository =
@@ -69,6 +106,8 @@ class CustomerAuthServiceTest {
     private final SocialLoginCodeRepository socialLoginCodeRepository =
             mock(SocialLoginCodeRepository.class);
     private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
+    private final SocialProfileImageDownloader socialProfileImageDownloader = mock(SocialProfileImageDownloader.class);
+    private final SocialSignupAttemptRepository socialSignupAttemptRepository = mock(SocialSignupAttemptRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
             new JwtProperties("customer-test", SECRET, 3600L, 1209600L),
             timeProvider()
@@ -79,6 +118,18 @@ class CustomerAuthServiceTest {
             mock(SessionRevocationStore.class);
     private final AccessTokenBlacklist accessTokenBlacklist =
             mock(AccessTokenBlacklist.class);
+    private final UserSignupPhoneVerificationUseCase userSignupPhoneVerificationUseCase =
+            mock(UserSignupPhoneVerificationUseCase.class);
+    private final UserSignupEmailVerificationUseCase userSignupEmailVerificationUseCase =
+            mock(UserSignupEmailVerificationUseCase.class);
+    private final UserSignupContactVerificationUseCase userSignupContactVerificationUseCase =
+            mock(UserSignupContactVerificationUseCase.class);
+    private final CustomerSignupContactVerificationAdapter signupContactVerificationAdapter =
+            new CustomerSignupContactVerificationAdapter(
+                    userSignupPhoneVerificationUseCase,
+                    userSignupEmailVerificationUseCase,
+                    userSignupContactVerificationUseCase
+            );
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final JwtTokenLifecycle jwtTokenLifecycle = new JwtTokenLifecycle(
             jwtTokenProvider,
@@ -96,8 +147,17 @@ class CustomerAuthServiceTest {
             customerJwtTokenAdapter,
             timeProvider(),
             objectMapper,
-            Mappers.getMapper(CustomerViewMapper.class)
+            Mappers.getMapper(CustomerViewMapper.class),
+            signupContactVerificationAdapter,
+            socialProfileImageDownloader,
+            socialSignupAttemptRepository
     );
+
+    @BeforeEach
+    void allowSocialSignupAttempt() {
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID))
+                .thenReturn(SocialSignupAttemptRepository.AcquireResult.acquired(LEASE_TOKEN));
+    }
 
     @Test
     @DisplayName("소셜 고객 가입 완료 시 User를 저장하고 토큰을 발급한다")
@@ -132,7 +192,18 @@ class CustomerAuthServiceTest {
         assertThat(commandCaptor.getValue().providerId()).isEqualTo("naver-id");
         assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
         assertThat(commandCaptor.getValue().gender()).isEqualTo(UserGender.FEMALE);
+        assertThat(commandCaptor.getValue().profileImageKey()).isNull();
+        assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
+        assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
+        InOrder order = inOrder(userAccountUseCase, userSignupContactVerificationUseCase);
+        order.verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(
+                new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+        verify(userSignupPhoneVerificationUseCase, never()).consumeSignupPhoneVerification(any());
+        verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
+        verify(socialProfileImageDownloader, never()).download(any(), any());
+        verify(userAccountUseCase, never()).changeProfileImage(any());
         verify(socialSignupRepository).delete(SIGNUP_SID);
         verify(refreshTokenStore).save(
                 eq(userId),
@@ -140,6 +211,434 @@ class CustomerAuthServiceTest {
                 eq(refreshClaims.tokenId()),
                 any(Duration.class)
         );
+    }
+
+    @Test
+    @DisplayName("소셜 가입 요청에 파일이 있으면 provider 이미지 다운로드 없이 업로드 파일을 프로필 이미지로 저장한다")
+    void completeSocialSignupUsesUploadedProfileImageFileWhenPresent() throws Exception {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        when(userAccountUseCase.prepareProfileImage(any(ProfileImagePrepareCommand.class)))
+                .thenReturn(preparedImage);
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(userId, preparedImage))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/profile.png"));
+
+        // when
+        SocialSignupResult result = customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        );
+
+        // then
+        assertThat(result.userId()).isEqualTo(userId);
+        ArgumentCaptor<ProfileImagePrepareCommand> commandCaptor =
+                ArgumentCaptor.forClass(ProfileImagePrepareCommand.class);
+        verify(userAccountUseCase).prepareProfileImage(commandCaptor.capture());
+        assertThat(commandCaptor.getValue().originalFilename()).isEqualTo("signup-profile.png");
+        assertThat(commandCaptor.getValue().contentType()).isEqualTo("image/png");
+        assertThat(commandCaptor.getValue().content()).containsExactly(1, 2, 3);
+        InOrder order = inOrder(userAccountUseCase, userSignupContactVerificationUseCase);
+        order.verify(userAccountUseCase).prepareProfileImage(any(ProfileImagePrepareCommand.class));
+        order.verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        order.verify(userAccountUseCase).changePreparedProfileImage(userId, preparedImage);
+        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(any());
+        verify(socialProfileImageDownloader, never()).download(any(), any());
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("파일 없이 소셜 이미지 사용을 선택하면 서버가 보관한 provider URL을 다운로드해 저장한다")
+    void completeSocialSignupImportsProviderProfileImageWhenSelected() throws Exception {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {4, 5, 6});
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png",
+                        "image/png",
+                        new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/provider.png"));
+
+        // when
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommandUsingSocialProfileImage());
+
+        // then
+        ArgumentCaptor<PreparedProfileImage> preparedImageCaptor =
+                ArgumentCaptor.forClass(PreparedProfileImage.class);
+        verify(userAccountUseCase).changePreparedProfileImage(eq(userId), preparedImageCaptor.capture());
+        assertThat(preparedImageCaptor.getValue().normalizedExtension()).isEqualTo("png");
+        assertThat(preparedImageCaptor.getValue().contentType()).isEqualTo("image/png");
+        assertThat(preparedImageCaptor.getValue().content()).containsExactly(4, 5, 6);
+        verify(userAccountUseCase, never()).prepareProfileImage(any());
+    }
+
+    @Test
+    @DisplayName("선택한 provider 이미지 다운로드에 실패하면 가입 저장 전에 CUSTOMER 오류를 반환한다")
+    void completeSocialSignupFailsBeforeRegistrationWhenProviderImageDownloadFails() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED)
+        );
+
+        verifyNoInteractions(userSignupContactVerificationUseCase, userAccountUseCase);
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"   "})
+    @DisplayName("소셜 이미지 사용을 선택했는데 callback URL이 없으면 가입 저장 전에 실패한다")
+    void completeSocialSignupFailsBeforeRegistrationWhenSelectedProviderImageUrlIsMissing(String profileImageUrl)
+            throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(
+                        socialSignupInfoWithProfileImageUrl(profileImageUrl)
+                )));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED)
+        );
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("직접 업로드 저장 실패는 생성한 가입 데이터를 보상 삭제하고 CUSTOMER 오류로 매핑한다")
+    void completeSocialSignupRollsBackRegistrationWhenUploadedImageStorageFails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        TestUserException storageException =
+                new TestUserException(TestUserErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE);
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.prepareProfileImage(any(ProfileImagePrepareCommand.class)))
+                .thenReturn(preparedImage);
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(userId, preparedImage))
+                .thenThrow(storageException);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception -> {
+            assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE);
+            assertThat(exception).hasCause(storageException);
+        });
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(
+                new SocialCustomerRegistrationRollbackCommand(
+                        userId,
+                        ProviderType.NAVER,
+                        "naver-id",
+                        EMAIL
+                )
+        );
+        verifyNoInteractions(userSignupContactVerificationUseCase);
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("provider 이미지 object storage 실패는 가입 데이터를 보상 삭제하고 CUSTOMER 오류로 매핑한다")
+    void completeSocialSignupRollsBackRegistrationWhenProviderImageStorageFails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png", "image/png", new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenThrow(new TestUserException(TestUserErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.PROFILE_IMAGE_STORAGE_UNAVAILABLE)
+        );
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(
+                new SocialCustomerRegistrationRollbackCommand(
+                        userId,
+                        ProviderType.NAVER,
+                        "naver-id",
+                        EMAIL
+                )
+        );
+        verifyNoInteractions(userSignupContactVerificationUseCase);
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("provider 이미지 DB 반영 오류는 삼키지 않고 가입 데이터를 보상 삭제한다")
+    void completeSocialSignupRollsBackRegistrationWhenProviderImageDatabaseUpdateFails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        IllegalStateException databaseException = new IllegalStateException("database update failed");
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png", "image/png", new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenThrow(databaseException);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isSameAs(databaseException);
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(
+                new SocialCustomerRegistrationRollbackCommand(
+                        userId,
+                        ProviderType.NAVER,
+                        "naver-id",
+                        EMAIL
+                )
+        );
+        verifyNoInteractions(userSignupContactVerificationUseCase);
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("파일도 없고 소셜 이미지 사용도 선택하지 않으면 프로필 이미지 없이 가입한다")
+    void completeSocialSignupKeepsProfileImageEmptyWhenNoImageChoice() throws Exception {
+        // given
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+
+        // when
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand());
+
+        // then
+        verify(socialProfileImageDownloader, never()).download(any(), any());
+        verify(userAccountUseCase, never()).changeProfileImage(any());
+    }
+
+    @Test
+    @DisplayName("파일과 소셜 이미지 사용 선택이 동시에 오면 가입을 진행하지 않는다")
+    void completeSocialSignupRejectsAmbiguousProfileImageChoice() throws Exception {
+        // given
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+
+        // when, then
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImageAndSocialImageChoice()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.INVALID_PROFILE_IMAGE_CHOICE)
+        );
+
+        verifyNoInteractions(userSignupContactVerificationUseCase);
+        verifyNoInteractions(userAccountUseCase);
+        verifyNoInteractions(socialProfileImageDownloader);
+        verify(socialSignupAttemptRepository, never()).tryAcquire(any());
+    }
+
+    @Test
+    @DisplayName("가입 저장이 실패하면 휴대폰·이메일 인증 상태를 소비하지 않는다")
+    void completeSocialSignupDoesNotConsumeVerificationWhenRegisterFails() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenThrow(new DataIntegrityViolationException("duplicated"));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception ->
+                        assertThat(exception.getErrorCode())
+                                .isEqualTo(CustomerErrorCode.DUPLICATED_SIGNUP_INFO)
+                );
+
+        verifyNoInteractions(userSignupContactVerificationUseCase);
+        verify(userAccountUseCase, never()).rollbackSocialCustomerRegistration(any());
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("휴대폰 인증 소비 실패 시 생성한 소셜 고객 가입을 보상하고 CUSTOMER 오류로 매핑한다")
+    void completeSocialSignupRequiresPhoneVerification() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_PHONE_VERIFICATION_REQUIRED);
+        doThrow(verificationRequired)
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.PHONE_VERIFICATION_REQUIRED);
+                    assertThat(exception).hasCause(verificationRequired);
+                });
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    /** 보상 실패 로그에서 정리 대상은 식별하되 예외 메시지와 가입 인증 정보는 노출하지 않는다. */
+    @Test
+    @DisplayName("가입 보상 실패는 안전한 식별 로그를 남기고 원래 오류와 보상 오류를 보존한다")
+    void completeSocialSignupLogsRollbackFailureWithoutSensitiveDetails() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        RuntimeException originalFailure = new IllegalStateException("secret-original-message");
+        RuntimeException rollbackFailure = new IllegalArgumentException("secret-rollback-message");
+        doThrow(originalFailure).when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(any());
+        doThrow(rollbackFailure).when(userAccountUseCase).rollbackSocialCustomerRegistration(any());
+
+        Logger logger = (Logger) LoggerFactory.getLogger(CustomerAuthService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                    .isSameAs(originalFailure)
+                    .satisfies(error -> assertThat(error.getSuppressed()).containsExactly(rollbackFailure));
+            assertThat(appender.list).filteredOn(event -> event.getLevel() == Level.ERROR)
+                    .singleElement().satisfies(event -> {
+                        assertThat(event.getFormattedMessage())
+                                .contains("SOCIAL_SIGNUP_ROLLBACK_FAILED", userId.toString(),
+                                        "IllegalStateException", "IllegalArgumentException")
+                                .doesNotContain(SIGNUP_SID, EMAIL, "01012345678",
+                                        "secret-original-message", "secret-rollback-message");
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("이메일 인증 소비 실패 시 생성한 소셜 고객 가입을 보상하고 휴대폰 인증 상태는 보존한다")
+    void completeSocialSignupRequiresEmailVerification() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_EMAIL_VERIFICATION_REQUIRED);
+        doThrow(verificationRequired)
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.EMAIL_VERIFICATION_REQUIRED);
+                    assertThat(exception).hasCause(verificationRequired);
+                });
+
+        verify(userSignupPhoneVerificationUseCase, never()).consumeSignupPhoneVerification(any());
+        verify(userSignupEmailVerificationUseCase, never()).consumeSignupEmailVerification(any());
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 반영 후 인증 소비 실패 시 생성한 가입 데이터를 보상한다")
+    void completeSocialSignupRollsBackRegistrationWhenVerificationFailsAfterProfileImageApplied() throws Exception {
+        UUID userId = UUID.randomUUID();
+        PreparedProfileImage preparedImage = new PreparedProfileImage("png", "image/png", new byte[] {1, 2, 3});
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.prepareProfileImage(any(ProfileImagePrepareCommand.class)))
+                .thenReturn(preparedImage);
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(userId, preparedImage))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/profile.png"));
+        TestUserException verificationRequired = new TestUserException(TestUserErrorCode.SIGNUP_EMAIL_VERIFICATION_REQUIRED);
+        doThrow(verificationRequired)
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.EMAIL_VERIFICATION_REQUIRED)
+        );
+
+        InOrder order = inOrder(userAccountUseCase, userSignupContactVerificationUseCase);
+        order.verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        order.verify(userAccountUseCase).changePreparedProfileImage(userId, preparedImage);
+        order.verify(userSignupContactVerificationUseCase).consumeSignupContactVerification(any());
+        order.verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("회원가입 연락처 인증 소비 중 알 수 없는 USER 오류는 CUSTOMER 일반 인증 오류로 매핑한다")
+    void completeSocialSignupWhenUnknownUserVerificationErrorMapsGenericCustomerException() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        TestUserException unknownUserError = new TestUserException(TestUserErrorCode.UNKNOWN_USER_ERROR);
+        doThrow(unknownUserError)
+                .when(userSignupContactVerificationUseCase)
+                .consumeSignupContactVerification(new SignupContactVerificationConsumeCommand("01012345678", EMAIL));
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SIGNUP_VERIFICATION_UNAVAILABLE);
+                    assertThat(exception).hasCause(unknownUserError);
+                });
+
+        verify(userAccountUseCase).rollbackSocialCustomerRegistration(rollbackCommand(userId));
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+        verifyNoInteractions(refreshTokenStore);
     }
 
     @Test
@@ -151,6 +650,301 @@ class CustomerAuthServiceTest {
                 );
 
         verifyNoInteractions(userAccountUseCase, refreshTokenStore);
+        verify(socialSignupAttemptRepository, never()).tryAcquire(any());
+    }
+
+    @Test
+    @DisplayName("소셜 가입 성공 시 SID를 삭제하고 호출자가 획득한 처리권을 해제한다")
+    void completeSocialSignupDeletesSidAndReleasesOwnedAttemptOnSuccess() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand());
+
+        InOrder order = inOrder(socialSignupRepository, socialSignupAttemptRepository);
+        order.verify(socialSignupRepository).delete(SIGNUP_SID);
+        order.verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("회원가입 본 처리가 성공해도 처리권 해제 장애는 CUSTOMER-031로 전파한다")
+    void completeSocialSignupPropagatesAttemptReleaseFailureAfterSuccess() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        CustomerException releaseFailure = new CustomerException(
+                CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE
+        );
+        doThrow(releaseFailure)
+                .when(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isSameAs(releaseFailure);
+
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("예상하지 못한 처리권 해제 오류는 성공으로 숨기지 않는다")
+    void completeSocialSignupPropagatesUnexpectedAttemptReleaseFailure() throws Exception {
+        UUID userId = UUID.randomUUID();
+        IllegalStateException unexpectedFailure = new IllegalStateException("unexpected release failure");
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        doThrow(unexpectedFailure).when(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isSameAs(unexpectedFailure);
+
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("처리권 해제 장애는 기존 회원가입 실패 원인을 덮어쓰지 않는다")
+    void completeSocialSignupKeepsPrimaryFailureWhenAttemptReleaseFails() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.empty());
+        CustomerException releaseFailure = new CustomerException(
+                CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE
+        );
+        doThrow(releaseFailure)
+                .when(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception -> {
+            assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_PROFILE_IMAGE_IMPORT_FAILED);
+            assertThat(exception.getSuppressed()).containsExactly(releaseFailure);
+        });
+
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("가입 확정 후 SID 삭제 장애는 CUSTOMER-031로 전파하고 토큰을 발급하지 않는다")
+    void completeSocialSignupPropagatesCompletedSidCleanupFailureWithoutIssuingTokens() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        doThrow(new RedisConnectionFailureException("test SID cleanup unavailable"))
+                .when(socialSignupRepository).delete(SIGNUP_SID);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode())
+                            .isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE);
+                    assertThat(exception).hasCauseInstanceOf(RedisConnectionFailureException.class);
+                });
+
+        verify(userAccountUseCase).registerSocialCustomer(any(RegisterSocialCustomerCommand.class));
+        verify(userAccountUseCase, never()).rollbackSocialCustomerRegistration(any());
+        verify(socialSignupRepository).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+        verifyNoInteractions(refreshTokenStore);
+    }
+
+    @Test
+    @DisplayName("이미지 준비 실패 시 SID는 유지하고 호출자가 획득한 처리권만 해제한다")
+    void completeSocialSignupKeepsSidAndReleasesOwnedAttemptOnImageFailure() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOf(CustomerException.class);
+
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+        verify(socialSignupAttemptRepository).release(SIGNUP_SID, LEASE_TOKEN);
+    }
+
+    @Test
+    @DisplayName("동일 가입 요청이 처리 중이면 이미지 준비와 회원 생성을 시작하지 않는다")
+    void completeSocialSignupRejectsAlreadyProcessingAttemptBeforeExpensiveWork() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID))
+                .thenReturn(SocialSignupAttemptRepository.AcquireResult.alreadyProcessing());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandUsingSocialProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_ALREADY_PROCESSING)
+        );
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
+        verify(socialSignupAttemptRepository, never()).release(any(), any());
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("가입 시도 한도를 소진하면 이미지 준비와 회원 생성을 시작하지 않는다")
+    void completeSocialSignupRejectsRateLimitedAttemptBeforeExpensiveWork() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID))
+                .thenReturn(SocialSignupAttemptRepository.AcquireResult.rateLimitExceeded());
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(
+                SIGNUP_SID,
+                signupCommandWithUploadedProfileImage()
+        )).isInstanceOfSatisfying(CustomerException.class, exception ->
+                assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_RATE_LIMIT_EXCEEDED)
+        );
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
+        verify(socialSignupAttemptRepository, never()).release(any(), any());
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("가입 시도 제어 Redis 장애 시 원인을 보존한 503 오류로 실패한다")
+    void completeSocialSignupFailsClosedWhenAttemptGuardRedisIsUnavailable() throws Exception {
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        CustomerException attemptControlFailure = new CustomerException(
+                CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE,
+                new RedisConnectionFailureException("test Redis unavailable")
+        );
+        when(socialSignupAttemptRepository.tryAcquire(SIGNUP_SID)).thenThrow(attemptControlFailure);
+
+        assertThatThrownBy(() -> customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommand()))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode())
+                            .isEqualTo(CustomerErrorCode.SOCIAL_SIGNUP_ATTEMPT_CONTROL_UNAVAILABLE);
+                    assertThat(exception.getErrorCode().getStatus()).isEqualTo(503);
+                    assertThat(exception).isSameAs(attemptControlFailure);
+                    assertThat(exception).hasCauseInstanceOf(RedisConnectionFailureException.class);
+                });
+
+        verifyNoInteractions(socialProfileImageDownloader, userAccountUseCase, userSignupContactVerificationUseCase);
+        verify(socialSignupAttemptRepository, never()).release(any(), any());
+        verify(socialSignupRepository, never()).delete(SIGNUP_SID);
+    }
+
+    @Test
+    @DisplayName("가입 시도권은 소셜 이미지 다운로드 전에 획득한다")
+    void completeSocialSignupAcquiresAttemptBeforeProviderImageDownload() throws Exception {
+        UUID userId = UUID.randomUUID();
+        when(socialSignupRepository.findBySid(SIGNUP_SID))
+                .thenReturn(Optional.of(objectMapper.writeValueAsString(socialSignupInfo())));
+        when(socialProfileImageDownloader.download(ProviderType.NAVER, "https://image.example/profile.png"))
+                .thenReturn(Optional.of(new SocialProfileImageDownloadResult(
+                        "png", "image/png", new byte[] {4, 5, 6}
+                )));
+        when(userAccountUseCase.registerSocialCustomer(any(RegisterSocialCustomerCommand.class)))
+                .thenReturn(customerView(userId));
+        when(userAccountUseCase.changePreparedProfileImage(eq(userId), any(PreparedProfileImage.class)))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "http://localhost:9090/provider.png"));
+
+        customerAuthService.completeSocialSignup(SIGNUP_SID, signupCommandUsingSocialProfileImage());
+
+        InOrder order = inOrder(socialSignupAttemptRepository, socialProfileImageDownloader);
+        order.verify(socialSignupAttemptRepository).tryAcquire(SIGNUP_SID);
+        order.verify(socialProfileImageDownloader).download(
+                ProviderType.NAVER,
+                "https://image.example/profile.png"
+        );
+    }
+
+    @Test
+    @DisplayName("이미 가입된 휴대폰 번호는 CUSTOMER 중복 전화번호 예외로 매핑한다")
+    void sendSignupPhoneVerificationWhenPhoneNumberDuplicatedThrowsDuplicatedPhoneNumber() {
+        CustomerPhoneVerificationSendCommand command = new CustomerPhoneVerificationSendCommand("01012345678");
+        SignupPhoneVerificationSendCommand userCommand = new SignupPhoneVerificationSendCommand("01012345678");
+        TestUserException duplicatedPhoneNumber = new TestUserException(TestUserErrorCode.DUPLICATED_PHONE_NUMBER);
+        doThrow(duplicatedPhoneNumber)
+                .when(userSignupPhoneVerificationUseCase).sendSignupPhoneVerification(userCommand);
+
+        assertThatThrownBy(() -> customerAuthService.sendSignupPhoneVerification(command))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.DUPLICATED_PHONE_NUMBER);
+                    assertThat(exception).hasCause(duplicatedPhoneNumber);
+                });
+
+        verifyNoInteractions(userAccountUseCase);
+    }
+
+    @Test
+    @DisplayName("미가입 휴대폰 번호는 user 인증 use case로 발송을 위임한다")
+    void sendSignupPhoneVerificationWhenPhoneNumberAvailableSendsCode() {
+        CustomerPhoneVerificationSendCommand command = new CustomerPhoneVerificationSendCommand("01012345678");
+        SignupPhoneVerificationSendCommand userCommand = new SignupPhoneVerificationSendCommand("01012345678");
+        SignupPhoneVerificationSendResult sendResult = new SignupPhoneVerificationSendResult(true, 300L, 60L);
+        when(userSignupPhoneVerificationUseCase.sendSignupPhoneVerification(userCommand)).thenReturn(sendResult);
+
+        CustomerPhoneVerificationSendResult result = customerAuthService.sendSignupPhoneVerification(command);
+
+        assertThat(result.sent()).isTrue();
+        assertThat(result.expiresInSeconds()).isEqualTo(300L);
+        assertThat(result.resendAvailableInSeconds()).isEqualTo(60L);
+        verify(userSignupPhoneVerificationUseCase).sendSignupPhoneVerification(userCommand);
+        verifyNoInteractions(userAccountUseCase);
+    }
+
+    @Test
+    @DisplayName("인증번호 불일치는 CUSTOMER 인증번호 불일치 예외로 매핑한다")
+    void confirmSignupPhoneVerificationWhenCodeMismatchesMapsCustomerException() {
+        CustomerPhoneVerificationConfirmCommand command = new CustomerPhoneVerificationConfirmCommand("01012345678", "000000");
+        SignupPhoneVerificationConfirmCommand userCommand = new SignupPhoneVerificationConfirmCommand("01012345678", "000000");
+        TestUserException codeMismatch = new TestUserException(TestUserErrorCode.SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH);
+        doThrow(codeMismatch)
+                .when(userSignupPhoneVerificationUseCase).confirmSignupPhoneVerification(userCommand);
+
+        assertThatThrownBy(() -> customerAuthService.confirmSignupPhoneVerification(command))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.PHONE_VERIFICATION_CODE_MISMATCH);
+                    assertThat(exception).hasCause(codeMismatch);
+                });
+    }
+
+    @Test
+    @DisplayName("휴대폰 인증 확인 중 알 수 없는 USER 오류는 CUSTOMER 일반 인증 오류로 매핑한다")
+    void confirmSignupPhoneVerificationWhenUnknownUserErrorMapsGenericCustomerException() {
+        CustomerPhoneVerificationConfirmCommand command = new CustomerPhoneVerificationConfirmCommand("01012345678", "000000");
+        SignupPhoneVerificationConfirmCommand userCommand = new SignupPhoneVerificationConfirmCommand("01012345678", "000000");
+        TestUserException unknownUserError = new TestUserException(TestUserErrorCode.UNKNOWN_USER_ERROR);
+        doThrow(unknownUserError)
+                .when(userSignupPhoneVerificationUseCase).confirmSignupPhoneVerification(userCommand);
+
+        assertThatThrownBy(() -> customerAuthService.confirmSignupPhoneVerification(command))
+                .isInstanceOfSatisfying(CustomerException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.SIGNUP_VERIFICATION_UNAVAILABLE);
+                    assertThat(exception).hasCause(unknownUserError);
+                });
+    }
+
+    @Test
+    @DisplayName("인증번호가 일치하면 user 인증 use case의 확인 결과를 반환한다")
+    void confirmSignupPhoneVerificationWhenCodeMatchesReturnsResult() {
+        CustomerPhoneVerificationConfirmCommand command = new CustomerPhoneVerificationConfirmCommand("01012345678", "123456");
+        SignupPhoneVerificationConfirmCommand userCommand = new SignupPhoneVerificationConfirmCommand("01012345678", "123456");
+        SignupPhoneVerificationConfirmResult confirmResult = new SignupPhoneVerificationConfirmResult(true, 600L);
+        when(userSignupPhoneVerificationUseCase.confirmSignupPhoneVerification(userCommand)).thenReturn(confirmResult);
+
+        CustomerPhoneVerificationConfirmResult result = customerAuthService.confirmSignupPhoneVerification(command);
+
+        assertThat(result.phoneNumberVerified()).isTrue();
+        assertThat(result.verifiedExpiresInSeconds()).isEqualTo(600L);
+        verify(userSignupPhoneVerificationUseCase).confirmSignupPhoneVerification(userCommand);
     }
 
     @Test
@@ -183,13 +977,13 @@ class CustomerAuthServiceTest {
     }
 
     @Test
-    @DisplayName("임시 로그인 code가 있으면 저장된 토큰 정보를 반환하고 code를 삭제한다")
-    void exchangeTemporaryLoginCodeReturnsTokenInfoAndDeletesCode() throws Exception {
+    @DisplayName("임시 로그인 code가 있으면 원자적으로 소비한 토큰 정보를 반환한다")
+    void exchangeTemporaryLoginCodeReturnsAtomicallyConsumedTokenInfo() throws Exception {
         // given
         UUID userId = UUID.randomUUID();
         SocialLoginTokenResult tokenResult =
                 new SocialLoginTokenResult(userId, "access-token", "refresh-token");
-        when(socialLoginCodeRepository.findByCode(TEMPORARY_LOGIN_CODE))
+        when(socialLoginCodeRepository.consumeByCode(TEMPORARY_LOGIN_CODE))
                 .thenReturn(Optional.of(objectMapper.writeValueAsString(tokenResult)));
 
         // when
@@ -198,7 +992,7 @@ class CustomerAuthServiceTest {
 
         // then
         assertThat(result).isEqualTo(tokenResult);
-        verify(socialLoginCodeRepository).delete(TEMPORARY_LOGIN_CODE);
+        verify(socialLoginCodeRepository).consumeByCode(TEMPORARY_LOGIN_CODE);
     }
 
     @Test
@@ -294,7 +1088,10 @@ class CustomerAuthServiceTest {
                 jwtTokenAdapter,
                 timeProvider(),
                 objectMapper,
-                Mappers.getMapper(CustomerViewMapper.class)
+                Mappers.getMapper(CustomerViewMapper.class),
+                signupContactVerificationAdapter,
+                socialProfileImageDownloader,
+                socialSignupAttemptRepository
         );
         JwtTokenClaims previousRefreshClaims = new JwtTokenClaims(
                 userId,
@@ -428,6 +1225,56 @@ class CustomerAuthServiceTest {
     }
 
     @Test
+    @DisplayName("프로필 이미지 변경 시 Access Token 사용자 기준으로 user 프로필 이미지를 변경한다")
+    void updateProfileImageChangesCurrentCustomerProfileImage() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        CustomerProfileImageChangeCommand command = new CustomerProfileImageChangeCommand(
+                accessToken,
+                "profile.png",
+                "image/png",
+                new byte[] {1, 2, 3}
+        );
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
+        when(userAccountUseCase.changeProfileImage(any(ProfileImageChangeCommand.class)))
+                .thenReturn(customerViewWithProfileImageUrl(userId, "https://cdn.example/users/%s/profile/new.png".formatted(userId)));
+
+        // when
+        CustomerMeView result = customerAuthService.updateProfileImage(command);
+
+        // then
+        assertThat(result.profileImageUrl()).isEqualTo("https://cdn.example/users/%s/profile/new.png".formatted(userId));
+        ArgumentCaptor<ProfileImageChangeCommand> commandCaptor = ArgumentCaptor.forClass(ProfileImageChangeCommand.class);
+        verify(userAccountUseCase).changeProfileImage(commandCaptor.capture());
+        assertThat(commandCaptor.getValue().userId()).isEqualTo(userId);
+        assertThat(commandCaptor.getValue().originalFilename()).isEqualTo("profile.png");
+        assertThat(commandCaptor.getValue().contentType()).isEqualTo("image/png");
+        assertThat(commandCaptor.getValue().content()).containsExactly(1, 2, 3);
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
+    @Test
+    @DisplayName("프로필 이미지 삭제 시 Access Token 사용자 기준으로 user 프로필 이미지를 제거한다")
+    void deleteProfileImageRemovesCurrentCustomerProfileImage() {
+        // given
+        UUID userId = UUID.randomUUID();
+        String accessToken = jwtTokenProvider.createAccessToken(jwtSubject(userId, UserRole.USER.name()));
+        when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
+        when(userAccountUseCase.removeProfileImage(userId)).thenReturn(customerViewWithProfileImageUrl(userId, null));
+
+        // when
+        CustomerMeView result = customerAuthService.deleteProfileImage(accessToken);
+
+        // then
+        assertThat(result.profileImageUrl()).isNull();
+        verify(userAccountUseCase).removeProfileImage(userId);
+        verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
+    @Test
     @DisplayName("30일이 지난 뒤 닉네임 수정 시 중복을 검증하고 닉네임만 저장한다")
     void updateNicknameUpdatesCustomerNickname() {
         // given
@@ -440,7 +1287,7 @@ class CustomerAuthServiceTest {
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
-        when(userAccountUseCase.changeNickname(userId, "updated"))
+        when(userAccountUseCase.changeNickname(userId, "updated", Duration.ofDays(30)))
                 .thenReturn(customerView(userId, "updated", providerCreatedAt()));
 
         // when
@@ -461,7 +1308,7 @@ class CustomerAuthServiceTest {
         assertThat(accessClaims.nickname()).isEqualTo("updated");
         assertThat(accessClaims.email()).isEqualTo(EMAIL);
         verify(userAccountUseCase).existsByNickname("updated");
-        verify(userAccountUseCase).changeNickname(userId, "updated");
+        verify(userAccountUseCase).changeNickname(userId, "updated", Duration.ofDays(30));
         verify(accessTokenBlacklist).save(eq(oldAccessClaims.tokenId()), any(Duration.class));
         verify(refreshTokenStore, never()).save(any(UUID.class), any(UUID.class), any(UUID.class), any(Duration.class));
         verifyNoInteractions(sessionRevocationStore);
@@ -487,7 +1334,7 @@ class CustomerAuthServiceTest {
                         assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.NICKNAME_CHANGE_RESTRICTED)
                 );
         verify(userAccountUseCase).existsByNickname("updated");
-        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class), any(Duration.class));
     }
 
     @Test
@@ -509,7 +1356,7 @@ class CustomerAuthServiceTest {
                         assertThat(exception.getErrorCode()).isEqualTo(CustomerErrorCode.DUPLICATED_NICKNAME)
                 );
         verify(userAccountUseCase).existsByNickname("customer");
-        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class));
+        verify(userAccountUseCase, never()).changeNickname(any(UUID.class), any(String.class), any(Duration.class));
     }
 
     @Test
@@ -532,6 +1379,21 @@ class CustomerAuthServiceTest {
                 );
     }
 
+    /** 잠금 전 검증 이후 발생한 변경 간격 위반도 기존 도메인 응답으로 변환한다. */
+    @Test
+    void mapsNicknameRestrictionAfterLock() {
+        UUID id = UUID.randomUUID();
+        String token = jwtTokenProvider.createAccessToken(jwtSubject(id, UserRole.USER.name()));
+        when(userAccountUseCase.findById(id)).thenReturn(Optional.of(customerView(id)));
+        when(userAccountUseCase.changeNickname(id, "updated", Duration.ofDays(30)))
+                .thenThrow(new com.sapari.user.exception.NicknameChangeRestrictedException());
+
+        assertThatThrownBy(() -> customerAuthService.updateNickname(new CustomerNicknameUpdateCommand("updated", token)))
+                .isInstanceOfSatisfying(CustomerException.class, e ->
+                        assertThat(e.getErrorCode()).isEqualTo(CustomerErrorCode.NICKNAME_CHANGE_RESTRICTED));
+        verifyNoInteractions(accessTokenBlacklist);
+    }
+
     @Test
     @DisplayName("저장 중 닉네임 unique 충돌이 발생하면 닉네임 중복으로 실패한다")
     void updateNicknameThrowsExceptionWhenNicknameSaveConflicts() {
@@ -544,7 +1406,7 @@ class CustomerAuthServiceTest {
         );
         when(userAccountUseCase.findById(userId)).thenReturn(Optional.of(customerView(userId)));
         when(userAccountUseCase.existsByNickname("updated")).thenReturn(false);
-        when(userAccountUseCase.changeNickname(userId, "updated"))
+        when(userAccountUseCase.changeNickname(userId, "updated", Duration.ofDays(30)))
                 .thenThrow(new DataIntegrityViolationException("duplicated"));
 
         // when, then
@@ -586,11 +1448,71 @@ class CustomerAuthServiceTest {
                 "구매자",
                 LocalDate.of(2000, 1, 1),
                 UserGender.FEMALE.name(),
+                false,
+                null,
+                null,
+                null,
+                true,
+                true
+        );
+    }
+
+    private SocialSignupCommand signupCommandUsingSocialProfileImage() {
+        return new SocialSignupCommand(
+                "01012345678",
+                EMAIL,
+                "customer",
+                "구매자",
+                LocalDate.of(2000, 1, 1),
+                UserGender.FEMALE.name(),
+                true,
+                null,
+                null,
+                null,
+                true,
+                true
+        );
+    }
+
+    private SocialSignupCommand signupCommandWithUploadedProfileImage() {
+        return new SocialSignupCommand(
+                "01012345678",
+                EMAIL,
+                "customer",
+                "구매자",
+                LocalDate.of(2000, 1, 1),
+                UserGender.FEMALE.name(),
+                false,
+                "signup-profile.png",
+                "image/png",
+                new byte[] {1, 2, 3},
+                true,
+                true
+        );
+    }
+
+    private SocialSignupCommand signupCommandWithUploadedProfileImageAndSocialImageChoice() {
+        return new SocialSignupCommand(
+                "01012345678",
+                EMAIL,
+                "customer",
+                "구매자",
+                LocalDate.of(2000, 1, 1),
+                UserGender.FEMALE.name(),
+                true,
+                "signup-profile.png",
+                "image/png",
+                new byte[] {1, 2, 3},
+                true,
                 true
         );
     }
 
     private SocialSignupInfo socialSignupInfo() {
+        return socialSignupInfoWithProfileImageUrl("https://image.example/profile.png");
+    }
+
+    private SocialSignupInfo socialSignupInfoWithProfileImageUrl(String profileImageUrl) {
         return new SocialSignupInfo(
                 ProviderType.NAVER,
                 "naver-id",
@@ -598,9 +1520,18 @@ class CustomerAuthServiceTest {
                 "소셜이름",
                 "소셜닉네임",
                 "01012345678",
-                "https://image.example/profile.png",
+                profileImageUrl,
                 UserGender.MALE,
                 LocalDate.of(2000, 1, 1)
+        );
+    }
+
+    private SocialCustomerRegistrationRollbackCommand rollbackCommand(UUID userId) {
+        return new SocialCustomerRegistrationRollbackCommand(
+                userId,
+                ProviderType.NAVER,
+                "naver-id",
+                EMAIL
         );
     }
 
@@ -629,6 +1560,14 @@ class CustomerAuthServiceTest {
     }
 
     private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status) {
+        return customerView(userId, nickname, nicknameChangedAt, status, null);
+    }
+
+    private UserView customerViewWithProfileImageUrl(UUID userId, String profileImageUrl) {
+        return customerView(userId, "customer", providerCreatedAt(), UserStatus.ACTIVE, profileImageUrl);
+    }
+
+    private UserView customerView(UUID userId, String nickname, Instant nicknameChangedAt, UserStatus status, String profileImageUrl) {
         return new UserView(
                 userId,
                 UserRole.USER,
@@ -639,7 +1578,7 @@ class CustomerAuthServiceTest {
                 LocalDate.of(2000, 1, 1),
                 UserGender.MALE,
                 "01012345678",
-                null,
+                profileImageUrl,
                 EMAIL,
                 UserGrade.BRONZE,
                 0,
@@ -674,5 +1613,47 @@ class CustomerAuthServiceTest {
 
     private Instant providerCreatedAt() {
         return Instant.parse("2025-01-01T00:00:00Z");
+    }
+
+    private static class TestUserException extends BusinessException {
+
+        TestUserException(TestUserErrorCode errorCode) {
+            super(errorCode);
+        }
+    }
+
+    private enum TestUserErrorCode implements ErrorCode {
+
+        SIGNUP_PHONE_VERIFICATION_REQUIRED(400, "USER-101", "휴대폰 인증이 필요합니다."),
+        SIGNUP_PHONE_VERIFICATION_CODE_MISMATCH(400, "USER-103", "인증번호가 올바르지 않습니다."),
+        DUPLICATED_PHONE_NUMBER(409, "USER-107", "이미 사용 중인 전화번호입니다."),
+        SIGNUP_EMAIL_VERIFICATION_REQUIRED(400, "USER-108", "이메일 인증이 필요합니다."),
+        PROFILE_IMAGE_STORAGE_UNAVAILABLE(503, "USER-118", "프로필 이미지 저장이 지연되고 있습니다."),
+        UNKNOWN_USER_ERROR(500, "USER-999", "알 수 없는 user 오류입니다.");
+
+        private final int status;
+        private final String code;
+        private final String message;
+
+        TestUserErrorCode(int status, String code, String message) {
+            this.status = status;
+            this.code = code;
+            this.message = message;
+        }
+
+        @Override
+        public int getStatus() {
+            return status;
+        }
+
+        @Override
+        public String getCode() {
+            return code;
+        }
+
+        @Override
+        public String getMessage() {
+            return message;
+        }
     }
 }

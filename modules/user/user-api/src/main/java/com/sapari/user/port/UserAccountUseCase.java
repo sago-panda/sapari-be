@@ -1,23 +1,41 @@
 package com.sapari.user.port;
 
+import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.command.ProfileImagePrepareCommand;
 import com.sapari.user.command.RegisterSellerCommand;
 import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
 import com.sapari.user.model.ProviderType;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.view.UserView;
+import com.sapari.user.view.PreparedProfileImage;
 
 /**
  * 공유 식별자(User) 접근 포트. user-core가 구현하고 customer/seller는 이 계약에만 의존한다.
  * 역할별 도메인 규칙(닉네임 변경 제한·역할 검증 등)은 호출자(customer/seller)가 보유하고,
- * 이 포트는 영속성·조회·생성·매핑만 책임진다.
+ * 이 포트는 영속성·조회·생성·매핑과 전달된 변경 정책의 잠금 후 재검증을 책임진다.
  */
 public interface UserAccountUseCase {
 
+    /**
+     * 구매자 회원가입을 처리하고 가입 시점의 약관 증적까지 같은 성공 조건으로 저장한다.
+     * 약관 동의는 회원가입의 필수 정책이므로 별도 우회 포트를 두지 않는다.
+     */
     UserView registerSocialCustomer(RegisterSocialCustomerCommand command);
 
+    /**
+     * 소셜 가입 직후 필수 후속 처리 실패 시 방금 생성한 가입 데이터만 보상 삭제한다.
+     */
+    void rollbackSocialCustomerRegistration(SocialCustomerRegistrationRollbackCommand command);
+
+    /**
+     * 판매자 회원가입을 처리하고 가입 시점의 약관 증적까지 같은 성공 조건으로 저장한다.
+     * 약관 동의는 회원가입의 필수 정책이므로 별도 우회 포트를 두지 않는다.
+     */
     UserView registerSeller(RegisterSellerCommand command);
 
     Optional<UserView> findById(UUID userId);
@@ -32,7 +50,31 @@ public interface UserAccountUseCase {
 
     boolean existsByNickname(String nickname);
 
-    UserView changeNickname(UUID userId, String nickname);
+    /**
+     * 호출자가 정한 변경 간격을 잠금 획득 후 최신 사용자 시각으로 재검증하고 변경한다.
+     * @throws com.sapari.user.exception.NicknameChangeRestrictedException 변경 간격이 지나지 않은 경우
+     */
+    UserView changeNickname(UUID userId, String nickname, Duration changeInterval);
+
+    /**
+     * 인증된 사용자의 프로필 이미지를 검증·저장하고 DB에는 새 object key만 반영한다.
+     */
+    UserView changeProfileImage(ProfileImageChangeCommand command);
+
+    /**
+     * 회원 생성과 무관한 파일 검증·재인코딩을 먼저 수행한다.
+     */
+    PreparedProfileImage prepareProfileImage(ProfileImagePrepareCommand command);
+
+    /**
+     * 검증·재인코딩이 끝난 이미지를 저장하고 사용자 object key를 반영한다.
+     */
+    UserView changePreparedProfileImage(UUID userId, PreparedProfileImage image);
+
+    /**
+     * 인증된 사용자의 프로필 이미지 key를 제거하고 기존 object는 best-effort로 정리한다.
+     */
+    UserView removeProfileImage(UUID userId);
 
     /**
      * 회원탈퇴를 신청해 계정을 탈퇴 유예 상태로 전환한다.

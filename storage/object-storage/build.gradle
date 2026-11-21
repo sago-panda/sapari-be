@@ -1,4 +1,12 @@
-dependencies {}
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api platform('software.amazon.awssdk:bom:2.46.17')
+    api 'software.amazon.awssdk:s3'
+    api 'org.springframework.boot:spring-boot-starter-validation'
+}
 
 bootJar {
     enabled = false

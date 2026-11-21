@@ -7,7 +7,8 @@ cross-cutting rules; this file is the user-specific + **auth-area shared map** o
 ## Status
 
 - ✅ account creation + lookup via `UserAccountUseCase` (social customer / local seller).
-- 🚧 profile / grade / order linkage — not built. **Auth/login is the only flow so far.**
+- ✅ signup verification (phone / email), terms agreement history, profile image (store / replace / remove), withdrawal request.
+- 🚧 grade / order linkage — not built.
 
 ## Where things live (auth-area map)
 
@@ -58,11 +59,22 @@ cross-cutting rules; this file is the user-specific + **auth-area shared map** o
 
 ## Errors
 
-`user` has **no own `ErrorCode` enum** — domain record guards (`User.createSocialCustomer`,
-`User.createSeller`, `User.updateNickname`) use `Assert` / `IllegalArgumentException`, mapped by the
-global handler. Persistence entities do not own domain validation; they keep JPA mapping and mutation
-only. The flow modules own the catalogs (`SellerErrorCode` / `CustomerErrorCode`). Add a
-`UserErrorCode` only when user gains domain-specific failures (e.g. status transitions).
+- Signup-verification and profile-image failures are `UserErrorCode` (user-core). Domain record guards
+  (`User.createSocialCustomer`, `User.createSeller`, `User.updateNickname`) still use `Assert` /
+  `IllegalArgumentException`.
+- Flow modules can't see user-core, so a code they must branch on is published as a constant in
+  `UserPublicErrorCodes` (user-api) and `UserErrorCode` reuses it — never re-type the string.
+
+## Profile image
+
+- DB holds an **object key only**, never a URL (`ProfileImagePublicUrlResolver` rejects URLs).
+- Storage I/O runs **outside** any caller transaction (`UserAccountService` profile-image methods are
+  `NOT_SUPPORTED`) — an upload or delete can't be rolled back.
+- **Accepted loss:** after a hard delete commits, a failed S3 delete is logged and not retried, so the
+  object stays in S3 (`UserProfileImageCleanupService`). Retry is a separate ticket.
+- `UserProfileImageCleanupUseCase` deletes only keys under that user's path.
+- batch-app needs S3 settings to boot on purpose: the hard-delete job must clean images, so a missing
+  S3 config fails fast instead of silently leaving them.
 
 ## Tests
 

@@ -2,6 +2,7 @@ package com.sapari.apiapp.controller.seller.dto.request;
 
 import java.time.LocalDate;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -33,16 +34,17 @@ public record SellerSignupRequest(
         )
         String nickname,
 
-        @NotBlank(message = "이름은 필수입니다.")
-        @Size(max = 20, message = "이름은 20자 이하여야 합니다.")
+        @NotBlank(message = "대표자명은 필수입니다.")
+        @Size(max = 20, message = "대표자명은 20자 이하여야 합니다.")
         String name,
 
         @NotBlank(message = "전화번호는 필수입니다.")
         @Pattern(regexp = "^0\\d{8,10}$", message = "전화번호 형식이 올바르지 않습니다.")
         String phoneNumber,
 
-        @NotNull(message = "생년월일은 필수입니다.")
-        LocalDate birthDate,
+        @NotNull(message = "개인정보 수집 및 이용 동의는 필수입니다.")
+        @AssertTrue(message = "개인정보 수집 및 이용 동의는 필수입니다.")
+        Boolean privacyAgreed,
 
         Boolean marketingAgreed,
 
@@ -61,14 +63,24 @@ public record SellerSignupRequest(
         @Pattern(regexp = "^(INDIVIDUAL|CORPORATE)$", message = "사업자 유형이 올바르지 않습니다.")
         String businessType
 ) {
+    /** 로그·디버그 출력에 비밀번호와 개인정보가 포함되지 않도록 고정 문자열만 반환한다. */
+    @Override
+    public String toString() {
+        return "SellerSignupRequest[REDACTED]";
+    }
+
+    /**
+     * 필수 약관 거부/누락은 요청 검증에서 4xx로 차단하고, 선택 약관은 명시적 거부도 command에 전달한다.
+     */
     public SellerSignupCommand toCommand() {
         return new SellerSignupCommand(
                 email,
                 password,
+                passwordConfirm,
                 nickname,
                 name,
                 phoneNumber,
-                birthDate,
+                Boolean.TRUE.equals(privacyAgreed),
                 Boolean.TRUE.equals(marketingAgreed),
                 storeName,
                 businessNumber,
