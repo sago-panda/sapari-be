@@ -3,14 +3,10 @@ package com.sapari.common.securityjwt.jwt;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
 import java.util.UUID;
-
-import javax.crypto.SecretKey;
 
 import org.springframework.stereotype.Component;
 
@@ -26,7 +22,7 @@ public class JwtTokenProvider {
     private static final String SESSION_ID_CLAIM = "sid";
 
     private final String issuer;
-    private final SecretKey secretKey;
+    private final JwtKeys keys;
     private final long accessTokenExpirationSeconds;
     private final long refreshTokenExpirationSeconds;
 
@@ -34,7 +30,7 @@ public class JwtTokenProvider {
 
     public JwtTokenProvider(JwtProperties jwtProperties, TimeProvider timeProvider) {
         this.issuer = jwtProperties.issuer();
-        this.secretKey = Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8));
+        this.keys = JwtKeys.from(jwtProperties);
         this.accessTokenExpirationSeconds = jwtProperties.accessTokenExpirationSeconds();
         this.refreshTokenExpirationSeconds = jwtProperties.refreshTokenExpirationSeconds();
         this.timeProvider = timeProvider;
@@ -115,12 +111,11 @@ public class JwtTokenProvider {
                     .claim(EMAIL_CLAIM, subject.email());
         }
 
-        return builder.signWith(secretKey).compact();
+        return keys.signWith(builder).compact();
     }
 
     private Claims parseClaims(String token) {
-        return Jwts.parser()
-                .verifyWith(secretKey)
+        return keys.verifyWith(Jwts.parser())
                 .requireIssuer(issuer)
                 .clock(() -> Date.from(timeProvider.now()))
                 .build()

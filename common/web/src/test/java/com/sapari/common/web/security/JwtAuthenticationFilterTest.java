@@ -24,8 +24,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 
-import com.sapari.common.securityjwt.jwt.JwtProperties;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
@@ -34,7 +34,6 @@ import com.sapari.global.time.TimeProvider;
 @DisplayName("JWT 인증 필터 테스트")
 class JwtAuthenticationFilterTest {
 
-    private static final String SECRET = "test-secret-key-for-jwt-provider-32bytes";
     private static final String ISSUER = "auth-service-test";
 
     @AfterEach
@@ -263,7 +262,7 @@ class JwtAuthenticationFilterTest {
     }
 
     private JwtTokenProvider createProvider() {
-        return new JwtTokenProvider(new JwtProperties(ISSUER, SECRET, 3600L, 1209600L), timeProvider());
+        return new JwtTokenProvider(JwtTestKeys.properties(ISSUER, 3600L, 1209600L), timeProvider());
     }
 
     private TimeProvider timeProvider() {

@@ -36,7 +36,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import com.sapari.common.core.exception.BusinessException;
 import com.sapari.common.core.exception.ErrorCode;
-import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
@@ -95,7 +95,6 @@ import com.sapari.user.view.UserView;
 @DisplayName("구매자 인증 서비스 테스트")
 class CustomerAuthServiceTest {
 
-    private static final String SECRET = "test-secret-key-for-customer-jwt-32bytes";
     private static final String SIGNUP_SID = "signup-session-id";
     private static final String TEMPORARY_LOGIN_CODE = "temporary-login-code";
     private static final String EMAIL = "customer@example.com";
@@ -110,7 +109,7 @@ class CustomerAuthServiceTest {
     private final SocialProfileImageDownloader socialProfileImageDownloader = mock(SocialProfileImageDownloader.class);
     private final SocialSignupAttemptRepository socialSignupAttemptRepository = mock(SocialSignupAttemptRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("customer-test", SECRET, 3600L, 1209600L),
+            JwtTestKeys.properties("customer-test", 3600L, 1209600L),
             timeProvider()
     );
     private final RefreshTokenStore refreshTokenStore =

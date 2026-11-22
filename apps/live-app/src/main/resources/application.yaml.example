@@ -75,14 +75,17 @@ springdoc:
   packages-to-scan: com.sapari
 
 # ---------------------------------------------------------------------------
-# 인증 토큰(HMAC) — live-app 은 발급하지 않고 검증만 한다.
-# secret 은 api-app 과 같은 값이어야 서명 검증이 통과한다.
+# 인증 토큰(RS256) — live-app 은 발급하지 않고 api-app 의 공개키로 검증만 한다.
+# 서명 개인키(jwt.signing-key)를 여기 두지 말 것 — 클라우드 비밀만으로 홈랩에서 통하는 토큰을 만들 수 있게 된다.
+# 키 형식·교체 순서는 api-app application.yml.example 의 jwt 주석.
 # refresh-token-expiration-seconds 는 JwtProperties 의 @NotNull 충족용(여기서는 미사용).
 # ---------------------------------------------------------------------------
 jwt:
   issuer: ${JWT_ISSUER:sapari-api}
-  secret: ${JWT_SECRET:}                     # REQUIRED — 이 키로 임의의 access 토큰을 만들 수 있다
-  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:3600}
+  verification-keys:                         # REQUIRED — api-app 서명키의 공개키. 교체 중엔 신·구 두 개
+    - kid: ${JWT_VERIFICATION_KID:}
+      public-key: ${JWT_VERIFICATION_PUBLIC_KEY:}
+  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:900}
   refresh-token-expiration-seconds: ${JWT_REFRESH_TOKEN_EXPIRATION_SECONDS:1209600}
 
 # 브라우저 호출을 허용할 프론트 오리진(쉼표 구분, scheme://host[:port]). 비우면 CORS 끔 — 교차 출처 호출이 막힌다.
@@ -93,7 +96,7 @@ cors:
 live:
   # -------------------------------------------------------------------------
   # 채팅 입장용 룸 토큰(RS256) — live 가 개인키로 서명, chat 이 공개키로 검증.
-  # 위 jwt(HMAC)와 키·알고리즘·aud 가 모두 다르며 서로 대체 불가.
+  # 위 jwt 와 같은 RS256 이지만 키쌍·aud 가 다르며 서로 대체 불가 — 같은 키쌍을 재사용하지 말 것.
   # -------------------------------------------------------------------------
   room-token:
     issuer: ${LIVE_ROOM_TOKEN_ISSUER:live}

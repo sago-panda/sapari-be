@@ -17,7 +17,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycleException;
@@ -40,11 +40,10 @@ import com.sapari.user.view.UserView;
 class CustomerJwtTokenAdapterTest {
 
     private static final Instant NOW = Instant.parse("2025-01-01T00:00:00Z");
-    private static final String SECRET = "test-secret-key-for-customer-session-32bytes";
 
     private final TimeProvider timeProvider = new TimeProvider(Clock.fixed(NOW, ZoneOffset.UTC));
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("customer-session-test", SECRET, 3600L, 1209600L),
+            JwtTestKeys.properties("customer-session-test", 3600L, 1209600L),
             timeProvider
     );
     private final RefreshTokenStore refreshTokenStore = mock(RefreshTokenStore.class);

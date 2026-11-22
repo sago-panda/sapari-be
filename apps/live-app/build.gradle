@@ -74,6 +74,8 @@ dependencies {
     // 라는 규칙이 네 번째 자리에 흩어진다(chat 의 LiveSchema javadoc 이 경고한 그 모양).
     testImplementation 'org.flywaydb:flyway-core'
     testImplementation 'org.flywaydb:flyway-database-postgresql'
+
+    testImplementation(testFixtures(project(':common:security-jwt')))
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

@@ -84,11 +84,22 @@ springdoc:
     path: /v3/api-docs
   packages-to-scan: com.sapari
 
-# 인증 토큰(HMAC) — api-app 이 발급한다. secret 은 검증하는 앱(live-app 등)과 같은 값이어야 한다.
+# 인증 토큰(RS256) — api-app 이 개인키로 발급한다. 검증하는 앱(live-app 등)에는 공개키만 둔다.
+# 키는 PEM 헤더 없이 Base64 본문만(개인키 PKCS#8 / 공개키 X.509, RSA 2048비트 이상). 생성 예:
+#   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt.pem
+#   openssl pkcs8 -topk8 -nocrypt -in jwt.pem -outform DER | base64     → JWT_SIGNING_PRIVATE_KEY
+#   openssl pkey -in jwt.pem -pubout -outform DER | base64              → JWT_SIGNING_PUBLIC_KEY
+# 키 교체: 새 kid 공개키를 검증 앱들의 verification-keys 에 먼저 추가 → api-app 의 서명키를 새 kid 로 →
+# 구 kid 토큰이 만료된 뒤 구 공개키를 뺀다(검증 앱은 access 수명, api-app 은 refresh 수명 뒤). 규칙: JwtProperties, JwtKeys.
 jwt:
   issuer: ${JWT_ISSUER:sapari-api}
-  secret: ${JWT_SECRET:}                         # REQUIRED, 32자 이상
-  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:1800}
+  signing-key:
+    kid: ${JWT_SIGNING_KID:}                     # REQUIRED, verification-keys 중 하나의 kid
+    private-key: ${JWT_SIGNING_PRIVATE_KEY:}     # REQUIRED — 이 키로 임의의 토큰을 만들 수 있다
+  verification-keys:                             # REQUIRED, 자기가 발급한 토큰도 이 공개키로 검증한다
+    - kid: ${JWT_SIGNING_KID:}
+      public-key: ${JWT_SIGNING_PUBLIC_KEY:}
+  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:900}
   refresh-token-expiration-seconds: ${JWT_REFRESH_TOKEN_EXPIRATION_SECONDS:1209600}
   refresh-token-reuse-grace: ${JWT_REFRESH_TOKEN_REUSE_GRACE:5s}   # optional, 0~30s (0 = 유예 끔)
 

@@ -32,6 +32,7 @@ import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.port.GetChatNoticeUseCase;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -70,7 +71,8 @@ class ChatModerationWiringTest {
         registry.add("spring.jpa.properties.hibernate.boot.allow_jdbc_metadata_access", () -> false);
 
         registry.add("jwt.issuer", () -> "sapari-test");
-        registry.add("jwt.secret", () -> "test-only-secret-not-a-credential-32chars");
+        registry.add("jwt.verification-keys[0].kid", () -> JwtTestKeys.KID);
+        registry.add("jwt.verification-keys[0].public-key", JwtTestKeys::publicKeyBase64);
         registry.add("jwt.access-token-expiration-seconds", () -> 3600);
         registry.add("jwt.refresh-token-expiration-seconds", () -> 1209600);
 

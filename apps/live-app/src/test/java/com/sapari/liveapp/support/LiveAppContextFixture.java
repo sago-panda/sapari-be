@@ -8,6 +8,8 @@ import java.util.Base64;
 
 import org.springframework.test.context.DynamicPropertyRegistry;
 
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
+
 /**
  * live-app 컨텍스트를 <b>CI 에서도</b> 띄우기 위해 필요한 설정 전부.
  *
@@ -70,9 +72,10 @@ public final class LiveAppContextFixture {
         registry.add("live.thumbnail.cdn-base-url", () -> "https://cdn.example.test");
 
         // api-app 이 발급한 access 토큰을 이 앱이 검증한다(StatelessJwtAuthenticationFilter).
-        // 시크릿은 32자 이상이어야 한다 — 더미여도 길이 제약은 실제 규칙이다.
+        // 운영과 같이 공개키만 준다 — 이 앱 설정에 서명 개인키는 없다.
         registry.add("jwt.issuer", () -> "sapari-test");
-        registry.add("jwt.secret", () -> "test-secret-test-secret-test-secret-32");
+        registry.add("jwt.verification-keys[0].kid", () -> JwtTestKeys.KID);
+        registry.add("jwt.verification-keys[0].public-key", JwtTestKeys::publicKeyBase64);
         registry.add("jwt.access-token-expiration-seconds", () -> "1800");
         registry.add("jwt.refresh-token-expiration-seconds", () -> "604800");
 

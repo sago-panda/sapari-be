@@ -1,5 +1,7 @@
 dependencies {
     implementation project(':common:web')
+
+    testImplementation(testFixtures(project(':common:security-jwt')))
 }
 
 tasks.register("prepareKotlinBuildScriptModel"){}

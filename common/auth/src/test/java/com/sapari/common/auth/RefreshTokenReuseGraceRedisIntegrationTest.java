@@ -33,6 +33,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycleException;
 import com.sapari.common.securityjwt.jwt.JwtTokenPrincipal;
@@ -47,7 +48,6 @@ import com.sapari.global.time.TimeProvider;
 @DisplayName("Refresh Token 재사용 유예 Redis 통합 테스트")
 class RefreshTokenReuseGraceRedisIntegrationTest {
 
-    private static final String SECRET = "refresh-reuse-grace-test-secret-0123456789";
     private static final Duration GRACE = Duration.ofSeconds(5);
     // SPR-215 이전 회전 스크립트 그대로 — 섞여 도는 Pod·롤백 호환성 확인용.
     private static final DefaultRedisScript<Long> PREVIOUS_VERSION_ROTATE_SCRIPT = new DefaultRedisScript<>(
@@ -112,7 +112,7 @@ class RefreshTokenReuseGraceRedisIntegrationTest {
         }
         clock = new MutableClock(Instant.parse("2026-11-21T00:00:00Z"));
         TimeProvider timeProvider = new TimeProvider(clock);
-        JwtProperties jwtProperties = new JwtProperties("sapari-test", SECRET, 1800L, 1_209_600L);
+        JwtProperties jwtProperties = JwtTestKeys.properties("sapari-test", 1800L, 1_209_600L);
         sessionRevocationRepository = new SessionRevocationRedisRepository(redisTemplate, jwtProperties, timeProvider);
         lifecycle = new JwtTokenLifecycle(
                 new JwtTokenProvider(jwtProperties, timeProvider),

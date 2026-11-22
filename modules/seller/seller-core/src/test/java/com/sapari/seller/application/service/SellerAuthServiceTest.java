@@ -25,7 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.sapari.common.core.exception.BusinessException;
 import com.sapari.common.core.exception.ErrorCode;
-import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import com.sapari.common.securityjwt.jwt.JwtSubject;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
@@ -69,7 +69,6 @@ import com.sapari.user.view.UserView;
 @DisplayName("판매자 인증 서비스 테스트")
 class SellerAuthServiceTest {
 
-    private static final String SECRET = "test-secret-key-for-jwt-provider-32bytes";
     private static final String EMAIL = "seller@example.com";
     private static final String PASSWORD = "Password1!";
     private static final String PASSWORD_HASH = "hashed-password";
@@ -86,7 +85,7 @@ class SellerAuthServiceTest {
             mock(SellerSignupProcessor.class);
     private final PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("seller-test", SECRET, 3600L, 1209600L),
+            JwtTestKeys.properties("seller-test", 3600L, 1209600L),
             timeProvider()
     );
     private final RefreshTokenStore refreshTokenStore =

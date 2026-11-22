@@ -20,7 +20,9 @@ import com.sapari.live.infrastructure.config.RoomTokenProperties;
  * 룸 토큰 RS256 서명기 — {@link RoomTokenIssuer} 구현.
  *
  * <p>개인키({@link PrivateKey} 빈, {@code RoomTokenConfig}에서 파싱)로 서명한다. api-app 인증
- * 토큰(HMAC, {@code JwtTokenProvider})과는 키·알고리즘·audience가 모두 달라 서로 통용되지 않는다.
+ * 토큰({@code JwtTokenProvider}, 같은 RS256 이지만 별도 키쌍)과 서로 통용되지 않는다: 사용자 토큰은 chat 이
+ * iss·aud 로 거부하고, 이 토큰은 kid 헤더가 없어 사용자 토큰 검증({@code JwtKeys})이 거부한다 — 여기에 kid 를
+ * 넣지 말 것.
  *
  * <p>claim: {@code iss=live}, {@code aud=chat}, {@code sub=userId}, {@code room}, {@code role},
  * {@code owner}, (회원만) {@code nickname}/{@code email}, {@code iat}/{@code exp}. 게스트는
