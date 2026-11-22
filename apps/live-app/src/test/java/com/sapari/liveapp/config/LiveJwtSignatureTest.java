@@ -48,6 +48,7 @@ import com.sapari.live.application.port.RoomTokenClaims;
 import com.sapari.live.infrastructure.config.RoomTokenProperties;
 import com.sapari.live.infrastructure.media.RoomTokenProvider;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFixtures;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
 import com.sapari.liveapp.security.EnterRateLimiter;
@@ -181,6 +182,7 @@ class LiveJwtSignatureTest {
                     new StatelessJwtAuthenticationFilter(liveAppProvider()),
                     rateLimit,
                     ChatReadRateLimitFixtures.unlimited(),
+                    CredentialIssueRateLimitFixtures.unlimited(),
                     new TokenRevocationFilter(checker, checker, LiveMetrics.NOOP),
                     new JwtAuthenticationEntryPoint(JsonMapper.builder().build(), new TimeProvider(Clock.systemUTC())),
                     mock(JwtAccessDeniedHandler.class));
