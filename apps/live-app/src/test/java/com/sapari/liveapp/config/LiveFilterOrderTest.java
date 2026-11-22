@@ -28,6 +28,7 @@ import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.liveapp.security.ChatReadRateLimitFilter;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFixtures;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
 import com.sapari.liveapp.security.EnterRateLimiter;
@@ -116,7 +117,8 @@ class LiveFilterOrderTest {
                     LiveMetrics.NOOP);
             return new LiveSecurityConfig().liveFilterChain(http,
                     new StatelessJwtAuthenticationFilter(mock(JwtTokenProvider.class)),
-                    enterRateLimitFilter, ChatReadRateLimitFixtures.unlimited(), tokenRevocationFilter,
+                    enterRateLimitFilter, ChatReadRateLimitFixtures.unlimited(),
+                    CredentialIssueRateLimitFixtures.unlimited(), tokenRevocationFilter,
                     mock(JwtAuthenticationEntryPoint.class),
                     mock(JwtAccessDeniedHandler.class));
         }

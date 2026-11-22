@@ -40,6 +40,7 @@ import com.sapari.live.port.GetRecentLivesUseCase;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
@@ -50,7 +51,8 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 @WebMvcTest(controllers = RecentLiveController.class,
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
-@Import({RecentLiveController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class, CommonWebMvcConfig.class,
+@Import({RecentLiveController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
+        CredentialIssueRateLimitFixtures.UnlimitedConfig.class, CommonWebMvcConfig.class,
         RecentLiveAuthorizationTest.FixedClockConfig.class})
 @DisplayName("최근 본 라이브 — 구매자·판매자 200, 익명 401")
 class RecentLiveAuthorizationTest {

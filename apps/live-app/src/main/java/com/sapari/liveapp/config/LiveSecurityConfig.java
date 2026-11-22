@@ -32,6 +32,7 @@ import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.security.ChatReadRateLimitFilter;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.StatelessJwtAuthenticationFilter;
 import com.sapari.liveapp.security.TokenRevocationFilter;
@@ -43,7 +44,8 @@ import com.sapari.liveapp.security.TokenRevocationFilter;
  * {@link StatelessJwtAuthenticationFilter}가 서명·claims만으로 검증하며, user DB에 의존하지 않는다.
  *
  * <p><b>필터 순서가 설계다.</b> 인증({@link StatelessJwtAuthenticationFilter}) → 입장 상한
- * ({@link EnterRateLimitFilter}) → 채팅 조회 상한({@link ChatReadRateLimitFilter}) → 폐기 조회
+ * ({@link EnterRateLimitFilter}) → 채팅 조회 상한({@link ChatReadRateLimitFilter}) → 발급 상한
+ * ({@link CredentialIssueRateLimitFilter}) → 폐기 조회
  * ({@link TokenRevocationFilter}) 이고, 모두
  * {@code AuthorizationFilter} 앞이라 아래 {@code authorizeHttpRequests} 판정은 이미 거둬진
  * 컨텍스트를 본다. 상한이 폐기 조회보다 앞인 이유는 비용이다 — 거부될 요청이 Redis 왕복을
@@ -313,6 +315,7 @@ public class LiveSecurityConfig {
             StatelessJwtAuthenticationFilter statelessJwtAuthenticationFilter,
             EnterRateLimitFilter enterRateLimitFilter,
             ChatReadRateLimitFilter chatReadRateLimitFilter,
+            CredentialIssueRateLimitFilter credentialIssueRateLimitFilter,
             TokenRevocationFilter tokenRevocationFilter,
             JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint,
             JwtAccessDeniedHandler jwtAccessDeniedHandler
@@ -448,12 +451,16 @@ public class LiveSecurityConfig {
                 // 채팅 조회(이력·공지) 상한도 같은 이유로 인증 뒤, 폐기 조회 앞이다(SPR-203).
                 // 경로가 입장과 겹치지 않아 둘 사이 순서는 결과를 바꾸지 않는다.
                 .addFilterAfter(chatReadRateLimitFilter, EnterRateLimitFilter.class)
+                // 판매자 자격증명 발급(썸네일 업로드 허가·송출 키 재발급) 상한도 같은 이유로 인증
+                // 뒤다 — 판매자 sub 로 샤드를 접는다(SPR-207). 경로가 위 둘과 겹치지 않아 셋 사이
+                // 순서는 결과를 바꾸지 않는다.
+                .addFilterAfter(credentialIssueRateLimitFilter, ChatReadRateLimitFilter.class)
                 // 폐기 조회는 상한 <뒤>다 — 상한에 걸려 거부될 입장 요청이 Redis 왕복을 치지
                 // 않게 한다(상한은 CPU 천장이라 그 비용을 막아 주지 못한다). 그런데도
                 // AuthorizationFilter 보다는 앞이라 아래 역할 규칙은 거둬진 컨텍스트를 본다.
                 // 입장 밖 경로는 상한 필터가 EnterPaths.isEnterRequest 로 즉시 통과시키므로
                 // 이 순서가 그쪽 비용을 늘리지 않는다.
-                .addFilterAfter(tokenRevocationFilter, ChatReadRateLimitFilter.class)
+                .addFilterAfter(tokenRevocationFilter, CredentialIssueRateLimitFilter.class)
                 .build();
     }
 }

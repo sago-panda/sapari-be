@@ -43,6 +43,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 import org.mockito.ArgumentCaptor;
@@ -75,7 +76,8 @@ import org.mockito.ArgumentCaptor;
 // CHAT-001/004/006/008/010/011 이 선언한 상태로 HTTP 를 떠나는지가 live-app 에서 단언되지
 // 않았다 — 역변이로 확인했다: CHAT-011 을 409 → 400 으로 뒤집어도 아무것도 깨지지 않았다.
 // 형제 셋이 이 주석을 가리키므로, 지우려면 그 셋을 먼저 볼 것.
-@Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class, GlobalExceptionHandler.class})
+@Import({ChatHistoryController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
+        CredentialIssueRateLimitFixtures.UnlimitedConfig.class, GlobalExceptionHandler.class})
 @DisplayName("이력 엔드포인트 — 비회원도 지나고, 신원은 인증 주체에서만 온다")
 class ChatHistoryControllerTest {
 

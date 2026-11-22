@@ -139,6 +139,31 @@ live:
     # REQUIRED — 검증 완료 썸네일(thumbnails/)을 노출하는 CDN(https). 방 썸네일 주소는 이 호스트만 허용된다.
     # 비어 있으면 기동 실패. 로컬은 아무 https 값(예: https://cdn.local)이면 뜬다 — 업로드 URL 은 404.
     cdn-base-url: ${THUMBNAIL_CDN_URL:}
+    # 발급 상한 — 전부 optional(코드 기본값 있음), 잘못된 값은 기동 실패.
+    # 막는 것은 서명 CPU 가 아니라 S3 업로드 용량이다. 허가 하나가 객체 하나를 올릴 권리다.
+    # ⚠️ 파드 로컬이라 실효치는 상한 × 레플리카. 한도 변경은 롤링 재시작이다.
+    rate-limit:
+      seller-permits-per-second: ${THUMBNAIL_RATE_LIMIT_PPS:16}
+      seller-burst: ${THUMBNAIL_RATE_LIMIT_BURST:48}
+      seller-shards: ${THUMBNAIL_RATE_LIMIT_SHARDS:8}
+
+  # -------------------------------------------------------------------------
+  # 송출 키 재발급 상한(SPR-207). 전부 optional — 코드 기본값 있음.
+  #
+  # 막는 것은 이 엔드포인트가 아니라 LiveKit 이다. 요청 하나가 최대 5번을 부르고
+  # (createIngress 1 + deleteIngress·listRoomIngress 각 2), Scheduled 인 동안 횟수 제한이 없다.
+  # LiveKit 이 느려지면 같은 매니저를 쓰는 방송 시작·종료까지 함께 느려진다.
+  #
+  # 거부(429)는 방송을 막지 않는다 — 이전 키가 그대로 유효하다. 입장 거부와 다른 점이고,
+  # 그래서 썸네일보다 낮게 잡았다(증폭 5배).
+  # ⚠️ 파드 로컬이라 실효치는 상한 × 레플리카. 한도 변경은 롤링 재시작이다.
+  # -------------------------------------------------------------------------
+  ingress:
+    reissue:
+      rate-limit:
+        seller-permits-per-second: ${INGRESS_REISSUE_RATE_LIMIT_PPS:8}
+        seller-burst: ${INGRESS_REISSUE_RATE_LIMIT_BURST:16}
+        seller-shards: ${INGRESS_REISSUE_RATE_LIMIT_SHARDS:8}
 
   # -------------------------------------------------------------------------
   # 고아 라이브 정리 스케줄러 (전부 optional — 코드 기본값 있음)

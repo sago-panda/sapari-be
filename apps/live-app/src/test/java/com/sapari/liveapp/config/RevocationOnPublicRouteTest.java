@@ -37,6 +37,7 @@ import com.sapari.common.web.security.JwtAccessDeniedHandler;
 import com.sapari.common.web.security.JwtAuthenticationEntryPoint;
 import com.sapari.live.application.port.LiveMetrics;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFixtures;
 import com.sapari.liveapp.security.EnterRateLimitFilter;
 import com.sapari.liveapp.security.EnterRateLimitProperties;
 import com.sapari.liveapp.security.EnterRateLimiter;
@@ -197,6 +198,7 @@ class RevocationOnPublicRouteTest {
                     new StatelessJwtAuthenticationFilter(sellerTokenProvider()),
                     rateLimit,
                     ChatReadRateLimitFixtures.unlimited(),
+                    CredentialIssueRateLimitFixtures.unlimited(),
                     new TokenRevocationFilter(checker, checker, LiveMetrics.NOOP),
                     mock(JwtAuthenticationEntryPoint.class),
                     mock(JwtAccessDeniedHandler.class));
