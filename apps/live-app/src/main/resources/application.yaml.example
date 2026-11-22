@@ -129,13 +129,17 @@ live:
 
   # -------------------------------------------------------------------------
   # 방 썸네일 업로드 허가(presigned POST, SPR-156). 서버는 서명만 하고 바이트는 받지 않는다.
-  # 키는 egress 와 같은 정적 키를 쓴다(S3_*). 임시 자격증명(IRSA)은 미지원 — 전환 시 서명기 교체 필요.
+  # 키는 egress 와 분리된 썸네일 전용 IAM 사용자다(SPR-207). egress 키(S3_*)를 쓰면 안 된다 —
+  # 그 키는 live/ prefix 만 쓸 수 있어 업로드가 AccessDenied 로 끝난다. 반대로 썸네일 키는
+  # uploads/thumbnails/* PutObject 하나뿐이라 egress 용도로도 못 쓴다.
+  # 임시 자격증명(IRSA)은 미지원 — 전환 시 서명기 교체 필요.
   # -------------------------------------------------------------------------
   thumbnail:
     bucket: ${S3_BUCKET:}                     # REQUIRED
     region: ${S3_REGION:ap-northeast-2}
-    access-key: ${S3_ACCESS_KEY:}             # REQUIRED
-    secret-key: ${S3_SECRET_KEY:}             # REQUIRED
+    # REQUIRED — SSM /sapari/dev/media/thumbnail/{access-key-id,secret-access-key} 와 짝이다.
+    access-key: ${THUMBNAIL_S3_ACCESS_KEY:}   # REQUIRED
+    secret-key: ${THUMBNAIL_S3_SECRET_KEY:}   # REQUIRED
     # REQUIRED — 검증 완료 썸네일(thumbnails/)을 노출하는 CDN(https). 방 썸네일 주소는 이 호스트만 허용된다.
     # 비어 있으면 기동 실패. 로컬은 아무 https 값(예: https://cdn.local)이면 뜬다 — 업로드 URL 은 404.
     cdn-base-url: ${THUMBNAIL_CDN_URL:}

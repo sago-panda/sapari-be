@@ -6,8 +6,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
 /**
- * 썸네일 업로드 허가 서명 설정. 정적 키는 egress 와 같은 값을 쓰되({@code S3_*} 환경변수) 설정은 분리한다 —
- * {@link LiveKitProperties.S3} 와 수명이 묶이지 않고, 썸네일 전용 버킷·IAM 사용자로 나누기 쉽다.
+ * 썸네일 업로드 허가 서명 설정. 정적 키는 egress 와 <b>다른</b> 전용 IAM 사용자다({@code THUMBNAIL_S3_*}
+ * 환경변수, SPR-207) — 그 사용자의 권한은 {@code uploads/thumbnails/*} 의 {@code PutObject} 하나뿐이다.
+ * presigned POST 는 서명자의 권한을 그대로 물려받으므로, 여기에 egress 키를 넣으면 업로드가
+ * {@code AccessDenied} 로 끝난다({@link LiveKitProperties.S3} 쪽은 {@code live/} prefix 전용).
  *
  * @param cdnBaseUrl 검증 완료 썸네일을 노출하는 CDN 주소(https). 방 썸네일 주소 판정의 기준이다.
  */
