@@ -62,8 +62,9 @@ public class LiveController {
 
     @PostMapping("/rooms")
     @ResponseStatus(HttpStatus.CREATED)
-    public ResponseEnvelope<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request, @CurrentUserId UUID sellerId) {
-        CreateLiveCommand command = request.toCommand(sellerId);
+    public ResponseEnvelope<CreateLiveView> createRoom(@RequestBody @Valid CreateRoomRequest request,
+            @AuthenticationPrincipal LiveUserPrincipal principal) {
+        CreateLiveCommand command = request.toCommand(principal.userId(), principal.nickname());
         return ResponseEnvelope.success(createLiveUseCase.create(command));
     }
 

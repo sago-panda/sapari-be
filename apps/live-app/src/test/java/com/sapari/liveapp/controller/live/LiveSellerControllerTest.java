@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.web.method.annotation.AuthenticationPrincipalArgumentResolver;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
@@ -87,7 +88,8 @@ class LiveSellerControllerTest {
                 mock(EnterLiveUseCase.class), endLiveUseCase, mock(GetLiveUseCase.class),
                 mock(GetLiveReplayUseCase.class), prepareIngressUseCase, mock(GetUpcomingLivesUseCase.class));
         mvc = MockMvcBuilders.standaloneSetup(controller)
-                .setCustomArgumentResolvers(new CurrentUserIdArgumentResolver())
+                .setCustomArgumentResolvers(new CurrentUserIdArgumentResolver(),
+                        new AuthenticationPrincipalArgumentResolver())
                 .setControllerAdvice(new GlobalExceptionHandler(timeProvider))
                 .build();
 
@@ -103,7 +105,7 @@ class LiveSellerControllerTest {
     }
 
     @Test
-    @DisplayName("방 생성 — 201 + 봉투, sellerId 는 인증 주체에서")
+    @DisplayName("방 생성 — 201 + 봉투, sellerId·닉네임은 인증 주체에서(본문의 sellerNickname 은 무시)")
     void createRoomReturns201Envelope() throws Exception {
         given(createLiveUseCase.create(any())).willReturn(new CreateLiveView(ROOM_ID, "여름 라이브", "설명"));
 
@@ -121,13 +123,14 @@ class LiveSellerControllerTest {
         ArgumentCaptor<CreateLiveCommand> command = ArgumentCaptor.forClass(CreateLiveCommand.class);
         then(createLiveUseCase).should().create(command.capture());
         assertThat(command.getValue().sellerId()).isEqualTo(SELLER_ID);
+        assertThat(command.getValue().sellerNickname()).isEqualTo("닉");
         assertThat(command.getValue().streamType()).isEqualTo(LiveStreamKind.RTMP);
     }
 
     @Test
     @DisplayName("방 생성 — 송출 방식 누락·RTMP/WEBRTC 이외 값은 400 봉투, 유스케이스 미호출")
     void createRoomStreamTypeRequired() throws Exception {
-        String base = "{\"title\":\"제목\",\"sellerNickname\":\"스토어\","
+        String base = "{\"title\":\"제목\","
                 + "\"thumbnailUrl\":\"https://cdn.example.com/thumbnails/a/b\",\"scheduledAt\":\"2026-11-07T09:00:00Z\"";
 
         expectFailure(mvc.perform(post("/api/v1/lives/rooms").contentType(MediaType.APPLICATION_JSON)
@@ -302,7 +305,7 @@ class LiveSellerControllerTest {
     }
 
     private static String createBody(String titleJson, String descriptionJson) {
-        return "{\"title\":" + titleJson + ",\"description\":" + descriptionJson + ",\"sellerNickname\":\"스토어\","
+        return "{\"title\":" + titleJson + ",\"description\":" + descriptionJson + ","
                 + "\"thumbnailUrl\":\"https://cdn.example.com/thumbnails/a/b\",\"scheduledAt\":\"2026-11-07T09:00:00Z\",\"streamType\":\"WEBRTC\"}";
     }
 
