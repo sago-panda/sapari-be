@@ -10,6 +10,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.util.StringUtils;
 
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
@@ -17,9 +18,12 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.seller.application.mapper.SellerViewMapper;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerification;
 import com.sapari.seller.application.port.SellerBusinessRegistrationVerifier;
+import com.sapari.seller.command.SellerEmailVerificationConfirmCommand;
+import com.sapari.seller.command.SellerEmailVerificationSendCommand;
 import com.sapari.seller.command.SellerLoginCommand;
 import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.command.SellerNicknameUpdateCommand;
+import com.sapari.seller.command.SellerProfileImageChangeCommand;
 import com.sapari.seller.command.SellerSignupCommand;
 import com.sapari.seller.domain.exception.SellerErrorCode;
 import com.sapari.seller.domain.exception.SellerException;
@@ -29,11 +33,15 @@ import com.sapari.seller.domain.model.SellerProfile;
 import com.sapari.seller.domain.repository.LocalCredentialRepository;
 import com.sapari.seller.domain.repository.SellerProfileRepository;
 import com.sapari.seller.port.SellerAuthUseCase;
+import com.sapari.seller.view.SellerEmailVerificationConfirmResult;
+import com.sapari.seller.view.SellerEmailVerificationSendResult;
 import com.sapari.seller.view.SellerLoginResult;
 import com.sapari.seller.view.SellerMeView;
 import com.sapari.seller.view.SellerNicknameUpdateResult;
 import com.sapari.seller.view.SellerSignupResult;
 import com.sapari.seller.view.SellerTokenReissueResult;
+import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.exception.NicknameChangeRestrictedException;
 import com.sapari.user.model.UserRole;
 import com.sapari.user.model.UserStatus;
 import com.sapari.user.port.UserAccountUseCase;
@@ -52,6 +60,7 @@ public class SellerAuthService implements SellerAuthUseCase {
     private final SellerProfileRepository sellerProfileRepository;
     private final SellerBusinessRegistrationVerifier sellerBusinessRegistrationVerifier;
     private final SellerSignupProcessor sellerSignupProcessor;
+    private final SellerSignupContactVerificationAdapter signupContactVerificationAdapter;
     private final PasswordEncoder passwordEncoder;
     private final SellerJwtTokenAdapter sellerJwtTokenAdapter;
     private final TimeProvider timeProvider;
@@ -62,9 +71,13 @@ public class SellerAuthService implements SellerAuthUseCase {
         SellerBusinessType businessType = command.businessType();
         String normalizedStoreName = normalizeStoreName(command.storeName());
 
+        validatePasswordConfirm(command);
         validateBusinessRegistration(command);
         validateDuplicatedStoreName(normalizedStoreName);
         validateDuplicatedBusinessNumber(command.businessNumber());
+        // 판매자 가입 요청의 emailVerified 값은 위조 가능하므로 Redis verified 상태만 서버 기준으로 소비한다.
+        // Redis GETDEL은 DB 트랜잭션과 함께 롤백되지 않으므로, 이후 가입 저장 실패 시 사용자는 재인증해야 한다.
+        signupContactVerificationAdapter.consumeEmailVerification(command.email());
 
         try {
             return sellerSignupProcessor.signup(command, normalizedStoreName, businessType);
@@ -72,6 +85,24 @@ public class SellerAuthService implements SellerAuthUseCase {
             // 트랜잭션 commit/flush 시점 unique 충돌까지 서비스 예외로 변환한다.
             throw new SellerException(SellerErrorCode.DUPLICATED_SIGNUP_INFO, e);
         }
+    }
+
+    /**
+     * 판매자 회원가입 이메일 인증번호를 발송한다.
+     * 가입 가능 이메일 확인, 쿨다운, 발송·저장 정책은 user가 처리하되 seller API 오류 계약으로 변환해 반환한다.
+     */
+    @Override
+    public SellerEmailVerificationSendResult sendSignupEmailVerification(SellerEmailVerificationSendCommand command) {
+        return signupContactVerificationAdapter.sendEmailVerification(command);
+    }
+
+    /**
+     * 판매자 회원가입 이메일 인증번호를 확인한다.
+     * 인증 성공 시 회원가입 API가 소비할 Redis verified 상태를 생성하고, 실패 사유는 SELLER-* 코드로 노출한다.
+     */
+    @Override
+    public SellerEmailVerificationConfirmResult confirmSignupEmailVerification(SellerEmailVerificationConfirmCommand command) {
+        return signupContactVerificationAdapter.confirmEmailVerification(command);
     }
 
     @Override
@@ -146,11 +177,12 @@ public class SellerAuthService implements SellerAuthUseCase {
     @Override
     @Transactional
     public void logout(SellerLogoutCommand command) {
-        sellerJwtTokenAdapter.revokeSession(command.accessToken());
+        sellerJwtTokenAdapter.revokeSessionByRefreshToken(command.refreshToken());
     }
 
+    /** 탈퇴 DB 변경을 커밋한 뒤 세션을 폐기한다. 폐기 실패의 재요청은 최초 탈퇴 시각을 유지한다. */
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void requestWithdrawal(String accessToken) {
         JwtTokenLifecycle.AccessSession accessSession =
                 sellerJwtTokenAdapter.requireAccessToken(accessToken);
@@ -170,8 +202,9 @@ public class SellerAuthService implements SellerAuthUseCase {
         return sellerViewMapper.toMeView(seller, sellerProfile);
     }
 
+    /** DB 변경을 먼저 커밋해 잠금을 해제한 뒤 토큰을 교체한다. 토큰 실패 시 재발급/재로그인이 필요하다. */
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public SellerNicknameUpdateResult updateNickname(SellerNicknameUpdateCommand command) {
         JwtTokenLifecycle.AccessSession accessSession =
                 sellerJwtTokenAdapter.requireAccessToken(command.accessToken());
@@ -183,14 +216,56 @@ public class SellerAuthService implements SellerAuthUseCase {
         validateNicknameChangeAllowed(seller, now);
 
         try {
-            UserView savedSeller = userAccountUseCase.changeNickname(accessSession.userId(), command.nickname());
+            UserView savedSeller = userAccountUseCase.changeNickname(
+                    accessSession.userId(), command.nickname(), NICKNAME_CHANGE_INTERVAL);
             SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
             String accessToken = sellerJwtTokenAdapter.replaceAccessTokenForNickname(accessSession, savedSeller);
 
             return sellerViewMapper.toNicknameUpdateResult(savedSeller, sellerProfile, accessToken);
+        } catch (NicknameChangeRestrictedException e) {
+            // 사전 검사 이후 경합으로 변경된 시각도 기존 도메인의 제한 응답으로 변환한다.
+            throw new SellerException(SellerErrorCode.NICKNAME_CHANGE_RESTRICTED, e);
         } catch (DataIntegrityViolationException e) {
             throw new SellerException(SellerErrorCode.DUPLICATED_NICKNAME, e);
         }
+    }
+
+    /** Access Token의 판매자 소유권을 확인한 뒤 user 프로필 이미지 저장 흐름을 호출한다. */
+    @Override
+    public SellerMeView updateProfileImage(SellerProfileImageChangeCommand command) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                sellerJwtTokenAdapter.requireAccessToken(command.accessToken());
+        findSeller(accessSession.userId());
+
+        UserView savedSeller = userAccountUseCase.changeProfileImage(new ProfileImageChangeCommand(
+                accessSession.userId(),
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        ));
+        SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
+
+        return sellerViewMapper.toMeView(savedSeller, sellerProfile);
+    }
+
+    /** Access Token의 판매자 소유권을 확인한 뒤 DB key 제거와 기존 object 정리를 요청한다. */
+    @Override
+    public SellerMeView deleteProfileImage(String accessToken) {
+        JwtTokenLifecycle.AccessSession accessSession =
+                sellerJwtTokenAdapter.requireAccessToken(accessToken);
+        findSeller(accessSession.userId());
+
+        UserView savedSeller = userAccountUseCase.removeProfileImage(accessSession.userId());
+        SellerProfile sellerProfile = findSellerProfile(accessSession.userId());
+        return sellerViewMapper.toMeView(savedSeller, sellerProfile);
+    }
+
+    private void validatePasswordConfirm(SellerSignupCommand command) {
+        if (command.password() != null && command.password().equals(command.passwordConfirm())) {
+            return;
+        }
+
+        throw new SellerException(SellerErrorCode.PASSWORD_CONFIRM_MISMATCH);
     }
 
     private void validateDuplicatedBusinessNumber(String businessNumber) {

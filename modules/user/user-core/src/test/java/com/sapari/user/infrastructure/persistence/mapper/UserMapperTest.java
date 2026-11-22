@@ -32,6 +32,7 @@ class UserMapperTest {
                 UserGender.MALE,
                 "01012345678",
                 "tester@example.com",
+                "https://image.example/profile.png",
                 true,
                 ProviderType.KAKAO,
                 "provider-id",
@@ -59,7 +60,6 @@ class UserMapperTest {
         User user = User.createSeller(
                 "seller",
                 "판매자",
-                LocalDate.of(1990, 1, 1),
                 "01087654321",
                 "seller@example.com",
                 false,
@@ -84,7 +84,6 @@ class UserMapperTest {
         UserEntity entity = UserEntity.createSeller(
                 "seller",
                 "판매자",
-                LocalDate.of(1990, 1, 1),
                 "01087654321",
                 "seller@example.com",
                 false,

@@ -5,6 +5,7 @@ import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -37,13 +38,14 @@ import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.port.AdminEndLiveUseCase;
 import com.sapari.live.port.ChangeSellerLivePermissionUseCase;
+import com.sapari.live.port.GetAdminRoomsUseCase;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
- * 관리자 조치(종료·판매자 라이브 권한)의 관문 — {@code /api/v1/lives/admin/**} 는 ADMIN 전용이다.
+ * 관리자 경로(종료·방 목록·판매자 라이브 권한)의 관문 — {@code /api/v1/lives/admin/**} 는 ADMIN 전용이다.
  *
  * <p>이 경로는 {@code /api/v1/lives/**} 의 SELLER 바닥 아래에 있으므로, 전용 규칙이 없거나 그보다 뒤에
  * 오면 판매자가 남의 방을 끝낼 수 있고 관리자는 403 을 받는다. 그 순서를 고정한다.
@@ -68,6 +70,7 @@ class LiveAdminAuthorizationTest {
     @Autowired private MockMvc mockMvc;
 
     @MockitoBean private AdminEndLiveUseCase adminEndLiveUseCase;
+    @MockitoBean private GetAdminRoomsUseCase getAdminRoomsUseCase;
     @MockitoBean private ChangeSellerLivePermissionUseCase changeSellerLivePermissionUseCase;
     @MockitoBean private JwtTokenProvider jwtTokenProvider;
     // TokenRevocationFilter 가 요구한다 — 기본 스텁(=폐기 아님)이라 인가 판정을 가리지 않는다.
@@ -131,6 +134,33 @@ class LiveAdminAuthorizationTest {
         changePermission("ADMIN").andExpect(status().isNoContent());
 
         then(changeSellerLivePermissionUseCase).should(times(1)).change(any());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions listRooms(String role) throws Exception {
+        return mockMvc.perform(get("/api/v1/lives/admin/rooms").with(as(role)));
+    }
+
+    @Test
+    @DisplayName("방 목록 — 판매자·구매자는 403, 유스케이스에 닿지 않는다(SELLER 바닥이 먼저 걸리면 판매자가 전체 방을 본다)")
+    void listRooms_nonAdminIsForbidden() throws Exception {
+        listRooms("SELLER").andExpect(status().isForbidden());
+        listRooms("USER").andExpect(status().isForbidden());
+
+        then(getAdminRoomsUseCase).should(never()).getRooms(any());
+    }
+
+    @Test
+    @DisplayName("방 목록 — 비로그인은 401")
+    void listRooms_anonymousIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/api/v1/lives/admin/rooms")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("방 목록 — 관리자 200")
+    void listRooms_adminPasses() throws Exception {
+        listRooms("ADMIN").andExpect(status().isOk());
+
+        then(getAdminRoomsUseCase).should(times(1)).getRooms(any());
     }
 
     @SpringBootConfiguration

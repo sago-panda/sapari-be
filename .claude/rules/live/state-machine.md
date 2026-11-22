@@ -1,7 +1,7 @@
 ---
 paths:
   - "modules/live/live-core/src/main/java/com/sapari/live/domain/model/{LiveRoom,LiveStatus,LiveStreamType}.java"
-  - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{CreateLive,StartLive,EndLive,AdminEndLive,CancelLive,UpdateLive,ExpireOrphanLive,EndStaleLive,GoLiveByRtmp,EnterLive,GetSellerRooms}Service.java"
+  - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{CreateLive,StartLive,EndLive,AdminEndLive,CancelLive,UpdateLive,ExpireOrphanLive,EndStaleLive,GoLiveByRtmp,EnterLive,GetSellerRooms,GetAdminRooms}Service.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/application/service/LiveRoomTabs.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/infrastructure/persistence/**"
   - "db/migration/live/*.sql"
@@ -49,6 +49,7 @@ State lives in the record; transitions return a new `LiveRoom`; a guard gates ev
 - `Suspended` counts as **not live** for external readers (`GetLiveRoomUseCase.live=false`) — 송출이 멈춘 방이므로 진행 중 통제(강퇴 등)의 판정 근거를 그렇게 제공한다. 거부 여부는 소비 도메인이 정한다. `startedAt` 은 다시보기 싱크용으로 보존한다. 뷰에서 `Ended` 와 구분되지 않으므로, `Suspended` 로 들어가는 전이를 만들 때 구분이 필요하면 그때 필드를 추가할 것.
 - Adding a state = `sealed permits` + `LiveRoomMapper` switches + `LiveRoomStatus` enum + `LiveRoomRepositoryImpl.STATUS_COLUMN` + `LiveRoomTabs`, together.
 - **A new `status` value is a rollout constraint.** No DDL is needed (no CHECK), but an old replica's `LiveRoomStatus` cannot read the new value — `findAllByIds` in the orphan job fails the whole round and room reads 500. Expose the transition that writes it (e.g. `cancel`, SPR-158) only after every replica runs the new code. The same holds for a column combination an old mapper rejects: RTMP without ingress (SPR-171). It is not gated, because gating would mean shipping room creation without the stream-type choice first; the mixed window is accepted instead — old replicas 500 on those rows, an orphan round may fail and retry, and an old replica's `/ingress` still flips a new WebRTC room to RTMP (`LiveRoomJpaRepository.assignRtmpIngressIfAbsent`).
-- An admin-ended room's start/cut times reach **seller views only** (list, detail via `LiveRoomTabs.*ForSeller`);
-  public detail and recent views keep them null (SPR-211). A seller-cancelled room shows neither, as before.
+- An admin-ended room's start/cut times reach **seller and admin views only** (seller list/detail, admin room list via
+  `LiveRoomTabs.*ForSeller`); public detail and recent views keep them null (SPR-211, SPR-212). A seller-cancelled
+  room shows neither, as before. In the admin list both kinds are `CANCELLED`; only `startedAt` tells them apart.
 - Seller tabs (`LiveRoomTabs`) put `Suspended` under LIVE (the room has started — the seller's view), while external readers get `live=false`. Revisit when a transition INTO `Suspended` is added.

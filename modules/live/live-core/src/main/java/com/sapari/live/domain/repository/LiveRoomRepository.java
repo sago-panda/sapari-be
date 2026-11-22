@@ -87,6 +87,14 @@ public interface LiveRoomRepository {
     /** 판매자 방을 상태 종류별로 센다. 방이 없는 상태는 키가 없다. */
     Map<Class<? extends LiveStatus>, Long> countSellerRoomsByStatus(UUID sellerId);
 
+    /**
+     * 관리자 방 목록의 {@code page}(0부터) 번째 페이지. {@code scheduled_at DESC, id DESC} 순이다.
+     * 총 개수는 같은 {@code filter} 로 {@link #countAdminRooms} 가 센다. {@code page * size} 는 int 범위여야 한다.
+     */
+    List<LiveRoom> findAdminRooms(AdminRoomFilter filter, int page, int size);
+
+    long countAdminRooms(AdminRoomFilter filter);
+
     /** 지금 Live 인 방, 최대 {@code limit} 건. 공개 목록 재조정의 원본이다. */
     List<LiveRoom> findAllLive(int limit);
 

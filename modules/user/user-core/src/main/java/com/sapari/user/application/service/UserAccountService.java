@@ -1,0 +1,436 @@
+package com.sapari.user.application.service;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.util.Optional;
+import java.util.UUID;
+
+import org.springframework.stereotype.Service;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+import com.sapari.global.time.TimeProvider;
+import com.sapari.user.command.ProfileImageChangeCommand;
+import com.sapari.user.command.ProfileImagePrepareCommand;
+import com.sapari.user.command.RegisterSellerCommand;
+import com.sapari.user.command.RegisterSocialCustomerCommand;
+import com.sapari.user.command.SocialCustomerRegistrationRollbackCommand;
+import com.sapari.user.application.dto.ProfileImageChangeResult;
+import com.sapari.user.application.dto.ProfileImageRemoveResult;
+import com.sapari.user.application.dto.ProfileImageStoreCommand;
+import com.sapari.user.application.dto.StoredProfileImage;
+import com.sapari.user.application.port.ProfileImageStorage;
+import com.sapari.user.application.port.UserEventPublisher;
+import com.sapari.user.domain.model.Terms;
+import com.sapari.user.domain.exception.UserException;
+import com.sapari.user.domain.exception.UserErrorCode;
+import com.sapari.user.exception.NicknameChangeRestrictedException;
+import com.sapari.user.domain.model.User;
+import com.sapari.user.domain.model.UserTermsAgreement;
+import com.sapari.user.domain.model.WithdrawnUserRetention;
+import com.sapari.user.application.support.WithdrawnUserRetentionMasker;
+import com.sapari.user.application.support.ProfileImageUploadValidator;
+import com.sapari.user.domain.repository.TermsRepository;
+import com.sapari.user.domain.repository.UserRepository;
+import com.sapari.user.domain.repository.UserTermsAgreementRepository;
+import com.sapari.user.domain.repository.WithdrawnUserRetentionRepository;
+import com.sapari.user.application.port.ProfileImageUrlResolver;
+import com.sapari.user.model.ProviderType;
+import com.sapari.user.model.TermsType;
+import com.sapari.user.model.UserRole;
+import com.sapari.user.model.UserStatus;
+import com.sapari.user.port.UserAccountUseCase;
+import com.sapari.user.view.PreparedProfileImage;
+import com.sapari.user.view.UserView;
+
+/**
+ * UserAccountUseCase 구현. User 애그리거트의 생성·조회·변경을 user-core 안으로 캡슐화하고
+ * 외부에는 UserView만 노출한다. 시각은 TimeProvider로 user-core가 채운다.
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class UserAccountService implements UserAccountUseCase {
+
+    private static final long WITHDRAWN_USER_RETENTION_YEARS = 5L;
+
+    private final UserRepository userRepository;
+    private final WithdrawnUserRetentionRepository withdrawnUserRetentionRepository;
+    private final TermsRepository termsRepository;
+    private final UserTermsAgreementRepository userTermsAgreementRepository;
+    private final WithdrawnUserRetentionMasker withdrawnUserRetentionMasker;
+    private final ProfileImageUploadValidator profileImageUploadValidator;
+    private final ProfileImageStorage profileImageStorage;
+    private final ProfileImageMutationProcessor profileImageMutationProcessor;
+    private final SocialCustomerRegistrationMutationProcessor socialCustomerRegistrationMutationProcessor;
+    private final ProfileImageUrlResolver profileImageUrlResolver;
+    private final UserEventPublisher userEventPublisher;
+    private final TimeProvider timeProvider;
+
+    /**
+     * 구매자 가입과 약관 증적 저장을 하나의 트랜잭션 성공 조건으로 처리한다.
+     */
+    @Override
+    @Transactional
+    public UserView registerSocialCustomer(RegisterSocialCustomerCommand command) {
+        Instant now = timeProvider.now();
+        validateRequiredPrivacyAgreement(command.privacyAgreed());
+        Terms privacyTerms = findActiveTerms(TermsType.PRIVACY, now);
+        Terms marketingTerms = findActiveTerms(TermsType.MARKETING, now);
+        User user = createSocialCustomer(command, now);
+        User savedUser = userRepository.save(user);
+        saveSignupTermsAgreements(savedUser.userId(), privacyTerms, marketingTerms, command.marketingAgreed(), now);
+        return toView(savedUser);
+    }
+
+    /** 소셜 가입 후 필수 후속 처리 실패 시 가입 데이터를 삭제하고 커밋된 프로필 이미지도 정리한다. */
+    @Override
+    public void rollbackSocialCustomerRegistration(SocialCustomerRegistrationRollbackCommand command) {
+        String profileImageKey = socialCustomerRegistrationMutationProcessor.rollback(command);
+        if (profileImageKey != null) {
+            profileImageStorage.deleteQuietly(profileImageKey);
+        }
+    }
+
+    private User createSocialCustomer(RegisterSocialCustomerCommand command, Instant now) {
+        return User.createSocialCustomer(
+                command.nickname(),
+                command.name(),
+                command.birthDate(),
+                command.gender(),
+                command.phoneNumber(),
+                command.email(),
+                command.profileImageKey(),
+                command.marketingAgreed(),
+                command.provider(),
+                command.providerId(),
+                command.providerEmail(),
+                now,
+                now
+        );
+    }
+
+    /**
+     * 판매자 가입과 약관 증적 저장을 하나의 트랜잭션 성공 조건으로 처리한다.
+     */
+    @Override
+    @Transactional
+    public UserView registerSeller(RegisterSellerCommand command) {
+        Instant now = timeProvider.now();
+        validateRequiredPrivacyAgreement(command.privacyAgreed());
+        Terms privacyTerms = findActiveTerms(TermsType.PRIVACY, now);
+        Terms marketingTerms = findActiveTerms(TermsType.MARKETING, now);
+        User user = createSeller(command, now);
+        User savedUser = userRepository.save(user);
+        saveSignupTermsAgreements(savedUser.userId(), privacyTerms, marketingTerms, command.marketingAgreed(), now);
+        return toView(savedUser);
+    }
+
+    private User createSeller(RegisterSellerCommand command, Instant now) {
+        return User.createSeller(
+                command.nickname(),
+                command.name(),
+                command.phoneNumber(),
+                command.email(),
+                command.marketingAgreed(),
+                now
+        );
+    }
+
+    /**
+     * 회원가입 시점의 활성 약관 버전과 사용자 선택값을 같은 트랜잭션의 증적 이력으로 고정한다.
+     * MARKETING은 선택 약관이므로 false도 명시적 거부 증적으로 저장한다.
+     */
+    private void saveSignupTermsAgreements(
+            UUID userId,
+            Terms privacyTerms,
+            Terms marketingTerms,
+            boolean marketingAgreed,
+            Instant agreedAt
+    ) {
+        // 필수 약관 저장
+        userTermsAgreementRepository.save(UserTermsAgreement.create(
+                userId,
+                privacyTerms.termsId(),
+                true,
+                agreedAt
+        ));
+
+        // 마케팅 약관 저장
+        userTermsAgreementRepository.save(UserTermsAgreement.create(
+                userId,
+                marketingTerms.termsId(),
+                marketingAgreed,
+                agreedAt
+        ));
+    }
+
+    /**
+     * HTTP DTO 검증을 거치지 않는 호출자도 필수 개인정보 동의 불변식을 우회하지 못하게 막는다.
+     */
+    private void validateRequiredPrivacyAgreement(boolean privacyAgreed) {
+        if (!privacyAgreed) {
+            throw new IllegalArgumentException("개인정보 수집 및 이용 동의는 필수입니다.");
+        }
+    }
+
+    /**
+     * 가입 증적은 가입 시각에 이미 효력이 시작된 활성 약관 버전을 참조해야 한다.
+     * active=true는 현재 유효 약관 1개라는 운영 상태이고, effectiveAt 조건은 미래 약관 오등록을 방어한다.
+     * 선택 약관인 MARKETING도 거부 증적을 버전과 함께 남겨야 하므로 누락 시 설정 오류로 간주한다.
+     */
+    private Terms findActiveTerms(TermsType type, Instant effectiveAt) {
+        return termsRepository.findActiveByTypeEffectiveAt(type, effectiveAt)
+                .orElseThrow(() -> new IllegalStateException("active terms not found: " + type));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<UserView> findById(UUID userId) {
+        return userRepository.findById(userId).map(this::toView);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<UserView> findBySocialAccount(ProviderType provider, String providerId) {
+        return userRepository.findByProviderAndProviderId(provider, providerId).map(this::toView);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<UserView> findByEmailAndRole(String email, UserRole role) {
+        return userRepository.findByEmailAndRole(email, role).map(this::toView);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean existsByEmail(String email) {
+        return userRepository.existsByEmail(email);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean existsByPhoneNumber(String phoneNumber) {
+        return userRepository.existsByPhoneNumber(phoneNumber);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean existsByNickname(String nickname) {
+        return userRepository.existsByNickname(nickname);
+    }
+
+    /** 최신 사용자 상태를 잠금으로 읽고 호출자의 변경 간격을 검사한 뒤 닉네임을 저장한다. */
+    @Override
+    @Transactional
+    public UserView changeNickname(UUID userId, String nickname, Duration changeInterval) {
+        if (changeInterval == null || changeInterval.isNegative() || changeInterval.isZero()) {
+            throw new IllegalArgumentException("닉네임 변경 간격은 양수여야 합니다.");
+        }
+        User user = findUserForUpdate(userId);
+        if (!user.isActive()) {
+            throw new UserException(UserErrorCode.USER_NOT_ACTIVE);
+        }
+        Instant now = timeProvider.now();
+        // 잠금 전에 두 요청이 모두 검증을 통과했어도 두 번째 변경은 최신 시각으로 거부한다.
+        if (now.isBefore(user.nicknameChangedAt().plus(changeInterval))) {
+            throw new NicknameChangeRestrictedException();
+        }
+        User updated = user.updateNickname(nickname, now);
+        return toView(userRepository.save(updated));
+    }
+
+    /**
+     * 프로필 이미지 원본을 검증·저장한 뒤 DB에는 새 object key만 반영한다.
+     * 저장소 업로드는 DB 트랜잭션 밖에서 수행하고, DB key 교체 실패 시 새 object를 best-effort로 보상 삭제한다.
+     */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Override
+    public UserView changeProfileImage(ProfileImageChangeCommand command) {
+        ProfileImageStoreCommand storeCommand = profileImageUploadValidator.validate(
+                command.userId(),
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        );
+        StoredProfileImage storedProfileImage = profileImageStorage.store(storeCommand);
+
+        ProfileImageChangeResult result;
+        try {
+            result = profileImageMutationProcessor.replaceProfileImageKey(command.userId(), storedProfileImage.key());
+        } catch (RuntimeException e) {
+            // 새 object 업로드 후 DB key 교체가 실패하면 참조되지 않는 object를 줄이기 위해 보상 삭제한다.
+            profileImageStorage.deleteQuietly(storedProfileImage.key());
+            throw e;
+        }
+
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+    /** 사용자 생성 전에 원본 이미지의 안전성 검증과 재인코딩을 완료한다. */
+    @Override
+    public PreparedProfileImage prepareProfileImage(ProfileImagePrepareCommand command) {
+        return profileImageUploadValidator.prepare(
+                command.originalFilename(),
+                command.contentType(),
+                command.content()
+        );
+    }
+
+    /** 공개 전달 타입의 바이트를 재검증한 뒤 저장하고 DB 실패 시 신규 object를 보상한다. */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Override
+    public UserView changePreparedProfileImage(UUID userId, PreparedProfileImage image) {
+        // public record는 검증기를 거치지 않고도 생성할 수 있으므로 타입명만 신뢰하지 않는다.
+        ProfileImageStoreCommand storeCommand = profileImageUploadValidator.validate(
+                userId,
+                "prepared." + image.normalizedExtension(),
+                image.contentType(),
+                image.content()
+        );
+        // object key는 userId를 포함하므로 회원 생성이 끝난 이 단계에서 처음 생성·저장한다.
+        StoredProfileImage storedProfileImage = profileImageStorage.store(storeCommand);
+
+        ProfileImageChangeResult result;
+        try {
+            result = profileImageMutationProcessor.replaceProfileImageKey(userId, storedProfileImage.key());
+        } catch (RuntimeException e) {
+            // object 저장 후 DB key 반영에 실패하면 참조되지 않는 신규 object를 best-effort로 정리한다.
+            profileImageStorage.deleteQuietly(storedProfileImage.key());
+            throw e;
+        }
+
+        // 새 key가 DB에 반영된 뒤에만 이전 object를 삭제해 실패 시 기존 이미지를 보존한다.
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+    /**
+     * DB의 프로필 이미지 key를 비운 뒤 커밋된 기존 object만 best-effort로 정리한다.
+     */
+    // 저장소 업로드·삭제는 되돌릴 수 없으니 호출자 트랜잭션에 묶이지 않게 끊는다. 바깥 롤백 뒤 DB 가 지워진 object 를 가리키는 일을 막는다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Override
+    public UserView removeProfileImage(UUID userId) {
+        ProfileImageRemoveResult result = profileImageMutationProcessor.removeProfileImageKey(userId);
+        profileImageStorage.deleteQuietly(result.oldProfileImageKey());
+        return toView(result.savedUser());
+    }
+
+
+    /**
+     * 회원탈퇴 신청 시 사용자 상태를 WITHDRAWING으로 변경하고 deletedAt에 유예 시작 시각을 기록한다.
+     * 원문 개인정보는 남기지 않고 보존 테이블에는 마스킹된 식별 힌트만 한 번 저장한다.
+     */
+    @Override
+    @Transactional
+    public UserView requestWithdrawal(UUID userId) {
+        User user = findUserForUpdate(userId);
+        if (user.status() == UserStatus.WITHDRAWING) {
+            // 세션 폐기 실패 후 재요청해도 최초 탈퇴 유예 시작 시각을 연장하지 않는다.
+            // 발행은 다시 건다 — 발행은 at-most-once 라 첫 발행이 유실됐으면 재요청이 유일한 재시도다.
+            // 구독자 동작(WS 세션 종료)은 중복에 무해하다.
+            registerWithdrawalPublish(userId, user.deletedAt());
+            return toView(user);
+        }
+        Instant now = timeProvider.now();
+        createRetentionIfAbsent(user, now);
+
+        User updated = user.requestWithdrawal(now);
+        UserView view = toView(userRepository.save(updated));
+
+        // 커밋 이후에만 발행 — 롤백 시 오발행(멀쩡한 계정에 구독자가 조치하는 것)을 막는다.
+        registerWithdrawalPublish(userId, now);
+        return view;
+    }
+
+    /**
+     * 탈퇴 신청 발행을 커밋 뒤로 미룬다 — 형제 {@code EndLiveService.registerRoomEndedPublish} 와 같은
+     * 모양이다. 트랜잭션 밖에서 불리면(회귀) 커밋 보장이 없으므로 발행하지 않고 경고만 남긴다.
+     *
+     * <p><b>발행이 하는 일</b>: 열려 있는 WebSocket 세션을 구독자가 끊는다. 이 경로는 이미
+     * {@code revokeAllSessions} 로 access 토큰을 폐기하지만, <b>이미 수립된 WS 세션은 토큰을 다시
+     * 보지 않는다</b> — 폐기가 막는 것은 재입장뿐이다. 그 둘이 다른 축이라 신호가 따로 필요하다.
+     */
+    private void registerWithdrawalPublish(UUID userId, Instant requestedAt) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            log.warn("트랜잭션 동기화 비활성 — 탈퇴 신청 발행 생략. userId={}", userId);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                userEventPublisher.publishWithdrawalRequested(userId, requestedAt);
+            }
+        });
+    }
+
+    /** 잠금 충돌은 사용자 부재와 구분하여 재시도 가능한 일시 장애로 노출한다. */
+    private User findUserForUpdate(UUID userId) {
+        try {
+            return userRepository.findByIdForUpdate(userId)
+                    .orElseThrow(() -> new IllegalStateException("user not found: " + userId));
+        } catch (PessimisticLockingFailureException e) {
+            throw new UserException(UserErrorCode.USER_MUTATION_BUSY, e);
+        }
+    }
+
+    /**
+     * 동일 사용자에 대한 보존 row가 없을 때만 생성해 탈퇴 신청 재호출에도 중복 보존정보를 만들지 않는다.
+     */
+    private void createRetentionIfAbsent(User user, Instant now) {
+        if (withdrawnUserRetentionRepository.existsByOriginalUserId(user.userId())) {
+            return;
+        }
+
+        withdrawnUserRetentionRepository.save(WithdrawnUserRetention.create(
+                user.userId(),
+                withdrawnUserRetentionMasker.maskName(user.name()),
+                withdrawnUserRetentionMasker.maskEmail(user.email()),
+                withdrawnUserRetentionMasker.maskPhoneNumber(user.phoneNumber()),
+                retentionUntil(now)
+        ));
+    }
+
+    /**
+     * 법정 보존 만료 시각을 UTC 기준으로 계산한다.
+     */
+    private Instant retentionUntil(Instant withdrawalRequestedAt) {
+        return ZonedDateTime.ofInstant(withdrawalRequestedAt, ZoneOffset.UTC)
+                .plusYears(WITHDRAWN_USER_RETENTION_YEARS)
+                .toInstant();
+    }
+
+    private UserView toView(User user) {
+        return new UserView(
+                user.userId(),
+                user.role(),
+                user.status(),
+                user.nickname(),
+                user.nicknameChangedAt(),
+                user.name(),
+                user.birthDate(),
+                user.gender(),
+                user.phoneNumber(),
+                profileImageUrlResolver.resolve(user.profileImageKey()),
+                user.email(),
+                user.grade(),
+                user.pointBalance(),
+                user.marketingAgreed(),
+                user.provider(),
+                user.providerId(),
+                user.providerEmail()
+        );
+    }
+}

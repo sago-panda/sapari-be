@@ -10,6 +10,7 @@ import jakarta.persistence.LockModeType;
 
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -20,7 +21,7 @@ import com.sapari.live.infrastructure.persistence.entity.LiveRoomStatus;
 import com.sapari.live.infrastructure.persistence.entity.StreamType;
 import com.sapari.live.infrastructure.persistence.entity.VodStatus;
 
-public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUID> {
+public interface LiveRoomJpaRepository extends JpaRepository<LiveRoomEntity, UUID>, JpaSpecificationExecutor<LiveRoomEntity> {
 
     /*
      * 잠금 대기 상한(lock_timeout)은 아직 없다. 시작 계열이 미디어 I/O 를 트랜잭션 안에서 부르므로

@@ -20,7 +20,7 @@ public interface SellerViewMapper {
     @Mapping(target = "name", source = "seller.name")
     @Mapping(target = "birthDate", source = "seller.birthDate")
     @Mapping(target = "phoneNumber", source = "seller.phoneNumber")
-    @Mapping(target = "profileImageKey", source = "seller.profileImageKey")
+    @Mapping(target = "profileImageUrl", source = "seller.profileImageUrl")
     @Mapping(target = "email", source = "seller.email")
     @Mapping(target = "role", expression = "java(seller.role().name())")
     @Mapping(target = "status", expression = "java(seller.status().name())")

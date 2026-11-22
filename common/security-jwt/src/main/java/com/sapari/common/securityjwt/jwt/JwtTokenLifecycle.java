@@ -9,6 +9,7 @@ import java.util.UUID;
 import org.springframework.stereotype.Component;
 
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.RefreshTokenRotationResult;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.global.time.TimeProvider;
@@ -55,6 +56,8 @@ public class JwtTokenLifecycle {
 
     /**
      * 검증된 refresh 세션을 같은 sid의 새 Access Token과 Refresh Token으로 회전한다.
+     * 직전 회전 직후 유예 시간 안에 같은 Refresh Token이 다시 오면(동시 재발급) 세션을 폐기하지 않고
+     * 새 Access Token만 발급한다 — 이때 refreshToken은 null이고 호출자는 refresh 쿠키를 건드리지 않는다.
      */
     public RotatedRefreshToken rotateRefreshToken(
             RefreshSession refreshSession,
@@ -84,13 +87,29 @@ public class JwtTokenLifecycle {
     }
 
     /**
-     * 로그아웃한 sid 세션을 폐기해 같은 세션의 Access Token까지 차단한다.
+     * 로그아웃: Refresh Token의 sid 세션을 폐기해 같은 세션의 Access Token까지 차단한다.
+     * Access Token이 만료된 뒤에도 로그아웃할 수 있도록 Refresh Token만 받는다.
+     * 토큰이 없거나 무효(위조·만료)면 폐기할 세션이 남아 있지 않으므로 아무것도 하지 않는다 — 로그아웃은 멱등이다.
+     * 판매자·구매자가 같은 refresh 쿠키 이름을 쓰므로, 토큰의 role 이 호출한 flow 의 role 과 다르면 남의 세션이라
+     * 폐기하지 않는다.
      */
-    public void revokeSession(String accessToken) {
-        AccessSession accessSession = requireAccessToken(accessToken);
+    public void revokeSessionByRefreshToken(String refreshToken, String expectedRole) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            return;
+        }
 
-        refreshTokenStore.deleteBySessionId(accessSession.userId(), accessSession.sessionId());
-        sessionRevocationStore.revoke(accessSession.sessionId());
+        JwtTokenClaims refreshClaims;
+        try {
+            refreshClaims = parseRefreshToken(refreshToken);
+        } catch (JwtTokenLifecycleException e) {
+            return;
+        }
+        if (!refreshClaims.role().equals(expectedRole)) {
+            return;
+        }
+
+        refreshTokenStore.deleteBySessionId(refreshClaims.userId(), refreshClaims.sessionId());
+        sessionRevocationStore.revoke(refreshClaims.sessionId());
     }
 
     /**
@@ -169,21 +188,23 @@ public class JwtTokenLifecycle {
             throw new JwtTokenLifecycleException("Refresh Token is expired.");
         }
 
-        boolean rotated = refreshTokenStore.rotate(
+        RefreshTokenRotationResult result = refreshTokenStore.rotate(
                 refreshSession.sessionId(),
                 refreshSession.tokenId(),
                 refreshClaims.tokenId(),
                 refreshTokenTtl
         );
 
-        if (!rotated) {
-            // 저장된 refresh jti와 맞지 않으면 재사용으로 보고 해당 sid 세션을 폐기한다.
-            refreshTokenStore.deleteBySessionId(refreshSession.userId(), refreshSession.sessionId());
-            sessionRevocationStore.revoke(refreshSession.sessionId());
-            throw new JwtTokenLifecycleException("Refresh Token rotation failed.");
-        }
-
-        return new RefreshTokenRotation(refreshToken, refreshTokenTtl.toSeconds());
+        return switch (result) {
+            case ROTATED -> new RefreshTokenRotation(refreshToken, refreshTokenTtl.toSeconds());
+            case REUSED_WITHIN_GRACE -> new RefreshTokenRotation(null, 0);
+            case REJECTED -> {
+                // 저장된 refresh jti와 맞지 않으면 재사용으로 보고 해당 sid 세션을 폐기한다.
+                refreshTokenStore.deleteBySessionId(refreshSession.userId(), refreshSession.sessionId());
+                sessionRevocationStore.revoke(refreshSession.sessionId());
+                throw new JwtTokenLifecycleException("Refresh Token rotation failed.");
+            }
+        };
     }
 
     private void validateRefreshSessionOwner(RefreshSession refreshSession, JwtTokenPrincipal principal) {
@@ -248,6 +269,7 @@ public class JwtTokenLifecycle {
 
     /**
      * RTR 성공 후 응답에 필요한 새 토큰과 refresh cookie max-age 정보다.
+     * 재사용 유예로 회전하지 않았으면 refreshToken은 null이다.
      */
     public record RotatedRefreshToken(
             String accessToken,

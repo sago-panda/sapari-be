@@ -46,6 +46,7 @@ public record User(
             UserGender gender,
             String phoneNumber,
             String email,
+            String profileImageKey,
             Boolean marketingAgreed,
             ProviderType provider,
             String providerId,
@@ -53,7 +54,8 @@ public record User(
             Instant providerCreatedAt,
             Instant nicknameChangedAt
     ) {
-        validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        validateRequiredProfile(nickname, name, phoneNumber, email);
+        Assert.notNull(birthDate, "birthDate은 필수입니다.");
         Assert.notNull(gender, "gender은 필수입니다.");
         Assert.notNull(providerCreatedAt, "providerCreatedAt은 필수입니다.");
         Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
@@ -67,6 +69,7 @@ public record User(
                 .birthDate(birthDate)
                 .gender(gender)
                 .phoneNumber(phoneNumber)
+                .profileImageKey(profileImageKey)
                 .email(email)
                 .grade(UserGrade.BRONZE)
                 .pointBalance(0)
@@ -81,13 +84,12 @@ public record User(
     public static User createSeller(
             String nickname,
             String name,
-            LocalDate birthDate,
             String phoneNumber,
             String email,
             Boolean marketingAgreed,
             Instant nicknameChangedAt
     ) {
-        validateRequiredProfile(nickname, name, birthDate, phoneNumber, email);
+        validateRequiredProfile(nickname, name, phoneNumber, email);
         Assert.notNull(nicknameChangedAt, "nicknameChangedAt은 필수입니다.");
 
         return User.builder()
@@ -96,7 +98,6 @@ public record User(
                 .nickname(nickname)
                 .nicknameChangedAt(nicknameChangedAt)
                 .name(name)
-                .birthDate(birthDate)
                 .phoneNumber(phoneNumber)
                 .email(email)
                 .grade(UserGrade.BRONZE)
@@ -112,6 +113,22 @@ public record User(
         return toBuilder()
                 .nickname(nickname)
                 .nicknameChangedAt(nicknameChangedAt)
+                .build();
+    }
+
+    /** 검증·저장이 끝난 object key로 프로필 이미지 연결을 교체한 새 aggregate를 반환한다. */
+    public User updateProfileImageKey(String profileImageKey) {
+        Assert.hasText(profileImageKey, "profileImageKey는 필수입니다.");
+
+        return toBuilder()
+                .profileImageKey(profileImageKey)
+                .build();
+    }
+
+    /** 외부 object 삭제와 분리해 DB의 프로필 이미지 연결만 제거한 새 aggregate를 반환한다. */
+    public User removeProfileImage() {
+        return toBuilder()
+                .profileImageKey(null)
                 .build();
     }
 
@@ -147,13 +164,11 @@ public record User(
     private static void validateRequiredProfile(
             String nickname,
             String name,
-            LocalDate birthDate,
             String phoneNumber,
             String email
     ) {
         Assert.hasText(nickname, "닉네임은 필수입니다.");
         Assert.hasText(name, "name은 필수입니다.");
-        Assert.notNull(birthDate, "birthDate은 필수입니다.");
         Assert.hasText(phoneNumber, "phoneNumber은 필수입니다.");
         Assert.hasText(email, "email은 필수입니다.");
     }

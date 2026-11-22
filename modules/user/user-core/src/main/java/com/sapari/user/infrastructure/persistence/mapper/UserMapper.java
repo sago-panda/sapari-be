@@ -20,7 +20,6 @@ public interface UserMapper {
             UserEntity seller = UserEntity.createSeller(
                     user.nickname(),
                     user.name(),
-                    user.birthDate(),
                     user.phoneNumber(),
                     user.email(),
                     user.marketingAgreed(),
@@ -50,6 +49,7 @@ public interface UserMapper {
                 user.gender(),
                 user.phoneNumber(),
                 user.email(),
+                user.profileImageKey(),
                 user.marketingAgreed(),
                 user.provider(),
                 user.providerId(),

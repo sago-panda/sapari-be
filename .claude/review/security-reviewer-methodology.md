@@ -27,7 +27,7 @@ angle: mass-assignment and injection (§5).
    - Can one user reach another's resource (order/broadcast/profile)? Missing ownership check.
 
 2. `SEC-02` **JWT / token lifecycle**
-   - Logout: access token blacklisted and refresh deleted?
+   - Logout: the refresh cookie's sid revoked (refresh deleted + session revoked), without needing an access token?
    - Refresh rotation/reuse compared to `RefreshTokenStore`; token type (ACCESS vs REFRESH), expiry,
      signature, issuer validated? Tokens must not leak to responses/logs.
    - Cookie-borne refresh: `HttpOnly`+`Secure`+`SameSite`, CSRF on cookie endpoints, **CORS** not
