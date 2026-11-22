@@ -8,7 +8,6 @@ public final class LiveFieldLimits {
 
     public static final int TITLE_MAX = 100;
     public static final int DESCRIPTION_MAX = 500;
-    public static final int SELLER_NICKNAME_MAX = 50;
     public static final int THUMBNAIL_URL_MAX = 500;
 
     private LiveFieldLimits() {
