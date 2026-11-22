@@ -42,6 +42,7 @@ import com.sapari.live.port.GetAdminRoomsUseCase;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
@@ -54,6 +55,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
         properties = {"management.server.port=9999",
                 "management.endpoints.web.exposure.include=health,prometheus"})
 @Import({LiveAdminController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
+        CredentialIssueRateLimitFixtures.UnlimitedConfig.class,
         LiveAdminAuthorizationTest.FixedClockConfig.class})
 @DisplayName("관리자 엔드포인트 — ADMIN 만 지난다")
 class LiveAdminAuthorizationTest {

@@ -49,6 +49,7 @@ import com.sapari.global.time.TimeProvider;
 import com.sapari.liveapp.config.EnterRateLimitConfig;
 import com.sapari.liveapp.config.LiveSecurityConfig;
 import com.sapari.liveapp.security.ChatReadRateLimitFixtures;
+import com.sapari.liveapp.security.CredentialIssueRateLimitFixtures;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
@@ -72,6 +73,7 @@ import com.sapari.liveapp.security.LiveUserPrincipal;
 // GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
 // (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
 @Import({ChatFilterWordController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
+        CredentialIssueRateLimitFixtures.UnlimitedConfig.class,
         ChatFilterWordAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("사전 관리 엔드포인트 — 세 메서드 전부 관리자만 지난다")
 class ChatFilterWordAuthorizationTest {

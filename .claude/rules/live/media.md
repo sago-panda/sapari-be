@@ -7,6 +7,7 @@ paths:
   - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{StartLive,EndLive,AdminEndLive,GoLiveByRtmp,PrepareIngress,ReissueIngress}Service.java"
   - "modules/live/live-core/src/main/java/com/sapari/live/application/service/{PostCommitMediaCleanup,EgressRollbackCompensation,RtmpIngressAssigner,IngressStartedWebhookHandler}.java"
   - "apps/live-app/src/main/resources/application*.yaml*"
+  - "apps/live-app/src/main/java/com/sapari/liveapp/security/{CredentialIssue*,IngressReissueRateLimitProperties}.java"
   - "{modules/live/live-core,apps/live-app}/src/test/java/**/{LiveKitMediaManager,MeteredLiveMediaManager,StartLiveService,EndLiveService,AdminEndLiveService,GoLiveByRtmpService,PrepareIngressService,ReissueIngressService}*Test.java"
 ---
 
@@ -56,3 +57,10 @@ so both sides must reach the same outcome — if they diverge, the room's fate d
   room created with the wrong type cannot switch back; the only way out is cancel and recreate (`PrepareIngressService`,
   `ReissueIngressService`).
 - End cleanup deletes ingress room-wide **before** `closeRoom`; a survivor lets OBS re-create the room.
+- **Reissue is rate-limited because one request is up to five LiveKit calls** (`createIngress` 1 +
+  `deleteIngress`/`listRoomIngress` 2 each) and `Scheduled` put no count on it — a single parked room could
+  issue unbounded LiveKit calls, and LiveKit slowing down slows **start and end** through the same manager.
+  The cap does not stand in for the CAS: exclusivity is `RtmpIngressAssigner.reassignIfCurrent`, this is a call
+  ceiling. A 429 does **not** block broadcasting — the old key stays valid — which is why it sits lower than the
+  thumbnail cap (`IngressReissueRateLimitProperties`). First issue is deliberately outside it: `assignRtmpIngressIfAbsent`
+  bounds it to once per room (`CredentialIssuePaths`).
