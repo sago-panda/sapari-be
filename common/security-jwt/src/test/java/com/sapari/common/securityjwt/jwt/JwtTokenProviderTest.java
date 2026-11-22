@@ -5,21 +5,26 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.IncorrectClaimException;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.MalformedJwtException;
+import io.jsonwebtoken.UnsupportedJwtException;
 import io.jsonwebtoken.security.Keys;
 import io.jsonwebtoken.security.SignatureException;
 
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Date;
+import java.util.List;
 import java.util.UUID;
 
 import javax.crypto.SecretKey;
@@ -33,8 +38,10 @@ import com.sapari.global.time.TimeProvider;
 @DisplayName("JWT 토큰 제공자 테스트")
 class JwtTokenProviderTest {
 
-    private static final String SECRET = "test-secret-key-for-jwt-provider-32bytes";
-    private static final String OTHER_SECRET = "other-test-secret-key-for-jwt-provider-32bytes";
+    private static final String KID = "key-1";
+    private static final KeyPair KEY_PAIR = JwtTestKeys.generateKeyPair();
+    private static final KeyPair OTHER_KEY_PAIR = JwtTestKeys.generateKeyPair();
+    private static final String HMAC_SECRET = "test-secret-key-for-jwt-provider-32bytes";
     private static final String ISSUER = "auth-service-test";
     private static final Instant FIXED_NOW = Instant.parse("2025-01-01T00:00:00Z");
     private static final long ACCESS_TOKEN_EXPIRATION_SECONDS = 3600L;
@@ -155,7 +162,6 @@ class JwtTokenProviderTest {
         // given
         JwtTokenProvider tokenValidator = createProvider(
                 "different-issuer",
-                SECRET,
                 ACCESS_TOKEN_EXPIRATION_SECONDS,
                 REFRESH_TOKEN_EXPIRATION_SECONDS
         );
@@ -166,10 +172,13 @@ class JwtTokenProviderTest {
     }
 
     @Test
-    @DisplayName("다른 secret으로 서명한 토큰은 파싱에 실패한다")
+    @DisplayName("같은 kid 를 다른 개인키로 서명한 토큰은 파싱에 실패한다")
     void parseTokenThrowsExceptionWhenSignatureDoesNotMatch() {
         // given
-        String token = createAccessTokenSignedWith(OTHER_SECRET);
+        String token = accessTokenBuilder()
+                .header().keyId(KID).and()
+                .signWith(OTHER_KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
+                .compact();
 
         // when, then
         assertThrows(SignatureException.class, () -> jwtTokenProvider.parseToken(token));
@@ -227,14 +236,98 @@ class JwtTokenProviderTest {
     }
 
     @Test
+    @DisplayName("발급한 토큰 헤더에 RS256 과 서명 kid 를 넣는다")
+    void createdTokenHeaderHasRs256AndKid() {
+        // when
+        String token = jwtTokenProvider.createAccessToken(subject);
+        String header = new String(Base64.getUrlDecoder().decode(token.split("\\.")[0]), StandardCharsets.UTF_8);
+
+        // then
+        assertTrue(header.contains("\"alg\":\"RS256\""), header);
+        assertTrue(header.contains("\"kid\":\"" + KID + "\""), header);
+    }
+
+    @Test
+    @DisplayName("공개키만 가진 검증 전용 provider 는 발급 앱의 토큰을 검증한다")
+    void verifyOnlyProviderParsesTokenSignedWithPrivateKey() {
+        // given
+        JwtTokenProvider verifier = verifyOnlyProvider(verificationKey(KID, KEY_PAIR));
+        String token = jwtTokenProvider.createAccessToken(subject);
+
+        // when
+        JwtTokenClaims claims = verifier.parseToken(token);
+
+        // then
+        assertEquals(userId, claims.userId());
+        assertEquals(JwtTokenType.ACCESS, claims.tokenType());
+    }
+
+    @Test
+    @DisplayName("검증 전용 provider 는 토큰을 발급할 수 없다")
+    void verifyOnlyProviderCannotSign() {
+        JwtTokenProvider verifier = verifyOnlyProvider(verificationKey(KID, KEY_PAIR));
+
+        assertThrows(IllegalStateException.class, () -> verifier.createAccessToken(subject));
+    }
+
+    @Test
+    @DisplayName("HMAC(HS256)으로 서명한 이전 방식 토큰은 파싱에 실패한다")
+    void parseTokenRejectsHmacSignedToken() {
+        // given
+        String token = accessTokenBuilder()
+                .header().keyId(KID).and()
+                .signWith(hmacKey(HMAC_SECRET))
+                .compact();
+
+        // when, then
+        assertThrows(UnsupportedJwtException.class, () -> jwtTokenProvider.parseToken(token));
+    }
+
+    @Test
+    @DisplayName("kid 가 없거나 모르는 kid 인 토큰은 파싱에 실패한다")
+    void parseTokenRejectsMissingOrUnknownKid() {
+        // given
+        String withoutKid = accessTokenBuilder()
+                .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
+                .compact();
+        String unknownKid = accessTokenBuilder()
+                .header().keyId("unknown").and()
+                .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
+                .compact();
+
+        // when, then
+        assertThrows(UnsupportedJwtException.class, () -> jwtTokenProvider.parseToken(withoutKid));
+        assertThrows(UnsupportedJwtException.class, () -> jwtTokenProvider.parseToken(unknownKid));
+    }
+
+    @Test
+    @DisplayName("키 교체 중에는 신·구 공개키를 모두 가진 검증자가 두 키의 토큰을 모두 받는다")
+    void verifierAcceptsBothKeysDuringRotation() {
+        // given
+        String oldToken = jwtTokenProvider.createAccessToken(subject);
+        String newToken = accessTokenBuilder()
+                .header().keyId("key-2").and()
+                .signWith(OTHER_KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
+                .compact();
+        JwtTokenProvider verifier = verifyOnlyProvider(
+                verificationKey("key-2", OTHER_KEY_PAIR),
+                verificationKey(KID, KEY_PAIR));
+
+        // when, then
+        assertEquals(userId, verifier.parseToken(oldToken).userId());
+        assertEquals(userId, verifier.parseToken(newToken).userId());
+    }
+
+    @Test
     @DisplayName("JWT 설정 객체는 yml 또는 환경변수에서 주입된 값을 그대로 가진다")
     void jwtPropertiesKeepsConfiguredValues() {
         // given & when
-        JwtProperties jwtProperties = new JwtProperties(ISSUER, SECRET, 3600L, 1209600L);
+        JwtProperties jwtProperties = properties(ISSUER, 3600L, 1209600L);
 
         // then
         assertEquals(ISSUER, jwtProperties.issuer());
-        assertEquals(SECRET, jwtProperties.secret());
+        assertEquals(KID, jwtProperties.signingKey().kid());
+        assertEquals(KID, jwtProperties.verificationKeys().getFirst().kid());
         assertEquals(3600L, jwtProperties.accessTokenExpirationSeconds());
         assertEquals(1209600L, jwtProperties.refreshTokenExpirationSeconds());
     }
@@ -243,21 +336,50 @@ class JwtTokenProviderTest {
             long accessTokenExpirationSeconds,
             long refreshTokenExpirationSeconds
     ) {
-        return createProvider(ISSUER, SECRET, accessTokenExpirationSeconds, refreshTokenExpirationSeconds);
+        return createProvider(ISSUER, accessTokenExpirationSeconds, refreshTokenExpirationSeconds);
     }
 
     private JwtTokenProvider createProvider(
             String issuer,
-            String secret,
             long accessTokenExpirationSeconds,
             long refreshTokenExpirationSeconds
     ) {
-        return new JwtTokenProvider(new JwtProperties(
+        return new JwtTokenProvider(
+                properties(issuer, accessTokenExpirationSeconds, refreshTokenExpirationSeconds), timeProvider);
+    }
+
+    private JwtProperties properties(String issuer, long accessTokenExpirationSeconds, long refreshTokenExpirationSeconds) {
+        return new JwtProperties(
                 issuer,
-                secret,
+                new JwtProperties.SigningKey(KID, JwtTestKeys.privateKeyBase64(KEY_PAIR)),
+                List.of(verificationKey(KID, KEY_PAIR)),
                 accessTokenExpirationSeconds,
                 refreshTokenExpirationSeconds
-        ), timeProvider);
+        );
+    }
+
+    /** 서명키 없이 공개키만 가진 검증 전용 provider(live-app 과 같은 설정). */
+    private JwtTokenProvider verifyOnlyProvider(JwtProperties.VerificationKey... keys) {
+        return new JwtTokenProvider(
+                new JwtProperties(ISSUER, null, List.of(keys),
+                        ACCESS_TOKEN_EXPIRATION_SECONDS, REFRESH_TOKEN_EXPIRATION_SECONDS),
+                timeProvider);
+    }
+
+    private JwtProperties.VerificationKey verificationKey(String kid, KeyPair keyPair) {
+        return new JwtProperties.VerificationKey(kid, JwtTestKeys.publicKeyBase64(keyPair));
+    }
+
+    private JwtBuilder accessTokenBuilder() {
+        return Jwts.builder()
+                .id(UUID.randomUUID().toString())
+                .issuer(ISSUER)
+                .subject(userId.toString())
+                .claim("sid", sessionId.toString())
+                .claim("role", "USER")
+                .claim("tokenType", JwtTokenType.ACCESS.name())
+                .issuedAt(Date.from(FIXED_NOW))
+                .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)));
     }
 
     private JwtSubject jwtSubject(UUID userId, String role) {
@@ -274,21 +396,8 @@ class JwtTokenProviderTest {
                 .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW.minusSeconds(3600)))
                 .expiration(Date.from(FIXED_NOW.minusSeconds(1)))
-                .signWith(secretKey(SECRET))
-                .compact();
-    }
-
-    private String createAccessTokenSignedWith(String secret) {
-        return Jwts.builder()
-                .id(UUID.randomUUID().toString())
-                .issuer(ISSUER)
-                .subject(userId.toString())
-                .claim("sid", sessionId.toString())
-                .claim("role", "USER")
-                .claim("tokenType", JwtTokenType.ACCESS.name())
-                .issuedAt(Date.from(FIXED_NOW))
-                .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
-                .signWith(secretKey(secret))
+                .header().keyId(KID).and()
+                .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
     }
 
@@ -301,7 +410,8 @@ class JwtTokenProviderTest {
                 .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW))
                 .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
-                .signWith(secretKey(SECRET))
+                .header().keyId(KID).and()
+                .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
     }
 
@@ -314,7 +424,8 @@ class JwtTokenProviderTest {
                 .claim("role", "USER")
                 .issuedAt(Date.from(FIXED_NOW))
                 .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
-                .signWith(secretKey(SECRET))
+                .header().keyId(KID).and()
+                .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
     }
 
@@ -327,7 +438,8 @@ class JwtTokenProviderTest {
                 .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW))
                 .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
-                .signWith(secretKey(SECRET))
+                .header().keyId(KID).and()
+                .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
     }
 
@@ -340,7 +452,8 @@ class JwtTokenProviderTest {
                 .claim("tokenType", JwtTokenType.ACCESS.name())
                 .issuedAt(Date.from(FIXED_NOW))
                 .expiration(Date.from(FIXED_NOW.plusSeconds(ACCESS_TOKEN_EXPIRATION_SECONDS)))
-                .signWith(secretKey(SECRET))
+                .header().keyId(KID).and()
+                .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
     }
 
@@ -353,7 +466,7 @@ class JwtTokenProviderTest {
         return parts[0] + "." + tamperedPayload + "." + parts[2];
     }
 
-    private SecretKey secretKey(String secret) {
+    private SecretKey hmacKey(String secret) {
         return Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
     }
 }

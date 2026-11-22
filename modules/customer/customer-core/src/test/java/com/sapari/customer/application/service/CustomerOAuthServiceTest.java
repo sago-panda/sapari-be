@@ -18,7 +18,7 @@ import org.mockito.ArgumentCaptor;
 
 import tools.jackson.databind.ObjectMapper;
 
-import com.sapari.common.securityjwt.jwt.JwtProperties;
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import com.sapari.common.securityjwt.jwt.JwtTokenClaims;
 import com.sapari.common.securityjwt.jwt.JwtTokenLifecycle;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
@@ -47,7 +47,6 @@ import com.sapari.user.view.UserView;
 @DisplayName("구매자 OAuth 서비스 테스트")
 class CustomerOAuthServiceTest {
 
-    private static final String SECRET = "test-secret-key-for-customer-jwt-32bytes";
 
     private final UserAccountUseCase userAccountUseCase = mock(UserAccountUseCase.class);
     private final SocialSignupRepository socialSignupRepository =
@@ -55,7 +54,7 @@ class CustomerOAuthServiceTest {
     private final SocialLoginCodeRepository socialLoginCodeRepository =
             mock(SocialLoginCodeRepository.class);
     private final JwtTokenProvider jwtTokenProvider = new JwtTokenProvider(
-            new JwtProperties("customer-oauth-test", SECRET, 3600L, 1209600L),
+            JwtTestKeys.properties("customer-oauth-test", 3600L, 1209600L),
             timeProvider()
     );
     private final RefreshTokenStore refreshTokenStore =

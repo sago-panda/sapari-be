@@ -34,6 +34,6 @@ rejection, revisit if relaxed → `EnterRateLimitProperties` (seller defaults).
 
 ## Room token — chat entry auth
 
-`enter` issues an RS256 token; distinct key/alg/`aud` from the api-app HMAC token, never interchangeable.
+`enter` issues an RS256 token on a key pair separate from the api-app user token — reuse refuses boot (`LiveJwtKeyGuardConfig`); the room token stays kid-less (`RoomTokenProvider`).
 Unauth viewers get an ephemeral GUEST token. Claims: `role`, `owner` (chat's PII gate), ~90s `exp` — capped (refuses to boot above it; the cap is a §Design-time invariant).
 The room-token cache and revocation (503 vs. guest downgrade, filter order) → the class map above.

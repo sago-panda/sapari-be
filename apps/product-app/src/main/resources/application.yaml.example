@@ -59,14 +59,16 @@ springdoc:
   packages-to-scan: com.sapari
 
 # ---------------------------------------------------------------------------
-# 인증 토큰(HMAC) — product-app 은 발급하지 않고 검증만 한다.
-# secret 은 api-app 과 같은 값이어야 서명 검증이 통과한다.
+# 인증 토큰(RS256) — product-app 은 발급하지 않고 api-app 의 공개키로 검증만 한다(개인키 두지 말 것).
+# 키 형식·교체 순서는 api-app application.yml.example 의 jwt 주석.
 # refresh-token-expiration-seconds 는 JwtProperties 의 @NotNull 충족용(여기서는 미사용).
 # ---------------------------------------------------------------------------
 jwt:
   issuer: ${JWT_ISSUER:sapari-api}
-  secret: ${JWT_SECRET:}                     # REQUIRED — 이 키로 임의의 access 토큰을 만들 수 있다
-  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:3600}
+  verification-keys:                         # REQUIRED — api-app 서명키의 공개키. 교체 중엔 신·구 두 개
+    - kid: ${JWT_VERIFICATION_KID:}
+      public-key: ${JWT_VERIFICATION_PUBLIC_KEY:}
+  access-token-expiration-seconds: ${JWT_ACCESS_TOKEN_EXPIRATION_SECONDS:900}
   refresh-token-expiration-seconds: ${JWT_REFRESH_TOKEN_EXPIRATION_SECONDS:1209600}
 
 logging:

@@ -11,7 +11,7 @@ import org.springframework.validation.annotation.Validated;
 /**
  * 채팅 입장용 룸 토큰(RS256) 발급 설정.
  *
- * <p>api-app 인증 토큰(HMAC 대칭키, {@code JwtProperties})과 <b>별개</b>다. 룸 토큰은 live가
+ * <p>api-app 인증 토큰({@code JwtProperties}, 별도 RSA 키쌍)과 <b>별개</b>다. 룸 토큰은 live가
  * <b>개인키로 서명</b>하고 chat이 공개키로 검증만 하는 비대칭(RS256) 모델이라, 여기서는 <b>개인키만</b>
  * 주입받는다(공개키는 chat 측 설정).
  *

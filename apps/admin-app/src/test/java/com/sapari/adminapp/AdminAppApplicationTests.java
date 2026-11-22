@@ -6,6 +6,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+import com.sapari.common.securityjwt.jwt.JwtTestKeys;
+
 /**
  * 이 앱이 실제로 뜨는지만 본다 — 가장 싼 부팅 가드다.
  *
@@ -21,13 +23,14 @@ import org.springframework.test.context.DynamicPropertySource;
 class AdminAppApplicationTests {
 
     /**
-     * {@code common:web} 의 JWT 프로퍼티. 시크릿은 32자 이상이어야 한다 — 더미여도 길이 제약은 실제
-     * 규칙이고, 그 규칙을 비껴가려 검증을 끄면 이 테스트가 운영과 다른 구성을 재게 된다.
+     * {@code common:web} 의 JWT 프로퍼티. 검증 공개키는 실제로 파싱되는 RSA 키여야 한다 — 그 규칙을
+     * 비껴가려 검증을 끄면 이 테스트가 운영과 다른 구성을 재게 된다.
      */
     @DynamicPropertySource
     static void requiredConfig(DynamicPropertyRegistry registry) {
         registry.add("jwt.issuer", () -> "sapari-test");
-        registry.add("jwt.secret", () -> "test-secret-test-secret-test-secret-32");
+        registry.add("jwt.verification-keys[0].kid", () -> JwtTestKeys.KID);
+        registry.add("jwt.verification-keys[0].public-key", JwtTestKeys::publicKeyBase64);
         registry.add("jwt.access-token-expiration-seconds", () -> "1800");
         registry.add("jwt.refresh-token-expiration-seconds", () -> "604800");
     }

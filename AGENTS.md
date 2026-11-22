@@ -50,6 +50,7 @@ modules/X/X-api   → no internal module dependencies; DTO / interface only
 - **Time via `TimeProvider`** — never `Instant.now()` directly in services.
 - **Async cross-domain fan-out = domain events over Redis Pub/Sub** (broadcast start/end). Runtime/deploy: `infra/AGENTS.md`.
 - **Minimize external calls inside a transaction**, and **never swallow exceptions** (`catch (Exception e) { log... }`) — re-throw, or translate known infrastructure exceptions into domain/application exceptions.
+- **User JWT = RS256; the signing key lives only in api-app**, verify-only apps (live/product) hold public keys by `kid` (rotation = old+new). No JWKS — cloud is mostly off with no private link to the homelab. `JwtProperties`, `JwtKeys`, `LiveJwtKeyGuardConfig`/`ProductJwtKeyGuardConfig`.
 - **Never commit** `.env`, secrets, or credentials.
 
 ## Common Commands
