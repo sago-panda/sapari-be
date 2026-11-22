@@ -60,9 +60,9 @@ public class SellerSignupProcessor {
         return new RegisterSellerCommand(
                 command.nickname(),
                 command.name(),
-                command.birthDate(),
                 command.phoneNumber(),
                 command.email(),
+                command.privacyAgreed(),
                 command.marketingAgreed()
         );
     }

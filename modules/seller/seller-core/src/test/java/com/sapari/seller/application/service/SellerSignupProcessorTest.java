@@ -85,6 +85,8 @@ class SellerSignupProcessorTest {
         verify(userAccountUseCase).registerSeller(commandCaptor.capture());
         assertThat(commandCaptor.getValue().email()).isEqualTo(EMAIL);
         assertThat(commandCaptor.getValue().nickname()).isEqualTo("seller");
+        assertThat(commandCaptor.getValue().privacyAgreed()).isTrue();
+        assertThat(commandCaptor.getValue().marketingAgreed()).isTrue();
 
         ArgumentCaptor<LocalCredential> credentialCaptor = ArgumentCaptor.forClass(LocalCredential.class);
         verify(localCredentialRepository).save(credentialCaptor.capture());
@@ -119,10 +121,11 @@ class SellerSignupProcessorTest {
         return new SellerSignupCommand(
                 EMAIL,
                 PASSWORD,
+                PASSWORD,
                 "seller",
                 "판매자",
                 "01012345678",
-                LocalDate.of(1990, 1, 1),
+                true,
                 true,
                 "사파리 상점",
                 "1234567890",

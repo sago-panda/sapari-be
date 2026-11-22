@@ -41,7 +41,7 @@ class CustomerViewMapperTest {
         assertThat(view.birthDate()).isEqualTo(customer.birthDate());
         assertThat(view.gender()).isEqualTo(customer.gender().name());
         assertThat(view.phoneNumber()).isEqualTo(customer.phoneNumber());
-        assertThat(view.profileImageKey()).isEqualTo(customer.profileImageKey());
+        assertThat(view.profileImageUrl()).isEqualTo(customer.profileImageUrl());
         assertThat(view.email()).isEqualTo(customer.email());
         assertThat(view.role()).isEqualTo(customer.role().name());
         assertThat(view.status()).isEqualTo(customer.status().name());
@@ -110,7 +110,7 @@ class CustomerViewMapperTest {
                 LocalDate.of(1998, 3, 14),
                 UserGender.MALE,
                 "01012345678",
-                "profile-key",
+                "https://image.example/profile.png",
                 "customer@example.com",
                 UserGrade.BRONZE,
                 100,

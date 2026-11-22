@@ -23,12 +23,12 @@ public class SocialLoginCodeRedisRepository implements SocialLoginCodeRepository
         stringRedisTemplate.opsForValue().set(createKey(code), value, TTL);
     }
 
-    public Optional<String> findByCode(String code) {
-        return Optional.ofNullable(stringRedisTemplate.opsForValue().get(createKey(code)));
-    }
-
-    public void delete(String code) {
-        stringRedisTemplate.delete(createKey(code));
+    /**
+     * temporary_login_code는 토큰 교환용 one-time code이므로 Redis GETDEL로 조회와 삭제를 원자적으로 처리한다.
+     */
+    @Override
+    public Optional<String> consumeByCode(String code) {
+        return Optional.ofNullable(stringRedisTemplate.opsForValue().getAndDelete(createKey(code)));
     }
 
     private String createKey(String code) {

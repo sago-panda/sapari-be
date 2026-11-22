@@ -28,6 +28,7 @@ import com.sapari.live.command.CreateLiveCommand;
 import com.sapari.live.domain.exception.InvalidLiveRoomException;
 import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveErrorCode;
+import com.sapari.live.domain.exception.LivePermissionDeniedException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStreamType;
 import com.sapari.live.domain.model.ThumbnailUrlRule;
@@ -47,6 +48,7 @@ class CreateLiveServiceTest {
     @Mock private LiveMediaManager liveMediaManager;
     @Mock private TimeProvider timeProvider;
     @Spy private ThumbnailUrlRule thumbnailUrlRule = ThumbnailUrlRule.of("https://cdn.example.com");
+    @Mock private SellerLivePermissionGuard sellerLivePermissionGuard;
     @InjectMocks private CreateLiveService createLiveService;
 
     private static CreateLiveCommand command(String thumbnailUrl, Instant scheduledAt, String description) {
@@ -127,5 +129,17 @@ class CreateLiveServiceTest {
                 .isEqualTo(code);
         then(liveRoomRepository).should(never()).save(any());
         then(liveMediaManager).should(never()).createRoom(any());
+    }
+
+    @Test
+    @DisplayName("라이브 권한이 꺼진 판매자 — LIVE-019, 저장·SFU 호출 없음")
+    void blockedSellerIsRejectedBeforeAnything() {
+        org.mockito.BDDMockito.willThrow(new LivePermissionDeniedException())
+                .given(sellerLivePermissionGuard).verifyLiveEnabled(SELLER);
+
+        assertThatThrownBy(() -> createLiveService.create(command(THUMB, NOW.plusMillis(1), "설명")))
+                .isInstanceOf(LivePermissionDeniedException.class);
+
+        org.mockito.Mockito.verifyNoInteractions(liveRoomRepository, liveMediaManager);
     }
 }

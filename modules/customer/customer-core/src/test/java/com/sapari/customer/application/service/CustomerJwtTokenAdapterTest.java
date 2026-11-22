@@ -24,6 +24,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycleException;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.common.securityjwt.jwt.JwtTokenType;
 import com.sapari.common.securityjwt.store.AccessTokenBlacklist;
+import com.sapari.common.securityjwt.store.RefreshTokenRotationResult;
 import com.sapari.common.securityjwt.store.RefreshTokenStore;
 import com.sapari.common.securityjwt.store.SessionRevocationStore;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
@@ -104,7 +105,7 @@ class CustomerJwtTokenAdapterTest {
         JwtTokenLifecycle.IssuedTokenPair tokenPair = service.issueTokenPair(customer);
         JwtTokenClaims oldRefreshClaims = jwtTokenProvider.parseToken(tokenPair.refreshToken());
         when(refreshTokenStore.rotate(eq(oldRefreshClaims.sessionId()), eq(oldRefreshClaims.tokenId()), any(), any()))
-                .thenReturn(true);
+                .thenReturn(RefreshTokenRotationResult.ROTATED);
         JwtTokenLifecycle.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
 
         // when
@@ -147,7 +148,7 @@ class CustomerJwtTokenAdapterTest {
         JwtTokenLifecycle.IssuedTokenPair tokenPair = service.issueTokenPair(customer);
         JwtTokenClaims oldRefreshClaims = jwtTokenProvider.parseToken(tokenPair.refreshToken());
         when(refreshTokenStore.rotate(eq(oldRefreshClaims.sessionId()), eq(oldRefreshClaims.tokenId()), any(), any()))
-                .thenReturn(false);
+                .thenReturn(RefreshTokenRotationResult.REJECTED);
         JwtTokenLifecycle.RefreshSession refreshSession = service.requireRefreshToken(tokenPair.refreshToken());
 
         // when & then

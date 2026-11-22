@@ -1,7 +1,12 @@
 package com.sapari.apiapp.controller;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -17,8 +22,13 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import jakarta.servlet.http.Cookie;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -29,18 +39,26 @@ import com.sapari.common.securityjwt.store.AccessTokenRevocationChecker;
 import com.sapari.common.securityjwt.store.SessionRevocationChecker;
 import com.sapari.common.securityjwt.jwt.JwtTokenProvider;
 import com.sapari.global.time.TimeProvider;
+import com.sapari.customer.infrastructure.oauth.CookieOAuth2AuthorizationRequestRepository;
+import com.sapari.customer.infrastructure.oauth.CustomerOAuth2FailureHandler;
 import com.sapari.customer.infrastructure.oauth.CustomerOAuth2SuccessHandler;
 import com.sapari.customer.infrastructure.oauth.CustomerOAuth2UserService;
+import com.sapari.customer.command.CustomerLogoutCommand;
 import com.sapari.customer.port.CustomerAuthUseCase;
+import com.sapari.seller.command.SellerLogoutCommand;
 import com.sapari.seller.port.SellerAuthUseCase;
 
 @WebMvcTest(controllers = {CustomerAuthController.class, SellerAuthController.class})
 @Import({
+        // 중첩 TestApplication 은 컴포넌트 스캔을 하지 않아 컨트롤러를 직접 올린다(로그아웃처럼 필터를 통과하는 요청용).
+        CustomerAuthController.class,
+        SellerAuthController.class,
         ApiSecurityConfig.class,
         com.sapari.common.web.config.CommonWebMvcConfig.class,
         TimeProvider.class,
         SecurityFailureResponseTest.FixedClockConfig.class
 })
+@TestPropertySource(properties = "jwt.refresh-token-expiration-seconds=1209600")
 @DisplayName("인증/인가 실패 응답 테스트")
 class SecurityFailureResponseTest {
 
@@ -72,6 +90,12 @@ class SecurityFailureResponseTest {
     private CustomerOAuth2SuccessHandler customerOAuth2SuccessHandler;
 
     @MockitoBean
+    private CustomerOAuth2FailureHandler customerOAuth2FailureHandler;
+
+    @MockitoBean
+    private CookieOAuth2AuthorizationRequestRepository cookieOAuth2AuthorizationRequestRepository;
+
+    @MockitoBean
     private ClientRegistrationRepository clientRegistrationRepository;
 
     @Test
@@ -93,6 +117,101 @@ class SecurityFailureResponseTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.error.status").value(403))
                 .andExpect(jsonPath("$.error.message").value("접근 권한이 없습니다."));
+    }
+
+    @Test
+    @DisplayName("미인증 사용자가 고객 프로필 이미지 변경 API에 접근하면 401 ErrorResponse를 반환한다")
+    void unauthenticatedCustomerProfileImageUpdateReturnsUnauthorizedErrorResponse() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "profile.png",
+                MediaType.IMAGE_PNG_VALUE,
+                new byte[] {1, 2, 3}
+        );
+
+        mockMvc.perform(multipart("/api/v1/customers/auth/me/profile-image")
+                        .file(file)
+                        .with(request -> {
+                            request.setMethod("PUT");
+                            return request;
+                        }))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(401))
+                .andExpect(jsonPath("$.error.message").value("인증이 필요합니다."));
+    }
+
+    @Test
+    @DisplayName("미인증 사용자가 고객 프로필 이미지 삭제 API에 접근하면 401 ErrorResponse를 반환한다")
+    void unauthenticatedCustomerProfileImageDeleteReturnsUnauthorizedErrorResponse() throws Exception {
+        mockMvc.perform(delete("/api/v1/customers/auth/me/profile-image"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(401))
+                .andExpect(jsonPath("$.error.message").value("인증이 필요합니다."));
+    }
+
+    @Test
+    @DisplayName("USER 권한 사용자가 판매자 프로필 이미지 변경 API에 접근하면 403 ErrorResponse를 반환한다")
+    void userRoleSellerProfileImageUpdateReturnsForbiddenErrorResponse() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "profile.png",
+                MediaType.IMAGE_PNG_VALUE,
+                new byte[] {1, 2, 3}
+        );
+
+        mockMvc.perform(multipart("/api/v1/sellers/auth/me/profile-image")
+                        .file(file)
+                        .with(user("019e6e30-ea61-7392-8123-1047154d4660").roles("USER"))
+                        .with(request -> {
+                            request.setMethod("PUT");
+                            return request;
+                        }))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(403))
+                .andExpect(jsonPath("$.error.message").value("접근 권한이 없습니다."));
+    }
+
+    @Test
+    @DisplayName("USER 권한 사용자가 판매자 프로필 이미지 삭제 API에 접근하면 403 ErrorResponse를 반환한다")
+    void userRoleSellerProfileImageDeleteReturnsForbiddenErrorResponse() throws Exception {
+        mockMvc.perform(delete("/api/v1/sellers/auth/me/profile-image")
+                        .with(user("019e6e30-ea61-7392-8123-1047154d4660").roles("USER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.error.status").value(403))
+                .andExpect(jsonPath("$.error.message").value("접근 권한이 없습니다."));
+    }
+
+    @Test
+    @DisplayName("고객은 Access Token 없이 refresh 쿠키만으로 로그아웃하고 쿠키가 지워진다")
+    void customerLogoutWithRefreshCookieOnly() throws Exception {
+        mockMvc.perform(post("/api/v1/customers/auth/logout")
+                        .cookie(new Cookie("refresh_token", "refresh-token-value")))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string(HttpHeaders.SET_COOKIE,
+                        org.hamcrest.Matchers.allOf(
+                                org.hamcrest.Matchers.startsWith("refresh_token=;"),
+                                org.hamcrest.Matchers.containsString("Max-Age=0"))));
+
+        verify(customerAuthUseCase).logout(new CustomerLogoutCommand("refresh-token-value"));
+    }
+
+    @Test
+    @DisplayName("판매자는 Access Token 없이 refresh 쿠키만으로 로그아웃하고, 쿠키가 없어도 같은 204 를 받는다")
+    void sellerLogoutWithRefreshCookieOnlyAndIdempotent() throws Exception {
+        mockMvc.perform(post("/api/v1/sellers/auth/logout")
+                        .cookie(new Cookie("refresh_token", "refresh-token-value")))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(post("/api/v1/sellers/auth/logout"))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string(HttpHeaders.SET_COOKIE,
+                        org.hamcrest.Matchers.containsString("Max-Age=0")));
+
+        verify(sellerAuthUseCase).logout(new SellerLogoutCommand("refresh-token-value"));
+        verify(sellerAuthUseCase).logout(new SellerLogoutCommand(null));
     }
 
     @TestConfiguration(proxyBeanMethods = false)

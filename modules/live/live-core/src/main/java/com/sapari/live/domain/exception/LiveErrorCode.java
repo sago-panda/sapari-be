@@ -26,7 +26,9 @@ public enum LiveErrorCode implements ErrorCode {
     LIVE_SCHEDULE_NOT_FUTURE(400, "LIVE-015", "방송 예정 시각은 현재 이후여야 합니다."),
     INVALID_THUMBNAIL_URL(400, "LIVE-016", "허용되지 않은 썸네일 주소입니다."),
     INGRESS_REQUIRED(400, "LIVE-017", "송출 키를 발급받은 뒤 방송을 시작할 수 있습니다."),
-    INGRESS_REISSUE_NOT_ALLOWED(400, "LIVE-018", "송출 키를 재발급할 수 없는 방입니다.");
+    INGRESS_REISSUE_NOT_ALLOWED(400, "LIVE-018", "송출 키를 재발급할 수 없는 방입니다."),
+    LIVE_PERMISSION_DENIED(403, "LIVE-019", "라이브 방송 권한이 정지된 판매자입니다."),
+    INVALID_ADMIN_ROOM_QUERY(400, "LIVE-020", "방 목록 조회 조건이 올바르지 않습니다.");
 
     private final int status;
     private final String code;

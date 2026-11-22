@@ -10,7 +10,9 @@ public interface SocialLoginCodeRepository {
 
     void save(String code, String value);
 
-    Optional<String> findByCode(String code);
-
-    void delete(String code);
+    /**
+     * 임시 로그인 code를 한 번만 소비한다.
+     * 값이 존재하면 반환과 동시에 삭제하고, 없거나 이미 소비된 code면 Optional.empty()를 반환한다.
+     */
+    Optional<String> consumeByCode(String code);
 }

@@ -16,13 +16,13 @@ import jakarta.persistence.Table;
  * <p><b>이 테이블은 chat 것이 아니다.</b> 정본 DDL 이 {@code -- 공통 (도메인 전용 outbox / audit)}
  * 아래에 두었고 같은 모양이 <b>11 스키마 중 10</b> 에 있다(실측:
  * {@code CREATE TABLE <schema>.audit_logs} 10건 · {@code db/migration} 디렉터리 11개 · 없는 것은
- * batch). 그런데 live 는 이 테이블을 <b>한 번도 주장하지 않았다</b>(실측: {@code live-core} 에
- * audit·outbox 엔티티 0건, 저장소 전체 writer 0건). 그래서
- * 지금 쓰는 쪽인 chat 이 매핑을 갖는다 — {@code chat_ban}·{@code chat_kick_log}·
- * {@code chat_filter_word} 도 같은 모양으로 {@code live_schema} 를 명시한다.
+ * batch). 먼저 쓴 쪽인 chat 이 매핑을 갖는다 — {@code chat_ban}·{@code chat_kick_log}·
+ * {@code chat_filter_word} 도 같은 모양으로 {@code live_schema} 를 명시한다. live 도 관리자 종료
+ * (SPR-211)부터 같은 테이블에 쓰는데, live-core 는 chat-core 에 의존할 수 없어 자기 매핑
+ * ({@code LiveAuditLogEntity})을 따로 둔다.
  *
- * <p>live 가 나중에 자기 조치를 같은 테이블에 적으면 섞이는 것은 <b>행</b>이 아니라 {@code action}
- * 값이다. 그쪽은 {@code ChatAuditAction} 의 {@code CHAT_} 접두가 가른다.
+ * <p>두 도메인이 같은 테이블에 적어도 섞이는 것은 <b>행</b>이 아니라 {@code action} 값이다.
+ * {@code ChatAuditAction} 의 {@code CHAT_} 접두와 live 의 {@code LIVE_} 접두가 가른다.
  *
  * <p><b>공용 베이스 엔티티를 쓰지 않는다.</b> {@code BaseUuidEntity} 는 {@code created_at} 을
  * {@code @CreatedDate} + {@code AuditingEntityListener} 로 채우는데, 아래 쓰기가 네이티브라 그

@@ -29,6 +29,7 @@ import com.sapari.live.command.PrepareIngressCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveErrorCode;
+import com.sapari.live.domain.exception.LivePermissionDeniedException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
 import com.sapari.live.domain.model.LiveStatus;
@@ -51,6 +52,9 @@ class PrepareIngressServiceTest {
 
     @Mock
     private TimeProvider timeProvider;
+
+    @Mock
+    private SellerLivePermissionGuard sellerLivePermissionGuard;
 
     @InjectMocks
     private PrepareIngressService prepareIngressService;
@@ -214,5 +218,17 @@ class PrepareIngressServiceTest {
                 .isEqualTo(LiveErrorCode.INGRESS_NOT_ALLOWED);
 
         then(liveMediaManager).should(never()).createIngress(any(), any());
+    }
+
+    @Test
+    @DisplayName("라이브 권한이 꺼진 판매자 — LIVE-019, ingress 생성 없음")
+    void blockedSellerIsRejectedBeforeAnything() {
+        org.mockito.BDDMockito.willThrow(new LivePermissionDeniedException())
+                .given(sellerLivePermissionGuard).verifyLiveEnabled(sellerId);
+
+        assertThatThrownBy(() -> prepareIngressService.prepare(command))
+                .isInstanceOf(LivePermissionDeniedException.class);
+
+        org.mockito.Mockito.verifyNoInteractions(liveRoomRepository, liveMediaManager, rtmpIngressAssigner);
     }
 }

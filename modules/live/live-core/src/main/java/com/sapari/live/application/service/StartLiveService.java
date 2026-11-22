@@ -42,10 +42,12 @@ public class StartLiveService implements StartLiveUseCase {
     private final TimeProvider timeProvider;
     private final LiveMetrics liveMetrics;
     private final LiveListCacheSync liveListCacheSync;
+    private final SellerLivePermissionGuard sellerLivePermissionGuard;
 
     @Override
     @Transactional
     public StartLiveView start(StartLiveCommand command) {
+        sellerLivePermissionGuard.verifyLiveEnabled(command.sellerId());
         LiveRoom room = liveRoomRepository.findByIdAndSellerIdForUpdate(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
 

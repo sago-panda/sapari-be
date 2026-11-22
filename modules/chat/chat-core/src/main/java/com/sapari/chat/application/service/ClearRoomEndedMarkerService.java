@@ -30,11 +30,11 @@ import lombok.extern.slf4j.Slf4j;
  * 하필 아래 LIVE 검증에 거부되는 경우</b>다. 생산 사슬을 전수로 재면 그 이유가 드러난다:
  * <pre>
  *   markEnded 호출처          LiveRoomEndedHandler 하나 — live:room:ended 구독으로만 깨어난다
- *   publishRoomEnded 호출처    EndLiveService · EndStaleLiveService 둘
- *   그 둘의 순서              endLive() → save() → afterCommit() → publish
- *   live 판정                 status instanceof LiveStatus.Live  (modules/live: "Ended is terminal")
+ *   publishRoomEnded 호출처    EndLiveService · EndStaleLiveService · AdminEndLiveService 셋
+ *   그 셋의 순서              endLive()/cancelByAdmin() → save() → afterCommit() → publish
+ *   live 판정                 status instanceof LiveStatus.Live  (modules/live: "Terminal = Ended or Cancelled")
  * </pre>
- * 즉 <b>마커가 존재하는 모든 순간 그 방은 DB 에서 이미 {@code Ended}</b> 다 — 앱 경로로는
+ * 즉 <b>마커가 존재하는 모든 순간 그 방은 DB 에서 이미 종단({@code Ended}·{@code Cancelled})</b> 이다 — 앱 경로로는
  * "진행 중인데 마커가 있는" 상태가 만들어지지 않는다. 배치 오판도 그 방을 <i>먼저 커밋하고</i>
  * 발행하므로, 그 사고에서 이 엔드포인트는 400 을 돌려주고 마커는 보관 기간을 다 채운다.
  *

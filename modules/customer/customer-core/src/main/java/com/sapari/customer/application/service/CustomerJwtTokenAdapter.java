@@ -11,6 +11,7 @@ import com.sapari.common.securityjwt.jwt.JwtTokenLifecycleException;
 import com.sapari.common.securityjwt.jwt.JwtTokenPrincipal;
 import com.sapari.customer.domain.exception.CustomerErrorCode;
 import com.sapari.customer.domain.exception.CustomerException;
+import com.sapari.user.model.UserRole;
 import com.sapari.user.view.UserView;
 
 /**
@@ -67,14 +68,10 @@ public class CustomerJwtTokenAdapter {
     }
 
     /**
-     * 로그아웃 대상 Access Token을 검증하고 같은 sid 세션을 폐기한다.
+     * 로그아웃 대상 Refresh Token의 sid 세션을 폐기한다. 토큰이 없거나 무효거나 다른 role(판매자) 것이면 아무것도 하지 않는다(멱등).
      */
-    public void revokeSession(String accessToken) {
-        try {
-            jwtTokenLifecycle.revokeSession(accessToken);
-        } catch (JwtTokenLifecycleException e) {
-            throw invalidAccessToken(e);
-        }
+    public void revokeSessionByRefreshToken(String refreshToken) {
+        jwtTokenLifecycle.revokeSessionByRefreshToken(refreshToken, UserRole.USER.name());
     }
 
     /**

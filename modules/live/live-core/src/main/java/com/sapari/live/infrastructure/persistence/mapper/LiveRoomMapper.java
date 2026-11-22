@@ -133,7 +133,8 @@ public interface LiveRoomMapper {
             case SUSPENDED -> new Suspended(
                     entity.getStartedAt(), entity.getSuspendedAt(), entity.getSuspendedReason());
             // 취소 시각은 종단 시각 컬럼(ended_at)에 있다 — applyCancelled 가 쓰는 컬럼이다.
-            case CANCELLED -> new Cancelled(entity.getScheduledAt(), entity.getEndedAt());
+            // started_at 은 관리자 종료(방송 중 취소)면 Live 때 쓴 값이 남아 있고, 판매자 예약 취소면 null 이다.
+            case CANCELLED -> new Cancelled(entity.getScheduledAt(), entity.getStartedAt(), entity.getEndedAt());
         };
     }
 

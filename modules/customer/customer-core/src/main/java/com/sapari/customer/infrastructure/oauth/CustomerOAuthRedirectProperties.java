@@ -14,4 +14,5 @@ public class CustomerOAuthRedirectProperties {
 
     private String loginSuccessUrl;
     private String signupUrl;
+    private String failureUrl;
 }

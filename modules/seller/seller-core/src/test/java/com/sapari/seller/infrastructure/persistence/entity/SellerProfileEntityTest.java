@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Instant;
 import java.util.UUID;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Table;
 
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import com.sapari.seller.model.SellerApprovalStatus;
 import com.sapari.seller.model.SellerBusinessType;
+import com.sapari.storage.db.entity.UuidTimeEntity;
 
 @DisplayName("판매자 프로필 엔티티 테스트")
 class SellerProfileEntityTest {
@@ -42,6 +44,7 @@ class SellerProfileEntityTest {
         assertThat(entity.getBusinessType()).isEqualTo(SellerBusinessType.CORPORATE);
         assertThat(entity.getRejectionReason()).isNull();
         assertThat(entity.getApprovedAt()).isEqualTo(approvedAt);
+        assertThat(entity).isInstanceOf(UuidTimeEntity.class);
     }
 
     @Test
@@ -87,5 +90,20 @@ class SellerProfileEntityTest {
         // then
         assertThat(table.name()).isEqualTo("seller_profiles");
         assertThat(table.schema()).isEqualTo("seller_schema");
+    }
+
+    @Test
+    @DisplayName("판매자 프로필 주요 컬럼 길이는 마이그레이션과 동일한 20자를 사용한다")
+    void mainColumnLengthsMatchMigration() throws NoSuchFieldException {
+        assertThat(columnLength("status")).isEqualTo(20);
+        assertThat(columnLength("storeName")).isEqualTo(20);
+        assertThat(columnLength("businessNumber")).isEqualTo(20);
+        assertThat(columnLength("businessType")).isEqualTo(10);
+    }
+
+    private int columnLength(String fieldName) throws NoSuchFieldException {
+        return SellerProfileEntity.class.getDeclaredField(fieldName)
+                .getAnnotation(Column.class)
+                .length();
     }
 }
