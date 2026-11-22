@@ -7,4 +7,6 @@ import java.util.UUID;
 public interface LiveAuditLogRepository {
 
     void appendAdminEnd(UUID adminId, UUID roomId, String reason, Instant occurredAt);
+
+    void appendSellerLivePermission(UUID adminId, UUID sellerId, boolean liveEnabled, String reason, Instant occurredAt);
 }

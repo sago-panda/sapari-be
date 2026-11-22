@@ -293,6 +293,31 @@ class LiveRoomTest {
         }
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("everyStatus")
+    @DisplayName("cancelForRevokedPermission — Ready+RTMP 만 Cancelled 로(방송 없음, startedAt 없음), 나머지는 거부")
+    void cancelForRevokedPermission_onlyReadyRtmp(String name, LiveStatus status) {
+        LiveRoom room = roomIn(status).toBuilder().streamType(new LiveStreamType.Rtmp("ing-1")).build();
+        if (status instanceof LiveStatus.Ready) {
+            LiveRoom cancelled = room.cancelForRevokedPermission(NOW);
+            assertThat(cancelled.status()).isEqualTo(new LiveStatus.Cancelled(SCHEDULED_AT, NOW));
+            assertThat(cancelled.updatedAt()).isEqualTo(NOW);
+        } else {
+            assertThatThrownBy(() -> room.cancelForRevokedPermission(NOW))
+                    .isInstanceOf(InvalidLiveStateException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("cancelForRevokedPermission — Ready 라도 WebRTC 방은 거부(OBS 승격 대상이 아니다)")
+    void cancelForRevokedPermission_rejectsWebRtc() {
+        LiveRoom webRtcReady = roomIn(new LiveStatus.Ready(SCHEDULED_AT)).toBuilder()
+                .streamType(new LiveStreamType.WebRtc()).build();
+
+        assertThatThrownBy(() -> webRtcReady.cancelForRevokedPermission(NOW))
+                .isInstanceOf(InvalidLiveStateException.class);
+    }
+
     @Test
     @DisplayName("판매자 예약 취소는 방송한 적이 없으므로 startedAt 이 없다")
     void cancel_hasNoStartedAt() {

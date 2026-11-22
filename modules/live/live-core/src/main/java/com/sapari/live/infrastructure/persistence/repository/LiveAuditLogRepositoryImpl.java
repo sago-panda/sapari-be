@@ -19,4 +19,10 @@ public class LiveAuditLogRepositoryImpl implements LiveAuditLogRepository {
     public void appendAdminEnd(UUID adminId, UUID roomId, String reason, Instant occurredAt) {
         jpaRepository.insertAdminEnd(adminId, roomId, reason, occurredAt);
     }
+
+    @Override
+    public void appendSellerLivePermission(UUID adminId, UUID sellerId, boolean liveEnabled, String reason,
+                                           Instant occurredAt) {
+        jpaRepository.insertSellerLivePermission(adminId, sellerId, liveEnabled, reason, occurredAt);
+    }
 }

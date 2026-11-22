@@ -56,9 +56,11 @@ public class ReissueIngressService implements ReissueIngressUseCase {
     private final LiveMediaManager liveMediaManager;
     private final RtmpIngressAssigner rtmpIngressAssigner;
     private final TimeProvider timeProvider;
+    private final SellerLivePermissionGuard sellerLivePermissionGuard;
 
     @Override
     public IngressCredentialView reissue(ReissueIngressCommand command) {
+        sellerLivePermissionGuard.verifyLiveEnabled(command.sellerId());
         // 소유권: 남의 방과 없는 방은 같은 404
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));

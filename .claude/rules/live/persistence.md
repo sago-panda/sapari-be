@@ -26,6 +26,9 @@ invariants. What and why only; how lives in the named class's comment.
 - **`live_schema.audit_logs` is shared by live and chat** — rows are told apart only by the `action` prefix
   (`LIVE_` / `CHAT_`); each side maps it separately because live-core cannot depend on chat-core
   (`LiveAuditLogEntity`, `ChatAuditLogEntity`).
+- **Seller live permission** (`live_seller_permission`, SPR-213): no row = allowed; only the admin endpoint writes
+  it, with one audit row per request in the same transaction (`ChangeSellerLivePermissionService`). Blocking leaves
+  `Live` rooms alone; a room already `Ready` is closed to `Cancelled` when OBS connects (`SellerLivePermissionGuard`).
 - **Every state-transition read takes a row lock** (`findByIdForUpdate`, `findByIdAndSellerIdForUpdate`);
   unlocked reintroduces the double-`startHlsEgress` race. Ownership stays **in the query** — a service-side
   check would leak room existence. Hibernate emits **`for no key update`**, not `for update`; don't grep for

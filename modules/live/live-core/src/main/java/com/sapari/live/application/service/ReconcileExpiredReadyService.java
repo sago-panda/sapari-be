@@ -215,6 +215,7 @@ public class ReconcileExpiredReadyService implements ReconcileExpiredReadyUseCas
         if (!nowLive) {
             // 여기까지 왔다는 건 방이 인정하는 ingress 가 송출 중이었다는 뜻이라 승격이 됐어야 한다.
             // 그런데 안 됐다면 조회~잠금 사이에 상태가 바뀐 것이다(판매자가 직접 종료 등). 다음 회차가 다시 본다.
+            // 라이브 권한이 꺼진 판매자의 방도 여기로 온다 — 승격 대신 Cancelled 로 닫혀 다음 회차 후보에서 빠진다.
             log.warn("Ready 고착 방 승격 no-op — 조회 이후 상태가 바뀐 것으로 보임. roomId={}", roomId);
             return 0;
         }

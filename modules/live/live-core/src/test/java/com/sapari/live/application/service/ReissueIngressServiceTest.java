@@ -31,6 +31,7 @@ import com.sapari.live.command.ReissueIngressCommand;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveDomainException;
 import com.sapari.live.domain.exception.LiveErrorCode;
+import com.sapari.live.domain.exception.LivePermissionDeniedException;
 import com.sapari.live.domain.exception.LiveMediaException;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.domain.model.LiveRoom;
@@ -53,6 +54,7 @@ class ReissueIngressServiceTest {
     @Mock private LiveMediaManager liveMediaManager;
     @Mock private RtmpIngressAssigner rtmpIngressAssigner;
     @Mock private TimeProvider timeProvider;
+    @Mock private SellerLivePermissionGuard sellerLivePermissionGuard;
     @InjectMocks private ReissueIngressService service;
 
     private static LiveRoom room(LiveStatus status, LiveStreamType streamType) {
@@ -179,5 +181,17 @@ class ReissueIngressServiceTest {
                 .isInstanceOf(InvalidLiveStateException.class)
                 .extracting(e -> ((LiveDomainException) e).getErrorCode())
                 .isEqualTo(code);
+    }
+
+    @Test
+    @DisplayName("라이브 권한이 꺼진 판매자 — LIVE-019, 재발급 없음")
+    void blockedSellerIsRejectedBeforeAnything() {
+        org.mockito.BDDMockito.willThrow(new LivePermissionDeniedException())
+                .given(sellerLivePermissionGuard).verifyLiveEnabled(SELLER);
+
+        assertThatThrownBy(() -> service.reissue(COMMAND))
+                .isInstanceOf(LivePermissionDeniedException.class);
+
+        org.mockito.Mockito.verifyNoInteractions(liveRoomRepository, liveMediaManager, rtmpIngressAssigner);
     }
 }

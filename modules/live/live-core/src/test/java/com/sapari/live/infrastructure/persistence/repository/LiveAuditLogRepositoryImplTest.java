@@ -37,7 +37,7 @@ import com.sapari.live.infrastructure.persistence.entity.LiveAuditLogEntity;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Testcontainers
-@DisplayName("LiveAuditLogRepository — 관리자 종료가 live_schema.audit_logs 에 한 줄로 남는다 (Postgres)")
+@DisplayName("LiveAuditLogRepository — 관리자 조치가 live_schema.audit_logs 에 한 줄로 남는다 (Postgres)")
 class LiveAuditLogRepositoryImplTest {
 
     @Configuration
@@ -104,6 +104,33 @@ class LiveAuditLogRepositoryImplTest {
         assertThat(row.get("target_id")).isEqualTo(roomId);
         assertThat(row.get("target_type")).isEqualTo("LIVE_ROOM");
         assertThat(row.get("reason")).isEqualTo("음란물 \"송출\"");
+        assertThat(((Timestamp) row.get("created_at")).toInstant()).isEqualTo(NOW);
+    }
+
+    @Test
+    @DisplayName("판매자 권한 변경 — 관리자·판매자·조치 시각이 남고, 바꾼 값(boolean)과 사유는 detail jsonb 에 있다")
+    void appendSellerLivePermission_writesOneRow() {
+        UUID adminId = UUID.randomUUID();
+        UUID sellerId = UUID.randomUUID();
+
+        new LiveAuditLogRepositoryImpl(jpaRepository)
+                .appendSellerLivePermission(adminId, sellerId, false, "반복 \"위반\"", NOW);
+
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT actor_type, action, target_id, target_type, created_at,
+                       detail->'liveEnabled' AS live_enabled_json,
+                       detail->>'reason' AS reason
+                  FROM live_schema.audit_logs
+                 WHERE actor_id = ?
+                """, adminId);
+        assertThat(rows).hasSize(1);
+        Map<String, Object> row = rows.get(0);
+        assertThat(row.get("actor_type")).isEqualTo("ADMIN");
+        assertThat(row.get("action")).isEqualTo("LIVE_ADMIN_SELLER_PERMISSION");
+        assertThat(row.get("target_id")).isEqualTo(sellerId);
+        assertThat(row.get("target_type")).isEqualTo("SELLER");
+        assertThat(row.get("live_enabled_json").toString()).isEqualTo("false");
+        assertThat(row.get("reason")).isEqualTo("반복 \"위반\"");
         assertThat(((Timestamp) row.get("created_at")).toInstant()).isEqualTo(NOW);
     }
 }

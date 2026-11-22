@@ -27,11 +27,13 @@ public class CreateLiveService implements CreateLiveUseCase {
     private final LiveMediaManager liveMediaManager;
     private final TimeProvider timeProvider;
     private final ThumbnailUrlRule thumbnailUrlRule;
+    private final SellerLivePermissionGuard sellerLivePermissionGuard;
 
     @Override
     @Transactional
     public CreateLiveView create(CreateLiveCommand command){
-        // 순서: 썸네일(LIVE-016) → 도메인 필드(예정 시각 LIVE-015) → 저장 → SFU. 거부는 저장·미디어 호출 전에 끝난다.
+        // 순서: 권한(LIVE-019) → 썸네일(LIVE-016) → 도메인 필드(예정 시각 LIVE-015) → 저장 → SFU. 거부는 저장·미디어 호출 전에 끝난다.
+        sellerLivePermissionGuard.verifyLiveEnabled(command.sellerId());
         thumbnailUrlRule.verify(command.thumbnailUrl(), command.sellerId());
 
         LiveRoom room = LiveRoom.create(

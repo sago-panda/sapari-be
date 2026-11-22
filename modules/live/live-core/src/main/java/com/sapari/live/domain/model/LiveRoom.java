@@ -204,6 +204,20 @@ public record LiveRoom(
                 .build();
     }
 
+    /**
+     * 라이브 권한이 꺼진 판매자의 Ready 방을 OBS 연결 시점에 닫는다 — Live 로 올리지 않는다. 방송한 적 없는 방이라
+     * startedAt 은 없고 RoomEnded 도 없다(판매자 예약 취소와 같은 모양). 대상은 승격과 같은 Ready+RTMP 다.
+     */
+    public LiveRoom cancelForRevokedPermission(Instant now){
+        if (!canGoLiveByRtmp()) {
+            throw new InvalidLiveStateException(LiveErrorCode.INVALID_LIVE_STATE, this.id != null ? this.id.toString() : "알 수 없는 방");
+        }
+        return toBuilder()
+                .status(new LiveStatus.Cancelled(((LiveStatus.Ready) this.status).scheduledAt(), now))
+                .updatedAt(now)
+                .build();
+    }
+
     // RTMP ingress 배정은 도메인 전이가 아니라 조건부 UPDATE 다(RtmpIngressAssigner) — 스냅샷 읽기 위에서는
     // 배타성을 보장할 수 없어 DB 가 승자를 고른다. 여기에 assignRtmpIngress 를 되살리지 말 것:
     // `ingress_id IS NULL` 조건 없는 경로가 생겨 한 방에 유효한 streamKey 가 여러 개 나간다.

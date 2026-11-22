@@ -21,6 +21,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.navercorp.fixturemonkey.FixtureMonkey;
@@ -53,6 +54,9 @@ class GoLiveByRtmpServiceTest {
 
     @Mock
     private LiveListCacheSync liveListCacheSync;
+
+    @Mock
+    private SellerLivePermissionGuard sellerLivePermissionGuard;
 
     @InjectMocks
     private GoLiveByRtmpService goLiveByRtmpService;
@@ -240,5 +244,58 @@ class GoLiveByRtmpServiceTest {
 
         org.assertj.core.api.Assertions.assertThat(liveMetrics.promotions).isEmpty();
         org.assertj.core.api.Assertions.assertThat(liveMetrics.transitions).isEmpty();
+    }
+
+    @Test
+    @DisplayName("권한 꺼진 판매자의 Ready 방 — Live 로 올리지 않고 Cancelled 로 닫는다. egress·라이브 목록·승격 집계 없음")
+    void blockedSeller_cancelsInsteadOfGoingLive() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        Instant now = Instant.parse("2026-06-10T10:05:00Z");
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
+        given(sellerLivePermissionGuard.isBlocked(ready.sellerId())).willReturn(true);
+        given(timeProvider.now()).willReturn(now);
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
+
+        ArgumentCaptor<LiveRoom> captor = ArgumentCaptor.forClass(LiveRoom.class);
+        verify(liveRoomRepository).save(captor.capture());
+        assertThat(captor.getValue().status())
+                .isEqualTo(new LiveStatus.Cancelled(Instant.parse("2026-06-10T10:00:00Z"), now));
+        verify(liveMediaManager, never()).startHlsEgress(any(UUID.class));
+        verify(liveListCacheSync, never()).registerAfterCommit(any());
+        assertThat(liveMetrics.promotions).isEmpty();
+        assertThat(liveMetrics.transitions).containsExactly("Ready->Cancelled");
+    }
+
+    @Test
+    @DisplayName("권한 꺼진 판매자의 Ready 방 — 커밋 뒤 ingress 를 지워 송출 중인 OBS 를 끊고 SFU 방을 닫는다")
+    void blockedSeller_deletesIngressAfterCommit() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
+        given(sellerLivePermissionGuard.isBlocked(ready.sellerId())).willReturn(true);
+        given(timeProvider.now()).willReturn(Instant.parse("2026-06-10T10:05:00Z"));
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-1", PromotionTrigger.WEBHOOK);
+        verify(liveMediaManager, never()).deleteIngress(roomId);
+
+        TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+
+        verify(liveMediaManager).deleteIngress(roomId);
+        verify(liveMediaManager).closeRoom("sfu-1");
+    }
+
+    @Test
+    @DisplayName("권한 꺼진 판매자라도 방이 인정하지 않는 ingress 의 이벤트면 아무것도 하지 않는다 — 남의 키로 방을 닫지 못한다")
+    void blockedSeller_foreignIngress_isNoop() {
+        LiveRoom ready = room(new LiveStatus.Ready(Instant.parse("2026-06-10T10:00:00Z")),
+                new LiveStreamType.Rtmp("ing-1"));
+        given(liveRoomRepository.findByIdForUpdate(roomId)).willReturn(Optional.of(ready));
+
+        goLiveByRtmpService.goLiveByRtmp(roomId, "ing-OTHER", PromotionTrigger.WEBHOOK);
+
+        verify(liveRoomRepository, never()).save(any(LiveRoom.class));
+        verify(sellerLivePermissionGuard, never()).isBlocked(any());
     }
 }

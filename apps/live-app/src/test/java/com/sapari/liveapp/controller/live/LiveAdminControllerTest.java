@@ -8,6 +8,7 @@ import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -35,35 +36,41 @@ import com.sapari.common.web.exception.GlobalExceptionHandler;
 import com.sapari.common.web.security.CurrentUserIdArgumentResolver;
 import com.sapari.global.time.TimeProvider;
 import com.sapari.live.command.AdminEndLiveCommand;
+import com.sapari.live.command.ChangeSellerLivePermissionCommand;
 import com.sapari.live.command.GetAdminRoomsQuery;
 import com.sapari.live.domain.exception.InvalidLiveQueryException;
 import com.sapari.live.domain.exception.InvalidLiveStateException;
 import com.sapari.live.domain.exception.LiveErrorCode;
 import com.sapari.live.domain.exception.LiveNotFoundException;
 import com.sapari.live.port.AdminEndLiveUseCase;
+import com.sapari.live.port.ChangeSellerLivePermissionUseCase;
 import com.sapari.live.port.GetAdminRoomsUseCase;
 import com.sapari.live.view.AdminLiveRoomSummary;
 import com.sapari.live.view.LiveRoomTab;
 import com.sapari.liveapp.security.LiveUserPrincipal;
 
 /**
- * 관리자 엔드포인트(종료·방 목록)의 입력·응답 계약. 인가(ADMIN 전용)는 {@code LiveAdminAuthorizationTest} 가 본다.
+ * 관리자 엔드포인트(종료·방 목록·판매자 라이브 권한)의 입력·응답 계약. 인가(ADMIN 전용)는 {@code LiveAdminAuthorizationTest} 가 본다.
  */
-@DisplayName("관리자 엔드포인트 — 종료 사유·방 목록 파라미터 검증과 상태 코드")
+@DisplayName("관리자 엔드포인트 — 종료 사유·방 목록 파라미터·권한 변경 검증과 상태 코드")
 class LiveAdminControllerTest {
 
     private static final UUID ADMIN_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
     private static final UUID ROOM_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID SELLER_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
 
     private final AdminEndLiveUseCase adminEndLiveUseCase = mock(AdminEndLiveUseCase.class);
     private final GetAdminRoomsUseCase getAdminRoomsUseCase = mock(GetAdminRoomsUseCase.class);
+    private final ChangeSellerLivePermissionUseCase changeSellerLivePermissionUseCase =
+            mock(ChangeSellerLivePermissionUseCase.class);
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         TimeProvider timeProvider = mock(TimeProvider.class);
         given(timeProvider.now()).willReturn(Instant.parse("2026-11-20T00:00:00Z"));
-        mvc = MockMvcBuilders.standaloneSetup(new LiveAdminController(adminEndLiveUseCase, getAdminRoomsUseCase))
+        mvc = MockMvcBuilders.standaloneSetup(new LiveAdminController(
+                        adminEndLiveUseCase, getAdminRoomsUseCase, changeSellerLivePermissionUseCase))
                 .setCustomArgumentResolvers(new CurrentUserIdArgumentResolver())
                 .setControllerAdvice(new GlobalExceptionHandler(timeProvider))
                 .build();
@@ -151,6 +158,41 @@ class LiveAdminControllerTest {
         forceEnd(reason("사유"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("LIVE-002"));
+    }
+
+    private ResultActions changePermission(String body) throws Exception {
+        return mvc.perform(patch("/api/v1/lives/admin/sellers/{sellerId}/live-permission", SELLER_ID)
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+    }
+
+    @Test
+    @DisplayName("권한 변경 — 204, 본문 없음. 관리자 id 는 인증 주체에서, 사유는 앞뒤 공백을 잘라 넘긴다")
+    void changePermission_passesAdminValueAndStrippedReason() throws Exception {
+        changePermission("{\"liveEnabled\":false,\"reason\":\"  정책 위반  \"}")
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+
+        ArgumentCaptor<ChangeSellerLivePermissionCommand> command =
+                ArgumentCaptor.forClass(ChangeSellerLivePermissionCommand.class);
+        then(changeSellerLivePermissionUseCase).should().change(command.capture());
+        assertThat(command.getValue())
+                .isEqualTo(new ChangeSellerLivePermissionCommand(SELLER_ID, ADMIN_ID, false, "정책 위반"));
+    }
+
+    @Test
+    @DisplayName("권한 변경 — liveEnabled 없음, 사유 없음·공백뿐·501자·NUL 은 400 COMMON-001, 유스케이스 미호출")
+    void changePermission_invalidBodyIs400() throws Exception {
+        for (String body : List.of(
+                "{\"reason\":\"사유\"}",
+                "{\"liveEnabled\":false}",
+                "{\"liveEnabled\":false,\"reason\":\"   \"}",
+                "{\"liveEnabled\":false,\"reason\":\"" + "가".repeat(501) + "\"}",
+                "{\"liveEnabled\":false,\"reason\":\"a\\u0000b\"}")) {
+            changePermission(body)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("COMMON-001"));
+        }
+        then(changeSellerLivePermissionUseCase).should(never()).change(any());
     }
 
     @Test

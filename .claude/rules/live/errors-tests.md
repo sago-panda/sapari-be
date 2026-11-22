@@ -20,6 +20,8 @@ Seller input rejected by the domain (prices 008, pin count 012) is `InvalidLiveP
 (schedule not future 015, thumbnail URL 016) is `InvalidLiveRoomException`; list query input (admin room list 020) is
 `InvalidLiveQueryException` — never IAE —
 IAE reaches the global net as 500. A new request kind (cancel, edit, …) adds its own code; don't reuse 003.
+A seller whose live permission an admin turned off gets 403 LIVE-019 on create/start/ingress/reissue — a permission,
+not a state, so `LivePermissionDeniedException`, never `InvalidLiveStateException` (`SellerLivePermissionGuard`).
 Tests in `live-core/src/test` (Mockito on ports); scheduler wiring in `live-app` via `ApplicationContextRunner`.
 FixtureMonkey for fixtures, plain builders when asserting specific values (random strings trip VO validation).
 Run `./gradlew :modules:live:live-core:test`.

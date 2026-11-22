@@ -26,6 +26,7 @@ public class PrepareIngressService implements PrepareIngressUseCase {
     private final LiveMediaManager liveMediaManager;
     private final RtmpIngressAssigner rtmpIngressAssigner;
     private final TimeProvider timeProvider;
+    private final SellerLivePermissionGuard sellerLivePermissionGuard;
 
     // @Transactional 없음(의도): createIngress(외부 I/O)를 트랜잭션 밖에서 호출해 네트워크 왕복 동안
     // DB 커넥션·행 잠금을 점유하지 않는다(루트 AGENTS "Minimize external calls inside a transaction").
@@ -33,6 +34,7 @@ public class PrepareIngressService implements PrepareIngressUseCase {
     // (RtmpIngressAssigner)으로 하고 진 쪽이 자기 ingress 를 회수한다.
     @Override
     public IngressCredentialView prepare(PrepareIngressCommand command){
+        sellerLivePermissionGuard.verifyLiveEnabled(command.sellerId());
         // 소유권: 판매자 본인의 방만 조회됨(남의 방에 ingress 발급 차단)
         LiveRoom room = liveRoomRepository.findByIdAndSellerId(command.roomId(), command.sellerId())
                 .orElseThrow(() -> new LiveNotFoundException(command.roomId().toString()));
