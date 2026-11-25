@@ -206,8 +206,13 @@ public class ChatSessionRedisRepository implements ChatSessionRepository {
         return lastSeenMillis < staleBefore.toEpochMilli() ? null : userId;
     }
 
+    /**
+     * {@code UNLINK} 다 — 키를 즉시 보이지 않게 하고, 해제 비용이 큰 값(큰 방의 해시)은 Redis 백그라운드 스레드가 해제한다.
+     * {@code DEL} 은 큰 방의 해시를 지우는 동안 그 Redis 의 다른 명령을 모두 세운다(같은 Redis 를 live-app 도 쓴다).
+     * 없는 키에도 무동작이라 모든 Pod 가 불러도 된다.
+     */
     @Override
     public Mono<Void> clearRoom(UUID roomId) {
-        return redisTemplate.delete(ChatRedisKeys.sessions(roomId)).then();
+        return redisTemplate.unlink(ChatRedisKeys.sessions(roomId)).then();
     }
 }

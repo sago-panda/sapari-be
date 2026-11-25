@@ -152,6 +152,38 @@ class ChatSessionRedisRepositoryTest {
     }
 
     @Test
+    @DisplayName("clearRoom — DEL 이 아니라 UNLINK 로 지운다(큰 해시의 해제를 Redis 백그라운드로 넘긴다)")
+    void clearRoom_unlinksInsteadOfDeleting() {
+        // 키가 사라졌는지만 보면 DEL 과 UNLINK 가 갈리지 않는다 — 결과가 같다. 그래서 서버가 센 명령 수를 본다.
+        // setUp 의 정리가 DEL 을 쓰므로 절대값이 아니라 이 호출 앞뒤의 증분을 잰다.
+        repository.add(roomId, "s1", userId).block(VERIFY_CEILING);
+        long unlinkBefore = commandCalls("unlink");
+        long delBefore = commandCalls("del");
+
+        repository.clearRoom(roomId).block(VERIFY_CEILING);
+
+        assertThat(commandCalls("unlink") - unlinkBefore).isEqualTo(1);
+        assertThat(commandCalls("del") - delBefore).isZero();
+        assertThat(redisTemplate.hasKey("chat:room:" + roomId + ":sessions").block(VERIFY_CEILING)).isFalse();
+    }
+
+    /** {@code INFO commandstats} 의 {@code cmdstat_<명령>:calls=N} — 한 번도 안 불린 명령은 줄이 없어 0 이다. */
+    private static long commandCalls(String command) {
+        java.util.Properties stats;
+        // 인터페이스 타입으로 받는다 — 팩토리가 돌려주는 Lettuce 구현 클래스는 공개가 아니라 그 위로는 메서드를 못 부른다.
+        try (org.springframework.data.redis.connection.ReactiveRedisConnection connection =
+                connectionFactory.getReactiveConnection()) {
+            stats = connection.serverCommands().info("commandstats").block(VERIFY_CEILING);
+        }
+        String line = stats == null ? null : stats.getProperty("cmdstat_" + command);
+        if (line == null) {
+            return 0;
+        }
+        java.util.regex.Matcher calls = java.util.regex.Pattern.compile("calls=(\\d+)").matcher(line);
+        return calls.find() ? Long.parseLong(calls.group(1)) : 0;
+    }
+
+    @Test
     @DisplayName("add — 등재와 함께 TTL이 실제로 걸린다(백스톱이 사라지는 걸 목이 아니라 Redis로 확인)")
     void add_setsTtlOnRealRedis() {
         // when
