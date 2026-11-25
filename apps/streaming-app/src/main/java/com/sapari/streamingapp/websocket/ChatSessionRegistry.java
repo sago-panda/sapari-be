@@ -426,7 +426,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 // 생존 시계도 지금부터 — 방금 핸드셰이크를 마쳤으므로 응답이 없는 상태가 아니다.
                 new AtomicLong(System.nanoTime()),
                 // 인바운드 상한도 지금부터 — 버스트 전부를 쥐고 시작한다.
-                new AtomicLong(System.nanoTime()));
+                new AtomicLong(System.nanoTime()),
+                new AtomicBoolean());    // closedByRoomEnd — closeAll 만 켠다
 
         boolean admitted = slots.tryAcquire(session.userId(), session.roomId(), sessionId);
         // ⚠️ <b>자리를 넣은 다음부터 반환까지 전부 이 try 안이다.</b> 그 구간에서 던지면 회수 경로
@@ -583,6 +584,13 @@ public class ChatSessionRegistry implements ChatSessionManager {
             slots.release(leaving.session().userId(), leaving.session().roomId(), sessionId);
         }
         rollbackLocalIndexes(sessionId, indexRoom);
+        // 방 종료로 닫힌 세션은 HDEL 을 보내지 않는다. 종료 처리가 closeAll 다음에 clearRoom 으로 키째 지우므로
+        // 세션마다의 HDEL 은 할 일이 없는데, 큰 방이면 같은 순간에 세션 수만큼 몰린다. clearRoom 이 실패하면
+        // 남은 필드는 재등록이 끊겨(ViewerCounts 는 로컬 명부에 있는 세션만 다시 쓴다) 낡음 판정으로 집계에서
+        // 빠지고, 키는 TTL 이 걷는다.
+        if (leaving != null && leaving.closedByRoomEnd().get()) {
+            return Mono.empty();
+        }
         // 로컬 정리는 끝났고, Redis 필드는 아래 HDEL이 지운다 — 그게 정상 회수 경로다.
         // 실패하면 방 종료의 clearRoom이, 그마저 놓치면 키 TTL이 받는다(3단 폴백).
         //
@@ -685,6 +693,8 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return Mono.fromRunnable(() -> {
             SessionOutbound.FanOutBudget budget = outbound.newSharedBudget();
             index.forEachInRoom(roomId, ls -> {
+                // terminate 보다 먼저 켠다 — 종료가 소켓 정리(unregister)를 깨우므로, 뒤에 켜면 그 정리가 표시를 못 볼 수 있다.
+                ls.closedByRoomEnd().set(true);
                 metrics.sessionCut(SessionCutReason.ROOM_ENDED);
                 outbound.terminate(ls, CloseStatus.NORMAL, budget.completeDeadline());
             });

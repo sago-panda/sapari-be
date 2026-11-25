@@ -155,6 +155,52 @@ class ChatSessionRegistryTest {
     }
 
     @Test
+    @DisplayName("⭐ closeAll 로 닫힌 세션은 떠날 때 Redis 명부 필드를 지우지 않는다 — 뒤따르는 clearRoom 이 키째 지운다")
+    void a_session_closed_by_room_end_skips_the_per_session_redis_removal() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.closeAll(roomId).block(VERIFY_CEILING);
+
+        // when: 핸들러가 소켓을 정리하며 부르는 것과 같은 호출
+        registry.unregister(roomId, "s1").block(VERIFY_CEILING);
+
+        // then: Redis 왕복은 없고, 로컬 정리는 평소대로 끝났다
+        then(sessionRepository).should(never()).remove(any(), any());
+        assertThat(registry.trackedSlotCount()).isZero();
+        StepVerifier.create(registry.outbound("s1")).expectComplete().verify(VERIFY_CEILING);
+    }
+
+    @Test
+    @DisplayName("⭐ 방 종료가 아닌 이유로 닫힌 세션은 명부 필드를 그대로 지운다 — 강퇴")
+    void a_session_closed_for_another_reason_still_removes_its_redis_field() {
+        // given
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.closeUser(roomId, userId).block(VERIFY_CEILING);
+
+        // when
+        registry.unregister(roomId, "s1").block(VERIFY_CEILING);
+
+        // then: 방은 계속 방송 중이라 clearRoom 이 오지 않는다 — 여기서 빠지면 시청자 수가 부푼다
+        then(sessionRepository).should(times(1)).remove(roomId, "s1");
+    }
+
+    @Test
+    @DisplayName("⭐ closeAll 은 그 방 세션만 표시한다 — 다른 방 세션은 떠날 때 명부 필드를 지운다")
+    void close_all_marks_only_the_sessions_of_that_room() {
+        // given
+        UUID otherRoomId = UUID.randomUUID();
+        registry.register("s1", session(roomId, userId)).block(VERIFY_CEILING);
+        registry.register("s2", session(otherRoomId, UUID.randomUUID())).block(VERIFY_CEILING);
+        registry.closeAll(roomId).block(VERIFY_CEILING);
+
+        // when
+        registry.unregister(otherRoomId, "s2").block(VERIFY_CEILING);
+
+        // then
+        then(sessionRepository).should(times(1)).remove(otherRoomId, "s2");
+    }
+
+    @Test
     @DisplayName("closeUser — 해당 유저 세션의 아웃바운드만 완료")
     void close_user_completes_target_outbound() {
         // given

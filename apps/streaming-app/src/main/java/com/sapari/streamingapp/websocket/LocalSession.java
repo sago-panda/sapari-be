@@ -19,10 +19,14 @@ import reactor.core.publisher.Sinks;
  *
  * <p>{@code closeStatus}는 종료 사유 — complete로 곱게 닫히든 제어 채널로 끊기든 같은 코드로 닫기 위해
  * 따로 보관한다(complete 신호엔 코드를 실을 수 없다).
+ *
+ * <p>{@code closedByRoomEnd}는 {@code roomEnded}와 다르다. {@code roomEnded}는 "이 방이 끝난 것을 안다"(전송
+ * 경로가 확인해도 켜진다)이고, {@code closedByRoomEnd}는 "방 종료 처리({@code closeAll})가 이 세션을 닫았다"다.
+ * 뒤의 것만 그 다음 단계 {@code clearRoom}이 명부 키를 지운다는 뜻이라, 떠날 때 필드 제거를 건너뛰는 근거가 된다.
  */
 record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundFrame> sink,
         Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
         AtomicLong lastRejectionReplyNanos, AtomicLong rateLimitedUntilNanos,
         AtomicLong lastRoomAliveCheckNanos, AtomicBoolean roomEnded,
-        AtomicLong lastInboundNanos, AtomicLong inboundAllowedAtNanos) {
+        AtomicLong lastInboundNanos, AtomicLong inboundAllowedAtNanos, AtomicBoolean closedByRoomEnd) {
 }
