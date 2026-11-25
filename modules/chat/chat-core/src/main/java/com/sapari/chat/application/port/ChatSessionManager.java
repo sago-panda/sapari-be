@@ -47,6 +47,12 @@ public interface ChatSessionManager {
      */
     Mono<Void> closeUser(UUID roomId, UUID userId);
 
+    /**
+     * 방 종료 — 이 Pod 의 그 방 세션을 모두 닫는다.
+     *
+     * <p>⚠️ 구현은 이렇게 닫힌 세션이 떠날 때 Redis 명부 필드를 지우지 않아도 된다. 호출자가 뒤이어
+     * {@code ChatSessionRepository.clearRoom} 으로 키째 지우는 것이 계약이다({@code LiveRoomEndedHandler}).
+     */
     Mono<Void> closeAll(UUID roomId);
 
     /**
