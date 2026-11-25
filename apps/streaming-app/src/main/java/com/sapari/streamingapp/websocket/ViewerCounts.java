@@ -198,10 +198,15 @@ final class ViewerCounts {
      * <p>이 확인이 창을 <b>없애지는 못한다</b>(확인과 쓰기 사이는 여전히 열려 있다). 다만 창을 "한
      * 회차 전체" 에서 "Redis 왕복 한 번" 으로 줄인다 — 세션이 많으면 그 차이가 수 초 대 수 밀리초다.
      * 완전히 닫으려면 세션별 직렬화가 필요하고, 유계·자가치유인 과다계수에 그 값은 과하다.
+     *
+     * <p><b>방 종료로 닫힌 세션도 뺀다.</b> 그 세션은 떠나기 전까지(종료 상한만큼) 명부에 남아 위 확인을
+     * 통과하는데, 떠날 때 HDEL 을 보내지 않는다({@code ChatSessionRegistry.unregister}). 그래서 {@code clearRoom}
+     * 뒤에 착지한 재등록을 걷을 명령이 없고 되살아난 키가 TTL(24시간)까지 남는다. 이 확인도 위와 같은 창
+     * (확인과 쓰기 사이 왕복 한 번)은 남긴다.
      */
     Mono<Void> reregister(LocalSession ls) {
         return Mono.defer(() -> {
-                    if (!index.contains(ls.sessionId())) {
+                    if (!index.contains(ls.sessionId()) || ls.closedByRoomEnd().get()) {
                         return Mono.<Void>empty();
                     }
                     return sessionRepository.heartbeat(

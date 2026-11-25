@@ -104,7 +104,7 @@ Every measured number and vector: `ProfanityFilter`'s class javadoc and the head
 | Key | Type | Notes |
 |---|---|---|
 | `chat:pubsub:{roomId}` | Pub/Sub | `PUBSUB_PREFIX` is shared by publish, pattern-subscribe and channel parsing. **Never drop the permanent drain subscriber in `RedisChatBroadcaster`** — without it the shared stream stalls once a pod's last room unsubscribes and replays the backlog to the next one. It covers only the zero-subscriber case: a room subscriber whose fan-out Mono never completes stalls the stream, drain included — unreachable today because the fan-out is synchronous (`ChatBroadcastSubscriber.subscribeRoom` javadoc) |
-| `chat:room:{id}:sessions` | HASH | `sessionId → userId:lastSeenMillis`; stale after 4 heartbeats; 24h key TTL backstop. Sessions closed by room end skip their HDEL — `LiveRoomEndedHandler`'s `clearRoom` (UNLINK) is their only removal |
+| `chat:room:{id}:sessions` | HASH | `sessionId → userId:lastSeenMillis`; stale after 4 heartbeats; 24h key TTL backstop. Sessions closed by room end skip their HDEL and are not re-registered (`ViewerCounts.reregister`) — `LiveRoomEndedHandler`'s `clearRoom` (UNLINK) is their only removal |
 | `chat:room:{id}:ended` | String | 70m; floor = session `max-lifetime` (streaming-app refuses to boot otherwise) |
 | `chat:kicked:{roomId}` | SET | **no TTL while live**; room-end attaches 24h; every `SADD` is followed by `PERSIST` |
 | `chat:banned:{userId}` | String | presence = banned, TTL = expiry |

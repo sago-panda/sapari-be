@@ -293,6 +293,36 @@ class ChatSessionHeartbeatSchedulerTest {
         }
     }
 
+    /**
+     * 방 종료로 닫힌 세션은 떠나기({@code unregister}) 전까지 로컬 명부에 남는다(종료 상한까지 최대 수 초).
+     * 그 사이 회차가 재등록하면 {@code clearRoom} 이 지운 키를 필드·TTL 째 되살리는데, 그 세션은 떠날 때 HDEL 을
+     * 보내지 않으므로 되살아난 키가 TTL(24시간)까지 남는다. 그래서 닫힌 세션은 재등록 대상에서 뺀다.
+     */
+    @Test
+    @DisplayName("⭐ 방 종료로 닫힌 세션은 떠나기 전이라도 재등록하지 않는다 — 지운 명부 키를 되살린다")
+    void aSessionClosedByRoomEndIsNotReregistered() {
+        // given: s1 은 끝난 방에서 닫혔고 아직 떠나지 않았다. s2 는 다른 방에서 열려 있다(대조군)
+        given(sessionRepository.heartbeat(any(), any(), any())).willReturn(Mono.empty());
+        UUID otherRoomId = UUID.randomUUID();
+        register("s1", userA);
+        registry.register("s2", new ChatSession(otherRoomId, userB, ChatRole.BUYER,
+                "닉", "e@example.com", false)).block(VERIFY_CEILING);
+        registry.closeAll(roomId).block(VERIFY_CEILING);
+
+        // when
+        registry.startHeartbeat();
+        try {
+            // 대조군이 두 번 재등록될 때까지 — 회차가 실제로 돌았다는 증거다. 없으면 아래 never 는 아무것도 재지 않는다.
+            await(() -> invocationCount(sessionRepository, "s2") >= 2);
+        } finally {
+            registry.stopHeartbeat();
+        }
+
+        // then
+        assertThat(invocationCount(sessionRepository, "s2")).isGreaterThanOrEqualTo(2);
+        then(sessionRepository).should(never()).heartbeat(any(), eq("s1"), any());
+    }
+
     @Test
     @DisplayName("⭐ 한 세션의 실패가 Pod 전체 재등록을 멈추지 않는다 — 멈추면 전원이 집계에서 사라진다")
     void oneFailureDoesNotStopThePod() {

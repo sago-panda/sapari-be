@@ -23,6 +23,7 @@ import reactor.core.publisher.Sinks;
  * <p>{@code closedByRoomEnd}는 {@code roomEnded}와 다르다. {@code roomEnded}는 "이 방이 끝난 것을 안다"(전송
  * 경로가 확인해도 켜진다)이고, {@code closedByRoomEnd}는 "방 종료 처리({@code closeAll})가 이 세션을 닫았다"다.
  * 뒤의 것만 그 다음 단계 {@code clearRoom}이 명부 키를 지운다는 뜻이라, 떠날 때 필드 제거를 건너뛰는 근거가 된다.
+ * 같은 이유로 재등록({@code ViewerCounts.reregister})도 이 표시가 켜진 세션은 다시 쓰지 않는다.
  */
 record LocalSession(String sessionId, ChatSession session, Sinks.Many<OutboundFrame> sink,
         Sinks.One<CloseStatus> terminate, AtomicReference<CloseStatus> closeStatus,
