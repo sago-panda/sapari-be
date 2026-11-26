@@ -65,7 +65,7 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
             // 입력이므로 조용히 고치지 않고 시끄럽게 막는다.
             throw new IllegalArgumentException("size는 1 이상이어야 한다: " + size);
         }
-        Criteria criteria = roomScope(roomId, excludedSenderIds);
+        Criteria criteria = roomScope(roomId, excludedSenderIds).and(ChatMessageDocument.DELETED_AT).is(null);
         if (beforeId != null) {
             criteria = criteria.and("_id").lt(cursor(beforeId));
         }
@@ -88,7 +88,8 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
             // 커서가 없으면 "처음부터" 가 되어 방 전체를 오래된 것부터 긁는다 — 재접속 조회의 뜻이 아니다.
             throw new IllegalArgumentException("afterId는 필수다");
         }
-        Criteria criteria = roomScope(roomId, excludedSenderIds).and("_id").gt(cursor(afterId));
+        Criteria criteria = roomScope(roomId, excludedSenderIds).and(ChatMessageDocument.DELETED_AT).is(null)
+                .and("_id").gt(cursor(afterId));
         return read(Query.query(criteria).with(OLDEST_FIRST).limit(size));
     }
 
@@ -128,7 +129,31 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
         }
         Criteria criteria = roomScope(roomId, excludedSenderIds)
                 .and("createdAt").gte(from).lte(to);
+        List<ObjectId> deleted = deletedIdsInWindow(roomId, from, to);
+        if (!deleted.isEmpty()) {
+            criteria = criteria.and("_id").nin(deleted);
+        }
         return read(Query.query(criteria).with(NEWEST_FIRST).limit(limit));
+    }
+
+    /**
+     * 창 안의 삭제된 메시지 id — 삭제 파셜 인덱스({@code ChatMongoConfig.DELETED_INDEX})로 읽는다.
+     *
+     * <p>창 조회만 다른 방식으로 거르는 이유는 정렬이다. 창 인덱스는 {@code _id} 정렬을 공급하지 못해 SORT 가
+     * 남는데, 인덱스 밖 조건({@code deletedAt: null})을 걸면 그 SORT 가 FETCH 뒤로 가서 창 전수를 읽는다.
+     * {@code _id} 는 창 인덱스의 키라 {@code $nin} 은 FETCH 전에 걸린다. 실측(일회용 mongo:7.0 위 임시 프로브, 창 60건 ·
+     * limit 5 · 삭제 1건): {@code deletedAt: null} 60 · {@code deletedAt} 을 넷째 키로 더해도 59 ·
+     * {@code _id $nin} 5.
+     */
+    private List<ObjectId> deletedIdsInWindow(UUID roomId, Instant from, Instant to) {
+        Query query = Query.query(Criteria.where("roomId").is(roomId)
+                .and(ChatMessageDocument.DELETED_AT).exists(true)
+                .and("createdAt").gte(from).lte(to));
+        query.fields().include("_id");
+        return mongoTemplate.find(query, org.bson.Document.class, mongoTemplate.getCollectionName(ChatMessageDocument.class))
+                .stream()
+                .map(found -> found.getObjectId("_id"))
+                .toList();
     }
 
     /**
@@ -138,7 +163,8 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
      */
     @Override
     public Optional<ChatMessage> findLatestNotice(UUID roomId, Collection<UUID> excludedSenderIds) {
-        Criteria criteria = roomScope(roomId, excludedSenderIds).and("type").is(NOTICE_TYPE);
+        Criteria criteria = roomScope(roomId, excludedSenderIds).and(ChatMessageDocument.DELETED_AT).is(null)
+                .and("type").is(NOTICE_TYPE);
         return read(Query.query(criteria).with(NEWEST_FIRST).limit(1)).stream().findFirst();
     }
 

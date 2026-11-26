@@ -117,6 +117,10 @@ class ChatMessageQueryPlanTest {
     @Autowired
     private ReactiveMongoTemplate mongoTemplate;
 
+    /** 삭제 표시는 운영 삭제 어댑터로 단다. */
+    @Autowired
+    private MongoTemplate blockingTemplate;
+
     private final UUID roomId = UUID.randomUUID();
     private final UUID senderId = UUID.randomUUID();
 
@@ -210,6 +214,50 @@ class ChatMessageQueryPlanTest {
     }
 
     @Test
+    @DisplayName("⭐ 창 안에 삭제된 메시지가 있어도 본 조회가 읽는 문서 수는 limit 이다")
+    void aDeletionInsideTheWindowKeepsTheReadBoundedByTheLimit() {
+        // given: 위 칸과 같은 모양에 창 안 한 건을 지운다. 삭제 조건이 인덱스 밖이면 SORT 가 FETCH 뒤로 가 창 전수를 읽는다
+        Instant windowEnd = WINDOW_FROM.plusSeconds(MESSAGES_IN_WINDOW);
+        String deletedId = null;
+        for (int i = 0; i < MESSAGES_IN_WINDOW; i++) {
+            ChatMessage saved = repository.save(message("창-" + i, "win-" + i, WINDOW_FROM.plusSeconds(i)))
+                    .block(VERIFY_CEILING);
+            if (i == MESSAGES_IN_WINDOW - 1) {
+                deletedId = saved.id();
+            }
+        }
+        for (int i = 0; i < MESSAGES_AFTER_WINDOW; i++) {
+            repository.save(message("창뒤-" + i, "after-" + i, windowEnd.plusSeconds(60L + i)))
+                    .block(VERIFY_CEILING);
+        }
+        assertThat(new ChatMessageDeletionMongoRepository(blockingTemplate)
+                .markDeleted(roomId, deletedId, UUID.randomUUID(), WINDOW_FROM)).isTrue();
+
+        // when
+        runCommand(new Document("profile", 2)).block(VERIFY_CEILING);
+        List<ChatMessage> page = historyRepository.findWindow(
+                roomId, WINDOW_FROM, windowEnd, WINDOW_LIMIT, List.of());
+        runCommand(new Document("profile", 0)).block(VERIFY_CEILING);
+
+        // then: 지운 것(창의 가장 최신)은 빠지고 그 앞의 limit 건이 온다
+        assertThat(page).hasSize(WINDOW_LIMIT)
+                .extracting(ChatMessage::id).doesNotContain(deletedId);
+
+        Document windowRead = lastWindowRead();
+        assertThat(windowRead).as("프로파일러가 본 조회를 못 잡았다 — 아래 수치의 분모가 0 이다").isNotNull();
+        assertThat(windowRead.getInteger("docsExamined"))
+                .as("삭제 조건이 창 읽기를 창 전수(%d)로 넓혔다. 고른 계획: %s",
+                        MESSAGES_IN_WINDOW, windowRead.getString("planSummary"))
+                .isEqualTo(WINDOW_LIMIT);
+
+        Document deletedRead = lastDeletedIdsRead();
+        assertThat(deletedRead).as("프로파일러가 삭제 id 조회를 못 잡았다").isNotNull();
+        assertThat(deletedRead.getInteger("docsExamined"))
+                .as("삭제 id 조회가 삭제된 문서(1건)보다 많이 읽었다. 고른 계획: %s", deletedRead.getString("planSummary"))
+                .isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("⭐ 공지가 없는 방의 공지 조회가 방의 메시지를 읽지 않는다")
     void theNoticeReadOfARoomWithoutNoticesReadsNoDocument() {
         // given: 일반 메시지만 깔아 둔다 — 페이징 인덱스로 훑으면 이 수가 docsExamined 다
@@ -272,8 +320,18 @@ class ChatMessageQueryPlanTest {
 
     /** {@code system.profile} 에서 윈도우 조회를 찾는다 — {@code createdAt} 범위를 필터에 담은 읽기가 그것뿐이다. */
     private Document lastWindowRead() {
+        // 삭제된 id 를 먼저 읽는 조회도 createdAt 을 거른다 — deletedAt 조건이 있는 쪽이 그것이라 뺀다.
         Document filter = new Document("op", "query")
-                .append("command.filter.createdAt", new Document("$exists", true));
+                .append("command.filter.createdAt", new Document("$exists", true))
+                .append("command.filter.deletedAt", new Document("$exists", false));
+        return findProfiled(filter);
+    }
+
+    /** 창 안의 삭제된 id 를 읽는 조회 — deletedAt 조건을 담은 창 읽기가 그것뿐이다. */
+    private Document lastDeletedIdsRead() {
+        Document filter = new Document("op", "query")
+                .append("command.filter.createdAt", new Document("$exists", true))
+                .append("command.filter.deletedAt", new Document("$exists", true));
         return findProfiled(filter);
     }
 

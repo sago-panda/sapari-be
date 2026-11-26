@@ -74,6 +74,10 @@ class ChatHistoryMongoRepositoryTest {
     @Autowired
     private ReactiveMongoTemplate reactiveMongoTemplate;
 
+    /** 삭제 표시는 운영 삭제 어댑터로 단다 — 키를 손으로 쓰면 그 어댑터가 다른 키를 써도 이 칸이 초록이다. */
+    @Autowired
+    private MongoTemplate blockingTemplate;
+
     /** 운영 쓰기 경로 — 읽기만 맞고 실제로는 못 읽는 상태를 막는다. */
     @Autowired
     private com.sapari.chat.domain.repository.ChatMessageRepository writeRepository;
@@ -358,6 +362,64 @@ class ChatHistoryMongoRepositoryTest {
 
         // when & then
         assertThat(repository.findLatestNotice(roomId, Set.of(kickedSender)))
+                .map(ChatMessage::displayMessage).contains("남는 공지");
+    }
+
+    private void delete(String messageId) {
+        assertThat(new ChatMessageDeletionMongoRepository(blockingTemplate)
+                .markDeleted(roomId, messageId, UUID.randomUUID(), BASE)).isTrue();
+    }
+
+    @Test
+    @DisplayName("⭐ 삭제된 메시지는 질의 안에서 빠진다 — 첫 페이지가 여전히 size 건이다")
+    void aDeletedMessageIsExcludedInsideTheBeforeQuery() {
+        // given: 최신 넷 중 하나를 지운다. 뒤에서 걸렀다면 3건이 나온다
+        for (int i = 0; i < 4; i++) {
+            save(roomId, cleanSender, "m" + i, BASE.plusSeconds(i));
+        }
+        delete(save(roomId, cleanSender, "지운 것", BASE.plusSeconds(10)));
+
+        // when & then
+        assertThat(repository.findBefore(roomId, null, 4, Set.of()))
+                .extracting(ChatMessage::displayMessage).containsExactly("m3", "m2", "m1", "m0");
+    }
+
+    @Test
+    @DisplayName("⭐ 재접속 조회도 삭제된 메시지를 질의에서 뺀다")
+    void aDeletedMessageIsExcludedFromTheAfterQuery() {
+        // given
+        String cursor = save(roomId, cleanSender, "cursor", BASE);
+        delete(save(roomId, cleanSender, "지운 것", BASE.plusSeconds(1)));
+        save(roomId, cleanSender, "a1", BASE.plusSeconds(2));
+        save(roomId, cleanSender, "a2", BASE.plusSeconds(3));
+
+        // when & then
+        assertThat(repository.findAfter(roomId, cursor, 2, Set.of()))
+                .extracting(ChatMessage::displayMessage).containsExactly("a1", "a2");
+    }
+
+    @Test
+    @DisplayName("⭐ VOD 윈도우도 삭제된 메시지를 질의에서 뺀다")
+    void aDeletedMessageIsExcludedFromTheWindow() {
+        // given
+        save(roomId, cleanSender, "w1", BASE.plusSeconds(10));
+        save(roomId, cleanSender, "w2", BASE.plusSeconds(20));
+        delete(save(roomId, cleanSender, "지운 것", BASE.plusSeconds(30)));
+
+        // when & then
+        assertThat(repository.findWindow(roomId, BASE, BASE.plusSeconds(60), 2, Set.of()))
+                .extracting(ChatMessage::displayMessage).containsExactly("w2", "w1");
+    }
+
+    @Test
+    @DisplayName("⭐ 삭제된 공지는 건너뛰고 그 앞의 공지를 준다")
+    void aDeletedNoticeIsSkipped() {
+        // given
+        saveNotice(roomId, cleanSender, "남는 공지");
+        delete(saveNotice(roomId, cleanSender, "지운 공지"));
+
+        // when & then
+        assertThat(repository.findLatestNotice(roomId, Set.of()))
                 .map(ChatMessage::displayMessage).contains("남는 공지");
     }
 

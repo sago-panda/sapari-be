@@ -348,6 +348,13 @@ public class ChatMongoConfig {
     static final String NOTICE_INDEX = "roomId_1__id_1_notice";
 
     /**
+     * 삭제된 메시지 파셜 인덱스 이름 — 이름을 직접 준다. 키가 옛 2키 윈도우 인덱스와 같아 자동 이름이
+     * {@link #SUPERSEDED_WINDOW_INDEX} 와 겹친다. 실측(일회용 mongo:7.0, 이름을 뺀 역변이): 옛 인덱스가 없는 DB 에서는
+     * 그 드롭이 이 인덱스를 지우고, 옛 인덱스가 남은 DB 에서는 생성이 error 86 {@code IndexKeySpecsConflict} 로 실패한다.
+     */
+    static final String DELETED_INDEX = "roomId_1_createdAt_1_deleted";
+
+    /**
      * 드롭 상한 — 생성과 달리 짧게 잡는다.
      *
      * <p>인덱스 빌드는 컬렉션 크기에 비례하지만 드롭은 메타데이터 연산이라 그렇지 않다. 여기서
@@ -432,9 +439,19 @@ public class ChatMongoConfig {
                 .partial(PartialIndexFilter.of(new org.bson.Document("type", "NOTICE")))),
                 deadline, ceiling, "roomId+_id NOTICE partial(최근 공지)");
 
+        // 삭제 표시가 있는 문서만 담는다. VOD 창 조회가 창 안의 삭제된 id 를 먼저 읽어 _id $nin 으로 거는 데 쓴다
+        // (ChatHistoryMongoRepository.findWindow).
+        String deleted = awaitIndex(ops.createIndex(new Index()
+                .on("roomId", Sort.Direction.ASC)
+                .on("createdAt", Sort.Direction.ASC)
+                .named(DELETED_INDEX)
+                .partial(PartialIndexFilter.of(new org.bson.Document(ChatMessageDocument.DELETED_AT,
+                        new org.bson.Document("$exists", true))))),
+                deadline, ceiling, "roomId+createdAt deleted partial(삭제된 메시지)");
+
         dropSupersededWindowIndex(mongoTemplate);
 
-        return List.of(paging, dedup, ttl, window, notice);
+        return List.of(paging, dedup, ttl, window, notice, deleted);
     }
 
     /**

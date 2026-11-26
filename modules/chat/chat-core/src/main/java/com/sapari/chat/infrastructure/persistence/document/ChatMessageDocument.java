@@ -23,6 +23,16 @@ import lombok.Getter;
 @Document("chat_messages")
 public class ChatMessageDocument extends BaseDocument {
 
+    /**
+     * 삭제 표시 키. 이 클래스의 필드가 아니다 — {@code ChatMessageDeletionMongoRepository} 가 {@code $set} 으로 쓰고
+     * 표시 여부를 원시 문서로 읽으며, 이력 조회({@code ChatHistoryMongoRepository})가 질의 조건으로 써서 표시가 있는
+     * 문서를 이력에서 뺀다. 이 클래스로 읽는 경로(중복 재조회·증거 조회)는 표시를 보지 않는다.
+     */
+    public static final String DELETED_AT = "deletedAt";
+
+    /** 삭제한 사람의 id — 위와 같이 이 클래스 밖에서만 쓰는 키다. */
+    public static final String DELETED_BY = "deletedBy";
+
     private final UUID roomId;
     private final UUID senderId;
     private final String senderNickname;
