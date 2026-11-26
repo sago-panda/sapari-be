@@ -425,6 +425,8 @@ public class LiveSecurityConfig {
                         // 메시지 삭제 — 강퇴와 같은 주체(방 주인 판매자 · 관리자). /api/v1/lives/** 밖에 둔 것은
                         // 아래 판매자 바닥이 관리자를 403 으로 만들기 때문이다(ChatMessageController). 방 주인인지는
                         // DeleteChatMessageService 가 본다. 메서드를 한정하지 않는 이유는 위 /chat/bans/** 주석과 같다.
+                        // 이 서브트리 전체에 역할 바닥이 깔린다 — 구매자용 엔드포인트를 그 아래에 두려면 메서드 한정이
+                        // 아니라 더 구체적인 매처를 이 줄 앞에 둔다.
                         .requestMatchers("/api/v1/chat/rooms/*/messages/**").hasAnyRole("SELLER", "ADMIN")
                         // 강퇴 명단 재적재도 ADMIN 전용이다. 경로가 방 아래라 아래 판매자 전용
                         // 규칙에 걸리므로 그보다 먼저 와야 한다 — 먼저 맞는 규칙이 이긴다.
