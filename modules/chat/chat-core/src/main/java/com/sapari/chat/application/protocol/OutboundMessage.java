@@ -19,7 +19,7 @@ import com.sapari.chat.domain.model.ChatRole;
  * <p>필드 유무는 {@code type}에 따라 달라진다(아래 주석). ChatSessionManager.sendToSession 파라미터이며,
  * 생산은 SendChatService 에코 폴백·SystemMessageService 렌더·ChatBroadcastSubscriber가 맡는다.
  *
- * <p><b>값이 없는 필드는 와이어에 싣지 않는다.</b> 이 record는 여덟 종류의 메시지를 한 모양으로 나르는
+ * <p><b>값이 없는 필드는 와이어에 싣지 않는다.</b> 이 record는 아홉 종류의 메시지를 한 모양으로 나르는
  * 합집합이라 어떤 종류든 절반 넘게 비어 있다 — NORMAL 수신분은 15개 중 7개만 값이 있다. 비운 채로
  * 내보내면 나머지가 전부 {@code "이름":null,}로 나가고, 그 패딩이 메시지 하나에서 실어 나르는 본문보다
  * 커진다. 방 하나가 초당 수백 건을 뿌리는 구조라 그 차이가 그대로 대역폭이 된다.
@@ -31,9 +31,9 @@ import com.sapari.chat.domain.model.ChatRole;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @Builder(access = AccessLevel.PACKAGE)
 public record OutboundMessage(
-        String type,             // NORMAL | NOTICE | SYSTEM | KICK | ROOM_INFO | RATE_LIMIT | ERROR | ACK
+        String type,             // NORMAL | NOTICE | SYSTEM | KICK | MESSAGE_DELETED | ROOM_INFO | RATE_LIMIT | ERROR | ACK
         String code,             // SYSTEM: SystemMessageCode 전수 / ERROR: ChatWebSocketHandler.errorCode 전수 (그 외 null)
-        String id,               // NORMAL/NOTICE: MongoDB ObjectId / ACK: 저장된 serverId (그 외 null)
+        String id,               // NORMAL/NOTICE: MongoDB ObjectId / ACK: 저장된 serverId / MESSAGE_DELETED: 지울 메시지 id (그 외 null)
         UUID senderId,           // NORMAL/NOTICE: 실제 발신자 / SYSTEM: 고정 시스템 UUID / 그 외 null
         String senderNickname,   // NORMAL/NOTICE; SYSTEM은 "SYSTEM" 고정
         ChatRole senderRole,     // NORMAL/NOTICE (그 외 null)
@@ -53,7 +53,7 @@ public record OutboundMessage(
 
     // ── 타입별 생성자 ────────────────────────────────────────────────────────
     //
-    // 이 record는 여덟 종류를 15개 nullable 필드 하나로 나른다. 위치 인자로 지으면 한 칸 밀린
+    // 이 record는 아홉 종류를 15개 nullable 필드 하나로 나른다. 위치 인자로 지으면 한 칸 밀린
     // 실수가 <b>컴파일도 타입 검사도 통과한다</b> — 하필 senderEmail 바로 뒤가 displayMessage라,
     // 그 실수는 발신자 이메일을 본문 자리에 넣어 방 전원에게 뿌린다.
     //
@@ -103,6 +103,14 @@ public record OutboundMessage(
         return OutboundMessage.builder()
                 .type("KICK")
                 .userId(kickedUserId)
+                .build();
+    }
+
+    /** 메시지 삭제 알림(방 전원) — 프론트가 이 id 의 메시지를 화면에서 지운다. */
+    public static OutboundMessage messageDeleted(String messageId) {
+        return OutboundMessage.builder()
+                .type("MESSAGE_DELETED")
+                .id(messageId)
                 .build();
     }
 

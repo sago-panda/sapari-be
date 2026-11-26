@@ -19,7 +19,7 @@ import com.sapari.chat.domain.model.ChatRole;
 /**
  * 와이어에 <b>빈 필드가 실리지 않는지</b> 고정한다.
  *
- * <p>{@code OutboundMessage}는 여덟 종류를 한 모양으로 나르는 합집합이라 어떤 종류든 절반 넘게 비어
+ * <p>{@code OutboundMessage}는 아홉 종류를 한 모양으로 나르는 합집합이라 어떤 종류든 절반 넘게 비어
  * 있다. 그 빈 자리를 그대로 내보내면 패딩이 본문보다 커지고, 방 하나가 초당 수백 건을 뿌리는 구조에서
  * 그 차이가 그대로 대역폭이 된다. 애너테이션 한 줄로 사라지는 비용이라 회귀도 한 줄로 일어난다 —
  * 그래서 테스트로 못 박는다.
@@ -116,5 +116,17 @@ class OutboundMessageSerializationTest {
         assertThat(json.size()).isEqualTo(4);   // type · code · senderId · senderNickname
         assertThat(json.get("code").asText()).isEqualTo("KICKED");
         assertThat(json.has("displayMessage")).isFalse();
+    }
+
+    @Test
+    @DisplayName("MESSAGE_DELETED 는 type 과 지울 id 만 싣는다")
+    void messageDeletedFrameCarriesOnlyTheId() throws Exception {
+        // when
+        var json = mapper.readTree(mapper.writeValueAsString(OutboundMessage.messageDeleted("65a1f2c3d4e5f60718293a4b")));
+
+        // then
+        assertThat(json.size()).isEqualTo(2);
+        assertThat(json.get("type").asText()).isEqualTo("MESSAGE_DELETED");
+        assertThat(json.get("id").asText()).isEqualTo("65a1f2c3d4e5f60718293a4b");
     }
 }

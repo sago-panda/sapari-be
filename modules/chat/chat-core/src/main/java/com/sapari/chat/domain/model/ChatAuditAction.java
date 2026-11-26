@@ -48,7 +48,13 @@ public enum ChatAuditAction {
     CHAT_RECONCILE_BAN_MIRROR(ChatAuditTargetType.USER, false),
 
     /** 방의 종료 마커를 지웠다(오발행으로 멈춘 채팅 복구). */
-    CHAT_CLEAR_ROOM_ENDED_MARKER(ChatAuditTargetType.LIVE_ROOM, true);
+    CHAT_CLEAR_ROOM_ENDED_MARKER(ChatAuditTargetType.LIVE_ROOM, true),
+
+    /**
+     * 방의 메시지 한 건에 삭제 표시를 달았다. 메시지 id 는 UUID 가 아니라 대상 칸에 못 싣는다 — 대상은 방이고,
+     * 어느 메시지를 누가 썼는지는 {@code detail} 에 있다.
+     */
+    CHAT_DELETE_MESSAGE(ChatAuditTargetType.LIVE_ROOM, true);
 
     private final ChatAuditTargetType targetType;
     private final boolean requiresTargetId;

@@ -8,7 +8,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.sapari.chat.domain.model.ChatMessage;
 
 /**
- * chat:pubsub 채널 봉투 — CHAT(메시지)와 KICK_EVENT(강퇴 신호)를 한 채널에서 구분한다.
+ * chat:pubsub 채널 봉투 — CHAT(메시지)·KICK_EVENT(강퇴 신호)·MESSAGE_DELETED(삭제 신호)를 한 채널에서 구분한다.
  *
  * <p>식별자는 {@code kind}를 쓴다(ChatMessage.type의 NORMAL|NOTICE와 이름 충돌 방지).
  * ChatBroadcaster(application/port)가 반환 타입으로 노출하므로 application/protocol에 둔다 —
@@ -23,9 +23,10 @@ import com.sapari.chat.domain.model.ChatMessage;
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")
 @JsonSubTypes({
         @JsonSubTypes.Type(value = ChatEnvelope.ChatMsg.class, name = "CHAT"),
-        @JsonSubTypes.Type(value = ChatEnvelope.KickEvent.class, name = "KICK_EVENT")
+        @JsonSubTypes.Type(value = ChatEnvelope.KickEvent.class, name = "KICK_EVENT"),
+        @JsonSubTypes.Type(value = ChatEnvelope.MessageDeleted.class, name = "MESSAGE_DELETED")
 })
-public sealed interface ChatEnvelope permits ChatEnvelope.ChatMsg, ChatEnvelope.KickEvent {
+public sealed interface ChatEnvelope permits ChatEnvelope.ChatMsg, ChatEnvelope.KickEvent, ChatEnvelope.MessageDeleted {
 
     record ChatMsg(ChatMessage message) implements ChatEnvelope { }   // kind=CHAT
 
@@ -48,6 +49,15 @@ public sealed interface ChatEnvelope permits ChatEnvelope.ChatMsg, ChatEnvelope.
         public KickEvent {
             if (userId == null) {
                 throw new IllegalArgumentException("KICK_EVENT 의 userId 는 필수입니다.");
+            }
+        }
+    }
+
+    /** 이 방의 메시지 한 건이 삭제됐다 — 받는 Pod 는 그 방 세션 전원에게 같은 알림을 보낸다. */
+    record MessageDeleted(String messageId) implements ChatEnvelope {
+        public MessageDeleted {
+            if (messageId == null || messageId.isBlank()) {
+                throw new IllegalArgumentException("MESSAGE_DELETED 의 messageId 는 필수입니다.");
             }
         }
     }

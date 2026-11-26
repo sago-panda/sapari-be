@@ -35,6 +35,7 @@ import reactor.core.publisher.Mono;
  *       이 fan-out 시점에 적용된다 — 봉투엔 평문 PII가 남아 있고, 그건 특권 수신자가 다른 Pod에 붙어
  *       있을 수 있어서다.
  *   <li><b>KICK_EVENT</b>: 강퇴 당사자 세션엔 SYSTEM(KICKED) 후 WS close, 그 외 세션엔 KICK(userId).
+ *   <li><b>MESSAGE_DELETED</b>: 방 세션 전원에게 MESSAGE_DELETED(id).
  * </ul>
  *
  * <p>구독 시작/해제(어느 방을 언제 subscribe 할지)는 WS 핸들러가 방 첫 입장/마지막 퇴장에 맞춰 호출한다
@@ -92,6 +93,9 @@ public class ChatBroadcastSubscriber {
         return switch (envelope) {
             case ChatEnvelope.ChatMsg chat -> timed(() -> fanOutChat(roomId, chat.message()));
             case ChatEnvelope.KickEvent kick -> fanOutKick(roomId, kick.userId());
+            // 받는 사람마다 다를 것이 없다 — 지울 메시지 id 하나를 방 전원에게 같은 프레임으로 보낸다.
+            case ChatEnvelope.MessageDeleted deleted ->
+                    sessionManager.sendToRoomLocal(roomId, OutboundMessage.messageDeleted(deleted.messageId()));
         };
     }
 

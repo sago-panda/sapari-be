@@ -192,6 +192,24 @@ class RedisChatBroadcasterTest {
     }
 
     @Test
+    @DisplayName("⭐ messageId 가 없는 MESSAGE_DELETED 는 전달하지 않는다 — 관용 매퍼가 null 로 바꾸는 자리다")
+    void subscribe_rejects_a_deletion_without_a_message_id() throws Exception {
+        // given: 위 KICK_EVENT 칸과 같은 모양 — 필드명이 어긋나면 관용 매퍼가 null 을 채운다
+        String broken = "{\"kind\":\"MESSAGE_DELETED\",\"messageIdd\":\"65a1f2c3d4e5f60718293a4b\"}";
+
+        java.util.List<ChatEnvelope> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        broadcaster.subscribe(roomId).subscribe(received::add);
+        pattern.tryEmitNext(message(channel, broken));
+        pattern.tryEmitNext(message(channel, mapper.writeValueAsString(
+                new ChatEnvelope.MessageDeleted("65a1f2c3d4e5f60718293a4c"))));
+
+        // then: 깨진 것은 안 나오고 뒤따르는 정상 봉투는 나온다
+        await(() -> received.size() == 1);
+        assertThat(received).singleElement()
+                .isEqualTo(new ChatEnvelope.MessageDeleted("65a1f2c3d4e5f60718293a4c"));
+    }
+
+    @Test
     @DisplayName("subscribe — 깨진 봉투 1건은 skip하고 스트림은 살아남는다(poison 생존)")
     void subscribe_skips_poison_message() throws Exception {
         // given
