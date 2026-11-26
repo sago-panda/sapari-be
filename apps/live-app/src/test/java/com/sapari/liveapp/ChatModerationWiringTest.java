@@ -32,6 +32,7 @@ import com.sapari.chat.application.service.ChatKickRecorder;
 import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.port.GetChatNoticeUseCase;
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.DeleteChatMessageUseCase;
 import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import java.util.concurrent.TimeUnit;
 
@@ -132,6 +133,12 @@ class ChatModerationWiringTest {
     @DisplayName("강퇴 유스케이스가 조립된다 — 빠진 협력자가 있으면 부팅이 실패한다")
     void kickUseCaseIsAssembled() {
         assertThat(context.getBean(KickUserUseCase.class)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("메시지 삭제 유스케이스가 조립된다")
+    void deleteMessageUseCaseIsAssembled() {
+        assertThat(context.getBean(DeleteChatMessageUseCase.class)).isNotNull();
     }
 
     @Test
@@ -300,6 +307,8 @@ class ChatModerationWiringTest {
         Set<String> expected = Set.of(
                 // ChatModerationBeansConfig 가 세우는 것
                 "ChatPermissionPolicy", "ChatKickRecorder", "KickUserService",
+                // 메시지 삭제 — 표시(Mongo) · 감사 · 방 채널 발행.
+                "DeleteChatMessageService", "ChatMessageDeletionMongoRepository", "ChatMessageDeletedRedisPublisher",
                 // 밴 해제 — 이 도메인의 첫 역경로. 해제는 ADMIN 전용이고 방을 읽지 않는다.
                 "ChatBanReleaseRecorder", "ReleaseBanService",
                 // 강퇴 집행 캐시의 역경로 — 정본을 읽어 Redis SET 을 다시 세운다.

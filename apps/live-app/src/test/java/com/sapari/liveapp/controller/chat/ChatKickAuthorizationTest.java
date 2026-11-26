@@ -35,6 +35,9 @@ import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.sapari.chat.port.KickUserUseCase;
+import com.sapari.chat.port.DeleteChatMessageUseCase;
+import com.sapari.chat.command.DeleteChatMessageCommand;
+import com.sapari.chat.domain.exception.ChatMessageNotFoundException;
 import com.sapari.chat.port.ClearRoomEndedMarkerUseCase;
 import com.sapari.chat.port.ReconcileKickListUseCase;
 import com.sapari.global.time.TimeProvider;
@@ -70,10 +73,14 @@ import java.time.ZoneOffset;
  * <p>여기서 재는 것은 <b>관문 통과 여부</b>뿐이다. 자기 방인지, 방이 진행 중인지, 대상이 관리자는
  * 아닌지는 {@code KickUserService} 가 보고 그쪽 테스트가 잰다. 그래서 use case 는 가짜다 —
  * 통과했는지를 "호출됐는가" 로 확인한다.
+ *
+ * <p>⚠️ <b>메시지 삭제 칸은 모양이 다르다.</b> 그 경로({@code /api/v1/chat/rooms/**})는 판매자 바닥 밖이라 보안
+ * 필터가 역할을 보지 않고, 구매자도 유스케이스까지 간다 — 역할 관문은 {@code DeleteChatMessageService} 의
+ * 첫 검사다({@code ChatMessageController} javadoc).
  */
 // management.server.port 는 LiveSecurityConfig 의 가드 빈이 요구한다 — 없으면 액추에이터가
 // 사용자 포트에 열린다며 컨텍스트가 뜨지 않는다. 여기서 재는 것과 무관하지만 채워야 뜬다.
-@WebMvcTest(controllers = ChatModerationController.class,
+@WebMvcTest(controllers = {ChatModerationController.class, ChatMessageController.class},
         properties = {"management.server.port=9999",
                 // 노출 가드가 prometheus 를 요구한다 — 빠지면 스크레이퍼가 401 을 받아
                 // 지표가 조용히 빈다(LiveSecurityConfig.requiredEndpointsMustBeExposed).
@@ -84,7 +91,7 @@ import java.time.ZoneOffset;
 // 스캔이 없고, 스캔이 없으면 @WebMvcTest 의 controllers 지정만으로는 빈이 생기지 않아 404 가 된다.
 // GlobalExceptionHandler 를 올린다 — 근거는 형제 ChatHistoryControllerTest 에 적혀 있다
 // (스캔이 없어 @RestControllerAdvice 가 안 잡히고, 없으면 ChatException 이 매핑되지 않는다).
-@Import({ChatModerationController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
+@Import({ChatModerationController.class, ChatMessageController.class, LiveSecurityConfig.class, EnterRateLimitConfig.class, ChatReadRateLimitFixtures.UnlimitedConfig.class,
         CredentialIssueRateLimitFixtures.UnlimitedConfig.class,
         ChatKickAuthorizationTest.FixedClockConfig.class, GlobalExceptionHandler.class})
 @DisplayName("강퇴 엔드포인트 — 판매자와 관리자만 관문을 지난다")
@@ -108,6 +115,9 @@ class ChatKickAuthorizationTest {
 
     @MockitoBean
     private ClearRoomEndedMarkerUseCase clearRoomEndedMarkerUseCase;
+
+    @MockitoBean
+    private DeleteChatMessageUseCase deleteChatMessageUseCase;
 
     @MockitoBean
     private JwtTokenProvider jwtTokenProvider;
@@ -287,6 +297,66 @@ class ChatKickAuthorizationTest {
                 .andExpect(status().isForbidden());
 
         then(clearRoomEndedMarkerUseCase).should(never()).clear(any());
+    }
+
+    private static final String MESSAGE_ID = "665f1f77bcf86cd799439011";
+
+    @Test
+    @DisplayName("⭐ 메시지 삭제 — 관리자는 지난다(경로가 /api/v1/lives/** 의 판매자 바닥 밖이라서다)")
+    void adminPassesTheDeleteGate() throws Exception {
+        mockMvc.perform(delete("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID)
+                        .with(as("ADMIN")))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    @DisplayName("메시지 삭제 — 판매자는 지나고, 신원은 본문이 아니라 주체에서 온다")
+    void sellerPassesTheDeleteGate() throws Exception {
+        mockMvc.perform(delete("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID)
+                        .with(as("SELLER")))
+                .andExpect(status().isNoContent());
+
+        then(deleteChatMessageUseCase).should().delete(
+                new DeleteChatMessageCommand(ROOM_ID, PRINCIPAL_ID, "SELLER", MESSAGE_ID));
+    }
+
+    @Test
+    @DisplayName("⭐ 메시지 삭제 — 일반 사용자는 보안 필터를 지나 유스케이스까지 간다(역할 관문은 서비스의 첫 검사다)")
+    void buyerReachesTheDeleteUseCase() throws Exception {
+        // 이 경로에는 역할 바닥이 없다. 거부는 DeleteChatMessageService 가 메시지를 읽기 전에 하고,
+        // 그 순서는 DeleteChatMessageServiceTest 가 잰다. 여기서는 그 전제(필터가 막지 않는다)를 박는다 —
+        // 누가 나중에 필터에 규칙을 더하면 이 칸이 바뀌고, 그때 이 javadoc 들도 같이 봐야 한다.
+        mockMvc.perform(delete("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID)
+                        .with(as("USER")))
+                .andExpect(status().isNoContent());
+
+        then(deleteChatMessageUseCase).should().delete(
+                new DeleteChatMessageCommand(ROOM_ID, PRINCIPAL_ID, "USER", MESSAGE_ID));
+    }
+
+    @Test
+    @DisplayName("메시지 삭제 — 비인증은 막힌다")
+    void anonymousIsDeniedTheDeleteGate() throws Exception {
+        mockMvc.perform(delete("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID))
+                .andExpect(status().isUnauthorized());
+
+        then(deleteChatMessageUseCase).should(never()).delete(any());
+    }
+
+    @Test
+    @DisplayName("⭐ 메시지 삭제 — 그 방에 없는 메시지는 404(CHAT-015), 권한 없음은 403(CHAT-001)")
+    void deleteFailuresLeaveAsTheirDeclaredStatus() throws Exception {
+        willThrow(new ChatMessageNotFoundException("없음")).given(deleteChatMessageUseCase).delete(any());
+        mockMvc.perform(delete("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID)
+                        .with(as("SELLER")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("CHAT-015"));
+
+        willThrow(new ChatPermissionDeniedException("권한 없음")).given(deleteChatMessageUseCase).delete(any());
+        mockMvc.perform(delete("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID)
+                        .with(as("SELLER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("CHAT-001"));
     }
 
     @Test

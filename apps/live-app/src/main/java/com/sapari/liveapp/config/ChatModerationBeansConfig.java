@@ -8,6 +8,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
+import com.sapari.chat.application.port.ChatMessageDeletedPublisher;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
 import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.application.service.ChatAuditRecorder;
@@ -51,10 +52,15 @@ import com.sapari.chat.infrastructure.persistence.repository.ChatBanStateReposit
 import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatMessageEvidenceMongoRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatMessageDeletionMongoRepository;
+import com.sapari.chat.domain.repository.ChatMessageDeletionRepository;
+import com.sapari.chat.application.service.DeleteChatMessageService;
+import com.sapari.chat.port.DeleteChatMessageUseCase;
 import com.sapari.chat.infrastructure.redis.ChatBanWriteRedisRepository;
 import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
+import com.sapari.chat.infrastructure.redis.ChatMessageDeletedRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
 import com.sapari.chat.infrastructure.redis.ChatRoomEndedWriteRedisRepository;
 import com.sapari.chat.infrastructure.redis.ChatViewerCountRedisRepository;
@@ -183,6 +189,29 @@ public class ChatModerationBeansConfig {
     @Bean
     public ChatMessageEvidenceRepository chatMessageEvidenceRepository(MongoTemplate mongoTemplate) {
         return new ChatMessageEvidenceMongoRepository(mongoTemplate);
+    }
+
+    /** 메시지 삭제 표시. 증거 조회와 같은 블로킹 {@link MongoTemplate} 을 쓴다. */
+    @Bean
+    public ChatMessageDeletionRepository chatMessageDeletionRepository(MongoTemplate mongoTemplate) {
+        return new ChatMessageDeletionMongoRepository(mongoTemplate);
+    }
+
+    /** 삭제 봉투 발행 — 강퇴 발행과 같은 방 채널이다. */
+    @Bean
+    public ChatMessageDeletedPublisher chatMessageDeletedPublisher(StringRedisTemplate redisTemplate) {
+        return new ChatMessageDeletedRedisPublisher(redisTemplate);
+    }
+
+    @Bean
+    public DeleteChatMessageUseCase deleteChatMessageUseCase(GetLiveRoomUseCase liveRoomReader,
+                                                             ChatMessageDeletionRepository deletionRepository,
+                                                             ChatMessageDeletedPublisher deletedPublisher,
+                                                             ChatAuditRecorder auditRecorder,
+                                                             ChatPermissionPolicy permissionPolicy,
+                                                             TimeProvider timeProvider) {
+        return new DeleteChatMessageService(liveRoomReader, deletionRepository, deletedPublisher,
+                auditRecorder, permissionPolicy, timeProvider);
     }
 
     /**

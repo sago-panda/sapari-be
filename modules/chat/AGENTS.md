@@ -283,6 +283,14 @@ A new UUID is the unsafe retry.
   (that would also shift continuation calls and repeat pages). Reason in the `findAfter` javadoc.
 - `findBefore` · `findAfter` read exactly `size` (the front end infers `hasNext` from a full page) — not `CursorPage`.
 - **Kicked senders are excluded inside the Mongo query** (`$nin`); filtering after makes the scroll stop silently.
+- **Deleted messages are excluded inside the query too** (SPR-226, mark = `deletedAt`/`deletedBy`, body kept).
+  The VOD window uses `_id $nin` from the `DELETED_INDEX` partial index, **not** `deletedAt: null` — the
+  window index can't supply the `_id` sort, so a non-key filter pushes SORT behind FETCH and reads the whole
+  window (`ChatHistoryMongoRepository.deletedIdsInWindow`; tripwire `ChatMessageQueryPlanTest`). Kicked
+  senders still have that shape in the window — open.
+- **Delete lives at `/api/v1/chat/rooms/{roomId}/messages/{messageId}`**, outside the `/api/v1/lives/**`
+  SELLER floor so ADMIN can reach it without a live security change; the role gate is
+  `DeleteChatMessageService`'s first check, before the message read (`ChatMessageController`).
 - The privileged view is `seesUnmaskedContent`; an unknown requester role throws; anonymous is allowed, but
   `requesterId` and `requesterRole` come as a pair.
 - Window: 5 min from `LiveRoomView.startedAt`, capped at 200; a never-started room is rejected.
