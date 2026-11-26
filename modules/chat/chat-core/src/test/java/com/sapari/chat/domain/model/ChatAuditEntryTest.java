@@ -44,7 +44,8 @@ class ChatAuditEntryTest {
             ChatAuditAction.CHAT_KICK_USER,
             ChatAuditAction.CHAT_RELEASE_BAN,
             ChatAuditAction.CHAT_RECONCILE_KICK_LIST,
-            ChatAuditAction.CHAT_CLEAR_ROOM_ENDED_MARKER);
+            ChatAuditAction.CHAT_CLEAR_ROOM_ENDED_MARKER,
+            ChatAuditAction.CHAT_DELETE_MESSAGE);
 
     private static final EnumSet<ChatAuditAction> SPEAKS_THROUGH_DETAIL = EnumSet.of(
             ChatAuditAction.CHAT_ADD_FILTER_WORD,

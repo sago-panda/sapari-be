@@ -85,6 +85,33 @@ class ChatPermissionPolicyTest {
         );
     }
 
+    @DisplayName("canDeleteMessage — 메시지 삭제 권한")
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("canDeleteMessageCases")
+    void canDeleteMessage(String tc, ChatRole actorRole, UUID actorId, UUID roomOwnerId,
+                          ChatRole senderRole, UUID senderId, boolean expected) {
+        assertThat(policy.canDeleteMessage(actorRole, actorId, roomOwnerId, senderRole, senderId))
+                .isEqualTo(expected);
+    }
+
+    static Stream<Arguments> canDeleteMessageCases() {
+        UUID owner = UUID.fromString("00000000-0000-0000-0000-0000000000a1");
+        UUID other = UUID.fromString("00000000-0000-0000-0000-0000000000b2");
+        UUID sender = UUID.fromString("00000000-0000-0000-0000-0000000000c3");
+        UUID admin = UUID.fromString("00000000-0000-0000-0000-0000000000d4");
+        return Stream.of(
+                arguments("SELLER(방주인) → BUYER 메시지 → 허용", ChatRole.SELLER, owner, owner, ChatRole.BUYER, sender, true),
+                arguments("SELLER(방주인) → 자기 공지 → 허용(강퇴와 다른 점)", ChatRole.SELLER, owner, owner, ChatRole.SELLER, owner, true),
+                arguments("SELLER(방주인) → ADMIN 메시지 → 거부", ChatRole.SELLER, owner, owner, ChatRole.ADMIN, sender, false),
+                arguments("SELLER(남의 방) → BUYER 메시지 → 거부", ChatRole.SELLER, other, owner, ChatRole.BUYER, sender, false),
+                arguments("ADMIN → SELLER 메시지 → 허용", ChatRole.ADMIN, admin, owner, ChatRole.SELLER, owner, true),
+                arguments("ADMIN → 다른 ADMIN 메시지 → 거부", ChatRole.ADMIN, admin, owner, ChatRole.ADMIN, sender, false),
+                arguments("ADMIN → 자기 메시지 → 허용", ChatRole.ADMIN, admin, owner, ChatRole.ADMIN, admin, true),
+                arguments("BUYER → 자기 메시지 → 거부(관리 권한이 먼저다)", ChatRole.BUYER, sender, owner, ChatRole.BUYER, sender, false),
+                arguments("GUEST → 거부", ChatRole.GUEST, other, owner, ChatRole.BUYER, sender, false)
+        );
+    }
+
     @Nested
     @DisplayName("노출 수준과 감사 — 갈리면 안 되는 두 판정")
     class Visibility {

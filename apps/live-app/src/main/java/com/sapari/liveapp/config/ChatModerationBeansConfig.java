@@ -8,6 +8,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.sapari.chat.application.port.ChatKickEventPublisher;
+import com.sapari.chat.application.port.ChatMessageDeletedPublisher;
 import com.sapari.chat.application.port.ProfanityDictionarySnapshotPublisher;
 import com.sapari.chat.application.port.ProfanityFilterFactory;
 import com.sapari.chat.application.service.ChatAuditRecorder;
@@ -51,10 +52,15 @@ import com.sapari.chat.infrastructure.persistence.repository.ChatBanStateReposit
 import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogJpaRepository;
 import com.sapari.chat.infrastructure.persistence.repository.ChatKickLogRepositoryImpl;
 import com.sapari.chat.infrastructure.persistence.repository.ChatMessageEvidenceMongoRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatMessageDeletionMongoRepository;
+import com.sapari.chat.domain.repository.ChatMessageDeletionRepository;
+import com.sapari.chat.application.service.DeleteChatMessageService;
+import com.sapari.chat.port.DeleteChatMessageUseCase;
 import com.sapari.chat.infrastructure.redis.ChatBanWriteRedisRepository;
 import com.sapari.chat.application.port.ChatAccountEventPublisher;
 import com.sapari.chat.infrastructure.redis.ChatAccountEventRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickEventRedisPublisher;
+import com.sapari.chat.infrastructure.redis.ChatMessageDeletedRedisPublisher;
 import com.sapari.chat.infrastructure.redis.ChatKickWriteRedisRepository;
 import com.sapari.chat.infrastructure.redis.ChatRoomEndedWriteRedisRepository;
 import com.sapari.chat.infrastructure.redis.ChatViewerCountRedisRepository;
@@ -121,8 +127,10 @@ public class ChatModerationBeansConfig {
      *
      * <p><b>값의 축이 streaming-app 과 다르다.</b> 그쪽은 전송이 {@code concatMap} 으로 직렬화돼
      * 상한이 <b>메시지마다</b> 걸리므로 축이 "(세션이 막혀도 되는 시간 ÷ 대기 프레임 수)" 였다.
-     * 이쪽은 요청 하나가 Mongo 조회 하나를 쓰고 끝나므로 축이 <b>"HTTP 워커를 몇 초까지 점유해도
-     * 되는가"</b> 다. 동시 점유 수는 공개 이력 조회 상한(기본 20/s)이 위에서 잡는다.
+     * 이쪽은 요청 하나가 Mongo 연산 몇 개를 쓰고 끝나므로 축이 <b>"HTTP 워커를 몇 초까지 점유해도
+     * 되는가"</b> 다. 단 상한은 <b>연산마다</b> 걸리고, VOD 창 조회는 연산이 둘이다(창 안의 삭제된 id 를 먼저 읽는다 —
+     * {@code ChatHistoryMongoRepository.findWindow}). 그래서 멈춘 Mongo 아래에서 그 경로의 워커 점유 상한은 이 값의
+     * 두 배다. 동시 점유 수는 공개 이력 조회 상한(기본 20/s)이 위에서 잡는다.
      *
      * <p>⚠️ 3초는 <b>재지 않은 값</b>이다 — 잴 수 없어서가 아니라 안 쟀다. 재서 나온 것은
      * "상한이 없다" 와 "축이 워커 점유다" 둘이고 그 수는 거기서 나오지 않는다. 운영에서 올리는
@@ -183,6 +191,29 @@ public class ChatModerationBeansConfig {
     @Bean
     public ChatMessageEvidenceRepository chatMessageEvidenceRepository(MongoTemplate mongoTemplate) {
         return new ChatMessageEvidenceMongoRepository(mongoTemplate);
+    }
+
+    /** 메시지 삭제 표시. 증거 조회와 같은 블로킹 {@link MongoTemplate} 을 쓴다. */
+    @Bean
+    public ChatMessageDeletionRepository chatMessageDeletionRepository(MongoTemplate mongoTemplate) {
+        return new ChatMessageDeletionMongoRepository(mongoTemplate);
+    }
+
+    /** 삭제 봉투 발행 — 강퇴 발행과 같은 방 채널이다. */
+    @Bean
+    public ChatMessageDeletedPublisher chatMessageDeletedPublisher(StringRedisTemplate redisTemplate) {
+        return new ChatMessageDeletedRedisPublisher(redisTemplate);
+    }
+
+    @Bean
+    public DeleteChatMessageUseCase deleteChatMessageUseCase(GetLiveRoomUseCase liveRoomReader,
+                                                             ChatMessageDeletionRepository deletionRepository,
+                                                             ChatMessageDeletedPublisher deletedPublisher,
+                                                             ChatAuditRecorder auditRecorder,
+                                                             ChatPermissionPolicy permissionPolicy,
+                                                             TimeProvider timeProvider) {
+        return new DeleteChatMessageService(liveRoomReader, deletionRepository, deletedPublisher,
+                auditRecorder, permissionPolicy, timeProvider);
     }
 
     /**

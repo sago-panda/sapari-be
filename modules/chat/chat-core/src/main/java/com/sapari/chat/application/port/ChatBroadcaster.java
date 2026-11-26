@@ -11,7 +11,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * Pod 간 채팅 중계 — chat:pubsub:{roomId} 발행/구독.
- * KICK_EVENT 발행은 live-app(KickUserService)이 직접 수행하므로 여기 두지 않는다.
+ * KICK_EVENT·MESSAGE_DELETED 발행은 live-app(KickUserService·DeleteChatMessageService)이 직접 수행하므로 여기 두지 않는다.
  */
 @ReactiveChat
 public interface ChatBroadcaster {

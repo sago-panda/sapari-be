@@ -270,6 +270,23 @@ class ChatBroadcastSubscriberTest {
     }
 
     @Test
+    @DisplayName("MESSAGE_DELETED 는 방 로컬 세션 전원에게 같은 MESSAGE_DELETED(id) 프레임으로 나간다")
+    void routeMessageDeleted_sendsOneFrameToTheRoom() {
+        // given
+        given(sessionManager.sendToRoomLocal(eq(roomId), any(OutboundMessage.class))).willReturn(Mono.empty());
+
+        // when
+        StepVerifier.create(subscriber.route(roomId, new ChatEnvelope.MessageDeleted("65a1f2c3d4e5f60718293a4b")))
+                .expectComplete().verify(VERIFY_CEILING);
+
+        // then
+        ArgumentCaptor<OutboundMessage> sent = ArgumentCaptor.forClass(OutboundMessage.class);
+        then(sessionManager).should(times(1)).sendToRoomLocal(eq(roomId), sent.capture());
+        assertThat(sent.getValue().type()).isEqualTo("MESSAGE_DELETED");
+        assertThat(sent.getValue().id()).isEqualTo("65a1f2c3d4e5f60718293a4b");
+    }
+
+    @Test
     @DisplayName("CHAT 팬아웃 — 보낸 사람 세션에만 clientMsgId를 싣는다(자기 버블 짝짓기 키)")
     void routeChat_carriesClientMsgIdOnlyToSender() {
         // given

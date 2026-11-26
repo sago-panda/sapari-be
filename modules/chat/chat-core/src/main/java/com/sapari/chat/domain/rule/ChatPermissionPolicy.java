@@ -61,6 +61,25 @@ public final class ChatPermissionPolicy {
         };
     }
 
+    /**
+     * 메시지 삭제 가능 여부. 누가 지울 수 있는지는 강퇴와 같다 — ADMIN, 또는 자기 방의 SELLER.
+     *
+     * <p>대상 쪽 보호도 강퇴와 같다: ADMIN 의 메시지는 남이 지우지 못한다. 강퇴와 다른 점은 <b>자기 메시지</b>다 —
+     * 자기 강퇴는 뜻이 없어 막지만, 방 주인이 자기 공지를 지우는 것은 정상 조치라 연다.
+     */
+    public boolean canDeleteMessage(ChatRole actorRole, UUID actorId, UUID roomOwnerId,
+                                    ChatRole senderRole, UUID senderId) {
+        boolean moderator = switch (actorRole) {
+            case ADMIN -> true;
+            case SELLER -> actorId.equals(roomOwnerId);
+            default -> false;
+        };
+        if (!moderator) {
+            return false;
+        }
+        return actorId.equals(senderId) || senderRole != ChatRole.ADMIN;
+    }
+
     private boolean isMember(ChatRole role) {
         return role == ChatRole.BUYER || role == ChatRole.SELLER || role == ChatRole.ADMIN;
     }

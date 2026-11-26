@@ -223,18 +223,20 @@ class ChatMessageRepositoryImplTest {
     }
 
     @Test
-    @DisplayName("인덱스 5종(페이징·dedup unique partial·TTL 2년·VOD 윈도우·공지 partial)이 생성된다")
-    void creates_five_indexes() {
+    @DisplayName("인덱스 6종(페이징·dedup unique partial·TTL 2년·VOD 윈도우·공지 partial·삭제 partial)이 생성된다")
+    void creates_six_indexes() {
         // given
         var indexes = mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo().collectList().block(VERIFY_CEILING);
 
-        // when & then: 다섯을 다 적는다 — 종전에는 셋만 적어 윈도우 인덱스의 이름이 아무 데도
+        // when & then: 여섯을 다 적는다 — 종전에는 셋만 적어 윈도우 인덱스의 이름이 아무 데도
         // 단언되지 않았고, 그래서 그 인덱스의 키가 바뀌어도 이 칸이 초록이었다.
         assertThat(indexes).extracting(i -> i.getName())
                 .contains("roomId_1__id_1", "roomId_1_senderId_1_clientMsgId_1", "createdAt_1",
-                        "roomId_1_createdAt_1__id_1", "roomId_1__id_1_notice");
+                        "roomId_1_createdAt_1__id_1", "roomId_1__id_1_notice", "roomId_1_createdAt_1_deleted");
         var notice = indexes.stream().filter(i -> i.getName().equals("roomId_1__id_1_notice")).findFirst().orElseThrow();
         assertThat(notice.getPartialFilterExpression()).contains("NOTICE");
+        var deleted = indexes.stream().filter(i -> i.getName().equals("roomId_1_createdAt_1_deleted")).findFirst().orElseThrow();
+        assertThat(deleted.getPartialFilterExpression()).contains("deletedAt");
         var ttl = indexes.stream().filter(i -> i.getName().equals("createdAt_1")).findFirst().orElseThrow();
         assertThat(ttl.getExpireAfter()).isPresent();
         assertThat(ttl.getExpireAfter().get().toDays()).isEqualTo(730);
@@ -259,7 +261,8 @@ class ChatMessageRepositoryImplTest {
                 .map(i -> i.getName()).collectList().block(VERIFY_CEILING))
                 .as("옛 2키 윈도우 인덱스가 남아 있다 — 상위집합이 섰는데도 쓰기 비용을 계속 낸다")
                 .doesNotContain("roomId_1_createdAt_1")
-                .contains("roomId_1_createdAt_1__id_1");
+                // 삭제 파셜 인덱스는 옛 2키와 키가 같다 — 이름이 달라 드롭에 휩쓸리지 않는다
+                .contains("roomId_1_createdAt_1__id_1", "roomId_1_createdAt_1_deleted");
     }
 
     private ChatMessage message(String text, String clientMsgId) {

@@ -345,7 +345,7 @@ class ArchitectureTest {
         rule.check(SAPARI);
     }
 
-    // OutboundMessage는 여덟 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 위치 인자로 지으면
+    // OutboundMessage는 아홉 종류를 15개 nullable 필드 하나로 나르는 합집합이다. 위치 인자로 지으면
     // 한 칸 밀린 실수가 컴파일도 타입 검사도 통과한다 — 하필 senderEmail 바로 뒤가 displayMessage라,
     // 그 실수는 발신자 이메일을 본문 자리에 넣어 방 전원에게 뿌린다.
     //

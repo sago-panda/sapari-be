@@ -96,7 +96,11 @@ public enum ChatErrorCode implements ErrorCode {
     // 이 항목과 위 SEND_UNAVAILABLE 의 상태값·문구는 WS 로 나가지 않는다 — 전송은 WS 뿐이고, WS 의 ERROR
     // 코드는 핸들러가 예외 타입으로 만든다(UNAVAILABLE · CLIENT_MSG_ID_REUSED). 값은 다른 항목과 모양을
     // 맞춘 것이다.
-    CLIENT_MSG_ID_REUSED(409, "CHAT-014", "같은 메시지 키로 다른 내용을 보낼 수 없습니다.");
+    CLIENT_MSG_ID_REUSED(409, "CHAT-014", "같은 메시지 키로 다른 내용을 보낼 수 없습니다."),
+
+    // 그 방에 그 메시지가 없다. 다른 방의 메시지와 없는 메시지를 가르지 않는다 — 이 응답을 받는 사람은
+    // 이미 그 방을 관리할 수 있는 사람이지만, 가르면 다른 방의 메시지 id 가 있는지를 알려 주게 된다.
+    MESSAGE_NOT_FOUND(404, "CHAT-015", "메시지를 찾을 수 없습니다.");
 
     private final int status;
     private final String code;

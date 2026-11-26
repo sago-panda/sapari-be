@@ -139,4 +139,18 @@ class ChatEnvelopeSerializationTest {
                 null,
                 Instant.parse("2026-06-11T00:00:00Z"));
     }
+
+    @Test
+    @DisplayName("MessageDeleted — kind=MESSAGE_DELETED + messageId 두 필드로 나가고 그대로 돌아온다")
+    void messageDeleted_roundTrips() throws Exception {
+        // when
+        String json = objectMapper.writeValueAsString(new ChatEnvelope.MessageDeleted("65a1f2c3d4e5f60718293a4b"));
+        JsonNode tree = objectMapper.readTree(json);
+
+        // then
+        assertThat(tree.get("kind").asText()).isEqualTo("MESSAGE_DELETED");
+        assertThat(tree.size()).isEqualTo(2);
+        assertThat(objectMapper.readValue(json, ChatEnvelope.class))
+                .isEqualTo(new ChatEnvelope.MessageDeleted("65a1f2c3d4e5f60718293a4b"));
+    }
 }
