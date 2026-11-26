@@ -422,6 +422,10 @@ public class LiveSecurityConfig {
                         // true, 끝 슬래시 유무 무관). 처음에 "** 는 하위 세그먼트에만 맞는다" 로
                         // 적고 같은 경로를 두 줄로 두려 했는데 그 전제가 거짓이었다.
                         .requestMatchers("/api/v1/chat/filter-words/**").hasRole("ADMIN")
+                        // 메시지 삭제 — 강퇴와 같은 주체(방 주인 판매자 · 관리자). /api/v1/lives/** 밖에 둔 것은
+                        // 아래 판매자 바닥이 관리자를 403 으로 만들기 때문이다(ChatMessageController). 방 주인인지는
+                        // DeleteChatMessageService 가 본다. 메서드를 한정하지 않는 이유는 위 /chat/bans/** 주석과 같다.
+                        .requestMatchers("/api/v1/chat/rooms/*/messages/**").hasAnyRole("SELLER", "ADMIN")
                         // 강퇴 명단 재적재도 ADMIN 전용이다. 경로가 방 아래라 아래 판매자 전용
                         // 규칙에 걸리므로 그보다 먼저 와야 한다 — 먼저 맞는 규칙이 이긴다.
                         // 순서가 뒤집히면 관리자가 403 을 받고, 집행이 꺼진 방을 고칠 사람이 없어진다.
