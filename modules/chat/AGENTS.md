@@ -122,7 +122,8 @@ live told first.** That `EXISTS` is `CROSSSLOT` on a Redis cluster.
 
 0. **The room token must carry `iat`** (`RoomTokenVerifier`; live sets it in `RoomTokenProvider.issue`). A
    missing `iat` is rejected loudly, by design.
-1. **`ChatEnvelope`** is serialized as the real type by both publishers. Receivers disable
+1. **`ChatEnvelope`** is serialized as the real type by all three publishers (`RedisChatBroadcaster` ·
+   `ChatKickEventRedisPublisher` · `ChatMessageDeletedRedisPublisher`). Receivers disable
    `FAIL_ON_UNKNOWN_PROPERTIES`, so add fields **nullable and unvalidated**. An unknown `kind` still throws:
    **ship a new envelope kind to consumers first.** Envelope records validate their own required fields.
 2. **`ChatMessageTypeMixin` registration is mandatory** on any mapper touching a CHAT envelope.

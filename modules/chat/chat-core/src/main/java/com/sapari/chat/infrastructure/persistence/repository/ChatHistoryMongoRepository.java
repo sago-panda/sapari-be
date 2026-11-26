@@ -142,8 +142,14 @@ public class ChatHistoryMongoRepository implements ChatHistoryRepository {
      * <p>창 조회만 다른 방식으로 거르는 이유는 정렬이다. 창 인덱스는 {@code _id} 정렬을 공급하지 못해 SORT 가
      * 남는데, 인덱스 밖 조건({@code deletedAt: null})을 걸면 그 SORT 가 FETCH 뒤로 가서 창 전수를 읽는다.
      * {@code _id} 는 창 인덱스의 키라 {@code $nin} 은 FETCH 전에 걸린다. 실측(일회용 mongo:7.0 위 임시 프로브, 창 60건 ·
-     * limit 5 · 삭제 1건): {@code deletedAt: null} 60 · {@code deletedAt} 을 넷째 키로 더해도 59 ·
+     * limit 5 · 삭제 1건 · <b>강퇴자 없음</b>): {@code deletedAt: null} 60 · {@code deletedAt} 을 넷째 키로 더해도 59 ·
      * {@code _id $nin} 5.
+     *
+     * <p>⚠️ <b>limit 에 묶이는 것은 강퇴자 제외가 없을 때뿐이다.</b> 강퇴자 {@code senderId $nin} 도 인덱스 밖 조건이라
+     * 같은 이유로 SORT 가 FETCH 뒤로 간다(리뷰어 실측, 창 60건 · 삭제 10 · 강퇴자 1명: {@code _id $nin} 만 5 →
+     * 강퇴자 조건을 더하면 51). 그 경우에도 {@code $nin} 이 {@code deletedAt: null}(61)보다 덜 읽는다.
+     *
+     * <p>이 선조회는 삭제가 0건이어도 매번 돈다 — 창 요청 하나가 Mongo 연산 둘이다.
      */
     private List<ObjectId> deletedIdsInWindow(UUID roomId, Instant from, Instant to) {
         Query query = Query.query(Criteria.where("roomId").is(roomId)
