@@ -311,6 +311,45 @@ class ChatMessageQueryPlanTest {
                 .isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("⭐ 채팅 수가 방의 메시지를 읽지 않는다 — 문서는 삭제된 일반 메시지만 읽는다")
+    void theMessageCountReadsOnlyTheDeletedDocuments() {
+        // given: 일반 메시지 · 공지 하나 · 삭제된 일반 메시지 하나. 질의 하나로 세면 방 전체가 docsExamined 다
+        for (int i = 0; i < OTHER_MESSAGES_IN_ROOM; i++) {
+            repository.save(message("기타-" + i, "other-" + i)).block(VERIFY_CEILING);
+        }
+        repository.save(notice("공지", "notice-1")).block(VERIFY_CEILING);
+        String deleted = repository.save(message("지울 것", "to-delete")).block(VERIFY_CEILING).id();
+        new ChatMessageDeletionMongoRepository(blockingTemplate)
+                .markDeleted(roomId, deleted, UUID.randomUUID(), Instant.now());
+
+        // when
+        runCommand(new Document("profile", 2)).block(VERIFY_CEILING);
+        long count = new ChatMessageCountMongoRepository(blockingTemplate).countMessages(roomId);
+        runCommand(new Document("profile", 0)).block(VERIFY_CEILING);
+
+        // then: 분모 먼저 — 개수 질의 셋이 다 잡혀야 아래 합이 뜻을 갖는다
+        List<Document> counts = profiledCounts();
+        assertThat(counts).as("프로파일러가 잡은 개수 질의 수").hasSize(3);
+        assertThat(count).isEqualTo(OTHER_MESSAGES_IN_ROOM);
+
+        int docsExamined = counts.stream().mapToInt(d -> d.getInteger("docsExamined")).sum();
+        assertThat(docsExamined)
+                .as("삭제된 일반 메시지(1건)보다 많이 읽었다 — 방의 메시지 수(%d)에 비례한다. 계획: %s",
+                        OTHER_MESSAGES_IN_ROOM + 2, counts.stream().map(d -> d.getString("planSummary")).toList())
+                .isEqualTo(1);
+    }
+
+    /** 채팅 수 어댑터가 보낸 개수 질의 — {@code MongoTemplate.count} 는 {@code $match} 로 시작하는 집계로 나간다(실측). */
+    private List<Document> profiledCounts() {
+        Document filter = new Document("op", "command")
+                .append("command.aggregate", new Document("$exists", true));
+        return mongoTemplate
+                .execute("system.profile", collection -> reactor.core.publisher.Flux.from(collection.find(filter)))
+                .collectList()
+                .block(VERIFY_CEILING);
+    }
+
     /** {@code system.profile} 에서 공지 조회를 찾는다 — {@code type} 을 필터에 담은 읽기가 그것뿐이다. */
     private Document lastNoticeRead() {
         Document filter = new Document("op", "query")

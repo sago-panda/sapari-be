@@ -32,6 +32,10 @@ import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
 import com.sapari.chat.application.service.ClearRoomEndedMarkerService;
 import com.sapari.chat.application.service.GetChatViewerCountsService;
+import com.sapari.chat.application.service.GetChatMessageCountService;
+import com.sapari.chat.domain.repository.ChatMessageCountRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatMessageCountMongoRepository;
+import com.sapari.chat.port.GetChatMessageCountUseCase;
 import com.sapari.chat.application.service.ReconcileBanMirrorService;
 import com.sapari.chat.application.service.ReconcileKickListService;
 import com.sapari.chat.application.service.ReleaseBanService;
@@ -485,5 +489,16 @@ public class ChatModerationBeansConfig {
     @Bean
     public GetChatViewerCountsUseCase getChatViewerCountsUseCase(ChatViewerCountRepository viewerCountRepository) {
         return new GetChatViewerCountsService(viewerCountRepository);
+    }
+
+    /** 방 하나의 채팅 수 — live 통계가 chat-api 포트로 읽는다. */
+    @Bean
+    public ChatMessageCountRepository chatMessageCountRepository(MongoTemplate mongoTemplate) {
+        return new ChatMessageCountMongoRepository(mongoTemplate);
+    }
+
+    @Bean
+    public GetChatMessageCountUseCase getChatMessageCountUseCase(ChatMessageCountRepository countRepository) {
+        return new GetChatMessageCountService(countRepository);
     }
 }
