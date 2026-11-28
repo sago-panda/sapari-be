@@ -9,6 +9,8 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -74,9 +76,8 @@ import java.time.ZoneOffset;
  * 아닌지는 {@code KickUserService} 가 보고 그쪽 테스트가 잰다. 그래서 use case 는 가짜다 —
  * 통과했는지를 "호출됐는가" 로 확인한다.
  *
- * <p>⚠️ <b>메시지 삭제 칸은 모양이 다르다.</b> 그 경로({@code /api/v1/chat/rooms/**})는 판매자 바닥 밖이라 보안
- * 필터가 역할을 보지 않고, 구매자도 유스케이스까지 간다 — 역할 관문은 {@code DeleteChatMessageService} 의
- * 첫 검사다({@code ChatMessageController} javadoc).
+ * <p>메시지 삭제 경로({@code /api/v1/chat/rooms/**})는 판매자 바닥 밖이라 관문이 그 경로 전용 규칙(판매자 · 관리자)이다
+ * — 관리자도 통과하는 것이 강퇴 칸과 다르다({@code ChatMessageController} javadoc).
  */
 // management.server.port 는 LiveSecurityConfig 의 가드 빈이 요구한다 — 없으면 액추에이터가
 // 사용자 포트에 열린다며 컨텍스트가 뜨지 않는다. 여기서 재는 것과 무관하지만 채워야 뜬다.
@@ -321,17 +322,23 @@ class ChatKickAuthorizationTest {
     }
 
     @Test
-    @DisplayName("⭐ 메시지 삭제 — 일반 사용자는 보안 필터를 지나 유스케이스까지 간다(역할 관문은 서비스의 첫 검사다)")
-    void buyerReachesTheDeleteUseCase() throws Exception {
-        // 이 경로에는 역할 바닥이 없다. 거부는 DeleteChatMessageService 가 메시지를 읽기 전에 하고,
-        // 그 순서는 DeleteChatMessageServiceTest 가 잰다. 여기서는 그 전제(필터가 막지 않는다)를 박는다 —
-        // 누가 나중에 필터에 규칙을 더하면 이 칸이 바뀌고, 그때 이 javadoc 들도 같이 봐야 한다.
+    @DisplayName("⭐ 메시지 삭제 — 일반 사용자는 보안 필터에서 403, 유스케이스는 호출되지 않는다")
+    void buyerIsDeniedTheDeleteGate() throws Exception {
         mockMvc.perform(delete("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID)
                         .with(as("USER")))
-                .andExpect(status().isNoContent());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("COMMON-003"));
 
-        then(deleteChatMessageUseCase).should().delete(
-                new DeleteChatMessageCommand(ROOM_ID, PRINCIPAL_ID, "USER", MESSAGE_ID));
+        then(deleteChatMessageUseCase).should(never()).delete(any());
+    }
+
+    @Test
+    @DisplayName("메시지 삭제 — 일반 사용자의 OPTIONS 도 403 이고 Allow 헤더로 수락 메서드를 흘리지 않는다")
+    void buyerOptionsDoesNotLeakTheAllowedMethods() throws Exception {
+        mockMvc.perform(options("/api/v1/chat/rooms/{roomId}/messages/{messageId}", ROOM_ID, MESSAGE_ID)
+                        .with(as("USER")))
+                .andExpect(status().isForbidden())
+                .andExpect(header().doesNotExist("Allow"));
     }
 
     @Test

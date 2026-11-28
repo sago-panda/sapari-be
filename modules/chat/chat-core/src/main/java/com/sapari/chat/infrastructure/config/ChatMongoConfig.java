@@ -366,7 +366,7 @@ public class ChatMongoConfig {
     private static final int INDEX_NOT_FOUND_ERROR_CODE = 27;
 
     /**
-     * 인덱스 5종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
+     * 인덱스 6종 생성(멱등). clientMsgId unique partial($type:"string")은 애너테이션으로 표현 불가해
      * 인덱스 정의 전체를 여기로 일원화한다. $type을 쓰는 이유: $exists:true는 null 저장 필드도 매칭해
      * clientMsgId=null 2건째에 DuplicateKey가 터진다. 생성된 인덱스 이름 목록 반환(테스트 검증용).
      */

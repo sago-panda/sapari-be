@@ -33,6 +33,7 @@ import com.sapari.chat.port.GetChatHistoryUseCase;
 import com.sapari.chat.port.GetChatNoticeUseCase;
 import com.sapari.chat.port.KickUserUseCase;
 import com.sapari.chat.port.DeleteChatMessageUseCase;
+import com.sapari.chat.port.GetChatMessageCountUseCase;
 import com.sapari.common.securityjwt.jwt.JwtTestKeys;
 import java.util.concurrent.TimeUnit;
 
@@ -139,6 +140,12 @@ class ChatModerationWiringTest {
     @DisplayName("메시지 삭제 유스케이스가 조립된다")
     void deleteMessageUseCaseIsAssembled() {
         assertThat(context.getBean(DeleteChatMessageUseCase.class)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("채팅 수 유스케이스가 조립된다")
+    void messageCountUseCaseIsAssembled() {
+        assertThat(context.getBean(GetChatMessageCountUseCase.class)).isNotNull();
     }
 
     @Test
@@ -321,6 +328,8 @@ class ChatModerationWiringTest {
                 "ChatRoomEndedWriteRedisRepository", "ClearRoomEndedMarkerService",
                 // 방송 중 목록의 시청자 수 — live 재조정이 chat-api 포트로 읽는다(SPR-157).
                 "ChatViewerCountRedisRepository", "GetChatViewerCountsService",
+                // 방 하나의 채팅 수 — live 통계가 chat-api 포트로 읽는다.
+                "ChatMessageCountMongoRepository", "GetChatMessageCountService",
                 "ChatKickLogRepositoryImpl", "ChatBanStateRepositoryImpl",
                 "ChatMessageEvidenceMongoRepository",
                 "ChatKickWriteRedisRepository", "ChatBanWriteRedisRepository",

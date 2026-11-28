@@ -290,8 +290,11 @@ A new UUID is the unsafe retry.
   window (`ChatHistoryMongoRepository.deletedIdsInWindow`; tripwire `ChatMessageQueryPlanTest`). Kicked
   senders still have that shape in the window — open.
 - **Delete lives at `/api/v1/chat/rooms/{roomId}/messages/{messageId}`**, outside the `/api/v1/lives/**`
-  SELLER floor so ADMIN can reach it without a live security change; the role gate is
-  `DeleteChatMessageService`'s first check, before the message read (`ChatMessageController`).
+  SELLER floor so ADMIN can reach it; the role gate (SELLER · ADMIN) is that path's own rule in
+  `LiveSecurityConfig`, and room ownership is `DeleteChatMessageService`'s check before the message read.
+- **Message count (`GetChatMessageCountUseCase`) counts kicked senders**, unlike history — it is a stats number of
+  what was shown. NOTICE and deleted are excluded by three counts — total − NOTICE − deleted NORMAL — that read
+  documents only for the deleted ones (`ChatMessageCountMongoRepository`; tripwire `ChatMessageQueryPlanTest`).
 - The privileged view is `seesUnmaskedContent`; an unknown requester role throws; anonymous is allowed, but
   `requesterId` and `requesterRole` come as a pair.
 - Window: 5 min from `LiveRoomView.startedAt`, capped at 200; a never-started room is rejected.

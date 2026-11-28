@@ -21,9 +21,9 @@ import lombok.RequiredArgsConstructor;
  * {@code MESSAGE_DELETED} 가 간다.
  *
  * <p><b>경로가 {@code /api/v1/lives/**} 밖인 이유.</b> 그 아래는 {@code LiveSecurityConfig} 의 판매자 전용 바닥에
- * 걸려 관리자가 403 을 받는다(실측). 강퇴처럼 그 앞에 규칙을 두려면 live 의 보안 설정을 고쳐야 해서, 역할 바닥이 없는
- * {@code /api/v1/chat/**}(인증만 본다)에 둔다. 그래서 이 경로의 역할 관문은 보안 필터가 아니라
- * {@code DeleteChatMessageService} 의 첫 검사다 — 방 주인도 관리자도 아니면 메시지를 읽기 전에 403 이다.
+ * 걸려 관리자가 403 을 받는다(실측). 그래서 {@code /api/v1/chat/**} 에 두고, 역할 관문(판매자 · 관리자)은
+ * {@code LiveSecurityConfig} 의 이 경로 규칙이 맡는다. 그 방의 주인인지는 {@code DeleteChatMessageService} 가 메시지를
+ * 읽기 전에 본다.
  *
  * <p>성공은 204 이고 이미 지운 메시지도 204 다. 그 방에 없는 메시지(다른 방의 id 포함)는 404, 권한 없음은 403.
  * 끝난 방도 지울 수 있다 — 다시보기 채팅이 같은 이력을 읽는다.

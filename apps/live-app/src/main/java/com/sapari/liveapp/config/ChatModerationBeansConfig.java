@@ -32,6 +32,10 @@ import com.sapari.chat.application.service.GetChatHistoryService;
 import com.sapari.chat.application.service.KickUserService;
 import com.sapari.chat.application.service.ClearRoomEndedMarkerService;
 import com.sapari.chat.application.service.GetChatViewerCountsService;
+import com.sapari.chat.application.service.GetChatMessageCountService;
+import com.sapari.chat.domain.repository.ChatMessageCountRepository;
+import com.sapari.chat.infrastructure.persistence.repository.ChatMessageCountMongoRepository;
+import com.sapari.chat.port.GetChatMessageCountUseCase;
 import com.sapari.chat.application.service.ReconcileBanMirrorService;
 import com.sapari.chat.application.service.ReconcileKickListService;
 import com.sapari.chat.application.service.ReleaseBanService;
@@ -128,9 +132,10 @@ public class ChatModerationBeansConfig {
      * <p><b>값의 축이 streaming-app 과 다르다.</b> 그쪽은 전송이 {@code concatMap} 으로 직렬화돼
      * 상한이 <b>메시지마다</b> 걸리므로 축이 "(세션이 막혀도 되는 시간 ÷ 대기 프레임 수)" 였다.
      * 이쪽은 요청 하나가 Mongo 연산 몇 개를 쓰고 끝나므로 축이 <b>"HTTP 워커를 몇 초까지 점유해도
-     * 되는가"</b> 다. 단 상한은 <b>연산마다</b> 걸리고, VOD 창 조회는 연산이 둘이다(창 안의 삭제된 id 를 먼저 읽는다 —
-     * {@code ChatHistoryMongoRepository.findWindow}). 그래서 멈춘 Mongo 아래에서 그 경로의 워커 점유 상한은 이 값의
-     * 두 배다. 동시 점유 수는 공개 이력 조회 상한(기본 20/s)이 위에서 잡는다.
+     * 되는가"</b> 다. 단 상한은 <b>연산마다</b> 걸린다. VOD 창 조회는 연산이 둘(창 안의 삭제된 id 를 먼저 읽는다 —
+     * {@code ChatHistoryMongoRepository.findWindow}), 채팅 수는 셋이다({@code ChatMessageCountMongoRepository}). 그래서
+     * 멈춘 Mongo 아래에서 호출 하나의 워커 점유 상한은 이 값의 최대 세 배다. 동시 점유 수는 공개 이력 조회는 그
+     * 상한(기본 20/s)이 위에서 잡고, 채팅 수는 내부 호출(live 통계)이라 이 앱의 상한이 없다 — 부르는 쪽 몫이다.
      *
      * <p>⚠️ 3초는 <b>재지 않은 값</b>이다 — 잴 수 없어서가 아니라 안 쟀다. 재서 나온 것은
      * "상한이 없다" 와 "축이 워커 점유다" 둘이고 그 수는 거기서 나오지 않는다. 운영에서 올리는
@@ -485,5 +490,16 @@ public class ChatModerationBeansConfig {
     @Bean
     public GetChatViewerCountsUseCase getChatViewerCountsUseCase(ChatViewerCountRepository viewerCountRepository) {
         return new GetChatViewerCountsService(viewerCountRepository);
+    }
+
+    /** 방 하나의 채팅 수 — live 통계가 chat-api 포트로 읽는다. */
+    @Bean
+    public ChatMessageCountRepository chatMessageCountRepository(MongoTemplate mongoTemplate) {
+        return new ChatMessageCountMongoRepository(mongoTemplate);
+    }
+
+    @Bean
+    public GetChatMessageCountUseCase getChatMessageCountUseCase(ChatMessageCountRepository countRepository) {
+        return new GetChatMessageCountService(countRepository);
     }
 }
