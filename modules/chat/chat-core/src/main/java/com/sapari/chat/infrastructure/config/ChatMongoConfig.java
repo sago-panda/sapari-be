@@ -170,13 +170,13 @@ public class ChatMongoConfig {
     @Bean
     public MongoClientSettingsBuilderCustomizer chatOperationTimeoutCustomizer(
             @Value("${chat.mongo.operation-timeout:2s}") Duration operationTimeout) {
-        // 2s 는 이 티켓이 <b>재지 않은</b> 값이다 — 잴 수 없는 값이 아니라 안 쟀다. 재서 나온 것은
+        // 2s 는 이 티켓이 재지 않은 값이다 — 잴 수 없는 값이 아니라 안 쟀다. 재서 나온 것은
         // "상한이 있어야 한다" 와 "클라이언트 쪽이어야 한다" 둘이고 그 수는 거기서 나오지 않는다.
         //
         // 값을 정하는 식은 "정상의 몇 배" 가 아니다. 전송이 concatMap 으로 직렬화돼 있어서, 멈춘
         // Mongo 아래에서는 이 상한이 **메시지마다** 걸린다 — 그 세션이 막히는 시간은 상한이 아니라
-        // (대기 프레임 수 × 상한)이다. 그러니 축은 <b>"그 세션이 몇 초까지 막혀도 되는가 ÷ 대기
-        // 프레임 수"</b> 이고, 정상 save 의 지연 분포는 하한만 준다(그보다 작으면 멀쩡한 쓰기를 자른다).
+        // (대기 프레임 수 × 상한)이다. 그러니 축은 "그 세션이 몇 초까지 막혀도 되는가 ÷ 대기
+        // 프레임 수" 이고, 정상 save 의 지연 분포는 하한만 준다(그보다 작으면 멀쩡한 쓰기를 자른다).
         //
         // ⚠️ 운영에서 chat.persist.timeout 빈도만 보면 **위쪽 경계**는 보이지만 "세션이 얼마나
         // 막혔나" 는 안 보인다 — 그 축을 재려면 대기 프레임 수를 같이 들고 있어야 한다.
@@ -329,16 +329,17 @@ public class ChatMongoConfig {
     private static final Duration INDEX_CREATE_CEILING = Duration.ofMinutes(10);
 
     /**
-     * 옛 윈도우 인덱스 이름 — Mongo 의 파생 규칙이 정한 값이다(키 이름과 방향을 이어 붙인다).
+     * 옛 윈도우 인덱스 이름들(2키 · 3키) — Mongo 의 파생 규칙이 정한 값이다(키 이름과 방향을 이어 붙인다).
      *
      * <p>이름을 적어 두는 것이 요점이다. 키로 찾아 지우려면 인덱스 목록을 왕복해 비교해야 하고,
-     * 그 비교가 "2키인데 다른 인덱스" 까지 집어낼 여지를 만든다.
+     * 그 비교가 "같은 접두인데 다른 인덱스" 까지 집어낼 여지를 만든다.
      *
-     * <p>⚠️ <b>이 이름은 현 윈도우 인덱스의 파생 이름과 달라야 한다.</b> 윈도우 인덱스를 2키로
-     * 되돌리면 그 파생 이름이 이 값과 같아져 <b>드롭이 방금 만든 인덱스를 지운다</b>. 코드에 그걸
-     * 막는 가드는 없고 테스트가 막는다({@code ChatMessageRepositoryImplTest} 의 인덱스 칸 둘).
+     * <p>⚠️ <b>이 이름들은 현 윈도우 인덱스의 파생 이름과 달라야 한다.</b> 윈도우 인덱스를 옛 키로
+     * 되돌리면 그 파생 이름이 여기 있는 값과 같아져 <b>드롭이 방금 만든 인덱스를 지운다</b>. 코드에 그걸
+     * 막는 가드는 없고 테스트가 막는다({@code ChatMessageRepositoryImplTest} 의 인덱스 칸).
      */
-    private static final String SUPERSEDED_WINDOW_INDEX = "roomId_1_createdAt_1";
+    private static final List<String> SUPERSEDED_WINDOW_INDEXES =
+            List.of("roomId_1_createdAt_1", "roomId_1_createdAt_1__id_1");
 
     /**
      * 공지 파셜 인덱스 이름 — 이름을 직접 준다. 키가 페이징 인덱스와 같아(roomId, _id) 자동 이름이
@@ -349,7 +350,7 @@ public class ChatMongoConfig {
 
     /**
      * 삭제된 메시지 파셜 인덱스 이름 — 이름을 직접 준다. 키가 옛 2키 윈도우 인덱스와 같아 자동 이름이
-     * {@link #SUPERSEDED_WINDOW_INDEX} 와 겹친다. 실측(일회용 mongo:7.0, 이름을 뺀 역변이): 옛 인덱스가 없는 DB 에서는
+     * {@link #SUPERSEDED_WINDOW_INDEXES} 의 첫째와 겹친다. 실측(일회용 mongo:7.0, 이름을 뺀 역변이): 옛 인덱스가 없는 DB 에서는
      * 그 드롭이 이 인덱스를 지우고, 옛 인덱스가 남은 DB 에서는 생성이 error 86 {@code IndexKeySpecsConflict} 로 실패한다.
      */
     static final String DELETED_INDEX = "roomId_1_createdAt_1_deleted";
@@ -404,27 +405,32 @@ public class ChatMongoConfig {
 
         // VOD 윈도우(roomId 등치 + createdAt 범위)의 범위 필드를 인덱스 경계로 묶는다.
         //
-        // 없으면 플래너가 위 TTL 의 createdAt 단일 인덱스를 고르는데, 그건 그 시간대의 <b>모든 방</b>을
+        // 없으면 플래너가 위 TTL 의 createdAt 단일 인덱스를 고르는데, 그건 그 시간대의 모든 방을
         // 훑는다 — 비용이 방 길이가 아니라 동시 방송 수에 비례한다. 실측(explain, 12방·12만건, 재생
         // 2분 지점): 반환 112건에 docsExamined 1,344(=방 수 배). 이 인덱스가 붙으면 112/112 가 된다.
         //
         // 방향은 ASC 다. 정렬 키가 _id 라 두 번째 필드의 방향이 경계에 영향을 주지 않는다(실측: ASC·DESC
         // 모두 112/112). 나머지 인덱스가 전부 ASC 라 그쪽에 맞춘다.
         //
-        // ⚠️ 세 번째 키 _id 가 사는 이유는 <b>정렬이 아니라 docsExamined</b> 다. 위 "112/112" 는
+        // ⚠️ 세 번째 키 _id 가 사는 이유는 정렬이 아니라 docsExamined 다. 위 "112/112" 는
         // 112 ≤ limit 이었던 창의 참이고, 창이 limit 보다 크면 그 등식이 깨진다 — createdAt 이 범위라
         // 이 인덱스는 _id 정렬을 공급하지 못하고 blocking SORT 가 남는데, _id 가 인덱스에 없으면
-        // 그 SORT 가 <b>FETCH 뒤</b>에 와서 창 전수를 읽는다. 즉 비용이 limit 이 아니라 그 방의 5분
+        // 그 SORT 가 FETCH 뒤에 와서 창 전수를 읽는다. 즉 비용이 limit 이 아니라 그 방의 5분
         // 생산량에 비례하고, 그 엔드포인트는 미인증 공개다.
         //
         // 실측(일회용 mongo:7.0): 창 60건 · limit 5 에서 2키는 IXSCAN{roomId,createdAt} ·
         // docsExamined 60, 3키는 docsExamined 5. 12만건 규모에서는 333 → 50(=limit) 이었다.
         // keysExamined 는 그대로 창 전수다 — SORT 가 인덱스 키 위에서 돌고 FETCH 만 limit 으로 줄어든다.
-        // 옛 2키 인덱스가 이것의 접두라 잃는 커버리지가 없다.
+        //
+        // 네 번째 키 senderId 도 같은 이유다. 강퇴자 제외(senderId $nin)가 인덱스 밖이면 FETCH 가 SORT 앞으로
+        // 와서 창 전수를 읽는다. 실측(일회용 mongo:7.0, 창 60건 · 창 뒤 240건 · limit 5, 강퇴자 메시지 1·5·30건을
+        // 흩거나 최신 쪽에 몰아서): 3키 docsExamined 60(여섯 모양 전부), 4키 5(여섯 모양 전부). 키 단계에서
+        // 걸러지니 강퇴자가 몇 건이든 FETCH 는 limit 이다. 옛 2키·3키가 이것의 접두라 잃는 커버리지가 없다.
         String window = awaitIndex(ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
                 .on("createdAt", Sort.Direction.ASC)
-                .on("_id", Sort.Direction.ASC)), deadline, ceiling, "roomId+createdAt+_id(VOD 윈도우)");
+                .on("_id", Sort.Direction.ASC)
+                .on("senderId", Sort.Direction.ASC)), deadline, ceiling, "roomId+createdAt+_id+senderId(VOD 윈도우)");
 
         // 방의 최근 공지 한 건. type=NOTICE 행만 담는 파셜 인덱스다 — 공지는 방의 메시지 중 소수라
         // 인덱스가 작고, insert 대부분(NORMAL)은 이 인덱스를 쓰지 않는다.
@@ -449,25 +455,25 @@ public class ChatMongoConfig {
                         new org.bson.Document("$exists", true))))),
                 deadline, ceiling, "roomId+createdAt deleted partial(삭제된 메시지)");
 
-        dropSupersededWindowIndex(mongoTemplate);
+        SUPERSEDED_WINDOW_INDEXES.forEach(name -> dropSupersededWindowIndex(mongoTemplate, name));
 
         return List.of(paging, dedup, ttl, window, notice, deleted);
     }
 
     /**
-     * 옛 2키 윈도우 인덱스{@code (roomId, createdAt)} 를 걷어낸다 — 위에서 그 상위집합을 세운 <b>뒤</b>다.
+     * 옛 윈도우 인덱스 하나(2키 {@code (roomId, createdAt)} 또는 3키 {@code (roomId, createdAt, _id)})를 걷어낸다
+     * — 위에서 그 상위집합을 세운 <b>뒤</b>다.
      *
-     * <p>왜 필요한가. 3키는 2키의 상위집합이라 이름이 달라지고, Mongo 는 기존 것을 두고 새 것을
-     * 하나 더 만든다(실측, 일회용 {@code mongo:7.0}:
-     * {@code _id_ | roomId_1_createdAt_1 | roomId_1_createdAt_1__id_1}). 조회에는 해가 없지만
-     * {@code chat_messages} 의 모든 insert 가 인덱스를 하나 더 쓴다 — 이 저장소에서 가장 뜨거운
-     * 쓰기 경로다. 잃는 커버리지는 없다: 2키가 3키의 접두라 2키로 답할 수 있는 질의는 3키로도 답한다.
+     * <p>왜 필요한가. 키를 더하면 이름이 달라지고, Mongo 는 기존 것을 두고 새 것을 하나 더 만든다(실측,
+     * 일회용 {@code mongo:7.0}: {@code _id_ | roomId_1_createdAt_1 | roomId_1_createdAt_1__id_1}). 조회에는 해가
+     * 없지만 {@code chat_messages} 의 모든 insert 가 인덱스를 하나 더 쓴다 — 이 저장소에서 가장 뜨거운 쓰기
+     * 경로다. 잃는 커버리지는 없다: 옛 것이 새 것의 접두라 옛 것으로 답할 수 있는 질의는 새 것으로도 답한다.
      *
      * <p>순서가 계약이다. 드롭을 생성보다 앞에 두면 그 사이에 윈도우 조회가 인덱스 없이 돈다.
      *
-     * <p><b>롤링 배포에서 무엇이 일어나는가.</b> 이 경로는 부팅에만 돈다 — 새 파드가 뜨면 3키를
-     * 만들고 2키를 지우고, 이미 떠 있는 옛 파드는 다시 만들지 않는다. 그래서 정상 롤링에서는 왕복이
-     * 한 번이다. 배포 창 안에 <b>옛 파드가 재시작하면</b> 2키를 다시 만들고 다음 새 파드가 또 지운다.
+     * <p><b>롤링 배포에서 무엇이 일어나는가.</b> 이 경로는 부팅에만 돈다 — 새 파드가 뜨면 새 것을
+     * 만들고 옛 것을 지우고, 이미 떠 있는 옛 파드는 다시 만들지 않는다. 그래서 정상 롤링에서는 왕복이
+     * 한 번이다. 배포 창 안에 <b>옛 파드가 재시작하면</b> 옛 것을 다시 만들고 다음 새 파드가 또 지운다.
      *
      * <p>실측(일회용 {@code mongo:7.0}, 400,000 문서): 옛 2키 단독 빌드 <b>374ms</b>(건당
      * 0.0009ms — ⚠️ 독립 2회에서 374ms·604ms 로 갈린다. <b>사이징에는 쓰지 않는다</b>; 그 수는
@@ -486,10 +492,10 @@ public class ChatMongoConfig {
      * 넓게 잡으면 권한 부족·연결 끊김까지 "이미 없다" 로 라벨을 갈아 붙이고, 그러면 쓰기 증폭이
      * 남은 상태가 조용히 통과한다.
      */
-    private static void dropSupersededWindowIndex(ReactiveMongoTemplate mongoTemplate) {
+    private static void dropSupersededWindowIndex(ReactiveMongoTemplate mongoTemplate, String name) {
         try {
             mongoTemplate.indexOps(ChatMessageDocument.class)
-                    .dropIndex(SUPERSEDED_WINDOW_INDEX)
+                    .dropIndex(name)
                     .onErrorResume(ChatMongoConfig::isIndexNotFound, error -> Mono.empty())
                     .block(INDEX_DROP_CEILING);
         } catch (IllegalStateException e) {
@@ -510,7 +516,7 @@ public class ChatMongoConfig {
                 throw e;
             }
             throw new IllegalStateException(
-                    "옛 윈도우 인덱스 " + SUPERSEDED_WINDOW_INDEX + " 드롭이 "
+                    "옛 윈도우 인덱스 " + name + " 드롭이 "
                             + INDEX_DROP_CEILING.toSeconds() + "초 안에 끝나지 않았다 — Mongo 가 응답하는지"
                             + " 먼저 보라. 드롭은 메타데이터 연산이라 컬렉션 크기에 비례하지 않는다"
                             + "(실측: 400,000 문서에서 즉시).", e);
@@ -575,7 +581,7 @@ public class ChatMongoConfig {
         //   block(Duration.ZERO)        즉시 던진다 (Timeout on blocking read for 0 NANOSECONDS)
         //   block(Duration.ofNanos(1))  즉시 던진다
         //   block(Duration.ofMillis(-5)) 즉시 던진다
-        // 무한인 것은 <b>인자 없는</b> block() 뿐이다(CountDownLatch.await(0, ns) 가 바로 false).
+        // 무한인 것은 인자 없는 block() 뿐이다(CountDownLatch.await(0, ns) 가 바로 false).
         // 한때 여기 ofMillis(1) 폴백을 두고 "ZERO 는 무한이라" 고 적었는데 그건 재지 않은 추측이었고,
         // 그 폴백이 오히려 "최악 = 이 값" 을 "이 값 + (건수−1)×1ms" 로 만들었다 — 단위를 따진
         // 커밋에서 같은 종류의 흠을 하나 더 만든 셈이다.

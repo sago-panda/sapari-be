@@ -81,6 +81,9 @@ class ChatMessageQueryPlanTest {
 
     private static final int WINDOW_LIMIT = 5;
 
+    /** 창의 최신 쪽에 강퇴자가 쓴 메시지 수 — limit 보다 커야 "강퇴자를 건너뛰며 FETCH" 와 "키에서 거름" 이 갈린다. */
+    private static final int KICKED_IN_WINDOW = 10;
+
     private static final Instant WINDOW_FROM = Instant.parse("2026-06-18T00:00:00Z");
 
     /**
@@ -194,7 +197,7 @@ class ChatMessageQueryPlanTest {
                         WINDOW_LIMIT, MESSAGES_IN_WINDOW, profiled.getString("planSummary"))
                 .isEqualTo(WINDOW_LIMIT);
 
-        // 그리고 **묶이지 않는 축**을 같이 박는다. ChatMongoConfig:402-408 이 이미 사실로 적는다 —
+        // 그리고 **묶이지 않는 축**을 같이 박는다. ChatMongoConfig 의 윈도우 인덱스 주석이 이미 사실로 적는다 —
         // 이 인덱스는 _id 정렬을 공급하지 못해 blocking SORT 가 남고 "keysExamined 는 그대로 창
         // 전수다 — SORT 가 인덱스 키 위에서 돌고 FETCH 만 limit 으로 줄어든다". 그 문장이 맞는데
         // **단언하는 칸이 없어** 안 묶여 있었다(외부 리뷰가 그 축을 재서 지적했고, 저장소 문장은
@@ -211,6 +214,42 @@ class ChatMessageQueryPlanTest {
                 // 축이 하나다 — 한때 isGreaterThan(WINDOW_LIMIT) 을 앞에 붙였는데 60 > 5 라 뒤에
                 // 완전히 먹혔다. 둘처럼 보이면 나중에 뒤를 느슨하게 한 사람이 "6 이면 통과" 만 남긴다.
                 .isGreaterThanOrEqualTo(MESSAGES_IN_WINDOW);
+    }
+
+    @Test
+    @DisplayName("⭐ 창의 최신 쪽에 강퇴자 메시지가 몰려 있어도 읽는 문서 수는 limit 이다")
+    void kickedSendersInsideTheWindowKeepTheReadBoundedByTheLimit() {
+        // given: 창의 가장 최신 KICKED_IN_WINDOW 건을 강퇴자가 썼다 — 최신부터 읽으므로 가장 불리한 모양이다.
+        // 강퇴자 조건이 인덱스 키에서 안 걸리면 SORT 가 FETCH 뒤로 가 창 전수를 읽는다
+        UUID kicked = UUID.randomUUID();
+        Instant windowEnd = WINDOW_FROM.plusSeconds(MESSAGES_IN_WINDOW);
+        for (int i = 0; i < MESSAGES_IN_WINDOW; i++) {
+            boolean byKicked = i >= MESSAGES_IN_WINDOW - KICKED_IN_WINDOW;
+            repository.save(byKicked
+                    ? message("강퇴자-" + i, "kick-" + i, WINDOW_FROM.plusSeconds(i), kicked)
+                    : message("창-" + i, "win-" + i, WINDOW_FROM.plusSeconds(i))).block(VERIFY_CEILING);
+        }
+        for (int i = 0; i < MESSAGES_AFTER_WINDOW; i++) {
+            repository.save(message("창뒤-" + i, "after-" + i, windowEnd.plusSeconds(60L + i)))
+                    .block(VERIFY_CEILING);
+        }
+
+        // when
+        runCommand(new Document("profile", 2)).block(VERIFY_CEILING);
+        List<ChatMessage> page = historyRepository.findWindow(
+                roomId, WINDOW_FROM, windowEnd, WINDOW_LIMIT, List.of(kicked));
+        runCommand(new Document("profile", 0)).block(VERIFY_CEILING);
+
+        // then: 분모 먼저 — 강퇴자 메시지는 빠지고 limit 건이 왔다
+        assertThat(page).hasSize(WINDOW_LIMIT)
+                .extracting(ChatMessage::senderId).doesNotContain(kicked);
+
+        Document windowRead = lastWindowRead();
+        assertThat(windowRead).as("프로파일러가 본 조회를 못 잡았다 — 아래 수치의 분모가 0 이다").isNotNull();
+        assertThat(windowRead.getInteger("docsExamined"))
+                .as("강퇴자 조건이 창 읽기를 창 전수(%d)로 넓혔다. 고른 계획: %s",
+                        MESSAGES_IN_WINDOW, windowRead.getString("planSummary"))
+                .isEqualTo(WINDOW_LIMIT);
     }
 
     @Test
@@ -406,7 +445,11 @@ class ChatMessageQueryPlanTest {
     }
 
     private ChatMessage message(String text, String clientMsgId, Instant createdAt) {
-        return new ChatMessage(null, roomId, senderId, "구매자닉", "buyer@example.com",
+        return message(text, clientMsgId, createdAt, senderId);
+    }
+
+    private ChatMessage message(String text, String clientMsgId, Instant createdAt, UUID sender) {
+        return new ChatMessage(null, roomId, sender, "구매자닉", "buyer@example.com",
                 ChatRole.BUYER, new ChatMessageType.Normal(), text, text, clientMsgId, createdAt);
     }
 }

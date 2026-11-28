@@ -159,7 +159,7 @@ class ChatMessageRepositoryImplTest {
                 ChatRole.BUYER, new ChatMessageType.Normal(), "남의방", "남의방", null, Instant.now());
         repository.save(other).block(VERIFY_CEILING);
 
-        // 읽기는 템플릿으로 한다 — 이 테스트가 재는 것은 <b>쓰기가 roomId 를 제대로 담는가</b>이고,
+        // 읽기는 템플릿으로 한다 — 이 테스트가 재는 것은 쓰기가 roomId 를 제대로 담는가이고,
         // 읽는 쪽 격리는 이력 어댑터 테스트가 따로 잰다. 종전에는 리액티브 커서 조회로 읽었는데
         // 그 메서드가 운영 호출자 없이 지워졌다.
         List<ChatMessageDocument> stored = mongoTemplate
@@ -232,7 +232,7 @@ class ChatMessageRepositoryImplTest {
         // 단언되지 않았고, 그래서 그 인덱스의 키가 바뀌어도 이 칸이 초록이었다.
         assertThat(indexes).extracting(i -> i.getName())
                 .contains("roomId_1__id_1", "roomId_1_senderId_1_clientMsgId_1", "createdAt_1",
-                        "roomId_1_createdAt_1__id_1", "roomId_1__id_1_notice", "roomId_1_createdAt_1_deleted");
+                        "roomId_1_createdAt_1__id_1_senderId_1", "roomId_1__id_1_notice", "roomId_1_createdAt_1_deleted");
         var notice = indexes.stream().filter(i -> i.getName().equals("roomId_1__id_1_notice")).findFirst().orElseThrow();
         assertThat(notice.getPartialFilterExpression()).contains("NOTICE");
         var deleted = indexes.stream().filter(i -> i.getName().equals("roomId_1_createdAt_1_deleted")).findFirst().orElseThrow();
@@ -262,7 +262,27 @@ class ChatMessageRepositoryImplTest {
                 .as("옛 2키 윈도우 인덱스가 남아 있다 — 상위집합이 섰는데도 쓰기 비용을 계속 낸다")
                 .doesNotContain("roomId_1_createdAt_1")
                 // 삭제 파셜 인덱스는 옛 2키와 키가 같다 — 이름이 달라 드롭에 휩쓸리지 않는다
-                .contains("roomId_1_createdAt_1__id_1", "roomId_1_createdAt_1_deleted");
+                .contains("roomId_1_createdAt_1__id_1_senderId_1", "roomId_1_createdAt_1_deleted");
+    }
+
+    @Test
+    @DisplayName("⭐ 옛 3키 윈도우 인덱스도 걷어낸다 — senderId 를 더한 4키가 그 상위집합이다")
+    void the_superseded_three_key_window_index_is_removed() {
+        // given: SPR-228 이전에 배포된 환경의 모양 — 3키가 이미 있다
+        mongoTemplate.indexOps(ChatMessageDocument.class).createIndex(new Index()
+                .on("roomId", Sort.Direction.ASC)
+                .on("createdAt", Sort.Direction.ASC)
+                .on("_id", Sort.Direction.ASC)).block(VERIFY_CEILING);
+
+        // when
+        ChatMongoConfig.createChatMessagesIndexes(mongoTemplate);
+
+        // then
+        assertThat(mongoTemplate.indexOps(ChatMessageDocument.class).getIndexInfo()
+                .map(i -> i.getName()).collectList().block(VERIFY_CEILING))
+                .as("옛 3키 윈도우 인덱스가 남아 있다 — 상위집합이 섰는데도 쓰기 비용을 계속 낸다")
+                .doesNotContain("roomId_1_createdAt_1__id_1")
+                .contains("roomId_1_createdAt_1__id_1_senderId_1");
     }
 
     private ChatMessage message(String text, String clientMsgId) {

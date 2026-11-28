@@ -288,7 +288,7 @@ A new UUID is the unsafe retry.
   The VOD window uses `_id $nin` from the `DELETED_INDEX` partial index, **not** `deletedAt: null` — the
   window index can't supply the `_id` sort, so a non-key filter pushes SORT behind FETCH and reads the whole
   window (`ChatHistoryMongoRepository.deletedIdsInWindow`; tripwire `ChatMessageQueryPlanTest`). Kicked
-  senders still have that shape in the window — open.
+  senders are a window-index key (`senderId`, 4th) for the same reason.
 - **Delete lives at `/api/v1/chat/rooms/{roomId}/messages/{messageId}`**, outside the `/api/v1/lives/**`
   SELLER floor so ADMIN can reach it; the role gate (SELLER · ADMIN) is that path's own rule in
   `LiveSecurityConfig`, and room ownership is `DeleteChatMessageService`'s check before the message read.
