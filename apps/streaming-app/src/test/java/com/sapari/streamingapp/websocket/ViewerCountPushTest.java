@@ -258,7 +258,7 @@ class ViewerCountPushTest {
     @Test
     @DisplayName("⭐ 시청자 수 갱신이 하트비트 타이머에 얹혀 있다 — 떼면 수가 다시 고정 스냅샷이 된다")
     void theHeartbeatTimerAlsoPushesViewerCounts() {
-        // given: 위 테스트들은 pushViewerCounts() 를 직접 불러서 <b>계산</b>만 보고 있었다. 그래서
+        // given: 위 테스트들은 pushViewerCounts() 를 직접 불러서 계산만 보고 있었다. 그래서
         // startHeartbeat() 에서 그 호출 한 줄을 떼도 이 앱의 테스트가 전부 초록이었다(실측). 갱신이
         // 아무 주기에도 얹히지 않으면 ROOM_INFO 는 입장 시 1회로 돌아가고, 화면의 시청자 수는 다시
         // 고정 스냅샷이 된다 — 계산은 정확한데 아무에게도 도달하지 않는 모양이다.

@@ -30,7 +30,7 @@ public enum ChatErrorCode implements ErrorCode {
     // 남긴다), 클라이언트에게는 재시도해도 소용없다는 신호로 읽힌다. 문구에 재시도를 담는다.
     KICK_CONTENDED(409, "CHAT-008", "다른 요청이 같은 사용자를 처리 중입니다. 잠시 후 다시 시도해 주세요."),
 
-    // 이력 조회 입력이 계약을 어겼다. 도달 가능한 사유를 <b>열거만</b> 한다 — 개수를 적으면 사유가
+    // 이력 조회 입력이 계약을 어겼다. 도달 가능한 사유를 열거만 한다 — 개수를 적으면 사유가
     // 늘 때마다 그 수가 틀리고, 이 자리에서 "세 사유"→"네 사유" 로 이미 두 번 틀렸다:
     //   · 조회 모드(beforeId · afterId · 재생 위치)를 둘 이상 지정
     //   · 음수 재생 위치
@@ -38,11 +38,11 @@ public enum ChatErrorCode implements ErrorCode {
     //   · size 가 1~100 밖
     //   · 커서(beforeId · afterId) 형식이 ObjectId 가 아님(어댑터가 판정)
     // 이 코드가 따로 있는 이유: 명령 record 의 불변식은 IllegalArgumentException 으로 던지는데
-    // 전역 핸들러에 그 타입 처리가 없어 <b>클라 잘못이 500 + "Unhandled exception" 로그</b>가 된다.
+    // 전역 핸들러에 그 타입 처리가 없어 클라 잘못이 500 + "Unhandled exception" 로그가 된다.
     // 전역 핸들러에 IllegalArgumentException 을 더하는 쪽은 저장소 전체의 응답을 바꾸므로(인프라 깊은
     // 곳에서 올라온 것까지 400 이 된다) 여기서 좁게 받는다.
     //
-    // 문구가 사유들에 공통인 것은 의도가 아니라 <b>지금은 구분이 쓸모없기 때문</b>이다 — 전부
+    // 문구가 사유들에 공통인 것은 의도가 아니라 지금은 구분이 쓸모없기 때문이다 — 전부
     // 클라이언트 코드의 버그이고 사용자가 고칠 것이 없다. 사유는 debugMessage 로 로그에만 남는다.
     HISTORY_QUERY_INVALID(400, "CHAT-009", "채팅 이력 조회 조건이 올바르지 않습니다."),
 
@@ -80,7 +80,7 @@ public enum ChatErrorCode implements ErrorCode {
     //
     // 이 문구는 WS 로 나가지 않는다 — WS 의 ERROR 프레임은 코드 문자열과 clientMsgId 만 싣고, 이 예외는
     // 거기서 INTERNAL 이 된다. 재시도 규칙은 그래서 modules/chat/AGENTS.md 의 "Retry contract" 에 있다:
-    // 실패한 버블을 남겨 두고 <b>같은 clientMsgId 와 같은 본문</b>으로 다시 보낸다. 첫 쓰기가 남아 있었으면 유니크
+    // 실패한 버블을 남겨 두고 같은 clientMsgId 와 같은 본문으로 다시 보낸다. 첫 쓰기가 남아 있었으면 유니크
     // 파셜 인덱스가 막고 그 메시지가 ACK 로 돌아온다. 새 UUID 로 보내면 중복이 생길 수 있다.
     PERSIST_TIMEOUT(503, "CHAT-012",
             "메시지 저장 결과를 확인하지 못했습니다. 잠시 후 이력을 확인해 주세요."),

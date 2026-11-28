@@ -377,7 +377,7 @@ class ChatWebSocketIntegrationTest {
                     .as("기준선: 접속 중인데 방 세션 명부가 없다 — 아래 '지워졌다' 가 항진명제가 된다")
                     .isTrue();
 
-            // ⚠️ <b>잔재를 하나 심는다.</b> 이것 없이는 "명부가 지워졌다" 가 clearRoom 을 재지
+            // ⚠️ 잔재를 하나 심는다. 이것 없이는 "명부가 지워졌다" 가 clearRoom 을 재지
             // 못한다 — 세션이 하나뿐이면 그 세션의 HDEL 이 해시의 마지막 필드를 지우고, Redis 는
             // 빈 해시의 키 자체를 없앤다. 실측: clearRoom 단계를 지워도 이 단언이 통과했다.
             // 심은 항목은 HDEL 이 닿지 않는 자리(다른 Pod 가 남긴 잔재)이고, 그걸 걷는 경로는
@@ -443,7 +443,7 @@ class ChatWebSocketIntegrationTest {
         // 정상 경로이고, 제어 채널 + 유예(3초)는 그게 막혔을 때의 탈출로다.
         //
         // 아웃바운드에 끝나지 않는 publisher 가 섞이면 session.send 가 영원히 완료되지 않아
-        // <b>정상 경로가 도달 불가</b>가 된다. 그러면 강퇴·밴·방 종료·버퍼 초과·수명·생존이 전부
+        // 정상 경로가 도달 불가가 된다. 그러면 강퇴·밴·방 종료·버퍼 초과·수명·생존이 전부
         // 유예 경로로만 닫히고, 그 사이 세션 명부·방 인덱스·방 구독·Redis 항목이 함께 남는다
         // (방 종료 때는 그 방 전체가 동시에).
         UUID roomId = UUID.randomUUID();
@@ -471,9 +471,9 @@ class ChatWebSocketIntegrationTest {
         assertThat(kickedAtNanos.get()).as("강퇴 발행 시각이 안 잡혔다").isNotNull();
         assertThat(closedAtNanos.get()).as("세션이 닫히지 않았다").isNotNull();
 
-        // ⚠️ <b>강퇴 팬아웃을 실제로 탔는지를 먼저 본다.</b> 아래 경과시간만 보면 이 테스트에
+        // ⚠️ 강퇴 팬아웃을 실제로 탔는지를 먼저 본다. 아래 경과시간만 보면 이 테스트에
         // 초록인 채 아무것도 재지 않는 모드가 있다 — kickedAtNanos 는 convertAndSend 앞에서 무조건
-        // 찍히고 closedAtNanos 는 <b>어떤 이유의</b> close 에도 찍히므로, 세션이 강퇴보다 먼저 닫히면
+        // 찍히고 closedAtNanos 는 어떤 이유의 close 에도 찍히므로, 세션이 강퇴보다 먼저 닫히면
         // 경과시간이 음수가 되어 "1초 미만" 을 만족한다. 리뷰어가 그 모드를 재현했다 — 토큰을 위조해
         // 입장 거부로 ~50ms 에 끊으니 이 테스트가 팬아웃을 한 번도 타지 않은 채 통과했고 형제
         // 테스트들은 정상적으로 실패했다. SYSTEM(KICKED) 수신이 "팬아웃이 돌았다" 의 양성 증거다.
@@ -494,18 +494,18 @@ class ChatWebSocketIntegrationTest {
         // given: 본문 상한을 꽉 채운 한글 200자 + clientMsgId 상한 64자. 한글은 UTF-8에서 글자당 3바이트라
         // 영문 기준으로 상한을 잡으면 여기서 처음 걸린다.
         //
-        // 이 테스트가 프레임 상한의 <b>아래쪽</b>을 지킨다. 위쪽만 지키면 상한을 계속 낮추는 변경이
+        // 이 테스트가 프레임 상한의 아래쪽을 지킨다. 위쪽만 지키면 상한을 계속 낮추는 변경이
         // 통과하고, 그러면 정당한 긴 메시지가 사유 프레임도 없이 사라진다 — 클라에게는 "긴 글만
         // 안 간다"로 보이고 서버 로그에는 아무것도 남지 않는다.
         UUID roomId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         String token = roomToken(liveKeys.getPrivate(), roomId, userId, "BUYER", false, "구매자", "b@example.com");
-        // 와이어 바이트를 <b>이스케이프 최악</b>으로 만든다. 생 UTF-8 한글은 글자당 3바이트(~714B)인데
+        // 와이어 바이트를 이스케이프 최악으로 만든다. 생 UTF-8 한글은 글자당 3바이트(~714B)인데
         // 클라가 JSON 유니코드 이스케이프로 보내면 글자당 6바이트다 — 상한을 유도할 때 쓴 바로 그
         // 최악이고, 생 바이트만 보내면 상한을 1KB 로 낮추는 변경이 통과한다(리뷰어 실측). 그러면
         // 계약상 정당한 긴 메시지가 사유 프레임도 없이 연결째 끊긴다.
         //
-        // 접두를 런타임에 조립하는 이유: 자바는 <b>주석과 문자열 안에서도</b> 유니코드 이스케이프를
+        // 접두를 런타임에 조립하는 이유: 자바는 주석과 문자열 안에서도 유니코드 이스케이프를
         // 토큰화 전에 먼저 해석한다(JLS 3.3). 그 표기를 소스에 그대로 쓰면 컴파일이 깨진다.
         String escape = "\\" + "u";
         String longestContent = (escape + "AC00").repeat(200);     // '가' 200자를 이스케이프 표기로
@@ -547,7 +547,7 @@ class ChatWebSocketIntegrationTest {
                     .delaySubscription(Duration.ofMillis(500))).and(receive);
         }).block(Duration.ofSeconds(25));
 
-        // when & then: 입장 안내는 받았지만, 그 프레임에 대한 <b>본문 검증 응답은 오지 않는다</b> —
+        // when & then: 입장 안내는 받았지만, 그 프레임에 대한 본문 검증 응답은 오지 않는다 —
         // 디코더가 먼저 끊었다는 뜻이다. 상한이 없으면 파싱까지 가서 VALIDATION이 돌아온다.
         assertThat(frames).anyMatch(f -> f.contains("\"type\":\"ROOM_INFO\""));
         assertThat(frames)

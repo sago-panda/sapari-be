@@ -136,7 +136,7 @@ class RedisChatBroadcasterTest {
         String withEnvelopeField = wire.replaceFirst("\\{", "{\"envelopeVersion\":2,");
         String withMessageField = wire.replaceFirst("\"message\":\\{", "\"message\":{\"reactionCount\":3,");
 
-        // when & then: 모르는 필드 하나 때문에 역직렬화가 통째로 실패하면 그 Pod 의 <b>방 전체</b>가
+        // when & then: 모르는 필드 하나 때문에 역직렬화가 통째로 실패하면 그 Pod 의 방 전체가
         // 실시간 전달을 잃는다 — 깨진 봉투 한 건이 아니라 신 버전이 보내는 모든 봉투가 skip 된다.
         // 계정 이벤트 쪽은 이미 모르는 필드를 흘려보내는데 이쪽만 엄격했다.
         StepVerifier.create(broadcaster.subscribe(roomId))
@@ -162,7 +162,7 @@ class RedisChatBroadcasterTest {
     @DisplayName("⭐ userId 가 없는 KICK_EVENT 는 전달하지 않는다 — 관용 매퍼가 거부를 null 로 바꿨다")
     void subscribe_rejects_a_kick_event_without_a_user_id() throws Exception {
         // given: 필드명이 어긋난 강퇴 봉투. 엄격한 매퍼에서는 "모르는 프로퍼티"로 거부됐는데,
-        // 롤링 배포를 위해 관용으로 바꾼 뒤로는 <b>userId=null</b> 이 되어 통과한다.
+        // 롤링 배포를 위해 관용으로 바꾼 뒤로는 userId=null 이 되어 통과한다.
         //
         // 통과하면 두 가지가 동시에 일어난다. 강퇴 팬아웃이 userId 로 당사자를 고르므로 아무 세션도
         // 끊지 못하고(조치가 조용히 no-op), 동시에 userId 키가 빠진 KICK 프레임이 방 전원에게 나간다.

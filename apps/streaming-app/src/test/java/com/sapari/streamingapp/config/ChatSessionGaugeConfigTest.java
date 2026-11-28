@@ -275,7 +275,7 @@ class ChatSessionGaugeConfigTest {
     @Test
     @DisplayName("⭐ 등록한 미터 집합을 이름까지 고정한다 — 상수로 적으면 이름 변경을 따라가 버린다")
     void theRegisteredMeterSetIsPinned() {
-        // 이 클래스의 다른 테스트는 전부 미터를 <b>이름으로</b> 조회한다. 그러면 새 미터를 상수만
+        // 이 클래스의 다른 테스트는 전부 미터를 이름으로 조회한다. 그러면 새 미터를 상수만
         // 만들고 등록을 빠뜨려도 아무것도 깨지지 않는다 — 실제로 그랬다: chat.sessions.reaped 가
         // 접근자와 문서에는 있는데 등록이 없었고, 문서 두 곳(infra/AGENTS.md ·
         // modules/chat/AGENTS.md)이 당직자에게 그 지표를 보라고 적고 있었다. 빈 패널이 하필 "공격" 서명으로 읽히는 쪽이라 더 나쁘다.

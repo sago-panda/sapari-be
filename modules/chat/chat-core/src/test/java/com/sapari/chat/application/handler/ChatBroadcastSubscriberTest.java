@@ -124,13 +124,13 @@ class ChatBroadcastSubscriberTest {
         Function<ChatSession, OutboundMessage> resolver = cap.getValue();
 
         // then: 전송 계층({@code ChatSessionManager.sendToRoomGated} 계약)이 서로 다른 메시지를
-        // <b>객체 동일성</b>으로 묶어 직렬화·인코딩을 종류 수만큼만 한다. 그래서 같은 뷰의 두 세션이
+        // 객체 동일성으로 묶어 직렬화·인코딩을 종류 수만큼만 한다. 그래서 같은 뷰의 두 세션이
         // 같은 인스턴스를 받아야 한다 — 세션마다 new 로 만들면 내용이 같아도 묶이지 않고, 팬아웃
         // 비용이 다시 세션 수에 비례한다(실측: 12,000 세션 한 메시지에 직렬화 9.23ms + 인코딩 2.09ms).
         //
-        // 그 회귀는 <b>조용하다</b> — 응답 내용이 같으니 어떤 내용 단언도 깨지지 않는다. 그래서
+        // 그 회귀는 조용하다 — 응답 내용이 같으니 어떤 내용 단언도 깨지지 않는다. 그래서
         // 동치(isEqualTo)가 아니라 동일성(isSameAs)으로 재야 한다.
-        // 축이 <b>둘</b>이다 — 특권 여부 × 발신자 여부. "같은 뷰" 는 둘 다 같아야 한다.
+        // 축이 둘이다 — 특권 여부 × 발신자 여부. "같은 뷰" 는 둘 다 같아야 한다.
         // (이 테스트를 처음 쓸 때 viewer(buyerId) 와 랜덤 id 를 같은 뷰로 봤는데, 전자는 발신자라
         //  senderView·후자는 normalView 다. 코드가 아니라 단언이 틀렸다.)
         assertThat(resolver.apply(viewer(UUID.randomUUID())))

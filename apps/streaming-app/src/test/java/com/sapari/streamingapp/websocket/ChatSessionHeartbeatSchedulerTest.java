@@ -336,7 +336,7 @@ class ChatSessionHeartbeatSchedulerTest {
         // when
         registry.startHeartbeat();
         try {
-            // then: 실패한 쪽이 먼저여도 성공한 쪽이 <b>여러 주기에 걸쳐</b> 계속 불려야 한다 —
+            // then: 실패한 쪽이 먼저여도 성공한 쪽이 여러 주기에 걸쳐 계속 불려야 한다 —
             // 스트림이 끝났다면 한 번에서 멈춘다
             await(() -> registry.heartbeatFailures() >= 2);
             then(sessionRepository).should(atLeast(2)).heartbeat(roomId, "s2", userB);

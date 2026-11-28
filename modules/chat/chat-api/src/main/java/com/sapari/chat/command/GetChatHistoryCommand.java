@@ -46,8 +46,8 @@ public record GetChatHistoryCommand(
         if (roomId == null) {
             throw new IllegalArgumentException("roomId는 필수입니다.");
         }
-        // 신원은 둘이 한 쌍이다. 한쪽만 오면 특권 판정이 반쪽이 되는데, 그 반쪽은 <b>조용히 좁은
-        // 쪽으로</b> 기울어 요청자가 자기 방 이력에서 원문을 못 보는 모양이 된다 — 버그로 보이지 않는
+        // 신원은 둘이 한 쌍이다. 한쪽만 오면 특권 판정이 반쪽이 되는데, 그 반쪽은 조용히 좁은
+        // 쪽으로 기울어 요청자가 자기 방 이력에서 원문을 못 보는 모양이 된다 — 버그로 보이지 않는
         // 버그다. 쌍이 깨진 입력은 컨트롤러의 잘못이므로 여기서 거부한다.
         if (requesterId != null && (requesterRole == null || requesterRole.isBlank())) {
             throw new IllegalArgumentException("requesterId가 있으면 requesterRole도 필요합니다.");

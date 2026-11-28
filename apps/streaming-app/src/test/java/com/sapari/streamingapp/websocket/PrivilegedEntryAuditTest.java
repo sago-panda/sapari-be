@@ -141,7 +141,7 @@ class PrivilegedEntryAuditTest {
                 .isEqualTo(before);
         assertThat(messages()).noneSatisfy(message -> assertThat(message).contains("denied"));
 
-        // 이 테스트가 재는 것은 <b>과다계수</b> 한 방향뿐이다 — 감사가 아예 안 남는 변이는
+        // 이 테스트가 재는 것은 과다계수 한 방향뿐이다 — 감사가 아예 안 남는 변이는
         // adminEntryIsRecorded 가 받는다. 둘을 한 테스트로 묶지 않는 이유는 실패 시 어느 방향이
         // 깨졌는지가 이름에서 바로 보여야 하기 때문이다.
     }

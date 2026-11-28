@@ -288,7 +288,7 @@ final class ViewerCounts {
     }
 
     private Mono<Void> pushViewerCount(UUID roomId) {
-        // 캐시(getActiveCount)를 거치지 않는다. 그 캐시는 <b>입장 폭주</b>를 막으려고 조회를 억제하는
+        // 캐시(getActiveCount)를 거치지 않는다. 그 캐시는 입장 폭주를 막으려고 조회를 억제하는
         // 장치인데, 이 타이머가 하려는 일이 정확히 "변화를 관측" 이라서 억제를 거치면 캐시 수명 안의
         // 변화를 못 본다. 그리고 억제할 이유도 없다 — 이쪽은 방당 회차당 한 번으로 이미 유계다.
         return sessionRepository.count(roomId)
@@ -385,11 +385,11 @@ final class ViewerCounts {
             AtomicReference<Mono<Long>> self = new AtomicReference<>();
             Mono<Long> flight = sessionRepository.count(room)
                     // HVALS distinct = 고유 유저 수.
-                    // 캐시 쓰기가 cache() <b>상류</b>라 합류자가 50이어도 쓰기는 1회다 — 병합 전에는
+                    // 캐시 쓰기가 cache() 상류라 합류자가 50이어도 쓰기는 1회다 — 병합 전에는
                     // 호출자마다 각자 썼다.
                     .doOnNext(count -> cacheIfRoomStillLocal(room, count))
-                    // ⚠️ <b>값까지 비교해서 지운다.</b> remove(room) 한 인자로 지우면 "내 비행이 끝났다"가
-                    // 아니라 "그 방의 비행 자리를 비운다"가 되어, 그 사이에 설치된 <b>남의 비행</b>을
+                    // ⚠️ 값까지 비교해서 지운다. remove(room) 한 인자로 지우면 "내 비행이 끝났다"가
+                    // 아니라 "그 방의 비행 자리를 비운다"가 되어, 그 사이에 설치된 남의 비행을
                     // 걷어낼 수 있다. 오늘은 cache() 가 doFinally 를 비행당 1회로 묶어 안전하지만,
                     // 그 안전이 연산자 선택 하나에 걸려 있다 — 제거를 cache() 하류로 옮기거나
                     // doFinally 와 cache() 사이에 retry 를 끼우면 구독자 수만큼 발화하고, 그러면
