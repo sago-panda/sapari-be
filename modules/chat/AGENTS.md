@@ -354,8 +354,9 @@ on-call reading of all of them is in `infra/AGENTS.md`.
 
 The port binds before `ApplicationRunner`s run (`EagerSingletonsRunBeforeThePortBindsTest`), so **anything a
 request depends on finishes in a bean body** — Mongo index creation is there for that reason. Its worst case is
-10 min 30 s (`ChatMongoConfig.INDEX_CREATE_CEILING` + `INDEX_DROP_CEILING`, `ChatMongoIndexCeilingTest`); the
-`startupProbe` sizing is in `infra/AGENTS.md`.
+`INDEX_CREATE_CEILING` (10 min, one deadline over all creations) + one `INDEX_DROP_CEILING` (30 s) per name in
+`SUPERSEDED_WINDOW_INDEXES` — 10 min 60 s with two names (`ChatMongoConfig`; `ChatMongoIndexCeilingTest` measures
+the creation ceiling only). The `startupProbe` sizing is in `infra/AGENTS.md`.
 
 ## Tests
 

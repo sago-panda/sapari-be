@@ -426,6 +426,10 @@ public class ChatMongoConfig {
         // 와서 창 전수를 읽는다. 실측(일회용 mongo:7.0, 창 60건 · 창 뒤 240건 · limit 5, 강퇴자 메시지 1·5·30건을
         // 흩거나 최신 쪽에 몰아서): 3키 docsExamined 60(여섯 모양 전부), 4키 5(여섯 모양 전부). 키 단계에서
         // 걸러지니 강퇴자가 몇 건이든 FETCH 는 limit 이다. 옛 2키·3키가 이것의 접두라 잃는 커버리지가 없다.
+        //
+        // 대가는 크기다. senderId 가 UUID 라 이 인덱스의 모든 키가 넓어진다 — 리뷰어 실측(일회용 mongo:7.0,
+        // 400,000 문서 · 200방 · 발신자 5,000): 9.7MB → 17.8MB(건당 25.4B → 46.6B). 규모는 건당 수에 곱한다
+        // (선형은 가정이다). insert 지연 차이는 그 계기(로컬 벌크 insertMany)의 해상도 밖이었다 — "차이 없음" 이 아니다.
         String window = awaitIndex(ops.createIndex(new Index()
                 .on("roomId", Sort.Direction.ASC)
                 .on("createdAt", Sort.Direction.ASC)
@@ -483,8 +487,8 @@ public class ChatMongoConfig {
      * 못 잡았다</b> — 그쪽이 깨지면 그 파드의 부팅이 실패하고, 다음 재시작에는 지우는 쪽이 없어
      * 성공한다. 그 재시작 빈도는 실파드가 없어 재지 못했다.
      *
-     * <p>⚠️ <b>이 상한은 생성의 공유 데드라인 밖이다</b> — 부팅 창 전체가 10분이 아니라
-     * <b>10분 + 30초</b>다. 그 수를 쓰는 자리(startupProbe 사이징)가 {@code infra/AGENTS.md} 와
+     * <p>⚠️ <b>이 상한은 생성의 공유 데드라인 밖이고 드롭마다 따로 걸린다</b> — 부팅 창 전체가 10분이 아니라
+     * <b>10분 + ({@link #SUPERSEDED_WINDOW_INDEXES} 길이 × 30초)</b>, 지금은 이름이 둘이라 10분 60초다. 그 수를 쓰는 자리(startupProbe 사이징)가 {@code infra/AGENTS.md} 와
      * {@code modules/chat/AGENTS.md} 에 있고 둘 다 고쳤다. 공유 데드라인 안으로 넣지 않은 이유는
      * 아래 {@link #INDEX_DROP_CEILING} 에 적어 두었다.
      *

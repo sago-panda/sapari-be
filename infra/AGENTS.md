@@ -470,12 +470,14 @@ that on.
     binds** — so for the whole of that window `httpGet` and `tcpSocket` both get **connection refused**,
     not a false `Ready` (asserted by a raw TCP connect in
     `EagerSingletonsRunBeforeThePortBindsTest`). The window's length is
-    **10 min 30 s** (SPR-178): `ChatMongoConfig.INDEX_CREATE_CEILING` = 10 min (SPR-152) is **one
-    deadline over all four index creations**, not per call — a fifth *creation* would not add to it —
-    and `INDEX_DROP_CEILING` = 30 s sits **outside** that deadline, for the one superseded-index drop. Nothing in the driver bounds
+    **10 min + 30 s × (superseded-index names)** — **10 min 60 s** today (SPR-228): `ChatMongoConfig.INDEX_CREATE_CEILING`
+    = 10 min (SPR-152) is **one deadline over all six index creations**, not per call — another *creation* would not
+    add to it — and `INDEX_DROP_CEILING` = 30 s sits **outside** that deadline, once **per name** in
+    `SUPERSEDED_WINDOW_INDEXES` (two: the old 2-key and 3-key window indexes). Nothing in the driver bounds
     it otherwise: `socketReadTimeoutMs` defaults to **0 (infinite)** and the repo sets no Mongo client
     timeout anywhere (measured).
-    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min 30 s**. Under that and
+    - So `failureThreshold × periodSeconds` on the **`startupProbe` must exceed 10 min 60 s** (the formula above, if
+      the name list changes). Under that and
       Kubernetes kills the pod before the app's own ceiling fires — which throws away the one message
       that tells the operator *which* of the two causes it was (Mongo silent vs. first build on a large
       collection). `livenessProbe`/`readinessProbe` are not the lever here; a `startupProbe` is, because
@@ -491,7 +493,8 @@ that on.
       disconnect leaves the server-side build in place — `createIndexes` op still listed,
       `IndexBuildsCoordinatorMongod-0` still running — and the index finishes with no client attached).
       So restarting does not undo progress and the loop is **not permanent**: a build taking N× the
-      ceiling costs roughly N restarts, and the wall clock is N × 10 min 30 s **plus Kubernetes'
+      ceiling costs roughly N restarts, and the wall clock is N × 10 min (a creation timeout throws before the drops
+      run — `createChatMessagesIndexes` order) **plus Kubernetes'
       `CrashLoopBackOff` backoff**, which grows 10s → 20s → … up to a 5 min cap between restarts.
       - Scope, because this claim keeps getting repeated: **standalone**. A replica set builds in phases
         with a commit quorum and DocumentDB is a compatibility layer, and this repo does not record which
