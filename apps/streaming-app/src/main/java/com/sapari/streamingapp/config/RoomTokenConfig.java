@@ -49,9 +49,9 @@ public class RoomTokenConfig {
 
         byte[] der;
         try {
-            // MIME 디코더다 — <b>개행을 허용</b>한다. 설정 템플릿이 지시하는 값이 "PEM 헤더 없이
+            // MIME 디코더다 — 개행을 허용한다. 설정 템플릿이 지시하는 값이 "PEM 헤더 없이
             // 본문만"이고 PEM 본문은 64열로 줄바꿈된 문자열인데, basic 디코더는 그 개행을 거부해
-            // <b>유효한 base64 를 "Base64 가 아니다"로 오진한다</b>(실측: Illegal base64 character a).
+            // 유효한 base64 를 "Base64 가 아니다"로 오진한다(실측: Illegal base64 character a).
             // 이 가드의 목적이 친절한 실패인데 가장 흔한 입력 모양에서 바로 그 목적이 깨졌다.
             //
             // 헤더까지 붙여 넣은 값은 MIME 디코더에서 쓰레기 바이트로 디코드돼 아래 두 번째 분기
@@ -62,7 +62,7 @@ public class RoomTokenConfig {
             // 아니다"라는 게 로그에서 바로 읽히지 않는다. 값 자체는 싣지 않는다(공개키라 비밀은 아니지만
             // 설정 값을 로그에 흘리는 선례를 만들지 않는다).
             //
-            // 여기 오는 것은 <b>패딩·길이가 깨진</b> 입력이다. 비-base64 문자는 MIME 디코더가 무시하므로
+            // 여기 오는 것은 패딩·길이가 깨진 입력이다. 비-base64 문자는 MIME 디코더가 무시하므로
             // 그런 값은 아래 키 분기로 떨어진다(실측).
             throw new IllegalStateException(
                     "chat.room-token.public-key 가 Base64 가 아니다 — 길이=" + base64Spki.trim().length(), e);

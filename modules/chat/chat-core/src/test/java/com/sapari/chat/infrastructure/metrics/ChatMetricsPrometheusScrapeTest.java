@@ -189,7 +189,7 @@ class ChatMetricsPrometheusScrapeTest {
             method.invoke(metrics, args);
         }
 
-        // then: 선언된 이름마다 미터가 실재하고, <b>실제 스크레이프 텍스트</b>에 나온다.
+        // then: 선언된 이름마다 미터가 실재하고, 실제 스크레이프 텍스트에 나온다.
         // 등록만 보면 이 클래스의 축(스크레이프)을 안 보는 것이고, 리플렉션은 상수를 따라가므로
         // 이름 변경도 못 잡는다 — 그래서 변환된 이름을 스크레이프에서 찾는다(점 → 밑줄).
         String scrape = registry.scrape();

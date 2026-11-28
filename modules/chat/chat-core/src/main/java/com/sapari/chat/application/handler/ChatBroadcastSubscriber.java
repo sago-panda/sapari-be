@@ -72,7 +72,7 @@ public class ChatBroadcastSubscriber {
     public Disposable subscribeRoom(UUID roomId) {
         return broadcaster.subscribe(roomId)
                 // 팬아웃은 Pod 공유 Redis 구독 스레드에서 돈다 — 세션 컨텍스트가 없다. 여기서 room_id 를
-                // 실어야 라우팅 실패가 어느 방인지 <b>필드</b>로 남는다(팬아웃 실패는 그 방 전원이
+                // 실어야 라우팅 실패가 어느 방인지 필드로 남는다(팬아웃 실패는 그 방 전원이
                 // 그 메시지를 못 받은 것이라, 방 단위로 묶이지 않으면 규모를 읽을 수 없다).
                 .flatMap(envelope -> route(roomId, envelope)
                         .onErrorResume(e -> {

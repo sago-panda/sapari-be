@@ -288,7 +288,7 @@ A new UUID is the unsafe retry.
   The VOD window uses `_id $nin` from the `DELETED_INDEX` partial index, **not** `deletedAt: null` — the
   window index can't supply the `_id` sort, so a non-key filter pushes SORT behind FETCH and reads the whole
   window (`ChatHistoryMongoRepository.deletedIdsInWindow`; tripwire `ChatMessageQueryPlanTest`). Kicked
-  senders still have that shape in the window — open.
+  senders are a window-index key (`senderId`, 4th) for the same reason.
 - **Delete lives at `/api/v1/chat/rooms/{roomId}/messages/{messageId}`**, outside the `/api/v1/lives/**`
   SELLER floor so ADMIN can reach it; the role gate (SELLER · ADMIN) is that path's own rule in
   `LiveSecurityConfig`, and room ownership is `DeleteChatMessageService`'s check before the message read.
@@ -354,8 +354,9 @@ on-call reading of all of them is in `infra/AGENTS.md`.
 
 The port binds before `ApplicationRunner`s run (`EagerSingletonsRunBeforeThePortBindsTest`), so **anything a
 request depends on finishes in a bean body** — Mongo index creation is there for that reason. Its worst case is
-10 min 30 s (`ChatMongoConfig.INDEX_CREATE_CEILING` + `INDEX_DROP_CEILING`, `ChatMongoIndexCeilingTest`); the
-`startupProbe` sizing is in `infra/AGENTS.md`.
+`INDEX_CREATE_CEILING` (10 min, one deadline over all creations) + one `INDEX_DROP_CEILING` (30 s) per name in
+`SUPERSEDED_WINDOW_INDEXES` — 10 min 60 s with two names (`ChatMongoConfig`; `ChatMongoIndexCeilingTest` measures
+the creation ceiling only). The `startupProbe` sizing is in `infra/AGENTS.md`.
 
 ## Tests
 

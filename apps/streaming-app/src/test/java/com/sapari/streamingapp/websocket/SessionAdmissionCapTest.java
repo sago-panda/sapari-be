@@ -145,7 +145,7 @@ class SessionAdmissionCapTest {
         // 방 인덱스(roomSessions)는 여기서 단언하지 않는다 — 단언할 수 있는 모양이 아니다.
         // 상한 거부는 정의상 "그 방에 그 유저 세션이 상한만큼 있다" 는 뜻이라 방 항목이 이미 존재하고,
         // trackedRoomCount 는 어느 쪽으로 구현해도 1 이다(그래서 그 수를 재는 단언은 통과만 하고
-        // 아무것도 잡지 못한다). 집합 <b>안</b>에 죽은 sessionId 가 남는 모양은 공개 표면으로 보이지
+        // 아무것도 잡지 못한다). 집합 안에 죽은 sessionId 가 남는 모양은 공개 표면으로 보이지
         // 않는다 — 팬아웃이 local 조회로 그것을 건너뛰므로 동작으로도 드러나지 않는다(누수일 뿐이다).
         // 지금 그 경로가 없는 근거는 코드다: 거부 분기가 roomSessions.compute 앞에서 돌아간다.
     }
@@ -213,12 +213,12 @@ class SessionAdmissionCapTest {
         assertThat(registry.slotsReaped())
                 .as("거둔 수가 지표에 안 들어오면 공격과 모바일 핸드오버를 가를 수 없다").isEqualTo(CAP);
 
-        // ⭐ 거둔 세션을 <b>종료하지는 않는다.</b> 종료는 Lettuce NIO 이벤트루프에서 세션마다
+        // ⭐ 거둔 세션을 종료하지는 않는다. 종료는 Lettuce NIO 이벤트루프에서 세션마다
         // 50ms 예산을 새로 받는 spin 이라, 5건이면 그 루프가 최대 250ms 멈춘다 — 이 파일이 두 자리에서
         // 금지한 모양이고 하필 발동 조건이 재접속 폭주 구간이다. 수거는 각 세션의 생존 확인
         // (Schedulers.parallel)이 다음 틱에 가져간다.
         //
-        // ⚠️ 이걸 localSessionCount 로 재면 <b>변이에 반응하지 않는다</b> — terminateUnresponsive 는
+        // ⚠️ 이걸 localSessionCount 로 재면 변이에 반응하지 않는다 — terminateUnresponsive 는
         // local 에서 지우지 않으므로(지우는 것은 핸들러 cleanup → unregister 다) 종료를 다시 넣어도
         // 그 수가 그대로다. 실제로 한때 그렇게 적어 뒀고, reap 에 종료를 되돌려도 전 스위트가
         // 초록이었다 — 금지한다고 적은 변경이 통째로 통과했다. 종료의 관측 가능한 흔적은 지표다.

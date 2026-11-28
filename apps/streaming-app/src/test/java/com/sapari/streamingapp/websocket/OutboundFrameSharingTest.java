@@ -111,7 +111,7 @@ class OutboundFrameSharingTest {
                 .as("직렬화가 세션 수에 비례한다 — 같은 뷰를 받는 세션들이 프레임을 공유하지 않았다")
                 .hasValue(2);
 
-        // ⭐ 같은 뷰를 받는 세션들은 <b>같은 배열 인스턴스</b>를 받는다. 그게 이 변경의 하중 지점이다 —
+        // ⭐ 같은 뷰를 받는 세션들은 같은 배열 인스턴스를 받는다. 그게 이 변경의 하중 지점이다 —
         // 세션은 그 배열을 자기 버퍼로 감싸기만 하므로 UTF-8 인코딩도 종류 수만큼만 돈다.
         // 인스턴스 동일성으로 재는 이유: 내용 비교는 "따로 만들어 같은 값" 과 구분되지 않는다.
         //
@@ -223,7 +223,7 @@ class OutboundFrameSharingTest {
         // 네이티브 버퍼의 배열 인스턴스를 본다.
         //
         // 되돌림이 잡히는 자리: 운영 등가 회귀(세션마다 bufferFactory().wrap(serialize(..)))로
-        // 바꾸면 <b>이 공유 단언</b>에서 깨진다. 다만 session.textMessage(..) 로 되돌리면 목 세션에
+        // 바꾸면 이 공유 단언에서 깨진다. 다만 session.textMessage(..) 로 되돌리면 목 세션에
         // 그 스텁이 없어 단언보다 먼저 NPE 로 죽는다 — 보장은 서지만 실패 지점이 다르다.
         byte[] firstArray = ((NettyDataBuffer) one.getPayload()).getNativeBuffer().array();
         byte[] secondArray = ((NettyDataBuffer) two.getPayload()).getNativeBuffer().array();

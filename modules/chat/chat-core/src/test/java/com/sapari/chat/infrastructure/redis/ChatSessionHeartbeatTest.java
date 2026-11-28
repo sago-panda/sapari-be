@@ -63,7 +63,7 @@ class ChatSessionHeartbeatTest {
         template = new ReactiveStringRedisTemplate(factory);
         template.delete(ChatRedisKeys.sessions(roomId)).block(VERIFY_CEILING);
         // 합성 시계 — 낡음 상한이 2분이라 실시간으로 기다리면 테스트가 2분짜리가 된다.
-        // TimeProvider 를 감싸지 않고 <b>Clock 을 움직인다</b> — 운영이 쓰는 경로가 그쪽이라,
+        // TimeProvider 를 감싸지 않고 Clock 을 움직인다 — 운영이 쓰는 경로가 그쪽이라,
         // TimeProvider 를 가짜로 바꾸면 그 안의 변환이 검증에서 빠진다.
         Clock movingClock = new Clock() {
             @Override

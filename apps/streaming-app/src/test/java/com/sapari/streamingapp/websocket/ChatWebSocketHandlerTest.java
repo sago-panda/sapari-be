@@ -127,7 +127,7 @@ class ChatWebSocketHandlerTest {
         // 조립 중 동기 예외 — register 의 즉시 실행 구간이 던지는 모양이다.
         given(registry.register(eq("s1"), any()))
                 .willThrow(new IllegalStateException("프로브: 조립 중 던진다"));
-        // 뒷정리가 정상으로 돌게 둔다 — 이 테스트가 재는 것은 doFinally 의 <b>배치</b>다.
+        // 뒷정리가 정상으로 돌게 둔다 — 이 테스트가 재는 것은 doFinally 의 배치다.
         // (뒷정리 자신이 던지는 경우는 아래 테스트가 따로 본다.)
         given(registry.unregister(roomId, "s1")).willReturn(Mono.empty());
         // 방 구독 목이 Disposable 을 돌려줘야 한다 — null 이면 releaseRoom 안에서 dispose() 가 NPE 를
@@ -170,7 +170,7 @@ class ChatWebSocketHandlerTest {
         given(subscriber.subscribeRoom(roomId))
                 .willThrow(new IllegalStateException("프로브: subscribeRoom 이 던진다"))
                 .willReturn(disposable);
-        // 던짐과 해제 <b>사이</b>에 다른 세션이 같은 방을 refs=1 로 설치한다. 뒷정리가 unregister 를
+        // 던짐과 해제 사이에 다른 세션이 같은 방을 refs=1 로 설치한다. 뒷정리가 unregister 를
         // 먼저 부르므로 그 안이 정확히 그 틈이다.
         given(registry.unregister(roomId, "s1")).willAnswer(invocation -> {
             handler.acquireRoom(roomId);
@@ -186,8 +186,8 @@ class ChatWebSocketHandlerTest {
                 .as("실패한 접속의 뒷정리가 다른 세션의 방 구독을 걷어냈다").isTrue();
         then(disposable).should(never()).dispose();
 
-        // ⚠️ 이 교차는 뒷정리의 <b>내부 순서</b>(unregister 먼저 → 방 해제 나중)에 기댄다. 순서를
-        // 뒤집으면 설치가 해제 뒤로 가서 이 테스트가 과다 해제를 <b>조용히 못 잡는다</b>(실측: 순서
+        // ⚠️ 이 교차는 뒷정리의 내부 순서(unregister 먼저 → 방 해제 나중)에 기댄다. 순서를
+        // 뒤집으면 설치가 해제 뒤로 가서 이 테스트가 과다 해제를 조용히 못 잡는다(실측: 순서
         // 뒤집기 + 플래그 무시 → 전 스위트 초록). 운영의 교차는 시간 기반이라 순서를 바꿔도 결함이
         // 남으므로, 순서에 기대지 않는 걸쇠를 아래 테스트가 따로 건다 —
         // {@code a_failed_acquire_never_calls_release}.
@@ -243,14 +243,14 @@ class ChatWebSocketHandlerTest {
 
         handler.acquireRoom(roomId);
         // 던짐은 호출부로 올라간다(그 catch 는 cleanup 에 있고 이건 직접 호출이다). 재는 것은
-        // 그 던짐 뒤에 <b>맵 상태가 일관된가</b>다.
+        // 그 던짐 뒤에 맵 상태가 일관된가다.
         assertThatThrownBy(() -> handler.releaseRoom(roomId))
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(handler.isSubscribed(roomId))
                 .as("dispose 가 던지자 refs=0 항목이 남았다 — 다음 세션이 구독 없이 그 방을 쓴다")
                 .isFalse();
-        // 그 뒤 새 세션은 구독을 <b>새로</b> 만들 수 있어야 한다.
+        // 그 뒤 새 세션은 구독을 새로 만들 수 있어야 한다.
         given(subscriber.subscribeRoom(roomId)).willReturn(mock(Disposable.class));
         handler.acquireRoom(roomId);
         assertThat(handler.isSubscribed(roomId)).isTrue();
@@ -450,7 +450,7 @@ class ChatWebSocketHandlerTest {
         given(registry.terminationSignal("s1")).willReturn(Mono.never());
         given(registry.closeStatusOf("s1")).willReturn(CloseStatus.NORMAL);
         // 기한이 지났다고 레지스트리가 답한다 — 시계 자체는 레지스트리 단위 테스트가 지킨다.
-        // 기한 인자를 any() 로 지우면 핸들러가 <b>수명 상한</b>을 기한으로 넘기는 뮤턴트가 통과한다 —
+        // 기한 인자를 any() 로 지우면 핸들러가 수명 상한을 기한으로 넘기는 뮤턴트가 통과한다 —
         // 그러면 생존 확인이 60분 침묵에서만 참이 되어 사실상 무효가 되는데 아무 테스트도 깨지지 않는다.
         given(registry.isUnresponsive("s1", LIVENESS_DEADLINE)).willReturn(true);
         ChatSession chatSession = new ChatSession(roomId, userId, ChatRole.BUYER, "구매자", "b@example.com", false);

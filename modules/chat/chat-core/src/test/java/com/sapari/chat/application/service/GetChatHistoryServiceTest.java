@@ -305,7 +305,7 @@ class GetChatHistoryServiceTest {
     @Test
     @DisplayName("⭐ 커서가 질의로 그대로 내려간다 — 떨어지면 모든 페이지가 최신부터가 되고 응답은 200 이다")
     void theCursorIsForwardedToTheQuery() {
-        // 형식 판정을 어댑터로 내린 뒤 이 서비스에 남은 커서 책임은 <b>전달</b> 하나다. 그런데 이
+        // 형식 판정을 어댑터로 내린 뒤 이 서비스에 남은 커서 책임은 전달 하나다. 그런데 이
         // 테스트는 doesNotThrowAnyException() 하나였고, 전달을 재는 단언이 없었다 — 실측: 서비스에서
         // command.beforeId() 를 null 로 바꾼 한 줄 변경에 chat-core 412건이 전부 초록이었다.
         // 그 상태면 무한 스크롤이 같은 페이지를 반복하는데 서버는 200 이라 아무 신호가 없다.
@@ -373,7 +373,7 @@ class GetChatHistoryServiceTest {
                 .contains("ADMIN")
                 .contains(adminId.toString())
                 .contains(roomId.toString());
-        // PII 부재는 <b>이 서비스가 남긴 모든 줄</b>에 긋는다 — 감사 줄 하나만 보면 나중에 같은
+        // PII 부재는 이 서비스가 남긴 모든 줄에 긋는다 — 감사 줄 하나만 보면 나중에 같은
         // 서비스에 log.debug("이력 응답 — email={}") 류를 더했을 때 초록으로 통과한다. 실시간 쪽
         // 쌍둥이(PrivilegedEntryAuditTest)가 allSatisfy 로 같은 선을 긋고 있어서, 한쪽만 좁으면
         // 그 비대칭이 다시 사각지대가 된다.

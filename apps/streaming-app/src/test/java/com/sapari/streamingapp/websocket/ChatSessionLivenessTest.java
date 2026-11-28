@@ -114,7 +114,7 @@ class ChatSessionLivenessTest {
         // when: 기한(3초)을 한참 넘긴 5초까지 아무것도 보내지 않다가, 그 뒤에 한 건 보낸다.
         //
         // 단언을 "닫히지 않았다"로 쓸 수 없다 — 수신을 끝내는 순간 클라가 스스로 닫으므로 그 close 와
-        // 서버가 끊은 close 가 구별되지 않는다(둘 다 1000이다). 기한 뒤의 <b>왕복</b>이 그 둘을 가른다:
+        // 서버가 끊은 close 가 구별되지 않는다(둘 다 1000이다). 기한 뒤의 왕복이 그 둘을 가른다:
         // 서버가 3초에 끊었다면 ACK 가 올 곳이 없다.
         ChatWsClients.connect(URI.create(
                 "ws://localhost:" + port + "/ws/chat?roomId=" + roomId), token, session ->

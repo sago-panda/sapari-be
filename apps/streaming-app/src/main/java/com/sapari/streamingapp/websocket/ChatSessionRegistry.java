@@ -286,7 +286,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
      * 전부이고, 표의 두 칸이 거부 쪽에 불리하다는 것도 그대로 둔다.
      *
      * <p>⚠️ 한때 근거를 셋으로 적었는데 <b>둘이 틀렸다.</b> (2) 로 "evict 는 살아 있는 소켓의
-     * flush 를 접속 경로에 올린다" 고 적었는데, {@code terminate} 는 <b>소켓 I/O 를 하지 않는다</b> —
+     * flush 를 접속 경로에 올린다" 고 적었는데, {@link SessionOutbound#terminate} 는 <b>소켓 I/O 를 하지 않는다</b> —
      * closeStatus CAS · sink {@code tryEmitComplete} · 제어 채널 {@code tryEmitValue} 뿐이고 실제
      * {@code session.close()} 는 피해자 자신의 체인에서 다른 스레드가 쓴다. 배수도 반대다: 빼낸
      * reap 은 최대 5건 × 50ms 였고 evict 는 1건 × 50ms 다. (3) 으로 "정상 사용자가 걸리는 경로는
@@ -379,36 +379,36 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> register(String sessionId, ChatSession session) {
-        // 상한 검사와 등재를 <b>한 원자 구간</b>에 묶는다. 세어 보고 나중에 넣으면 동시 접속 둘이
+        // 상한 검사와 등재를 한 원자 구간에 묶는다. 세어 보고 나중에 넣으면 동시 접속 둘이
         // 같은 수를 읽고 둘 다 통과해 상한을 넘긴다 — compute 의 재매핑 함수는 그 키에 대해 직렬화되므로
         // "셋을 보고 넣는다" 가 쪼개지지 않는다. 판정을 배열로 받는 것은 그 안에서만 쓰는 값이라서다
         // (같은 키에 동시 실행이 없으므로 가시성 문제도 없다).
         //
-        // ⚠️ 이 메서드는 {@code Mono.defer} 로 감싸여 있지 않다 — 자리 증가는 <b>조립 시점에 즉시</b>
-        // 일어난다. 한때 여기 "그 구간은 Mono 조립뿐이라 도달 불가" 라고 적었는데 <b>두 문장이 다
-        // 틀렸다</b>: 그 구간에는 index.put 과 주입 협력자 호출(특권 뷰 감사)과 index.addToRoom
+        // ⚠️ 이 메서드는 {@code Mono.defer} 로 감싸여 있지 않다 — 자리 증가는 조립 시점에 즉시
+        // 일어난다. 한때 여기 "그 구간은 Mono 조립뿐이라 도달 불가" 라고 적었는데 두 문장이 다
+        // 틀렸다: 그 구간에는 index.put 과 주입 협력자 호출(특권 뷰 감사)과 index.addToRoom
         // 가 있고, 이 파일의 테스트가 그 협력자를 던지게 해 실제로 그 구간을 밟는다. 그리고 "항목이
         // 영구히 남는다" 도 이제 아래 try/finally 가 되돌린다 — 불변식이 "도달 불가" 에서 "집행" 으로
         // 바뀐 것이 이 설계의 내용이다. 다음 사람이 "도달 불가" 를 읽고 그 가드를 걷으면 안 된다.
         //
-        // index.put 보다 <b>앞</b>이어야 한다. 뒤에 두면 거부된 연결이 이미 명부에 들어가 있어
+        // index.put 보다 앞이어야 한다. 뒤에 두면 거부된 연결이 이미 명부에 들어가 있어
         // 게이지·팬아웃이 그 세션을 한 번 보고, cleanup 이 지우기 전까지 시청자 수가 틀린다.
-        // ⚠️ <b>세션 레코드를 자리 확보 앞에서 만든다.</b> 한때 자리를 넣은 뒤 이 자리에서 만들었고,
-        // 그러면 자리 추가와 {@code index.put} 사이에 <b>할당</b>이 들어와 OutOfMemoryError 로 던질 수
+        // ⚠️ 세션 레코드를 자리 확보 앞에서 만든다. 한때 자리를 넣은 뒤 이 자리에서 만들었고,
+        // 그러면 자리 추가와 {@code index.put} 사이에 할당이 들어와 OutOfMemoryError 로 던질 수
         // 있는 창이 생긴다. 그 창은 테스트로 밟을 수단이 없어(남는 것이 Error 뿐이다) 그 구간의
         // 보상은 CI 가 영원히 확인해 주지 않는다 — 실제로 그 보상이 세 라운드에 걸쳐 두 번
         // 좁아졌고 두 번 다 스위트가 초록이었다.
         //
-        // ⚠️ 대가로 <b>불변식이 바뀌었다.</b> 아래 레코드는 nanoTime 셋을 들고 있고 그 원점이 이제
+        // ⚠️ 대가로 불변식이 바뀌었다. 아래 레코드는 nanoTime 셋을 들고 있고 그 원점이 이제
         // 자리 확보·거부 판정보다 앞선다. 포함관계는 보존된다 — 생존 확인의 두 술어가 같은 필드를
         // 읽으므로 원점이 δ 앞당겨지면 둘이 같이 δ 앞당겨진다. 실제로 앞당겨지는 것은 30s·90s 창
         // 둘이고 그 사이 구간은 맵 compute 하나와 분기(마이크로초)다. 나머지 둘(거부 응답 간격·
         // 레이트리밋)은 원점이 앞설수록 더 안전한 방향이다.
         //
-        // 그래서 금지가 "던질 수 있는 코드" 에서 <b>"느린 코드"</b> 로 바뀌었다 — 이 생성과
+        // 그래서 금지가 "던질 수 있는 코드" 에서 "느린 코드" 로 바뀌었다 — 이 생성과
         // index.put 사이에 I/O 나 락을 넣으면 그 창 둘이 그만큼 짧아진다.
         //
-        // 그래서 테스트를 만드는 대신 <b>창을 없앴다</b>. 이 아래로는 자리 추가 ~ index.put 사이에
+        // 그래서 테스트를 만드는 대신 창을 없앴다. 이 아래로는 자리 추가 ~ index.put 사이에
         // 할당이 없다. 대가는 거부 1건마다 버려지는 아웃바운드 큐 하나(256슬롯, 약 2.3KB)이고,
         // 거부 경로가 남용 경로라 공짜가 아니다 — 다만 그 1건은 이미 WS 핸드셰이크와 토큰 검증과
         // 입장 게이트의 Redis 왕복 넷을 쓴 뒤다.
@@ -430,31 +430,31 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 new AtomicBoolean());    // closedByRoomEnd — closeAll 만 켠다
 
         boolean admitted = slots.tryAcquire(session.userId(), session.roomId(), sessionId);
-        // ⚠️ <b>자리를 넣은 다음부터 반환까지 전부 이 try 안이다.</b> 그 구간에서 던지면 회수 경로
+        // ⚠️ 자리를 넣은 다음부터 반환까지 전부 이 try 안이다. 그 구간에서 던지면 회수 경로
         // 둘이 다 못 걷기 때문이다 — unregister 는 index.get 이 null 이라 블록을 건너뛰고,
         // reapUnresponsiveIfFull 은 isUnresponsive 가 명부에 없는 sessionId 에 "살아 있음" 을
         // 준다. 그러면 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다 — 이 파일이 스스로
         // "상한 코드가 만들 수 있는 최악의 결함" 이라 부른 그것이다.
         //
-        // ⚠️ "실패하면 되돌린다" 의 대상은 <b>넷</b>이다 — 자리·명부·방 항목·캐시 둘.
-        // 한때 이 try 가 <b>index.put 하나만</b> 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
+        // ⚠️ "실패하면 되돌린다" 의 대상은 넷이다 — 자리·명부·방 항목·캐시 둘.
+        // 한때 이 try 가 index.put 하나만 감쌌다. 그러면 집행 대상이 사실상 OOM 뿐이고
         // (put 과 생성자들은 Error 외에 던질 경로가 없다) 정작 던질 수 있는 둘 — 주입 협력자를
-        // 부르는 감사 블록과 index.addToRoom — 이 가드 <b>밖</b>에 남았다. 그 상태가 더
+        // 부르는 감사 블록과 index.addToRoom — 이 가드 밖에 남았다. 그 상태가 더
         // 나빴다: 거기서 던지면 자리뿐 아니라 명부 항목까지 남는다.
         //
         // ⚠️ 근거가 한 번 낡았다. 한때 "호출부가 register(...).then(...).doFinally(cleanup) 이라
         // doFinally 가 애초에 조립되지 않는다" 고 적었는데, 호출부가 Mono.defer{...}.doFinally(...)
-        // 로 바뀌어 <b>동기 예외에서도 doFinally 는 돈다</b>(실측). 가드가 여전히 필요한 이유는
+        // 로 바뀌어 동기 예외에서도 doFinally 는 돈다(실측). 가드가 여전히 필요한 이유는
         // 다른 것이다 — 그 cleanup 이 부르는 unregister 가 index.get 으로 키를 만들고, 이 구간에서
         // 던지면 명부에 항목이 없어 자리를 못 걷는다. 결론은 같고 근거만 교체됐다.
         //
-        // 거부 분기도 이 안에 둔다 — 자리 추가와 가드 사이에 <b>한 줄도 들어가지 않게</b> 하려는
+        // 거부 분기도 이 안에 둔다 — 자리 추가와 가드 사이에 한 줄도 들어가지 않게 하려는
         // 것이고, 인접성에 기대지 않는다는 것이 이 배치의 값이다.
         //
         // 그 경로의 finally 가 무해한 근거는 "remove 가 무연산" 한 단계가 아니다 — finally 는 자리와
-        // 명부와 방 항목과 캐시 둘을 되돌리고, 그중 <b>방 항목 삭제와 캐시 둘은 remove 의 무연산
-        // 여부와 무관하게 {@code sessionIds.isEmpty()} 하나로 갈린다.</b> 성립하는 근거는 더 센
-        // 불변식이다: <b>방 색인에 항목이 있으면 그 집합은 비어 있지 않다</b>. 그 불변식을 집행하는 것도,
+        // 명부와 방 항목과 캐시 둘을 되돌리고, 그중 방 항목 삭제와 캐시 둘은 remove 의 무연산
+        // 여부와 무관하게 {@code sessionIds.isEmpty()} 하나로 갈린다. 성립하는 근거는 더 센
+        // 불변식이다: 방 색인에 항목이 있으면 그 집합은 비어 있지 않다. 그 불변식을 집행하는 것도,
         // 근거와 지키는 칸을 적는 것도 {@link LocalSessionIndex} 다.
         boolean registered = false;
         try {
@@ -471,7 +471,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 return Mono.error(new EntryDeniedException(EntryDeniedException.Reason.TOO_MANY_SESSIONS));
             }
 
-            // ⚠️ <b>자리 증가와 index.put 사이에서 던지면 자리가 영구히 남는다.</b> 회수 경로 둘이
+            // ⚠️ 자리 증가와 index.put 사이에서 던지면 자리가 영구히 남는다. 회수 경로 둘이
             // 다 못 걷기 때문이다 — unregister 는 index.get 이 null 이라 블록을 건너뛰고,
             // reapUnresponsiveIfFull 은 isUnresponsive 가 명부에 없는 sessionId 에 "살아 있음" 을
             // 준다. 그러면 그 유저는 프로세스 재시작 전까지 그 방에 못 들어온다 — 이 파일이 스스로
@@ -479,12 +479,12 @@ public class ChatSessionRegistry implements ChatSessionManager {
             //
             // 한때 "그 구간은 비어 있어 도달 불가" 로 두었는데 그 추론은 두 번 깨졌다: 특권 뷰 감사
             // 블록이 그 사이로 들어왔고(그래서 아래로 옮겼다), 아래 할당 자체도 OutOfMemoryError 로
-            // 던질 수 있다. 추론으로 지키는 대신 <b>집행</b>한다 — 실패하면 자리를 되돌린다.
+            // 던질 수 있다. 추론으로 지키는 대신 집행한다 — 실패하면 자리를 되돌린다.
             // 세션마다 unicast Sink 1개(연결당 아웃바운드 1개). onBackpressureBuffer: 구독 전 emit·일시 적체 보관.
             // 버퍼는 유계 — 무제한이면 소비하지 않는 클라 하나가 Pod 힙을 잠식한다(초과 처리는 emit 참고).
             index.put(sessionId, pending);
 
-            // ⚠️ 감사 로그가 <b>상한 검사 뒤</b>에 있다. 한때 register 첫 줄이었는데, 그러면 상한으로
+            // ⚠️ 감사 로그가 상한 검사 뒤에 있다. 한때 register 첫 줄이었는데, 그러면 상한으로
             // 거부된 접속도 "특권 뷰 입장" 으로 남아 감사가 실제 특권 뷰보다 많아진다 — 이 줄의 값이
             // "누가 언제 어느 방을 봤는가" 에 답하는 것이라, 보지 못한 접속이 섞이면 그 답이 틀린다.
             // 관리자 입장만 남긴다. 이 세션은 방 주인과 같은 것을 받는다 — 마스킹 전 원문과 발신자
@@ -504,7 +504,7 @@ public class ChatSessionRegistry implements ChatSessionManager {
             // Redis 명부 등재 실패로 접속을 막지 않는다 — 이 HASH는 시청자 수 집계 전용이고, 메시지 전달·강퇴·
             // 종료는 전부 위 로컬 자료구조와 Pub/Sub으로 돈다. 강퇴 조회 실패에도 입장을 허용하는 정책과 같은 방향.
             //
-            // 다만 이 관용이 실제로 값을 내는 건 <b>일시적·부분적</b> 실패일 때다. Redis가 통째로 죽으면 전달
+            // 다만 이 관용이 실제로 값을 내는 건 일시적·부분적 실패일 때다. Redis가 통째로 죽으면 전달
             // 자체가 Pub/Sub이라 아무도 못 받는다. 그 구간의 전송은 강퇴·밴·종료 판정을 못 읽어 거절되므로
             // (SendChatService·EntryGate.isRoomAlive) 검사 없이 이력에 쌓이지 않는다.
             Mono<Void> registration = sessionRepository.add(session.roomId(), sessionId, session.userId())
@@ -522,11 +522,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
                 // 돌지만, 그것이 부르는 unregister 는 index.get 으로 키를 만들어 자리를 못 걷는다).
                 //
                 // ⚠️ 이 가드가 못 덮는 갈래가 하나 있다: 등록이 성공한 뒤 호출부의 다음 단계가
-                // <b>영원히 끝나지 않는</b> 경우다(그러면 doFinally 가 돌지 않아 명부 잔류가
+                // 영원히 끝나지 않는 경우다(그러면 doFinally 가 돌지 않아 명부 잔류가
                 // 유계가 아니다). 실제로는 Lettuce 명령 타임아웃이 묶지만 그 값이 추적되는 설정에
                 // 없어 라이브러리 기본값에 기댄다. 능력 증가는 없고(구독 전이라 프레임도 받지
                 // 못한다) 자원 누수다 — 여기서 고칠 자리가 아니라 적어 둔다.
-                // 자리는 <b>인자에서 키를 만들어 무조건</b> 되돌린다 — 명부 조회로 키를 만들면
+                // 자리는 인자에서 키를 만들어 무조건 되돌린다 — 명부 조회로 키를 만들면
                 // 자리가 들어간 뒤 index.put 전에 던지는 구간에서 반납이 통째로 빠진다(실측).
                 // 그 구간이 이 가드가 존재하는 유일한 이유다. 멱등이라 두 번 불려도 무해하다.
                 slots.release(session.userId(), session.roomId(), sessionId);
@@ -563,10 +563,10 @@ public class ChatSessionRegistry implements ChatSessionManager {
 
     @Override
     public Mono<Void> unregister(UUID roomId, String sessionId) {
-        // 상한 인덱스를 <b>명부를 지우기 전에</b> 걷는다 — 세션 레코드에서 userId 를 읽어야 키를
+        // 상한 인덱스를 명부를 지우기 전에 걷는다 — 세션 레코드에서 userId 를 읽어야 키를
         // 만들 수 있다. 먼저 지우면 키를 못 만들어 항목이 남고, 그 유저는 그 방에 다시 들어올 수
         // 없게 된다(상한이 영구히 찬 상태로 고정된다). 상한 코드가 만들 수 있는 최악의 결함이다.
-        // 자리도 방 색인도 <b>세션 자신의 roomId</b> 로 걷는다 — 등재를 session.roomId() 로 했으므로
+        // 자리도 방 색인도 세션 자신의 roomId 로 걷는다 — 등재를 session.roomId() 로 했으므로
         // 그래야 같은 키다. 포트 계약({@code ChatSessionManager.unregister})에 인자와 세션의 방이
         // 같아야 한다는 보장이 없고, 어긋나는 호출이 들어오면 둘이 다 영구히 남는다.
         //
@@ -626,11 +626,11 @@ public class ChatSessionRegistry implements ChatSessionManager {
         return Mono.fromRunnable(() -> {
             SessionOutbound.FanOutBudget budget = outbound.newSharedBudget();
             // resolver 가 돌려주는 서로 다른 메시지마다 프레임 하나 — 같은 메시지를 받는 세션들은
-            // 그 프레임을 공유하므로 직렬화가 세션 수가 아니라 <b>종류 수</b>에 비례한다.
+            // 그 프레임을 공유하므로 직렬화가 세션 수가 아니라 종류 수에 비례한다.
             // 동치가 아니라 동일성으로 묶는다: fanOutChat 이 뷰 4종을 미리 만들어 재사용하므로
             // 동일성으로 충분하고, record equals 는 15 필드를 비교하므로 이쪽이 싸다.
             //
-            // ⚠️ "빗나가도 직렬화 한 번 더 하는 것뿐" 이라고 적었는데 <b>틀렸다</b>. 이 맵은
+            // ⚠️ "빗나가도 직렬화 한 번 더 하는 것뿐" 이라고 적었는데 틀렸다. 이 맵은
             // SessionOutbound.DEFAULT_CONTENTION_SPIN_NANOS javadoc 이 "예산 소비자를 더 붙이지 말라" 고 못 박은 바로 그 루프 안에 있다 —
             // 12,000 세션 fan-out 이 이미 예산의 79%(3.96ms/5ms)다. 계약이 지켜지면 엔트리 4개라
             // 무시할 값이지만, 빗나가면 12,000 distinct 엔트리(table 65,536 · refs 약 524KB)로
